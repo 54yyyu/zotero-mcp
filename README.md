@@ -1,9 +1,15 @@
 # Zotero MCP: Your Research Library in Claude
 
 <p align="center">
-  <img src="https://www.zotero.org/static/images/svg/zotero-logo.svg" height="60" alt="Zotero Logo">
-  ➕
-  <img src="https://upload.wikimedia.org/wikipedia/commons/7/7e/Claude_Anthropic_Logo.svg" height="60" alt="Claude Logo">
+  <a href="https://www.zotero.org/">
+    <img src="https://img.shields.io/badge/Zotero-CC2936?style=for-the-badge&logo=zotero&logoColor=white" alt="Zotero">
+  </a>
+  <a href="https://www.anthropic.com/claude">
+    <img src="https://img.shields.io/badge/Claude-6849C3?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude">
+  </a>
+  <a href="https://modelcontextprotocol.io/introduction">
+    <img src="https://img.shields.io/badge/MCP-0175C2?style=for-the-badge&logoColor=white" alt="MCP">
+  </a>
 </p>
 
 **Zotero MCP** seamlessly connects your [Zotero](https://www.zotero.org/) research library with [Claude](https://www.anthropic.com/claude) and other AI assistants via the [Model Context Protocol](https://modelcontextprotocol.io/introduction). Discuss papers, get summaries, analyze citations, and more!
