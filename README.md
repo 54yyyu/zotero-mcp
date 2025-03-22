@@ -69,7 +69,7 @@ After installation, either:
 
 1. Start Zotero desktop (make sure local API is enabled in preferences)
 2. Launch Claude Desktop
-3. In Claude, type: `/tools zotero`
+3. Access the Zotero-MCP tool through Claude Desktop's tools interface
 
 Example prompts:
 - "Search my library for papers on machine learning"
