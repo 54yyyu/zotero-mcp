@@ -19,18 +19,19 @@ This MCP server provides the following tools:
   - `zotero_get_item_fulltext`: Get the full text content of a specific item
   - `zotero_get_item_children`: Get child items (attachments, notes) for a specific item
 
-- **Library management**
-  - `zotero_update_item`: Update fields of an existing item in your library
-  - `zotero_add_tags`: Add tags to an item in your library
-  - `zotero_batch_update_tags`: Add or remove tags across multiple items
-  - `zotero_create_collection`: Create a new collection in your library
-  - `zotero_add_note`: Add a note to an item in your library
-
 All tool responses are formatted using Markdown for optimal readability when used with AI assistants.
 
 ## Installation
 
-### Using pip
+### Quick Install from GitHub
+
+The easiest way to install is directly from GitHub:
+
+```bash
+pip install git+https://github.com/54yyyu/zotero-mcp.git
+```
+
+### Using pip (once published)
 
 ```bash
 pip install zotero-mcp
@@ -39,10 +40,38 @@ pip install zotero-mcp
 ### From source
 
 ```bash
-git clone https://github.com/yourusername/zotero-mcp.git
+git clone https://github.com/54yyyu/zotero-mcp.git
 cd zotero-mcp
 pip install -e .
 ```
+
+## Quick Setup for Claude Desktop
+
+After installation, you can automatically configure zotero-mcp for Claude Desktop with a single command:
+
+```bash
+zotero-mcp setup
+```
+
+This will:
+1. Find your zotero-mcp installation
+2. Locate (or create) your Claude Desktop configuration file
+3. Configure it to use the local Zotero API
+
+### Advanced Setup Options
+
+For more options:
+
+```bash
+zotero-mcp setup --help
+```
+
+Options include:
+- `--no-local`: Configure for the Zotero Web API instead of the local API
+- `--api-key`: Your Zotero API key (for Web API)
+- `--library-id`: Your Zotero library ID (for Web API)
+- `--library-type`: Your Zotero library type (user or group, for Web API)
+- `--config-path`: Manually specify the Claude Desktop config file path
 
 ## Configuration
 
@@ -58,13 +87,13 @@ The server can be configured through environment variables:
 If you're running Zotero 7 or newer, you can use this server with the local API. Make sure to:
 
 1. Enable the local API in Zotero's preferences
-2. Set `ZOTERO_LOCAL=true` in your environment variables
+2. Set `ZOTERO_LOCAL=true` in your environment variables or use the setup helper
 
 > **Note:** For access to the fulltext API locally, you'll need Zotero 7 or newer. Earlier versions don't support this feature.
 
-### Claude Desktop Integration
+### Manual Claude Desktop Integration
 
-To use this with Claude Desktop, add the following to your `claude_desktop_config.json`:
+If you prefer to manually configure Claude Desktop, add the following to your `claude_desktop_config.json`:
 
 ```json
 {
@@ -84,13 +113,13 @@ To use this with Claude Desktop, add the following to your `claude_desktop_confi
 Once configured, you can run the server directly:
 
 ```bash
-zotero-mcp
+zotero-mcp serve
 ```
 
 Or run it with specific options:
 
 ```bash
-zotero-mcp --transport stdio|sse
+zotero-mcp serve --transport stdio|sse
 ```
 
 ## Development
@@ -99,14 +128,11 @@ We welcome contributions! To set up a development environment:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/zotero-mcp.git
+git clone https://github.com/54yyyu/zotero-mcp.git
 cd zotero-mcp
 
 # Install in development mode
-pip install -e ".[dev]"
-
-# Run tests
-pytest
+pip install -e .
 ```
 
 ## License
