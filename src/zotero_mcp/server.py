@@ -860,3 +860,380 @@ def advanced_search(
     except Exception as e:
         ctx.error(f"Error in advanced search: {str(e)}")
         return f"Error in advanced search: {str(e)}"
+
+@mcp.tool(
+    name="zotero_update_item",
+    description="Update fields of existing Zotero items, including titles, authors, abstracts, and other metadata."
+)
+def update_item(
+    item_key: str,
+    fields: Dict[str, Any],
+    *,
+    ctx: Context
+) -> str:
+    """
+    Update fields of an existing Zotero item.
+    
+    Args:
+        item_key: Zotero item key/ID
+        fields: Dictionary of fields to update (e.g., {"title": "New Title", "abstractNote": "New abstract"})
+        ctx: MCP context
+    
+    Returns:
+        Markdown-formatted summary of the update
+    """
+    try:
+        ctx.info(f"Updating item {item_key}")
+        zot = get_zotero_client()
+        
+        # Get the current item data
+        item = zot.item(item_key)
+        if not item:
+            return f"Error: No item found with key {item_key}"
+        
+        # Store original values for reporting changes
+        original_data = {k: v for k, v in item["data"].items() if k in fields}
+        
+        # Update the fields
+        for field, value in fields.items():
+            # Special handling for creators
+            if field == "creators":
+                # Ensure creators have the correct format
+                if isinstance(value, list):
+                    # Validate each creator has the required fields
+                    for creator in value:
+                        if not isinstance(creator, dict):
+                            return f"Error: Each creator must be a dictionary with 'creatorType' and name fields"
+                        if "creatorType" not in creator:
+                            return f"Error: Each creator must have a 'creatorType' field"
+                        # Ensure name is provided in the correct format
+                        if not any(key in creator for key in ["name", "firstName", "lastName"]):
+                            return f"Error: Each creator must have either 'name' or 'firstName'/'lastName' fields"
+                    
+                    item["data"]["creators"] = value
+                else:
+                    return f"Error: 'creators' field must be a list of creator dictionaries"
+            else:
+                # Update regular fields
+                item["data"][field] = value
+        
+        # Submit the update
+        updated = zot.update_item(item)
+        
+        # Check for successful update
+        if not updated:
+            return f"Error: Failed to update item {item_key}"
+        
+        # Format response showing before and after
+        response = [f"# Item Updated: {item['data'].get('title', 'Untitled')}", ""]
+        response.append(f"Item key: {item_key}")
+        response.append("")
+        response.append("## Changes Made")
+        
+        for field, new_value in fields.items():
+            old_value = original_data.get(field, "N/A")
+            
+            # Special handling for display of different field types
+            if field == "creators":
+                response.append(f"### {field}")
+                response.append("**Before:**")
+                for creator in old_value:
+                    if "name" in creator:
+                        response.append(f"- {creator.get('creatorType', 'author')}: {creator['name']}")
+                    else:
+                        response.append(f"- {creator.get('creatorType', 'author')}: {creator.get('lastName', '')}, {creator.get('firstName', '')}")
+                
+                response.append("**After:**")
+                for creator in new_value:
+                    if "name" in creator:
+                        response.append(f"- {creator.get('creatorType', 'author')}: {creator['name']}")
+                    else:
+                        response.append(f"- {creator.get('creatorType', 'author')}: {creator.get('lastName', '')}, {creator.get('firstName', '')}")
+            elif field == "tags":
+                response.append(f"### {field}")
+                old_tags = [tag["tag"] for tag in old_value] if isinstance(old_value, list) else []
+                new_tags = [tag["tag"] for tag in new_value] if isinstance(new_value, list) else []
+                
+                response.append(f"**Before:** {', '.join(f'`{tag}`' for tag in old_tags) or 'None'}")
+                response.append(f"**After:** {', '.join(f'`{tag}`' for tag in new_tags) or 'None'}")
+            else:
+                response.append(f"### {field}")
+                # Truncate long values for display
+                if isinstance(old_value, str) and len(old_value) > 100:
+                    old_display = old_value[:100] + "..."
+                else:
+                    old_display = old_value
+                
+                if isinstance(new_value, str) and len(new_value) > 100:
+                    new_display = new_value[:100] + "..."
+                else:
+                    new_display = new_value
+                
+                response.append(f"**Before:** {old_display}")
+                response.append(f"**After:** {new_display}")
+            
+            response.append("")
+        
+        # Return a link to view the updated item
+        response.append("## View Item")
+        response.append(f"To see all item details, use `zotero_get_item_metadata` with item key: `{item_key}`")
+        
+        return "\n".join(response)
+    
+    except Exception as e:
+        ctx.error(f"Error updating item: {str(e)}")
+        return f"Error updating item: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_tags",
+    description="Add new tags to existing Zotero items, making them easier to organize and find."
+)
+def add_tags(
+    item_key: str,
+    tags: List[str],
+    *,
+    ctx: Context
+) -> str:
+    """
+    Add tags to an existing Zotero item.
+    
+    Args:
+        item_key: Zotero item key/ID
+        tags: List of tags to add
+        ctx: MCP context
+    
+    Returns:
+        Markdown-formatted summary of the update
+    """
+    try:
+        if not tags:
+            return "Error: No tags provided to add"
+        
+        ctx.info(f"Adding {len(tags)} tags to item {item_key}")
+        zot = get_zotero_client()
+        
+        # Get the current item data
+        item = zot.item(item_key)
+        if not item:
+            return f"Error: No item found with key {item_key}"
+        
+        # Get the current tags
+        current_tags = item["data"].get("tags", [])
+        current_tag_values = {tag["tag"] for tag in current_tags}
+        
+        # Prepare new tags to add (avoid duplicates)
+        new_tags_added = []
+        for tag in tags:
+            if tag and tag not in current_tag_values:
+                current_tags.append({"tag": tag})
+                new_tags_added.append(tag)
+        
+        # If no new tags were added, return early
+        if not new_tags_added:
+            return f"No new tags added. All provided tags already exist on item: {item['data'].get('title', 'Untitled')}"
+        
+        # Update the item with new tags
+        item["data"]["tags"] = current_tags
+        updated = zot.update_item(item)
+        
+        # Check for successful update
+        if not updated:
+            return f"Error: Failed to update tags for item {item_key}"
+        
+        # Format response
+        response = [f"# Tags Added to: {item['data'].get('title', 'Untitled')}", ""]
+        response.append(f"Item key: {item_key}")
+        response.append("")
+        response.append("## Tags Added")
+        for tag in new_tags_added:
+            response.append(f"- `{tag}`")
+        
+        response.append("")
+        response.append("## All Tags")
+        all_tags = [tag["tag"] for tag in current_tags]
+        all_tags.sort()  # Sort tags alphabetically
+        for tag in all_tags:
+            response.append(f"- `{tag}`")
+        
+        return "\n".join(response)
+    
+    except Exception as e:
+        ctx.error(f"Error adding tags: {str(e)}")
+        return f"Error adding tags: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_collection",
+    description="Create new collections (folders) to organize your Zotero library, including support for nested collections."
+)
+def create_collection(
+    name: str,
+    parent_collection_key: Optional[str] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new collection in your Zotero library.
+    
+    Args:
+        name: Name of the new collection
+        parent_collection_key: Key of the parent collection (for nested collections)
+        ctx: MCP context
+    
+    Returns:
+        Markdown-formatted summary of the created collection
+    """
+    try:
+        if not name.strip():
+            return "Error: Collection name cannot be empty"
+        
+        ctx.info(f"Creating new collection: {name}")
+        zot = get_zotero_client()
+        
+        # Prepare collection data
+        collection_data = {"name": name}
+        
+        # If parent collection is specified, validate it exists
+        if parent_collection_key:
+            try:
+                parent = zot.collection(parent_collection_key)
+                parent_name = parent["data"].get("name", "Unknown Collection")
+                collection_data["parentCollection"] = parent_collection_key
+                ctx.info(f"Adding as sub-collection of: {parent_name}")
+            except Exception as parent_error:
+                return f"Error: Parent collection not found with key {parent_collection_key}: {str(parent_error)}"
+        
+        # Create the collection
+        result = zot.create_collection(collection_data)
+        
+        # Check for successful creation
+        if not result or not result.get("success"):
+            return f"Error: Failed to create collection '{name}'"
+        
+        # Extract the new collection key
+        collection_key = next(iter(result["success"].values()), None)
+        if not collection_key:
+            return f"Error: Could not retrieve key for created collection '{name}'"
+        
+        # Format response
+        response = ["# Collection Created", ""]
+        response.append(f"**Name:** {name}")
+        response.append(f"**Collection Key:** {collection_key}")
+        
+        if parent_collection_key:
+            response.append(f"**Parent Collection:** {parent_name} (Key: {parent_collection_key})")
+        
+        response.append("")
+        response.append("## Usage")
+        response.append("To add items to this collection, update the item and include this collection key in its 'collections' field.")
+        response.append("")
+        response.append("To view items in this collection, use `zotero_get_collection_items` with this collection key.")
+        
+        return "\n".join(response)
+    
+    except Exception as e:
+        ctx.error(f"Error creating collection: {str(e)}")
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_note",
+    description="Add notes to Zotero items, which is useful for summarizing content, adding comments, or attaching additional information."
+)
+def add_note(
+    item_key: str,
+    note_text: str,
+    note_title: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Add a note to a Zotero item.
+    
+    Args:
+        item_key: Zotero item key/ID to attach the note to
+        note_text: Content of the note (supports HTML formatting)
+        note_title: Title of the note (optional)
+        tags: List of tags to add to the note (optional)
+        ctx: MCP context
+    
+    Returns:
+        Markdown-formatted summary of the created note
+    """
+    try:
+        if not note_text.strip():
+            return "Error: Note text cannot be empty"
+        
+        ctx.info(f"Adding note to item {item_key}")
+        zot = get_zotero_client()
+        
+        # First check if the parent item exists
+        parent_item = zot.item(item_key)
+        if not parent_item:
+            return f"Error: No item found with key {item_key}"
+        
+        parent_title = parent_item["data"].get("title", "Untitled Item")
+        
+        # Prepare note data
+        note_data = {
+            "itemType": "note",
+            "parentItem": item_key,
+            "note": note_text
+        }
+        
+        # If a title was provided, use it for the note title field
+        if note_title:
+            note_data["title"] = note_title
+        
+        # If tags were provided, format them correctly
+        if tags:
+            note_data["tags"] = [{"tag": tag} for tag in tags if tag]
+        
+        # Create the note
+        result = zot.create_items([note_data])
+        
+        # Check for successful creation
+        if not result or not result.get("success"):
+            return f"Error: Failed to create note for item '{parent_title}'"
+        
+        # Extract the new note key
+        note_keys = list(result["success"].keys())
+        if not note_keys:
+            return f"Error: Could not retrieve key for created note"
+        
+        note_key = note_keys[0]
+        
+        # Format response
+        response = ["# Note Added", ""]
+        response.append(f"**Parent Item:** {parent_title}")
+        response.append(f"**Parent Key:** {item_key}")
+        response.append(f"**Note Key:** {note_key}")
+        
+        if note_title:
+            response.append(f"**Note Title:** {note_title}")
+        
+        if tags:
+            response.append(f"**Tags:** {', '.join(f'`{tag}`' for tag in tags)}")
+        
+        # Add a preview of the note content
+        response.append("")
+        response.append("## Note Preview")
+        
+        # Convert HTML to plaintext for preview
+        preview_text = note_text
+        preview_text = preview_text.replace("<p>", "").replace("</p>", "\n\n")
+        preview_text = preview_text.replace("<br/>", "\n").replace("<br>", "\n")
+        
+        # Limit preview length
+        if len(preview_text) > 500:
+            preview_text = preview_text[:500] + "...\n\n(Note truncated)"
+        
+        response.append(f"```\n{preview_text}\n```")
+        
+        return "\n".join(response)
+    
+    except Exception as e:
+        ctx.error(f"Error adding note: {str(e)}")
+        return f"Error adding note: {str(e)}"
