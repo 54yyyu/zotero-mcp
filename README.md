@@ -139,3 +139,14 @@ zotero-mcp setup --help
 ## 📄 License
 
 MIT
+
+
+## 📚 Documentation
+
+For detailed documentation, visit the [Zotero MCP Documentation Site](https://54yyyu.github.io/zotero-mcp/).
+
+The documentation includes:
+- Step-by-step installation guides
+- API reference for all available tools
+- Usage examples and best practices
+- Troubleshooting tips

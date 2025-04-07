@@ -1,0 +1,199 @@
+                <p>Smithery is a package manager for AI assistants that makes installing tools like Zotero MCP quick and easy. This is the recommended installation method for most users.</p>
+                
+                <h4 class="h5 mt-3">Installation Steps</h4>
+                <ol>
+                  <li>Make sure you have <a href="https://nodejs.org/" target="_blank">Node.js</a> installed on your system (required for the <code>npx</code> command).</li>
+                  <li>Open a terminal or command prompt.</li>
+                  <li>Run the following command:</li>
+                </ol>
+                
+                <div class="code-block">
+                  <pre><code>npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude</code></pre>
+                </div>
+                
+                <p>This command will:</p>
+                <ul>
+                  <li>Install the latest version of Zotero MCP</li>
+                  <li>Configure it for use with Claude Desktop</li>
+                  <li>Set up everything automatically</li>
+                </ul>
+                
+                <div class="alert alert-success">
+                  <i class="fas fa-check-circle me-2"></i>
+                  If the installation completes successfully, you should see a confirmation message. Smithery will handle all the configuration details for you.
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="manual-installation" class="mt-5">
+            <h2 class="border-bottom pb-2">Manual Installation</h2>
+            
+            <div class="card mb-4">
+              <div class="card-body">
+                <p>If you prefer to install Zotero MCP manually, follow these steps:</p>
+                
+                <h4 class="h5 mt-3">Installation via pip</h4>
+                <ol>
+                  <li>Open a terminal or command prompt.</li>
+                  <li>Run the following command to install from GitHub:</li>
+                </ol>
+                
+                <div class="code-block">
+                  <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git</code></pre>
+                </div>
+                
+                <p>Or install a specific version:</p>
+                
+                <div class="code-block">
+                  <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git@v0.1.0</code></pre>
+                </div>
+                
+                <h4 class="h5 mt-3">Auto-Configuration for Claude Desktop</h4>
+                <p>After installation, run the auto-configuration tool:</p>
+                
+                <div class="code-block">
+                  <pre><code>zotero-mcp setup</code></pre>
+                </div>
+                
+                <p>The setup tool will:</p>
+                <ul>
+                  <li>Find the installed Zotero MCP executable</li>
+                  <li>Locate your Claude Desktop configuration file</li>
+                  <li>Update the configuration to include Zotero MCP</li>
+                  <li>Set up local API access by default</li>
+                </ul>
+                
+                <div class="alert alert-info">
+                  <i class="fas fa-info-circle me-2"></i>
+                  You'll need to restart Claude Desktop after running the setup command for the changes to take effect.
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="configuration" class="mt-5">
+            <h2 class="border-bottom pb-2">Configuration Options</h2>
+            
+            <div class="card mb-4">
+              <div class="card-body">
+                <h4 class="h5">Local API Configuration</h4>
+                <p>To configure for local API use (default):</p>
+                
+                <div class="code-block">
+                  <pre><code>zotero-mcp setup</code></pre>
+                </div>
+                
+                <p>This will add the following to your Claude Desktop config:</p>
+                
+                <div class="code-block">
+                  <pre><code>{
+  "mcpServers": {
+    "zotero": {
+      "command": "zotero-mcp",
+      "env": {
+        "ZOTERO_LOCAL": "true"
+      }
+    }
+  }
+}</code></pre>
+                </div>
+                
+                <h4 class="h5 mt-4">Web API Configuration</h4>
+                <p>To configure for Web API use:</p>
+                
+                <div class="code-block">
+                  <pre><code>zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID</code></pre>
+                </div>
+                
+                <p>Replace <code>YOUR_API_KEY</code> and <code>YOUR_LIBRARY_ID</code> with your actual Zotero API key and library ID.</p>
+                
+                <h4 class="h5 mt-4">Manual Configuration File Editing</h4>
+                <p>You can also edit your Claude Desktop configuration file manually. The file is located at:</p>
+                
+                <ul>
+                  <li><strong>macOS:</strong> <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
+                  <li><strong>Windows:</strong> <code>%APPDATA%\Claude\claude_desktop_config.json</code></li>
+                  <li><strong>Linux:</strong> <code>~/.config/Claude/claude_desktop_config.json</code></li>
+                </ul>
+                
+                <p>Add the Zotero MCP configuration to the <code>mcpServers</code> section of the file.</p>
+                
+                <h4 class="h5 mt-4">Environment Variables</h4>
+                <p>Instead of using the configuration file, you can also set environment variables:</p>
+                
+                <div class="code-block">
+                  <pre><code># For local API
+export ZOTERO_LOCAL=true
+
+# For web API
+export ZOTERO_API_KEY=your_api_key
+export ZOTERO_LIBRARY_ID=your_library_id
+export ZOTERO_LIBRARY_TYPE=user  # or 'group' for group libraries</code></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="verification" class="mt-5">
+            <h2 class="border-bottom pb-2">Verification</h2>
+            
+            <div class="card mb-4">
+              <div class="card-body">
+                <p>To verify that Zotero MCP is installed and configured correctly:</p>
+                
+                <h4 class="h5 mt-3">Check Installation</h4>
+                <ol>
+                  <li>Open a terminal or command prompt.</li>
+                  <li>Run the following command to check the version:</li>
+                </ol>
+                
+                <div class="code-block">
+                  <pre><code>zotero-mcp version</code></pre>
+                </div>
+                
+                <p>You should see output showing the installed version of Zotero MCP.</p>
+                
+                <h4 class="h5 mt-3">Test with Claude Desktop</h4>
+                <ol>
+                  <li>Make sure Zotero is running and the local API is enabled.</li>
+                  <li>Launch Claude Desktop.</li>
+                  <li>In a conversation with Claude, type: <code>/tools zotero</code> to activate the Zotero tool.</li>
+                  <li>Try a simple query like: "List my recent additions to Zotero"</li>
+                </ol>
+                
+                <p>If everything is set up correctly, Claude should be able to access your Zotero library and display results.</p>
+                
+                <div class="alert alert-warning">
+                  <i class="fas fa-exclamation-triangle me-2"></i>
+                  If you encounter any issues, check the <a href="index.html#troubleshooting">Troubleshooting</a> section or <a href="https://github.com/54yyyu/zotero-mcp/issues" target="_blank">submit an issue on GitHub</a>.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="py-5 bg-dark text-white">
+    <div class="container text-center">
+      <p>Zotero MCP - Your Research Library in Claude</p>
+      <p class="mb-0">
+        <a href="https://github.com/54yyyu/zotero-mcp" class="text-white" target="_blank">
+          <i class="fab fa-github me-2"></i>GitHub
+        </a>
+        <span class="mx-2">|</span>
+        <a href="https://github.com/54yyyu/zotero-mcp/issues" class="text-white" target="_blank">
+          <i class="fas fa-bug me-2"></i>Report an Issue
+        </a>
+      </p>
+      <p class="mt-2 mb-0">
+        <small>License: MIT</small>
+      </p>
+    </div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

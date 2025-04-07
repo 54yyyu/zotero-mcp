@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Background circle with gradient -->
+  <defs>
+    <linearGradient id="gradientBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6849C3;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#8460E6;stop-opacity:0.9" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Main circle -->
+  <circle cx="50" cy="50" r="45" fill="url(#gradientBg)" />
+  
+  <!-- Zotero-like book icon (simplified) -->
+  <g fill="white">
+    <!-- Book cover -->
+    <rect x="30" y="25" width="40" height="50" rx="2" />
+    
+    <!-- Pages - right side of book -->
+    <path d="M72,25 h4 a2,2 0 0 1 2,2 v46 a2,2 0 0 1 -2,2 h-4 v-50" fill="#f0f0f0" />
+    
+    <!-- Book spine details -->
+    <rect x="30" y="30" width="5" height="40" fill="#CC2936" />
+    
+    <!-- "MCP" Text -->
+    <text x="37" y="58" font-family="Arial, sans-serif" font-weight="bold" font-size="18" fill="#6849C3">MCP</text>
+  </g>
+  
+  <!-- Arc showing connection -->
+  <path d="M50,15 A35,35 0 0 1 85,50" stroke="white" stroke-width="3" fill="none" stroke-dasharray="5,3" />
+  
+  <!-- Small Claude-like purple circle -->
+  <circle cx="85" cy="50" r="8" fill="white" />
+  <path d="M81,50 l3,-3 l3,3 l-3,3 z" fill="#6849C3" />
+</svg>

@@ -1,0 +1,10 @@
+title: Zotero MCP
+description: Seamlessly connect your Zotero research library with Claude and other AI assistants via the Model Context Protocol
+theme: jekyll-theme-cayman
+baseurl: /zotero-mcp
+url: https://54yyyu.github.io
+github:
+  is_project_page: true
+  repository_url: https://github.com/54yyyu/zotero-mcp
+  repository_name: zotero-mcp
+  owner_name: 54yyyu

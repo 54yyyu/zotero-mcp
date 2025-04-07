@@ -1,0 +1,140 @@
+/* Custom styles for Zotero MCP documentation */
+
+:root {
+  --primary-color: #6849C3;  /* Claude purple */
+  --secondary-color: #CC2936; /* Zotero red */
+  --tertiary-color: #0175C2;  /* MCP blue */
+  --bg-light: #f8f9fa;
+  --text-dark: #343a40;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.6;
+  color: var(--text-dark);
+}
+
+/* Navigation */
+.navbar-dark.bg-primary {
+  background-color: var(--primary-color) !important;
+}
+
+/* Hero section */
+.hero-section {
+  background: linear-gradient(135deg, var(--primary-color) 0%, #8460e6 100%);
+  color: white;
+  padding: 5rem 0;
+}
+
+.badge-link {
+  text-decoration: none;
+}
+
+/* Feature cards */
+.feature-icon {
+  font-size: 2.5rem;
+  color: var(--primary-color);
+}
+
+.card {
+  border: none;
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+
+/* Code blocks */
+.code-block {
+  background-color: #f5f5f5;
+  border-radius: 0.25rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.code-block pre {
+  margin-bottom: 0;
+  white-space: pre-wrap;
+}
+
+.code-block code {
+  color: var(--secondary-color);
+}
+
+/* Section headers */
+section h2 {
+  margin-bottom: 2rem;
+  position: relative;
+  padding-bottom: 0.5rem;
+}
+
+section h2:after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80px;
+  height: 3px;
+  background-color: var(--primary-color);
+}
+
+/* Button styling */
+.btn-primary {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-primary:hover, .btn-primary:focus {
+  background-color: #5738a9;
+  border-color: #5738a9;
+}
+
+.btn-outline-secondary {
+  color: white;
+  border-color: white;
+}
+
+.btn-outline-secondary:hover, .btn-outline-secondary:focus {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: white;
+}
+
+/* Card headers */
+.card-header.bg-primary {
+  background-color: var(--primary-color) !important;
+}
+
+/* Accordion */
+.accordion-button:not(.collapsed) {
+  background-color: #f0ebff;
+  color: var(--primary-color);
+}
+
+.accordion-button:focus {
+  border-color: #c4b5f3;
+  box-shadow: 0 0 0 0.25rem rgba(104, 73, 195, 0.25);
+}
+
+/* Footer */
+footer a {
+  text-decoration: none;
+}
+
+footer a:hover {
+  text-decoration: underline;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .hero-section {
+    padding: 3rem 0;
+  }
+  
+  section {
+    padding: 3rem 0;
+  }
+}
