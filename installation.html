@@ -1,3 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zotero MCP Installation Guide</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+    <div class="container">
+      <a class="navbar-brand" href="index.html">
+        <img src="img/logo.svg" alt="Zotero MCP Logo" height="30" class="d-inline-block align-top">
+        Zotero MCP
+      </a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav ms-auto">
+          <li class="nav-item">
+            <a class="nav-link" href="index.html#home">Home</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="index.html#features">Features</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link active" href="installation.html">Installation</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="index.html#usage">Usage</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="api.html">API</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="index.html#troubleshooting">Troubleshooting</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="https://github.com/54yyyu/zotero-mcp" target="_blank">
+              <i class="fab fa-github"></i> GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <header class="py-4 bg-light">
+    <div class="container">
+      <h1>Installation Guide</h1>
+      <p class="lead">Detailed instructions to get Zotero MCP up and running.</p>
+    </div>
+  </header>
+
+  <section class="py-5">
+    <div class="container">
+      <div class="row">
+        <!-- Sidebar with navigation -->
+        <div class="col-lg-3">
+          <div class="sticky-top pt-4">
+            <div class="list-group">
+              <a href="#prerequisites" class="list-group-item list-group-item-action">Prerequisites</a>
+              <a href="#smithery-installation" class="list-group-item list-group-item-action">Smithery Installation</a>
+              <a href="#manual-installation" class="list-group-item list-group-item-action">Manual Installation</a>
+              <a href="#configuration" class="list-group-item list-group-item-action">Configuration</a>
+              <a href="#verification" class="list-group-item list-group-item-action">Verification</a>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Main content -->
+        <div class="col-lg-9">
+          <div id="prerequisites">
+            <h2 class="border-bottom pb-2">Prerequisites</h2>
+            
+            <div class="card mb-4">
+              <div class="card-body">
+                <p>Before installing Zotero MCP, make sure you have the following prerequisites:</p>
+                
+                <h4 class="h5 mt-3">Required Software</h4>
+                <ul>
+                  <li><strong>Python 3.10+</strong> - The tool is built on Python and requires version 3.10 or newer.</li>
+                  <li><strong>Zotero 7+</strong> - For local API with full-text access.</li>
+                  <li><strong>Claude Desktop</strong> - Or another compatible MCP-enabled AI assistant.</li>
+                </ul>
+                
+                <h4 class="h5 mt-3">For Local API Use (Recommended)</h4>
+                <p>To use the local Zotero API:</p>
+                <ol>
+                  <li>Open Zotero</li>
+                  <li>Go to Edit > Preferences > Advanced > API</li>
+                  <li>Check "Enable local API"</li>
+                  <li>Click OK to save the settings</li>
+                </ol>
+                
+                <div class="alert alert-info">
+                  <i class="fas fa-info-circle me-2"></i>
+                  Using the local API is recommended for the best experience, as it provides full-text access to your library.
+                </div>
+                
+                <h4 class="h5 mt-3">For Web API Use</h4>
+                <p>If you plan to use the Zotero Web API, you'll need:</p>
+                <ol>
+                  <li><strong>Zotero API Key</strong> - Create one at <a href="https://www.zotero.org/settings/keys" target="_blank">https://www.zotero.org/settings/keys</a></li>
+                  <li><strong>Library ID</strong> - Your user ID or group ID</li>
+                </ol>
+                
+                <div class="alert alert-warning">
+                  <i class="fas fa-exclamation-triangle me-2"></i>
+                  Note that the Web API doesn't provide direct access to attachments, so full-text extraction may not be available.
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="smithery-installation" class="mt-5">
+            <h2 class="border-bottom pb-2">Smithery Installation (Recommended)</h2>
+            
+            <div class="card mb-4">
+              <div class="card-body">
                 <p>Smithery is a package manager for AI assistants that makes installing tools like Zotero MCP quick and easy. This is the recommended installation method for most users.</p>
                 
                 <h4 class="h5 mt-3">Installation Steps</h4>
