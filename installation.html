@@ -63,6 +63,7 @@
           <div class="sticky-top pt-4">
             <div class="list-group">
               <a href="#prerequisites" class="list-group-item list-group-item-action">Prerequisites</a>
+              <a href="#smithery-installation" class="list-group-item list-group-item-action">Smithery Installation</a>
               <a href="#pip-installation" class="list-group-item list-group-item-action">Pip Installation</a>
               <a href="#configuration" class="list-group-item list-group-item-action">Configuration</a>
               <a href="#verification" class="list-group-item list-group-item-action">Verification</a>
@@ -110,6 +111,39 @@
                 <div class="alert alert-warning">
                   <i class="fas fa-exclamation-triangle me-2"></i>
                   Note that the Web API doesn't provide direct access to attachments, so full-text extraction may not be available.
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div id="smithery-installation" class="mt-5">
+            <h2 class="border-bottom pb-2">Smithery Installation</h2>
+            
+            <div class="card mb-4">
+              <div class="card-body">
+                <p>Smithery is a package manager for AI assistants that makes installing tools like Zotero MCP quick and easy:</p>
+                
+                <h4 class="h5 mt-3">Installation Steps</h4>
+                <ol>
+                  <li>Make sure you have <a href="https://nodejs.org/" target="_blank">Node.js</a> installed on your system (required for the <code>npx</code> command).</li>
+                  <li>Open a terminal or command prompt.</li>
+                  <li>Run the following command:</li>
+                </ol>
+                
+                <div class="code-block">
+                  <pre><code>npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude</code></pre>
+                </div>
+                
+                <p>This command will:</p>
+                <ul>
+                  <li>Install the latest version of Zotero MCP</li>
+                  <li>Configure it for use with Claude Desktop</li>
+                  <li>Set up everything automatically</li>
+                </ul>
+                
+                <div class="alert alert-success">
+                  <i class="fas fa-check-circle me-2"></i>
+                  If the installation completes successfully, you should see a confirmation message. Smithery will handle all the configuration details for you.
                 </div>
               </div>
             </div>
