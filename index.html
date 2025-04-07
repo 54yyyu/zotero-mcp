@@ -121,24 +121,23 @@
       <p class="text-center mb-4">For detailed setup instructions, check out our <a href="installation.html">Installation Guide</a>.</p>
       <div class="row">
         <div class="col-lg-6 mb-4 mb-lg-0">
-          <h3>Automatic Installation via Smithery</h3>
+          <h3>Pip Installation</h3>
           <div class="card mb-4">
             <div class="card-body">
-              <p class="card-text">The easiest way to install Zotero MCP for Claude Desktop:</p>
+              <p class="card-text">Install from GitHub repository:</p>
               <div class="code-block">
-                <pre><code>npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude</code></pre>
+                <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git</code></pre>
               </div>
             </div>
           </div>
         </div>
         <div class="col-lg-6">
-          <h3>Manual Installation</h3>
+          <h3>Auto-Configuration</h3>
           <div class="card">
             <div class="card-body">
-              <p class="card-text">Install from GitHub and auto-configure for Claude Desktop:</p>
+              <p class="card-text">After installation, run the setup utility:</p>
               <div class="code-block">
-                <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git
-zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
+                <pre><code>zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
               </div>
             </div>
           </div>
