@@ -112,6 +112,30 @@
           </div>
         </div>
       </div>
+      <div class="row g-4 mt-3">
+        <div class="col-md-6">
+          <div class="card h-100">
+            <div class="card-body">
+              <div class="feature-icon mb-3">
+                <i class="fas fa-highlighter"></i>
+              </div>
+              <h5 class="card-title">Work with Annotations</h5>
+              <p class="card-text">Extract and search PDF annotations directly. Access Zotero's native annotations or extract directly from PDFs. For optimal annotation extraction, it's highly recommended to install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a> for Zotero.</p>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="card h-100">
+            <div class="card-body">
+              <div class="feature-icon mb-3">
+                <i class="fas fa-sticky-note"></i>
+              </div>
+              <h5 class="card-title">Note Management</h5>
+              <p class="card-text">Retrieve, search, and create notes for your research items. Extract insights from your notes or create new ones (beta feature). Organize your thoughts and research findings seamlessly with Claude's natural language capabilities.</p>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -193,6 +217,9 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
                 <li>"Search my library for papers on machine learning"</li>
                 <li>"Find recent articles I've added about climate change"</li>
                 <li>"Summarize the key findings from my paper on quantum computing"</li>
+                <li>"Extract all PDF annotations from my paper on neural networks"</li>
+                <li>"Search my notes and annotations for mentions of 'reinforcement learning'"</li>
+                <li>"Create a detailed note for my climate paper with a summary of key points"</li>
               </ul>
             </div>
           </div>
@@ -238,7 +265,7 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
       <h2 class="text-center mb-5">Available Tools</h2>
       <p class="text-center mb-4">Check out our <a href="api.html">API Documentation</a> for detailed information on all available tools.</p>
       <div class="row">
-        <div class="col-lg-6">
+        <div class="col-lg-4">
           <div class="card mb-4">
             <div class="card-header bg-primary text-white">
               <h5 class="mb-0">Search Tools</h5>
@@ -255,8 +282,8 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
             </div>
           </div>
         </div>
-        <div class="col-lg-6">
-          <div class="card">
+        <div class="col-lg-4">
+          <div class="card mb-4">
             <div class="card-header bg-primary text-white">
               <h5 class="mb-0">Content Tools</h5>
             </div>
@@ -266,6 +293,21 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
                 <li class="list-group-item"><code>zotero_get_item_fulltext</code>: Get full text content</li>
                 <li class="list-group-item"><code>zotero_get_item_children</code>: Get attachments and notes</li>
                 <li class="list-group-item"><code>zotero_batch_update_tags</code>: Update tags across multiple items</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card mb-4">
+            <div class="card-header bg-primary text-white">
+              <h5 class="mb-0">Notes & Annotations</h5>
+            </div>
+            <div class="card-body">
+              <ul class="list-group list-group-flush">
+                <li class="list-group-item"><code>zotero_get_annotations</code>: Get annotations</li>
+                <li class="list-group-item"><code>zotero_get_notes</code>: Retrieve notes</li>
+                <li class="list-group-item"><code>zotero_search_notes</code>: Search in notes and annotations</li>
+                <li class="list-group-item"><code>zotero_create_note</code>: Create a new note <span class="badge bg-warning text-dark">Beta</span></li>
               </ul>
             </div>
           </div>
@@ -318,7 +360,30 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
                     </div>
                   </div>
                 </div>
-              </div>
+                <div class="accordion-item">
+                  <h2 class="accordion-header">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFour">
+                      Annotations not appearing or incomplete
+                    </button>
+                  </h2>
+                  <div id="collapseFour" class="accordion-collapse collapse" data-bs-parent="#troubleshootingAccordion">
+                    <div class="accordion-body">
+                      For optimal annotation extraction, install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a> for Zotero. Try using <code>use_pdf_extraction: true</code> parameter with the <code>zotero_get_annotations</code> tool as a fallback method.
+                    </div>
+                  </div>
+                </div>
+                <div class="accordion-item">
+                  <h2 class="accordion-header">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFive">
+                      Note creation errors
+                    </button>
+                  </h2>
+                  <div id="collapseFive" class="accordion-collapse collapse" data-bs-parent="#troubleshootingAccordion">
+                    <div class="accordion-body">
+                      The <code>zotero_create_note</code> tool is currently in beta. Make sure you're providing a valid parent item key and the required parameters. Basic HTML formatting (<code>&lt;p&gt;</code>, <code>&lt;br&gt;</code>) is supported in note content.
+                    </div>
+                  </div>
+                </div>
             </div>
           </div>
         </div>
