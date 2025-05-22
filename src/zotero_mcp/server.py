@@ -7,7 +7,7 @@ import os
 import uuid
 import tempfile
 
-from mcp.server.fastmcp import Context, FastMCP
+from fastmcp import Context, FastMCP
 
 from zotero_mcp.client import (
     AttachmentDetails,
@@ -21,7 +21,7 @@ from zotero_mcp.utils import format_creators
 # Create an MCP server with appropriate dependencies
 mcp = FastMCP(
     "Zotero",
-    dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown"],
+    dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown", "fastmcp"],
 )
 
 

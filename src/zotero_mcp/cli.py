@@ -21,7 +21,7 @@ def main():
     server_parser = subparsers.add_parser("serve", help="Run the MCP server")
     server_parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
+        choices=["stdio", "streamable-http", "sse"],
         default="stdio",
         help="Transport to use (default: stdio)",
     )
@@ -72,9 +72,15 @@ def main():
         transport = getattr(args, "transport", "stdio")
         if transport == "stdio":
             mcp.run(transport="stdio")
+        elif transport == "streamable-http":
+            host = getattr(args, "host", "localhost") 
+            port = getattr(args, "port", 8000)
+            mcp.run(transport="streamable-http", host=host, port=port)
         elif transport == "sse":
             host = getattr(args, "host", "localhost") 
             port = getattr(args, "port", 8000)
+            import warnings
+            warnings.warn("The SSE transport is deprecated and may be removed in a future version. New applications should use Streamable HTTP transport instead.", UserWarning)
             mcp.run(transport="sse", host=host, port=port)
 
 

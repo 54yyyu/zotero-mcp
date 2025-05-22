@@ -159,7 +159,7 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 zotero-mcp serve
 
 # Specify transport method
-zotero-mcp serve --transport stdio|sse
+zotero-mcp serve --transport stdio|streamable-http|sse
 
 # Get help on setup options
 zotero-mcp setup --help
