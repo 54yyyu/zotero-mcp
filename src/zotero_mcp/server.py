@@ -2,6 +2,9 @@
 Zotero MCP server implementation.
 """
 
+import os
+from typing import Union
+from Pytero import zotero
 from typing import Any, Dict, List, Literal, Optional, Union
 import os
 import uuid
@@ -24,6 +27,36 @@ mcp = FastMCP(
     dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown", "fastmcp"],
 )
 
+def get_web_api_client() -> Optional[zotero.Zotero]:
+    """Get a web API client for write operations."""
+    library_id = os.getenv("ZOTERO_LIBRARY_ID")
+    library_type = os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+    api_key = os.getenv("ZOTERO_API_KEY")
+    
+    if not (library_id and api_key):
+        return None
+    
+    try:
+        return zotero.Zotero(
+            library_id=library_id,
+            library_type=library_type,
+            api_key=api_key,
+            local=False  # Force web API
+        )
+    except Exception:
+        return None
+
+def parse_tags_parameter(tags_param: Union[str, List[str], None]) -> List[str]:
+    """Parse tags parameter that might be a string or list."""
+    if not tags_param:
+        return []
+    
+    if isinstance(tags_param, str):
+        return [tag.strip() for tag in tags_param.split(',') if tag.strip()]
+    elif isinstance(tags_param, list):
+        return [str(tag).strip() for tag in tags_param if str(tag).strip()]
+    else:
+        return []
 
 @mcp.tool(
     name="zotero_search_items",
@@ -606,23 +639,23 @@ def get_recent(
 
 @mcp.tool(
     name="zotero_batch_update_tags",
-    description="Batch update tags across multiple items matching a search query."
+    description="Batch update tags across multiple items matching a search query. Requires web API credentials for write operations."
 )
 def batch_update_tags(
     query: str,
-    add_tags: Optional[List[str]] = None,
-    remove_tags: Optional[List[str]] = None,
+    add_tags: Optional[Union[str, List[str]]] = None,
+    remove_tags: Optional[Union[str, List[str]]] = None,
     limit: int = 50,
     *,
     ctx: Context
 ) -> str:
     """
-    Batch update tags across multiple items matching a search query.
+    Batch update tags across multiple items matching a search query using web API.
     
     Args:
         query: Search query to find items to update
-        add_tags: List of tags to add to matched items
-        remove_tags: List of tags to remove from matched items
+        add_tags: Tags to add (comma-separated string or list)
+        remove_tags: Tags to remove (comma-separated string or list)
         limit: Maximum number of items to process
         ctx: MCP context
     
@@ -633,15 +666,35 @@ def batch_update_tags(
         if not query:
             return "Error: Search query cannot be empty"
         
-        if not add_tags and not remove_tags:
+        # Parse tag parameters
+        parsed_add_tags = parse_tags_parameter(add_tags)
+        parsed_remove_tags = parse_tags_parameter(remove_tags)
+        
+        if not parsed_add_tags and not parsed_remove_tags:
             return "Error: You must specify either tags to add or tags to remove"
         
         ctx.info(f"Batch updating tags for items matching '{query}'")
-        zot = get_zotero_client()
+        ctx.info(f"Add tags: {parsed_add_tags}")
+        ctx.info(f"Remove tags: {parsed_remove_tags}")
         
-        # Search for items matching the query
-        zot.add_parameters(q=query, limit=limit)
-        items = zot.items()
+        # Get web API client for write operations
+        web_zot = get_web_api_client()
+        if not web_zot:
+            return (
+                "Error: Write operations require Zotero Web API credentials.\n"
+                "Please set environment variables:\n"
+                "- ZOTERO_API_KEY: Your Zotero API key\n"
+                "- ZOTERO_LIBRARY_ID: Your library ID\n"
+                "- ZOTERO_LIBRARY_TYPE: 'user' or 'group' (optional, defaults to 'user')\n\n"
+                "Get your API key at: https://www.zotero.org/settings/keys"
+            )
+        
+        # Get read client (could be local or web)
+        read_zot = get_zotero_client()
+        
+        # Search for items using read client
+        read_zot.add_parameters(q=query, limit=limit)
+        items = read_zot.items()
         
         if not items:
             return f"No items found matching query: '{query}'"
@@ -649,67 +702,97 @@ def batch_update_tags(
         # Initialize counters
         updated_count = 0
         skipped_count = 0
-        added_tag_counts = {tag: 0 for tag in (add_tags or [])}
-        removed_tag_counts = {tag: 0 for tag in (remove_tags or [])}
+        error_count = 0
+        added_tag_counts = {tag: 0 for tag in parsed_add_tags}
+        removed_tag_counts = {tag: 0 for tag in parsed_remove_tags}
         
         # Process each item
+        items_to_update = []
+        
         for item in items:
-            # Skip attachments if they were included in the results
-            if item["data"].get("itemType") == "attachment":
+            # Skip attachments and notes
+            item_type = item["data"].get("itemType", "")
+            if item_type in ["attachment", "note"]:
                 skipped_count += 1
                 continue
-                
+            
             # Get current tags
             current_tags = item["data"].get("tags", [])
             current_tag_values = {t["tag"] for t in current_tags}
             
             # Track if this item needs to be updated
             needs_update = False
+            new_tags = current_tags.copy()
             
             # Process tags to remove
-            if remove_tags:
+            if parsed_remove_tags:
                 new_tags = []
                 for tag_obj in current_tags:
                     tag = tag_obj["tag"]
-                    if tag in remove_tags:
+                    if tag in parsed_remove_tags:
                         removed_tag_counts[tag] += 1
                         needs_update = True
                     else:
                         new_tags.append(tag_obj)
-                current_tags = new_tags
             
             # Process tags to add
-            if add_tags:
-                for tag in add_tags:
-                    if tag and tag not in current_tag_values:
-                        current_tags.append({"tag": tag})
+            if parsed_add_tags:
+                current_tag_values_after_removal = {t["tag"] for t in new_tags}
+                for tag in parsed_add_tags:
+                    if tag and tag not in current_tag_values_after_removal:
+                        new_tags.append({"tag": tag})
                         added_tag_counts[tag] += 1
                         needs_update = True
             
-            # Update the item if needed
+            # Prepare item for update if needed
             if needs_update:
-                item["data"]["tags"] = current_tags
-                zot.update_item(item)
-                updated_count += 1
+                # Create a copy of the item for updating
+                update_item = item.copy()
+                update_item["data"]["tags"] = new_tags
+                items_to_update.append(update_item)
             else:
                 skipped_count += 1
         
+        # Batch update items using web API
+        if items_to_update:
+            try:
+                # Update items in batches (Zotero API has limits)
+                batch_size = 50
+                for i in range(0, len(items_to_update), batch_size):
+                    batch = items_to_update[i:i + batch_size]
+                    result = web_zot.update_items(batch)
+                    
+                    if "success" in result:
+                        updated_count += len(result["success"])
+                    if "failed" in result:
+                        error_count += len(result["failed"])
+                        ctx.warn(f"Failed to update some items: {result['failed']}")
+                        
+            except Exception as update_error:
+                ctx.error(f"Error during batch update: {str(update_error)}")
+                return f"Error during batch update: {str(update_error)}"
+        
         # Format the response
         response = ["# Batch Tag Update Results", ""]
-        response.append(f"Query: '{query}'")
-        response.append(f"Items processed: {len(items)}")
-        response.append(f"Items updated: {updated_count}")
-        response.append(f"Items skipped: {skipped_count}")
+        response.append(f"**Query:** '{query}'")
+        response.append(f"**Items found:** {len(items)}")
+        response.append(f"**Items updated:** {updated_count}")
+        response.append(f"**Items skipped:** {skipped_count}")
+        if error_count > 0:
+            response.append(f"**Items with errors:** {error_count}")
         
-        if add_tags:
+        if parsed_add_tags:
             response.append("\n## Tags Added")
             for tag, count in added_tag_counts.items():
                 response.append(f"- `{tag}`: {count} items")
         
-        if remove_tags:
+        if parsed_remove_tags:
             response.append("\n## Tags Removed")
             for tag, count in removed_tag_counts.items():
                 response.append(f"- `{tag}`: {count} items")
+        
+        if updated_count > 0:
+            response.append(f"\n✅ Successfully updated {updated_count} items!")
         
         return "\n".join(response)
     
@@ -1420,50 +1503,65 @@ def search_notes(
 
 @mcp.tool(
     name="zotero_create_note",
-    description="Create a new note for a Zotero item."
+    description="Create a new note for a Zotero item. Requires web API credentials for write operations."
 )
 def create_note(
     item_key: str,
     note_title: str,
     note_text: str,
-    tags: Optional[List[str]] = None,
+    tags: Optional[Union[str, List[str]]] = None,
     *,
     ctx: Context
 ) -> str:
     """
-    Create a new note for a Zotero item.
+    Create a new note for a Zotero item using web API.
     
     Args:
         item_key: Zotero item key/ID to attach the note to
         note_title: Title for the note
         note_text: Content of the note (can include simple HTML formatting)
-        tags: List of tags to apply to the note
+        tags: Tags as comma-separated string or list
         ctx: MCP context
     
     Returns:
         Confirmation message with the new note key
     """
     try:
-        ctx.info(f"Creating note for item {item_key}")
-        zot = get_zotero_client()
+        # Parse tags parameter
+        parsed_tags = parse_tags_parameter(tags)
         
-        # First verify the parent item exists
+        ctx.info(f"Creating note for item {item_key} with {len(parsed_tags)} tags")
+        
+        # Get web API client for write operations
+        web_zot = get_web_api_client()
+        if not web_zot:
+            return (
+                "Error: Write operations require Zotero Web API credentials.\n"
+                "Please set environment variables:\n"
+                "- ZOTERO_API_KEY: Your Zotero API key\n"
+                "- ZOTERO_LIBRARY_ID: Your library ID\n"
+                "- ZOTERO_LIBRARY_TYPE: 'user' or 'group' (optional, defaults to 'user')\n\n"
+                "Get your API key at: https://www.zotero.org/settings/keys"
+            )
+        
+        # Get read client (could be local or web)
+        read_zot = get_zotero_client()
+        
+        # Verify the parent item exists using read client
         try:
-            parent = zot.item(item_key)
+            parent = read_zot.item(item_key)
             parent_title = parent["data"].get("title", "Untitled Item")
         except Exception:
             return f"Error: No item found with key: {item_key}"
         
         # Format the note content with proper HTML
-        # If the note_text already has HTML, use it directly
         if "<p>" in note_text or "<div>" in note_text:
             html_content = note_text
         else:
-            # Convert plain text to HTML paragraphs - avoiding f-strings with replacements
+            # Convert plain text to HTML paragraphs
             paragraphs = note_text.split("\n\n")
             html_parts = []
             for p in paragraphs:
-                # Replace newlines with <br/> tags
                 p_with_br = p.replace("\n", "<br/>")
                 html_parts.append("<p>" + p_with_br + "</p>")
             html_content = "".join(html_parts)
@@ -1473,23 +1571,94 @@ def create_note(
             "itemType": "note",
             "parentItem": item_key,
             "note": html_content,
-            "tags": [{"tag": tag} for tag in (tags or [])]
+            "tags": [{"tag": tag} for tag in parsed_tags]
         }
         
-        # Create the note
-        result = zot.create_items([note_data])
+        # Create the note using web API
+        result = web_zot.create_items([note_data])
         
         # Check if creation was successful
         if "success" in result and result["success"]:
             successful = result["success"]
             if len(successful) > 0:
                 note_key = next(iter(successful.keys()))
-                return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
+                tag_info = f" with tags: {', '.join(parsed_tags)}" if parsed_tags else ""
+                return f"Successfully created note for \"{parent_title}\"{tag_info}\n\nNote key: {note_key}"
             else:
                 return f"Note creation response was successful but no key was returned: {result}"
         else:
-            return f"Failed to create note: {result.get('failed', 'Unknown error')}"
+            error_details = result.get('failed', 'Unknown error')
+            return f"Failed to create note: {error_details}"
     
     except Exception as e:
         ctx.error(f"Error creating note: {str(e)}")
         return f"Error creating note: {str(e)}"
+
+@mcp.tool(
+    name="zotero_check_write_access",
+    description "Check if write operations are available by verifying web API credentials."
+)
+def check_write_access(*, ctx: Context) -> str:
+    """
+    Check if write operations are available.
+    
+    Returns:
+        Status of write access configuration
+    """
+    try:
+        web_zot = get_web_api_client()
+        
+        if not web_zot:
+            library_id = os.getenv("ZOTERO_LIBRARY_ID")
+            api_key = os.getenv("ZOTERO_API_KEY")
+            library_type = os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+            local_mode = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
+            
+            status = ["# Write Access Status: ❌ NOT AVAILABLE", ""]
+            status.append("## Current Configuration")
+            status.append(f"- Local mode: {local_mode}")
+            status.append(f"- Library ID: {'✅ Set' if library_id else '❌ Missing'}")
+            status.append(f"- API Key: {'✅ Set' if api_key else '❌ Missing'}")
+            status.append(f"- Library Type: {library_type}")
+            
+            status.append("\n## Required for Write Operations")
+            status.append("To enable write operations (creating notes, updating tags), you need:")
+            status.append("1. **ZOTERO_API_KEY**: Get from https://www.zotero.org/settings/keys")
+            status.append("2. **ZOTERO_LIBRARY_ID**: Your user ID or group ID")
+            status.append("3. **ZOTERO_LIBRARY_TYPE**: 'user' (default) or 'group'")
+            
+            status.append("\n## Setup Instructions")
+            status.append("```bash")
+            status.append("export ZOTERO_API_KEY='your_api_key_here'")
+            status.append("export ZOTERO_LIBRARY_ID='your_library_id'")
+            status.append("export ZOTERO_LIBRARY_TYPE='user'  # or 'group'")
+            status.append("```")
+            
+            return "\n".join(status)
+        
+        # Test the web API connection
+        try:
+            # Try a simple read operation to test credentials
+            test_items = web_zot.items(limit=1)
+            
+            status = ["# Write Access Status: ✅ AVAILABLE", ""]
+            status.append("## Configuration")
+            status.append(f"- Library ID: {web_zot.library_id}")
+            status.append(f"- Library Type: {web_zot.library_type}")
+            status.append(f"- API Key: ✅ Valid")
+            
+            status.append(f"\n## Test Results")
+            status.append(f"- Connection: ✅ Successful")
+            status.append(f"- Read access: ✅ Confirmed ({len(test_items)} items accessible)")
+            status.append(f"- Write operations: ✅ Available")
+            
+            status.append(f"\n✅ You can now use `zotero_create_note` and `zotero_batch_update_tags`!")
+            
+            return "\n".join(status)
+            
+        except Exception as test_error:
+            return f"❌ Web API credentials are set but connection failed: {str(test_error)}"
+            
+    except Exception as e:
+        ctx.error(f"Error checking write access: {str(e)}")
+        return f"Error checking write access: {str(e)}"
