@@ -61,13 +61,14 @@ def get_zotero_client() -> zotero.Zotero:
     )
 
 
-def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) -> str:
+def format_item_metadata(item: dict[str, Any], include_abstract: bool = True, concise: bool = False) -> str:
     """
     Format a Zotero item's metadata as markdown.
 
     Args:
         item: A Zotero item dictionary.
         include_abstract: Whether to include the abstract in the output.
+        concise: If True, returns a more compact format with less metadata.
 
     Returns:
         Markdown-formatted metadata.
@@ -76,75 +77,98 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     item_type = data.get("itemType", "unknown")
 
     # Basic information
-    lines = [
-        f"# {data.get('title', 'Untitled')}",
-        f"**Type:** {item_type}",
-        f"**Item Key:** {data.get('key')}",
-    ]
+    title = data.get('title', 'Untitled')
+
+    if concise:
+        lines = [f"**{title}**"]
+    else:
+        lines = [
+            f"# {title}",
+            f"**Type:** {item_type}",
+            f"**Item Key:** {data.get('key')}",
+        ]
 
     # Date
     if date := data.get("date"):
-        lines.append(f"**Date:** {date}")
+        if concise:
+            year = date[:4] if len(date) >= 4 and date[:4].isdigit() else date
+            lines[0] = f"{lines[0]} ({year})"
+        else:
+            lines.append(f"**Date:** {date}")
 
     # Authors/Creators
     if creators := data.get("creators", []):
-        lines.append(f"**Authors:** {format_creators(creators)}")
+        if concise:
+            lines.append(format_creators(creators, concise=True))
+        else:
+            lines.append(f"**Authors:** {format_creators(creators)}")
 
     # Publication details based on item type
-    if item_type == "journalArticle":
-        if journal := data.get("publicationTitle"):
-            journal_info = f"**Journal:** {journal}"
-            if volume := data.get("volume"):
-                journal_info += f", Volume {volume}"
-            if issue := data.get("issue"):
-                journal_info += f", Issue {issue}"
-            if pages := data.get("pages"):
-                journal_info += f", Pages {pages}"
-            lines.append(journal_info)
-    elif item_type == "book":
-        if publisher := data.get("publisher"):
-            book_info = f"**Publisher:** {publisher}"
-            if place := data.get("place"):
-                book_info += f", {place}"
-            lines.append(book_info)
+    if not concise:
+        if item_type == "journalArticle":
+            if journal := data.get("publicationTitle"):
+                journal_info = f"**Journal:** {journal}"
+                if volume := data.get("volume"):
+                    journal_info += f", Volume {volume}"
+                if issue := data.get("issue"):
+                    journal_info += f", Issue {issue}"
+                if pages := data.get("pages"):
+                    journal_info += f", Pages {pages}"
+                lines.append(journal_info)
+        elif item_type == "book":
+            if publisher := data.get("publisher"):
+                book_info = f"**Publisher:** {publisher}"
+                if place := data.get("place"):
+                    book_info += f", {place}"
+                lines.append(book_info)
 
     # DOI and URL
-    if doi := data.get("DOI"):
-        lines.append(f"**DOI:** {doi}")
-    if url := data.get("url"):
-        lines.append(f"**URL:** {url}")
+    if not concise:
+        if doi := data.get("DOI"):
+            lines.append(f"**DOI:** {doi}")
+        if url := data.get("url"):
+            lines.append(f"**URL:** {url}")
 
     # Extra field often holds citation key / misc metadata
-    if extra := data.get("extra"):
-        lines.extend(["", "## Extra", extra])
+    if not concise:
+        if extra := data.get("extra"):
+            lines.extend(["", "## Extra", extra])
 
-        # Try to surface a citation key if present in Extra
-        for line in extra.splitlines():
-            if "citation key" in line.lower():
-                key_part = line.split(":", 1)[1].strip() if ":" in line else line.strip()
-                lines.append(f"**Citation Key (from Extra):** {key_part}")
-                break
-    
+            # Try to surface a citation key if present in Extra
+            for line in extra.splitlines():
+                if "citation key" in line.lower():
+                    key_part = line.split(":", 1)[1].strip() if ":" in line else line.strip()
+                    lines.append(f"**Citation Key (from Extra):** {key_part}")
+                    break
+
     # Tags
-    if tags := data.get("tags"):
-        tag_list = [f"`{tag['tag']}`" for tag in tags]
-        if tag_list:
-            lines.append(f"**Tags:** {' '.join(tag_list)}")
+    if not concise:
+        if tags := data.get("tags"):
+            tag_list = [f"`{tag['tag']}`" for tag in tags]
+            if tag_list:
+                lines.append(f"**Tags:** {' '.join(tag_list)}")
 
     # Abstract
     if include_abstract and (abstract := data.get("abstractNote")):
-        lines.extend(["", "## Abstract", abstract])
+        if concise:
+            abstract_snippet = abstract[:100] + "..." if len(abstract) > 100 else abstract
+            lines.append(f"*{abstract_snippet}*")
+        else:
+            lines.extend(["", "## Abstract", abstract])
 
-    # Collections
-    if collections := data.get("collections", []):
-        if collections:
-            lines.append(f"**Collections:** {len(collections)} collections")
+    # Collections and Notes/Attachments - skip in concise mode
+    if not concise:
+        if collections := data.get("collections", []):
+            if collections:
+                lines.append(f"**Collections:** {len(collections)} collections")
 
-    # Notes - this requires additional API calls, so we just indicate if there are notes
-    if "meta" in item and item["meta"].get("numChildren", 0) > 0:
-        lines.append(f"**Notes/Attachments:** {item['meta']['numChildren']}")
+        if "meta" in item and item["meta"].get("numChildren", 0) > 0:
+            lines.append(f"**Notes/Attachments:** {item['meta']['numChildren']}")
 
-    return "\n\n".join(lines)
+    if concise:
+        return "\n".join(lines)
+    else:
+        return "\n\n".join(lines)
 
 
 def generate_bibtex(item: dict[str, Any]) -> str:
