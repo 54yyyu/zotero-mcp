@@ -24,6 +24,120 @@ mcp = FastMCP(
     dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown", "fastmcp"],
 )
 
+# Check if concise mode is enabled
+def is_concise_mode() -> bool:
+    """Check if ZOTERO_CONCISE_MODE environment variable is set."""
+    return os.environ.get("ZOTERO_CONCISE_MODE", "").lower() in ["true", "yes", "1"]
+
+
+def trim_bibliography(text: str) -> str:
+    """
+    Trim text content after bibliography/references section.
+    
+    In concise mode, this removes everything after common bibliography markers
+    to save tokens while preserving the main content.
+    
+    Args:
+        text: The full text content
+        
+    Returns:
+        Trimmed text if bibliography section found, otherwise original text
+    """
+    if not is_concise_mode():
+        return text
+    
+    # Common bibliography/references section markers
+    bibliography_markers = [
+        # English
+        "\nREFERENCES\n",
+        "\nReferences\n",
+        "\nreferences\n",
+        "\nBIBLIOGRAPHY\n",
+        "\nBibliography\n", 
+        "\nbibliography\n",
+        "\nWORKS CITED\n",
+        "\nWorks Cited\n",
+        "\nworks cited\n",
+        "\nCITATIONS\n",
+        "\nCitations\n",
+        "\ncitations\n",
+        "\nLITERATURE CITED\n",
+        "\nLiterature Cited\n",
+        "\nliterature cited\n",
+        "\nSOURCES\n",
+        "\nSources\n",
+        "\nsources\n",
+        # Variations with different formatting
+        "\n## References\n",
+        "\n### References\n",
+        "\n#### References\n",
+        "\n**References**\n",
+        "\n**REFERENCES**\n",
+        "\n## Bibliography\n",
+        "\n### Bibliography\n",
+        "\n**Bibliography**\n",
+        "\n**BIBLIOGRAPHY**\n",
+        # With numbers or special characters
+        "\n6. References\n",
+        "\n7. References\n", 
+        "\n8. References\n",
+        "\n9. References\n",
+        "\n10. References\n",
+        "\n[References]\n",
+        "\n[REFERENCES]\n",
+        "\n[Bibliography]\n",
+        "\n[BIBLIOGRAPHY]\n",
+        # Additional patterns
+        "\nREFERENCE LIST\n",
+        "\nReference List\n",
+        "\nreference list\n",
+        "\nBIBLIOGRAPHIC REFERENCES\n",
+        "\nBibliographic References\n",
+        "\nLIST OF REFERENCES\n",
+        "\nList of References\n",
+        "\nREFERENCE\n",
+        "\nReference\n",
+        # With colons
+        "\nReferences:\n",
+        "\nBibliography:\n",
+        "\nWorks Cited:\n",
+        "\nSources:\n",
+        # Appendix patterns (often comes before references)
+        "\nAPPENDIX\n",
+        "\nAppendix\n",
+        "\nAPPENDICES\n",
+        "\nAppendices\n",
+        "\nSUPPLEMENTARY MATERIAL\n",
+        "\nSupplementary Material\n",
+        "\nSUPPLEMENT\n",
+        "\nSupplement\n",
+    ]
+    
+    # Find the earliest occurrence of any bibliography marker
+    earliest_pos = len(text)
+    found_marker = None
+    
+    for marker in bibliography_markers:
+        pos = text.find(marker)
+        if pos != -1 and pos < earliest_pos:
+            earliest_pos = pos
+            found_marker = marker
+    
+    # Only trim if bibliography appears in the last 40% of the document
+    # This helps avoid trimming mid-document reference sections
+    if found_marker and earliest_pos > len(text) * 0.6:
+        trimmed_text = text[:earliest_pos].rstrip()
+        
+        # Calculate approximate tokens saved (rough estimate: 1 token ≈ 4 chars)
+        chars_removed = len(text) - len(trimmed_text)
+        tokens_saved = chars_removed // 4
+        
+        # Add a note that content was trimmed
+        trimmed_text += f"\n\n[... Bibliography/References section trimmed in concise mode. Approximately {tokens_saved} tokens saved ...]"
+        return trimmed_text
+    
+    return text
+
 
 @mcp.tool(
     name="zotero_search_items",
@@ -72,38 +186,68 @@ def search_items(
         if not results:
             return f"No items found matching query: '{query}'{tag_condition_str}"
         
+        # Check if concise mode is enabled
+        concise = is_concise_mode()
+        
         # Format results as markdown
-        output = [f"# Search Results for '{query}'", f"{tag_condition_str}", ""]
+        if concise:
+            output = [f"Found {len(results)} items for '{query}'{tag_condition_str}", ""]
+        else:
+            output = [f"# Search Results for '{query}'", f"{tag_condition_str}", ""]
         
         for i, item in enumerate(results, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
             
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-            
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Authors:** {creators_str}")
-            
-            # Add abstract snippet if present
-            if abstract := data.get("abstractNote"):
-                # Limit abstract length for search results
-                abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                output.append(f"**Abstract:** {abstract_snippet}")
-            
-            # Add tags if present
-            if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
-                if tag_list:
-                    output.append(f"**Tags:** {' '.join(tag_list)}")
+            if concise:
+                # Concise format: Number. Title (Year) - Author [Key]
+                date = data.get("date", "")
+                year = date[:4] if len(date) >= 4 and date[:4].isdigit() else ""
+                creators = data.get("creators", [])
+                author = format_creators(creators, concise=True) if creators else ""
+                key = item.get("key", "")
+                
+                entry = f"{i}. {title}"
+                if year:
+                    entry += f" ({year})"
+                if author and author != "No authors listed":
+                    entry += f" - {author}"
+                if key:
+                    entry += f" [{key}]"
+                output.append(entry)
+                
+                # Add very short abstract if present
+                if abstract := data.get("abstractNote"):
+                    abstract_snippet = abstract[:80] + "..." if len(abstract) > 80 else abstract
+                    output.append(f"   {abstract_snippet}")
+            else:
+                # Full format (existing behavior)
+                item_type = data.get("itemType", "unknown")
+                date = data.get("date", "No date")
+                key = item.get("key", "")
+                
+                # Format creators
+                creators = data.get("creators", [])
+                creators_str = format_creators(creators)
+                
+                # Build the formatted entry
+                output.append(f"## {i}. {title}")
+                output.append(f"**Type:** {item_type}")
+                output.append(f"**Item Key:** {key}")
+                output.append(f"**Date:** {date}")
+                output.append(f"**Authors:** {creators_str}")
+                
+                # Add abstract snippet if present
+                if abstract := data.get("abstractNote"):
+                    # Limit abstract length for search results
+                    abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
+                    output.append(f"**Abstract:** {abstract_snippet}")
+                
+                # Add tags if present
+                if tags := data.get("tags"):
+                    tag_list = [f"`{tag['tag']}`" for tag in tags]
+                    if tag_list:
+                        output.append(f"**Tags:** {' '.join(tag_list)}")
             
             output.append("")  # Empty line between items
         
@@ -160,38 +304,63 @@ def search_by_tag(
         if not results:
             return f"No items found with tag: '{tag}'"
         
+        # Check if concise mode is enabled
+        concise = is_concise_mode()
+        
         # Format results as markdown
-        output = [f"# Search Results for Tag: '{tag}'", ""]
+        if concise:
+            output = [f"Found {len(results)} items with tag: '{tag}'", ""]
+        else:
+            output = [f"# Search Results for Tag: '{tag}'", ""]
         
         for i, item in enumerate(results, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
             
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-            
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Authors:** {creators_str}")
-            
-            # Add abstract snippet if present
-            if abstract := data.get("abstractNote"):
-                # Limit abstract length for search results
-                abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                output.append(f"**Abstract:** {abstract_snippet}")
-            
-            # Add tags if present
-            if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
-                if tag_list:
-                    output.append(f"**Tags:** {' '.join(tag_list)}")
+            if concise:
+                # Concise format
+                date = data.get("date", "")
+                year = date[:4] if len(date) >= 4 and date[:4].isdigit() else ""
+                creators = data.get("creators", [])
+                author = format_creators(creators, concise=True) if creators else ""
+                key = item.get("key", "")
+                
+                entry = f"{i}. {title}"
+                if year:
+                    entry += f" ({year})"
+                if author and author != "No authors listed":
+                    entry += f" - {author}"
+                if key:
+                    entry += f" [{key}]"
+                output.append(entry)
+            else:
+                # Full format
+                item_type = data.get("itemType", "unknown")
+                date = data.get("date", "No date")
+                key = item.get("key", "")
+                
+                # Format creators
+                creators = data.get("creators", [])
+                creators_str = format_creators(creators)
+                
+                # Build the formatted entry
+                output.append(f"## {i}. {title}")
+                output.append(f"**Type:** {item_type}")
+                output.append(f"**Item Key:** {key}")
+                output.append(f"**Date:** {date}")
+                output.append(f"**Authors:** {creators_str}")
+                
+                # Add abstract snippet if present
+                if abstract := data.get("abstractNote"):
+                    # Limit abstract length for search results
+                    abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
+                    output.append(f"**Abstract:** {abstract_snippet}")
+                
+                # Add tags if present
+                if tags := data.get("tags"):
+                    tag_list = [f"`{tag['tag']}`" for tag in tags]
+                    if tag_list:
+                        output.append(f"**Tags:** {' '.join(tag_list)}")
             
             output.append("")  # Empty line between items
         
@@ -230,7 +399,7 @@ def get_item_metadata(
         if not item:
             return f"No item found with key: {item_key}"
         
-        return format_item_metadata(item, include_abstract)
+        return format_item_metadata(item, include_abstract, concise=is_concise_mode())
     
     except Exception as e:
         ctx.error(f"Error fetching item metadata: {str(e)}")
@@ -266,7 +435,7 @@ def get_item_fulltext(
             return f"No item found with key: {item_key}"
         
         # Get item metadata in markdown format
-        metadata = format_item_metadata(item, include_abstract=True)
+        metadata = format_item_metadata(item, include_abstract=True, concise=is_concise_mode())
         
         # Try to get attachment details
         attachment = get_attachment_details(zot, item)
@@ -280,7 +449,8 @@ def get_item_fulltext(
             full_text_data = zot.fulltext_item(attachment.key)
             if full_text_data and "content" in full_text_data and full_text_data["content"]:
                 ctx.info("Successfully retrieved full text from Zotero's index")
-                return f"{metadata}\n\n---\n\n## Full Text\n\n{full_text_data['content']}"
+                full_text = trim_bibliography(full_text_data['content'])
+                return f"{metadata}\n\n---\n\n## Full Text\n\n{full_text}"
         except Exception as fulltext_error:
             ctx.info(f"Couldn't retrieve indexed full text: {str(fulltext_error)}")
         
@@ -299,7 +469,8 @@ def get_item_fulltext(
                 if os.path.exists(file_path):
                     ctx.info(f"Downloaded file to {file_path}, converting to markdown")
                     converted_text = convert_to_markdown(file_path)
-                    return f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}"
+                    trimmed_text = trim_bibliography(converted_text)
+                    return f"{metadata}\n\n---\n\n## Full Text\n\n{trimmed_text}"
                 else:
                     return f"{metadata}\n\n---\n\nFile download failed."
         except Exception as download_error:
@@ -438,26 +609,51 @@ def get_collection_items(
         if not items:
             return f"No items found in collection: {collection_name} (Key: {collection_key})"
         
+        # Check if concise mode is enabled
+        concise = is_concise_mode()
+        
         # Format items as markdown
-        output = [f"# Items in Collection: {collection_name}", ""]
+        if concise:
+            output = [f"Collection: {collection_name} ({len(items)} items)", ""]
+        else:
+            output = [f"# Items in Collection: {collection_name}", ""]
         
         for i, item in enumerate(items, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
             
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-            
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Authors:** {creators_str}")
+            if concise:
+                # Concise format
+                date = data.get("date", "")
+                year = date[:4] if len(date) >= 4 and date[:4].isdigit() else ""
+                creators = data.get("creators", [])
+                author = format_creators(creators, concise=True) if creators else ""
+                key = item.get("key", "")
+                
+                entry = f"{i}. {title}"
+                if year:
+                    entry += f" ({year})"
+                if author and author != "No authors listed":
+                    entry += f" - {author}"
+                if key:
+                    entry += f" [{key}]"
+                output.append(entry)
+            else:
+                # Full format
+                item_type = data.get("itemType", "unknown")
+                date = data.get("date", "No date")
+                key = item.get("key", "")
+                
+                # Format creators
+                creators = data.get("creators", [])
+                creators_str = format_creators(creators)
+                
+                # Build the formatted entry
+                output.append(f"## {i}. {title}")
+                output.append(f"**Type:** {item_type}")
+                output.append(f"**Item Key:** {key}")
+                output.append(f"**Date:** {date}")
+                output.append(f"**Authors:** {creators_str}")
             
             output.append("")  # Empty line between items
         
@@ -667,28 +863,53 @@ def get_recent(
         if not items:
             return "No items found in your Zotero library."
         
+        # Check if concise mode is enabled
+        concise = is_concise_mode()
+        
         # Format items as markdown
-        output = [f"# {limit} Most Recently Added Items", ""]
+        if concise:
+            output = [f"Recent {len(items)} items:", ""]
+        else:
+            output = [f"# {limit} Most Recently Added Items", ""]
         
         for i, item in enumerate(items, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
-            date_added = data.get("dateAdded", "Unknown")
             
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-            
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Added:** {date_added}")
-            output.append(f"**Authors:** {creators_str}")
+            if concise:
+                # Concise format
+                date = data.get("date", "")
+                year = date[:4] if len(date) >= 4 and date[:4].isdigit() else ""
+                creators = data.get("creators", [])
+                author = format_creators(creators, concise=True) if creators else ""
+                key = item.get("key", "")
+                
+                entry = f"{i}. {title}"
+                if year:
+                    entry += f" ({year})"
+                if author and author != "No authors listed":
+                    entry += f" - {author}"
+                if key:
+                    entry += f" [{key}]"
+                output.append(entry)
+            else:
+                # Full format
+                item_type = data.get("itemType", "unknown")
+                date = data.get("date", "No date")
+                key = item.get("key", "")
+                date_added = data.get("dateAdded", "Unknown")
+                
+                # Format creators
+                creators = data.get("creators", [])
+                creators_str = format_creators(creators)
+                
+                # Build the formatted entry
+                output.append(f"## {i}. {title}")
+                output.append(f"**Type:** {item_type}")
+                output.append(f"**Item Key:** {key}")
+                output.append(f"**Date:** {date}")
+                output.append(f"**Added:** {date_added}")
+                output.append(f"**Authors:** {creators_str}")
             
             output.append("")  # Empty line between items
         
@@ -1201,8 +1422,14 @@ def get_annotations(
         if not annotations:
             return f"No annotations found{f' for item: {parent_title}' if item_key else ''}."
         
+        # Check if concise mode is enabled
+        concise = is_concise_mode()
+        
         # Generate markdown output
-        output = [f"# Annotations{f' for: {parent_title}' if item_key else ''}", ""]
+        if concise:
+            output = [f"Annotations{f' for: {parent_title}' if item_key else ''} ({len(annotations)} total)", ""]
+        else:
+            output = [f"# Annotations{f' for: {parent_title}' if item_key else ''}", ""]
         
         for i, anno in enumerate(annotations, 1):
             data = anno.get("data", {})
@@ -1211,63 +1438,80 @@ def get_annotations(
             anno_type = data.get("annotationType", "Unknown type")
             anno_text = data.get("annotationText", "")
             anno_comment = data.get("annotationComment", "")
-            anno_color = data.get("annotationColor", "")
-            anno_key = anno.get("key", "")
             
-            # Parent item context for library-wide retrieval
-            parent_info = ""
-            if not item_key and (parent_key := data.get("parentItem")):
-                try:
-                    parent = zot.item(parent_key)
-                    parent_title = parent["data"].get("title", "Untitled")
-                    parent_info = f" (from \"{parent_title}\")"
-                except Exception:
-                    parent_info = f" (parent key: {parent_key})"
-            
-            # Annotation source details
-            source_info = ""
-            if data.get("_from_better_bibtex", False):
-                source_info = " (extracted via Better BibTeX)"
-            elif data.get("_from_pdf_extraction", False):
-                source_info = " (extracted directly from PDF)"
-            
-            # Attachment context
-            attachment_info = ""
-            if "_attachment_title" in data and data["_attachment_title"]:
-                attachment_info = f" in {data['_attachment_title']}"
-            
-            # Build markdown annotation entry
-            output.append(f"## Annotation {i}{parent_info}{attachment_info}{source_info}")
-            output.append(f"**Type:** {anno_type}")
-            output.append(f"**Key:** {anno_key}")
-            
-            # Color information
-            if anno_color:
-                output.append(f"**Color:** {anno_color}")
-                if "_color_category" in data and data["_color_category"]:
-                    output.append(f"**Color Category:** {data['_color_category']}")
-            
-            # Page information
-            if "_pdf_page" in data:
-                label = data.get("_pageLabel", str(data["_pdf_page"]))
-                output.append(f"**Page:** {data['_pdf_page']} (Label: {label})")
-            
-            # Annotation content
-            if anno_text:
-                output.append(f"**Text:** {anno_text}")
-            
-            if anno_comment:
-                output.append(f"**Comment:** {anno_comment}")
-            
-            # Image annotation
-            if "_image_path" in data and os.path.exists(data["_image_path"]):
-                output.append(f"**Image:** This annotation includes an image (not displayed in this interface)")
-            
-            # Tags
-            if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
-                if tag_list:
-                    output.append(f"**Tags:** {' '.join(tag_list)}")
+            if concise:
+                # Concise format: just the text and comment with page number
+                page_info = ""
+                if "_pdf_page" in data:
+                    page_info = f" (p. {data['_pdf_page']})"
+                
+                # Truncate text for concise mode
+                if anno_text:
+                    text_snippet = anno_text[:150] + "..." if len(anno_text) > 150 else anno_text
+                    output.append(f"{i}. {text_snippet}{page_info}")
+                
+                if anno_comment:
+                    comment_snippet = anno_comment[:100] + "..." if len(anno_comment) > 100 else anno_comment
+                    output.append(f"   → {comment_snippet}")
+            else:
+                # Full format (existing behavior)
+                anno_color = data.get("annotationColor", "")
+                anno_key = anno.get("key", "")
+                
+                # Parent item context for library-wide retrieval
+                parent_info = ""
+                if not item_key and (parent_key := data.get("parentItem")):
+                    try:
+                        parent = zot.item(parent_key)
+                        parent_title = parent["data"].get("title", "Untitled")
+                        parent_info = f" (from \"{parent_title}\")"
+                    except Exception:
+                        parent_info = f" (parent key: {parent_key})"
+                
+                # Annotation source details
+                source_info = ""
+                if data.get("_from_better_bibtex", False):
+                    source_info = " (extracted via Better BibTeX)"
+                elif data.get("_from_pdf_extraction", False):
+                    source_info = " (extracted directly from PDF)"
+                
+                # Attachment context
+                attachment_info = ""
+                if "_attachment_title" in data and data["_attachment_title"]:
+                    attachment_info = f" in {data['_attachment_title']}"
+                
+                # Build markdown annotation entry
+                output.append(f"## Annotation {i}{parent_info}{attachment_info}{source_info}")
+                output.append(f"**Type:** {anno_type}")
+                output.append(f"**Key:** {anno_key}")
+                
+                # Color information
+                if anno_color:
+                    output.append(f"**Color:** {anno_color}")
+                    if "_color_category" in data and data["_color_category"]:
+                        output.append(f"**Color Category:** {data['_color_category']}")
+                
+                # Page information
+                if "_pdf_page" in data:
+                    label = data.get("_pageLabel", str(data["_pdf_page"]))
+                    output.append(f"**Page:** {data['_pdf_page']} (Label: {label})")
+                
+                # Annotation content
+                if anno_text:
+                    output.append(f"**Text:** {anno_text}")
+                
+                if anno_comment:
+                    output.append(f"**Comment:** {anno_comment}")
+                
+                # Image annotation
+                if "_image_path" in data and os.path.exists(data["_image_path"]):
+                    output.append(f"**Image:** This annotation includes an image (not displayed in this interface)")
+                
+                # Tags
+                if tags := data.get("tags"):
+                    tag_list = [f"`{tag['tag']}`" for tag in tags]
+                    if tag_list:
+                        output.append(f"**Tags:** {' '.join(tag_list)}")
             
             output.append("")  # Empty line between annotations
         
