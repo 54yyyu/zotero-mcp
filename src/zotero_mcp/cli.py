@@ -13,6 +13,30 @@ from pathlib import Path
 from zotero_mcp.server import mcp
 
 
+def obfuscate_sensitive_value(value, keep_chars=4):
+    """Obfuscate sensitive values by showing only the first few characters."""
+    if not value or not isinstance(value, str):
+        return value
+    if len(value) <= keep_chars:
+        return "*" * len(value)
+    return value[:keep_chars] + "*" * (len(value) - keep_chars)
+
+
+def obfuscate_config_for_display(config):
+    """Create a copy of config with sensitive values obfuscated."""
+    if not isinstance(config, dict):
+        return config
+    
+    obfuscated = config.copy()
+    sensitive_keys = ["ZOTERO_API_KEY", "ZOTERO_LIBRARY_ID", "API_KEY", "LIBRARY_ID"]
+    
+    for key in sensitive_keys:
+        if key in obfuscated:
+            obfuscated[key] = obfuscate_sensitive_value(obfuscated[key])
+    
+    return obfuscated
+
+
 def load_claude_desktop_env_vars():
     """Load Zotero environment variables from Claude Desktop config."""
     from zotero_mcp.setup_helper import find_claude_config
@@ -147,6 +171,8 @@ def main():
         sys.exit(0)
     
     elif args.command == "setup-info":
+        # Setup Zotero environment variables
+        setup_zotero_environment()
         
         # Get the installation path
         executable_path = shutil.which("zotero-mcp")
@@ -188,8 +214,10 @@ def main():
         print(f"  Command: {executable_path}")
         print("  Arguments: [] (empty)")
         
-        # Show environment variables in JSON format
-        print(f"  Environment (single-line): {json.dumps(claude_env_vars, separators=(',', ':'))}")
+        # Show environment variables with obfuscated sensitive values
+        obfuscated_env_vars = obfuscate_config_for_display(claude_env_vars)
+        print(f"  Environment (single-line): {json.dumps(obfuscated_env_vars, separators=(',', ':'))}")
+        print("  💡 Note: This shows client config. Shell variables may override for CLI use.")
         
         print()
         print("For Claude Desktop (claude_desktop_config.json):")
@@ -197,22 +225,47 @@ def main():
             "mcpServers": {
                 "zotero": {
                     "command": executable_path,
-                    "env": claude_env_vars
+                    "env": obfuscated_env_vars
                 }
             }
         }
         print(json.dumps(config_snippet, indent=2))
         
-        # Show semantic search database info
+        # Show semantic search database info with detailed statistics
         print()
         print("🧠 Semantic Search Database:")
         
         # Check for semantic search config
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
         if config_path.exists():
-            print("  Status: ✅ Configuration file found")
-            print(f"  Config path: {config_path}")
-            print("  💡 Run 'zotero-mcp db-status' for detailed database info")
+            try:
+                from zotero_mcp.semantic_search import create_semantic_search
+                
+                # Get database status (similar to db-status command)
+                search = create_semantic_search(str(config_path))
+                status = search.get_database_status()
+                
+                collection_info = status.get("collection_info", {})
+                
+                print("  Status: ✅ Configuration file found")
+                print(f"  Config path: {config_path}")
+                print(f"  Collection: {collection_info.get('name', 'Unknown')}")
+                print(f"  Document count: {collection_info.get('count', 0)}")
+                print(f"  Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
+                print(f"  Database path: {collection_info.get('persist_directory', 'Unknown')}")
+                
+                update_config = status.get("update_config", {})
+                print(f"  Auto update: {update_config.get('auto_update', False)}")
+                print(f"  Update frequency: {update_config.get('update_frequency', 'manual')}")
+                print(f"  Last update: {update_config.get('last_update', 'Never')}")
+                print(f"  Should update: {status.get('should_update', False)}")
+                
+                if collection_info.get('error'):
+                    print(f"  Error: {collection_info['error']}")
+                    
+            except Exception as e:
+                print("  Status: ⚠️ Configuration found but database error")
+                print(f"  Error: {e}")
         else:
             print("  Status: ⚠️ Not configured")
             print("  💡 Run 'zotero-mcp setup' to configure semantic search")
