@@ -310,7 +310,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 ## 🔍 Troubleshooting
 
 ### General Issues
-- **No results found**: Ensure Zotero is running and the local API is enabled
+- **No results found**: Ensure Zotero is running and the local API is enabled. You need to toggle on `Allow other applications on this computer to communicate with Zotero` in Zotero preferences.
 - **Can't connect to library**: Check your API key and library ID if using web API
 - **Full text not available**: Make sure you're using Zotero 7+ for local full-text access
 - **Local library limitations**: Some functionality (tagging, library modifications) may not work with local JS API. Consider using web library setup for full functionality. (See the [docs](docs/getting-started.md#local-library-limitations) for more info.)
