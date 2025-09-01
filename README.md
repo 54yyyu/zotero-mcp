@@ -238,8 +238,10 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
 - `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model name (text-embedding-3-small, text-embedding-3-large)
+- `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
 - `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (models/text-embedding-004, etc.)
+- `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 
 ### Command-Line Options
 
