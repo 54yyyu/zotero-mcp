@@ -369,6 +369,69 @@ class LocalZoteroReader:
             
         return items
 
+    def get_standalone_attachments_with_text(self, limit: Optional[int] = None) -> List[ZoteroItem]:
+        """
+        Return standalone attachments (attachments without a parent item) as ZoteroItem
+        entries. Attempts to resolve local file path and extract best-effort text.
+
+        Only attachments stored in Zotero storage are supported; external links are skipped.
+        """
+        conn = self._get_connection()
+        query = (
+            """
+            SELECT 
+                att.itemID AS itemID,
+                att.key AS key,
+                it.itemTypeID AS itemTypeID,
+                it.typeName AS item_type,
+                att.dateAdded AS dateAdded,
+                att.dateModified AS dateModified,
+                title_val.value AS title,
+                ia.path AS path,
+                ia.contentType AS contentType
+            FROM items att
+            JOIN itemTypes it ON att.itemTypeID = it.itemTypeID
+            JOIN itemAttachments ia ON ia.itemID = att.itemID
+            LEFT JOIN itemData title_data ON att.itemID = title_data.itemID AND title_data.fieldID = 1
+            LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
+            WHERE it.typeName = 'attachment' AND (ia.parentItemID IS NULL OR ia.parentItemID = 0)
+            ORDER BY att.dateModified DESC
+            """
+        )
+        if limit:
+            query += f" LIMIT {limit}"
+
+        items: List[ZoteroItem] = []
+        for row in conn.execute(query):
+            resolved = self._resolve_attachment_path(row["key"], row["path"] or "")
+            text = ""
+            source: Optional[str] = None
+            if resolved and resolved.exists():
+                text = self._extract_text_from_file(resolved) or ""
+                sfx = resolved.suffix.lower()
+                source = "pdf" if sfx == ".pdf" else ("html" if sfx in {".html", ".htm"} else "file")
+
+            items.append(
+                ZoteroItem(
+                    item_id=row["itemID"],
+                    key=row["key"],
+                    item_type_id=row["itemTypeID"],
+                    item_type="attachment",
+                    doi=None,
+                    title=row["title"],
+                    abstract=None,
+                    creators=None,
+                    fulltext=(text[:10000] if text else None),
+                    fulltext_source=source,
+                    notes=None,
+                    extra=None,
+                    date_added=row["dateAdded"],
+                    date_modified=row["dateModified"],
+                )
+            )
+
+        return items
+
     # Public helper to extract fulltext on demand for a specific item
     def extract_fulltext_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
         return self._extract_fulltext_for_item(item_id)

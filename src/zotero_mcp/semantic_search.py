@@ -12,15 +12,15 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 import logging
 
-from pyzotero import zotero
+from pyzotero import zotero  # noqa: F401
 
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .utils import format_creators, is_local_mode
-from .local_db import LocalZoteroReader, get_local_zotero_reader
+from .local_db import LocalZoteroReader
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +177,9 @@ class ZoteroSemanticSearch:
             metadata["has_fulltext"] = True
             if data.get("fulltextSource"):
                 metadata["fulltext_source"] = data.get("fulltextSource")
+        # Include attachment content type when present
+        if data.get("contentType"):
+            metadata["content_type"] = data.get("contentType")
         
         # Add tags as a single string
         if tags := data.get("tags"):
@@ -227,7 +230,23 @@ class ZoteroSemanticSearch:
         
         return False
     
-    def _get_items_from_source(self, limit: Optional[int] = None, extract_fulltext: bool = False) -> List[Dict[str, Any]]:
+    def _get_include_attachments_policy(self) -> str:
+        """
+        Determine how attachments should be included during indexing.
+        Returns one of: 'none', 'standalone', 'all_pdfs'. Default: 'standalone'.
+        """
+        try:
+            if self.config_path and os.path.exists(self.config_path):
+                with open(self.config_path, 'r') as f:
+                    cfg = json.load(f)
+                    return (cfg.get('semantic_search', {})
+                               .get('indexing', {})
+                               .get('include_attachments', 'standalone'))
+        except Exception:
+            pass
+        return 'standalone'
+
+    def _get_items_from_source(self, limit: Optional[int] = None, extract_fulltext: bool = False, include_attachments: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get items from either local database or API.
         
@@ -242,11 +261,11 @@ class ZoteroSemanticSearch:
             List of items in API-compatible format
         """
         if extract_fulltext and is_local_mode():
-            return self._get_items_from_local_db(limit, extract_fulltext=extract_fulltext)
+            return self._get_items_from_local_db(limit, extract_fulltext=extract_fulltext, include_attachments=include_attachments)
         else:
-            return self._get_items_from_api(limit)
+            return self._get_items_from_api(limit, include_attachments=include_attachments)
     
-    def _get_items_from_local_db(self, limit: Optional[int] = None, extract_fulltext: bool = False) -> List[Dict[str, Any]]:
+    def _get_items_from_local_db(self, limit: Optional[int] = None, extract_fulltext: bool = False, include_attachments: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get items from local Zotero database.
         
@@ -391,6 +410,30 @@ class ZoteroSemanticSearch:
                     
                     api_items.append(api_item)
                 
+                # Optionally include standalone attachments from local DB
+                attach_policy = include_attachments or self._get_include_attachments_policy()
+                if attach_policy != 'none':
+                    try:
+                        attach_items = reader.get_standalone_attachments_with_text(limit=limit)
+                        for att in attach_items:
+                            api_items.append({
+                                "key": att.key,
+                                "version": 0,
+                                "data": {
+                                    "key": att.key,
+                                    "itemType": "attachment",
+                                    "title": att.title or "",
+                                    "fulltext": att.fulltext or "",
+                                    "fulltextSource": att.fulltext_source or "",
+                                    "dateAdded": att.date_added,
+                                    "dateModified": att.date_modified,
+                                    "contentType": "application/pdf" if (getattr(att, 'fulltext_source', None) == "pdf") else ("text/html" if getattr(att, 'fulltext_source', None) == "html" else "")
+                                }
+                            })
+                        logger.info(f"Included {len(attach_items)} standalone attachments from local DB")
+                    except Exception as e:
+                        logger.warning(f"Could not include standalone attachments: {e}")
+
                 logger.info(f"Retrieved {len(api_items)} items from local database")
                 return api_items
                 
@@ -433,7 +476,7 @@ class ZoteroSemanticSearch:
         
         return creators
     
-    def _get_items_from_api(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _get_items_from_api(self, limit: Optional[int] = None, include_attachments: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
         
@@ -449,6 +492,7 @@ class ZoteroSemanticSearch:
         batch_size = 100
         start = 0
         all_items = []
+        attach_policy = include_attachments or self._get_include_attachments_policy()
         
         while True:
             batch_params = {"start": start, "limit": batch_size}
@@ -471,11 +515,33 @@ class ZoteroSemanticSearch:
             if not items:
                 break
             
-            # Filter out attachments and notes by default
-            filtered_items = [
-                item for item in items 
-                if item.get("data", {}).get("itemType") not in ["attachment", "note"]
-            ]
+            # Filter items based on policy
+            filtered_items: List[Dict[str, Any]] = []
+            for it in items:
+                data = it.get("data", {}) or {}
+                typ = data.get("itemType")
+                if typ in ["note", "annotation"]:
+                    continue
+                if typ == "attachment":
+                    if attach_policy == 'none':
+                        continue
+                    is_standalone = not data.get("parentItem")
+                    is_pdf = data.get("contentType") == "application/pdf"
+                    if attach_policy == 'standalone' and not is_standalone:
+                        continue
+                    if attach_policy == 'all_pdfs' and not is_pdf:
+                        continue
+                    # Try to enrich with Zotero's fulltext index
+                    try:
+                        ft = self.zotero_client.fulltext_item(it.get("key", ""))
+                        if ft and ft.get("content"):
+                            data["fulltext"] = ft["content"]
+                            data["fulltextSource"] = "zot-index"
+                    except Exception:
+                        pass
+                    filtered_items.append(it)
+                else:
+                    filtered_items.append(it)
             
             all_items.extend(filtered_items)
             start += batch_size
