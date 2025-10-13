@@ -17,6 +17,21 @@ from pathlib import Path
 
 from fastmcp import Context, FastMCP
 
+# Compatibility: some fastmcp Context versions don't expose `warn`.
+# Provide a lightweight shim that maps warn -> warning -> info.
+if not hasattr(Context, "warn"):
+    def _ctx_warn(self, message: str):
+        try:
+            if hasattr(self, "warning"):
+                return self.warning(message)
+            if hasattr(self, "info"):
+                return self.info(f"WARNING: {message}")
+        except Exception:
+            # Silently ignore logging failures to avoid impacting tool behavior
+            return None
+
+    setattr(Context, "warn", _ctx_warn)
+
 from zotero_mcp.client import (
     convert_to_markdown,
     format_item_metadata,
@@ -25,6 +40,8 @@ from zotero_mcp.client import (
     get_zotero_client,
 )
 from zotero_mcp.utils import format_creators
+import requests
+import xml.etree.ElementTree as ET
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
@@ -1786,6 +1803,415 @@ def search_notes(
     except Exception as e:
         ctx.error(f"Error searching notes: {str(e)}")
         return f"Error searching notes: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_by_identifier",
+    description="Add new Zotero item(s) by identifier (DOI, ISBN, arXiv ID, or PMID)."
+)
+def add_by_identifier(
+    identifiers: Union[List[str], str],
+    collections: Optional[List[str]] = None,
+    collection_names: Optional[Union[List[str], str]] = None,
+    tags: Optional[Union[List[str], str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create Zotero items using identifiers like DOI, ISBN, arXiv, or PMID.
+
+    Args:
+        identifiers: Single identifier or list/JSON string of identifiers
+        collections: Collection keys to add created items to
+        collection_names: Collection names to resolve and add created items to
+        tags: Optional tags to apply to the created items
+        ctx: MCP context
+
+    Returns:
+        Markdown summary with created item keys or errors per identifier
+    """
+    def _as_list(value) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str):
+            s = value.strip()
+            # Try JSON list first
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return [str(v).strip() for v in parsed if str(v).strip()]
+            except Exception:
+                pass
+            # Fallback to comma-separated
+            parts = [p.strip() for p in s.split(',') if p.strip()]
+            if parts:
+                return parts
+            # Single string
+            return [s]
+        return [str(value).strip()]
+
+    def _detect_id_type(raw: str) -> (str, str):
+        s = raw.strip()
+        s_low = s.lower()
+        # Remove common prefixes
+        for pref in ["doi:", "pmid:", "arxiv:"]:
+            if s_low.startswith(pref):
+                s = s[len(pref):].strip()
+                s_low = s.lower()
+                break
+        # URL forms
+        try:
+            if s_low.startswith("http://") or s_low.startswith("https://"):
+                # DOI URL
+                m = re.search(r"doi\.org/(10\.[^\s/#]+/.+)$", s_low)
+                if m:
+                    return ("doi", m.group(1))
+                # arXiv URL
+                m = re.search(r"arxiv\.org/(abs|pdf)/([\w\.-]+)", s_low)
+                if m:
+                    return ("arxiv", m.group(2).replace('.pdf',''))
+                # PubMed URL
+                m = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)/?", s_low)
+                if m:
+                    return ("pmid", m.group(1))
+        except Exception:
+            pass
+        # DOI
+        if s_low.startswith("10.") and "/" in s:
+            return ("doi", s)
+        # arXiv ID
+        # Accept forms like 2101.00001, 2101.00001v2, hep-th/9901001
+        if re.match(r"^(\d{4}\.\d{4,5}(v\d+)?)$", s) or re.match(r"^[a-zA-Z-]+/\d{7}$", s):
+            return ("arxiv", s)
+        # PMID (all digits, reasonable length)
+        if re.match(r"^\d{5,9}$", s):
+            return ("pmid", s)
+        # ISBN 10/13 (strip hyphens/spaces, allow trailing X)
+        s_isbn = re.sub(r"[^0-9Xx]", "", s)
+        if re.match(r"^(\d{9}[\dXx]|\d{13})$", s_isbn):
+            return ("isbn", s_isbn.upper())
+        return ("unknown", s)
+
+    def _first_or(seq, default=""):
+        if isinstance(seq, list) and seq:
+            return seq[0]
+        return default
+
+    def _date_from_crossref(issued) -> str:
+        try:
+            parts = (issued or {}).get('date-parts', [])
+            if parts and parts[0]:
+                p = parts[0]
+                if len(p) >= 3:
+                    return f"{p[0]:04d}-{p[1]:02d}-{p[2]:02d}"
+                if len(p) == 2:
+                    return f"{p[0]:04d}-{p[1]:02d}"
+                if len(p) == 1:
+                    return str(p[0])
+        except Exception:
+            pass
+        return ""
+
+    def _strip_html(text: str) -> str:
+        try:
+            return re.sub(r"<[^>]+>", "", text or "").strip()
+        except Exception:
+            return text or ""
+
+    def _authors_from_names(names: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        creators = []
+        for a in names or []:
+            first = a.get('given') or a.get('first') or ""
+            last = a.get('family') or a.get('last') or ""
+            literal = a.get('literal') or a.get('name')
+            if literal and (not first and not last):
+                # Try to split literal into first/last
+                parts = literal.split()
+                if len(parts) >= 2:
+                    first = " ".join(parts[:-1])
+                    last = parts[-1]
+                else:
+                    last = literal
+            creators.append({
+                "creatorType": "author",
+                "firstName": first,
+                "lastName": last,
+            })
+        return creators
+
+    def _fetch_crossref(doi: str) -> Optional[Dict[str, any]]:
+        url = f"https://api.crossref.org/works/{requests.utils.quote(doi)}"
+        headers = {"User-Agent": "zotero-mcp (identifier import)"}
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        msg = (r.json() or {}).get('message', {})
+        typ = (msg.get('type') or '').lower()
+        type_map = {
+            'journal-article': 'journalArticle',
+            'proceedings-article': 'conferencePaper',
+            'book': 'book',
+            'book-chapter': 'bookSection',
+            'chapter': 'bookSection',
+            'report': 'report',
+            'thesis': 'thesis',
+            'posted-content': 'preprint',
+        }
+        item_type = type_map.get(typ, 'journalArticle')
+        creators = _authors_from_names(msg.get('author', []))
+        title = _first_or(msg.get('title'), '')
+        container = _first_or(msg.get('container-title'), '')
+        abstract = _strip_html(msg.get('abstract', '') or '')
+        date_str = _date_from_crossref(msg.get('issued'))
+        pages = msg.get('page') or ''
+        volume = msg.get('volume') or ''
+        issue = msg.get('issue') or ''
+        publisher = msg.get('publisher') or ''
+        url_final = msg.get('URL') or (f"https://doi.org/{doi}")
+        data = {
+            "itemType": item_type,
+            "title": title or f"DOI {doi}",
+            "creators": creators,
+            "DOI": doi,
+            "url": url_final,
+        }
+        if container:
+            data["publicationTitle"] = container
+        if date_str:
+            data["date"] = date_str
+        if pages:
+            data["pages"] = pages
+        if volume:
+            data["volume"] = volume
+        if issue:
+            data["issue"] = issue
+        if publisher:
+            data["publisher"] = publisher
+        if abstract:
+            data["abstractNote"] = abstract
+        return data
+
+    def _fetch_openlibrary(isbn: str) -> Optional[Dict[str, any]]:
+        # Prefer the data endpoint that includes author names
+        url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        blob = r.json() or {}
+        entry = blob.get(f"ISBN:{isbn}") or {}
+        title = entry.get('title', '')
+        authors = entry.get('authors', [])
+        creators = _authors_from_names([
+            {"literal": a.get('name', '')} for a in authors
+        ])
+        publishers = entry.get('publishers', [])
+        publisher = publishers[0].get('name') if publishers else ''
+        pub_date = entry.get('publish_date', '')
+        pages = (entry.get('pagination') or '').strip()
+        data = {
+            "itemType": "book",
+            "title": title or f"ISBN {isbn}",
+            "creators": creators,
+            "ISBN": isbn,
+        }
+        if publisher:
+            data["publisher"] = publisher
+        if pub_date:
+            data["date"] = pub_date
+        if pages:
+            data["pages"] = pages
+        return data
+
+    def _fetch_pmid(pmid: str) -> Optional[Dict[str, any]]:
+        url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={pmid}&retmode=json"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        data = r.json() or {}
+        res = (data.get('result') or {}).get(pmid, {})
+        if not res:
+            return None
+        title = res.get('title', '')
+        journal = res.get('fulljournalname', '')
+        pubdate = res.get('pubdate', '')
+        volume = res.get('volume', '')
+        issue = res.get('issue', '')
+        pages = res.get('pages', '')
+        authors = res.get('authors', [])
+        creators = _authors_from_names([
+            {"literal": a.get('name', '')} for a in authors if a.get('name')
+        ])
+        url_pm = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+        item = {
+            "itemType": "journalArticle",
+            "title": title or f"PMID {pmid}",
+            "creators": creators,
+            "url": url_pm,
+        }
+        if journal:
+            item["publicationTitle"] = journal
+        if pubdate:
+            item["date"] = pubdate
+        if volume:
+            item["volume"] = volume
+        if issue:
+            item["issue"] = issue
+        if pages:
+            item["pages"] = pages
+        return item
+
+    def _fetch_arxiv(arx: str) -> Optional[Dict[str, any]]:
+        url = f"http://export.arxiv.org/api/query?search_query=id:{arx}"
+        r = requests.get(url, timeout=20, headers={"User-Agent": "zotero-mcp (identifier import)"})
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+        # Namespaces
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        entry = root.find('atom:entry', ns)
+        if entry is None:
+            return None
+        title = (entry.findtext('atom:title', default='', namespaces=ns) or '').strip()
+        pub = (entry.findtext('atom:published', default='', namespaces=ns) or '').strip()
+        url_final = (entry.findtext('atom:id', default='', namespaces=ns) or '').strip()
+        authors = [a.findtext('atom:name', default='', namespaces=ns) or '' for a in entry.findall('atom:author', ns)]
+        creators = _authors_from_names([{ "literal": n } for n in authors if n])
+        item = {
+            "itemType": "preprint",
+            "title": title or f"arXiv:{arx}",
+            "creators": creators,
+            "url": url_final or f"https://arxiv.org/abs/{arx}",
+        }
+        if pub:
+            item["date"] = pub
+        return item
+
+    try:
+        # Prepare inputs
+        id_list = _as_list(identifiers)
+        if not id_list:
+            return "Error: identifiers cannot be empty"
+
+        tag_list = _as_list(tags)
+
+        # Resolve collection names to keys if provided
+        zot = get_zotero_client()
+        resolved_collections: List[str] = []
+        if collections:
+            resolved_collections.extend(collections)
+        if collection_names:
+            names = _as_list(collection_names)
+            if names:
+                ctx.info(f"Resolving collection names: {names}")
+                try:
+                    all_collections = zot.collections()
+                    collection_map = {c["data"].get("name", "").lower(): c["key"] for c in all_collections}
+                    for name in names:
+                        key = collection_map.get(name.lower())
+                        if key:
+                            resolved_collections.append(key)
+                            ctx.info(f"Resolved '{name}' to key: {key}")
+                        else:
+                            # Partial match
+                            matches = [k for n, k in collection_map.items() if name.lower() in n]
+                            if matches:
+                                resolved_collections.append(matches[0])
+                                ctx.info(f"Resolved '{name}' to key: {matches[0]} (partial)")
+                            else:
+                                ctx.warn(f"Collection '{name}' not found.")
+                except Exception as ce:
+                    ctx.warn(f"Could not resolve collection names: {ce}")
+
+        results_md: List[str] = ["# Identifier Import Results", ""]
+        created_count = 0
+
+        for ident in id_list:
+            id_type, value = _detect_id_type(ident)
+            ctx.info(f"Processing identifier '{ident}' detected as {id_type}")
+
+            try:
+                item_data = None
+                if id_type == 'doi':
+                    item_data = _fetch_crossref(value)
+                elif id_type == 'isbn':
+                    item_data = _fetch_openlibrary(value)
+                elif id_type == 'pmid':
+                    item_data = _fetch_pmid(value)
+                elif id_type == 'arxiv':
+                    item_data = _fetch_arxiv(value)
+                elif value.lower().startswith("http://") or value.lower().startswith("https://"):
+                    # Try to discover an embedded DOI in the page content
+                    try:
+                        resp = requests.get(value, timeout=20, headers={"User-Agent": "zotero-mcp (identifier import)"})
+                        if resp.ok:
+                            m = re.search(r'''doi.org/(10.[^\s'"<>#]+/[\w-./:;()]+)''', resp.text, flags=re.IGNORECASE)
+                            if m:
+                                discovered_doi = m.group(1)
+                                ctx.info(f"Discovered DOI {discovered_doi} in page; importing via Crossref")
+                                item_data = _fetch_crossref(discovered_doi)
+                    except requests.RequestException as page_err:
+                        ctx.warn(f"Could not fetch page to discover DOI: {page_err}")
+                else:
+                    results_md.append(f"- {ident}: Unsupported or unrecognized identifier format")
+                    continue
+
+                if not item_data:
+                    results_md.append(f"- {ident}: No metadata found")
+                    continue
+
+                # Attach tags if given
+                if tag_list:
+                    item_data["tags"] = [{"tag": t} for t in tag_list]
+
+                # Force empty collections in item_data; we'll add after creation
+                item_data["collections"] = []
+
+                # Create the item
+                result = zot.create_items([item_data])
+                if "success" in result and result["success"]:
+                    item_key = next(iter(result["success"].values()))
+
+                    # Add to collections
+                    added_to = []
+                    errors = []
+                    for coll_key in resolved_collections:
+                        try:
+                            coll = zot.collection(coll_key)
+                            coll_name = coll["data"].get("name", coll_key)
+                            add_result = zot.addto_collection(coll_key, [item_key])
+                            if add_result:
+                                added_to.append(coll_name)
+                            else:
+                                errors.append(f"Failed to add to '{coll_name}'")
+                        except Exception as ce:
+                            errors.append(f"Error with collection {coll_key}: {str(ce)}")
+
+                    created_count += 1
+                    extra = f" (collections: {', '.join(added_to)})" if added_to else ""
+                    if errors:
+                        extra += f"; warnings: {'; '.join(errors)}"
+                    results_md.append(f"- {ident}: created item key `{item_key}`{extra}")
+                else:
+                    error_details = result.get('failed', {})
+                    if error_details:
+                        results_md.append(f"- {ident}: Failed to create item: {str(error_details)}")
+                    else:
+                        results_md.append(f"- {ident}: Failed to create item")
+            except requests.RequestException as net_err:
+                ctx.warn(f"Network error for {ident}: {net_err}")
+                results_md.append(f"- {ident}: Network error fetching metadata: {net_err}")
+            except Exception as e:
+                ctx.error(f"Error importing {ident}: {e}")
+                results_md.append(f"- {ident}: Error: {e}")
+
+        if created_count == 0:
+            results_md.insert(1, "No items were created.")
+        else:
+            results_md.insert(1, f"Created {created_count} item(s).")
+
+        return "\n".join(results_md)
+
+    except Exception as e:
+        ctx.error(f"Error adding by identifier: {str(e)}")
+        return f"Error adding by identifier: {str(e)}"
 
 
 @mcp.tool(
