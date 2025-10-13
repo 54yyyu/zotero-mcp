@@ -1792,30 +1792,29 @@ def search_notes(
     name="zotero_create_item",
     description="""Create a new item in your Zotero library (article, book, webpage, etc.).
 
-⚠️ CRITICAL - USE PYTHON NATIVE DATA TYPES, NOT JSON STRINGS! ⚠️
+📝 FLEXIBLE INPUT FORMATS - All structured parameters accept multiple formats:
 
-PARAMETER TYPES (Python list/dict, NOT JSON strings):
+PARAMETER TYPES (accepts both Python types AND JSON strings):
 ┌─────────────────┬─────────────────────────────────────────────────────────┐
-│ Parameter       │ Python Type & Example                                   │
+│ Parameter       │ Accepted Formats (all work!)                            │
 ├─────────────────┼─────────────────────────────────────────────────────────┤
-│ tags            │ Python list[str]                                        │
-│                 │ ✓ CORRECT: ["optimization", "machine learning"]        │
-│                 │ ❌ WRONG:  '["optimization", "machine learning"]'       │
-│                 │            (this is a string, not a list!)              │
+│ tags            │ ✓ ["optimization", "ML"]  (Python list)                │
+│                 │ ✓ '["optimization", "ML"]'  (JSON string)               │
+│                 │ ✓ "optimization, ML"  (comma-separated)                 │
+│                 │ ✓ "single-tag"  (single string)                         │
 ├─────────────────┼─────────────────────────────────────────────────────────┤
-│ creators        │ Python list[dict]                                       │
-│                 │ ✓ CORRECT: [{"creatorType": "author",                  │
-│                 │              "firstName": "Jane",                        │
-│                 │              "lastName": "Doe"}]                         │
-│                 │ ❌ WRONG:  '[{"creatorType": "author", ...}]'           │
-│                 │            (this is a string!)                          │
+│ creators        │ ✓ [{"creatorType": "author", ...}]  (Python list)      │
+│                 │ ✓ '[{"creatorType": "author", ...}]'  (JSON string)    │
 ├─────────────────┼─────────────────────────────────────────────────────────┤
-│ collection_names│ Python list[str]                                        │
-│                 │ ✓ CORRECT: ["PhD Research", "Papers"]                  │
-│                 │ ❌ WRONG:  '["PhD Research", "Papers"]'                 │
+│ collection_names│ ✓ ["PhD Research"]  (Python list)                      │
+│                 │ ✓ '["PhD Research"]'  (JSON string)                     │
+│                 │ ✓ "PhD Research"  (single string)                       │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ extra_fields    │ ✓ {"key": "value"}  (Python dict)                      │
+│                 │ ✓ '{"key": "value"}'  (JSON string)                     │
 └─────────────────┴─────────────────────────────────────────────────────────┘
 
-WORKING EXAMPLE - Copy this structure exactly:
+RECOMMENDED EXAMPLE (Python types - best practice):
 zotero_create_item(
     item_type="journalArticle",
     title="Deep Learning in Healthcare",
@@ -1829,13 +1828,13 @@ zotero_create_item(
     collection_names=["PhD Research"]
 )
 
-NOTE: Pass actual Python list and dict objects as you would in Python code.
-      Do NOT wrap them in quotes or convert them to JSON strings."""
+NOTE: Both Python native types and JSON strings are accepted and will work correctly.
+      The function will automatically convert JSON strings to the appropriate types."""
 )
 def create_item(
     item_type: str,
     title: str,
-    creators: Optional[List[Dict[str, str]]] = None,
+    creators: Optional[Union[List[Dict[str, str]], str]] = None,
     date: Optional[str] = None,
     publication_title: Optional[str] = None,
     volume: Optional[str] = None,
@@ -1846,10 +1845,10 @@ def create_item(
     doi: Optional[str] = None,
     url: Optional[str] = None,
     abstract: Optional[str] = None,
-    tags: Optional[List[str]] = None,
-    collections: Optional[List[str]] = None,
-    collection_names: Optional[List[str]] = None,
-    extra_fields: Optional[Dict[str, str]] = None,
+    tags: Optional[Union[List[str], str]] = None,
+    collections: Optional[Union[List[str], str]] = None,
+    collection_names: Optional[Union[List[str], str]] = None,
+    extra_fields: Optional[Union[Dict[str, str], str]] = None,
     *,
     ctx: Context
 ) -> str:
@@ -1895,20 +1894,35 @@ def create_item(
         if tags is not None:
             if isinstance(tags, str):
                 tags_stripped = tags.strip()
+                ctx.info(f"Received tags as string (first 100 chars): {repr(tags_stripped[:100])}")
 
                 # Try JSON parsing first (handles ["tag1", "tag2"])
                 try:
                     tags = json.loads(tags_stripped)
-                    ctx.info(f"✓ Auto-corrected tags from JSON string to Python list: {tags}")
-                except json.JSONDecodeError:
-                    # If JSON fails, try comma-separated string (handles "tag1, tag2, tag3")
-                    if ',' in tags_stripped:
-                        tags = [tag.strip() for tag in tags_stripped.split(',') if tag.strip()]
-                        ctx.info(f"✓ Auto-corrected tags from comma-separated string to Python list: {tags}")
-                    else:
-                        # Single tag without comma
-                        tags = [tags_stripped] if tags_stripped else []
-                        ctx.info(f"✓ Auto-corrected tags from single string to Python list: {tags}")
+                    ctx.info(f"✓ Auto-corrected tags from JSON string to Python list ({len(tags)} tags)")
+                except json.JSONDecodeError as json_err:
+                    ctx.info(f"JSON parse failed: {str(json_err)}, trying alternative formats")
+
+                    # Try unescaping if string contains backslash-escaped quotes
+                    if '\\' in tags_stripped:
+                        try:
+                            # Remove extra escaping that might have been added
+                            unescaped = tags_stripped.replace('\\"', '"').replace("\\'", "'")
+                            tags = json.loads(unescaped)
+                            ctx.info(f"✓ Auto-corrected tags from escaped JSON string to Python list ({len(tags)} tags)")
+                        except json.JSONDecodeError:
+                            # Fall through to comma-separated parsing
+                            pass
+
+                    # If still a string, try comma-separated parsing
+                    if isinstance(tags, str):
+                        if ',' in tags_stripped:
+                            tags = [tag.strip() for tag in tags_stripped.split(',') if tag.strip()]
+                            ctx.info(f"✓ Auto-corrected tags from comma-separated string to Python list ({len(tags)} tags)")
+                        else:
+                            # Single tag without comma
+                            tags = [tags_stripped] if tags_stripped else []
+                            ctx.info(f"✓ Auto-corrected tags from single string to Python list (1 tag)")
 
             if not isinstance(tags, list):
                 return f"Error: tags must be a list of strings. Example: ['optimization', 'machine learning']"
@@ -2135,26 +2149,25 @@ def create_item(
     name="zotero_update_item",
     description="""Update an existing item in your Zotero library.
 
-⚠️ CRITICAL - USE PYTHON NATIVE DATA TYPES, NOT JSON STRINGS! ⚠️
+📝 FLEXIBLE INPUT FORMATS - All structured parameters accept multiple formats:
 
-PARAMETER TYPES (Python list/dict, NOT JSON strings):
+PARAMETER TYPES (accepts both Python types AND JSON strings):
 ┌─────────────────┬─────────────────────────────────────────────────────────┐
-│ Parameter       │ Python Type & Example                                   │
+│ Parameter       │ Accepted Formats (all work!)                            │
 ├─────────────────┼─────────────────────────────────────────────────────────┤
-│ tags            │ Python list[str] - replaces ALL tags                   │
-│ add_tags        │ Python list[str] - adds to existing tags               │
-│ remove_tags     │ Python list[str] - removes from existing tags          │
-│                 │ ✓ CORRECT: ["optimization", "AI"]                      │
-│                 │ ❌ WRONG:  '["optimization", "AI"]' (string!)           │
+│ tags            │ Replaces ALL tags                                       │
+│ add_tags        │ Adds to existing tags                                   │
+│ remove_tags     │ Removes from existing tags                              │
+│                 │ ✓ ["optimization", "AI"]  (Python list)                 │
+│                 │ ✓ '["optimization", "AI"]'  (JSON string)               │
+│                 │ ✓ "optimization, AI"  (comma-separated)                 │
 ├─────────────────┼─────────────────────────────────────────────────────────┤
-│ creators        │ Python list[dict] - replaces ALL creators              │
-│                 │ ✓ CORRECT: [{"creatorType": "author",                  │
-│                 │              "firstName": "Jane",                        │
-│                 │              "lastName": "Doe"}]                         │
-│                 │ ❌ WRONG:  '[{...}]' (string!)                          │
+│ creators        │ Replaces ALL creators                                   │
+│                 │ ✓ [{"creatorType": "author", ...}]  (Python list)      │
+│                 │ ✓ '[{"creatorType": "author", ...}]'  (JSON string)    │
 └─────────────────┴─────────────────────────────────────────────────────────┘
 
-WORKING EXAMPLE - Copy this structure:
+RECOMMENDED EXAMPLE (Python types - best practice):
 zotero_update_item(
     item_key="ABC12345",
     abstract="Updated abstract text",
@@ -2165,12 +2178,13 @@ zotero_update_item(
     collection_names=["PhD Research"]
 )
 
-NOTE: Use Python list and dict objects directly, NOT JSON strings."""
+NOTE: Both Python native types and JSON strings are accepted and will work correctly.
+      The function will automatically convert JSON strings to the appropriate types."""
 )
 def update_item(
     item_key: str,
     title: Optional[str] = None,
-    creators: Optional[List[Dict[str, str]]] = None,
+    creators: Optional[Union[List[Dict[str, str]], str]] = None,
     date: Optional[str] = None,
     publication_title: Optional[str] = None,
     volume: Optional[str] = None,
@@ -2181,12 +2195,12 @@ def update_item(
     doi: Optional[str] = None,
     url: Optional[str] = None,
     abstract: Optional[str] = None,
-    tags: Optional[List[str]] = None,
-    add_tags: Optional[List[str]] = None,
-    remove_tags: Optional[List[str]] = None,
-    collections: Optional[List[str]] = None,
-    collection_names: Optional[List[str]] = None,
-    extra_fields: Optional[Dict[str, str]] = None,
+    tags: Optional[Union[List[str], str]] = None,
+    add_tags: Optional[Union[List[str], str]] = None,
+    remove_tags: Optional[Union[List[str], str]] = None,
+    collections: Optional[Union[List[str], str]] = None,
+    collection_names: Optional[Union[List[str], str]] = None,
+    extra_fields: Optional[Union[Dict[str, str], str]] = None,
     *,
     ctx: Context
 ) -> str:
