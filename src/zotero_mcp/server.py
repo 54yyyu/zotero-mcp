@@ -1792,20 +1792,30 @@ def search_notes(
     name="zotero_create_item",
     description="""Create a new item in your Zotero library (article, book, webpage, etc.).
 
-CRITICAL - Data Format Requirements:
-- tags: MUST be a list of strings: ["tag1", "tag2", "tag3"]
-  ❌ WRONG: tags='["tag1", "tag2"]' (JSON string)
-  ✓ CORRECT: tags=["tag1", "tag2"] (actual list)
+⚠️ CRITICAL - USE PYTHON NATIVE DATA TYPES, NOT JSON STRINGS! ⚠️
 
-- creators: MUST be a list of dictionaries. Each creator MUST have:
-  * creatorType: "author", "editor", "contributor", etc.
-  * firstName AND lastName (for people) OR name (for organizations)
-  ❌ WRONG: creators='[{"creatorType": "author", ...}]' (JSON string)
-  ✓ CORRECT: creators=[{"creatorType": "author", "firstName": "Jane", "lastName": "Doe"}]
+PARAMETER TYPES (Python list/dict, NOT JSON strings):
+┌─────────────────┬─────────────────────────────────────────────────────────┐
+│ Parameter       │ Python Type & Example                                   │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ tags            │ Python list[str]                                        │
+│                 │ ✓ CORRECT: ["optimization", "machine learning"]        │
+│                 │ ❌ WRONG:  '["optimization", "machine learning"]'       │
+│                 │            (this is a string, not a list!)              │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ creators        │ Python list[dict]                                       │
+│                 │ ✓ CORRECT: [{"creatorType": "author",                  │
+│                 │              "firstName": "Jane",                        │
+│                 │              "lastName": "Doe"}]                         │
+│                 │ ❌ WRONG:  '[{"creatorType": "author", ...}]'           │
+│                 │            (this is a string!)                          │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ collection_names│ Python list[str]                                        │
+│                 │ ✓ CORRECT: ["PhD Research", "Papers"]                  │
+│                 │ ❌ WRONG:  '["PhD Research", "Papers"]'                 │
+└─────────────────┴─────────────────────────────────────────────────────────┘
 
-- collection_names: Pass as list of strings: ["Collection1", "Collection2"]
-
-COMPLETE WORKING EXAMPLE:
+WORKING EXAMPLE - Copy this structure exactly:
 zotero_create_item(
     item_type="journalArticle",
     title="Deep Learning in Healthcare",
@@ -1817,7 +1827,10 @@ zotero_create_item(
     publication_title="Journal of AI",
     tags=["deep learning", "healthcare", "AI"],
     collection_names=["PhD Research"]
-)"""
+)
+
+NOTE: Pass actual Python list and dict objects as you would in Python code.
+      Do NOT wrap them in quotes or convert them to JSON strings."""
 )
 def create_item(
     item_type: str,
@@ -1864,10 +1877,10 @@ def create_item(
         doi: Digital Object Identifier
         url: URL of the item
         abstract: Abstract or summary text
-        tags: Simple list of tag strings. Example: ["optimization", "machine learning"]
-        collections: List of collection keys (if you already know them). Example: ["ABC123XY"]
-        collection_names: List of collection names (preferred - will auto-resolve). Example: ["PhD Research"]
-        extra_fields: Additional fields as key-value pairs. Example: {"ISBN": "978-0-123456-78-9"}
+        tags: Python list of strings (NOT JSON string). Example: ["optimization", "machine learning"]
+        collections: Python list of collection keys. Example: ["ABC123XY"]
+        collection_names: Python list of collection names (preferred). Example: ["PhD Research"]
+        extra_fields: Python dict of additional fields. Example: {"ISBN": "978-0-123456-78-9"}
         ctx: MCP context
 
     Returns:
@@ -1881,22 +1894,40 @@ def create_item(
         # Fix tags if passed as JSON string instead of list
         if tags is not None:
             if isinstance(tags, str):
+                tags_stripped = tags.strip()
+
+                # Try JSON parsing first (handles ["tag1", "tag2"])
                 try:
-                    tags = json.loads(tags)
-                    ctx.info(f"Auto-corrected tags from JSON string to list: {tags}")
+                    tags = json.loads(tags_stripped)
+                    ctx.info(f"✓ Auto-corrected tags from JSON string to Python list: {tags}")
                 except json.JSONDecodeError:
-                    return f"Error: tags parameter must be a list of strings, not a JSON string. Example: ['tag1', 'tag2']"
+                    # If JSON fails, try comma-separated string (handles "tag1, tag2, tag3")
+                    if ',' in tags_stripped:
+                        tags = [tag.strip() for tag in tags_stripped.split(',') if tag.strip()]
+                        ctx.info(f"✓ Auto-corrected tags from comma-separated string to Python list: {tags}")
+                    else:
+                        # Single tag without comma
+                        tags = [tags_stripped] if tags_stripped else []
+                        ctx.info(f"✓ Auto-corrected tags from single string to Python list: {tags}")
+
             if not isinstance(tags, list):
                 return f"Error: tags must be a list of strings. Example: ['optimization', 'machine learning']"
+            # Ensure all tags are strings
+            if not all(isinstance(tag, str) for tag in tags):
+                return f"Error: All tags must be strings. Received: {tags}"
 
         # Fix creators if passed as JSON string instead of list
         if creators is not None:
             if isinstance(creators, str):
+                creators_stripped = creators.strip()
                 try:
-                    creators = json.loads(creators)
-                    ctx.info(f"Auto-corrected creators from JSON string to list: {creators}")
-                except json.JSONDecodeError:
-                    return f"Error: creators parameter must be a list of dictionaries, not a JSON string. Example: [{{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}]"
+                    creators = json.loads(creators_stripped)
+                    ctx.info(f"✓ Auto-corrected creators from JSON string to Python list: {len(creators)} creator(s)")
+                except json.JSONDecodeError as e:
+                    return f"Error: creators parameter appears to be a string but couldn't be parsed as JSON.\n" \
+                           f"Parse error: {str(e)}\n" \
+                           f"Expected: Python list like [{{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}]\n" \
+                           f"Received: {repr(creators[:100])}..."
             if not isinstance(creators, list):
                 return f"Error: creators must be a list of dictionaries. Example: [{{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}]"
 
@@ -1930,28 +1961,38 @@ def create_item(
         if collections is not None:
             if isinstance(collections, str):
                 try:
-                    collections = json.loads(collections)
-                    ctx.info(f"Auto-corrected collections from JSON string to list: {collections}")
-                except json.JSONDecodeError:
-                    return f"Error: collections parameter must be a list of strings, not a JSON string."
+                    collections = json.loads(collections.strip())
+                    ctx.info(f"✓ Auto-corrected collections from JSON string to Python list")
+                except json.JSONDecodeError as e:
+                    return f"Error: collections must be a list of strings. Parse error: {str(e)}"
+            if not isinstance(collections, list):
+                return f"Error: collections must be a Python list of strings"
 
         # Fix collection_names if passed as JSON string
         if collection_names is not None:
             if isinstance(collection_names, str):
                 try:
-                    collection_names = json.loads(collection_names)
-                    ctx.info(f"Auto-corrected collection_names from JSON string to list: {collection_names}")
-                except json.JSONDecodeError:
-                    return f"Error: collection_names parameter must be a list of strings, not a JSON string."
+                    collection_names = json.loads(collection_names.strip())
+                    ctx.info(f"✓ Auto-corrected collection_names from JSON string to Python list")
+                except json.JSONDecodeError as e:
+                    return f"Error: collection_names must be a list of strings. Parse error: {str(e)}"
+            if not isinstance(collection_names, list):
+                return f"Error: collection_names must be a Python list of strings"
 
         # Fix extra_fields if passed as JSON string
         if extra_fields is not None:
             if isinstance(extra_fields, str):
+                extra_fields_stripped = extra_fields.strip()
                 try:
-                    extra_fields = json.loads(extra_fields)
-                    ctx.info(f"Auto-corrected extra_fields from JSON string to dict: {extra_fields}")
-                except json.JSONDecodeError:
-                    return f"Error: extra_fields parameter must be a dictionary, not a JSON string."
+                    extra_fields = json.loads(extra_fields_stripped)
+                    ctx.info(f"✓ Auto-corrected extra_fields from JSON string to Python dict: {extra_fields}")
+                except json.JSONDecodeError as e:
+                    return f"Error: extra_fields parameter appears to be a string but couldn't be parsed as JSON.\n" \
+                           f"Parse error: {str(e)}\n" \
+                           f"Expected: Python dict like {{'key': 'value'}}\n" \
+                           f"Received: {repr(extra_fields[:100])}..."
+            if not isinstance(extra_fields, dict):
+                return f"Error: extra_fields must be a dictionary. Example: {{'ISBN': '123-456'}}"
 
         # Validate item type specific fields
         if item_type == "conferencePaper" and publication_title:
@@ -2092,21 +2133,39 @@ def create_item(
 
 @mcp.tool(
     name="zotero_update_item",
-    description="""Update an existing item in your Zotero library. You can update any metadata fields.
+    description="""Update an existing item in your Zotero library.
 
-IMPORTANT - Data Format Requirements:
-- tags: Pass as a simple list of strings: ["tag1", "tag2", "tag3"]
-- add_tags/remove_tags: Also pass as lists: ["new_tag"], ["old_tag"]
-- creators: Pass as a list of dictionaries with creatorType, firstName, lastName
-- collection_names: Pass collection names as strings: ["Collection Name"]
+⚠️ CRITICAL - USE PYTHON NATIVE DATA TYPES, NOT JSON STRINGS! ⚠️
 
-Example call:
+PARAMETER TYPES (Python list/dict, NOT JSON strings):
+┌─────────────────┬─────────────────────────────────────────────────────────┐
+│ Parameter       │ Python Type & Example                                   │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ tags            │ Python list[str] - replaces ALL tags                   │
+│ add_tags        │ Python list[str] - adds to existing tags               │
+│ remove_tags     │ Python list[str] - removes from existing tags          │
+│                 │ ✓ CORRECT: ["optimization", "AI"]                      │
+│                 │ ❌ WRONG:  '["optimization", "AI"]' (string!)           │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ creators        │ Python list[dict] - replaces ALL creators              │
+│                 │ ✓ CORRECT: [{"creatorType": "author",                  │
+│                 │              "firstName": "Jane",                        │
+│                 │              "lastName": "Doe"}]                         │
+│                 │ ❌ WRONG:  '[{...}]' (string!)                          │
+└─────────────────┴─────────────────────────────────────────────────────────┘
+
+WORKING EXAMPLE - Copy this structure:
 zotero_update_item(
     item_key="ABC12345",
-    abstract="Updated abstract text here",
+    abstract="Updated abstract text",
     add_tags=["reviewed", "important"],
+    creators=[
+        {"creatorType": "author", "firstName": "Jane", "lastName": "Smith"}
+    ],
     collection_names=["PhD Research"]
-)"""
+)
+
+NOTE: Use Python list and dict objects directly, NOT JSON strings."""
 )
 def update_item(
     item_key: str,
@@ -2167,29 +2226,47 @@ def update_item(
         # Fix tags if passed as JSON string
         if tags is not None:
             if isinstance(tags, str):
+                tags_stripped = tags.strip()
                 try:
-                    tags = json.loads(tags)
-                    ctx.info(f"Auto-corrected tags from JSON string to list")
+                    tags = json.loads(tags_stripped)
+                    ctx.info(f"✓ Auto-corrected tags from JSON string to Python list")
                 except json.JSONDecodeError:
-                    return f"Error: tags parameter must be a list of strings, not a JSON string. Example: ['tag1', 'tag2']"
+                    if ',' in tags_stripped:
+                        tags = [tag.strip() for tag in tags_stripped.split(',') if tag.strip()]
+                        ctx.info(f"✓ Auto-corrected tags from comma-separated string to Python list")
+                    else:
+                        tags = [tags_stripped] if tags_stripped else []
+                        ctx.info(f"✓ Auto-corrected tags from single string to Python list")
 
         # Fix add_tags if passed as JSON string
         if add_tags is not None:
             if isinstance(add_tags, str):
+                add_tags_stripped = add_tags.strip()
                 try:
-                    add_tags = json.loads(add_tags)
-                    ctx.info(f"Auto-corrected add_tags from JSON string to list")
+                    add_tags = json.loads(add_tags_stripped)
+                    ctx.info(f"✓ Auto-corrected add_tags from JSON string to Python list")
                 except json.JSONDecodeError:
-                    return f"Error: add_tags parameter must be a list of strings, not a JSON string."
+                    if ',' in add_tags_stripped:
+                        add_tags = [tag.strip() for tag in add_tags_stripped.split(',') if tag.strip()]
+                        ctx.info(f"✓ Auto-corrected add_tags from comma-separated string to Python list")
+                    else:
+                        add_tags = [add_tags_stripped] if add_tags_stripped else []
+                        ctx.info(f"✓ Auto-corrected add_tags from single string to Python list")
 
         # Fix remove_tags if passed as JSON string
         if remove_tags is not None:
             if isinstance(remove_tags, str):
+                remove_tags_stripped = remove_tags.strip()
                 try:
-                    remove_tags = json.loads(remove_tags)
-                    ctx.info(f"Auto-corrected remove_tags from JSON string to list")
+                    remove_tags = json.loads(remove_tags_stripped)
+                    ctx.info(f"✓ Auto-corrected remove_tags from JSON string to Python list")
                 except json.JSONDecodeError:
-                    return f"Error: remove_tags parameter must be a list of strings, not a JSON string."
+                    if ',' in remove_tags_stripped:
+                        remove_tags = [tag.strip() for tag in remove_tags_stripped.split(',') if tag.strip()]
+                        ctx.info(f"✓ Auto-corrected remove_tags from comma-separated string to Python list")
+                    else:
+                        remove_tags = [remove_tags_stripped] if remove_tags_stripped else []
+                        ctx.info(f"✓ Auto-corrected remove_tags from single string to Python list")
 
         # Fix creators if passed as JSON string
         if creators is not None:
