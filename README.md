@@ -192,6 +192,8 @@ Example prompts:
 - "Search for papers on operating system with tag '#Arm'"
 - "Export the BibTeX citation for papers on machine learning"
 - "Create a new journal article in my library titled 'Deep Learning Applications'"
+- "Update item ABCD1234 to add author Jane Smith"
+- "Update the abstract for item EFGH5678 with the new abstract text"
 - "Add a new book to my library with author John Doe and add it to my 'Reading List' collection"
 - "Create a new collection called 'PhD Research'"
 - "Search for my 'Machine Learning' collection"
@@ -392,6 +394,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 
 ### ✍️ Item & Collection Management Tools
 - `zotero_create_item`: Create new items in your library (articles, books, webpages, etc.)
+- `zotero_update_item`: Update existing items (modify title, authors, date, abstract, tags, etc.)
 - `zotero_create_collection`: Create new collections (projects/folders)
 - `zotero_add_items_to_collection`: Add existing items to a collection
 

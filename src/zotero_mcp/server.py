@@ -1790,7 +1790,23 @@ def search_notes(
 
 @mcp.tool(
     name="zotero_create_item",
-    description="Create a new item in your Zotero library (article, book, webpage, etc.). Use zotero_search_collections first to find collection keys if needed."
+    description="""Create a new item in your Zotero library (article, book, webpage, etc.).
+
+IMPORTANT - Data Format Requirements:
+- tags: Pass as a simple list of strings: ["tag1", "tag2", "tag3"]
+- creators: Pass as a list of dictionaries with creatorType, firstName, lastName
+- collection_names: Preferred - pass collection names as strings: ["My Collection", "Research"]
+- collections: Alternative - pass collection keys if you already have them: ["ABC123", "XYZ789"]
+
+Example call:
+zotero_create_item(
+    item_type="journalArticle",
+    title="Machine Learning Applications",
+    creators=[{"creatorType": "author", "firstName": "Jane", "lastName": "Smith"}],
+    date="2024",
+    tags=["machine learning", "AI", "research"],
+    collection_names=["PhD Research", "ML Papers"]
+)"""
 )
 def create_item(
     item_type: str,
@@ -1819,22 +1835,28 @@ def create_item(
     Args:
         item_type: Type of item (e.g., "journalArticle", "book", "webpage", "conferencePaper")
         title: Title of the item
-        creators: List of creator dictionaries with keys: creatorType, firstName, lastName (or name for single-field)
+        creators: List of creator dictionaries. Each dict must have:
+                 - creatorType: "author", "editor", "contributor", etc.
+                 - firstName: Author's first name
+                 - lastName: Author's last name
+                 OR for single-field names (organizations):
+                 - creatorType: "author"
+                 - name: Full name/organization name
                  Example: [{"creatorType": "author", "firstName": "John", "lastName": "Doe"}]
-        date: Publication date (flexible format)
+        date: Publication date (flexible format like "2024", "2024-01", "2024-01-15")
         publication_title: Journal/publication name (for articles)
-        volume: Volume number
-        issue: Issue number
+        volume: Volume number (as string)
+        issue: Issue number (as string)
         pages: Page range (e.g., "123-145")
         publisher: Publisher name
         place: Publication place
         doi: Digital Object Identifier
         url: URL of the item
         abstract: Abstract or summary text
-        tags: List of tags to apply
-        collections: List of collection keys to add the item to
-        collection_names: List of collection names (will be automatically resolved to keys)
-        extra_fields: Additional fields as key-value pairs (e.g., {"ISBN": "123-456", "series": "Book Series"})
+        tags: Simple list of tag strings. Example: ["optimization", "machine learning"]
+        collections: List of collection keys (if you already know them). Example: ["ABC123XY"]
+        collection_names: List of collection names (preferred - will auto-resolve). Example: ["PhD Research"]
+        extra_fields: Additional fields as key-value pairs. Example: {"ISBN": "978-0-123456-78-9"}
         ctx: MCP context
 
     Returns:
@@ -1908,11 +1930,9 @@ def create_item(
         else:
             item_data["tags"] = []
 
-        # Add resolved collections
-        if resolved_collections:
-            item_data["collections"] = resolved_collections
-        else:
-            item_data["collections"] = []
+        # Don't add collections to item_data - we'll add them after creation
+        # The Zotero API works better when collections are added via addto_collection()
+        item_data["collections"] = []
 
         # Add extra fields
         if extra_fields:
@@ -1928,9 +1948,35 @@ def create_item(
             successful = result["success"]
             if len(successful) > 0:
                 item_key = next(iter(successful.values()))
+
+                # Now add the item to collections if specified
                 collection_info = ""
                 if resolved_collections:
-                    collection_info = f"\n\nAdded to {len(resolved_collections)} collection(s)"
+                    collection_errors = []
+                    successfully_added = []
+
+                    for coll_key in resolved_collections:
+                        try:
+                            # Verify collection exists and add item to it
+                            coll = zot.collection(coll_key)
+                            coll_name = coll["data"].get("name", coll_key)
+                            add_result = zot.addto_collection(coll_key, [item_key])
+
+                            if add_result:
+                                successfully_added.append(coll_name)
+                                ctx.info(f"Added item to collection: {coll_name}")
+                            else:
+                                collection_errors.append(f"Failed to add to '{coll_name}'")
+                                ctx.warn(f"Failed to add item to collection: {coll_name}")
+                        except Exception as coll_error:
+                            collection_errors.append(f"Error with collection {coll_key}: {str(coll_error)}")
+                            ctx.error(f"Error adding to collection {coll_key}: {str(coll_error)}")
+
+                    if successfully_added:
+                        collection_info = f"\n\nAdded to collection(s): {', '.join(successfully_added)}"
+                    if collection_errors:
+                        collection_info += f"\n\n**Collection warnings:**\n" + "\n".join(f"- {err}" for err in collection_errors)
+
                 return f"Successfully created {item_type}: \"{title}\"\n\nItem key: `{item_key}`{collection_info}"
             else:
                 return f"Item creation response was successful but no key was returned: {result}"
@@ -1945,6 +1991,251 @@ def create_item(
     except Exception as e:
         ctx.error(f"Error creating item: {str(e)}")
         return f"Error creating item: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_item",
+    description="Update an existing item in your Zotero library. You can update any metadata fields like title, authors, date, abstract, tags, etc."
+)
+def update_item(
+    item_key: str,
+    title: Optional[str] = None,
+    creators: Optional[List[Dict[str, str]]] = None,
+    date: Optional[str] = None,
+    publication_title: Optional[str] = None,
+    volume: Optional[str] = None,
+    issue: Optional[str] = None,
+    pages: Optional[str] = None,
+    publisher: Optional[str] = None,
+    place: Optional[str] = None,
+    doi: Optional[str] = None,
+    url: Optional[str] = None,
+    abstract: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    add_tags: Optional[List[str]] = None,
+    remove_tags: Optional[List[str]] = None,
+    collections: Optional[List[str]] = None,
+    collection_names: Optional[List[str]] = None,
+    extra_fields: Optional[Dict[str, str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Update an existing item in your Zotero library.
+
+    Args:
+        item_key: Zotero item key/ID to update
+        title: New title for the item
+        creators: New list of creator dictionaries (replaces existing creators)
+        date: New publication date
+        publication_title: New journal/publication name
+        volume: New volume number
+        issue: New issue number
+        pages: New page range
+        publisher: New publisher name
+        place: New publication place
+        doi: New Digital Object Identifier
+        url: New URL
+        abstract: New abstract or summary text
+        tags: New list of tags (replaces existing tags)
+        add_tags: Tags to add to existing tags (doesn't replace)
+        remove_tags: Tags to remove from existing tags
+        collections: New list of collection keys (replaces existing collections)
+        collection_names: Collection names to add (will be automatically resolved to keys)
+        extra_fields: Additional fields to update as key-value pairs
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with update details
+    """
+    try:
+        ctx.info(f"Updating item {item_key}")
+        zot = get_zotero_client()
+
+        # First, fetch the existing item
+        try:
+            item = zot.item(item_key)
+            if not item:
+                return f"Error: No item found with key: {item_key}"
+        except Exception as e:
+            return f"Error: Could not fetch item {item_key}: {str(e)}"
+
+        # Get the item data
+        item_data = item.get("data", {})
+        original_title = item_data.get("title", "Untitled")
+
+        # Track what we're updating
+        updates = []
+
+        # Update basic fields
+        if title is not None:
+            item_data["title"] = title
+            updates.append(f"title: '{title}'")
+
+        if date is not None:
+            item_data["date"] = date
+            updates.append(f"date: '{date}'")
+
+        if publication_title is not None:
+            item_data["publicationTitle"] = publication_title
+            updates.append(f"publication title: '{publication_title}'")
+
+        if volume is not None:
+            item_data["volume"] = volume
+            updates.append(f"volume: '{volume}'")
+
+        if issue is not None:
+            item_data["issue"] = issue
+            updates.append(f"issue: '{issue}'")
+
+        if pages is not None:
+            item_data["pages"] = pages
+            updates.append(f"pages: '{pages}'")
+
+        if publisher is not None:
+            item_data["publisher"] = publisher
+            updates.append(f"publisher: '{publisher}'")
+
+        if place is not None:
+            item_data["place"] = place
+            updates.append(f"place: '{place}'")
+
+        if doi is not None:
+            item_data["DOI"] = doi
+            updates.append(f"DOI: '{doi}'")
+
+        if url is not None:
+            item_data["url"] = url
+            updates.append(f"URL: '{url}'")
+
+        if abstract is not None:
+            item_data["abstractNote"] = abstract
+            updates.append(f"abstract updated")
+
+        # Update creators (replaces existing)
+        if creators is not None:
+            item_data["creators"] = creators
+            updates.append(f"creators: {len(creators)} creator(s)")
+
+        # Handle tags
+        current_tags = item_data.get("tags", [])
+        current_tag_values = {t["tag"] for t in current_tags}
+
+        if tags is not None:
+            # Replace all tags
+            item_data["tags"] = [{"tag": tag} for tag in tags]
+            updates.append(f"tags replaced with {len(tags)} tag(s)")
+        else:
+            # Add/remove specific tags
+            if remove_tags:
+                new_tags = [t for t in current_tags if t["tag"] not in remove_tags]
+                item_data["tags"] = new_tags
+                updates.append(f"removed {len(remove_tags)} tag(s)")
+                current_tag_values = {t["tag"] for t in new_tags}
+
+            if add_tags:
+                for tag in add_tags:
+                    if tag and tag not in current_tag_values:
+                        item_data["tags"].append({"tag": tag})
+                        current_tag_values.add(tag)
+                updates.append(f"added {len(add_tags)} tag(s)")
+
+        # Track collections to add (don't modify item_data["collections"] directly)
+        collections_to_add = []
+
+        if collections is not None:
+            # User wants to replace collections - we'll handle this after update
+            collections_to_add = collections
+            updates.append(f"collections will be set to {len(collections)} collection(s)")
+        elif collection_names:
+            # Resolve collection names to add
+            ctx.info(f"Resolving collection names: {collection_names}")
+            all_collections = zot.collections()
+            collection_map = {c["data"].get("name", "").lower(): c["key"] for c in all_collections}
+
+            for name in collection_names:
+                name_lower = name.lower()
+                if name_lower in collection_map:
+                    resolved_key = collection_map[name_lower]
+                    collections_to_add.append(resolved_key)
+                    ctx.info(f"Resolved '{name}' to key: {resolved_key}")
+                else:
+                    # Try partial match
+                    matches = [key for coll_name, key in collection_map.items() if name_lower in coll_name]
+                    if matches:
+                        collections_to_add.append(matches[0])
+                        ctx.info(f"Resolved '{name}' to key: {matches[0]} (partial match)")
+                    else:
+                        ctx.warn(f"Collection '{name}' not found.")
+
+            if collections_to_add:
+                updates.append(f"will add to {len(collections_to_add)} collection(s)")
+
+        # Update extra fields
+        if extra_fields:
+            for key, value in extra_fields.items():
+                item_data[key] = value
+                updates.append(f"{key}: '{value}'")
+
+        # Check if there are any updates
+        if not updates and not collections_to_add:
+            return f"No updates specified for item: \"{original_title}\" (Key: {item_key})"
+
+        # Update the item in Zotero (if there are field updates)
+        if updates:
+            try:
+                result = zot.update_item(item)
+                ctx.info(f"Update result: {result}")
+            except Exception as update_error:
+                ctx.error(f"Failed to update item: {str(update_error)}")
+                return f"Failed to update item: {str(update_error)}"
+
+        # Now add to collections if specified
+        collection_info = ""
+        if collections_to_add:
+            collection_errors = []
+            successfully_added = []
+
+            for coll_key in collections_to_add:
+                try:
+                    # Verify collection exists and add item to it
+                    coll = zot.collection(coll_key)
+                    coll_name = coll["data"].get("name", coll_key)
+                    add_result = zot.addto_collection(coll_key, [item_key])
+
+                    if add_result:
+                        successfully_added.append(coll_name)
+                        ctx.info(f"Added item to collection: {coll_name}")
+                    else:
+                        collection_errors.append(f"Failed to add to '{coll_name}'")
+                        ctx.warn(f"Failed to add item to collection: {coll_name}")
+                except Exception as coll_error:
+                    collection_errors.append(f"Error with collection {coll_key}: {str(coll_error)}")
+                    ctx.error(f"Error adding to collection {coll_key}: {str(coll_error)}")
+
+            if successfully_added:
+                collection_info = f"\n\n**Added to collection(s):** {', '.join(successfully_added)}"
+            if collection_errors:
+                collection_info += f"\n\n**Collection warnings:**\n" + "\n".join(f"- {err}" for err in collection_errors)
+
+        # Format the response
+        response = [
+            f"Successfully updated item: \"{original_title}\"",
+            f"Item key: `{item_key}`",
+            "",
+            "**Updated fields:**"
+        ]
+        for update in updates:
+            response.append(f"- {update}")
+
+        if collection_info:
+            response.append(collection_info)
+
+        return "\n".join(response)
+
+    except Exception as e:
+        ctx.error(f"Error updating item: {str(e)}")
+        return f"Error updating item: {str(e)}"
 
 
 @mcp.tool(
