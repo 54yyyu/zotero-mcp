@@ -461,6 +461,170 @@ def get_collections(
 
 
 @mcp.tool(
+    name="zotero_search_collections",
+    description="Search for collections by name to find their keys for adding items."
+)
+def search_collections(
+    query: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Search for collections by name.
+
+    Args:
+        query: Collection name or partial name to search for
+        ctx: MCP context
+
+    Returns:
+        Markdown-formatted list of matching collections with their keys
+    """
+    try:
+        ctx.info(f"Searching collections for '{query}'")
+        zot = get_zotero_client()
+
+        # Get all collections
+        collections = zot.collections()
+
+        if not collections:
+            return "No collections found in your Zotero library."
+
+        # Filter collections by name (case-insensitive)
+        query_lower = query.lower()
+        matching = [
+            c for c in collections
+            if query_lower in c["data"].get("name", "").lower()
+        ]
+
+        if not matching:
+            return f"No collections found matching '{query}'"
+
+        # Format results
+        output = [f"# Collections matching '{query}'", ""]
+
+        for i, coll in enumerate(matching, 1):
+            name = coll["data"].get("name", "Unnamed Collection")
+            key = coll["key"]
+            parent_key = coll["data"].get("parentCollection")
+
+            output.append(f"## {i}. {name}")
+            output.append(f"**Key:** `{key}`")
+
+            # Show parent collection if exists
+            if parent_key:
+                try:
+                    parent = zot.collection(parent_key)
+                    parent_name = parent["data"].get("name", "Unknown")
+                    output.append(f"**Parent Collection:** {parent_name}")
+                except Exception:
+                    output.append(f"**Parent Collection Key:** {parent_key}")
+
+            output.append("")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        ctx.error(f"Error searching collections: {str(e)}")
+        return f"Error searching collections: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_collection",
+    description="Create a new collection (project/folder) in your Zotero library."
+)
+def create_collection(
+    name: str,
+    parent_collection: Optional[str] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new collection in your Zotero library.
+
+    Args:
+        name: Name of the collection to create
+        parent_collection: Optional parent collection key to create a subcollection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new collection key
+    """
+    try:
+        ctx.info(f"Creating collection '{name}'")
+        zot = get_zotero_client()
+
+        # Build collection data
+        collection_data = {"name": name}
+
+        if parent_collection:
+            collection_data["parentCollection"] = parent_collection
+
+        # Create the collection
+        result = zot.create_collections([collection_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                collection_key = next(iter(successful.values()))
+                parent_info = f" as subcollection of {parent_collection}" if parent_collection else ""
+                return f"Successfully created collection: \"{name}\"{parent_info}\n\nCollection key: `{collection_key}`\n\nYou can now use this key to add items to this collection."
+            else:
+                return f"Collection creation response was successful but no key was returned: {result}"
+        else:
+            return f"Failed to create collection: {result.get('failed', 'Unknown error')}"
+
+    except Exception as e:
+        ctx.error(f"Error creating collection: {str(e)}")
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_items_to_collection",
+    description="Add existing items to a collection by their keys."
+)
+def add_items_to_collection(
+    collection_key: str,
+    item_keys: List[str],
+    *,
+    ctx: Context
+) -> str:
+    """
+    Add existing items to a collection.
+
+    Args:
+        collection_key: The collection key to add items to
+        item_keys: List of item keys to add to the collection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        ctx.info(f"Adding {len(item_keys)} items to collection {collection_key}")
+        zot = get_zotero_client()
+
+        # Verify collection exists
+        try:
+            collection = zot.collection(collection_key)
+            collection_name = collection["data"].get("name", "Unknown Collection")
+        except Exception:
+            return f"Error: Collection with key '{collection_key}' not found"
+
+        # Add items to collection
+        result = zot.addto_collection(collection_key, item_keys)
+
+        if result:
+            return f"Successfully added {len(item_keys)} item(s) to collection: \"{collection_name}\""
+        else:
+            return f"Failed to add items to collection"
+
+    except Exception as e:
+        ctx.error(f"Error adding items to collection: {str(e)}")
+        return f"Error adding items to collection: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_get_collection_items",
     description="Get all items in a specific Zotero collection."
 )
@@ -1622,6 +1786,165 @@ def search_notes(
     except Exception as e:
         ctx.error(f"Error searching notes: {str(e)}")
         return f"Error searching notes: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_item",
+    description="Create a new item in your Zotero library (article, book, webpage, etc.). Use zotero_search_collections first to find collection keys if needed."
+)
+def create_item(
+    item_type: str,
+    title: str,
+    creators: Optional[List[Dict[str, str]]] = None,
+    date: Optional[str] = None,
+    publication_title: Optional[str] = None,
+    volume: Optional[str] = None,
+    issue: Optional[str] = None,
+    pages: Optional[str] = None,
+    publisher: Optional[str] = None,
+    place: Optional[str] = None,
+    doi: Optional[str] = None,
+    url: Optional[str] = None,
+    abstract: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    collections: Optional[List[str]] = None,
+    collection_names: Optional[List[str]] = None,
+    extra_fields: Optional[Dict[str, str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new item in your Zotero library.
+
+    Args:
+        item_type: Type of item (e.g., "journalArticle", "book", "webpage", "conferencePaper")
+        title: Title of the item
+        creators: List of creator dictionaries with keys: creatorType, firstName, lastName (or name for single-field)
+                 Example: [{"creatorType": "author", "firstName": "John", "lastName": "Doe"}]
+        date: Publication date (flexible format)
+        publication_title: Journal/publication name (for articles)
+        volume: Volume number
+        issue: Issue number
+        pages: Page range (e.g., "123-145")
+        publisher: Publisher name
+        place: Publication place
+        doi: Digital Object Identifier
+        url: URL of the item
+        abstract: Abstract or summary text
+        tags: List of tags to apply
+        collections: List of collection keys to add the item to
+        collection_names: List of collection names (will be automatically resolved to keys)
+        extra_fields: Additional fields as key-value pairs (e.g., {"ISBN": "123-456", "series": "Book Series"})
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new item key
+    """
+    try:
+        ctx.info(f"Creating new {item_type} item: {title}")
+        zot = get_zotero_client()
+
+        # Resolve collection names to keys if provided
+        resolved_collections = []
+        if collections:
+            resolved_collections.extend(collections)
+
+        if collection_names:
+            ctx.info(f"Resolving collection names: {collection_names}")
+            all_collections = zot.collections()
+            collection_map = {c["data"].get("name", "").lower(): c["key"] for c in all_collections}
+
+            for name in collection_names:
+                name_lower = name.lower()
+                if name_lower in collection_map:
+                    resolved_collections.append(collection_map[name_lower])
+                    ctx.info(f"Resolved '{name}' to key: {collection_map[name_lower]}")
+                else:
+                    # Try partial match
+                    matches = [key for coll_name, key in collection_map.items() if name_lower in coll_name]
+                    if matches:
+                        resolved_collections.append(matches[0])
+                        ctx.info(f"Resolved '{name}' to key: {matches[0]} (partial match)")
+                    else:
+                        ctx.warn(f"Collection '{name}' not found. Use zotero_search_collections to find it or zotero_create_collection to create it.")
+
+        # Build item data structure
+        item_data = {
+            "itemType": item_type,
+            "title": title
+        }
+
+        # Add creators if provided
+        if creators:
+            item_data["creators"] = creators
+        else:
+            item_data["creators"] = []
+
+        # Add optional fields
+        if date:
+            item_data["date"] = date
+        if publication_title:
+            item_data["publicationTitle"] = publication_title
+        if volume:
+            item_data["volume"] = volume
+        if issue:
+            item_data["issue"] = issue
+        if pages:
+            item_data["pages"] = pages
+        if publisher:
+            item_data["publisher"] = publisher
+        if place:
+            item_data["place"] = place
+        if doi:
+            item_data["DOI"] = doi
+        if url:
+            item_data["url"] = url
+        if abstract:
+            item_data["abstractNote"] = abstract
+
+        # Add tags
+        if tags:
+            item_data["tags"] = [{"tag": tag} for tag in tags]
+        else:
+            item_data["tags"] = []
+
+        # Add resolved collections
+        if resolved_collections:
+            item_data["collections"] = resolved_collections
+        else:
+            item_data["collections"] = []
+
+        # Add extra fields
+        if extra_fields:
+            for key, value in extra_fields.items():
+                if key not in item_data:  # Don't override existing fields
+                    item_data[key] = value
+
+        # Create the item
+        result = zot.create_items([item_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                item_key = next(iter(successful.values()))
+                collection_info = ""
+                if resolved_collections:
+                    collection_info = f"\n\nAdded to {len(resolved_collections)} collection(s)"
+                return f"Successfully created {item_type}: \"{title}\"\n\nItem key: `{item_key}`{collection_info}"
+            else:
+                return f"Item creation response was successful but no key was returned: {result}"
+        else:
+            error_details = result.get('failed', {})
+            if error_details:
+                # Extract error message from failed response
+                error_msg = str(error_details)
+                return f"Failed to create item: {error_msg}\n\nPlease check that all required fields for '{item_type}' are provided."
+            return f"Failed to create item: {result}"
+
+    except Exception as e:
+        ctx.error(f"Error creating item: {str(e)}")
+        return f"Error creating item: {str(e)}"
 
 
 @mcp.tool(
