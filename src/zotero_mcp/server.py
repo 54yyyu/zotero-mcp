@@ -1792,20 +1792,31 @@ def search_notes(
     name="zotero_create_item",
     description="""Create a new item in your Zotero library (article, book, webpage, etc.).
 
-IMPORTANT - Data Format Requirements:
-- tags: Pass as a simple list of strings: ["tag1", "tag2", "tag3"]
-- creators: Pass as a list of dictionaries with creatorType, firstName, lastName
-- collection_names: Preferred - pass collection names as strings: ["My Collection", "Research"]
-- collections: Alternative - pass collection keys if you already have them: ["ABC123", "XYZ789"]
+CRITICAL - Data Format Requirements:
+- tags: MUST be a list of strings: ["tag1", "tag2", "tag3"]
+  ❌ WRONG: tags='["tag1", "tag2"]' (JSON string)
+  ✓ CORRECT: tags=["tag1", "tag2"] (actual list)
 
-Example call:
+- creators: MUST be a list of dictionaries. Each creator MUST have:
+  * creatorType: "author", "editor", "contributor", etc.
+  * firstName AND lastName (for people) OR name (for organizations)
+  ❌ WRONG: creators='[{"creatorType": "author", ...}]' (JSON string)
+  ✓ CORRECT: creators=[{"creatorType": "author", "firstName": "Jane", "lastName": "Doe"}]
+
+- collection_names: Pass as list of strings: ["Collection1", "Collection2"]
+
+COMPLETE WORKING EXAMPLE:
 zotero_create_item(
     item_type="journalArticle",
-    title="Machine Learning Applications",
-    creators=[{"creatorType": "author", "firstName": "Jane", "lastName": "Smith"}],
+    title="Deep Learning in Healthcare",
+    creators=[
+        {"creatorType": "author", "firstName": "Jane", "lastName": "Smith"},
+        {"creatorType": "author", "firstName": "John", "lastName": "Doe"}
+    ],
     date="2024",
-    tags=["machine learning", "AI", "research"],
-    collection_names=["PhD Research", "ML Papers"]
+    publication_title="Journal of AI",
+    tags=["deep learning", "healthcare", "AI"],
+    collection_names=["PhD Research"]
 )"""
 )
 def create_item(
@@ -1865,6 +1876,92 @@ def create_item(
     try:
         ctx.info(f"Creating new {item_type} item: {title}")
         zot = get_zotero_client()
+
+        # Input validation and auto-correction for common mistakes
+        # Fix tags if passed as JSON string instead of list
+        if tags is not None:
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                    ctx.info(f"Auto-corrected tags from JSON string to list: {tags}")
+                except json.JSONDecodeError:
+                    return f"Error: tags parameter must be a list of strings, not a JSON string. Example: ['tag1', 'tag2']"
+            if not isinstance(tags, list):
+                return f"Error: tags must be a list of strings. Example: ['optimization', 'machine learning']"
+
+        # Fix creators if passed as JSON string instead of list
+        if creators is not None:
+            if isinstance(creators, str):
+                try:
+                    creators = json.loads(creators)
+                    ctx.info(f"Auto-corrected creators from JSON string to list: {creators}")
+                except json.JSONDecodeError:
+                    return f"Error: creators parameter must be a list of dictionaries, not a JSON string. Example: [{{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}]"
+            if not isinstance(creators, list):
+                return f"Error: creators must be a list of dictionaries. Example: [{{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}]"
+
+            # Validate creator structure
+            if creators:  # Only validate if not empty
+                for i, creator in enumerate(creators):
+                    if not isinstance(creator, dict):
+                        return f"Error: Each creator must be a dictionary. Creator {i+1} is not a dictionary."
+
+                    if "creatorType" not in creator:
+                        return f"Error: Creator {i+1} is missing 'creatorType' field. Must be 'author', 'editor', 'contributor', etc."
+
+                    # Check if it has either (firstName + lastName) OR name
+                    has_split_name = "firstName" in creator and "lastName" in creator
+                    has_single_name = "name" in creator
+
+                    if not has_split_name and not has_single_name:
+                        return f"Error: Creator {i+1} must have EITHER ('firstName' AND 'lastName') OR 'name'. Example: {{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}"
+
+                    # Warn about empty names
+                    if has_split_name:
+                        if not creator.get("firstName") and not creator.get("lastName"):
+                            ctx.warn(f"Creator {i+1} has empty firstName and lastName")
+                    elif has_single_name:
+                        if not creator.get("name"):
+                            ctx.warn(f"Creator {i+1} has empty name field")
+
+                ctx.info(f"Validated {len(creators)} creator(s) successfully")
+
+        # Fix collections if passed as JSON string
+        if collections is not None:
+            if isinstance(collections, str):
+                try:
+                    collections = json.loads(collections)
+                    ctx.info(f"Auto-corrected collections from JSON string to list: {collections}")
+                except json.JSONDecodeError:
+                    return f"Error: collections parameter must be a list of strings, not a JSON string."
+
+        # Fix collection_names if passed as JSON string
+        if collection_names is not None:
+            if isinstance(collection_names, str):
+                try:
+                    collection_names = json.loads(collection_names)
+                    ctx.info(f"Auto-corrected collection_names from JSON string to list: {collection_names}")
+                except json.JSONDecodeError:
+                    return f"Error: collection_names parameter must be a list of strings, not a JSON string."
+
+        # Fix extra_fields if passed as JSON string
+        if extra_fields is not None:
+            if isinstance(extra_fields, str):
+                try:
+                    extra_fields = json.loads(extra_fields)
+                    ctx.info(f"Auto-corrected extra_fields from JSON string to dict: {extra_fields}")
+                except json.JSONDecodeError:
+                    return f"Error: extra_fields parameter must be a dictionary, not a JSON string."
+
+        # Validate item type specific fields
+        if item_type == "conferencePaper" and publication_title:
+            ctx.warn(f"Note: 'publication_title' is not a standard field for conferencePaper. Consider using extra_fields with 'proceedingsTitle' or 'conferenceName' instead.")
+            # Move it to extra_fields automatically
+            if extra_fields is None:
+                extra_fields = {}
+            extra_fields["proceedingsTitle"] = publication_title
+            publication_title = None
+            ctx.info("Automatically moved publication_title to extra_fields['proceedingsTitle']")
 
         # Resolve collection names to keys if provided
         resolved_collections = []
@@ -1995,7 +2092,21 @@ def create_item(
 
 @mcp.tool(
     name="zotero_update_item",
-    description="Update an existing item in your Zotero library. You can update any metadata fields like title, authors, date, abstract, tags, etc."
+    description="""Update an existing item in your Zotero library. You can update any metadata fields.
+
+IMPORTANT - Data Format Requirements:
+- tags: Pass as a simple list of strings: ["tag1", "tag2", "tag3"]
+- add_tags/remove_tags: Also pass as lists: ["new_tag"], ["old_tag"]
+- creators: Pass as a list of dictionaries with creatorType, firstName, lastName
+- collection_names: Pass collection names as strings: ["Collection Name"]
+
+Example call:
+zotero_update_item(
+    item_key="ABC12345",
+    abstract="Updated abstract text here",
+    add_tags=["reviewed", "important"],
+    collection_names=["PhD Research"]
+)"""
 )
 def update_item(
     item_key: str,
@@ -2051,6 +2162,96 @@ def update_item(
     try:
         ctx.info(f"Updating item {item_key}")
         zot = get_zotero_client()
+
+        # Input validation and auto-correction for common mistakes
+        # Fix tags if passed as JSON string
+        if tags is not None:
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                    ctx.info(f"Auto-corrected tags from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: tags parameter must be a list of strings, not a JSON string. Example: ['tag1', 'tag2']"
+
+        # Fix add_tags if passed as JSON string
+        if add_tags is not None:
+            if isinstance(add_tags, str):
+                try:
+                    add_tags = json.loads(add_tags)
+                    ctx.info(f"Auto-corrected add_tags from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: add_tags parameter must be a list of strings, not a JSON string."
+
+        # Fix remove_tags if passed as JSON string
+        if remove_tags is not None:
+            if isinstance(remove_tags, str):
+                try:
+                    remove_tags = json.loads(remove_tags)
+                    ctx.info(f"Auto-corrected remove_tags from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: remove_tags parameter must be a list of strings, not a JSON string."
+
+        # Fix creators if passed as JSON string
+        if creators is not None:
+            if isinstance(creators, str):
+                try:
+                    creators = json.loads(creators)
+                    ctx.info(f"Auto-corrected creators from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: creators parameter must be a list of dictionaries, not a JSON string."
+
+            # Validate creator structure
+            if creators:  # Only validate if not empty
+                for i, creator in enumerate(creators):
+                    if not isinstance(creator, dict):
+                        return f"Error: Each creator must be a dictionary. Creator {i+1} is not a dictionary."
+
+                    if "creatorType" not in creator:
+                        return f"Error: Creator {i+1} is missing 'creatorType' field. Must be 'author', 'editor', 'contributor', etc."
+
+                    # Check if it has either (firstName + lastName) OR name
+                    has_split_name = "firstName" in creator and "lastName" in creator
+                    has_single_name = "name" in creator
+
+                    if not has_split_name and not has_single_name:
+                        return f"Error: Creator {i+1} must have EITHER ('firstName' AND 'lastName') OR 'name'. Example: {{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}"
+
+                    # Warn about empty names
+                    if has_split_name:
+                        if not creator.get("firstName") and not creator.get("lastName"):
+                            ctx.warn(f"Creator {i+1} has empty firstName and lastName")
+                    elif has_single_name:
+                        if not creator.get("name"):
+                            ctx.warn(f"Creator {i+1} has empty name field")
+
+                ctx.info(f"Validated {len(creators)} creator(s) successfully")
+
+        # Fix collections if passed as JSON string
+        if collections is not None:
+            if isinstance(collections, str):
+                try:
+                    collections = json.loads(collections)
+                    ctx.info(f"Auto-corrected collections from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: collections parameter must be a list of strings, not a JSON string."
+
+        # Fix collection_names if passed as JSON string
+        if collection_names is not None:
+            if isinstance(collection_names, str):
+                try:
+                    collection_names = json.loads(collection_names)
+                    ctx.info(f"Auto-corrected collection_names from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: collection_names parameter must be a list of strings, not a JSON string."
+
+        # Fix extra_fields if passed as JSON string
+        if extra_fields is not None:
+            if isinstance(extra_fields, str):
+                try:
+                    extra_fields = json.loads(extra_fields)
+                    ctx.info(f"Auto-corrected extra_fields from JSON string to dict")
+                except json.JSONDecodeError:
+                    return f"Error: extra_fields parameter must be a dictionary, not a JSON string."
 
         # First, fetch the existing item
         try:
