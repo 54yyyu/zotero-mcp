@@ -5,7 +5,7 @@ Note: ChatGPT requires specific tool names "search" and "fetch", and so they
 are defined and used and piped through to the main server tools. See bottom of file for details.
 """
 
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Union, Tuple
 import os
 import sys
 import uuid
@@ -1814,6 +1814,7 @@ def add_by_identifier(
     collections: Optional[List[str]] = None,
     collection_names: Optional[Union[List[str], str]] = None,
     tags: Optional[Union[List[str], str]] = None,
+    attach_pdfs: bool = True,
     *,
     ctx: Context
 ) -> str:
@@ -1825,6 +1826,7 @@ def add_by_identifier(
         collections: Collection keys to add created items to
         collection_names: Collection names to resolve and add created items to
         tags: Optional tags to apply to the created items
+        attach_pdfs: If true, attempts to attach a PDF as a linked URL when discoverable
         ctx: MCP context
 
     Returns:
@@ -1941,7 +1943,7 @@ def add_by_identifier(
             })
         return creators
 
-    def _fetch_crossref(doi: str) -> Optional[Dict[str, any]]:
+    def _fetch_crossref(doi: str) -> Tuple[Optional[Dict[str, any]], Optional[str]]:
         url = f"https://api.crossref.org/works/{requests.utils.quote(doi)}"
         headers = {"User-Agent": "zotero-mcp (identifier import)"}
         r = requests.get(url, headers=headers, timeout=20)
@@ -1969,7 +1971,7 @@ def add_by_identifier(
         issue = msg.get('issue') or ''
         publisher = msg.get('publisher') or ''
         url_final = msg.get('URL') or (f"https://doi.org/{doi}")
-        data = {
+        data: Dict[str, any] = {
             "itemType": item_type,
             "title": title or f"DOI {doi}",
             "creators": creators,
@@ -1990,7 +1992,19 @@ def add_by_identifier(
             data["publisher"] = publisher
         if abstract:
             data["abstractNote"] = abstract
-        return data
+        # Try Crossref-provided PDF link if present
+        pdf_url: Optional[str] = None
+        try:
+            for link in msg.get('link', []) or []:
+                ct = (link.get('content-type') or link.get('content_type') or '').lower()
+                if ct == 'application/pdf':
+                    candidate = link.get('URL') or link.get('url')
+                    if candidate:
+                        pdf_url = candidate
+                        break
+        except Exception:
+            pass
+        return data, pdf_url
 
     def _fetch_openlibrary(isbn: str) -> Optional[Dict[str, any]]:
         # Prefer the data endpoint that includes author names
@@ -2129,24 +2143,32 @@ def add_by_identifier(
 
             try:
                 item_data = None
+                pdf_hint: Optional[str] = None
                 if id_type == 'doi':
-                    item_data = _fetch_crossref(value)
+                    item_data, pdf_hint = _fetch_crossref(value)
                 elif id_type == 'isbn':
                     item_data = _fetch_openlibrary(value)
                 elif id_type == 'pmid':
                     item_data = _fetch_pmid(value)
                 elif id_type == 'arxiv':
                     item_data = _fetch_arxiv(value)
+                    pdf_hint = f"https://arxiv.org/pdf/{value}.pdf"
                 elif value.lower().startswith("http://") or value.lower().startswith("https://"):
                     # Try to discover an embedded DOI in the page content
                     try:
                         resp = requests.get(value, timeout=20, headers={"User-Agent": "zotero-mcp (identifier import)"})
                         if resp.ok:
+                            # ACL Anthology heuristic
+                            m_acl = re.search(r"aclanthology\.org/([A-Za-z0-9\-]+)/?", value, flags=re.IGNORECASE)
+                            if m_acl:
+                                slug = m_acl.group(1)
+                                pdf_hint = f"https://aclanthology.org/{slug}.pdf"
                             m = re.search(r'''doi.org/(10.[^\s'"<>#]+/[\w-./:;()]+)''', resp.text, flags=re.IGNORECASE)
                             if m:
                                 discovered_doi = m.group(1)
                                 ctx.info(f"Discovered DOI {discovered_doi} in page; importing via Crossref")
-                                item_data = _fetch_crossref(discovered_doi)
+                                item_data, cr_pdf = _fetch_crossref(discovered_doi)
+                                pdf_hint = pdf_hint or cr_pdf
                     except requests.RequestException as page_err:
                         ctx.warn(f"Could not fetch page to discover DOI: {page_err}")
                 else:
@@ -2168,6 +2190,30 @@ def add_by_identifier(
                 result = zot.create_items([item_data])
                 if "success" in result and result["success"]:
                     item_key = next(iter(result["success"].values()))
+
+                    # Attach PDF as linked URL if requested and available
+                    if attach_pdfs and pdf_hint:
+                        try:
+                            probe = requests.head(pdf_hint, timeout=10, allow_redirects=True)
+                            ctype = (probe.headers.get('Content-Type') or '').lower()
+                            if probe.ok and ('pdf' in ctype or pdf_hint.lower().endswith('.pdf')):
+                                attachment_item = {
+                                    "itemType": "attachment",
+                                    "parentItem": item_key,
+                                    "linkMode": "linked_url",
+                                    "title": "PDF",
+                                    "url": pdf_hint,
+                                    "contentType": "application/pdf",
+                                }
+                                att_res = zot.create_items([attachment_item])
+                                if att_res.get('success'):
+                                    ctx.info("Attached PDF as linked URL")
+                                else:
+                                    ctx.warn(f"Failed to attach PDF link: {att_res}")
+                            else:
+                                ctx.warn(f"PDF URL not accessible or not a PDF: {pdf_hint}")
+                        except Exception as attach_err:
+                            ctx.warn(f"Error attaching PDF: {attach_err}")
 
                     # Add to collections
                     added_to = []
@@ -2270,6 +2316,7 @@ def create_item(
     place: Optional[str] = None,
     doi: Optional[str] = None,
     url: Optional[str] = None,
+    attach_pdf_url: Optional[str] = None,
     abstract: Optional[str] = None,
     tags: Optional[Union[List[str], str]] = None,
     collections: Optional[Union[List[str], str]] = None,
@@ -2301,6 +2348,7 @@ def create_item(
         place: Publication place
         doi: Digital Object Identifier
         url: URL of the item
+        attach_pdf_url: Optional direct PDF URL to attach (linked URL attachment)
         abstract: Abstract or summary text
         tags: Python list of strings (NOT JSON string). Example: ["optimization", "machine learning"]
         collections: Python list of collection keys. Example: ["ABC123XY"]
@@ -2527,6 +2575,32 @@ def create_item(
             if len(successful) > 0:
                 item_key = next(iter(successful.values()))
 
+                # Optionally attach a PDF link if provided
+                attachment_info = ""
+                if attach_pdf_url:
+                    try:
+                        probe = requests.head(attach_pdf_url, timeout=10, allow_redirects=True)
+                        ctype = (probe.headers.get('Content-Type') or '').lower()
+                        if probe.ok and ('pdf' in ctype or attach_pdf_url.lower().endswith('.pdf')):
+                            attachment_item = {
+                                "itemType": "attachment",
+                                "parentItem": item_key,
+                                "linkMode": "linked_url",
+                                "title": "PDF",
+                                "url": attach_pdf_url,
+                                "contentType": "application/pdf",
+                            }
+                            att_res = zot.create_items([attachment_item])
+                            if att_res.get('success'):
+                                attachment_info = "\n\nAttached PDF link."
+                                ctx.info("Attached PDF as linked URL")
+                            else:
+                                ctx.warn(f"Failed to attach PDF link: {att_res}")
+                        else:
+                            ctx.warn(f"PDF URL not accessible or not a PDF: {attach_pdf_url}")
+                    except Exception as attach_err:
+                        ctx.warn(f"Error attaching PDF: {attach_err}")
+
                 # Now add the item to collections if specified
                 collection_info = ""
                 if resolved_collections:
@@ -2555,7 +2629,7 @@ def create_item(
                     if collection_errors:
                         collection_info += f"\n\n**Collection warnings:**\n" + "\n".join(f"- {err}" for err in collection_errors)
 
-                return f"Successfully created {item_type}: \"{title}\"\n\nItem key: `{item_key}`{collection_info}"
+                return f"Successfully created {item_type}: \"{title}\"\n\nItem key: `{item_key}`{attachment_info}{collection_info}"
             else:
                 return f"Item creation response was successful but no key was returned: {result}"
         else:
