@@ -1178,16 +1178,16 @@ def get_annotations(
                         # Process annotations if citation key found
                         if citation_key:
                             try:
-                                # Determine library ID
-                                library_id = 1  # Default to personal library
+                                # Determine library
+                                library = "*"  # Default all libraries
                                 search_results = bibtex._make_request("item.search", [citation_key])
                                 if search_results:
                                     matched_item = next((item for item in search_results if item.get('citekey') == citation_key), None)
                                     if matched_item:
-                                        library_id = matched_item.get('libraryID', 1)
+                                        library = matched_item.get('library', "*")
                                 
                                 # Get attachments
-                                attachments = bibtex.get_attachments(citation_key, library_id)
+                                attachments = bibtex.get_attachments(citation_key, library)
                                 
                                 # Process annotations from attachments
                                 for attachment in attachments:
