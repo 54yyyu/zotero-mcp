@@ -35,15 +35,19 @@ def suppress_stdout():
 class OpenAIEmbeddingFunction(EmbeddingFunction):
     """Custom OpenAI embedding function for ChromaDB."""
     
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: Optional[str] = None):
+    def __init__(self, model_name: str = "text-embedding-3-small", api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
         
         try:
             import openai
-            self.client = openai.OpenAI(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            if self.base_url:
+                client_kwargs["base_url"] = self.base_url
+            self.client = openai.OpenAI(**client_kwargs)
         except ImportError:
             raise ImportError("openai package is required for OpenAI embeddings")
     
@@ -63,16 +67,21 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 class GeminiEmbeddingFunction(EmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai."""
     
-    def __init__(self, model_name: str = "models/text-embedding-004", api_key: Optional[str] = None):
+    def __init__(self, model_name: str = "models/text-embedding-004", api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        self.base_url = base_url or os.getenv("GEMINI_BASE_URL")
         if not self.api_key:
             raise ValueError("Gemini API key is required")
         
         try:
             from google import genai
             from google.genai import types
-            self.client = genai.Client(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            if self.base_url:
+                http_options = types.HttpOptions(baseUrl=self.base_url)
+                client_kwargs["http_options"] = http_options
+            self.client = genai.Client(**client_kwargs)
             self.types = types
         except ImportError:
             raise ImportError("google-genai package is required for Gemini embeddings")
@@ -169,12 +178,14 @@ class ChromaClient:
         if self.embedding_model == "openai":
             model_name = self.embedding_config.get("model_name", "text-embedding-3-small")
             api_key = self.embedding_config.get("api_key")
-            return OpenAIEmbeddingFunction(model_name=model_name, api_key=api_key)
+            base_url = self.embedding_config.get("base_url")
+            return OpenAIEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
         
         elif self.embedding_model == "gemini":
             model_name = self.embedding_config.get("model_name", "models/text-embedding-004")
             api_key = self.embedding_config.get("api_key")
-            return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key)
+            base_url = self.embedding_config.get("base_url")
+            return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
         
         else:
             # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
@@ -347,20 +358,26 @@ def create_chroma_client(config_path: Optional[str] = None) -> ChromaClient:
     if config["embedding_model"] == "openai":
         openai_api_key = os.getenv("OPENAI_API_KEY")
         openai_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        openai_base_url = os.getenv("OPENAI_BASE_URL")
         if openai_api_key:
             config["embedding_config"] = {
                 "api_key": openai_api_key,
                 "model_name": openai_model
             }
+            if openai_base_url:
+                config["embedding_config"]["base_url"] = openai_base_url
     
     elif config["embedding_model"] == "gemini":
         gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         gemini_model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
+        gemini_base_url = os.getenv("GEMINI_BASE_URL")
         if gemini_api_key:
             config["embedding_config"] = {
                 "api_key": gemini_api_key,
                 "model_name": gemini_model
             }
+            if gemini_base_url:
+                config["embedding_config"]["base_url"] = gemini_base_url
     
     return ChromaClient(
         collection_name=config["collection_name"],
