@@ -28,3 +28,28 @@ def is_local_mode() -> bool:
     """
     value = os.getenv("ZOTERO_LOCAL", "")
     return value.lower() in {"true", "yes", "1"}
+
+def timeout(seconds):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            import threading
+            result = [TimeoutError(f"Function {func.__name__} timed out after {seconds} seconds")]
+
+            def target():
+                try:
+                    result[0] = func(*args, **kwargs)
+                except Exception as e:
+                    result[0] = e
+
+            thread = threading.Thread(target=target)
+            thread.daemon = True
+            thread.start()
+            thread.join(seconds)
+
+            if isinstance(result[0], Exception):
+                raise result[0]
+
+            return result[0]
+
+        return wrapper
+    return decorator

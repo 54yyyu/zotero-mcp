@@ -160,6 +160,8 @@ def main():
                                  help="Limit number of items to process (for testing)")
     update_db_parser.add_argument("--fulltext", action="store_true",
                                  help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
+    update_db_parser.add_argument("--pdf-timeout", type=int,
+                                 help="Timeout in seconds for PDF text extraction.")
     update_db_parser.add_argument("--config-path", 
                                  help="Path to semantic search configuration file")
     
@@ -341,7 +343,8 @@ def main():
             stats = search.update_database(
                 force_full_rebuild=args.force_rebuild,
                 limit=args.limit,
-                extract_fulltext=args.fulltext
+                extract_fulltext=args.fulltext,
+                pdf_timeout=args.pdf_timeout
             )
             
             print(f"\nDatabase update completed:")

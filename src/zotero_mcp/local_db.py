@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
-from .utils import is_local_mode
+from .utils import is_local_mode, timeout
 
 
 @dataclass
@@ -74,7 +74,7 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
     
-    def __init__(self, db_path: Optional[str] = None, pdf_max_pages: Optional[int] = None):
+    def __init__(self, db_path: Optional[str] = None, pdf_max_pages: Optional[int] = None, pdf_timeout: Optional[int] = None):
         """
         Initialize the local database reader.
         
@@ -84,6 +84,7 @@ class LocalZoteroReader:
         self.db_path = db_path or self._find_zotero_db()
         self._connection: Optional[sqlite3.Connection] = None
         self.pdf_max_pages: Optional[int] = pdf_max_pages
+        self.pdf_timeout = pdf_timeout
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -169,8 +170,16 @@ class LocalZoteroReader:
     def _extract_text_from_pdf(self, file_path: Path) -> str:
         """Extract text from a PDF using pdfminer with a page cap to avoid stalls."""
         try:
-            from pdfminer.high_level import extract_text  # type: ignore
-            # Determine page cap: config value > env > default (10)
+            from pdfminer.high_level import extract_text
+
+            if self.pdf_timeout is not None:
+                @timeout(self.pdf_timeout)
+                def extract_text_with_timeout(path, maxpages):
+                    return extract_text(path, maxpages=maxpages)
+            else:
+                def extract_text_with_timeout(path, maxpages):
+                    return extract_text(path, maxpages=maxpages)
+
             if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
                 maxpages = self.pdf_max_pages
             else:
@@ -179,8 +188,12 @@ class LocalZoteroReader:
                     maxpages = int(max_pages_env) if max_pages_env else 10
                 except ValueError:
                     maxpages = 10
-            text = extract_text(str(file_path), maxpages=maxpages)
+
+            text = extract_text_with_timeout(str(file_path), maxpages)
             return text or ""
+        except TimeoutError as e:
+            logging.warning(f"Skipping PDF '{file_path}' due to timeout: {e}")
+            return ""
         except Exception:
             return ""
 
