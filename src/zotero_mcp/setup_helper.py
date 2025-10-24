@@ -183,6 +183,14 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
             config["embedding_config"]["api_key"] = api_key
         else:
             print("Warning: No API key provided. Set OPENAI_API_KEY environment variable.")
+        
+        # Get optional base URL
+        base_url = input("Enter custom OpenAI base URL (leave blank for default): ").strip()
+        if base_url:
+            config["embedding_config"]["base_url"] = base_url
+            print(f"Using custom OpenAI base URL: {base_url}")
+        else:
+            print("Using default OpenAI base URL")
     
     elif choice == "3":
         config["embedding_model"] = "gemini"
@@ -209,6 +217,14 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
             config["embedding_config"]["api_key"] = api_key
         else:
             print("Warning: No API key provided. Set GEMINI_API_KEY environment variable.")
+        
+        # Get optional base URL
+        base_url = input("Enter custom Gemini base URL (leave blank for default): ").strip()
+        if base_url:
+            config["embedding_config"]["base_url"] = base_url
+            print(f"Using custom Gemini base URL: {base_url}")
+        else:
+            print("Using default Gemini base URL")
     
     # Configure update frequency
     print("\n=== Database Update Configuration ===")
@@ -379,12 +395,16 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
                 env_settings["OPENAI_API_KEY"] = api_key
             if model := embedding_config.get("model_name"):
                 env_settings["OPENAI_EMBEDDING_MODEL"] = model
+            if base_url := embedding_config.get("base_url"):
+                env_settings["OPENAI_BASE_URL"] = base_url
         
         elif semantic_config.get("embedding_model") == "gemini":
             if api_key := embedding_config.get("api_key"):
                 env_settings["GEMINI_API_KEY"] = api_key
             if model := embedding_config.get("model_name"):
                 env_settings["GEMINI_EMBEDDING_MODEL"] = model
+            if base_url := embedding_config.get("base_url"):
+                env_settings["GEMINI_BASE_URL"] = base_url
     
     # Add or update zotero config
     config["mcpServers"]["zotero"] = {
