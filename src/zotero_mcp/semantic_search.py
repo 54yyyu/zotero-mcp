@@ -365,37 +365,19 @@ class ZoteroSemanticSearch:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
                                 local_has_fulltext = len(reader.get_fulltext_meta_for_item(it.item_id)) > 0
 
-                                # DEBUG: Pretty print the logical flow
-                                sys.stderr.write("\n" + "="*80 + "\n")
-                                sys.stderr.write(f"🔍 DEBUG: Item {it.key} (ID: {it.item_id})\n")
-                                sys.stderr.write(f"  📄 Title: {it.title or '(no title)'}\n")
-                                sys.stderr.write("-"*80 + "\n")
-                                sys.stderr.write(f"  ✓ Existing metadata found in Chroma\n")
-                                sys.stderr.write(f"  📚 Chroma has_fulltext:    {chroma_has_fulltext}\n")
-                                sys.stderr.write(f"  💾 Local has_fulltext:     {local_has_fulltext}\n")
-                                sys.stderr.write("-"*80 + "\n")
-
                                 # Skip only if chroma does not have the fulltext embedding but local does (e.g. the users updated it)
                                 if not chroma_has_fulltext and local_has_fulltext:
                                     # Document exists but lacks fulltext - we need to update it
-                                    sys.stderr.write(f"  🔄 Action: UPDATE EXISTING (chroma missing fulltext, local has it)\n")
-                                    sys.stderr.write(f"  ⚡ should_extract = True\n")
-                                    sys.stderr.write("="*80 + "\n\n")
                                     updated_existing += 1
                                 else:
-                                    sys.stderr.write(f"  ⏭️  Action: SKIP EXISTING (already up-to-date)\n")
-                                    sys.stderr.write(f"  🛑 should_extract = False\n")
-                                    sys.stderr.write("="*80 + "\n\n")
                                     should_extract = False
                                     skipped_existing += 1
                         
                         if should_extract:
                             # Extract fulltext if item doesn't have it yet
                             if not getattr(it, "fulltext", None):
-                                sys.stderr.write(f"EXTRACTING {it.title}\n")
                                 text = reader.extract_fulltext_for_item(it.item_id)
                                 if text:
-                                    sys.stderr.write(f"✅ Successfully found text!\n")
                                     # Support new (text, source) return format
                                     if isinstance(text, tuple) and len(text) == 2:
                                         it.fulltext, it.fulltext_source = text[0], text[1]
