@@ -227,7 +227,7 @@ class ZoteroSemanticSearch:
         
         return False
     
-    def _get_items_from_source(self, limit: Optional[int] = None, extract_fulltext: bool = False) -> List[Dict[str, Any]]:
+    def _get_items_from_source(self, limit: Optional[int] = None, extract_fulltext: bool = False, chroma_client: Optional[ChromaClient] = None, force_rebuild: bool = False) -> List[Dict[str, Any]]:
         """
         Get items from either local database or API.
         
@@ -237,22 +237,31 @@ class ZoteroSemanticSearch:
         Args:
             limit: Optional limit on number of items
             extract_fulltext: Whether to extract fulltext content
+            chroma_client: ChromaDB client to check for existing documents (None to skip checks)
+            force_rebuild: Whether to force extraction even if item exists
             
         Returns:
             List of items in API-compatible format
         """
         if extract_fulltext and is_local_mode():
-            return self._get_items_from_local_db(limit, extract_fulltext=extract_fulltext)
+            return self._get_items_from_local_db(
+                limit, 
+                extract_fulltext=extract_fulltext,
+                chroma_client=chroma_client,
+                force_rebuild=force_rebuild
+            )
         else:
             return self._get_items_from_api(limit)
     
-    def _get_items_from_local_db(self, limit: Optional[int] = None, extract_fulltext: bool = False) -> List[Dict[str, Any]]:
+    def _get_items_from_local_db(self, limit: Optional[int] = None, extract_fulltext: bool = False, chroma_client: Optional[ChromaClient] = None, force_rebuild: bool = False) -> List[Dict[str, Any]]:
         """
         Get items from local Zotero database.
         
         Args:
             limit: Optional limit on number of items
             extract_fulltext: Whether to extract fulltext content
+            chroma_client: ChromaDB client to check for existing documents (None to skip checks)
+            force_rebuild: Whether to force extraction even if item exists
             
         Returns:
             List of items in API-compatible format
@@ -342,21 +351,79 @@ class ZoteroSemanticSearch:
                 # Phase 2: selectively extract fulltext only when requested
                 if extract_fulltext:
                     extracted = 0
+                    skipped_existing = 0
+                    updated_existing = 0
+                    items_to_process = []
+                    
                     for it in local_items:
-                        if not getattr(it, "fulltext", None):
-                            text = reader.extract_fulltext_for_item(it.item_id)
-                            if text:
-                                # Support new (text, source) return format
-                                if isinstance(text, tuple) and len(text) == 2:
-                                    it.fulltext, it.fulltext_source = text[0], text[1]
+                        should_extract = True
+                        
+                        # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
+                        if chroma_client and not force_rebuild:
+                            existing_metadata = chroma_client.get_document_metadata(it.key)
+                            if existing_metadata:
+                                chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
+                                local_has_fulltext = len(reader.get_fulltext_meta_for_item(it.item_id)) > 0
+
+                                # DEBUG: Pretty print the logical flow
+                                sys.stderr.write("\n" + "="*80 + "\n")
+                                sys.stderr.write(f"🔍 DEBUG: Item {it.key} (ID: {it.item_id})\n")
+                                sys.stderr.write(f"  📄 Title: {it.title or '(no title)'}\n")
+                                sys.stderr.write("-"*80 + "\n")
+                                sys.stderr.write(f"  ✓ Existing metadata found in Chroma\n")
+                                sys.stderr.write(f"  📚 Chroma has_fulltext:    {chroma_has_fulltext}\n")
+                                sys.stderr.write(f"  💾 Local has_fulltext:     {local_has_fulltext}\n")
+                                sys.stderr.write("-"*80 + "\n")
+
+                                # Skip only if chroma does not have the fulltext embedding but local does (e.g. the users updated it)
+                                if not chroma_has_fulltext and local_has_fulltext:
+                                    # Document exists but lacks fulltext - we need to update it
+                                    sys.stderr.write(f"  🔄 Action: UPDATE EXISTING (chroma missing fulltext, local has it)\n")
+                                    sys.stderr.write(f"  ⚡ should_extract = True\n")
+                                    sys.stderr.write("="*80 + "\n\n")
+                                    updated_existing += 1
                                 else:
-                                    it.fulltext = text
-                        extracted += 1
-                        if extracted % 25 == 0 and total_to_extract:
-                            try:
-                                sys.stderr.write(f"Extracted content for {extracted}/{total_to_extract} items...\n")
-                            except Exception:
-                                pass
+                                    sys.stderr.write(f"  ⏭️  Action: SKIP EXISTING (already up-to-date)\n")
+                                    sys.stderr.write(f"  🛑 should_extract = False\n")
+                                    sys.stderr.write("="*80 + "\n\n")
+                                    should_extract = False
+                                    skipped_existing += 1
+                        
+                        if should_extract:
+                            # Extract fulltext if item doesn't have it yet
+                            if not getattr(it, "fulltext", None):
+                                sys.stderr.write(f"EXTRACTING {it.title}\n")
+                                text = reader.extract_fulltext_for_item(it.item_id)
+                                if text:
+                                    sys.stderr.write(f"✅ Successfully found text!\n")
+                                    # Support new (text, source) return format
+                                    if isinstance(text, tuple) and len(text) == 2:
+                                        it.fulltext, it.fulltext_source = text[0], text[1]
+                                    else:
+                                        it.fulltext = text
+                            extracted += 1
+                            items_to_process.append(it)
+                            
+                            if extracted % 25 == 0 and total_to_extract:
+                                try:
+                                    sys.stderr.write(f"Extracted content for {extracted}/{total_to_extract} items (skipped {skipped_existing} existing, updating {updated_existing})...\n")
+                                except Exception:
+                                    pass
+                    
+                    # Replace local_items with filtered list
+                    local_items = items_to_process
+                    
+                    # Report final stats
+                    if skipped_existing > 0 or updated_existing > 0:
+                        try:
+                            msg_parts = []
+                            if skipped_existing > 0:
+                                msg_parts.append(f"Skipped {skipped_existing} items with up to date embeddings")
+                            if updated_existing > 0:
+                                msg_parts.append(f"Updated {updated_existing} items with new fulltext")
+                            sys.stderr.write(", ".join(msg_parts) + "\n")
+                        except Exception:
+                            pass
                 else:
                     # Skip fulltext extraction for faster processing
                     for it in local_items:
@@ -525,9 +592,13 @@ class ZoteroSemanticSearch:
                 self.chroma_client.reset_collection()
             
             # Get all items from either local DB or API
-            # Get all items from either local DB or API
-            all_items = self._get_items_from_source(limit=limit, extract_fulltext=extract_fulltext)
-            
+            all_items = self._get_items_from_source(
+                limit=limit, 
+                extract_fulltext=extract_fulltext,
+                chroma_client=self.chroma_client if not force_full_rebuild else None,
+                force_rebuild=force_full_rebuild
+            )
+
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
             # Immediate progress line so users see counts up-front
@@ -595,12 +666,6 @@ class ZoteroSemanticSearch:
             try:
                 item_key = item.get("key", "")
                 if not item_key:
-                    stats["skipped"] += 1
-                    continue
-                
-                # Check if item exists and needs update
-                if not force_rebuild and self.chroma_client.document_exists(item_key):
-                    # For now, skip existing items (could implement update logic here)
                     stats["skipped"] += 1
                     continue
                 

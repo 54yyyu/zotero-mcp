@@ -215,6 +215,13 @@ class LocalZoteroReader:
         except Exception:
             return ""
 
+    def _get_fulltext_meta_for_item(self, item_id: int):
+        meta = []
+        for key, path, ctype in self._iter_parent_attachments(item_id):
+            meta.append([key, path, ctype])
+
+        return meta
+
     def _extract_fulltext_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
         """Attempt to extract fulltext and source from the item's best attachment.
 
@@ -368,6 +375,10 @@ class LocalZoteroReader:
             items.append(item)
             
         return items
+
+    # Public helper to quickly check full text metadata for item
+    def get_fulltext_meta_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
+        return self._get_fulltext_meta_for_item(item_id)
 
     # Public helper to extract fulltext on demand for a specific item
     def extract_fulltext_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
