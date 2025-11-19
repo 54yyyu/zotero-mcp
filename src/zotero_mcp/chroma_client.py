@@ -321,6 +321,24 @@ class ChromaClient:
             return len(result['ids']) > 0
         except Exception:
             return False
+    
+    def get_document_metadata(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get metadata for a document if it exists.
+        
+        Args:
+            doc_id: Document ID to look up
+            
+        Returns:
+            Metadata dictionary if document exists, None otherwise
+        """
+        try:
+            result = self.collection.get(ids=[doc_id], include=["metadatas"])
+            if result['ids'] and result['metadatas']:
+                return result['metadatas'][0]
+            return None
+        except Exception:
+            return None
 
 
 def create_chroma_client(config_path: Optional[str] = None) -> ChromaClient:
