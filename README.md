@@ -127,6 +127,11 @@ zotero-mcp update-db
 # Build with full-text extraction (slower, more comprehensive)
 zotero-mcp update-db --fulltext
 
+# Use your custom zotero.sqlite path
+zotero-mcp update-db --fulltext --db-path "/Your_custom_path/zotero.sqlite"  
+
+If you have embedding confilts when using `zotero-mcp update-db --fulltext`, use `--force-rebuild` to force a rebuild.
+
 # Check database status
 zotero-mcp db-status
 ```
