@@ -113,6 +113,17 @@ def format_item_metadata(item: Dict[str, Any], include_abstract: bool = True) ->
         lines.append(f"**DOI:** {doi}")
     if url := data.get("url"):
         lines.append(f"**URL:** {url}")
+
+    # Extra field often holds citation key / misc metadata
+    if extra := data.get("extra"):
+        lines.extend(["", "## Extra", extra])
+
+        # Try to surface a citation key if present in Extra
+        for line in extra.splitlines():
+            if "citation key" in line.lower():
+                key_part = line.split(":", 1)[1].strip() if ":" in line else line.strip()
+                lines.append(f"**Citation Key (from Extra):** {key_part}")
+                break
     
     # Tags
     if tags := data.get("tags"):
