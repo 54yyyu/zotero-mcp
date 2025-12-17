@@ -84,6 +84,47 @@ def apply_environment_variables(env_vars):
             os.environ[key] = str(value)
 
 
+def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
+    """
+    Save the Zotero database path to the configuration file.
+    
+    This allows users to specify --db-path once and have it remembered
+    for subsequent runs without needing to specify it again.
+    
+    Args:
+        config_path: Path to the configuration file
+        db_path: Path to the Zotero database file
+    """
+    try:
+        # Ensure config directory exists
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Load existing config or create new one
+        full_config = {}
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    full_config = json.load(f)
+            except Exception:
+                pass
+        
+        # Ensure semantic_search section exists
+        if "semantic_search" not in full_config:
+            full_config["semantic_search"] = {}
+        
+        # Save the db_path
+        full_config["semantic_search"]["zotero_db_path"] = db_path
+        
+        # Write back to file
+        with open(config_path, 'w') as f:
+            json.dump(full_config, f, indent=2)
+        
+        print(f"Saved Zotero database path to config: {config_path}")
+        
+    except Exception as e:
+        print(f"Warning: Could not save db_path to config: {e}")
+
+
 def setup_zotero_environment():
     """Setup Zotero environment for CLI commands."""
     # Load standalone env first so global flags (e.g., ZOTERO_NO_CLAUDE) take effect
@@ -162,6 +203,8 @@ def main():
                                  help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
     update_db_parser.add_argument("--config-path", 
                                  help="Path to semantic search configuration file")
+    update_db_parser.add_argument("--db-path",
+                                 help="Path to Zotero database file (zotero.sqlite), overrides config")
     
     # Database status command
     db_status_parser = subparsers.add_parser("db-status", help="Show semantic search database status")
@@ -331,9 +374,16 @@ def main():
         
         print(f"Using configuration: {config_path}")
         
+        # Get optional db_path override from CLI
+        db_path = getattr(args, 'db_path', None)
+        if db_path:
+            print(f"Using custom Zotero database: {db_path}")
+            # Save the db_path to config file for future use
+            _save_zotero_db_path_to_config(config_path, db_path)
+        
         try:
-            # Create semantic search instance
-            search = create_semantic_search(str(config_path))
+            # Create semantic search instance with optional db_path override
+            search = create_semantic_search(str(config_path), db_path=db_path)
             
             print("Starting database update...")
             if args.fulltext:

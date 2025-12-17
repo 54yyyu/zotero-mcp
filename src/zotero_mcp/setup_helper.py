@@ -128,10 +128,12 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         model = existing_semantic_config.get("embedding_model", "unknown")
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
+        db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
         print("Found existing semantic search configuration:")
         print(f"  - Embedding model: {model}")
         print(f"  - Embedding model name: {name}")
         print(f"  - Update frequency: {update_freq}")
+        print(f"  - Zotero database path: {db_path}")
         print("You can keep it or change it.")
         print("If you change to a new configuration, a database rebuild is advised.")
         print("Would you like to keep your existing configuration? (y/n): ", end="")
@@ -295,8 +297,34 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         except ValueError:
             print("Please enter a valid number")
 
+    # Configure Zotero database path
+    print("\n=== Zotero Database Path ===")
+    print("By default, zotero-mcp auto-detects the Zotero database location.")
+    print("If Zotero is installed in a custom location, you can specify the path here.")
+    default_db_path = existing_semantic_config.get("zotero_db_path", "") if existing_semantic_config else ""
+    db_path_hint = default_db_path if default_db_path else "auto-detect"
+    raw_db_path = input(f"Zotero database path [{db_path_hint}]: ").strip()
+    
+    # Validate path if provided
+    zotero_db_path = None
+    if raw_db_path:
+        db_file = Path(raw_db_path)
+        if db_file.exists() and db_file.is_file():
+            zotero_db_path = str(db_file)
+            print(f"Using custom Zotero database: {zotero_db_path}")
+        else:
+            print(f"Warning: File not found at '{raw_db_path}'. Using auto-detect instead.")
+    elif default_db_path:
+        # Keep existing custom path if user just pressed Enter
+        zotero_db_path = default_db_path
+        print(f"Keeping existing database path: {zotero_db_path}")
+    else:
+        print("Using auto-detect for Zotero database location.")
+
     config["update_config"] = update_config
     config["extraction"] = {"pdf_max_pages": pdf_max_pages}
+    if zotero_db_path:
+        config["zotero_db_path"] = zotero_db_path
     
     return config
 

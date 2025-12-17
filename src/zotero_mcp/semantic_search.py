@@ -42,17 +42,20 @@ class ZoteroSemanticSearch:
     
     def __init__(self, 
                  chroma_client: Optional[ChromaClient] = None,
-                 config_path: Optional[str] = None):
+                 config_path: Optional[str] = None,
+                 db_path: Optional[str] = None):
         """
         Initialize semantic search.
         
         Args:
             chroma_client: Optional ChromaClient instance
             config_path: Path to configuration file
+            db_path: Optional path to Zotero database (overrides config file)
         """
         self.chroma_client = chroma_client or create_chroma_client(config_path)
         self.zotero_client = get_zotero_client()
         self.config_path = config_path
+        self.db_path = db_path  # CLI override for Zotero database path
         
         # Load update configuration
         self.update_config = self._load_update_config()
@@ -269,18 +272,23 @@ class ZoteroSemanticSearch:
         logger.info("Fetching items from local Zotero database...")
         
         try:
-            # Load per-run config, including extraction limits if provided
+            # Load per-run config, including extraction limits and db path if provided
             pdf_max_pages = None
+            zotero_db_path = self.db_path  # CLI override takes precedence
             # If semantic_search config file exists, prefer its setting
             try:
                 if self.config_path and os.path.exists(self.config_path):
                     with open(self.config_path, 'r') as _f:
                         _cfg = json.load(_f)
-                        pdf_max_pages = _cfg.get('semantic_search', {}).get('extraction', {}).get('pdf_max_pages')
+                        semantic_cfg = _cfg.get('semantic_search', {})
+                        pdf_max_pages = semantic_cfg.get('extraction', {}).get('pdf_max_pages')
+                        # Use config db_path only if no CLI override
+                        if not zotero_db_path:
+                            zotero_db_path = semantic_cfg.get('zotero_db_path')
             except Exception:
                 pass
 
-            with suppress_stdout(), LocalZoteroReader(pdf_max_pages=pdf_max_pages) as reader:
+            with suppress_stdout(), LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
@@ -790,14 +798,15 @@ class ZoteroSemanticSearch:
             return False
 
 
-def create_semantic_search(config_path: Optional[str] = None) -> ZoteroSemanticSearch:
+def create_semantic_search(config_path: Optional[str] = None, db_path: Optional[str] = None) -> ZoteroSemanticSearch:
     """
     Create a ZoteroSemanticSearch instance.
     
     Args:
         config_path: Path to configuration file
+        db_path: Optional path to Zotero database (overrides config file)
         
     Returns:
         Configured ZoteroSemanticSearch instance
     """
-    return ZoteroSemanticSearch(config_path=config_path)
+    return ZoteroSemanticSearch(config_path=config_path, db_path=db_path)

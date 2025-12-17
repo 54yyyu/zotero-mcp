@@ -131,9 +131,10 @@ class LocalZoteroReader:
         return self._connection
 
     def _get_storage_dir(self) -> Path:
-        """Return the Zotero storage directory path."""
-        # Default Zotero data dir on macOS/Linux is ~/Zotero
-        return Path.home() / "Zotero" / "storage"
+        """Return the Zotero storage directory path based on database location."""
+        # Infer storage directory from database path (same parent directory)
+        db_parent = Path(self.db_path).parent
+        return db_parent / "storage"
 
     def _iter_parent_attachments(self, parent_item_id: int):
         """Yield tuples (attachment_key, path, content_type) for a parent item."""
