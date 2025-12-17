@@ -62,12 +62,8 @@ async def server_lifespan(server: FastMCP):
     sys.stderr.write("Shutting down Zotero MCP server...\n")
 
 
-# Create an MCP server with appropriate dependencies
-mcp = FastMCP(
-    "Zotero",
-    dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown", "fastmcp", "chromadb", "sentence-transformers", "openai", "google-genai"],
-    lifespan=server_lifespan,
-)
+# Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
+mcp = FastMCP("Zotero", lifespan=server_lifespan)
 
 
 @mcp.tool(
