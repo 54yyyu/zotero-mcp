@@ -35,11 +35,11 @@ If you want to connect to your Zotero library via the web API:
 1. Get your Zotero API key:
    - Go to [https://www.zotero.org/settings/keys](https://www.zotero.org/settings/keys)
    - Create a new key with appropriate permissions (at least "Read" access)
-   
+
 2. Find your library ID:
    - For personal libraries, your user ID is available at the same page
    - For group libraries, it's the number in the URL when viewing the group
-   
+
 3. Set the environment variables:
    ```bash
    export ZOTERO_API_KEY=your_api_key
@@ -98,7 +98,7 @@ A tunnel makes your locally running `zotero-mcp` server securely available to a 
 
 Important: you should probably leave this terminal open in order to ensure tunnel traffic is successfully transiting to the server.
 
-3.  **Start the ngrok tunnel**: Open a *second* terminal and start ngrok, pointing it to the port your server is using (8000). Here is an instruction that will work on a mac 
+3.  **Start the ngrok tunnel**: Open a *second* terminal and start ngrok, pointing it to the port your server is using (8000). Here is an instruction that will work on a mac
     ```bash
     ngrok http 8000
     ```
@@ -109,7 +109,7 @@ There are actually two ways to work with ChatGPT on the web once you have a tunn
 
 The setup is nearly identical for both.
 
-#### 1. ChatGPT.com setup 
+#### 1. ChatGPT.com setup
 
 1.  Navigate to [chatgpt.com](https://chatgpt.com). Make sure you are logged in, and at the base "chat" user interface.
 2.  Click on your profile name, then **Settings**.
@@ -149,7 +149,7 @@ This would be one possible path to working with Zotero with chatbots other than 
 
 To set up Zotero MCP with Chorus.sh:
 
-1. **Find your installation path**: 
+1. **Find your installation path**:
    - For uv: typically `/Users/USERNAME/.pyenv/versions/3.12.8/bin/zotero-mcp` on macOS
    - For other methods: use `zotero-mcp --setup-info` to get the exact path and configuration details
 

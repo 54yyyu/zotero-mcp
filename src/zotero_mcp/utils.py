@@ -4,10 +4,10 @@ import os
 def format_creators(creators: List[Dict[str, str]]) -> str:
     """
     Format creator names into a string.
-    
+
     Args:
         creators: List of creator objects from Zotero.
-        
+
     Returns:
         Formatted string with creator names.
     """

@@ -1,4 +1,10 @@
 ci:
     autoupdate_schedule: 'monthly'
 
-repos: []
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0  # Use the ref you want to point at
+    hooks:
+    -   id: trailing-whitespace
+    -   id: check-toml
+    -   id: check-yaml

@@ -30,10 +30,10 @@ class AttachmentDetails:
 def get_zotero_client() -> zotero.Zotero:
     """
     Get authenticated Zotero client using environment variables.
-    
+
     Returns:
         A configured Zotero client instance.
-        
+
     Raises:
         ValueError: If required environment variables are missing.
     """
@@ -64,32 +64,32 @@ def get_zotero_client() -> zotero.Zotero:
 def format_item_metadata(item: Dict[str, Any], include_abstract: bool = True) -> str:
     """
     Format a Zotero item's metadata as markdown.
-    
+
     Args:
         item: A Zotero item dictionary.
         include_abstract: Whether to include the abstract in the output.
-        
+
     Returns:
         Markdown-formatted metadata.
     """
     data = item.get("data", {})
     item_type = data.get("itemType", "unknown")
-    
+
     # Basic information
     lines = [
         f"# {data.get('title', 'Untitled')}",
         f"**Type:** {item_type}",
         f"**Item Key:** {data.get('key')}",
     ]
-    
+
     # Date
     if date := data.get("date"):
         lines.append(f"**Date:** {date}")
-    
+
     # Authors/Creators
     if creators := data.get("creators", []):
         lines.append(f"**Authors:** {format_creators(creators)}")
-    
+
     # Publication details based on item type
     if item_type == "journalArticle":
         if journal := data.get("publicationTitle"):
@@ -107,70 +107,70 @@ def format_item_metadata(item: Dict[str, Any], include_abstract: bool = True) ->
             if place := data.get("place"):
                 book_info += f", {place}"
             lines.append(book_info)
-    
+
     # DOI and URL
     if doi := data.get("DOI"):
         lines.append(f"**DOI:** {doi}")
     if url := data.get("url"):
         lines.append(f"**URL:** {url}")
-    
+
     # Tags
     if tags := data.get("tags"):
         tag_list = [f"`{tag['tag']}`" for tag in tags]
         if tag_list:
             lines.append(f"**Tags:** {' '.join(tag_list)}")
-    
+
     # Abstract
     if include_abstract and (abstract := data.get("abstractNote")):
         lines.extend(["", "## Abstract", abstract])
-    
+
     # Collections
     if collections := data.get("collections", []):
         if collections:
             lines.append(f"**Collections:** {len(collections)} collections")
-    
+
     # Notes - this requires additional API calls, so we just indicate if there are notes
     if "meta" in item and item["meta"].get("numChildren", 0) > 0:
         lines.append(f"**Notes/Attachments:** {item['meta']['numChildren']}")
-    
+
     return "\n\n".join(lines)
 
 
 def generate_bibtex(item: Dict[str, Any]) -> str:
     """
     Generate BibTeX format for a Zotero item.
-    
+
     Args:
         item: Zotero item data
-    
+
     Returns:
         BibTeX formatted string
     """
     data = item.get("data", {})
     item_key = data.get("key")
-    
+
     # Try Better BibTeX first
     try:
         from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
         bibtex = ZoteroBetterBibTexAPI()
-        
+
         if bibtex.is_zotero_running():
             return bibtex.export_bibtex(item_key)
-    
+
     except Exception:
         # Continue to fallback method if Better BibTeX fails
         pass
-    
+
     # Fallback to basic BibTeX generation
     item_type = data.get("itemType", "misc")
-    
+
     if item_type in ["attachment", "note"]:
         raise ValueError(f"Cannot export BibTeX for item type '{item_type}'")
-    
+
     # Map Zotero item types to BibTeX types
     type_map = {
         "journalArticle": "article",
-        "book": "book", 
+        "book": "book",
         "bookSection": "incollection",
         "conferencePaper": "inproceedings",
         "thesis": "phdthesis",
@@ -178,21 +178,21 @@ def generate_bibtex(item: Dict[str, Any]) -> str:
         "webpage": "misc",
         "manuscript": "unpublished"
     }
-    
+
     # Create citation key
     creators = data.get("creators", [])
     author = ""
     if creators:
         first = creators[0]
         author = first.get("lastName", first.get("name", "").split()[-1] if first.get("name") else "").replace(" ", "")
-    
+
     year = data.get("date", "")[:4] if data.get("date") else "nodate"
     cite_key = f"{author}{year}_{item_key}"
-    
+
     # Build BibTeX entry
     bib_type = type_map.get(item_type, "misc")
     lines = [f"@{bib_type}{{{cite_key},"]
-    
+
     # Add fields
     field_mappings = [
         ("title", "title"),
@@ -205,13 +205,13 @@ def generate_bibtex(item: Dict[str, Any]) -> str:
         ("url", "url"),
         ("abstractNote", "abstract")
     ]
-    
+
     for zotero_field, bibtex_field in field_mappings:
         if value := data.get(zotero_field):
             # Escape special characters
             value = value.replace("{", "\\{").replace("}", "\\}")
             lines.append(f'  {bibtex_field} = {{{value}}},')
-    
+
     # Add authors
     if creators:
         authors = []
@@ -223,16 +223,16 @@ def generate_bibtex(item: Dict[str, Any]) -> str:
                     authors.append(creator["name"])
         if authors:
             lines.append(f'  author = {{{" and ".join(authors)}}},')
-    
+
     # Add year
     if year != "nodate":
         lines.append(f'  year = {{{year}}},')
-    
+
     # Remove trailing comma from last field and close entry
     if lines[-1].endswith(','):
         lines[-1] = lines[-1][:-1]
     lines.append("}")
-    
+
     return "\n".join(lines)
 
 
@@ -241,11 +241,11 @@ def get_attachment_details(
 ) -> Optional[AttachmentDetails]:
     """
     Get attachment details for a Zotero item, finding the most relevant attachment.
-    
+
     Args:
         zot: A Zotero client instance.
         item: A Zotero item dictionary.
-        
+
     Returns:
         AttachmentDetails if found, None otherwise.
     """
@@ -265,7 +265,7 @@ def get_attachment_details(
     # For regular items, look for child attachments
     try:
         children = zot.children(item_key)
-        
+
         # Group attachments by content type
         pdfs = []
         htmls = []
@@ -278,12 +278,12 @@ def get_attachment_details(
                 filename = child_data.get("filename", "")
                 title = child_data.get("title", "Untitled")
                 key = child.get("key", "")
-                
+
                 # Use MD5 as proxy for size (longer MD5 usually means larger file)
                 size_proxy = len(child_data.get("md5", ""))
-                
+
                 attachment = (key, title, filename, content_type, size_proxy)
-                
+
                 if content_type == "application/pdf":
                     pdfs.append(attachment)
                 elif content_type.startswith("text/html"):
@@ -312,10 +312,10 @@ def get_attachment_details(
 def convert_to_markdown(file_path: Union[str, Path]) -> str:
     """
     Convert a file to markdown using markitdown library.
-    
+
     Args:
         file_path: Path to the file to convert.
-        
+
     Returns:
         Markdown text.
     """
