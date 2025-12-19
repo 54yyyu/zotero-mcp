@@ -106,6 +106,29 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         return embeddings
 
 
+class HuggingFaceEmbeddingFunction(EmbeddingFunction):
+    """Custom HuggingFace embedding function for ChromaDB using sentence-transformers."""
+
+    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B"):
+        self.model_name = model_name
+
+        try:
+            from sentence_transformers import SentenceTransformer
+            logger.info(f"Loading embedding model: {model_name}")
+            self.model = SentenceTransformer(model_name, trust_remote_code=True)
+        except ImportError:
+            raise ImportError("sentence-transformers package is required for HuggingFace embeddings. Install with: pip install sentence-transformers")
+
+    def name(self) -> str:
+        """Return the name of this embedding function."""
+        return f"huggingface-{self.model_name}"
+
+    def __call__(self, input: Documents) -> Embeddings:
+        """Generate embeddings using HuggingFace model."""
+        embeddings = self.model.encode(input, convert_to_numpy=True)
+        return embeddings.tolist()
+
+
 class ChromaClient:
     """ChromaDB client for Zotero semantic search."""
     
@@ -120,7 +143,7 @@ class ChromaClient:
         Args:
             collection_name: Name of the ChromaDB collection
             persist_directory: Directory to persist the database
-            embedding_model: Model to use for embeddings ('default', 'openai', 'gemini')
+            embedding_model: Model to use for embeddings ('default', 'openai', 'gemini', 'qwen', 'embeddinggemma', or HuggingFace model name)
             embedding_config: Configuration for the embedding model
         """
         self.collection_name = collection_name
@@ -186,6 +209,18 @@ class ChromaClient:
             api_key = self.embedding_config.get("api_key")
             base_url = self.embedding_config.get("base_url")
             return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
+
+        elif self.embedding_model == "qwen":
+            model_name = self.embedding_config.get("model_name", "Qwen/Qwen3-Embedding-0.6B")
+            return HuggingFaceEmbeddingFunction(model_name=model_name)
+
+        elif self.embedding_model == "embeddinggemma":
+            model_name = self.embedding_config.get("model_name", "google/embeddinggemma-300m")
+            return HuggingFaceEmbeddingFunction(model_name=model_name)
+
+        elif self.embedding_model not in ["default", "openai", "gemini"]:
+            # Treat any other value as a HuggingFace model name
+            return HuggingFaceEmbeddingFunction(model_name=self.embedding_model)
         
         else:
             # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
