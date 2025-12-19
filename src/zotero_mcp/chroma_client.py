@@ -35,7 +35,7 @@ def suppress_stdout():
 class OpenAIEmbeddingFunction(EmbeddingFunction):
     """Custom OpenAI embedding function for ChromaDB."""
 
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None, base_url: str | None = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
@@ -67,7 +67,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 class GeminiEmbeddingFunction(EmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai."""
 
-    def __init__(self, model_name: str = "models/text-embedding-004", api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(self, model_name: str = "models/text-embedding-004", api_key: str | None = None, base_url: str | None = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self.base_url = base_url or os.getenv("GEMINI_BASE_URL")
@@ -134,9 +134,9 @@ class ChromaClient:
 
     def __init__(self,
                  collection_name: str = "zotero_library",
-                 persist_directory: Optional[str] = None,
+                 persist_directory: str | None = None,
                  embedding_model: str = "default",
-                 embedding_config: Optional[Dict[str, Any]] = None):
+                 embedding_config: dict[str, Any] | None = None):
         """
         Initialize ChromaDB client.
 
@@ -227,9 +227,9 @@ class ChromaClient:
             return chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
 
     def add_documents(self,
-                     documents: List[str],
-                     metadatas: List[Dict[str, Any]],
-                     ids: List[str]) -> None:
+                     documents: list[str],
+                     metadatas: list[dict[str, Any]],
+                     ids: list[str]) -> None:
         """
         Add documents to the collection.
 
@@ -250,9 +250,9 @@ class ChromaClient:
             raise
 
     def upsert_documents(self,
-                        documents: List[str],
-                        metadatas: List[Dict[str, Any]],
-                        ids: List[str]) -> None:
+                        documents: list[str],
+                        metadatas: list[dict[str, Any]],
+                        ids: list[str]) -> None:
         """
         Upsert (update or insert) documents to the collection.
 
@@ -273,10 +273,10 @@ class ChromaClient:
             raise
 
     def search(self,
-               query_texts: List[str],
+               query_texts: list[str],
                n_results: int = 10,
-               where: Optional[Dict[str, Any]] = None,
-               where_document: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+               where: dict[str, Any] | None = None,
+               where_document: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Search for similar documents.
 
@@ -302,7 +302,7 @@ class ChromaClient:
             logger.error(f"Error performing semantic search: {e}")
             raise
 
-    def delete_documents(self, ids: List[str]) -> None:
+    def delete_documents(self, ids: list[str]) -> None:
         """
         Delete documents from the collection.
 
@@ -316,7 +316,7 @@ class ChromaClient:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
             raise
 
-    def get_collection_info(self) -> Dict[str, Any]:
+    def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
         try:
             count = self.collection.count()
@@ -357,7 +357,7 @@ class ChromaClient:
         except Exception:
             return False
 
-    def get_document_metadata(self, doc_id: str) -> Optional[Dict[str, Any]]:
+    def get_document_metadata(self, doc_id: str) -> dict[str, Any] | None:
         """
         Get metadata for a document if it exists.
 
@@ -376,7 +376,7 @@ class ChromaClient:
             return None
 
 
-def create_chroma_client(config_path: Optional[str] = None) -> ChromaClient:
+def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     """
     Create a ChromaClient instance from configuration.
 
@@ -396,7 +396,7 @@ def create_chroma_client(config_path: Optional[str] = None) -> ChromaClient:
     # Load configuration from file if it exists
     if config_path and os.path.exists(config_path):
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 file_config = json.load(f)
                 config.update(file_config.get("semantic_search", {}))
         except Exception as e:

@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 
 """
 Setup helper for zotero-mcp.
@@ -340,7 +339,7 @@ def save_semantic_search_config(config: dict, semantic_config_path: Path) -> boo
         full_semantic_config = {}
         if semantic_config_path.exists():
             try:
-                with open(semantic_config_path, 'r') as f:
+                with open(semantic_config_path) as f:
                     full_semantic_config = json.load(f)
             except json.JSONDecodeError:
                 print("Warning: Existing semantic search config file is invalid JSON, creating new one")
@@ -365,7 +364,7 @@ def load_semantic_search_config(semantic_config_path: Path) -> dict:
         return {}
 
     try:
-        with open(semantic_config_path, 'r') as f:
+        with open(semantic_config_path) as f:
             full_semantic_config = json.load(f)
         return full_semantic_config.get("semantic_search", {})
     except json.JSONDecodeError as e:
@@ -385,7 +384,7 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
     # Load existing config or create new one
     if config_path.exists():
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 config = json.load(f)
             print(f"Loaded existing config from: {config_path}")
         except json.JSONDecodeError:
@@ -462,7 +461,7 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
     full = {}
     if cfg_path.exists():
         try:
-            with open(cfg_path, 'r') as f:
+            with open(cfg_path) as f:
                 full = json.load(f)
         except Exception:
             full = {}
@@ -611,7 +610,7 @@ def main(cli_args=None):
             print(f"Config saved to: {cfg_path}")
             # Emit one-line client_env for easy copy/paste
             try:
-                with open(cfg_path, 'r') as f:
+                with open(cfg_path) as f:
                     full = json.load(f)
                 env_line = json.dumps(full.get("client_env", {}), separators=(',', ':'))
                 print("Client environment (single-line JSON):")

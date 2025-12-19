@@ -61,7 +61,7 @@ def get_zotero_client() -> zotero.Zotero:
     )
 
 
-def format_item_metadata(item: Dict[str, Any], include_abstract: bool = True) -> str:
+def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) -> str:
     """
     Format a Zotero item's metadata as markdown.
 
@@ -136,7 +136,7 @@ def format_item_metadata(item: Dict[str, Any], include_abstract: bool = True) ->
     return "\n\n".join(lines)
 
 
-def generate_bibtex(item: Dict[str, Any]) -> str:
+def generate_bibtex(item: dict[str, Any]) -> str:
     """
     Generate BibTeX format for a Zotero item.
 
@@ -237,8 +237,8 @@ def generate_bibtex(item: Dict[str, Any]) -> str:
 
 
 def get_attachment_details(
-    zot: zotero.Zotero, item: Dict[str, Any]
-) -> Optional[AttachmentDetails]:
+    zot: zotero.Zotero, item: dict[str, Any]
+) -> AttachmentDetails | None:
     """
     Get attachment details for a Zotero item, finding the most relevant attachment.
 
@@ -309,7 +309,7 @@ def get_attachment_details(
     return None
 
 
-def convert_to_markdown(file_path: Union[str, Path]) -> str:
+def convert_to_markdown(file_path: str | Path) -> str:
     """
     Convert a file to markdown using markitdown library.
 

@@ -63,12 +63,12 @@ def ensure_pdfannots_installed() -> bool:
         return False
 
 def extract_annotations_from_pdf(
-    pdf_path: Union[str, Path],
-    output_dir: Optional[str] = None,
+    pdf_path: str | Path,
+    output_dir: str | None = None,
     image_format: str = "jpg",
     image_dpi: int = 120,
     image_quality: int = 90
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Extract annotations directly from a PDF file using pdfannots2json
 

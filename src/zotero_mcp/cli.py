@@ -49,7 +49,7 @@ def load_claude_desktop_env_vars():
         if not config_path or not config_path.exists():
             return {}
 
-        with open(config_path, 'r') as f:
+        with open(config_path) as f:
             config = json.load(f)
 
         # Extract Zotero MCP server environment variables
@@ -70,7 +70,7 @@ def load_standalone_env_vars():
         cfg_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
         if not cfg_path.exists():
             return {}
-        with open(cfg_path, 'r') as f:
+        with open(cfg_path) as f:
             cfg = json.load(f)
         return cfg.get("client_env", {}) or {}
     except Exception:
@@ -103,7 +103,7 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
         full_config = {}
         if config_path.exists():
             try:
-                with open(config_path, 'r') as f:
+                with open(config_path) as f:
                     full_config = json.load(f)
             except Exception:
                 pass

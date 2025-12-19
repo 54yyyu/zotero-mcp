@@ -41,9 +41,9 @@ class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
     def __init__(self,
-                 chroma_client: Optional[ChromaClient] = None,
-                 config_path: Optional[str] = None,
-                 db_path: Optional[str] = None):
+                 chroma_client: ChromaClient | None = None,
+                 config_path: str | None = None,
+                 db_path: str | None = None):
         """
         Initialize semantic search.
 
@@ -60,7 +60,7 @@ class ZoteroSemanticSearch:
         # Load update configuration
         self.update_config = self._load_update_config()
 
-    def _load_update_config(self) -> Dict[str, Any]:
+    def _load_update_config(self) -> dict[str, Any]:
         """Load update configuration from file or use defaults."""
         config = {
             "auto_update": False,
@@ -71,7 +71,7 @@ class ZoteroSemanticSearch:
 
         if self.config_path and os.path.exists(self.config_path):
             try:
-                with open(self.config_path, 'r') as f:
+                with open(self.config_path) as f:
                     file_config = json.load(f)
                     config.update(file_config.get("semantic_search", {}).get("update_config", {}))
             except Exception as e:
@@ -91,7 +91,7 @@ class ZoteroSemanticSearch:
         full_config = {}
         if os.path.exists(self.config_path):
             try:
-                with open(self.config_path, 'r') as f:
+                with open(self.config_path) as f:
                     full_config = json.load(f)
             except Exception:
                 pass
@@ -108,7 +108,7 @@ class ZoteroSemanticSearch:
         except Exception as e:
             logger.error(f"Error saving update config: {e}")
 
-    def _create_document_text(self, item: Dict[str, Any]) -> str:
+    def _create_document_text(self, item: dict[str, Any]) -> str:
         """
         Create searchable text from a Zotero item.
 
@@ -151,7 +151,7 @@ class ZoteroSemanticSearch:
         text_parts = [title, creators_text, abstract] + extra_fields
         return " ".join(filter(None, text_parts))
 
-    def _create_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _create_metadata(self, item: dict[str, Any]) -> dict[str, Any]:
         """
         Create metadata for a Zotero item.
 
@@ -230,7 +230,7 @@ class ZoteroSemanticSearch:
 
         return False
 
-    def _get_items_from_source(self, limit: Optional[int] = None, extract_fulltext: bool = False, chroma_client: Optional[ChromaClient] = None, force_rebuild: bool = False) -> List[Dict[str, Any]]:
+    def _get_items_from_source(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: ChromaClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
 
@@ -256,7 +256,7 @@ class ZoteroSemanticSearch:
         else:
             return self._get_items_from_api(limit)
 
-    def _get_items_from_local_db(self, limit: Optional[int] = None, extract_fulltext: bool = False, chroma_client: Optional[ChromaClient] = None, force_rebuild: bool = False) -> List[Dict[str, Any]]:
+    def _get_items_from_local_db(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: ChromaClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
         """
         Get items from local Zotero database.
 
@@ -278,7 +278,7 @@ class ZoteroSemanticSearch:
             # If semantic_search config file exists, prefer its setting
             try:
                 if self.config_path and os.path.exists(self.config_path):
-                    with open(self.config_path, 'r') as _f:
+                    with open(self.config_path) as _f:
                         _cfg = json.load(_f)
                         semantic_cfg = _cfg.get('semantic_search', {})
                         pdf_max_pages = semantic_cfg.get('extraction', {}).get('pdf_max_pages')
@@ -297,7 +297,7 @@ class ZoteroSemanticSearch:
 
                 # Optional deduplication: if preprint and journalArticle share a DOI/title, keep journalArticle
                 # Build index by (normalized DOI or normalized title)
-                def norm(s: Optional[str]) -> Optional[str]:
+                def norm(s: str | None) -> str | None:
                     if not s:
                         return None
                     return "".join(s.lower().split())
@@ -456,7 +456,7 @@ class ZoteroSemanticSearch:
             logger.info("Falling back to API...")
             return self._get_items_from_api(limit)
 
-    def _parse_creators_string(self, creators_str: str) -> List[Dict[str, str]]:
+    def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:
         """
         Parse creators string from local DB into API format.
 
@@ -490,7 +490,7 @@ class ZoteroSemanticSearch:
 
         return creators
 
-    def _get_items_from_api(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _get_items_from_api(self, limit: int | None = None) -> list[dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
 
@@ -548,8 +548,8 @@ class ZoteroSemanticSearch:
 
     def update_database(self,
                        force_full_rebuild: bool = False,
-                       limit: Optional[int] = None,
-                       extract_fulltext: bool = False) -> Dict[str, Any]:
+                       limit: int | None = None,
+                       extract_fulltext: bool = False) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
 
@@ -644,7 +644,7 @@ class ZoteroSemanticSearch:
             stats["duration"] = str(end_time - start_time)
             return stats
 
-    def _process_item_batch(self, items: List[Dict[str, Any]], force_rebuild: bool = False) -> Dict[str, int]:
+    def _process_item_batch(self, items: list[dict[str, Any]], force_rebuild: bool = False) -> dict[str, int]:
         """Process a batch of items."""
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
@@ -693,7 +693,7 @@ class ZoteroSemanticSearch:
     def search(self,
                query: str,
                limit: int = 10,
-               filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+               filters: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -735,7 +735,7 @@ class ZoteroSemanticSearch:
                 "error": str(e)
             }
 
-    def _enrich_search_results(self, chroma_results: Dict[str, Any], query: str) -> List[Dict[str, Any]]:
+    def _enrich_search_results(self, chroma_results: dict[str, Any], query: str) -> list[dict[str, Any]]:
         """Enrich ChromaDB results with full Zotero item data."""
         enriched = []
 
@@ -777,7 +777,7 @@ class ZoteroSemanticSearch:
 
         return enriched
 
-    def get_database_status(self) -> Dict[str, Any]:
+    def get_database_status(self) -> dict[str, Any]:
         """Get status information about the semantic search database."""
         collection_info = self.chroma_client.get_collection_info()
 
@@ -798,7 +798,7 @@ class ZoteroSemanticSearch:
             return False
 
 
-def create_semantic_search(config_path: Optional[str] = None, db_path: Optional[str] = None) -> ZoteroSemanticSearch:
+def create_semantic_search(config_path: str | None = None, db_path: str | None = None) -> ZoteroSemanticSearch:
     """
     Create a ZoteroSemanticSearch instance.
 

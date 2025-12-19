@@ -32,7 +32,7 @@ class ZoteroBetterBibTexAPI:
             'Connection': 'keep-alive',
         }
 
-    def _make_request(self, method: str, params: List[Any]) -> Dict[str, Any]:
+    def _make_request(self, method: str, params: list[Any]) -> dict[str, Any]:
         """
         Make a JSON-RPC request to the Zotero API.
 
@@ -84,7 +84,7 @@ class ZoteroBetterBibTexAPI:
         except:
             return False
 
-    def get_item_by_citekey(self, citekey: str) -> Dict[str, Any]:
+    def get_item_by_citekey(self, citekey: str) -> dict[str, Any]:
         """
         Get item data by citation key.
 
@@ -139,7 +139,7 @@ class ZoteroBetterBibTexAPI:
             # Return basic item data from search
             return item
 
-    def get_attachments(self, citekey: str, library_id: int) -> List[Dict[str, Any]]:
+    def get_attachments(self, citekey: str, library_id: int) -> list[dict[str, Any]]:
         """
         Get all attachments for an item.
 
@@ -156,7 +156,7 @@ class ZoteroBetterBibTexAPI:
             print(f"Warning: Could not get attachments: {e}")
             return []
 
-    def get_annotations_from_attachment(self, attachment: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def get_annotations_from_attachment(self, attachment: dict[str, Any]) -> list[dict[str, Any]]:
         """
         Extract annotations from an attachment.
 
@@ -172,7 +172,7 @@ class ZoteroBetterBibTexAPI:
 
         return attachment.get('annotations', [])
 
-    def search_citekeys(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def search_citekeys(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """
         Search for items in Zotero by a search query and return their citation keys.
 
@@ -261,7 +261,7 @@ class ZoteroBetterBibTexAPI:
             return ""
 
 
-def process_annotation(annotation: Dict[str, Any], attachment: Dict[str, Any], format_type: str = 'markdown') -> Dict[str, Any]:
+def process_annotation(annotation: dict[str, Any], attachment: dict[str, Any], format_type: str = 'markdown') -> dict[str, Any]:
     """
     Process a raw Zotero annotation into a more usable format.
 
@@ -337,7 +337,7 @@ def process_annotation(annotation: Dict[str, Any], attachment: Dict[str, Any], f
         print(f"Error processing annotation: {e}")
         return {}
 
-def format_annotation_markdown(annotation: Dict[str, Any]) -> str:
+def format_annotation_markdown(annotation: dict[str, Any]) -> str:
     """
     Format an annotation as markdown.
 

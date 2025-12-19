@@ -1,7 +1,7 @@
 from typing import List, Dict
 import os
 
-def format_creators(creators: List[Dict[str, str]]) -> str:
+def format_creators(creators: list[dict[str, str]]) -> str:
     """
     Format creator names into a string.
 

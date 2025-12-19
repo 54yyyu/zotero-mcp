@@ -74,8 +74,8 @@ def search_items(
     query: str,
     qmode: Literal["titleCreatorYear", "everything"] = "titleCreatorYear",
     item_type: str = "-attachment",  # Exclude attachments by default
-    limit: Optional[Union[int, str]] = 10,
-    tag: Optional[List[str]] = None,
+    limit: int | str | None = 10,
+    tag: list[str] | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -163,9 +163,9 @@ def search_items(
     "Conditions are ANDed, each term supports disjunction`||` and exclusion`-`."
 )
 def search_by_tag(
-    tag: List[str],
+    tag: list[str],
     item_type: str = "-attachment",
-    limit: Optional[Union[int, str]] = 10,
+    limit: int | str | None = 10,
     *,
     ctx: Context
 ) -> str:
@@ -368,7 +368,7 @@ def get_item_fulltext(
     description="List all collections in your Zotero library."
 )
 def get_collections(
-    limit: Optional[Union[int, str]] = None,
+    limit: int | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -462,7 +462,7 @@ def get_collections(
 )
 def get_collection_items(
     collection_key: str,
-    limit: Optional[Union[int, str]] = 50,
+    limit: int | str | None = 50,
     *,
     ctx: Context
 ) -> str:
@@ -645,7 +645,7 @@ def get_item_children(
     description="Get all tags used in your Zotero library."
 )
 def get_tags(
-    limit: Optional[Union[int, str]] = None,
+    limit: int | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -699,7 +699,7 @@ def get_tags(
     description="Get recently added items to your Zotero library."
 )
 def get_recent(
-    limit: Union[int, str] = 10,
+    limit: int | str = 10,
     *,
     ctx: Context
 ) -> str:
@@ -769,9 +769,9 @@ def get_recent(
 )
 def batch_update_tags(
     query: str,
-    add_tags: Optional[Union[List[str], str]] = None,
-    remove_tags: Optional[Union[List[str], str]] = None,
-    limit: Union[int, str] = 50,
+    add_tags: list[str] | str | None = None,
+    remove_tags: list[str] | str | None = None,
+    limit: int | str = 50,
     *,
     ctx: Context
 ) -> str:
@@ -915,11 +915,11 @@ def batch_update_tags(
     description="Perform an advanced search with multiple criteria."
 )
 def advanced_search(
-    conditions: List[Dict[str, str]],
+    conditions: list[dict[str, str]],
     join_mode: Literal["all", "any"] = "all",
-    sort_by: Optional[str] = None,
+    sort_by: str | None = None,
     sort_direction: Literal["asc", "desc"] = "asc",
-    limit: Union[int, str] = 50,
+    limit: int | str = 50,
     *,
     ctx: Context
 ) -> str:
@@ -1080,9 +1080,9 @@ def advanced_search(
     description="Get all annotations for a specific item or across your entire Zotero library."
 )
 def get_annotations(
-    item_key: Optional[str] = None,
+    item_key: str | None = None,
     use_pdf_extraction: bool = False,
-    limit: Optional[Union[int, str]] = None,
+    limit: int | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1385,8 +1385,8 @@ def get_annotations(
     description="Retrieve notes from your Zotero library, with options to filter by parent item."
 )
 def get_notes(
-    item_key: Optional[str] = None,
-    limit: Optional[Union[int, str]] = 20,
+    item_key: str | None = None,
+    limit: int | str | None = 20,
     *,
     ctx: Context
 ) -> str:
@@ -1473,7 +1473,7 @@ def get_notes(
 )
 def search_notes(
     query: str,
-    limit: Optional[Union[int, str]] = 20,
+    limit: int | str | None = 20,
     *,
     ctx: Context
 ) -> str:
@@ -1628,7 +1628,7 @@ def create_note(
     item_key: str,
     note_title: str,
     note_text: str,
-    tags: Optional[List[str]] = None,
+    tags: list[str] | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1704,7 +1704,7 @@ def create_note(
 def semantic_search(
     query: str,
     limit: int = 10,
-    filters: Optional[Union[Dict[str, str], str]] = None,
+    filters: dict[str, str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1839,7 +1839,7 @@ def semantic_search(
 )
 def update_search_database(
     force_rebuild: bool = False,
-    limit: Optional[int] = None,
+    limit: int | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1967,7 +1967,7 @@ def get_search_database_status(*, ctx: Context) -> str:
 # specific tools required are "search" and "fetch"
 # See: https://platform.openai.com/docs/mcp
 
-def _extract_item_key_from_input(value: str) -> Optional[str]:
+def _extract_item_key_from_input(value: str) -> str | None:
     """Extract a Zotero item key from a Zotero URL, web URL, or bare key.
     Returns None if no plausible key is found.
     """
@@ -2013,7 +2013,7 @@ def chatgpt_connector_search(
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
         search = create_semantic_search(str(config_path))
 
-        result_list: List[Dict[str, str]] = []
+        result_list: list[dict[str, str]] = []
         results = search.search(query=query, limit=default_limit, filters=None) or {}
         for r in results.get("results", []):
             item_key = r.get("item_key") or ""

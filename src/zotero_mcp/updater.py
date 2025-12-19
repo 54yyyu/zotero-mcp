@@ -37,7 +37,7 @@ def detect_installation_method() -> str:
         for parent in [current_dir] + list(current_dir.parents):
             if (parent / "pyproject.toml").exists():
                 try:
-                    with open(parent / "pyproject.toml", "r") as f:
+                    with open(parent / "pyproject.toml") as f:
                         content = f.read()
                         if "uv" in content.lower() or "[tool.uv" in content:
                             return "uv"
@@ -53,7 +53,7 @@ def detect_installation_method() -> str:
             pyvenv_cfg = venv_path / "pyvenv.cfg"
             if pyvenv_cfg.exists():
                 try:
-                    with open(pyvenv_cfg, "r") as f:
+                    with open(pyvenv_cfg) as f:
                         content = f.read()
                         if "uv" in content.lower():
                             return "uv"
@@ -96,7 +96,7 @@ def is_pipx_installation() -> bool:
     return False
 
 
-def get_current_version() -> Optional[str]:
+def get_current_version() -> str | None:
     """Get the currently installed version of zotero-mcp."""
     try:
         from zotero_mcp._version import __version__
@@ -121,7 +121,7 @@ def get_current_version() -> Optional[str]:
     return None
 
 
-def get_latest_version() -> Optional[str]:
+def get_latest_version() -> str | None:
     """Get the latest version from GitHub releases."""
     if not requests:
         logger.warning("requests library not available, cannot check for updates")
@@ -252,7 +252,7 @@ def restore_configurations(backup_dir: Path) -> bool:
     return success
 
 
-def update_via_method(method: str, force: bool = False) -> Tuple[bool, str]:
+def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
     """
     Update zotero-mcp using the specified method.
 
@@ -315,7 +315,7 @@ def update_via_method(method: str, force: bool = False) -> Tuple[bool, str]:
         return False, f"Update error: {str(e)}"
 
 
-def verify_installation() -> Tuple[bool, str]:
+def verify_installation() -> tuple[bool, str]:
     """
     Verify that the updated installation is working.
 
@@ -348,7 +348,7 @@ def verify_installation() -> Tuple[bool, str]:
 
 def update_zotero_mcp(check_only: bool = False,
                      force: bool = False,
-                     method: Optional[str] = None) -> Dict[str, Any]:
+                     method: str | None = None) -> dict[str, Any]:
     """
     Main update function for zotero-mcp.
 

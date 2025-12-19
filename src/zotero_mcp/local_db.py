@@ -22,17 +22,17 @@ class ZoteroItem:
     item_id: int
     key: str
     item_type_id: int
-    item_type: Optional[str] = None
-    doi: Optional[str] = None
-    title: Optional[str] = None
-    abstract: Optional[str] = None
-    creators: Optional[str] = None
-    fulltext: Optional[str] = None
-    fulltext_source: Optional[str] = None  # 'pdf' or 'html'
-    notes: Optional[str] = None
-    extra: Optional[str] = None
-    date_added: Optional[str] = None
-    date_modified: Optional[str] = None
+    item_type: str | None = None
+    doi: str | None = None
+    title: str | None = None
+    abstract: str | None = None
+    creators: str | None = None
+    fulltext: str | None = None
+    fulltext_source: str | None = None  # 'pdf' or 'html'
+    notes: str | None = None
+    extra: str | None = None
+    date_added: str | None = None
+    date_modified: str | None = None
 
     def get_searchable_text(self) -> str:
         """
@@ -74,7 +74,7 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
 
-    def __init__(self, db_path: Optional[str] = None, pdf_max_pages: Optional[int] = None):
+    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None):
         """
         Initialize the local database reader.
 
@@ -82,8 +82,8 @@ class LocalZoteroReader:
             db_path: Optional path to zotero.sqlite. If None, auto-detect.
         """
         self.db_path = db_path or self._find_zotero_db()
-        self._connection: Optional[sqlite3.Connection] = None
-        self.pdf_max_pages: Optional[int] = pdf_max_pages
+        self._connection: sqlite3.Connection | None = None
+        self.pdf_max_pages: int | None = pdf_max_pages
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -154,7 +154,7 @@ class LocalZoteroReader:
         for row in conn.execute(query, (parent_item_id,)):
             yield row["attachmentKey"], row["path"], row["contentType"]
 
-    def _resolve_attachment_path(self, attachment_key: str, zotero_path: str) -> Optional[Path]:
+    def _resolve_attachment_path(self, attachment_key: str, zotero_path: str) -> Path | None:
         """Resolve a Zotero attachment path like 'storage:filename.pdf' to a filesystem path."""
         if not zotero_path:
             return None
@@ -223,7 +223,7 @@ class LocalZoteroReader:
 
         return meta
 
-    def _extract_fulltext_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
+    def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference: use PDF when available; fall back to HTML when no PDF exists.
@@ -280,7 +280,7 @@ class LocalZoteroReader:
         )
         return cursor.fetchone()[0]
 
-    def get_items_with_text(self, limit: Optional[int] = None, include_fulltext: bool = False) -> List[ZoteroItem]:
+    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
 
@@ -378,14 +378,14 @@ class LocalZoteroReader:
         return items
 
     # Public helper to quickly check full text metadata for item
-    def get_fulltext_meta_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
+    def get_fulltext_meta_for_item(self, item_id: int) -> tuple[str, str] | None:
         return self._get_fulltext_meta_for_item(item_id)
 
     # Public helper to extract fulltext on demand for a specific item
-    def extract_fulltext_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
+    def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         return self._extract_fulltext_for_item(item_id)
 
-    def get_item_by_key(self, key: str) -> Optional[ZoteroItem]:
+    def get_item_by_key(self, key: str) -> ZoteroItem | None:
         """
         Get a specific item by its Zotero key.
 
@@ -401,7 +401,7 @@ class LocalZoteroReader:
                 return item
         return None
 
-    def search_items_by_text(self, query: str, limit: int = 50) -> List[ZoteroItem]:
+    def search_items_by_text(self, query: str, limit: int = 50) -> list[ZoteroItem]:
         """
         Simple text search through item content.
 
@@ -427,7 +427,7 @@ class LocalZoteroReader:
         return matching_items
 
 
-def get_local_zotero_reader() -> Optional[LocalZoteroReader]:
+def get_local_zotero_reader() -> LocalZoteroReader | None:
     """
     Get a LocalZoteroReader instance if in local mode.
 
