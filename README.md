@@ -128,7 +128,7 @@ zotero-mcp update-db
 zotero-mcp update-db --fulltext
 
 # Use your custom zotero.sqlite path
-zotero-mcp update-db --fulltext --db-path "/Your_custom_path/zotero.sqlite"  
+zotero-mcp update-db --fulltext --db-path "/Your_custom_path/zotero.sqlite"
 
 If you have embedding confilts when using `zotero-mcp update-db --fulltext`, use `--force-rebuild` to force a rebuild.
 
@@ -252,7 +252,7 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (models/text-embedding-004, etc.)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
-  
+
 ### Command-Line Options
 
 ```bash
@@ -289,7 +289,7 @@ zotero-mcp version                         # Show current version
 Zotero MCP includes advanced PDF annotation extraction capabilities:
 
 - **Direct PDF Processing**: Extract annotations directly from PDF files, even if they're not yet indexed by Zotero
-- **Enhanced Search**: Search through PDF annotations and comments 
+- **Enhanced Search**: Search through PDF annotations and comments
 - **Image Annotation Support**: Extract image annotations from PDFs
 - **Seamless Integration**: Works alongside Zotero's native annotation system
 
@@ -342,7 +342,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
 - **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
 
-### Update Issues  
+### Update Issues
 - **Update command fails**: Check your internet connection and try `zotero-mcp update --force`
 - **Configuration lost after update**: The update process preserves configs automatically, but check `~/.config/zotero-mcp/` for backup files
 

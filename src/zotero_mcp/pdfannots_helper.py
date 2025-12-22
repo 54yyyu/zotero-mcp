@@ -38,7 +38,7 @@ def get_pdfannots_executable() -> str:
     base_dir = get_pdfannots_dir()
     system = platform.system().lower()
     machine = platform.machine()
-    
+
     if system == "windows":
         return os.path.join(base_dir, "pdfannots2json.exe")
     else:
@@ -52,7 +52,7 @@ def ensure_pdfannots_installed() -> bool:
     """Ensure pdfannots2json is installed, downloading if necessary"""
     if is_pdfannots_installed():
         return True
-    
+
     # If not installed, use the downloader script to install it
     try:
         from zotero_mcp import pdfannots_downloader
@@ -63,38 +63,38 @@ def ensure_pdfannots_installed() -> bool:
         return False
 
 def extract_annotations_from_pdf(
-    pdf_path: Union[str, Path], 
-    output_dir: Optional[str] = None, 
-    image_format: str = "jpg", 
-    image_dpi: int = 120, 
+    pdf_path: str | Path,
+    output_dir: str | None = None,
+    image_format: str = "jpg",
+    image_dpi: int = 120,
     image_quality: int = 90
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Extract annotations directly from a PDF file using pdfannots2json
-    
+
     Args:
         pdf_path: Path to the PDF file
         output_dir: Directory to save extracted images (if None, uses a temp dir)
         image_format: Format for extracted images (jpg, png)
         image_dpi: DPI for extracted images
         image_quality: Quality for extracted images (1-100)
-        
+
     Returns:
         List of annotation objects
     """
     if not ensure_pdfannots_installed():
         print("Error: pdfannots2json is not installed")
         return []
-    
+
     # Create temporary output directory if none provided
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
     else:
         os.makedirs(output_dir, exist_ok=True)
-    
+
     # Get the path to the executable
     exe_path = get_pdfannots_executable()
-    
+
     # Construct command similar to what the plugin uses
     cmd = [
         exe_path,
@@ -105,7 +105,7 @@ def extract_annotations_from_pdf(
         "-d", str(image_dpi),
         "-q", str(image_quality)
     ]
-    
+
     try:
         # Run the command and capture JSON output
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)

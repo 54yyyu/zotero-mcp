@@ -1,0 +1,15 @@
+ci:
+    autoupdate_schedule: 'monthly'
+
+repos:
+-   repo: https://github.com/asottile/pyupgrade
+    rev: v3.21.2
+    hooks:
+    -   id: pyupgrade
+        args: [--py310-plus]
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0  # Use the ref you want to point at
+    hooks:
+    -   id: trailing-whitespace
+    -   id: check-toml
+    -   id: check-yaml
