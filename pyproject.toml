@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zotero-mcp"
-version = "0.1.2"
+dynamic = ["version"]
 authors = [
   { name = "54yyyu", email = "54yyyu@github.com" },
 ]
@@ -43,6 +43,9 @@ dev = [
 
 [project.scripts]
 zotero-mcp = "zotero_mcp.cli:main"
+
+[tool.hatch.version]
+path = "src/zotero_mcp/_version.py"
 
 [tool.black]
 line-length = 88
