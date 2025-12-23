@@ -5,7 +5,7 @@ Note: ChatGPT requires specific tool names "search" and "fetch", and so they
 are defined and used and piped through to the main server tools. See bottom of file for details.
 """
 
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Union, Tuple
 import os
 import sys
 import uuid
@@ -17,6 +17,21 @@ from pathlib import Path
 
 from fastmcp import Context, FastMCP
 
+# Compatibility: some fastmcp Context versions don't expose `warn`.
+# Provide a lightweight shim that maps warn -> warning -> info.
+if not hasattr(Context, "warn"):
+    def _ctx_warn(self, message: str):
+        try:
+            if hasattr(self, "warning"):
+                return self.warning(message)
+            if hasattr(self, "info"):
+                return self.info(f"WARNING: {message}")
+        except Exception:
+            # Silently ignore logging failures to avoid impacting tool behavior
+            return None
+
+    setattr(Context, "warn", _ctx_warn)
+
 from zotero_mcp.client import (
     convert_to_markdown,
     format_item_metadata,
@@ -25,6 +40,8 @@ from zotero_mcp.client import (
     get_zotero_client,
 )
 from zotero_mcp.utils import format_creators
+import requests
+import xml.etree.ElementTree as ET
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
@@ -454,6 +471,170 @@ def get_collections(
         ctx.error(f"Error fetching collections: {str(e)}")
         error_msg = f"Error fetching collections: {str(e)}"
         return f"# Zotero Collections\n\n{error_msg}"
+
+
+@mcp.tool(
+    name="zotero_search_collections",
+    description="Search for collections by name to find their keys for adding items."
+)
+def search_collections(
+    query: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Search for collections by name.
+
+    Args:
+        query: Collection name or partial name to search for
+        ctx: MCP context
+
+    Returns:
+        Markdown-formatted list of matching collections with their keys
+    """
+    try:
+        ctx.info(f"Searching collections for '{query}'")
+        zot = get_zotero_client()
+
+        # Get all collections
+        collections = zot.collections()
+
+        if not collections:
+            return "No collections found in your Zotero library."
+
+        # Filter collections by name (case-insensitive)
+        query_lower = query.lower()
+        matching = [
+            c for c in collections
+            if query_lower in c["data"].get("name", "").lower()
+        ]
+
+        if not matching:
+            return f"No collections found matching '{query}'"
+
+        # Format results
+        output = [f"# Collections matching '{query}'", ""]
+
+        for i, coll in enumerate(matching, 1):
+            name = coll["data"].get("name", "Unnamed Collection")
+            key = coll["key"]
+            parent_key = coll["data"].get("parentCollection")
+
+            output.append(f"## {i}. {name}")
+            output.append(f"**Key:** `{key}`")
+
+            # Show parent collection if exists
+            if parent_key:
+                try:
+                    parent = zot.collection(parent_key)
+                    parent_name = parent["data"].get("name", "Unknown")
+                    output.append(f"**Parent Collection:** {parent_name}")
+                except Exception:
+                    output.append(f"**Parent Collection Key:** {parent_key}")
+
+            output.append("")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        ctx.error(f"Error searching collections: {str(e)}")
+        return f"Error searching collections: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_collection",
+    description="Create a new collection (project/folder) in your Zotero library."
+)
+def create_collection(
+    name: str,
+    parent_collection: Optional[str] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new collection in your Zotero library.
+
+    Args:
+        name: Name of the collection to create
+        parent_collection: Optional parent collection key to create a subcollection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new collection key
+    """
+    try:
+        ctx.info(f"Creating collection '{name}'")
+        zot = get_zotero_client()
+
+        # Build collection data
+        collection_data = {"name": name}
+
+        if parent_collection:
+            collection_data["parentCollection"] = parent_collection
+
+        # Create the collection
+        result = zot.create_collections([collection_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                collection_key = next(iter(successful.values()))
+                parent_info = f" as subcollection of {parent_collection}" if parent_collection else ""
+                return f"Successfully created collection: \"{name}\"{parent_info}\n\nCollection key: `{collection_key}`\n\nYou can now use this key to add items to this collection."
+            else:
+                return f"Collection creation response was successful but no key was returned: {result}"
+        else:
+            return f"Failed to create collection: {result.get('failed', 'Unknown error')}"
+
+    except Exception as e:
+        ctx.error(f"Error creating collection: {str(e)}")
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_items_to_collection",
+    description="Add existing items to a collection by their keys."
+)
+def add_items_to_collection(
+    collection_key: str,
+    item_keys: List[str],
+    *,
+    ctx: Context
+) -> str:
+    """
+    Add existing items to a collection.
+
+    Args:
+        collection_key: The collection key to add items to
+        item_keys: List of item keys to add to the collection
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        ctx.info(f"Adding {len(item_keys)} items to collection {collection_key}")
+        zot = get_zotero_client()
+
+        # Verify collection exists
+        try:
+            collection = zot.collection(collection_key)
+            collection_name = collection["data"].get("name", "Unknown Collection")
+        except Exception:
+            return f"Error: Collection with key '{collection_key}' not found"
+
+        # Add items to collection
+        result = zot.addto_collection(collection_key, item_keys)
+
+        if result:
+            return f"Successfully added {len(item_keys)} item(s) to collection: \"{collection_name}\""
+        else:
+            return f"Failed to add items to collection"
+
+    except Exception as e:
+        ctx.error(f"Error adding items to collection: {str(e)}")
+        return f"Error adding items to collection: {str(e)}"
 
 
 @mcp.tool(
@@ -1618,6 +1799,1231 @@ def search_notes(
     except Exception as e:
         ctx.error(f"Error searching notes: {str(e)}")
         return f"Error searching notes: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_by_identifier",
+    description="Add new Zotero item(s) by identifier (DOI, ISBN, arXiv ID, or PMID)."
+)
+def add_by_identifier(
+    identifiers: Union[List[str], str],
+    collections: Optional[List[str]] = None,
+    collection_names: Optional[Union[List[str], str]] = None,
+    tags: Optional[Union[List[str], str]] = None,
+    attach_pdfs: bool = True,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create Zotero items using identifiers like DOI, ISBN, arXiv, or PMID.
+
+    Args:
+        identifiers: Single identifier or list/JSON string of identifiers
+        collections: Collection keys to add created items to
+        collection_names: Collection names to resolve and add created items to
+        tags: Optional tags to apply to the created items
+        attach_pdfs: If true, attempts to attach a PDF as a linked URL when discoverable
+        ctx: MCP context
+
+    Returns:
+        Markdown summary with created item keys or errors per identifier
+    """
+    def _as_list(value) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str):
+            s = value.strip()
+            # Try JSON list first
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return [str(v).strip() for v in parsed if str(v).strip()]
+            except Exception:
+                pass
+            # Fallback to comma-separated
+            parts = [p.strip() for p in s.split(',') if p.strip()]
+            if parts:
+                return parts
+            # Single string
+            return [s]
+        return [str(value).strip()]
+
+    def _detect_id_type(raw: str) -> (str, str):
+        s = raw.strip()
+        s_low = s.lower()
+        # Remove common prefixes
+        for pref in ["doi:", "pmid:", "arxiv:"]:
+            if s_low.startswith(pref):
+                s = s[len(pref):].strip()
+                s_low = s.lower()
+                break
+        # URL forms
+        try:
+            if s_low.startswith("http://") or s_low.startswith("https://"):
+                # DOI URL
+                m = re.search(r"doi\.org/(10\.[^\s/#]+/.+)$", s_low)
+                if m:
+                    return ("doi", m.group(1))
+                # arXiv URL
+                m = re.search(r"arxiv\.org/(abs|pdf)/([\w\.-]+)", s_low)
+                if m:
+                    return ("arxiv", m.group(2).replace('.pdf',''))
+                # PubMed URL
+                m = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)/?", s_low)
+                if m:
+                    return ("pmid", m.group(1))
+        except Exception:
+            pass
+        # DOI
+        if s_low.startswith("10.") and "/" in s:
+            return ("doi", s)
+        # arXiv ID
+        # Accept forms like 2101.00001, 2101.00001v2, hep-th/9901001
+        if re.match(r"^(\d{4}\.\d{4,5}(v\d+)?)$", s) or re.match(r"^[a-zA-Z-]+/\d{7}$", s):
+            return ("arxiv", s)
+        # PMID (all digits, reasonable length)
+        if re.match(r"^\d{5,9}$", s):
+            return ("pmid", s)
+        # ISBN 10/13 (strip hyphens/spaces, allow trailing X)
+        s_isbn = re.sub(r"[^0-9Xx]", "", s)
+        if re.match(r"^(\d{9}[\dXx]|\d{13})$", s_isbn):
+            return ("isbn", s_isbn.upper())
+        return ("unknown", s)
+
+    def _first_or(seq, default=""):
+        if isinstance(seq, list) and seq:
+            return seq[0]
+        return default
+
+    def _date_from_crossref(issued) -> str:
+        try:
+            parts = (issued or {}).get('date-parts', [])
+            if parts and parts[0]:
+                p = parts[0]
+                if len(p) >= 3:
+                    return f"{p[0]:04d}-{p[1]:02d}-{p[2]:02d}"
+                if len(p) == 2:
+                    return f"{p[0]:04d}-{p[1]:02d}"
+                if len(p) == 1:
+                    return str(p[0])
+        except Exception:
+            pass
+        return ""
+
+    def _strip_html(text: str) -> str:
+        try:
+            return re.sub(r"<[^>]+>", "", text or "").strip()
+        except Exception:
+            return text or ""
+
+    def _authors_from_names(names: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        creators = []
+        for a in names or []:
+            first = a.get('given') or a.get('first') or ""
+            last = a.get('family') or a.get('last') or ""
+            literal = a.get('literal') or a.get('name')
+            if literal and (not first and not last):
+                # Try to split literal into first/last
+                parts = literal.split()
+                if len(parts) >= 2:
+                    first = " ".join(parts[:-1])
+                    last = parts[-1]
+                else:
+                    last = literal
+            creators.append({
+                "creatorType": "author",
+                "firstName": first,
+                "lastName": last,
+            })
+        return creators
+
+    def _fetch_crossref(doi: str) -> Tuple[Optional[Dict[str, any]], Optional[str]]:
+        url = f"https://api.crossref.org/works/{requests.utils.quote(doi)}"
+        headers = {"User-Agent": "zotero-mcp (identifier import)"}
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        msg = (r.json() or {}).get('message', {})
+        typ = (msg.get('type') or '').lower()
+        type_map = {
+            'journal-article': 'journalArticle',
+            'proceedings-article': 'conferencePaper',
+            'book': 'book',
+            'book-chapter': 'bookSection',
+            'chapter': 'bookSection',
+            'report': 'report',
+            'thesis': 'thesis',
+            'posted-content': 'preprint',
+        }
+        item_type = type_map.get(typ, 'journalArticle')
+        creators = _authors_from_names(msg.get('author', []))
+        title = _first_or(msg.get('title'), '')
+        container = _first_or(msg.get('container-title'), '')
+        abstract = _strip_html(msg.get('abstract', '') or '')
+        date_str = _date_from_crossref(msg.get('issued'))
+        pages = msg.get('page') or ''
+        volume = msg.get('volume') or ''
+        issue = msg.get('issue') or ''
+        publisher = msg.get('publisher') or ''
+        url_final = msg.get('URL') or (f"https://doi.org/{doi}")
+        data: Dict[str, any] = {
+            "itemType": item_type,
+            "title": title or f"DOI {doi}",
+            "creators": creators,
+            "DOI": doi,
+            "url": url_final,
+        }
+        if container:
+            data["publicationTitle"] = container
+        if date_str:
+            data["date"] = date_str
+        if pages:
+            data["pages"] = pages
+        if volume:
+            data["volume"] = volume
+        if issue:
+            data["issue"] = issue
+        if publisher:
+            data["publisher"] = publisher
+        if abstract:
+            data["abstractNote"] = abstract
+        # Try Crossref-provided PDF link if present
+        pdf_url: Optional[str] = None
+        try:
+            for link in msg.get('link', []) or []:
+                ct = (link.get('content-type') or link.get('content_type') or '').lower()
+                if ct == 'application/pdf':
+                    candidate = link.get('URL') or link.get('url')
+                    if candidate:
+                        pdf_url = candidate
+                        break
+        except Exception:
+            pass
+        return data, pdf_url
+
+    def _fetch_openlibrary(isbn: str) -> Optional[Dict[str, any]]:
+        # Prefer the data endpoint that includes author names
+        url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        blob = r.json() or {}
+        entry = blob.get(f"ISBN:{isbn}") or {}
+        title = entry.get('title', '')
+        authors = entry.get('authors', [])
+        creators = _authors_from_names([
+            {"literal": a.get('name', '')} for a in authors
+        ])
+        publishers = entry.get('publishers', [])
+        publisher = publishers[0].get('name') if publishers else ''
+        pub_date = entry.get('publish_date', '')
+        pages = (entry.get('pagination') or '').strip()
+        data = {
+            "itemType": "book",
+            "title": title or f"ISBN {isbn}",
+            "creators": creators,
+            "ISBN": isbn,
+        }
+        if publisher:
+            data["publisher"] = publisher
+        if pub_date:
+            data["date"] = pub_date
+        if pages:
+            data["pages"] = pages
+        return data
+
+    def _fetch_pmid(pmid: str) -> Optional[Dict[str, any]]:
+        url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={pmid}&retmode=json"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        data = r.json() or {}
+        res = (data.get('result') or {}).get(pmid, {})
+        if not res:
+            return None
+        title = res.get('title', '')
+        journal = res.get('fulljournalname', '')
+        pubdate = res.get('pubdate', '')
+        volume = res.get('volume', '')
+        issue = res.get('issue', '')
+        pages = res.get('pages', '')
+        authors = res.get('authors', [])
+        creators = _authors_from_names([
+            {"literal": a.get('name', '')} for a in authors if a.get('name')
+        ])
+        url_pm = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+        item = {
+            "itemType": "journalArticle",
+            "title": title or f"PMID {pmid}",
+            "creators": creators,
+            "url": url_pm,
+        }
+        if journal:
+            item["publicationTitle"] = journal
+        if pubdate:
+            item["date"] = pubdate
+        if volume:
+            item["volume"] = volume
+        if issue:
+            item["issue"] = issue
+        if pages:
+            item["pages"] = pages
+        return item
+
+    def _fetch_arxiv(arx: str) -> Optional[Dict[str, any]]:
+        url = f"http://export.arxiv.org/api/query?search_query=id:{arx}"
+        r = requests.get(url, timeout=20, headers={"User-Agent": "zotero-mcp (identifier import)"})
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+        # Namespaces
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        entry = root.find('atom:entry', ns)
+        if entry is None:
+            return None
+        title = (entry.findtext('atom:title', default='', namespaces=ns) or '').strip()
+        pub = (entry.findtext('atom:published', default='', namespaces=ns) or '').strip()
+        url_final = (entry.findtext('atom:id', default='', namespaces=ns) or '').strip()
+        authors = [a.findtext('atom:name', default='', namespaces=ns) or '' for a in entry.findall('atom:author', ns)]
+        creators = _authors_from_names([{ "literal": n } for n in authors if n])
+        item = {
+            "itemType": "preprint",
+            "title": title or f"arXiv:{arx}",
+            "creators": creators,
+            "url": url_final or f"https://arxiv.org/abs/{arx}",
+        }
+        if pub:
+            item["date"] = pub
+        return item
+
+    try:
+        # Prepare inputs
+        id_list = _as_list(identifiers)
+        if not id_list:
+            return "Error: identifiers cannot be empty"
+
+        tag_list = _as_list(tags)
+
+        # Resolve collection names to keys if provided
+        zot = get_zotero_client()
+        resolved_collections: List[str] = []
+        if collections:
+            resolved_collections.extend(collections)
+        if collection_names:
+            names = _as_list(collection_names)
+            if names:
+                ctx.info(f"Resolving collection names: {names}")
+                try:
+                    all_collections = zot.collections()
+                    collection_map = {c["data"].get("name", "").lower(): c["key"] for c in all_collections}
+                    for name in names:
+                        key = collection_map.get(name.lower())
+                        if key:
+                            resolved_collections.append(key)
+                            ctx.info(f"Resolved '{name}' to key: {key}")
+                        else:
+                            # Partial match
+                            matches = [k for n, k in collection_map.items() if name.lower() in n]
+                            if matches:
+                                resolved_collections.append(matches[0])
+                                ctx.info(f"Resolved '{name}' to key: {matches[0]} (partial)")
+                            else:
+                                ctx.warn(f"Collection '{name}' not found.")
+                except Exception as ce:
+                    ctx.warn(f"Could not resolve collection names: {ce}")
+
+        results_md: List[str] = ["# Identifier Import Results", ""]
+        created_count = 0
+
+        for ident in id_list:
+            id_type, value = _detect_id_type(ident)
+            ctx.info(f"Processing identifier '{ident}' detected as {id_type}")
+
+            try:
+                item_data = None
+                pdf_hint: Optional[str] = None
+                if id_type == 'doi':
+                    item_data, pdf_hint = _fetch_crossref(value)
+                elif id_type == 'isbn':
+                    item_data = _fetch_openlibrary(value)
+                elif id_type == 'pmid':
+                    item_data = _fetch_pmid(value)
+                elif id_type == 'arxiv':
+                    item_data = _fetch_arxiv(value)
+                    pdf_hint = f"https://arxiv.org/pdf/{value}.pdf"
+                elif value.lower().startswith("http://") or value.lower().startswith("https://"):
+                    # Try to discover an embedded DOI in the page content
+                    try:
+                        resp = requests.get(value, timeout=20, headers={"User-Agent": "zotero-mcp (identifier import)"})
+                        if resp.ok:
+                            # ACL Anthology heuristic
+                            m_acl = re.search(r"aclanthology\.org/([A-Za-z0-9\-]+)/?", value, flags=re.IGNORECASE)
+                            if m_acl:
+                                slug = m_acl.group(1)
+                                pdf_hint = f"https://aclanthology.org/{slug}.pdf"
+                            m = re.search(r'''doi.org/(10.[^\s'"<>#]+/[\w-./:;()]+)''', resp.text, flags=re.IGNORECASE)
+                            if m:
+                                discovered_doi = m.group(1)
+                                ctx.info(f"Discovered DOI {discovered_doi} in page; importing via Crossref")
+                                item_data, cr_pdf = _fetch_crossref(discovered_doi)
+                                pdf_hint = pdf_hint or cr_pdf
+                    except requests.RequestException as page_err:
+                        ctx.warn(f"Could not fetch page to discover DOI: {page_err}")
+                else:
+                    results_md.append(f"- {ident}: Unsupported or unrecognized identifier format")
+                    continue
+
+                if not item_data:
+                    results_md.append(f"- {ident}: No metadata found")
+                    continue
+
+                # Attach tags if given
+                if tag_list:
+                    item_data["tags"] = [{"tag": t} for t in tag_list]
+
+                # Force empty collections in item_data; we'll add after creation
+                item_data["collections"] = []
+
+                # Create the item
+                result = zot.create_items([item_data])
+                if "success" in result and result["success"]:
+                    item_key = next(iter(result["success"].values()))
+
+                    # Attach PDF as linked URL if requested and available
+                    if attach_pdfs and pdf_hint:
+                        try:
+                            probe = requests.head(pdf_hint, timeout=10, allow_redirects=True)
+                            ctype = (probe.headers.get('Content-Type') or '').lower()
+                            if probe.ok and ('pdf' in ctype or pdf_hint.lower().endswith('.pdf')):
+                                attachment_item = {
+                                    "itemType": "attachment",
+                                    "parentItem": item_key,
+                                    "linkMode": "linked_url",
+                                    "title": "PDF",
+                                    "url": pdf_hint,
+                                    "contentType": "application/pdf",
+                                }
+                                att_res = zot.create_items([attachment_item])
+                                if att_res.get('success'):
+                                    ctx.info("Attached PDF as linked URL")
+                                else:
+                                    ctx.warn(f"Failed to attach PDF link: {att_res}")
+                            else:
+                                ctx.warn(f"PDF URL not accessible or not a PDF: {pdf_hint}")
+                        except Exception as attach_err:
+                            ctx.warn(f"Error attaching PDF: {attach_err}")
+
+                    # Add to collections
+                    added_to = []
+                    errors = []
+                    for coll_key in resolved_collections:
+                        try:
+                            coll = zot.collection(coll_key)
+                            coll_name = coll["data"].get("name", coll_key)
+                            add_result = zot.addto_collection(coll_key, [item_key])
+                            if add_result:
+                                added_to.append(coll_name)
+                            else:
+                                errors.append(f"Failed to add to '{coll_name}'")
+                        except Exception as ce:
+                            errors.append(f"Error with collection {coll_key}: {str(ce)}")
+
+                    created_count += 1
+                    extra = f" (collections: {', '.join(added_to)})" if added_to else ""
+                    if errors:
+                        extra += f"; warnings: {'; '.join(errors)}"
+                    results_md.append(f"- {ident}: created item key `{item_key}`{extra}")
+                else:
+                    error_details = result.get('failed', {})
+                    if error_details:
+                        results_md.append(f"- {ident}: Failed to create item: {str(error_details)}")
+                    else:
+                        results_md.append(f"- {ident}: Failed to create item")
+            except requests.RequestException as net_err:
+                ctx.warn(f"Network error for {ident}: {net_err}")
+                results_md.append(f"- {ident}: Network error fetching metadata: {net_err}")
+            except Exception as e:
+                ctx.error(f"Error importing {ident}: {e}")
+                results_md.append(f"- {ident}: Error: {e}")
+
+        if created_count == 0:
+            results_md.insert(1, "No items were created.")
+        else:
+            results_md.insert(1, f"Created {created_count} item(s).")
+
+        return "\n".join(results_md)
+
+    except Exception as e:
+        ctx.error(f"Error adding by identifier: {str(e)}")
+        return f"Error adding by identifier: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_item",
+    description="""Create a new item in your Zotero library (article, book, webpage, etc.).
+
+📝 FLEXIBLE INPUT FORMATS - All structured parameters accept multiple formats:
+
+PARAMETER TYPES (accepts both Python types AND JSON strings):
+┌─────────────────┬─────────────────────────────────────────────────────────┐
+│ Parameter       │ Accepted Formats (all work!)                            │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ tags            │ ✓ ["optimization", "ML"]  (Python list)                │
+│                 │ ✓ '["optimization", "ML"]'  (JSON string)               │
+│                 │ ✓ "optimization, ML"  (comma-separated)                 │
+│                 │ ✓ "single-tag"  (single string)                         │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ creators        │ ✓ [{"creatorType": "author", ...}]  (Python list)      │
+│                 │ ✓ '[{"creatorType": "author", ...}]'  (JSON string)    │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ collection_names│ ✓ ["PhD Research"]  (Python list)                      │
+│                 │ ✓ '["PhD Research"]'  (JSON string)                     │
+│                 │ ✓ "PhD Research"  (single string)                       │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ extra_fields    │ ✓ {"key": "value"}  (Python dict)                      │
+│                 │ ✓ '{"key": "value"}'  (JSON string)                     │
+└─────────────────┴─────────────────────────────────────────────────────────┘
+
+RECOMMENDED EXAMPLE (Python types - best practice):
+zotero_create_item(
+    item_type="journalArticle",
+    title="Deep Learning in Healthcare",
+    creators=[
+        {"creatorType": "author", "firstName": "Jane", "lastName": "Smith"},
+        {"creatorType": "author", "firstName": "John", "lastName": "Doe"}
+    ],
+    date="2024",
+    publication_title="Journal of AI",
+    tags=["deep learning", "healthcare", "AI"],
+    collection_names=["PhD Research"]
+)
+
+NOTE: Both Python native types and JSON strings are accepted and will work correctly.
+      The function will automatically convert JSON strings to the appropriate types."""
+)
+def create_item(
+    item_type: str,
+    title: str,
+    creators: Optional[Union[List[Dict[str, str]], str]] = None,
+    date: Optional[str] = None,
+    publication_title: Optional[str] = None,
+    volume: Optional[str] = None,
+    issue: Optional[str] = None,
+    pages: Optional[str] = None,
+    publisher: Optional[str] = None,
+    place: Optional[str] = None,
+    doi: Optional[str] = None,
+    url: Optional[str] = None,
+    attach_pdf_url: Optional[str] = None,
+    abstract: Optional[str] = None,
+    tags: Optional[Union[List[str], str]] = None,
+    collections: Optional[Union[List[str], str]] = None,
+    collection_names: Optional[Union[List[str], str]] = None,
+    extra_fields: Optional[Union[Dict[str, str], str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a new item in your Zotero library.
+
+    Args:
+        item_type: Type of item (e.g., "journalArticle", "book", "webpage", "conferencePaper")
+        title: Title of the item
+        creators: List of creator dictionaries. Each dict must have:
+                 - creatorType: "author", "editor", "contributor", etc.
+                 - firstName: Author's first name
+                 - lastName: Author's last name
+                 OR for single-field names (organizations):
+                 - creatorType: "author"
+                 - name: Full name/organization name
+                 Example: [{"creatorType": "author", "firstName": "John", "lastName": "Doe"}]
+        date: Publication date (flexible format like "2024", "2024-01", "2024-01-15")
+        publication_title: Journal/publication name (for articles)
+        volume: Volume number (as string)
+        issue: Issue number (as string)
+        pages: Page range (e.g., "123-145")
+        publisher: Publisher name
+        place: Publication place
+        doi: Digital Object Identifier
+        url: URL of the item
+        attach_pdf_url: Optional direct PDF URL to attach (linked URL attachment)
+        abstract: Abstract or summary text
+        tags: Python list of strings (NOT JSON string). Example: ["optimization", "machine learning"]
+        collections: Python list of collection keys. Example: ["ABC123XY"]
+        collection_names: Python list of collection names (preferred). Example: ["PhD Research"]
+        extra_fields: Python dict of additional fields. Example: {"ISBN": "978-0-123456-78-9"}
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new item key
+    """
+    try:
+        ctx.info(f"Creating new {item_type} item: {title}")
+        zot = get_zotero_client()
+
+        # Input validation and auto-correction for common mistakes
+        # Fix tags if passed as JSON string instead of list
+        if tags is not None:
+            if isinstance(tags, str):
+                tags_stripped = tags.strip()
+                ctx.info(f"Received tags as string (first 100 chars): {repr(tags_stripped[:100])}")
+
+                # Try JSON parsing first (handles ["tag1", "tag2"])
+                try:
+                    tags = json.loads(tags_stripped)
+                    ctx.info(f"✓ Auto-corrected tags from JSON string to Python list ({len(tags)} tags)")
+                except json.JSONDecodeError as json_err:
+                    ctx.info(f"JSON parse failed: {str(json_err)}, trying alternative formats")
+
+                    # Try unescaping if string contains backslash-escaped quotes
+                    if '\\' in tags_stripped:
+                        try:
+                            # Remove extra escaping that might have been added
+                            unescaped = tags_stripped.replace('\\"', '"').replace("\\'", "'")
+                            tags = json.loads(unescaped)
+                            ctx.info(f"✓ Auto-corrected tags from escaped JSON string to Python list ({len(tags)} tags)")
+                        except json.JSONDecodeError:
+                            # Fall through to comma-separated parsing
+                            pass
+
+                    # If still a string, try comma-separated parsing
+                    if isinstance(tags, str):
+                        if ',' in tags_stripped:
+                            tags = [tag.strip() for tag in tags_stripped.split(',') if tag.strip()]
+                            ctx.info(f"✓ Auto-corrected tags from comma-separated string to Python list ({len(tags)} tags)")
+                        else:
+                            # Single tag without comma
+                            tags = [tags_stripped] if tags_stripped else []
+                            ctx.info(f"✓ Auto-corrected tags from single string to Python list (1 tag)")
+
+            if not isinstance(tags, list):
+                return f"Error: tags must be a list of strings. Example: ['optimization', 'machine learning']"
+            # Ensure all tags are strings
+            if not all(isinstance(tag, str) for tag in tags):
+                return f"Error: All tags must be strings. Received: {tags}"
+
+        # Fix creators if passed as JSON string instead of list
+        if creators is not None:
+            if isinstance(creators, str):
+                creators_stripped = creators.strip()
+                try:
+                    creators = json.loads(creators_stripped)
+                    ctx.info(f"✓ Auto-corrected creators from JSON string to Python list: {len(creators)} creator(s)")
+                except json.JSONDecodeError as e:
+                    return f"Error: creators parameter appears to be a string but couldn't be parsed as JSON.\n" \
+                           f"Parse error: {str(e)}\n" \
+                           f"Expected: Python list like [{{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}]\n" \
+                           f"Received: {repr(creators[:100])}..."
+            if not isinstance(creators, list):
+                return f"Error: creators must be a list of dictionaries. Example: [{{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}]"
+
+            # Validate creator structure
+            if creators:  # Only validate if not empty
+                for i, creator in enumerate(creators):
+                    if not isinstance(creator, dict):
+                        return f"Error: Each creator must be a dictionary. Creator {i+1} is not a dictionary."
+
+                    if "creatorType" not in creator:
+                        return f"Error: Creator {i+1} is missing 'creatorType' field. Must be 'author', 'editor', 'contributor', etc."
+
+                    # Check if it has either (firstName + lastName) OR name
+                    has_split_name = "firstName" in creator and "lastName" in creator
+                    has_single_name = "name" in creator
+
+                    if not has_split_name and not has_single_name:
+                        return f"Error: Creator {i+1} must have EITHER ('firstName' AND 'lastName') OR 'name'. Example: {{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}"
+
+                    # Warn about empty names
+                    if has_split_name:
+                        if not creator.get("firstName") and not creator.get("lastName"):
+                            ctx.warn(f"Creator {i+1} has empty firstName and lastName")
+                    elif has_single_name:
+                        if not creator.get("name"):
+                            ctx.warn(f"Creator {i+1} has empty name field")
+
+                ctx.info(f"Validated {len(creators)} creator(s) successfully")
+
+        # Fix collections if passed as JSON string
+        if collections is not None:
+            if isinstance(collections, str):
+                try:
+                    collections = json.loads(collections.strip())
+                    ctx.info(f"✓ Auto-corrected collections from JSON string to Python list")
+                except json.JSONDecodeError as e:
+                    return f"Error: collections must be a list of strings. Parse error: {str(e)}"
+            if not isinstance(collections, list):
+                return f"Error: collections must be a Python list of strings"
+
+        # Fix collection_names if passed as JSON string
+        if collection_names is not None:
+            if isinstance(collection_names, str):
+                try:
+                    collection_names = json.loads(collection_names.strip())
+                    ctx.info(f"✓ Auto-corrected collection_names from JSON string to Python list")
+                except json.JSONDecodeError as e:
+                    return f"Error: collection_names must be a list of strings. Parse error: {str(e)}"
+            if not isinstance(collection_names, list):
+                return f"Error: collection_names must be a Python list of strings"
+
+        # Fix extra_fields if passed as JSON string
+        if extra_fields is not None:
+            if isinstance(extra_fields, str):
+                extra_fields_stripped = extra_fields.strip()
+                try:
+                    extra_fields = json.loads(extra_fields_stripped)
+                    ctx.info(f"✓ Auto-corrected extra_fields from JSON string to Python dict: {extra_fields}")
+                except json.JSONDecodeError as e:
+                    return f"Error: extra_fields parameter appears to be a string but couldn't be parsed as JSON.\n" \
+                           f"Parse error: {str(e)}\n" \
+                           f"Expected: Python dict like {{'key': 'value'}}\n" \
+                           f"Received: {repr(extra_fields[:100])}..."
+            if not isinstance(extra_fields, dict):
+                return f"Error: extra_fields must be a dictionary. Example: {{'ISBN': '123-456'}}"
+
+        # Validate item type specific fields
+        if item_type == "conferencePaper" and publication_title:
+            ctx.warn(f"Note: 'publication_title' is not a standard field for conferencePaper. Consider using extra_fields with 'proceedingsTitle' or 'conferenceName' instead.")
+            # Move it to extra_fields automatically
+            if extra_fields is None:
+                extra_fields = {}
+            extra_fields["proceedingsTitle"] = publication_title
+            publication_title = None
+            ctx.info("Automatically moved publication_title to extra_fields['proceedingsTitle']")
+
+        # Resolve collection names to keys if provided
+        resolved_collections = []
+        if collections:
+            resolved_collections.extend(collections)
+
+        if collection_names:
+            ctx.info(f"Resolving collection names: {collection_names}")
+            all_collections = zot.collections()
+            collection_map = {c["data"].get("name", "").lower(): c["key"] for c in all_collections}
+
+            for name in collection_names:
+                name_lower = name.lower()
+                if name_lower in collection_map:
+                    resolved_collections.append(collection_map[name_lower])
+                    ctx.info(f"Resolved '{name}' to key: {collection_map[name_lower]}")
+                else:
+                    # Try partial match
+                    matches = [key for coll_name, key in collection_map.items() if name_lower in coll_name]
+                    if matches:
+                        resolved_collections.append(matches[0])
+                        ctx.info(f"Resolved '{name}' to key: {matches[0]} (partial match)")
+                    else:
+                        ctx.warn(f"Collection '{name}' not found. Use zotero_search_collections to find it or zotero_create_collection to create it.")
+
+        # Build item data structure
+        item_data = {
+            "itemType": item_type,
+            "title": title
+        }
+
+        # Add creators if provided
+        if creators:
+            item_data["creators"] = creators
+        else:
+            item_data["creators"] = []
+
+        # Add optional fields
+        if date:
+            item_data["date"] = date
+        if publication_title:
+            item_data["publicationTitle"] = publication_title
+        if volume:
+            item_data["volume"] = volume
+        if issue:
+            item_data["issue"] = issue
+        if pages:
+            item_data["pages"] = pages
+        if publisher:
+            item_data["publisher"] = publisher
+        if place:
+            item_data["place"] = place
+        if doi:
+            item_data["DOI"] = doi
+        if url:
+            item_data["url"] = url
+        if abstract:
+            item_data["abstractNote"] = abstract
+
+        # Add tags
+        if tags:
+            item_data["tags"] = [{"tag": tag} for tag in tags]
+        else:
+            item_data["tags"] = []
+
+        # Don't add collections to item_data - we'll add them after creation
+        # The Zotero API works better when collections are added via addto_collection()
+        item_data["collections"] = []
+
+        # Add extra fields
+        if extra_fields:
+            for key, value in extra_fields.items():
+                if key not in item_data:  # Don't override existing fields
+                    item_data[key] = value
+
+        # Create the item
+        result = zot.create_items([item_data])
+
+        # Check if creation was successful
+        if "success" in result and result["success"]:
+            successful = result["success"]
+            if len(successful) > 0:
+                item_key = next(iter(successful.values()))
+
+                # Optionally attach a PDF link if provided
+                attachment_info = ""
+                if attach_pdf_url:
+                    try:
+                        probe = requests.head(attach_pdf_url, timeout=10, allow_redirects=True)
+                        ctype = (probe.headers.get('Content-Type') or '').lower()
+                        if probe.ok and ('pdf' in ctype or attach_pdf_url.lower().endswith('.pdf')):
+                            attachment_item = {
+                                "itemType": "attachment",
+                                "parentItem": item_key,
+                                "linkMode": "linked_url",
+                                "title": "PDF",
+                                "url": attach_pdf_url,
+                                "contentType": "application/pdf",
+                            }
+                            att_res = zot.create_items([attachment_item])
+                            if att_res.get('success'):
+                                attachment_info = "\n\nAttached PDF link."
+                                ctx.info("Attached PDF as linked URL")
+                            else:
+                                ctx.warn(f"Failed to attach PDF link: {att_res}")
+                        else:
+                            ctx.warn(f"PDF URL not accessible or not a PDF: {attach_pdf_url}")
+                    except Exception as attach_err:
+                        ctx.warn(f"Error attaching PDF: {attach_err}")
+
+                # Now add the item to collections if specified
+                collection_info = ""
+                if resolved_collections:
+                    collection_errors = []
+                    successfully_added = []
+
+                    for coll_key in resolved_collections:
+                        try:
+                            # Verify collection exists and add item to it
+                            coll = zot.collection(coll_key)
+                            coll_name = coll["data"].get("name", coll_key)
+                            add_result = zot.addto_collection(coll_key, [item_key])
+
+                            if add_result:
+                                successfully_added.append(coll_name)
+                                ctx.info(f"Added item to collection: {coll_name}")
+                            else:
+                                collection_errors.append(f"Failed to add to '{coll_name}'")
+                                ctx.warn(f"Failed to add item to collection: {coll_name}")
+                        except Exception as coll_error:
+                            collection_errors.append(f"Error with collection {coll_key}: {str(coll_error)}")
+                            ctx.error(f"Error adding to collection {coll_key}: {str(coll_error)}")
+
+                    if successfully_added:
+                        collection_info = f"\n\nAdded to collection(s): {', '.join(successfully_added)}"
+                    if collection_errors:
+                        collection_info += f"\n\n**Collection warnings:**\n" + "\n".join(f"- {err}" for err in collection_errors)
+
+                return f"Successfully created {item_type}: \"{title}\"\n\nItem key: `{item_key}`{attachment_info}{collection_info}"
+            else:
+                return f"Item creation response was successful but no key was returned: {result}"
+        else:
+            error_details = result.get('failed', {})
+            if error_details:
+                # Extract error message from failed response
+                error_msg = str(error_details)
+                return f"Failed to create item: {error_msg}\n\nPlease check that all required fields for '{item_type}' are provided."
+            return f"Failed to create item: {result}"
+
+    except Exception as e:
+        ctx.error(f"Error creating item: {str(e)}")
+        return f"Error creating item: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_item",
+    description="""Update an existing item in your Zotero library.
+
+📝 FLEXIBLE INPUT FORMATS - All structured parameters accept multiple formats:
+
+PARAMETER TYPES (accepts both Python types AND JSON strings):
+┌─────────────────┬─────────────────────────────────────────────────────────┐
+│ Parameter       │ Accepted Formats (all work!)                            │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ tags            │ Replaces ALL tags                                       │
+│ add_tags        │ Adds to existing tags                                   │
+│ remove_tags     │ Removes from existing tags                              │
+│                 │ ✓ ["optimization", "AI"]  (Python list)                 │
+│                 │ ✓ '["optimization", "AI"]'  (JSON string)               │
+│                 │ ✓ "optimization, AI"  (comma-separated)                 │
+├─────────────────┼─────────────────────────────────────────────────────────┤
+│ creators        │ Replaces ALL creators                                   │
+│                 │ ✓ [{"creatorType": "author", ...}]  (Python list)      │
+│                 │ ✓ '[{"creatorType": "author", ...}]'  (JSON string)    │
+└─────────────────┴─────────────────────────────────────────────────────────┘
+
+RECOMMENDED EXAMPLE (Python types - best practice):
+zotero_update_item(
+    item_key="ABC12345",
+    abstract="Updated abstract text",
+    add_tags=["reviewed", "important"],
+    creators=[
+        {"creatorType": "author", "firstName": "Jane", "lastName": "Smith"}
+    ],
+    collection_names=["PhD Research"]
+)
+
+NOTE: Both Python native types and JSON strings are accepted and will work correctly.
+      The function will automatically convert JSON strings to the appropriate types."""
+)
+def update_item(
+    item_key: str,
+    title: Optional[str] = None,
+    creators: Optional[Union[List[Dict[str, str]], str]] = None,
+    date: Optional[str] = None,
+    publication_title: Optional[str] = None,
+    volume: Optional[str] = None,
+    issue: Optional[str] = None,
+    pages: Optional[str] = None,
+    publisher: Optional[str] = None,
+    place: Optional[str] = None,
+    doi: Optional[str] = None,
+    url: Optional[str] = None,
+    abstract: Optional[str] = None,
+    tags: Optional[Union[List[str], str]] = None,
+    add_tags: Optional[Union[List[str], str]] = None,
+    remove_tags: Optional[Union[List[str], str]] = None,
+    collections: Optional[Union[List[str], str]] = None,
+    collection_names: Optional[Union[List[str], str]] = None,
+    extra_fields: Optional[Union[Dict[str, str], str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Update an existing item in your Zotero library.
+
+    Args:
+        item_key: Zotero item key/ID to update
+        title: New title for the item
+        creators: New list of creator dictionaries (replaces existing creators)
+        date: New publication date
+        publication_title: New journal/publication name
+        volume: New volume number
+        issue: New issue number
+        pages: New page range
+        publisher: New publisher name
+        place: New publication place
+        doi: New Digital Object Identifier
+        url: New URL
+        abstract: New abstract or summary text
+        tags: New list of tags (replaces existing tags)
+        add_tags: Tags to add to existing tags (doesn't replace)
+        remove_tags: Tags to remove from existing tags
+        collections: New list of collection keys (replaces existing collections)
+        collection_names: Collection names to add (will be automatically resolved to keys)
+        extra_fields: Additional fields to update as key-value pairs
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with update details
+    """
+    try:
+        ctx.info(f"Updating item {item_key}")
+        zot = get_zotero_client()
+
+        # Input validation and auto-correction for common mistakes
+        # Fix tags if passed as JSON string
+        if tags is not None:
+            if isinstance(tags, str):
+                tags_stripped = tags.strip()
+                try:
+                    tags = json.loads(tags_stripped)
+                    ctx.info(f"✓ Auto-corrected tags from JSON string to Python list")
+                except json.JSONDecodeError:
+                    if ',' in tags_stripped:
+                        tags = [tag.strip() for tag in tags_stripped.split(',') if tag.strip()]
+                        ctx.info(f"✓ Auto-corrected tags from comma-separated string to Python list")
+                    else:
+                        tags = [tags_stripped] if tags_stripped else []
+                        ctx.info(f"✓ Auto-corrected tags from single string to Python list")
+
+        # Fix add_tags if passed as JSON string
+        if add_tags is not None:
+            if isinstance(add_tags, str):
+                add_tags_stripped = add_tags.strip()
+                try:
+                    add_tags = json.loads(add_tags_stripped)
+                    ctx.info(f"✓ Auto-corrected add_tags from JSON string to Python list")
+                except json.JSONDecodeError:
+                    if ',' in add_tags_stripped:
+                        add_tags = [tag.strip() for tag in add_tags_stripped.split(',') if tag.strip()]
+                        ctx.info(f"✓ Auto-corrected add_tags from comma-separated string to Python list")
+                    else:
+                        add_tags = [add_tags_stripped] if add_tags_stripped else []
+                        ctx.info(f"✓ Auto-corrected add_tags from single string to Python list")
+
+        # Fix remove_tags if passed as JSON string
+        if remove_tags is not None:
+            if isinstance(remove_tags, str):
+                remove_tags_stripped = remove_tags.strip()
+                try:
+                    remove_tags = json.loads(remove_tags_stripped)
+                    ctx.info(f"✓ Auto-corrected remove_tags from JSON string to Python list")
+                except json.JSONDecodeError:
+                    if ',' in remove_tags_stripped:
+                        remove_tags = [tag.strip() for tag in remove_tags_stripped.split(',') if tag.strip()]
+                        ctx.info(f"✓ Auto-corrected remove_tags from comma-separated string to Python list")
+                    else:
+                        remove_tags = [remove_tags_stripped] if remove_tags_stripped else []
+                        ctx.info(f"✓ Auto-corrected remove_tags from single string to Python list")
+
+        # Fix creators if passed as JSON string
+        if creators is not None:
+            if isinstance(creators, str):
+                try:
+                    creators = json.loads(creators)
+                    ctx.info(f"Auto-corrected creators from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: creators parameter must be a list of dictionaries, not a JSON string."
+
+            # Validate creator structure
+            if creators:  # Only validate if not empty
+                for i, creator in enumerate(creators):
+                    if not isinstance(creator, dict):
+                        return f"Error: Each creator must be a dictionary. Creator {i+1} is not a dictionary."
+
+                    if "creatorType" not in creator:
+                        return f"Error: Creator {i+1} is missing 'creatorType' field. Must be 'author', 'editor', 'contributor', etc."
+
+                    # Check if it has either (firstName + lastName) OR name
+                    has_split_name = "firstName" in creator and "lastName" in creator
+                    has_single_name = "name" in creator
+
+                    if not has_split_name and not has_single_name:
+                        return f"Error: Creator {i+1} must have EITHER ('firstName' AND 'lastName') OR 'name'. Example: {{'creatorType': 'author', 'firstName': 'Jane', 'lastName': 'Doe'}}"
+
+                    # Warn about empty names
+                    if has_split_name:
+                        if not creator.get("firstName") and not creator.get("lastName"):
+                            ctx.warn(f"Creator {i+1} has empty firstName and lastName")
+                    elif has_single_name:
+                        if not creator.get("name"):
+                            ctx.warn(f"Creator {i+1} has empty name field")
+
+                ctx.info(f"Validated {len(creators)} creator(s) successfully")
+
+        # Fix collections if passed as JSON string
+        if collections is not None:
+            if isinstance(collections, str):
+                try:
+                    collections = json.loads(collections)
+                    ctx.info(f"Auto-corrected collections from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: collections parameter must be a list of strings, not a JSON string."
+
+        # Fix collection_names if passed as JSON string
+        if collection_names is not None:
+            if isinstance(collection_names, str):
+                try:
+                    collection_names = json.loads(collection_names)
+                    ctx.info(f"Auto-corrected collection_names from JSON string to list")
+                except json.JSONDecodeError:
+                    return f"Error: collection_names parameter must be a list of strings, not a JSON string."
+
+        # Fix extra_fields if passed as JSON string
+        if extra_fields is not None:
+            if isinstance(extra_fields, str):
+                try:
+                    extra_fields = json.loads(extra_fields)
+                    ctx.info(f"Auto-corrected extra_fields from JSON string to dict")
+                except json.JSONDecodeError:
+                    return f"Error: extra_fields parameter must be a dictionary, not a JSON string."
+
+        # First, fetch the existing item
+        try:
+            item = zot.item(item_key)
+            if not item:
+                return f"Error: No item found with key: {item_key}"
+        except Exception as e:
+            return f"Error: Could not fetch item {item_key}: {str(e)}"
+
+        # Get the item data
+        item_data = item.get("data", {})
+        original_title = item_data.get("title", "Untitled")
+
+        # Track what we're updating
+        updates = []
+
+        # Update basic fields
+        if title is not None:
+            item_data["title"] = title
+            updates.append(f"title: '{title}'")
+
+        if date is not None:
+            item_data["date"] = date
+            updates.append(f"date: '{date}'")
+
+        if publication_title is not None:
+            item_data["publicationTitle"] = publication_title
+            updates.append(f"publication title: '{publication_title}'")
+
+        if volume is not None:
+            item_data["volume"] = volume
+            updates.append(f"volume: '{volume}'")
+
+        if issue is not None:
+            item_data["issue"] = issue
+            updates.append(f"issue: '{issue}'")
+
+        if pages is not None:
+            item_data["pages"] = pages
+            updates.append(f"pages: '{pages}'")
+
+        if publisher is not None:
+            item_data["publisher"] = publisher
+            updates.append(f"publisher: '{publisher}'")
+
+        if place is not None:
+            item_data["place"] = place
+            updates.append(f"place: '{place}'")
+
+        if doi is not None:
+            item_data["DOI"] = doi
+            updates.append(f"DOI: '{doi}'")
+
+        if url is not None:
+            item_data["url"] = url
+            updates.append(f"URL: '{url}'")
+
+        if abstract is not None:
+            item_data["abstractNote"] = abstract
+            updates.append(f"abstract updated")
+
+        # Update creators (replaces existing)
+        if creators is not None:
+            item_data["creators"] = creators
+            updates.append(f"creators: {len(creators)} creator(s)")
+
+        # Handle tags
+        current_tags = item_data.get("tags", [])
+        current_tag_values = {t["tag"] for t in current_tags}
+
+        if tags is not None:
+            # Replace all tags
+            item_data["tags"] = [{"tag": tag} for tag in tags]
+            updates.append(f"tags replaced with {len(tags)} tag(s)")
+        else:
+            # Add/remove specific tags
+            if remove_tags:
+                new_tags = [t for t in current_tags if t["tag"] not in remove_tags]
+                item_data["tags"] = new_tags
+                updates.append(f"removed {len(remove_tags)} tag(s)")
+                current_tag_values = {t["tag"] for t in new_tags}
+
+            if add_tags:
+                for tag in add_tags:
+                    if tag and tag not in current_tag_values:
+                        item_data["tags"].append({"tag": tag})
+                        current_tag_values.add(tag)
+                updates.append(f"added {len(add_tags)} tag(s)")
+
+        # Track collections to add (don't modify item_data["collections"] directly)
+        collections_to_add = []
+
+        if collections is not None:
+            # User wants to replace collections - we'll handle this after update
+            collections_to_add = collections
+            updates.append(f"collections will be set to {len(collections)} collection(s)")
+        elif collection_names:
+            # Resolve collection names to add
+            ctx.info(f"Resolving collection names: {collection_names}")
+            all_collections = zot.collections()
+            collection_map = {c["data"].get("name", "").lower(): c["key"] for c in all_collections}
+
+            for name in collection_names:
+                name_lower = name.lower()
+                if name_lower in collection_map:
+                    resolved_key = collection_map[name_lower]
+                    collections_to_add.append(resolved_key)
+                    ctx.info(f"Resolved '{name}' to key: {resolved_key}")
+                else:
+                    # Try partial match
+                    matches = [key for coll_name, key in collection_map.items() if name_lower in coll_name]
+                    if matches:
+                        collections_to_add.append(matches[0])
+                        ctx.info(f"Resolved '{name}' to key: {matches[0]} (partial match)")
+                    else:
+                        ctx.warn(f"Collection '{name}' not found.")
+
+            if collections_to_add:
+                updates.append(f"will add to {len(collections_to_add)} collection(s)")
+
+        # Update extra fields
+        if extra_fields:
+            for key, value in extra_fields.items():
+                item_data[key] = value
+                updates.append(f"{key}: '{value}'")
+
+        # Check if there are any updates
+        if not updates and not collections_to_add:
+            return f"No updates specified for item: \"{original_title}\" (Key: {item_key})"
+
+        # Update the item in Zotero (if there are field updates)
+        if updates:
+            try:
+                result = zot.update_item(item)
+                ctx.info(f"Update result: {result}")
+            except Exception as update_error:
+                ctx.error(f"Failed to update item: {str(update_error)}")
+                return f"Failed to update item: {str(update_error)}"
+
+        # Now add to collections if specified
+        collection_info = ""
+        if collections_to_add:
+            collection_errors = []
+            successfully_added = []
+
+            for coll_key in collections_to_add:
+                try:
+                    # Verify collection exists and add item to it
+                    coll = zot.collection(coll_key)
+                    coll_name = coll["data"].get("name", coll_key)
+                    add_result = zot.addto_collection(coll_key, [item_key])
+
+                    if add_result:
+                        successfully_added.append(coll_name)
+                        ctx.info(f"Added item to collection: {coll_name}")
+                    else:
+                        collection_errors.append(f"Failed to add to '{coll_name}'")
+                        ctx.warn(f"Failed to add item to collection: {coll_name}")
+                except Exception as coll_error:
+                    collection_errors.append(f"Error with collection {coll_key}: {str(coll_error)}")
+                    ctx.error(f"Error adding to collection {coll_key}: {str(coll_error)}")
+
+            if successfully_added:
+                collection_info = f"\n\n**Added to collection(s):** {', '.join(successfully_added)}"
+            if collection_errors:
+                collection_info += f"\n\n**Collection warnings:**\n" + "\n".join(f"- {err}" for err in collection_errors)
+
+        # Format the response
+        response = [
+            f"Successfully updated item: \"{original_title}\"",
+            f"Item key: `{item_key}`",
+            "",
+            "**Updated fields:**"
+        ]
+        for update in updates:
+            response.append(f"- {update}")
+
+        if collection_info:
+            response.append(collection_info)
+
+        return "\n".join(response)
+
+    except Exception as e:
+        ctx.error(f"Error updating item: {str(e)}")
+        return f"Error updating item: {str(e)}"
 
 
 @mcp.tool(

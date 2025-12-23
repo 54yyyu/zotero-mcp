@@ -196,6 +196,13 @@ Example prompts:
 - "Show me papers tagged '#Arm' excluding those with '#Crypt' in my library"
 - "Search for papers on operating system with tag '#Arm'"
 - "Export the BibTeX citation for papers on machine learning"
+- "Create a new journal article in my library titled 'Deep Learning Applications'"
+- "Update item ABCD1234 to add author Jane Smith"
+- "Update the abstract for item EFGH5678 with the new abstract text"
+- "Add a new book to my library with author John Doe and add it to my 'Reading List' collection"
+- "Create a new collection called 'PhD Research'"
+- "Search for my 'Machine Learning' collection"
+- "Add items ABCD1234 and EFGH5678 to my Research collection"
 - **"Find papers conceptually similar to deep learning in computer vision"** *(semantic search)*
 - **"Research that relates to the intersection of AI and healthcare"** *(semantic search)*
 - **"Papers that discuss topics similar to this abstract: [paste text]"** *(semantic search)*
@@ -284,6 +291,74 @@ zotero-mcp db-status                       # Show database status and info
 zotero-mcp version                         # Show current version
 ```
 
+## 📁 Working with Collections (Projects)
+
+Zotero MCP provides comprehensive tools for organizing your research into collections (also known as projects or folders):
+
+### Creating Collections
+
+Create new collections to organize your research:
+
+```
+"Create a new collection called 'PhD Thesis Research'"
+"Create a subcollection 'Literature Review' under my PhD Research collection"
+```
+
+### Finding Collections
+
+Before adding items to a collection, you can search for it by name:
+
+```
+"Search for my 'Machine Learning' collection"
+"Find collections with 'research' in the name"
+```
+
+This will return the collection key (e.g., `ABC123XY`) which you can use to add items.
+
+### Adding Items to Collections
+
+**Option 1: During Item Creation**
+
+You can add items to collections when creating them:
+
+```python
+# Using collection names (recommended - automatic resolution)
+zotero_create_item(
+    item_type="journalArticle",
+    title="Deep Learning in Healthcare",
+    collection_names=["PhD Research", "Machine Learning"]
+)
+
+# Using collection keys (if you already know them)
+zotero_create_item(
+    item_type="book",
+    title="Introduction to AI",
+    collections=["ABC123XY", "DEF456ZW"]
+)
+```
+
+**Option 2: Add Existing Items**
+
+Add already-existing items to a collection:
+
+```
+"Add items ABCD1234 and EFGH5678 to my Research collection"
+```
+
+### Common Workflows
+
+1. **Start a new research project:**
+   - Create a collection: `"Create a collection for my new project on quantum computing"`
+   - Add items with collection name: `"Create a journal article about quantum algorithms and add it to my quantum computing collection"`
+
+2. **Organize existing items:**
+   - Search for collection: `"Find my AI Research collection"`
+   - Add items: `"Add items X1Y2Z3 and A4B5C6 to collection KEY123"`
+
+3. **Browse collection contents:**
+   - `"Show me all items in my PhD Research collection"`
+   - `"List items in collection KEY123"`
+
 ## 📑 PDF Annotation Extraction
 
 Zotero MCP includes advanced PDF annotation extraction capabilities:
@@ -309,6 +384,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_search_items`: Search your library by keywords
 - `zotero_advanced_search`: Perform complex searches with multiple criteria
 - `zotero_get_collections`: List collections
+- `zotero_search_collections`: Search for collections by name
 - `zotero_get_collection_items`: Get items in a collection
 - `zotero_get_tags`: List all tags
 - `zotero_get_recent`: Get recently added items
@@ -323,7 +399,13 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_get_annotations`: Get annotations (including direct PDF extraction)
 - `zotero_get_notes`: Retrieve notes from your Zotero library
 - `zotero_search_notes`: Search in notes and annotations (including PDF-extracted)
-- `zotero_create_note`: Create a new note for an item (beta feature)
+- `zotero_create_note`: Create a new note for an item
+
+### ✍️ Item & Collection Management Tools
+- `zotero_create_item`: Create new items in your library (articles, books, webpages, etc.)
+- `zotero_update_item`: Update existing items (modify title, authors, date, abstract, tags, etc.)
+- `zotero_create_collection`: Create new collections (projects/folders)
+- `zotero_add_items_to_collection`: Add existing items to a collection
 
 ## 🔍 Troubleshooting
 
