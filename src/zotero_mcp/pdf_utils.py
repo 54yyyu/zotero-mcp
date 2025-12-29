@@ -175,6 +175,13 @@ def _search_single_page(
     """
     page_height = page.rect.height
 
+    # For long passages (>100 chars), use anchor-based matching
+    if len(search_text) > 100:
+        anchor_result = _anchor_based_search(page, page_index, search_text)
+        if anchor_result:
+            return anchor_result
+        # Fall through to try other methods if anchor search fails
+
     # Try exact search first
     text_instances = page.search_for(search_text)
 
@@ -231,6 +238,169 @@ def _search_single_page(
         "sort_index": sort_index,
         "matched_text": matched_text,
     }
+
+
+def _anchor_based_search(page, page_index: int, search_text: str) -> dict | None:
+    """
+    Search for long text using anchor-based matching.
+
+    Instead of matching the entire passage, this finds:
+    1. The START of the passage (first ~40 chars)
+    2. The END of the passage (last ~40 chars)
+    3. Highlights everything between them
+
+    This is much more robust for long passages with line breaks,
+    hyphenation, or character variations in the middle.
+
+    Args:
+        page: PyMuPDF page object
+        page_index: 0-indexed page number
+        search_text: Full text to highlight
+
+    Returns:
+        Dict with position data if found, None otherwise
+    """
+    page_height = page.rect.height
+
+    # Extract anchors (aim for ~40 chars, but break at word boundaries)
+    start_anchor = _extract_anchor(search_text, from_start=True, target_len=40)
+    end_anchor = _extract_anchor(search_text, from_start=False, target_len=40)
+
+    if not start_anchor or not end_anchor:
+        return None
+
+    # Get all text spans with positions
+    blocks = page.get_text("dict", flags=11)["blocks"]
+    spans = []
+    for block in blocks:
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                spans.append({
+                    "text": span["text"],
+                    "bbox": span["bbox"],
+                })
+
+    if not spans:
+        return None
+
+    # Build normalized cumulative text and track positions
+    cumulative_normalized = ""
+    span_norm_positions = []
+
+    for i, span in enumerate(spans):
+        norm_start = len(cumulative_normalized)
+        span_normalized = normalize_for_matching(span["text"])
+        cumulative_normalized += span_normalized
+        norm_end = len(cumulative_normalized)
+        span_norm_positions.append((norm_start, norm_end, i))
+
+    # Find start anchor
+    normalized_start = normalize_for_matching(start_anchor)
+    start_pos = cumulative_normalized.find(normalized_start)
+
+    if start_pos == -1:
+        # Try fuzzy match for start anchor
+        match = _sliding_window_match(cumulative_normalized, normalized_start, 0.75, return_best=True)
+        if match and match[2] >= 0.75:
+            start_pos = match[0]
+        else:
+            return None
+
+    # Find end anchor (search after start position)
+    normalized_end = normalize_for_matching(end_anchor)
+    # Search for end anchor starting from after the start anchor
+    search_start = start_pos + len(normalized_start) // 2
+    end_pos = cumulative_normalized.find(normalized_end, search_start)
+
+    if end_pos == -1:
+        # Try fuzzy match for end anchor
+        remaining_text = cumulative_normalized[search_start:]
+        match = _sliding_window_match(remaining_text, normalized_end, 0.75, return_best=True)
+        if match and match[2] >= 0.75:
+            end_pos = search_start + match[0] + len(normalized_end)
+        else:
+            # If end anchor not found, estimate based on text length ratio
+            estimated_len = int(len(normalize_for_matching(search_text)) * 1.1)
+            end_pos = min(start_pos + estimated_len, len(cumulative_normalized))
+    else:
+        end_pos = end_pos + len(normalized_end)
+
+    # Find all spans between start and end positions
+    matching_rects = []
+    matched_span_texts = []
+
+    for norm_start, norm_end, span_idx in span_norm_positions:
+        # Check if this span overlaps with our range
+        if norm_start < end_pos and norm_end > start_pos:
+            matching_rects.append(spans[span_idx]["bbox"])
+            matched_span_texts.append(spans[span_idx]["text"])
+
+    if not matching_rects:
+        return None
+
+    # Convert to Zotero coordinate system
+    rects = []
+    min_y_pdf = float("inf")
+    min_x = float("inf")
+
+    for bbox in matching_rects:
+        x0, y0, x1, y1 = bbox
+        pdf_y1 = page_height - y1
+        pdf_y2 = page_height - y0
+        rects.append([x0, pdf_y1, x1, pdf_y2])
+        min_y_pdf = min(min_y_pdf, pdf_y1)
+        min_x = min(min_x, x0)
+
+    sort_index = f"{page_index:05d}|{int(min_y_pdf):06d}|{int(min_x):05d}"
+    matched_text = " ".join(matched_span_texts)
+
+    return {
+        "pageIndex": page_index,
+        "rects": rects,
+        "sort_index": sort_index,
+        "matched_text": matched_text,
+    }
+
+
+def _extract_anchor(text: str, from_start: bool, target_len: int = 40) -> str:
+    """
+    Extract an anchor phrase from the start or end of text.
+
+    Tries to break at word boundaries for better matching.
+
+    Args:
+        text: Full text to extract from
+        from_start: If True, extract from start; if False, from end
+        target_len: Target length for the anchor
+
+    Returns:
+        Anchor string, or empty string if text is too short
+    """
+    text = text.strip()
+
+    if len(text) < target_len * 2:
+        # Text too short for anchoring
+        return ""
+
+    if from_start:
+        # Get first target_len chars, then extend to word boundary
+        anchor = text[:target_len]
+        # Find next space to complete the word
+        next_space = text.find(" ", target_len)
+        if next_space != -1 and next_space < target_len + 15:
+            anchor = text[:next_space]
+    else:
+        # Get last target_len chars, then extend to word boundary
+        anchor = text[-target_len:]
+        # Find previous space to start at word boundary
+        remaining = text[:-target_len]
+        last_space = remaining.rfind(" ")
+        if last_space != -1 and len(remaining) - last_space < 15:
+            anchor = text[last_space + 1:]
+
+    return anchor.strip()
 
 
 def _get_dynamic_threshold(text_length: int) -> float:
