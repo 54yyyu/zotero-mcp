@@ -1699,7 +1699,7 @@ def create_note(
 
 @mcp.tool(
     name="zotero_create_annotation",
-    description="Create a highlight annotation on a PDF attachment with optional comment."
+    description="Create a highlight annotation on a PDF or EPUB attachment with optional comment."
 )
 def create_annotation(
     attachment_key: str,
@@ -1711,17 +1711,17 @@ def create_annotation(
     ctx: Context
 ) -> str:
     """
-    Create a highlight annotation on a PDF attachment.
+    Create a highlight annotation on a PDF or EPUB attachment.
 
     This tool handles multiple storage configurations:
-    - Zotero Cloud Storage: Downloads PDF via Web API
-    - WebDAV Storage: Downloads PDF via local Zotero (requires Zotero desktop running)
+    - Zotero Cloud Storage: Downloads file via Web API
+    - WebDAV Storage: Downloads file via local Zotero (requires Zotero desktop running)
     - Annotations are always created via the Web API (required for write operations)
 
     Args:
-        attachment_key: PDF attachment key (e.g., "NHZFE5A7")
-        page: 1-indexed page number where the text appears
-        text: Exact text to highlight (used to find coordinates)
+        attachment_key: Attachment key (e.g., "NHZFE5A7")
+        page: For PDF: 1-indexed page number. For EPUB: 1-indexed chapter number.
+        text: Exact text to highlight (used to find coordinates/CFI)
         comment: Optional comment on the annotation
         color: Highlight color in hex format (default: "#ffd400" yellow)
         ctx: MCP context
@@ -1773,10 +1773,15 @@ def create_annotation(
                 return f"Error: Item {attachment_key} is not an attachment"
 
             content_type = attachment_data.get("contentType", "")
-            if content_type != "application/pdf":
-                return f"Error: Attachment {attachment_key} is not a PDF (type: {content_type})"
+            supported_types = {
+                "application/pdf": "pdf",
+                "application/epub+zip": "epub",
+            }
+            if content_type not in supported_types:
+                return f"Error: Attachment {attachment_key} is not a PDF or EPUB (type: {content_type})"
 
-            filename = attachment_data.get("filename", f"{attachment_key}.pdf")
+            file_type = supported_types[content_type]
+            filename = attachment_data.get("filename", f"{attachment_key}.{file_type}")
 
         except Exception as e:
             return f"Error: No attachment found with key: {attachment_key} ({e})"
@@ -1824,14 +1829,25 @@ def create_annotation(
                     "- **Linked files**: Linked attachments (not imported) cannot be accessed remotely"
                 )
 
-            # Verify it's a valid PDF
-            if not verify_pdf_attachment(file_path):
-                return f"Error: Downloaded file is not a valid PDF"
+            # Verify the file is valid
+            if file_type == "pdf":
+                if not verify_pdf_attachment(file_path):
+                    return f"Error: Downloaded file is not a valid PDF"
+            else:  # epub
+                from zotero_mcp.epub_utils import verify_epub_attachment
+                if not verify_epub_attachment(file_path):
+                    return f"Error: Downloaded file is not a valid EPUB"
 
             # Search for the text and get position data
             search_preview = text[:50] + "..." if len(text) > 50 else text
-            ctx.info(f"Searching for text on page {page}: '{search_preview}'")
-            position_data = find_text_position(file_path, page, text)
+            location_type = "page" if file_type == "pdf" else "chapter"
+            ctx.info(f"Searching for text in {location_type} {page}: '{search_preview}'")
+
+            if file_type == "pdf":
+                position_data = find_text_position(file_path, page, text)
+            else:  # epub
+                from zotero_mcp.epub_utils import find_text_in_epub
+                position_data = find_text_in_epub(file_path, page, text)
 
             if "error" in position_data:
                 # Build debug info message
@@ -1868,31 +1884,48 @@ def create_annotation(
                     if best_match:
                         preview = best_match[:80]
                         debug_lines.append(f"  Best match text: \"{preview}...\"")
-                    if position_data.get("page_found"):
-                        debug_lines.append(f"  Found on page: {position_data['page_found']}")
+                    # Handle both PDF (page_found) and EPUB (chapter_found)
+                    found_location = position_data.get("page_found") or position_data.get("chapter_found")
+                    if found_location:
+                        debug_lines.append(f"  Found in {location_type}: {found_location}")
 
-                if position_data.get("pages_searched"):
-                    debug_lines.append(f"  Pages searched: {position_data['pages_searched']}")
+                # Handle both PDF (pages_searched) and EPUB (chapters_searched)
+                searched = position_data.get("pages_searched") or position_data.get("chapters_searched")
+                if searched:
+                    debug_lines.append(f"  {location_type.title()}s searched: {searched}")
 
                 if best_score < 0.5:
                     debug_lines.extend([
                         "",
                         "Tips:",
-                        "- Copy the exact text from the PDF (don't paraphrase)",
+                        f"- Copy the exact text from the {file_type.upper()} (don't paraphrase)",
                         "- Try a shorter, unique phrase from the beginning",
-                        "- Check that the page number is correct",
+                        f"- Check that the {location_type} number is correct",
                     ])
 
                 return "\n".join(debug_lines)
 
-            # Get page label (might differ from page number in some PDFs)
-            page_label = get_page_label(file_path, page)
+            # Build annotation data based on file type
+            if file_type == "pdf":
+                # Get page label (might differ from page number in some PDFs)
+                page_label = get_page_label(file_path, page)
 
-            # Build annotation position JSON
-            annotation_position = build_annotation_position(
-                position_data["pageIndex"],
-                position_data["rects"]
-            )
+                # Build annotation position JSON for PDF
+                annotation_position = build_annotation_position(
+                    position_data["pageIndex"],
+                    position_data["rects"]
+                )
+                sort_index = position_data["sort_index"]
+            else:  # epub
+                # For EPUB: leave pageLabel EMPTY for proper navigation
+                # Zotero's manual EPUB annotations have empty pageLabel and it works
+                page_label = ""  # Empty, not chapter number!
+                annotation_position = position_data["annotation_position"]
+                # EPUB sort index format: "spine_index|character_offset"
+                # Use actual character position from CFI generation
+                chapter = position_data.get("chapter_found", page)
+                char_position = position_data.get("char_position", chapter * 1000)
+                sort_index = f"{chapter:05d}|{char_position:08d}"
 
             # Prepare the annotation data
             annotation_data = {
@@ -1902,10 +1935,12 @@ def create_annotation(
                 "annotationText": text,
                 "annotationComment": comment or "",
                 "annotationColor": color,
-                "annotationPageLabel": page_label,
-                "annotationSortIndex": position_data["sort_index"],
+                "annotationSortIndex": sort_index,
                 "annotationPosition": annotation_position,
             }
+            # Only add pageLabel if not empty (EPUB should not have it)
+            if page_label:
+                annotation_data["annotationPageLabel"] = page_label
 
             ctx.info(f"Creating annotation via Web API...")
 
@@ -1917,13 +1952,22 @@ def create_annotation(
                 successful = result["success"]
                 if len(successful) > 0:
                     annotation_key = list(successful.values())[0]
+                    location_label = "Page" if file_type == "pdf" else "Chapter"
                     response = [
                         f"Successfully created highlight annotation",
                         f"",
                         f"**Annotation Key:** {annotation_key}",
-                        f"**Page:** {page_label}",
-                        f"**Text:** \"{text[:100]}{'...' if len(text) > 100 else ''}\"",
+                        f"**{location_label}:** {page_label}",
                     ]
+                    # For EPUB, show if text was found in different chapter than requested
+                    if file_type == "epub":
+                        chapter_found = position_data.get("chapter_found", page)
+                        if chapter_found != page:
+                            response.append(f"**Note:** Text was found in chapter {chapter_found} (you specified {page})")
+                        chapter_href = position_data.get("chapter_href", "")
+                        if chapter_href:
+                            response.append(f"**Section:** {chapter_href}")
+                    response.append(f"**Text:** \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
                     if comment:
                         response.append(f"**Comment:** {comment}")
                     response.append(f"**Color:** {color}")
