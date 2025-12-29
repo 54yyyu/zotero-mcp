@@ -1,63 +1,121 @@
 """
-PDF utility functions for annotation creation.
+PDF utility functions for Zotero annotation creation.
 
-This module provides functions to search for text in PDFs and extract
-position data needed for creating Zotero annotations.
+This module provides text search capabilities for PDFs to extract position data
+needed for creating Zotero highlight annotations. It handles common PDF text
+extraction issues like:
+- Hyphenation at line breaks
+- Special characters (em-dashes, curly quotes, ligatures)
+- Missing word spacing in extracted text
+- Page number mismatches
+
+Search Strategy (in order):
+1. For long text (>100 chars): Anchor-based matching (find start/end, highlight between)
+2. Exact match using PyMuPDF's search
+3. Fuzzy matching with normalized text comparison
 """
+
+from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
+# =============================================================================
+# Configuration Constants
+# =============================================================================
+
+# Anchor-based matching settings
+ANCHOR_MIN_TEXT_LENGTH = 100  # Use anchor matching for text longer than this
+ANCHOR_TARGET_LENGTH = 40     # Target length for start/end anchors
+ANCHOR_WORD_BOUNDARY_TOLERANCE = 15  # How far to extend to find word boundary
+ANCHOR_MATCH_THRESHOLD = 0.75  # Minimum similarity for anchor fuzzy matching
+
+# Fuzzy matching thresholds (by text length)
+FUZZY_THRESHOLD_SHORT = 0.85   # For text < 50 chars
+FUZZY_THRESHOLD_MEDIUM = 0.75  # For text 50-150 chars
+FUZZY_THRESHOLD_LONG = 0.65    # For text > 150 chars
+
+# Search behavior
+DEFAULT_NEIGHBOR_PAGES = 2  # How many pages to search on either side
+
+# Performance optimization
+SLIDING_WINDOW_STEP_THRESHOLD = 10000  # Use stepping for texts longer than this
+
+
+# =============================================================================
+# Text Normalization
+# =============================================================================
+
+# Character replacement maps for normalization
+DASH_REPLACEMENTS = {
+    '\u2014': '-',  # em-dash
+    '\u2013': '-',  # en-dash
+    '\u2012': '-',  # figure dash
+    '\u2011': '-',  # non-breaking hyphen
+    '\u2010': '-',  # hyphen
+}
+
+QUOTE_REPLACEMENTS = {
+    '\u2018': "'",  # left single quote
+    '\u2019': "'",  # right single quote
+    '\u201c': '"',  # left double quote
+    '\u201d': '"',  # right double quote
+}
+
+LIGATURE_REPLACEMENTS = {
+    '\ufb01': 'fi',   # fi ligature
+    '\ufb02': 'fl',   # fl ligature
+    '\ufb00': 'ff',   # ff ligature
+    '\ufb03': 'ffi',  # ffi ligature
+    '\ufb04': 'ffl',  # ffl ligature
+}
 
 
 def normalize_text(text: str) -> str:
     """
-    Normalize text for fuzzy matching.
+    Normalize text for matching, handling common PDF extraction issues.
 
-    Handles common PDF text extraction issues:
-    - Hyphenation at line breaks (e.g., "regard-\\nless" -> "regardless")
-    - Multiple whitespace -> single space
-    - Various dash types, curly quotes, special characters
+    Transformations applied:
+    - Remove hyphenation at line breaks ("regard-\\nless" -> "regardless")
+    - Normalize dashes (em-dash, en-dash, etc.) to simple hyphen
+    - Normalize curly quotes to straight quotes
+    - Expand common ligatures (fi, fl, ff, etc.)
+    - Collapse whitespace to single spaces
 
     Args:
         text: Raw text to normalize
 
     Returns:
-        Normalized text for comparison
+        Normalized text suitable for comparison
     """
-    # Remove hyphenation at line breaks (hyphen followed by newline and optional spaces)
+    # Remove hyphenation at line breaks
     text = re.sub(r'-\s*\n\s*', '', text)
-    # Also handle soft hyphens and other dash variants at line breaks
     text = re.sub(r'[\u00ad\u2010\u2011-]\s*\n\s*', '', text)
-    # Normalize various dash types to simple hyphen
-    text = text.replace('\u2014', '-')  # em-dash
-    text = text.replace('\u2013', '-')  # en-dash
-    text = text.replace('\u2012', '-')  # figure dash
-    text = text.replace('\u2011', '-')  # non-breaking hyphen
-    text = text.replace('\u2010', '-')  # hyphen
-    # Normalize curly quotes to straight quotes
-    text = text.replace('\u2018', "'")  # left single quote
-    text = text.replace('\u2019', "'")  # right single quote
-    text = text.replace('\u201c', '"')  # left double quote
-    text = text.replace('\u201d', '"')  # right double quote
-    # Handle common ligatures
-    text = text.replace('\ufb01', 'fi')  # fi ligature
-    text = text.replace('\ufb02', 'fl')  # fl ligature
-    text = text.replace('\ufb00', 'ff')  # ff ligature
-    text = text.replace('\ufb03', 'ffi')  # ffi ligature
-    text = text.replace('\ufb04', 'ffl')  # ffl ligature
-    # Collapse all whitespace to single spaces
+
+    # Apply character replacements
+    for old, new in DASH_REPLACEMENTS.items():
+        text = text.replace(old, new)
+    for old, new in QUOTE_REPLACEMENTS.items():
+        text = text.replace(old, new)
+    for old, new in LIGATURE_REPLACEMENTS.items():
+        text = text.replace(old, new)
+
+    # Collapse whitespace
     text = re.sub(r'\s+', ' ', text)
-    # Strip leading/trailing whitespace
-    text = text.strip()
-    return text
+    return text.strip()
 
 
 def normalize_for_matching(text: str) -> str:
     """
-    Aggressively normalize text for fuzzy matching comparison.
+    Aggressively normalize text for fuzzy matching.
 
-    This removes ALL spaces to handle PDFs where words are stored
-    without proper spacing between spans.
+    This removes ALL spaces and lowercases the text to handle PDFs where
+    words are stored without proper spacing between spans.
 
     Args:
         text: Text to normalize
@@ -65,47 +123,572 @@ def normalize_for_matching(text: str) -> str:
     Returns:
         Text with all spaces removed, lowercased
     """
-    # First apply standard normalization
     text = normalize_text(text)
-    # Remove all spaces for comparison
     text = re.sub(r'\s+', '', text)
-    # Lowercase for case-insensitive matching
-    text = text.lower()
-    return text
+    return text.lower()
 
+
+# =============================================================================
+# Page Text Extraction
+# =============================================================================
+
+def _extract_page_spans(page) -> list[dict[str, Any]]:
+    """
+    Extract all text spans from a PDF page with their bounding boxes.
+
+    Args:
+        page: PyMuPDF page object
+
+    Returns:
+        List of dicts with 'text' and 'bbox' keys
+    """
+    blocks = page.get_text("dict", flags=11)["blocks"]
+    spans = []
+
+    for block in blocks:
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                spans.append({
+                    "text": span["text"],
+                    "bbox": span["bbox"],
+                })
+
+    return spans
+
+
+def _build_normalized_text_index(spans: list[dict]) -> tuple[str, list[tuple[int, int, int]]]:
+    """
+    Build a normalized cumulative text string and index mapping.
+
+    This concatenates all span text (normalized) and tracks where each span's
+    text appears in the cumulative string, enabling position-to-span lookups.
+
+    Args:
+        spans: List of span dicts with 'text' keys
+
+    Returns:
+        Tuple of:
+        - Cumulative normalized text string
+        - List of (norm_start, norm_end, span_index) tuples
+    """
+    cumulative = ""
+    positions = []
+
+    for i, span in enumerate(spans):
+        start = len(cumulative)
+        normalized = normalize_for_matching(span["text"])
+        cumulative += normalized
+        end = len(cumulative)
+        positions.append((start, end, i))
+
+    return cumulative, positions
+
+
+def _get_spans_in_range(
+    start_pos: int,
+    end_pos: int,
+    span_positions: list[tuple[int, int, int]],
+    spans: list[dict],
+) -> tuple[list, list[str]]:
+    """
+    Get all spans that overlap with a position range in normalized text.
+
+    Args:
+        start_pos: Start position in normalized text
+        end_pos: End position in normalized text
+        span_positions: Index from _build_normalized_text_index
+        spans: Original span list
+
+    Returns:
+        Tuple of (list of bboxes, list of original text strings)
+    """
+    bboxes = []
+    texts = []
+
+    for norm_start, norm_end, span_idx in span_positions:
+        if norm_start < end_pos and norm_end > start_pos:
+            bboxes.append(spans[span_idx]["bbox"])
+            texts.append(spans[span_idx]["text"])
+
+    return bboxes, texts
+
+
+# =============================================================================
+# Coordinate Conversion
+# =============================================================================
+
+def _convert_rects_to_zotero(
+    bboxes: list[tuple[float, float, float, float]],
+    page_height: float,
+) -> tuple[list[list[float]], float, float]:
+    """
+    Convert PyMuPDF bounding boxes to Zotero's coordinate system.
+
+    PyMuPDF uses top-left origin (y increases downward).
+    Zotero/PDF uses bottom-left origin (y increases upward).
+
+    Args:
+        bboxes: List of (x0, y0, x1, y1) tuples from PyMuPDF
+        page_height: Height of the page
+
+    Returns:
+        Tuple of:
+        - List of [x0, y1, x1, y2] rects in Zotero coordinates
+        - Minimum y position (for sort index)
+        - Minimum x position (for sort index)
+    """
+    rects = []
+    min_y = float("inf")
+    min_x = float("inf")
+
+    for bbox in bboxes:
+        x0, y0, x1, y1 = bbox
+        # Transform Y coordinates
+        pdf_y1 = page_height - y1  # Bottom in PDF coords
+        pdf_y2 = page_height - y0  # Top in PDF coords
+
+        rects.append([x0, pdf_y1, x1, pdf_y2])
+        min_y = min(min_y, pdf_y1)
+        min_x = min(min_x, x0)
+
+    return rects, min_y, min_x
+
+
+def _build_sort_index(page_index: int, min_y: float, min_x: float) -> str:
+    """
+    Build Zotero annotation sort index string.
+
+    Format: PPPPP|YYYYYY|XXXXX (page|y-position|x-position)
+
+    Args:
+        page_index: 0-indexed page number
+        min_y: Minimum y position
+        min_x: Minimum x position
+
+    Returns:
+        Sort index string
+    """
+    return f"{page_index:05d}|{int(min_y):06d}|{int(min_x):05d}"
+
+
+def _build_search_result(
+    page_index: int,
+    bboxes: list,
+    texts: list[str],
+    page_height: float,
+) -> dict:
+    """
+    Build a successful search result dict.
+
+    Args:
+        page_index: 0-indexed page number
+        bboxes: List of bounding boxes
+        texts: List of matched text strings
+        page_height: Page height for coordinate conversion
+
+    Returns:
+        Dict with pageIndex, rects, sort_index, matched_text
+    """
+    rects, min_y, min_x = _convert_rects_to_zotero(bboxes, page_height)
+    sort_index = _build_sort_index(page_index, min_y, min_x)
+
+    return {
+        "pageIndex": page_index,
+        "rects": rects,
+        "sort_index": sort_index,
+        "matched_text": " ".join(texts),
+    }
+
+
+# =============================================================================
+# Search Strategies
+# =============================================================================
+
+def _sliding_window_match(
+    text: str,
+    pattern: str,
+    threshold: float,
+    return_best: bool = False,
+) -> tuple[int, int, float] | None:
+    """
+    Find the best fuzzy match for pattern in text using sliding window.
+
+    Uses difflib.SequenceMatcher for similarity comparison.
+
+    Args:
+        text: Text to search in (should be normalized)
+        pattern: Pattern to find (should be normalized)
+        threshold: Minimum similarity ratio (0.0 to 1.0)
+        return_best: If True, return best match even if below threshold
+
+    Returns:
+        Tuple of (start, end, score) or None if no match found
+    """
+    pattern_len = len(pattern)
+    if pattern_len == 0 or len(text) < pattern_len:
+        return None
+
+    best_ratio = 0.0
+    best_start = 0
+    best_end = 0
+
+    window_size = int(pattern_len * 1.2)
+    text_lower = text.lower()
+    pattern_lower = pattern.lower()
+
+    # Use stepping for very long texts
+    step = 1
+    if len(text) >= SLIDING_WINDOW_STEP_THRESHOLD:
+        step = max(1, len(text) // 5000)
+
+    # First pass: find approximate location
+    for i in range(0, len(text) - pattern_len + 1, step):
+        window = text_lower[i:i + window_size]
+        ratio = SequenceMatcher(None, pattern_lower, window).ratio()
+
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_start = i
+            best_end = min(i + pattern_len, len(text))
+
+    # Refine if we used stepping
+    if step > 1 and best_ratio > 0:
+        refine_start = max(0, best_start - step)
+        refine_end = min(len(text) - pattern_len + 1, best_start + step)
+
+        for i in range(refine_start, refine_end):
+            window = text_lower[i:i + window_size]
+            ratio = SequenceMatcher(None, pattern_lower, window).ratio()
+
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_start = i
+                best_end = min(i + pattern_len, len(text))
+
+    if best_ratio >= threshold or return_best:
+        return (best_start, best_end, best_ratio)
+
+    return None
+
+
+def _get_dynamic_threshold(text_length: int) -> float:
+    """
+    Get fuzzy matching threshold based on text length.
+
+    Longer passages need lower thresholds because there's more opportunity
+    for small variations to accumulate.
+    """
+    if text_length < 50:
+        return FUZZY_THRESHOLD_SHORT
+    elif text_length < 150:
+        return FUZZY_THRESHOLD_MEDIUM
+    else:
+        return FUZZY_THRESHOLD_LONG
+
+
+def _extract_anchor(text: str, from_start: bool) -> str:
+    """
+    Extract an anchor phrase from the start or end of text.
+
+    Tries to break at word boundaries for better matching.
+
+    Args:
+        text: Full text to extract from
+        from_start: If True, extract from start; if False, from end
+
+    Returns:
+        Anchor string, or empty string if text is too short
+    """
+    text = text.strip()
+
+    if len(text) < ANCHOR_TARGET_LENGTH * 2:
+        return ""
+
+    if from_start:
+        anchor = text[:ANCHOR_TARGET_LENGTH]
+        # Extend to word boundary
+        next_space = text.find(" ", ANCHOR_TARGET_LENGTH)
+        if 0 < next_space < ANCHOR_TARGET_LENGTH + ANCHOR_WORD_BOUNDARY_TOLERANCE:
+            anchor = text[:next_space]
+    else:
+        anchor = text[-ANCHOR_TARGET_LENGTH:]
+        # Find word boundary
+        remaining = text[:-ANCHOR_TARGET_LENGTH]
+        last_space = remaining.rfind(" ")
+        if last_space != -1 and len(remaining) - last_space < ANCHOR_WORD_BOUNDARY_TOLERANCE:
+            anchor = text[last_space + 1:]
+
+    return anchor.strip()
+
+
+def _anchor_based_search(page, page_index: int, search_text: str) -> dict | None:
+    """
+    Search for long text using anchor-based matching.
+
+    Instead of matching the entire passage, finds the START (~40 chars) and
+    END (~40 chars) of the passage, then highlights everything between them.
+    This is robust against variations in the middle of the text.
+
+    Args:
+        page: PyMuPDF page object
+        page_index: 0-indexed page number
+        search_text: Full text to highlight
+
+    Returns:
+        Search result dict if found, None otherwise
+    """
+    page_height = page.rect.height
+
+    # Extract anchors
+    start_anchor = _extract_anchor(search_text, from_start=True)
+    end_anchor = _extract_anchor(search_text, from_start=False)
+
+    if not start_anchor or not end_anchor:
+        return None
+
+    # Build text index
+    spans = _extract_page_spans(page)
+    if not spans:
+        return None
+
+    cumulative, span_positions = _build_normalized_text_index(spans)
+    if not cumulative:
+        return None
+
+    # Find start anchor
+    normalized_start = normalize_for_matching(start_anchor)
+    start_pos = cumulative.find(normalized_start)
+
+    if start_pos == -1:
+        match = _sliding_window_match(
+            cumulative, normalized_start, ANCHOR_MATCH_THRESHOLD, return_best=True
+        )
+        if match and match[2] >= ANCHOR_MATCH_THRESHOLD:
+            start_pos = match[0]
+        else:
+            return None
+
+    # Find end anchor (search after start)
+    normalized_end = normalize_for_matching(end_anchor)
+    search_offset = start_pos + len(normalized_start) // 2
+    end_pos = cumulative.find(normalized_end, search_offset)
+
+    if end_pos == -1:
+        remaining = cumulative[search_offset:]
+        match = _sliding_window_match(
+            remaining, normalized_end, ANCHOR_MATCH_THRESHOLD, return_best=True
+        )
+        if match and match[2] >= ANCHOR_MATCH_THRESHOLD:
+            end_pos = search_offset + match[0] + len(normalized_end)
+        else:
+            # Estimate based on text length
+            estimated_len = int(len(normalize_for_matching(search_text)) * 1.1)
+            end_pos = min(start_pos + estimated_len, len(cumulative))
+    else:
+        end_pos = end_pos + len(normalized_end)
+
+    # Get matching spans
+    bboxes, texts = _get_spans_in_range(start_pos, end_pos, span_positions, spans)
+    if not bboxes:
+        return None
+
+    return _build_search_result(page_index, bboxes, texts, page_height)
+
+
+def _fuzzy_search_page(
+    page,
+    search_text: str,
+    threshold: float | None = None,
+) -> dict | None:
+    """
+    Perform fuzzy text search on a PDF page.
+
+    Handles cases where exact matching fails due to hyphenation,
+    whitespace differences, or character variations.
+
+    Args:
+        page: PyMuPDF page object
+        search_text: Text to search for
+        threshold: Minimum similarity (0.0-1.0), or None for dynamic
+
+    Returns:
+        Dict with 'rects', 'matched_text', 'score' if found, None otherwise
+    """
+    spans = _extract_page_spans(page)
+    if not spans:
+        return None
+
+    cumulative, span_positions = _build_normalized_text_index(spans)
+    normalized_search = normalize_for_matching(search_text)
+
+    if not normalized_search or not cumulative:
+        return None
+
+    if threshold is None:
+        threshold = _get_dynamic_threshold(len(search_text))
+
+    # Try exact match first
+    match_start = cumulative.find(normalized_search)
+
+    if match_start != -1:
+        match_end = match_start + len(normalized_search)
+        bboxes, texts = _get_spans_in_range(match_start, match_end, span_positions, spans)
+
+        if bboxes:
+            return {
+                "rects": bboxes,
+                "matched_text": " ".join(texts),
+                "score": 1.0,
+            }
+
+    # Try sliding window fuzzy match
+    match_result = _sliding_window_match(
+        cumulative, normalized_search, threshold, return_best=True
+    )
+
+    if match_result is None:
+        return None
+
+    match_start, match_end, match_score = match_result
+    bboxes, texts = _get_spans_in_range(match_start, match_end, span_positions, spans)
+
+    if not bboxes:
+        return None
+
+    # Return result (may be below threshold for debug purposes)
+    return {
+        "rects": bboxes if match_score >= threshold else [],
+        "matched_text": " ".join(texts),
+        "score": match_score,
+    }
+
+
+def _search_single_page(
+    page,
+    page_index: int,
+    search_text: str,
+    fuzzy: bool,
+    best_debug: dict,
+) -> dict | None:
+    """
+    Search for text on a single PDF page using multiple strategies.
+
+    Strategy order:
+    1. Anchor-based matching (for long text)
+    2. Exact search via PyMuPDF
+    3. Fuzzy matching
+
+    Args:
+        page: PyMuPDF page object
+        page_index: 0-indexed page number
+        search_text: Text to search for
+        fuzzy: Whether to use fuzzy matching as fallback
+        best_debug: Dict to track best match for debug info (mutated)
+
+    Returns:
+        Search result dict if found, None otherwise
+    """
+    page_height = page.rect.height
+
+    # Strategy 1: Anchor-based matching for long passages
+    if len(search_text) > ANCHOR_MIN_TEXT_LENGTH:
+        result = _anchor_based_search(page, page_index, search_text)
+        if result:
+            return result
+
+    # Strategy 2: Exact search
+    text_instances = page.search_for(search_text)
+
+    if not text_instances:
+        # Try with normalized whitespace
+        normalized = " ".join(search_text.split())
+        text_instances = page.search_for(normalized)
+
+    if text_instances:
+        rects, min_y, min_x = _convert_rects_to_zotero(
+            [r for r in text_instances], page_height
+        )
+        return {
+            "pageIndex": page_index,
+            "rects": rects,
+            "sort_index": _build_sort_index(page_index, min_y, min_x),
+            "matched_text": search_text,
+        }
+
+    # Strategy 3: Fuzzy matching
+    if fuzzy:
+        fuzzy_result = _fuzzy_search_page(page, search_text)
+
+        if fuzzy_result:
+            # Update debug info
+            score = fuzzy_result.get("score", 0)
+            if score > best_debug["score"]:
+                best_debug["match"] = fuzzy_result.get("matched_text")
+                best_debug["score"] = score
+                best_debug["page"] = page_index
+
+            # Return if we have valid rects
+            if fuzzy_result.get("rects"):
+                bboxes = fuzzy_result["rects"]
+                rects, min_y, min_x = _convert_rects_to_zotero(bboxes, page_height)
+
+                return {
+                    "pageIndex": page_index,
+                    "rects": rects,
+                    "sort_index": _build_sort_index(page_index, min_y, min_x),
+                    "matched_text": fuzzy_result["matched_text"],
+                }
+
+    return None
+
+
+# =============================================================================
+# Public API
+# =============================================================================
 
 def find_text_position(
     pdf_path: str,
     page_num: int,
     search_text: str,
     fuzzy: bool = True,
-    search_neighbors: int = 2,
+    search_neighbors: int = DEFAULT_NEIGHBOR_PAGES,
 ) -> dict:
     """
     Search for text in a PDF and return position data for Zotero annotation.
 
+    Searches the specified page first, then neighboring pages if not found.
+    Uses multiple matching strategies (anchor-based, exact, fuzzy) to handle
+    various PDF text extraction issues.
+
     Args:
         pdf_path: Path to the PDF file
         page_num: 1-indexed page number to search on
-        search_text: Text to find (exact or fuzzy match)
-        fuzzy: If True, use fuzzy matching to handle hyphenation and line breaks
-        search_neighbors: Number of neighboring pages to search if not found on target page
+        search_text: Text to find
+        fuzzy: If True, use fuzzy matching as fallback
+        search_neighbors: Number of pages to search on either side
 
     Returns:
-        Dict with annotation position data on success:
-        - pageIndex: 0-indexed page number
-        - rects: list of [x1, y1, x2, y2] bounding boxes in PDF coordinates
-        - sort_index: string for annotationSortIndex (PPPPP|YYYYYY|XXXXX)
-        - matched_text: the actual text that was matched (useful for fuzzy matches)
+        On success:
+            {
+                "pageIndex": int,  # 0-indexed page where found
+                "rects": [[x1, y1, x2, y2], ...],  # Bounding boxes
+                "sort_index": str,  # For annotation ordering
+                "matched_text": str,  # Actual matched text
+            }
 
-        Dict with debug info on failure:
-        - error: error message
-        - best_match: best matching text found (if any)
-        - best_score: similarity score of best match
-        - page_searched: list of pages that were searched
+        On failure:
+            {
+                "error": str,
+                "best_match": str | None,  # Best partial match found
+                "best_score": float,  # Similarity score
+                "page_found": int | None,  # Page with best match
+                "pages_searched": [int, ...],  # Pages that were searched
+            }
     """
     try:
-        import fitz  # pymupdf
+        import fitz
     except ImportError:
         raise ImportError(
             "pymupdf is required for PDF text search. "
@@ -115,11 +698,10 @@ def find_text_position(
     doc = fitz.open(pdf_path)
 
     try:
-        # Convert to 0-indexed
-        target_page_index = page_num - 1
+        target_index = page_num - 1
         total_pages = len(doc)
 
-        if target_page_index < 0 or target_page_index >= total_pages:
+        if target_index < 0 or target_index >= total_pages:
             return {
                 "error": f"Page {page_num} out of range (PDF has {total_pages} pages)",
                 "best_match": None,
@@ -127,24 +709,24 @@ def find_text_position(
                 "pages_searched": [],
             }
 
-        # Build list of pages to search: target first, then neighbors
-        pages_to_search = [target_page_index]
+        # Build page search order: target first, then neighbors
+        pages_to_search = [target_index]
         for offset in range(1, search_neighbors + 1):
-            if target_page_index - offset >= 0:
-                pages_to_search.append(target_page_index - offset)
-            if target_page_index + offset < total_pages:
-                pages_to_search.append(target_page_index + offset)
+            if target_index - offset >= 0:
+                pages_to_search.append(target_index - offset)
+            if target_index + offset < total_pages:
+                pages_to_search.append(target_index + offset)
 
-        # Track best match across all pages for debug info
-        best_debug = {"match": None, "score": 0, "page": None}
+        best_debug = {"match": None, "score": 0.0, "page": None}
 
         for page_index in pages_to_search:
             page = doc[page_index]
             result = _search_single_page(page, page_index, search_text, fuzzy, best_debug)
-            if result and "error" not in result:
+
+            if result:
                 return result
 
-        # No match found - return debug info
+        # No match found
         return {
             "error": f"Could not find text on page {page_num} or neighboring pages",
             "best_match": best_debug["match"],
@@ -157,547 +739,18 @@ def find_text_position(
         doc.close()
 
 
-def _search_single_page(
-    page, page_index: int, search_text: str, fuzzy: bool, best_debug: dict
-) -> dict | None:
-    """
-    Search for text on a single PDF page.
-
-    Args:
-        page: PyMuPDF page object
-        page_index: 0-indexed page number
-        search_text: Text to search for
-        fuzzy: Whether to use fuzzy matching
-        best_debug: Dict to track best match for debug info (mutated)
-
-    Returns:
-        Dict with position data if found, None otherwise
-    """
-    page_height = page.rect.height
-
-    # For long passages (>100 chars), use anchor-based matching
-    if len(search_text) > 100:
-        anchor_result = _anchor_based_search(page, page_index, search_text)
-        if anchor_result:
-            return anchor_result
-        # Fall through to try other methods if anchor search fails
-
-    # Try exact search first
-    text_instances = page.search_for(search_text)
-
-    if not text_instances:
-        # Try with normalized whitespace
-        normalized_text = " ".join(search_text.split())
-        text_instances = page.search_for(normalized_text)
-
-    # If still no match and fuzzy is enabled, try fuzzy matching
-    matched_text = search_text
-    if not text_instances and fuzzy:
-        fuzzy_result = _fuzzy_search_page(page, search_text)
-        if fuzzy_result:
-            if fuzzy_result.get("score", 1.0) >= 0:  # Accept any valid match
-                text_instances = fuzzy_result["rects"]
-                matched_text = fuzzy_result["matched_text"]
-            # Update debug info with best match
-            if fuzzy_result.get("score", 0) > best_debug["score"]:
-                best_debug["match"] = fuzzy_result.get("matched_text")
-                best_debug["score"] = fuzzy_result.get("score", 0)
-                best_debug["page"] = page_index
-
-    if not text_instances:
-        return None
-
-    # Convert fitz.Rect objects to [x1, y1, x2, y2] lists
-    # PyMuPDF uses top-left origin (y increases downward)
-    # Zotero/PDF uses bottom-left origin (y increases upward)
-    rects = []
-    min_y_pdf = float("inf")
-    min_x = float("inf")
-
-    for rect in text_instances:
-        # Handle both fitz.Rect objects and raw tuples/lists
-        if hasattr(rect, 'x0'):
-            x0, y0, x1, y1 = rect.x0, rect.y0, rect.x1, rect.y1
-        else:
-            x0, y0, x1, y1 = rect[0], rect[1], rect[2], rect[3]
-
-        # Transform Y coordinates from top-left to bottom-left origin
-        pdf_y1 = page_height - y1
-        pdf_y2 = page_height - y0
-
-        rects.append([x0, pdf_y1, x1, pdf_y2])
-        min_y_pdf = min(min_y_pdf, pdf_y1)
-        min_x = min(min_x, x0)
-
-    # Build sort index: PPPPP|YYYYYY|XXXXX
-    sort_index = f"{page_index:05d}|{int(min_y_pdf):06d}|{int(min_x):05d}"
-
-    return {
-        "pageIndex": page_index,
-        "rects": rects,
-        "sort_index": sort_index,
-        "matched_text": matched_text,
-    }
-
-
-def _anchor_based_search(page, page_index: int, search_text: str) -> dict | None:
-    """
-    Search for long text using anchor-based matching.
-
-    Instead of matching the entire passage, this finds:
-    1. The START of the passage (first ~40 chars)
-    2. The END of the passage (last ~40 chars)
-    3. Highlights everything between them
-
-    This is much more robust for long passages with line breaks,
-    hyphenation, or character variations in the middle.
-
-    Args:
-        page: PyMuPDF page object
-        page_index: 0-indexed page number
-        search_text: Full text to highlight
-
-    Returns:
-        Dict with position data if found, None otherwise
-    """
-    page_height = page.rect.height
-
-    # Extract anchors (aim for ~40 chars, but break at word boundaries)
-    start_anchor = _extract_anchor(search_text, from_start=True, target_len=40)
-    end_anchor = _extract_anchor(search_text, from_start=False, target_len=40)
-
-    if not start_anchor or not end_anchor:
-        return None
-
-    # Get all text spans with positions
-    blocks = page.get_text("dict", flags=11)["blocks"]
-    spans = []
-    for block in blocks:
-        if "lines" not in block:
-            continue
-        for line in block["lines"]:
-            for span in line["spans"]:
-                spans.append({
-                    "text": span["text"],
-                    "bbox": span["bbox"],
-                })
-
-    if not spans:
-        return None
-
-    # Build normalized cumulative text and track positions
-    cumulative_normalized = ""
-    span_norm_positions = []
-
-    for i, span in enumerate(spans):
-        norm_start = len(cumulative_normalized)
-        span_normalized = normalize_for_matching(span["text"])
-        cumulative_normalized += span_normalized
-        norm_end = len(cumulative_normalized)
-        span_norm_positions.append((norm_start, norm_end, i))
-
-    # Find start anchor
-    normalized_start = normalize_for_matching(start_anchor)
-    start_pos = cumulative_normalized.find(normalized_start)
-
-    if start_pos == -1:
-        # Try fuzzy match for start anchor
-        match = _sliding_window_match(cumulative_normalized, normalized_start, 0.75, return_best=True)
-        if match and match[2] >= 0.75:
-            start_pos = match[0]
-        else:
-            return None
-
-    # Find end anchor (search after start position)
-    normalized_end = normalize_for_matching(end_anchor)
-    # Search for end anchor starting from after the start anchor
-    search_start = start_pos + len(normalized_start) // 2
-    end_pos = cumulative_normalized.find(normalized_end, search_start)
-
-    if end_pos == -1:
-        # Try fuzzy match for end anchor
-        remaining_text = cumulative_normalized[search_start:]
-        match = _sliding_window_match(remaining_text, normalized_end, 0.75, return_best=True)
-        if match and match[2] >= 0.75:
-            end_pos = search_start + match[0] + len(normalized_end)
-        else:
-            # If end anchor not found, estimate based on text length ratio
-            estimated_len = int(len(normalize_for_matching(search_text)) * 1.1)
-            end_pos = min(start_pos + estimated_len, len(cumulative_normalized))
-    else:
-        end_pos = end_pos + len(normalized_end)
-
-    # Find all spans between start and end positions
-    matching_rects = []
-    matched_span_texts = []
-
-    for norm_start, norm_end, span_idx in span_norm_positions:
-        # Check if this span overlaps with our range
-        if norm_start < end_pos and norm_end > start_pos:
-            matching_rects.append(spans[span_idx]["bbox"])
-            matched_span_texts.append(spans[span_idx]["text"])
-
-    if not matching_rects:
-        return None
-
-    # Convert to Zotero coordinate system
-    rects = []
-    min_y_pdf = float("inf")
-    min_x = float("inf")
-
-    for bbox in matching_rects:
-        x0, y0, x1, y1 = bbox
-        pdf_y1 = page_height - y1
-        pdf_y2 = page_height - y0
-        rects.append([x0, pdf_y1, x1, pdf_y2])
-        min_y_pdf = min(min_y_pdf, pdf_y1)
-        min_x = min(min_x, x0)
-
-    sort_index = f"{page_index:05d}|{int(min_y_pdf):06d}|{int(min_x):05d}"
-    matched_text = " ".join(matched_span_texts)
-
-    return {
-        "pageIndex": page_index,
-        "rects": rects,
-        "sort_index": sort_index,
-        "matched_text": matched_text,
-    }
-
-
-def _extract_anchor(text: str, from_start: bool, target_len: int = 40) -> str:
-    """
-    Extract an anchor phrase from the start or end of text.
-
-    Tries to break at word boundaries for better matching.
-
-    Args:
-        text: Full text to extract from
-        from_start: If True, extract from start; if False, from end
-        target_len: Target length for the anchor
-
-    Returns:
-        Anchor string, or empty string if text is too short
-    """
-    text = text.strip()
-
-    if len(text) < target_len * 2:
-        # Text too short for anchoring
-        return ""
-
-    if from_start:
-        # Get first target_len chars, then extend to word boundary
-        anchor = text[:target_len]
-        # Find next space to complete the word
-        next_space = text.find(" ", target_len)
-        if next_space != -1 and next_space < target_len + 15:
-            anchor = text[:next_space]
-    else:
-        # Get last target_len chars, then extend to word boundary
-        anchor = text[-target_len:]
-        # Find previous space to start at word boundary
-        remaining = text[:-target_len]
-        last_space = remaining.rfind(" ")
-        if last_space != -1 and len(remaining) - last_space < 15:
-            anchor = text[last_space + 1:]
-
-    return anchor.strip()
-
-
-def _get_dynamic_threshold(text_length: int) -> float:
-    """
-    Calculate dynamic fuzzy matching threshold based on text length.
-
-    Longer passages need lower thresholds because there's more opportunity
-    for small variations to accumulate.
-
-    Args:
-        text_length: Number of characters in the search text
-
-    Returns:
-        Threshold between 0.65 and 0.85
-    """
-    if text_length < 50:
-        return 0.85  # Short text: be strict
-    elif text_length < 150:
-        return 0.75  # Medium text: moderate
-    else:
-        return 0.65  # Long passages: be lenient
-
-
-def _fuzzy_search_page(page, search_text: str, threshold: float | None = None) -> dict | None:
-    """
-    Perform fuzzy text search on a PDF page.
-
-    This handles cases where the search text doesn't exactly match the PDF
-    due to hyphenation at line breaks, different whitespace, etc.
-
-    Args:
-        page: PyMuPDF page object
-        search_text: Text to search for
-        threshold: Minimum similarity ratio (0.0 to 1.0) for a match.
-                   If None, uses dynamic threshold based on text length.
-
-    Returns:
-        Dict with 'rects', 'matched_text', and 'score' if found, None otherwise.
-        Even when no match above threshold, may return best match info for debugging.
-    """
-    # Get all text blocks with position info
-    blocks = page.get_text("dict", flags=11)["blocks"]
-
-    # Extract text spans with their positions
-    spans = []
-    for block in blocks:
-        if "lines" not in block:
-            continue
-        for line in block["lines"]:
-            for span in line["spans"]:
-                spans.append({
-                    "text": span["text"],
-                    "bbox": span["bbox"],  # (x0, y0, x1, y1)
-                })
-
-    if not spans:
-        return None
-
-    # Build cumulative normalized text and track span boundaries
-    cumulative_normalized = ""
-    span_norm_positions = []  # (norm_start, norm_end, span_idx)
-
-    for i, span in enumerate(spans):
-        norm_start = len(cumulative_normalized)
-        span_normalized = normalize_for_matching(span["text"])
-        cumulative_normalized += span_normalized
-        norm_end = len(cumulative_normalized)
-        span_norm_positions.append((norm_start, norm_end, i))
-
-    # Normalize search text the same way
-    normalized_search = normalize_for_matching(search_text)
-
-    if not normalized_search or not cumulative_normalized:
-        return None
-
-    # Use dynamic threshold if not specified
-    if threshold is None:
-        threshold = _get_dynamic_threshold(len(search_text))
-
-    # Try exact match first
-    match_start = cumulative_normalized.find(normalized_search)
-    match_score = 1.0  # Exact match
-
-    if match_start == -1:
-        # For long passages, try matching just the first sentence
-        first_sentence_match = None
-        if len(search_text) > 100:
-            first_sentence_match = _try_first_sentence_match(
-                cumulative_normalized, search_text, span_norm_positions, spans
-            )
-            if first_sentence_match:
-                return first_sentence_match
-
-        # Try sliding window fuzzy match
-        match_result = _sliding_window_match(
-            cumulative_normalized, normalized_search, threshold, return_best=True
-        )
-        if match_result is None:
-            return None
-
-        match_start, match_end, match_score = match_result
-
-        # If score is below threshold, return debug info but mark as not matched
-        if match_score < threshold:
-            # Find spans for debug info
-            debug_rects, debug_texts = _get_matching_spans(
-                match_start, match_end, span_norm_positions, spans
-            )
-            return {
-                "rects": [],  # Empty rects = no valid match
-                "matched_text": " ".join(debug_texts) if debug_texts else None,
-                "score": match_score,
-            }
-    else:
-        match_end = match_start + len(normalized_search)
-
-    # Find which spans overlap with our match
-    matching_rects, matched_span_texts = _get_matching_spans(
-        match_start, match_end, span_norm_positions, spans
-    )
-
-    if not matching_rects:
-        return None
-
-    matched_text = " ".join(matched_span_texts)
-
-    return {
-        "rects": matching_rects,
-        "matched_text": matched_text,
-        "score": match_score,
-    }
-
-
-def _get_matching_spans(
-    match_start: int, match_end: int, span_norm_positions: list, spans: list
-) -> tuple[list, list]:
-    """Get spans that overlap with a match region."""
-    matching_rects = []
-    matched_span_texts = []
-
-    for norm_start, norm_end, span_idx in span_norm_positions:
-        if norm_start < match_end and norm_end > match_start:
-            matching_rects.append(spans[span_idx]["bbox"])
-            matched_span_texts.append(spans[span_idx]["text"])
-
-    return matching_rects, matched_span_texts
-
-
-def _try_first_sentence_match(
-    cumulative_normalized: str,
-    search_text: str,
-    span_norm_positions: list,
-    spans: list
-) -> dict | None:
-    """
-    For long passages, try matching just the first sentence and extend from there.
-
-    This handles cases where the full passage may have too many variations,
-    but the first sentence matches well.
-    """
-    # Extract first sentence (up to first period, question mark, or ~100 chars)
-    first_sentence = search_text
-    for delimiter in ['. ', '? ', '! ']:
-        idx = search_text.find(delimiter)
-        if idx > 0 and idx < 150:
-            first_sentence = search_text[:idx + 1]
-            break
-
-    if len(first_sentence) >= len(search_text):
-        return None  # No sentence break found
-
-    normalized_first = normalize_for_matching(first_sentence)
-
-    # Try exact match of first sentence
-    match_start = cumulative_normalized.find(normalized_first)
-
-    if match_start == -1:
-        # Try fuzzy match with higher threshold for short text
-        result = _sliding_window_match(
-            cumulative_normalized, normalized_first, 0.80, return_best=True
-        )
-        if result is None or result[2] < 0.80:
-            return None
-        match_start = result[0]
-
-    # Found first sentence - now extend to cover full search text length
-    # Estimate end position based on original search length ratio
-    ratio = len(search_text) / len(first_sentence)
-    estimated_end = match_start + int(len(normalized_first) * ratio * 1.1)
-    match_end = min(estimated_end, len(cumulative_normalized))
-
-    # Get matching spans
-    matching_rects, matched_span_texts = _get_matching_spans(
-        match_start, match_end, span_norm_positions, spans
-    )
-
-    if not matching_rects:
-        return None
-
-    return {
-        "rects": matching_rects,
-        "matched_text": " ".join(matched_span_texts),
-        "score": 0.90,  # High score since we matched first sentence exactly
-    }
-
-
-def _sliding_window_match(
-    text: str, pattern: str, threshold: float, return_best: bool = False
-) -> tuple | None:
-    """
-    Find the best fuzzy match for pattern in text using sliding window.
-
-    Args:
-        text: Text to search in
-        pattern: Pattern to find
-        threshold: Minimum similarity ratio
-        return_best: If True, return best match even if below threshold (for debug)
-
-    Returns:
-        Tuple of (start, end, score) or None if no match found.
-        If return_best=True, returns best match regardless of threshold.
-    """
-    from difflib import SequenceMatcher
-
-    pattern_len = len(pattern)
-    if pattern_len == 0 or len(text) < pattern_len:
-        return None
-
-    best_ratio = 0
-    best_start = 0
-    best_end = 0
-
-    # Use a window slightly larger than the pattern to account for variations
-    window_size = int(pattern_len * 1.2)
-
-    text_lower = text.lower()
-    pattern_lower = pattern.lower()
-
-    # Optimization: skip positions in larger steps for very long texts
-    step = 1 if len(text) < 10000 else max(1, len(text) // 5000)
-
-    for i in range(0, len(text) - pattern_len + 1, step):
-        window = text_lower[i:i + window_size]
-        ratio = SequenceMatcher(None, pattern_lower, window).ratio()
-
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_start = i
-            best_end = min(i + pattern_len, len(text))
-
-    # If we used stepping, refine around best position
-    if step > 1 and best_ratio > 0:
-        refine_start = max(0, best_start - step)
-        refine_end = min(len(text) - pattern_len + 1, best_start + step)
-        for i in range(refine_start, refine_end):
-            window = text_lower[i:i + window_size]
-            ratio = SequenceMatcher(None, pattern_lower, window).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_start = i
-                best_end = min(i + pattern_len, len(text))
-
-    if best_ratio >= threshold or return_best:
-        return (best_start, best_end, best_ratio)
-
-    return None
-
-
-def _map_normalized_to_original(original: str, normalized: str, normalized_pos: int) -> int:
-    """
-    Map a position in normalized text back to approximate position in original.
-
-    This is a best-effort mapping since normalization is lossy.
-    """
-    if normalized_pos <= 0:
-        return 0
-    if normalized_pos >= len(normalized):
-        return len(original)
-
-    # Calculate ratio and apply to original length
-    ratio = normalized_pos / len(normalized)
-    return int(ratio * len(original))
-
-
 def get_page_label(pdf_path: str, page_num: int) -> str:
     """
     Get the page label for a given page number.
 
     Some PDFs have custom page labels (e.g., "i", "ii", "1", "2").
-    This function returns the label if available, otherwise the page number.
 
     Args:
         pdf_path: Path to the PDF file
         page_num: 1-indexed page number
 
     Returns:
-        Page label as string
+        Page label if available, otherwise the page number as string
     """
     try:
         import fitz
@@ -714,8 +767,6 @@ def get_page_label(pdf_path: str, page_num: int) -> str:
 
         page = doc[page_index]
 
-        # Try to get page label from PDF metadata
-        # PyMuPDF provides this via page.get_label() in newer versions
         if hasattr(page, "get_label"):
             label = page.get_label()
             if label:
@@ -757,10 +808,9 @@ def build_annotation_position(page_index: int, rects: list[list[float]]) -> str:
         rects: List of [x1, y1, x2, y2] bounding boxes
 
     Returns:
-        JSON string for annotationPosition field
+        JSON string for Zotero's annotationPosition field
     """
-    position_data = {
+    return json.dumps({
         "pageIndex": page_index,
         "rects": rects,
-    }
-    return json.dumps(position_data)
+    })
