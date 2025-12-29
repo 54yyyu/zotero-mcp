@@ -6,22 +6,51 @@ position data needed for creating Zotero annotations.
 """
 
 import json
+import re
 
 
-def find_text_position(pdf_path: str, page_num: int, search_text: str) -> dict | None:
+def normalize_text(text: str) -> str:
+    """
+    Normalize text for fuzzy matching.
+
+    Handles common PDF text extraction issues:
+    - Hyphenation at line breaks (e.g., "regard-\\nless" -> "regardless")
+    - Multiple whitespace -> single space
+    - Various dash types
+
+    Args:
+        text: Raw text to normalize
+
+    Returns:
+        Normalized text for comparison
+    """
+    # Remove hyphenation at line breaks (hyphen followed by newline and optional spaces)
+    text = re.sub(r'-\s*\n\s*', '', text)
+    # Also handle soft hyphens and other dash variants at line breaks
+    text = re.sub(r'[\u00ad\u2010\u2011-]\s*\n\s*', '', text)
+    # Collapse all whitespace to single spaces
+    text = re.sub(r'\s+', ' ', text)
+    # Strip leading/trailing whitespace
+    text = text.strip()
+    return text
+
+
+def find_text_position(pdf_path: str, page_num: int, search_text: str, fuzzy: bool = True) -> dict | None:
     """
     Search for text in a PDF and return position data for Zotero annotation.
 
     Args:
         pdf_path: Path to the PDF file
         page_num: 1-indexed page number to search on
-        search_text: Exact text to find
+        search_text: Text to find (exact or fuzzy match)
+        fuzzy: If True, use fuzzy matching to handle hyphenation and line breaks
 
     Returns:
         Dict with annotation position data:
         - pageIndex: 0-indexed page number
         - rects: list of [x1, y1, x2, y2] bounding boxes in PDF coordinates
         - sort_index: string for annotationSortIndex (PPPPP|YYYYYY|XXXXX)
+        - matched_text: the actual text that was matched (useful for fuzzy matches)
 
         Returns None if text not found.
     """
@@ -45,13 +74,21 @@ def find_text_position(pdf_path: str, page_num: int, search_text: str) -> dict |
         page = doc[page_index]
         page_height = page.rect.height
 
-        # Search for the text on the page
+        # Try exact search first
         text_instances = page.search_for(search_text)
 
         if not text_instances:
             # Try with normalized whitespace
             normalized_text = " ".join(search_text.split())
             text_instances = page.search_for(normalized_text)
+
+        # If still no match and fuzzy is enabled, try fuzzy matching
+        matched_text = search_text
+        if not text_instances and fuzzy:
+            fuzzy_result = _fuzzy_search_page(page, search_text)
+            if fuzzy_result:
+                text_instances = fuzzy_result["rects"]
+                matched_text = fuzzy_result["matched_text"]
 
         if not text_instances:
             return None
@@ -65,16 +102,19 @@ def find_text_position(pdf_path: str, page_num: int, search_text: str) -> dict |
         min_x = float("inf")
 
         for rect in text_instances:
-            # Transform Y coordinates from top-left to bottom-left origin
-            # rect.y0 is top of text (smaller in fitz), rect.y1 is bottom (larger in fitz)
-            # In PDF coords: y1 (bottom of rect) = page_height - rect.y1
-            #                y2 (top of rect) = page_height - rect.y0
-            pdf_y1 = page_height - rect.y1  # Bottom of highlight in PDF coords
-            pdf_y2 = page_height - rect.y0  # Top of highlight in PDF coords
+            # Handle both fitz.Rect objects and raw tuples/lists
+            if hasattr(rect, 'x0'):
+                x0, y0, x1, y1 = rect.x0, rect.y0, rect.x1, rect.y1
+            else:
+                x0, y0, x1, y1 = rect[0], rect[1], rect[2], rect[3]
 
-            rects.append([rect.x0, pdf_y1, rect.x1, pdf_y2])
+            # Transform Y coordinates from top-left to bottom-left origin
+            pdf_y1 = page_height - y1  # Bottom of highlight in PDF coords
+            pdf_y2 = page_height - y0  # Top of highlight in PDF coords
+
+            rects.append([x0, pdf_y1, x1, pdf_y2])
             min_y_pdf = min(min_y_pdf, pdf_y1)
-            min_x = min(min_x, rect.x0)
+            min_x = min(min_x, x0)
 
         # Build sort index: PPPPP|YYYYYY|XXXXX
         # Page (5 digits), Y position (6 digits), X position (5 digits)
@@ -85,10 +125,157 @@ def find_text_position(pdf_path: str, page_num: int, search_text: str) -> dict |
             "pageIndex": page_index,
             "rects": rects,
             "sort_index": sort_index,
+            "matched_text": matched_text,
         }
 
     finally:
         doc.close()
+
+
+def _fuzzy_search_page(page, search_text: str, threshold: float = 0.8) -> dict | None:
+    """
+    Perform fuzzy text search on a PDF page.
+
+    This handles cases where the search text doesn't exactly match the PDF
+    due to hyphenation at line breaks, different whitespace, etc.
+
+    Args:
+        page: PyMuPDF page object
+        search_text: Text to search for
+        threshold: Minimum similarity ratio (0.0 to 1.0) for a match
+
+    Returns:
+        Dict with 'rects' (list of fitz.Rect) and 'matched_text' if found, None otherwise
+    """
+    # Get all text blocks with position info
+    blocks = page.get_text("dict", flags=11)["blocks"]
+
+    # Extract text spans with their positions
+    spans = []
+    for block in blocks:
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                spans.append({
+                    "text": span["text"],
+                    "bbox": span["bbox"],  # (x0, y0, x1, y1)
+                })
+
+    if not spans:
+        return None
+
+    # Concatenate all text for searching
+    full_text = ""
+    span_positions = []  # Maps character positions to span indices
+
+    for i, span in enumerate(spans):
+        start_pos = len(full_text)
+        full_text += span["text"]
+        end_pos = len(full_text)
+        span_positions.append((start_pos, end_pos, i))
+        # Add space between spans (approximate word separation)
+        full_text += " "
+
+    # Normalize both texts for comparison
+    normalized_search = normalize_text(search_text)
+    normalized_full = normalize_text(full_text)
+
+    # Try to find the normalized search text in the normalized full text
+    # First try direct substring match on normalized text
+    match_start = normalized_full.lower().find(normalized_search.lower())
+
+    if match_start == -1:
+        # Try sliding window fuzzy match
+        match_result = _sliding_window_match(normalized_full, normalized_search, threshold)
+        if match_result is None:
+            return None
+        match_start, match_end, matched_text = match_result
+    else:
+        match_end = match_start + len(normalized_search)
+        matched_text = normalized_full[match_start:match_end]
+
+    # Map the match back to original character positions
+    # This is approximate due to normalization, but should be close enough
+    original_start = _map_normalized_to_original(full_text, normalized_full, match_start)
+    original_end = _map_normalized_to_original(full_text, normalized_full, match_end)
+
+    # Find which spans overlap with our match
+    matching_rects = []
+    for start_pos, end_pos, span_idx in span_positions:
+        if start_pos < original_end and end_pos > original_start:
+            # This span overlaps with our match
+            matching_rects.append(spans[span_idx]["bbox"])
+
+    if not matching_rects:
+        return None
+
+    return {
+        "rects": matching_rects,
+        "matched_text": matched_text,
+    }
+
+
+def _sliding_window_match(text: str, pattern: str, threshold: float) -> tuple | None:
+    """
+    Find the best fuzzy match for pattern in text using sliding window.
+
+    Args:
+        text: Text to search in
+        pattern: Pattern to find
+        threshold: Minimum similarity ratio
+
+    Returns:
+        Tuple of (start, end, matched_text) or None if no match above threshold
+    """
+    from difflib import SequenceMatcher
+
+    pattern_len = len(pattern)
+    if pattern_len == 0 or len(text) < pattern_len:
+        return None
+
+    best_ratio = 0
+    best_start = 0
+    best_end = 0
+
+    # Use a window slightly larger than the pattern to account for variations
+    window_size = int(pattern_len * 1.2)
+
+    text_lower = text.lower()
+    pattern_lower = pattern.lower()
+
+    for i in range(len(text) - pattern_len + 1):
+        window = text_lower[i:i + window_size]
+        ratio = SequenceMatcher(None, pattern_lower, window).ratio()
+
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_start = i
+            # Estimate actual match length
+            best_end = min(i + pattern_len + 20, len(text))
+
+    if best_ratio >= threshold:
+        # Refine the end position
+        matched_text = text[best_start:best_end].strip()
+        return (best_start, best_end, matched_text)
+
+    return None
+
+
+def _map_normalized_to_original(original: str, normalized: str, normalized_pos: int) -> int:
+    """
+    Map a position in normalized text back to approximate position in original.
+
+    This is a best-effort mapping since normalization is lossy.
+    """
+    if normalized_pos <= 0:
+        return 0
+    if normalized_pos >= len(normalized):
+        return len(original)
+
+    # Calculate ratio and apply to original length
+    ratio = normalized_pos / len(normalized)
+    return int(ratio * len(original))
 
 
 def get_page_label(pdf_path: str, page_num: int) -> str:
