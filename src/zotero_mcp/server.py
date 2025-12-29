@@ -1698,6 +1698,207 @@ def create_note(
 
 
 @mcp.tool(
+    name="zotero_create_annotation",
+    description="Create a highlight annotation on a PDF attachment with optional comment."
+)
+def create_annotation(
+    attachment_key: str,
+    page: int,
+    text: str,
+    comment: str | None = None,
+    color: str = "#ffd400",
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create a highlight annotation on a PDF attachment.
+
+    This tool handles multiple storage configurations:
+    - Zotero Cloud Storage: Downloads PDF via Web API
+    - WebDAV Storage: Downloads PDF via local Zotero (requires Zotero desktop running)
+    - Annotations are always created via the Web API (required for write operations)
+
+    Args:
+        attachment_key: PDF attachment key (e.g., "NHZFE5A7")
+        page: 1-indexed page number where the text appears
+        text: Exact text to highlight (used to find coordinates)
+        comment: Optional comment on the annotation
+        color: Highlight color in hex format (default: "#ffd400" yellow)
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new annotation key
+    """
+    import tempfile
+
+    from zotero_mcp.client import (
+        get_local_zotero_client,
+        get_web_zotero_client,
+    )
+    from zotero_mcp.pdf_utils import (
+        find_text_position,
+        get_page_label,
+        build_annotation_position,
+        verify_pdf_attachment,
+    )
+
+    try:
+        ctx.info(f"Creating annotation on attachment {attachment_key}, page {page}")
+
+        # Get clients for different operations
+        local_client = get_local_zotero_client()
+        web_client = get_web_zotero_client()
+
+        # REQUIREMENT: Web API is required for creating annotations
+        # Zotero's local API (port 23119) is read-only
+        if not web_client:
+            return (
+                "Error: Web API credentials required for creating annotations.\n\n"
+                "Please configure the following environment variables:\n"
+                "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
+                "- ZOTERO_LIBRARY_ID: Your library ID\n"
+                "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'\n\n"
+                "Note: Zotero's local API is read-only and cannot create annotations."
+            )
+
+        # Use web client for metadata (it has the credentials)
+        metadata_client = web_client
+
+        # Verify the attachment exists and is a PDF
+        try:
+            attachment = metadata_client.item(attachment_key)
+            attachment_data = attachment.get("data", {})
+
+            if attachment_data.get("itemType") != "attachment":
+                return f"Error: Item {attachment_key} is not an attachment"
+
+            content_type = attachment_data.get("contentType", "")
+            if content_type != "application/pdf":
+                return f"Error: Attachment {attachment_key} is not a PDF (type: {content_type})"
+
+            filename = attachment_data.get("filename", f"{attachment_key}.pdf")
+
+        except Exception as e:
+            return f"Error: No attachment found with key: {attachment_key} ({e})"
+
+        # Download the PDF to a temporary location
+        # Strategy: Try multiple sources in order of likelihood to succeed
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, filename)
+            ctx.info(f"Downloading PDF to {file_path}")
+
+            download_errors = []
+            downloaded = False
+
+            # Source 1: Try local Zotero first (works for WebDAV and local storage)
+            if local_client and not downloaded:
+                try:
+                    ctx.info("Trying local Zotero (WebDAV/local storage)...")
+                    local_client.dump(attachment_key, filename=filename, path=tmpdir)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        downloaded = True
+                        ctx.info("PDF downloaded via local Zotero")
+                except Exception as e:
+                    download_errors.append(f"Local Zotero: {e}")
+
+            # Source 2: Try Web API (works for Zotero Cloud Storage)
+            if not downloaded:
+                try:
+                    ctx.info("Trying Zotero Web API (cloud storage)...")
+                    web_client.dump(attachment_key, filename=filename, path=tmpdir)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        downloaded = True
+                        ctx.info("PDF downloaded via Web API")
+                except Exception as e:
+                    download_errors.append(f"Web API: {e}")
+
+            if not downloaded:
+                error_details = "\n".join(f"  - {err}" for err in download_errors)
+                return (
+                    f"Error: Could not download PDF attachment.\n\n"
+                    f"Attempted sources:\n{error_details}\n\n"
+                    "Possible solutions:\n"
+                    "- **Zotero Cloud Storage**: Ensure file syncing is enabled in Zotero preferences\n"
+                    "- **WebDAV Storage**: Ensure Zotero desktop is running with "
+                    "'Allow other applications to communicate with Zotero' enabled\n"
+                    "- **Linked files**: Linked attachments (not imported) cannot be accessed remotely"
+                )
+
+            # Verify it's a valid PDF
+            if not verify_pdf_attachment(file_path):
+                return f"Error: Downloaded file is not a valid PDF"
+
+            # Search for the text and get position data
+            search_preview = text[:50] + "..." if len(text) > 50 else text
+            ctx.info(f"Searching for text on page {page}: '{search_preview}'")
+            position_data = find_text_position(file_path, page, text)
+
+            if position_data is None:
+                return (
+                    f"Error: Could not find text on page {page}.\n\n"
+                    f"Text searched: \"{text}\"\n\n"
+                    "Tips:\n"
+                    "- Verify the page number is correct (1-indexed)\n"
+                    "- Ensure the text matches exactly as it appears in the PDF\n"
+                    "- Try a shorter, unique phrase from the text\n"
+                    "- Check for special characters or line breaks in the original"
+                )
+
+            # Get page label (might differ from page number in some PDFs)
+            page_label = get_page_label(file_path, page)
+
+            # Build annotation position JSON
+            annotation_position = build_annotation_position(
+                position_data["pageIndex"],
+                position_data["rects"]
+            )
+
+            # Prepare the annotation data
+            annotation_data = {
+                "itemType": "annotation",
+                "parentItem": attachment_key,
+                "annotationType": "highlight",
+                "annotationText": text,
+                "annotationComment": comment or "",
+                "annotationColor": color,
+                "annotationPageLabel": page_label,
+                "annotationSortIndex": position_data["sort_index"],
+                "annotationPosition": annotation_position,
+            }
+
+            ctx.info(f"Creating annotation via Web API...")
+
+            # Create the annotation using web client
+            result = web_client.create_items([annotation_data])
+
+            # Check if creation was successful
+            if "success" in result and result["success"]:
+                successful = result["success"]
+                if len(successful) > 0:
+                    annotation_key = list(successful.values())[0]
+                    response = [
+                        f"Successfully created highlight annotation",
+                        f"",
+                        f"**Annotation Key:** {annotation_key}",
+                        f"**Page:** {page_label}",
+                        f"**Text:** \"{text[:100]}{'...' if len(text) > 100 else ''}\"",
+                    ]
+                    if comment:
+                        response.append(f"**Comment:** {comment}")
+                    response.append(f"**Color:** {color}")
+                    return "\n".join(response)
+                else:
+                    return f"Annotation creation response was successful but no key was returned: {result}"
+            else:
+                failed_info = result.get("failed", {})
+                return f"Failed to create annotation: {failed_info}"
+
+    except Exception as e:
+        ctx.error(f"Error creating annotation: {str(e)}")
+        return f"Error creating annotation: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_semantic_search",
     description="Prioritized search tool. Perform semantic search over your Zotero library using AI-powered embeddings."
 )
