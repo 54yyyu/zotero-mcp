@@ -1833,16 +1833,36 @@ def create_annotation(
             ctx.info(f"Searching for text on page {page}: '{search_preview}'")
             position_data = find_text_position(file_path, page, text)
 
-            if position_data is None:
-                return (
-                    f"Error: Could not find text on page {page}.\n\n"
-                    f"Text searched: \"{text}\"\n\n"
-                    "Tips:\n"
-                    "- Verify the page number is correct (1-indexed)\n"
-                    "- Ensure the text matches exactly as it appears in the PDF\n"
-                    "- Try a shorter, unique phrase from the text\n"
-                    "- Check for special characters or line breaks in the original"
-                )
+            if "error" in position_data:
+                # Build debug info message
+                debug_lines = [
+                    f"Error: {position_data['error']}",
+                    f"",
+                    f"Text searched: \"{text[:100]}{'...' if len(text) > 100 else ''}\"",
+                ]
+
+                if position_data.get("best_score", 0) > 0:
+                    debug_lines.append(f"")
+                    debug_lines.append(f"Debug info:")
+                    debug_lines.append(f"  Best match score: {position_data['best_score']:.2f}")
+                    if position_data.get("best_match"):
+                        preview = position_data["best_match"][:80]
+                        debug_lines.append(f"  Best match text: \"{preview}...\"")
+                    if position_data.get("page_found"):
+                        debug_lines.append(f"  Found on page: {position_data['page_found']}")
+
+                if position_data.get("pages_searched"):
+                    debug_lines.append(f"  Pages searched: {position_data['pages_searched']}")
+
+                debug_lines.extend([
+                    "",
+                    "Tips:",
+                    "- Try a shorter, unique phrase from the beginning of the text",
+                    "- Check that the page number is correct",
+                    "- The text may have special characters or hyphenation",
+                ])
+
+                return "\n".join(debug_lines)
 
             # Get page label (might differ from page number in some PDFs)
             page_label = get_page_label(file_path, page)
