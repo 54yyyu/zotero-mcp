@@ -35,6 +35,28 @@ def normalize_text(text: str) -> str:
     return text
 
 
+def normalize_for_matching(text: str) -> str:
+    """
+    Aggressively normalize text for fuzzy matching comparison.
+
+    This removes ALL spaces to handle PDFs where words are stored
+    without proper spacing between spans.
+
+    Args:
+        text: Text to normalize
+
+    Returns:
+        Text with all spaces removed, lowercased
+    """
+    # First apply standard normalization
+    text = normalize_text(text)
+    # Remove all spaces for comparison
+    text = re.sub(r'\s+', '', text)
+    # Lowercase for case-insensitive matching
+    text = text.lower()
+    return text
+
+
 def find_text_position(pdf_path: str, page_num: int, search_text: str, fuzzy: bool = True) -> dict | None:
     """
     Search for text in a PDF and return position data for Zotero annotation.
@@ -165,50 +187,52 @@ def _fuzzy_search_page(page, search_text: str, threshold: float = 0.8) -> dict |
     if not spans:
         return None
 
-    # Concatenate all text for searching
-    full_text = ""
-    span_positions = []  # Maps character positions to span indices
+    # Build cumulative normalized text and track span boundaries
+    # This lets us map positions in normalized text back to spans
+    cumulative_normalized = ""
+    span_norm_positions = []  # (norm_start, norm_end, span_idx)
 
     for i, span in enumerate(spans):
-        start_pos = len(full_text)
-        full_text += span["text"]
-        end_pos = len(full_text)
-        span_positions.append((start_pos, end_pos, i))
-        # Add space between spans (approximate word separation)
-        full_text += " "
+        norm_start = len(cumulative_normalized)
+        # Normalize each span's text (remove spaces, lowercase)
+        span_normalized = normalize_for_matching(span["text"])
+        cumulative_normalized += span_normalized
+        norm_end = len(cumulative_normalized)
+        span_norm_positions.append((norm_start, norm_end, i))
 
-    # Normalize both texts for comparison
-    normalized_search = normalize_text(search_text)
-    normalized_full = normalize_text(full_text)
+    # Normalize search text the same way
+    normalized_search = normalize_for_matching(search_text)
 
-    # Try to find the normalized search text in the normalized full text
-    # First try direct substring match on normalized text
-    match_start = normalized_full.lower().find(normalized_search.lower())
+    if not normalized_search or not cumulative_normalized:
+        return None
+
+    # Try to find the normalized search text
+    match_start = cumulative_normalized.find(normalized_search)
 
     if match_start == -1:
         # Try sliding window fuzzy match
-        match_result = _sliding_window_match(normalized_full, normalized_search, threshold)
+        match_result = _sliding_window_match(cumulative_normalized, normalized_search, threshold)
         if match_result is None:
             return None
-        match_start, match_end, matched_text = match_result
+        match_start, match_end, _ = match_result
     else:
         match_end = match_start + len(normalized_search)
-        matched_text = normalized_full[match_start:match_end]
 
-    # Map the match back to original character positions
-    # This is approximate due to normalization, but should be close enough
-    original_start = _map_normalized_to_original(full_text, normalized_full, match_start)
-    original_end = _map_normalized_to_original(full_text, normalized_full, match_end)
-
-    # Find which spans overlap with our match
+    # Find which spans overlap with our match in normalized space
     matching_rects = []
-    for start_pos, end_pos, span_idx in span_positions:
-        if start_pos < original_end and end_pos > original_start:
-            # This span overlaps with our match
+    matched_span_texts = []
+
+    for norm_start, norm_end, span_idx in span_norm_positions:
+        # Check if this span overlaps with the match
+        if norm_start < match_end and norm_end > match_start:
             matching_rects.append(spans[span_idx]["bbox"])
+            matched_span_texts.append(spans[span_idx]["text"])
 
     if not matching_rects:
         return None
+
+    # Reconstruct matched text from spans (with original spacing)
+    matched_text = " ".join(matched_span_texts)
 
     return {
         "rects": matching_rects,
