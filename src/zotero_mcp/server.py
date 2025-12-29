@@ -1841,12 +1841,32 @@ def create_annotation(
                     f"Text searched: \"{text[:100]}{'...' if len(text) > 100 else ''}\"",
                 ]
 
-                if position_data.get("best_score", 0) > 0:
+                best_score = position_data.get("best_score", 0)
+                best_match = position_data.get("best_match")
+
+                # Add "Did you mean" suggestion if we found a reasonable match
+                if best_score >= 0.5 and best_match:
+                    debug_lines.append("")
+                    debug_lines.append("=" * 50)
+                    debug_lines.append(f"DID YOU MEAN (score: {best_score:.0%}):")
+                    debug_lines.append("")
+                    # Show a useful preview - first 150 chars of the match
+                    suggestion = best_match[:150].strip()
+                    if len(best_match) > 150:
+                        suggestion += "..."
+                    debug_lines.append(f'  "{suggestion}"')
+                    debug_lines.append("")
+                    if position_data.get("page_found"):
+                        debug_lines.append(f"  (Found on page {position_data['page_found']})")
+                    debug_lines.append("=" * 50)
+                    debug_lines.append("")
+                    debug_lines.append("TIP: Copy the exact text from the PDF instead of paraphrasing.")
+                elif best_score > 0:
                     debug_lines.append(f"")
                     debug_lines.append(f"Debug info:")
-                    debug_lines.append(f"  Best match score: {position_data['best_score']:.2f}")
-                    if position_data.get("best_match"):
-                        preview = position_data["best_match"][:80]
+                    debug_lines.append(f"  Best match score: {best_score:.2f} (too low for suggestion)")
+                    if best_match:
+                        preview = best_match[:80]
                         debug_lines.append(f"  Best match text: \"{preview}...\"")
                     if position_data.get("page_found"):
                         debug_lines.append(f"  Found on page: {position_data['page_found']}")
@@ -1854,13 +1874,14 @@ def create_annotation(
                 if position_data.get("pages_searched"):
                     debug_lines.append(f"  Pages searched: {position_data['pages_searched']}")
 
-                debug_lines.extend([
-                    "",
-                    "Tips:",
-                    "- Try a shorter, unique phrase from the beginning of the text",
-                    "- Check that the page number is correct",
-                    "- The text may have special characters or hyphenation",
-                ])
+                if best_score < 0.5:
+                    debug_lines.extend([
+                        "",
+                        "Tips:",
+                        "- Copy the exact text from the PDF (don't paraphrase)",
+                        "- Try a shorter, unique phrase from the beginning",
+                        "- Check that the page number is correct",
+                    ])
 
                 return "\n".join(debug_lines)
 
