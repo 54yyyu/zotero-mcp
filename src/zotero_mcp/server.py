@@ -1409,14 +1409,16 @@ def get_notes(
 
         # Prepare search parameters
         params = {"itemType": "note"}
-        if item_key:
-            params["parentItem"] = item_key
 
         if isinstance(limit, str):
             limit = int(limit)
 
         # Get notes
-        notes = zot.items(**params) if not limit else zot.items(limit=limit, **params)
+        notes = []
+        if item_key:
+            notes = zot.children(item_key, **params) if not limit else zot.children(item_key, limit=limit, **params)
+        else: 
+            notes = zot.items(**params) if not limit else zot.items(limit=limit, **params)
 
         if not notes:
             return f"No notes found{f' for item {item_key}' if item_key else ''}."
