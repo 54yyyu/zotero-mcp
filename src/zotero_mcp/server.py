@@ -24,7 +24,7 @@ from zotero_mcp.client import (
     get_attachment_details,
     get_zotero_client,
 )
-from zotero_mcp.utils import format_creators
+from zotero_mcp.utils import format_creators, clean_html
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
@@ -1442,8 +1442,7 @@ def get_notes(
             note_text = data.get("note", "")
 
             # Clean up HTML formatting
-            note_text = note_text.replace("<p>", "").replace("</p>", "\n\n")
-            note_text = note_text.replace("<br/>", "\n").replace("<br>", "\n")
+            note_text = clean_html(note_text)
 
             # Limit note length for display
             if truncate and len(note_text) > 500:
