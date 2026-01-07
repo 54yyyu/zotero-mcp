@@ -1387,6 +1387,7 @@ def get_annotations(
 def get_notes(
     item_key: str | None = None,
     limit: int | str | None = 20,
+    truncate: bool = True,
     *,
     ctx: Context
 ) -> str:
@@ -1396,6 +1397,7 @@ def get_notes(
     Args:
         item_key: Optional Zotero item key/ID to filter notes by parent item
         limit: Maximum number of notes to return
+        truncate: Whether to truncate long notes for display
         ctx: MCP context
 
     Returns:
@@ -1444,7 +1446,7 @@ def get_notes(
             note_text = note_text.replace("<br/>", "\n").replace("<br>", "\n")
 
             # Limit note length for display
-            if len(note_text) > 500:
+            if truncate and len(note_text) > 500:
                 note_text = note_text[:500] + "..."
 
             # Build markdown entry
