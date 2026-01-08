@@ -13,6 +13,9 @@
   <a href="https://modelcontextprotocol.io/introduction">
     <img src="https://img.shields.io/badge/MCP-0175C2?style=for-the-badge&logoColor=white" alt="MCP">
   </a>
+  <a href="https://pypi.org/project/zotero-mcp/">
+    <img src="https://img.shields.io/pypi/v/zotero-mcp?style=for-the-badge&logo=pypi&logoColor=white&color=3775A9" alt="PyPI Version">
+  </a>
 </p>
 
 **Zotero MCP** seamlessly connects your [Zotero](https://www.zotero.org/) research library with [ChatGPT](https://openai.com), [Claude](https://www.anthropic.com/claude), and other AI assistants (e.g., [Cherry Studio](https://cherry-ai.com/), [Chorus](https://chorus.sh), [Cursor](https://www.cursor.com/)) via the [Model Context Protocol](https://modelcontextprotocol.io/introduction). Review papers, get summaries, analyze citations, extract PDF annotations, and more!
