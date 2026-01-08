@@ -36,3 +36,9 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Lock files
+uv.lock
+
+# Local project docs
+CLAUDE.md

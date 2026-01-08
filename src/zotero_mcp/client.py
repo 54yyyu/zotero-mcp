@@ -61,6 +61,63 @@ def get_zotero_client() -> zotero.Zotero:
     )
 
 
+def get_local_zotero_client() -> zotero.Zotero | None:
+    """
+    Get a local Zotero client for file access (WebDAV/local storage).
+
+    This client connects to the local Zotero instance running on port 23119.
+    It's useful for accessing PDF files stored via WebDAV when the main
+    client is configured for web API.
+
+    Returns:
+        A local Zotero client instance, or None if local Zotero is not available.
+    """
+    try:
+        # Create a local client - library_id 0 is the default for local
+        client = zotero.Zotero(
+            library_id="0",
+            library_type="user",
+            api_key=None,
+            local=True,
+        )
+        # Test connection by making a simple request
+        client.items(limit=1)
+        return client
+    except Exception:
+        return None
+
+
+def get_web_zotero_client() -> zotero.Zotero | None:
+    """
+    Get a web API Zotero client for write operations.
+
+    This client connects to the Zotero web API and can create/modify items.
+    Requires ZOTERO_API_KEY and ZOTERO_LIBRARY_ID environment variables.
+
+    Returns:
+        A web API Zotero client instance, or None if credentials are not available.
+    """
+    library_id = os.getenv("ZOTERO_LIBRARY_ID")
+    library_type = os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+    api_key = os.getenv("ZOTERO_API_KEY")
+
+    if not library_id or not api_key:
+        return None
+
+    return zotero.Zotero(
+        library_id=library_id,
+        library_type=library_type,
+        api_key=api_key,
+        local=False,
+    )
+
+
+def is_local_zotero_available() -> bool:
+    """Check if local Zotero instance is running and accessible."""
+    client = get_local_zotero_client()
+    return client is not None
+
+
 def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) -> str:
     """
     Format a Zotero item's metadata as markdown.
