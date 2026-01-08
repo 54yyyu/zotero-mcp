@@ -24,7 +24,7 @@ from zotero_mcp.client import (
     get_attachment_details,
     get_zotero_client,
 )
-from zotero_mcp.utils import format_creators
+from zotero_mcp.utils import format_creators, clean_html
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
@@ -1387,6 +1387,7 @@ def get_annotations(
 def get_notes(
     item_key: str | None = None,
     limit: int | str | None = 20,
+    truncate: bool = True,
     *,
     ctx: Context
 ) -> str:
@@ -1396,6 +1397,7 @@ def get_notes(
     Args:
         item_key: Optional Zotero item key/ID to filter notes by parent item
         limit: Maximum number of notes to return
+        truncate: Whether to truncate long notes for display
         ctx: MCP context
 
     Returns:
@@ -1407,14 +1409,16 @@ def get_notes(
 
         # Prepare search parameters
         params = {"itemType": "note"}
-        if item_key:
-            params["parentItem"] = item_key
 
         if isinstance(limit, str):
             limit = int(limit)
 
         # Get notes
-        notes = zot.items(**params) if not limit else zot.items(limit=limit, **params)
+        notes = []
+        if item_key:
+            notes = zot.children(item_key, **params) if not limit else zot.children(item_key, limit=limit, **params)
+        else: 
+            notes = zot.items(**params) if not limit else zot.items(limit=limit, **params)
 
         if not notes:
             return f"No notes found{f' for item {item_key}' if item_key else ''}."
@@ -1440,11 +1444,10 @@ def get_notes(
             note_text = data.get("note", "")
 
             # Clean up HTML formatting
-            note_text = note_text.replace("<p>", "").replace("</p>", "\n\n")
-            note_text = note_text.replace("<br/>", "\n").replace("<br>", "\n")
+            note_text = clean_html(note_text)
 
             # Limit note length for display
-            if len(note_text) > 500:
+            if truncate and len(note_text) > 500:
                 note_text = note_text[:500] + "..."
 
             # Build markdown entry
