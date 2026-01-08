@@ -22,86 +22,86 @@ class ZoteroItem:
     item_id: int
     key: str
     item_type_id: int
-    item_type: Optional[str] = None
-    doi: Optional[str] = None
-    title: Optional[str] = None
-    abstract: Optional[str] = None
-    creators: Optional[str] = None
-    fulltext: Optional[str] = None
-    fulltext_source: Optional[str] = None  # 'pdf' or 'html'
-    notes: Optional[str] = None
-    extra: Optional[str] = None
-    date_added: Optional[str] = None
-    date_modified: Optional[str] = None
-    
+    item_type: str | None = None
+    doi: str | None = None
+    title: str | None = None
+    abstract: str | None = None
+    creators: str | None = None
+    fulltext: str | None = None
+    fulltext_source: str | None = None  # 'pdf' or 'html'
+    notes: str | None = None
+    extra: str | None = None
+    date_added: str | None = None
+    date_modified: str | None = None
+
     def get_searchable_text(self) -> str:
         """
         Combine all text fields into a single searchable string.
-        
+
         Returns:
             Combined text content for semantic search indexing.
         """
         parts = []
-        
+
         if self.title:
             parts.append(f"Title: {self.title}")
-        
+
         if self.creators:
             parts.append(f"Authors: {self.creators}")
-            
+
         if self.abstract:
             parts.append(f"Abstract: {self.abstract}")
-            
+
         if self.extra:
             parts.append(f"Extra: {self.extra}")
-            
+
         if self.notes:
             parts.append(f"Notes: {self.notes}")
-            
+
         if self.fulltext:
             # Truncate fulltext to avoid overly long documents
             truncated_fulltext = self.fulltext[:5000] + "..." if len(self.fulltext) > 5000 else self.fulltext
             parts.append(f"Content: {truncated_fulltext}")
-            
+
         return "\n\n".join(parts)
 
 
 class LocalZoteroReader:
     """
     Direct SQLite reader for Zotero's local database.
-    
+
     Provides fast access to item metadata and fulltext for semantic search
     without going through the Zotero API.
     """
-    
-    def __init__(self, db_path: Optional[str] = None, pdf_max_pages: Optional[int] = None):
+
+    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None):
         """
         Initialize the local database reader.
-        
+
         Args:
             db_path: Optional path to zotero.sqlite. If None, auto-detect.
         """
         self.db_path = db_path or self._find_zotero_db()
-        self._connection: Optional[sqlite3.Connection] = None
-        self.pdf_max_pages: Optional[int] = pdf_max_pages
+        self._connection: sqlite3.Connection | None = None
+        self.pdf_max_pages: int | None = pdf_max_pages
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
         except Exception:
             pass
-        
+
     def _find_zotero_db(self) -> str:
         """
         Auto-detect the Zotero database location based on OS.
-        
+
         Returns:
             Path to zotero.sqlite file.
-            
+
         Raises:
             FileNotFoundError: If database cannot be located.
         """
         system = platform.system()
-        
+
         if system == "Darwin":  # macOS
             db_path = Path.home() / "Zotero" / "zotero.sqlite"
         elif system == "Windows":
@@ -112,15 +112,15 @@ class LocalZoteroReader:
                 db_path = Path(os.path.expanduser("~/Documents and Settings")) / os.getenv("USERNAME", "") / "Zotero" / "zotero.sqlite"
         else:  # Linux and others
             db_path = Path.home() / "Zotero" / "zotero.sqlite"
-            
+
         if not db_path.exists():
             raise FileNotFoundError(
                 f"Zotero database not found at {db_path}. "
                 "Please ensure Zotero is installed and has been run at least once."
             )
-            
+
         return str(db_path)
-    
+
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection, creating if needed."""
         if self._connection is None:
@@ -131,9 +131,10 @@ class LocalZoteroReader:
         return self._connection
 
     def _get_storage_dir(self) -> Path:
-        """Return the Zotero storage directory path."""
-        # Default Zotero data dir on macOS/Linux is ~/Zotero
-        return Path.home() / "Zotero" / "storage"
+        """Return the Zotero storage directory path based on database location."""
+        # Infer storage directory from database path (same parent directory)
+        db_parent = Path(self.db_path).parent
+        return db_parent / "storage"
 
     def _iter_parent_attachments(self, parent_item_id: int):
         """Yield tuples (attachment_key, path, content_type) for a parent item."""
@@ -153,7 +154,7 @@ class LocalZoteroReader:
         for row in conn.execute(query, (parent_item_id,)):
             yield row["attachmentKey"], row["path"], row["contentType"]
 
-    def _resolve_attachment_path(self, attachment_key: str, zotero_path: str) -> Optional[Path]:
+    def _resolve_attachment_path(self, attachment_key: str, zotero_path: str) -> Path | None:
         """Resolve a Zotero attachment path like 'storage:filename.pdf' to a filesystem path."""
         if not zotero_path:
             return None
@@ -222,7 +223,7 @@ class LocalZoteroReader:
 
         return meta
 
-    def _extract_fulltext_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
+    def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference: use PDF when available; fall back to HTML when no PDF exists.
@@ -248,23 +249,23 @@ class LocalZoteroReader:
         # Truncate to keep embeddings reasonable
         source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
         return (text[:10000], source)
-    
+
     def close(self):
         """Close database connection."""
         if self._connection:
             self._connection.close()
             self._connection = None
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-    
+
     def get_item_count(self) -> int:
         """
         Get total count of non-attachment items.
-        
+
         Returns:
             Number of items in the library.
         """
@@ -278,22 +279,22 @@ class LocalZoteroReader:
             """
         )
         return cursor.fetchone()[0]
-    
-    def get_items_with_text(self, limit: Optional[int] = None, include_fulltext: bool = False) -> List[ZoteroItem]:
+
+    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
-        
+
         Args:
             limit: Optional limit on number of items to return.
-            
+
         Returns:
             List of ZoteroItem objects with text content.
         """
         conn = self._get_connection()
-        
+
         # Query to get items with their text content (simplified for now)
         query = """
-        SELECT 
+        SELECT
             i.itemID,
             i.key,
             i.itemTypeID,
@@ -306,25 +307,25 @@ class LocalZoteroReader:
             doi_val.value as doi,
             GROUP_CONCAT(n.note, ' ') as notes,
             GROUP_CONCAT(
-                CASE 
-                    WHEN c.firstName IS NOT NULL AND c.lastName IS NOT NULL 
+                CASE
+                    WHEN c.firstName IS NOT NULL AND c.lastName IS NOT NULL
                     THEN c.lastName || ', ' || c.firstName
-                    WHEN c.lastName IS NOT NULL 
+                    WHEN c.lastName IS NOT NULL
                     THEN c.lastName
                     ELSE NULL
                 END, '; '
             ) as creators
         FROM items i
         JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
-        
+
         -- Get title
         LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
         LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
-        
-        -- Get abstract  
+
+        -- Get abstract
         LEFT JOIN itemData abstract_data ON i.itemID = abstract_data.itemID AND abstract_data.fieldID = 2
         LEFT JOIN itemDataValues abstract_val ON abstract_data.valueID = abstract_val.valueID
-        
+
         -- Get extra field
         LEFT JOIN itemData extra_data ON i.itemID = extra_data.itemID AND extra_data.fieldID = 16
         LEFT JOIN itemDataValues extra_val ON extra_data.valueID = extra_val.valueID
@@ -333,28 +334,28 @@ class LocalZoteroReader:
         LEFT JOIN fields doi_f ON doi_f.fieldName = 'DOI'
         LEFT JOIN itemData doi_data ON i.itemID = doi_data.itemID AND doi_data.fieldID = doi_f.fieldID
         LEFT JOIN itemDataValues doi_val ON doi_data.valueID = doi_val.valueID
-        
+
         -- Get notes
         LEFT JOIN itemNotes n ON i.itemID = n.parentItemID OR i.itemID = n.itemID
-        
+
         -- Get creators
         LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
         LEFT JOIN creators c ON ic.creatorID = c.creatorID
-        
+
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
-        
+
         GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
                  title_val.value, abstract_val.value, extra_val.value
-        
+
         ORDER BY i.dateModified DESC
         """
-        
+
         if limit:
             query += f" LIMIT {limit}"
-        
+
         cursor = conn.execute(query)
         items = []
-        
+
         for row in cursor:
             item = ZoteroItem(
                 item_id=row['itemID'],
@@ -373,24 +374,24 @@ class LocalZoteroReader:
                 date_modified=row['dateModified']
             )
             items.append(item)
-            
+
         return items
 
     # Public helper to quickly check full text metadata for item
-    def get_fulltext_meta_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
+    def get_fulltext_meta_for_item(self, item_id: int) -> tuple[str, str] | None:
         return self._get_fulltext_meta_for_item(item_id)
 
     # Public helper to extract fulltext on demand for a specific item
-    def extract_fulltext_for_item(self, item_id: int) -> Optional[tuple[str, str]]:
+    def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         return self._extract_fulltext_for_item(item_id)
-    
-    def get_item_by_key(self, key: str) -> Optional[ZoteroItem]:
+
+    def get_item_by_key(self, key: str) -> ZoteroItem | None:
         """
         Get a specific item by its Zotero key.
-        
+
         Args:
             key: The Zotero item key.
-            
+
         Returns:
             ZoteroItem if found, None otherwise.
         """
@@ -399,44 +400,44 @@ class LocalZoteroReader:
             if item.key == key:
                 return item
         return None
-    
-    def search_items_by_text(self, query: str, limit: int = 50) -> List[ZoteroItem]:
+
+    def search_items_by_text(self, query: str, limit: int = 50) -> list[ZoteroItem]:
         """
         Simple text search through item content.
-        
+
         Args:
             query: Search query string.
             limit: Maximum number of results.
-            
+
         Returns:
             List of matching ZoteroItem objects.
         """
         items = self.get_items_with_text()
         matching_items = []
-        
+
         query_lower = query.lower()
-        
+
         for item in items:
             searchable_text = item.get_searchable_text().lower()
             if query_lower in searchable_text:
                 matching_items.append(item)
                 if len(matching_items) >= limit:
                     break
-                    
+
         return matching_items
 
 
-def get_local_zotero_reader() -> Optional[LocalZoteroReader]:
+def get_local_zotero_reader() -> LocalZoteroReader | None:
     """
     Get a LocalZoteroReader instance if in local mode.
-    
+
     Returns:
         LocalZoteroReader instance if in local mode and database exists,
         None otherwise.
     """
     if not is_local_mode():
         return None
-        
+
     try:
         return LocalZoteroReader()
     except FileNotFoundError:
@@ -446,7 +447,7 @@ def get_local_zotero_reader() -> Optional[LocalZoteroReader]:
 def is_local_db_available() -> bool:
     """
     Check if local Zotero database is available.
-    
+
     Returns:
         True if local database can be accessed, False otherwise.
     """

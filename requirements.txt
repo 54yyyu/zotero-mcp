@@ -1,6 +1,0 @@
-pyzotero>=1.5.0
-mcp>=1.2.0
-python-dotenv>=1.0.0
-markitdown
-pydantic>=2.0.0
-fastmcp>=2.3.0
