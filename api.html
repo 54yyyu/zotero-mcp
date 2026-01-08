@@ -3,16 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zotero MCP API Documentation</title>
+  <title>API Documentation | Zotero MCP</title>
+  <meta name="description" content="Complete API reference for Zotero MCP. Semantic search, library tools, annotations, and more.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-  <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+  <nav class="navbar navbar-expand-lg navbar-dark">
     <div class="container">
       <a class="navbar-brand" href="index.html">
-        <img src="img/logo.svg" alt="Zotero MCP Logo" height="30" class="d-inline-block align-top">
+        <img src="img/logo.svg" alt="Zotero MCP" height="32">
         Zotero MCP
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
@@ -20,24 +24,12 @@
       </button>
       <div class="collapse navbar-collapse" id="navbarNav">
         <ul class="navbar-nav ms-auto">
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#home">Home</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#features">Features</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#installation">Installation</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#usage">Usage</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link active" href="api.html">API</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#troubleshooting">Troubleshooting</a>
-          </li>
+          <li class="nav-item"><a class="nav-link" href="index.html#home">Home</a></li>
+          <li class="nav-item"><a class="nav-link" href="index.html#features">Features</a></li>
+          <li class="nav-item"><a class="nav-link" href="installation.html">Installation</a></li>
+          <li class="nav-item"><a class="nav-link" href="index.html#usage">Usage</a></li>
+          <li class="nav-item"><a class="nav-link active" href="api.html">API</a></li>
+          <li class="nav-item"><a class="nav-link" href="index.html#troubleshooting">FAQ</a></li>
           <li class="nav-item">
             <a class="nav-link" href="https://github.com/54yyyu/zotero-mcp" target="_blank">
               <i class="fab fa-github"></i> GitHub
@@ -48,50 +40,157 @@
     </div>
   </nav>
 
-  <header class="py-4 bg-light">
+  <header class="py-5 bg-gradient-mesh" style="margin-top: 76px;">
     <div class="container">
       <h1>API Documentation</h1>
-      <p class="lead">Detailed documentation of all available Zotero MCP tools.</p>
+      <p class="lead mb-0">Complete reference for all Zotero MCP tools and functions</p>
     </div>
   </header>
 
   <section class="py-5">
     <div class="container">
       <div class="row">
-        <!-- Sidebar with navigation -->
-        <div class="col-lg-3">
-          <div class="sticky-top pt-4">
+        <!-- Sidebar -->
+        <div class="col-lg-3 mb-4">
+          <div class="sticky-top">
             <div class="list-group">
-              <a href="#search-tools" class="list-group-item list-group-item-action">Search Tools</a>
-              <a href="#content-tools" class="list-group-item list-group-item-action">Content Tools</a>
-              <a href="#notes-annotations-tools" class="list-group-item list-group-item-action">Notes & Annotations</a>
-              <a href="#management-tools" class="list-group-item list-group-item-action">Management Tools</a>
-              <a href="#examples" class="list-group-item list-group-item-action">Usage Examples</a>
+              <a href="#semantic-search-tools" class="list-group-item list-group-item-action">
+                <i class="fas fa-brain me-2 text-primary"></i>Semantic Search
+              </a>
+              <a href="#search-tools" class="list-group-item list-group-item-action">
+                <i class="fas fa-search me-2 text-primary"></i>Search Tools
+              </a>
+              <a href="#content-tools" class="list-group-item list-group-item-action">
+                <i class="fas fa-book me-2 text-primary"></i>Content Tools
+              </a>
+              <a href="#notes-annotations-tools" class="list-group-item list-group-item-action">
+                <i class="fas fa-sticky-note me-2 text-primary"></i>Notes & Annotations
+              </a>
+              <a href="#management-tools" class="list-group-item list-group-item-action">
+                <i class="fas fa-cog me-2 text-primary"></i>Management Tools
+              </a>
+              <a href="#examples" class="list-group-item list-group-item-action">
+                <i class="fas fa-code me-2 text-primary"></i>Usage Examples
+              </a>
             </div>
           </div>
         </div>
-        
-        <!-- Main content -->
+
+        <!-- Main Content -->
         <div class="col-lg-9">
-          <div id="search-tools">
-            <h2 class="border-bottom pb-2">Search Tools</h2>
-            
-            <div class="card mb-4">
+          <!-- Semantic Search Tools -->
+          <section id="semantic-search-tools" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              <i class="fas fa-brain me-2 text-primary"></i>Semantic Search Tools
+              <span class="badge badge-new ms-2">New</span>
+            </h2>
+            <p class="text-muted mb-4">AI-powered vector search for finding conceptually related papers</p>
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_search_items</h3>
+                <h3 class="h5 mb-0"><code>zotero_semantic_search</code></h3>
               </div>
               <div class="card-body">
-                <p>Search for items in your Zotero library, given a query string.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Perform AI-powered semantic search across your Zotero library. Finds papers based on conceptual similarity rather than exact keyword matches.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
+                  </thead>
+                  <tbody>
                     <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
+                      <td><code>query</code></td>
+                      <td>string</td>
+                      <td>Semantic search query (can be natural language, concepts, or even an abstract)</td>
+                      <td>Required</td>
                     </tr>
+                    <tr>
+                      <td><code>limit</code></td>
+                      <td>integer</td>
+                      <td>Maximum number of results to return</td>
+                      <td>10</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <h6>Returns</h6>
+                <p>Markdown-formatted results with similarity scores and item metadata.</p>
+
+                <h6>Example</h6>
+                <div class="code-block">
+                  <pre><code>{
+  "query": "machine learning applications in medical imaging",
+  "limit": 5
+}</code></pre>
+                </div>
+              </div>
+            </div>
+
+            <div class="card tool-card mb-4">
+              <div class="card-header">
+                <h3 class="h5 mb-0"><code>zotero_update_search_database</code></h3>
+              </div>
+              <div class="card-body">
+                <p>Manually trigger an update of the semantic search database.</p>
+
+                <h6>Parameters</h6>
+                <table class="table table-striped">
+                  <thead>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><code>extract_fulltext</code></td>
+                      <td>boolean</td>
+                      <td>Whether to extract full-text content from PDFs</td>
+                      <td>false</td>
+                    </tr>
+                    <tr>
+                      <td><code>force_rebuild</code></td>
+                      <td>boolean</td>
+                      <td>Force complete database rebuild</td>
+                      <td>false</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card tool-card mb-4">
+              <div class="card-header">
+                <h3 class="h5 mb-0"><code>zotero_get_search_database_status</code></h3>
+              </div>
+              <div class="card-body">
+                <p>Get the current status and statistics of the semantic search database.</p>
+
+                <h6>Parameters</h6>
+                <p>None</p>
+
+                <h6>Returns</h6>
+                <p>Database statistics including item count, last update time, and embedding model info.</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- Search Tools -->
+          <section id="search-tools" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              <i class="fas fa-search me-2 text-primary"></i>Search Tools
+            </h2>
+            <p class="text-muted mb-4">Traditional keyword and criteria-based search tools</p>
+
+            <div class="card tool-card mb-4">
+              <div class="card-header">
+                <h3 class="h5 mb-0"><code>zotero_search_items</code></h3>
+              </div>
+              <div class="card-body">
+                <p>Search for items in your Zotero library by keywords.</p>
+
+                <h6>Parameters</h6>
+                <table class="table table-striped">
+                  <thead>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
@@ -103,31 +202,33 @@
                     <tr>
                       <td><code>qmode</code></td>
                       <td>string</td>
-                      <td>Query mode, either "titleCreatorYear" or "everything"</td>
+                      <td>Query mode: "titleCreatorYear" or "everything"</td>
                       <td>"titleCreatorYear"</td>
                     </tr>
                     <tr>
                       <td><code>item_type</code></td>
                       <td>string</td>
-                      <td>Type of items to search for. Use "-attachment" to exclude attachments.</td>
+                      <td>Item type filter. Use "-attachment" to exclude attachments.</td>
                       <td>"-attachment"</td>
                     </tr>
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of results to return</td>
+                      <td>Maximum results to return</td>
                       <td>10</td>
+                    </tr>
+                    <tr>
+                      <td><code>tag</code></td>
+                      <td>array</td>
+                      <td>List of tag conditions to filter by</td>
+                      <td>null</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted search results with item metadata.</p>
-                
-                <h4 class="h6">Example</h4>
+
+                <h6>Example</h6>
                 <div class="code-block">
-                  <pre><code>// Example of using zotero_search_items to find papers about machine learning
-{
+                  <pre><code>{
   "query": "machine learning",
   "qmode": "everything",
   "limit": 5
@@ -135,102 +236,128 @@
                 </div>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_advanced_search</h3>
+                <h3 class="h5 mb-0"><code>zotero_search_by_tag</code> <span class="badge badge-new">New</span></h3>
               </div>
               <div class="card-body">
-                <p>Perform an advanced search with multiple criteria.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Search for items using tag filters with AND/OR logic and exclusions.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
+                  </thead>
+                  <tbody>
                     <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
+                      <td><code>tag</code></td>
+                      <td>array</td>
+                      <td>List of tag conditions. Use "||" for OR, "-" for exclusion. Example: ["research || important", "-draft"]</td>
+                      <td>Required</td>
                     </tr>
+                    <tr>
+                      <td><code>item_type</code></td>
+                      <td>string</td>
+                      <td>Item type filter</td>
+                      <td>"-attachment"</td>
+                    </tr>
+                    <tr>
+                      <td><code>limit</code></td>
+                      <td>integer</td>
+                      <td>Maximum results to return</td>
+                      <td>10</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <h6>Example</h6>
+                <div class="code-block">
+                  <pre><code>{
+  "tag": ["#ML || #AI", "-#draft"],
+  "limit": 20
+}</code></pre>
+                </div>
+
+                <div class="alert alert-info mt-3">
+                  <i class="fas fa-info-circle me-2"></i>
+                  Tags are ANDed together. Each tag can contain OR conditions (||) or exclusions (-).
+                </div>
+              </div>
+            </div>
+
+            <div class="card tool-card mb-4">
+              <div class="card-header">
+                <h3 class="h5 mb-0"><code>zotero_advanced_search</code></h3>
+              </div>
+              <div class="card-body">
+                <p>Perform advanced search with multiple criteria.</p>
+
+                <h6>Parameters</h6>
+                <table class="table table-striped">
+                  <thead>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
                       <td><code>conditions</code></td>
                       <td>array</td>
-                      <td>List of search condition dictionaries, each containing: field, operation, value</td>
+                      <td>List of condition objects: {field, operation, value}</td>
                       <td>Required</td>
                     </tr>
                     <tr>
                       <td><code>join_mode</code></td>
                       <td>string</td>
-                      <td>Whether all conditions must match ("all") or any condition can match ("any")</td>
+                      <td>"all" (AND) or "any" (OR)</td>
                       <td>"all"</td>
                     </tr>
                     <tr>
                       <td><code>sort_by</code></td>
                       <td>string</td>
-                      <td>Field to sort by (dateAdded, dateModified, title, creator, etc.)</td>
+                      <td>Field to sort by (dateAdded, dateModified, title, creator)</td>
                       <td>null</td>
                     </tr>
                     <tr>
                       <td><code>sort_direction</code></td>
                       <td>string</td>
-                      <td>Direction to sort ("asc" or "desc")</td>
+                      <td>"asc" or "desc"</td>
                       <td>"asc"</td>
                     </tr>
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of results to return</td>
+                      <td>Maximum results to return</td>
                       <td>50</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted search results with item metadata.</p>
-                
-                <h4 class="h6">Example</h4>
+
+                <h6>Example</h6>
                 <div class="code-block">
-                  <pre><code>// Example of using zotero_advanced_search to find recent papers by a specific author
-{
+                  <pre><code>{
   "conditions": [
-    {
-      "field": "creator",
-      "operation": "contains",
-      "value": "Smith"
-    },
-    {
-      "field": "date",
-      "operation": "is",
-      "value": "2023"
-    }
+    {"field": "creator", "operation": "contains", "value": "Smith"},
+    {"field": "date", "operation": "is", "value": "2023"}
   ],
   "join_mode": "all",
   "sort_by": "dateAdded",
-  "sort_direction": "desc",
-  "limit": 10
+  "sort_direction": "desc"
 }</code></pre>
                 </div>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_collections</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_collections</code></h3>
               </div>
               <div class="card-body">
-                <p>List all collections in your Zotero library.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>List all collections in your Zotero library with hierarchical structure.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
@@ -241,28 +368,20 @@
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of collections with hierarchical structure.</p>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_collection_items</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_collection_items</code></h3>
               </div>
               <div class="card-body">
-                <p>Get all items in a specific Zotero collection.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Get all items in a specific collection.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
@@ -274,65 +393,49 @@
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of items to return</td>
+                      <td>Maximum items to return</td>
                       <td>50</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of items in the collection.</p>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_tags</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_tags</code></h3>
               </div>
               <div class="card-body">
-                <p>Get all tags used in your Zotero library.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Get all tags used in your library, organized alphabetically.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of tags to return</td>
+                      <td>Maximum tags to return</td>
                       <td>null (no limit)</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of tags organized alphabetically.</p>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_recent</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_recent</code></h3>
               </div>
               <div class="card-body">
-                <p>Get recently added items to your Zotero library.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Get recently added items to your library.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
@@ -343,32 +446,28 @@
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of recently added items.</p>
               </div>
             </div>
-          </div>
-          
-          <div id="content-tools" class="mt-5">
-            <h2 class="border-bottom pb-2">Content Tools</h2>
-            
-            <div class="card mb-4">
+          </section>
+
+          <!-- Content Tools -->
+          <section id="content-tools" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              <i class="fas fa-book me-2 text-primary"></i>Content Tools
+            </h2>
+            <p class="text-muted mb-4">Access item metadata, full text, and attachments</p>
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_item_metadata</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_item_metadata</code></h3>
               </div>
               <div class="card-body">
-                <p>Get detailed metadata for a specific Zotero item by its key.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Get detailed metadata for a specific item. Supports BibTeX export format.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
@@ -380,70 +479,44 @@
                     <tr>
                       <td><code>include_abstract</code></td>
                       <td>boolean</td>
-                      <td>Whether to include the abstract in the output</td>
+                      <td>Whether to include the abstract</td>
                       <td>true</td>
                     </tr>
-                  </tbody>
-                </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted item metadata.</p>
-              </div>
-            </div>
-            
-            <div class="card mb-4">
-              <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_item_fulltext</h3>
-              </div>
-              <div class="card-body">
-                <p>Get the full text content of a Zotero item by its key.</p>
-                
-                <h4 class="h6">Parameters</h4>
-                <table class="table table-striped">
-                  <thead>
                     <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td><code>item_key</code></td>
+                      <td><code>format</code></td>
                       <td>string</td>
-                      <td>Zotero item key/ID</td>
-                      <td>Required</td>
+                      <td>Output format: "markdown" or "bibtex"</td>
+                      <td>"markdown"</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted item metadata followed by the full text content.</p>
-                
-                <div class="alert alert-info">
+
+                <h6>Example: BibTeX Export</h6>
+                <div class="code-block">
+                  <pre><code>{
+  "item_key": "ABC123XY",
+  "format": "bibtex"
+}</code></pre>
+                </div>
+
+                <div class="alert alert-info mt-3">
                   <i class="fas fa-info-circle me-2"></i>
-                  Requires Zotero 7+ for local full-text access. The text is extracted from the first available PDF or HTML attachment.
+                  For best BibTeX results, install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a>.
                 </div>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_item_children</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_item_fulltext</code></h3>
               </div>
               <div class="card-body">
-                <p>Get all child items (attachments, notes) for a specific Zotero item.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Get the full text content of an item from its PDF or HTML attachment.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
@@ -454,117 +527,128 @@
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of child items, including attachments and notes.</p>
-          </div>
-          
-          <div id="notes-annotations-tools" class="mt-5">
-            <h2 class="border-bottom pb-2">Notes & Annotations Tools</h2>
-            
-            <div class="card mb-4">
+
+                <div class="alert alert-warning mt-3">
+                  <i class="fas fa-exclamation-triangle me-2"></i>
+                  Requires Zotero 7+ for local full-text access.
+                </div>
+              </div>
+            </div>
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_annotations</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_item_children</code></h3>
               </div>
               <div class="card-body">
-                <p>Get all annotations for a specific item or across your entire Zotero library.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Get all child items (attachments, notes) for a specific item.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
                       <td><code>item_key</code></td>
                       <td>string</td>
-                      <td>Optional Zotero item key/ID to filter annotations by parent item</td>
+                      <td>Zotero item key/ID</td>
+                      <td>Required</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- Notes & Annotations Tools -->
+          <section id="notes-annotations-tools" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              <i class="fas fa-sticky-note me-2 text-primary"></i>Notes & Annotations Tools
+            </h2>
+            <p class="text-muted mb-4">Work with PDF annotations and research notes</p>
+
+            <div class="card tool-card mb-4">
+              <div class="card-header">
+                <h3 class="h5 mb-0"><code>zotero_get_annotations</code></h3>
+              </div>
+              <div class="card-body">
+                <p>Get annotations for a specific item or across your entire library.</p>
+
+                <h6>Parameters</h6>
+                <table class="table table-striped">
+                  <thead>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><code>item_key</code></td>
+                      <td>string</td>
+                      <td>Filter by parent item (optional)</td>
                       <td>null</td>
                     </tr>
                     <tr>
                       <td><code>use_pdf_extraction</code></td>
                       <td>boolean</td>
-                      <td>Whether to attempt direct PDF extraction as a fallback</td>
+                      <td>Extract directly from PDF as fallback</td>
                       <td>false</td>
                     </tr>
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of annotations to return</td>
+                      <td>Maximum annotations to return</td>
                       <td>null</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of annotations with context.</p>
-                
-                <div class="alert alert-info">
+
+                <div class="alert alert-info mt-3">
                   <i class="fas fa-info-circle me-2"></i>
-                  For optimal annotation extraction, it is <strong>highly recommended</strong> to install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a> for Zotero. The annotation-related functions have been primarily tested with this plugin and provide enhanced functionality when it's available.
+                  For best results, install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a>.
                 </div>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_get_notes</h3>
+                <h3 class="h5 mb-0"><code>zotero_get_notes</code></h3>
               </div>
               <div class="card-body">
-                <p>Retrieve notes from your Zotero library, with options to filter by parent item.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Retrieve notes from your library.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
                       <td><code>item_key</code></td>
                       <td>string</td>
-                      <td>Optional Zotero item key/ID to filter notes by parent item</td>
+                      <td>Filter by parent item (optional)</td>
                       <td>null</td>
                     </tr>
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of notes to return</td>
+                      <td>Maximum notes to return</td>
                       <td>20</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of notes.</p>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_search_notes</h3>
+                <h3 class="h5 mb-0"><code>zotero_search_notes</code></h3>
               </div>
               <div class="card-body">
-                <p>Search for notes across your Zotero library.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Search for notes and annotations by content.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
@@ -576,39 +660,31 @@
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of results to return</td>
+                      <td>Maximum results to return</td>
                       <td>20</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted search results with highlighted matches.</p>
               </div>
             </div>
-            
-            <div class="card mb-4">
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_create_note</h3>
+                <h3 class="h5 mb-0"><code>zotero_create_note</code> <span class="badge badge-beta">Beta</span></h3>
               </div>
               <div class="card-body">
-                <p>Create a new note for a Zotero item. <span class="badge bg-warning text-dark">Beta Feature</span></p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Create a new note for a Zotero item.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
                       <td><code>item_key</code></td>
                       <td>string</td>
-                      <td>Zotero item key/ID to attach the note to</td>
+                      <td>Parent item key to attach note to</td>
                       <td>Required</td>
                     </tr>
                     <tr>
@@ -620,231 +696,264 @@
                     <tr>
                       <td><code>note_text</code></td>
                       <td>string</td>
-                      <td>Content of the note (can include simple HTML formatting)</td>
+                      <td>Note content (supports basic HTML)</td>
                       <td>Required</td>
                     </tr>
                     <tr>
                       <td><code>tags</code></td>
                       <td>array</td>
-                      <td>List of tags to apply to the note</td>
+                      <td>Tags to apply to the note</td>
                       <td>null</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Confirmation message with the new note key.</p>
+
+                <h6>Example</h6>
+                <div class="code-block">
+                  <pre><code>{
+  "item_key": "ABC123XY",
+  "note_title": "Summary Notes",
+  "note_text": "<p>Key findings from this paper...</p>",
+  "tags": ["summary", "important"]
+}</code></pre>
+                </div>
               </div>
             </div>
-          </div>
-          
+          </section>
 
-          <div id="management-tools" class="mt-5">
-            <h2 class="border-bottom pb-2">Management Tools</h2>
-            
-            <div class="card mb-4">
+          <!-- Management Tools -->
+          <section id="management-tools" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              <i class="fas fa-cog me-2 text-primary"></i>Management Tools
+            </h2>
+            <p class="text-muted mb-4">Batch operations and library management</p>
+
+            <div class="card tool-card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0 text-primary">zotero_batch_update_tags</h3>
+                <h3 class="h5 mb-0"><code>zotero_batch_update_tags</code></h3>
               </div>
               <div class="card-body">
-                <p>Batch update tags across multiple items matching a search query.</p>
-                
-                <h4 class="h6">Parameters</h4>
+                <p>Batch add or remove tags across multiple items.</p>
+
+                <h6>Parameters</h6>
                 <table class="table table-striped">
                   <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
+                    <tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr>
                   </thead>
                   <tbody>
                     <tr>
                       <td><code>query</code></td>
                       <td>string</td>
-                      <td>Search query to find items to update</td>
+                      <td>Search query to find items</td>
                       <td>Required</td>
                     </tr>
                     <tr>
                       <td><code>add_tags</code></td>
                       <td>array</td>
-                      <td>List of tags to add to matched items</td>
+                      <td>Tags to add</td>
                       <td>null</td>
                     </tr>
                     <tr>
                       <td><code>remove_tags</code></td>
                       <td>array</td>
-                      <td>List of tags to remove from matched items</td>
+                      <td>Tags to remove</td>
                       <td>null</td>
                     </tr>
                     <tr>
                       <td><code>limit</code></td>
                       <td>integer</td>
-                      <td>Maximum number of items to process</td>
+                      <td>Maximum items to process</td>
                       <td>50</td>
                     </tr>
                   </tbody>
                 </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Summary of the batch update operation.</p>
-                
-                <h4 class="h6">Example</h4>
+
+                <h6>Example</h6>
                 <div class="code-block">
-                  <pre><code>// Example of using zotero_batch_update_tags to tag all machine learning papers
-{
+                  <pre><code>{
   "query": "machine learning",
-  "add_tags": ["ai", "research"],
+  "add_tags": ["AI", "research"],
   "remove_tags": ["to-read"],
   "limit": 100
 }</code></pre>
                 </div>
               </div>
             </div>
-          </div>
-          
-          <div id="examples" class="mt-5">
-            <h2 class="border-bottom pb-2">Usage Examples</h2>
-            
+          </section>
+
+          <!-- Usage Examples -->
+          <section id="examples" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              <i class="fas fa-code me-2 text-primary"></i>Usage Examples
+            </h2>
+            <p class="text-muted mb-4">Real-world examples of using Zotero MCP with your AI assistant</p>
+
             <div class="card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0">Finding Recent Papers</h3>
+                <h5 class="mb-0">Semantic Search for Related Research</h5>
               </div>
               <div class="card-body">
-                <p>You can ask Claude to help you find the most recent papers in your library:</p>
-                <div class="mb-3 p-3 bg-light rounded">
-                  <p><strong>You:</strong> Find my most recently added papers about machine learning</p>
-                  <p><strong>Claude:</strong> I'll search your Zotero library for recently added papers about machine learning.</p>
-                  <p>[Claude uses <code>zotero_search_items</code> with query "machine learning" and sorts by date added]</p>
-                  <p><strong>Claude:</strong> I found 5 recently added papers about machine learning in your Zotero library:</p>
+                <div class="p-3 bg-light rounded">
+                  <p><strong>You:</strong> Find papers in my library related to transformer architectures in computer vision</p>
+                  <p><strong>Claude:</strong> I'll search your library for conceptually related papers using semantic search.</p>
+                  <p><em>[Uses zotero_semantic_search with the query]</em></p>
+                  <p><strong>Claude:</strong> I found 5 papers related to transformers in vision:</p>
                   <ol>
-                    <li>"Transformers for Time Series: A Survey" (2023) by Chen et al.</li>
-                    <li>"A Survey of Large Language Models for Healthcare" (2023) by Zhang et al.</li>
+                    <li>"Vision Transformer: An Image is Worth 16x16 Words" (Score: 0.92)</li>
+                    <li>"Swin Transformer: Hierarchical Vision Transformer" (Score: 0.87)</li>
                     <li>...</li>
                   </ol>
-                  <p>Would you like me to get the full text or metadata for any of these papers?</p>
                 </div>
               </div>
             </div>
-            
+
             <div class="card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0">Summarizing a Paper</h3>
+                <h5 class="mb-0">BibTeX Export for Paper Writing</h5>
               </div>
               <div class="card-body">
-                <p>You can ask Claude to summarize a paper from your library:</p>
-                <div class="mb-3 p-3 bg-light rounded">
-                  <p><strong>You:</strong> Summarize the key findings from the paper "Transformers for Time Series" in my library</p>
-                  <p><strong>Claude:</strong> Let me find and summarize that paper for you.</p>
-                  <p>[Claude uses <code>zotero_search_items</code> to find the paper, then <code>zotero_get_item_fulltext</code> to access its content]</p>
-                  <p><strong>Claude:</strong> Here's a summary of the key findings from "Transformers for Time Series: A Survey":</p>
-                  <p>The paper identifies four main advantages of transformer architectures for time series analysis: (1) ability to model long-range dependencies, (2) parallelizable training, (3) flexibility in handling multivariate data, and (4) transfer learning capabilities. The authors review over 30 transformer-based approaches for time series tasks, categorizing them based on their architectures and showing that transformer models consistently outperform traditional methods on benchmark datasets for forecasting, classification, and anomaly detection tasks.</p>
+                <div class="p-3 bg-light rounded">
+                  <p><strong>You:</strong> Export the BibTeX citation for my attention mechanism paper</p>
+                  <p><strong>Claude:</strong> Let me find and export that paper.</p>
+                  <p><em>[Uses zotero_search_items, then zotero_get_item_metadata with format="bibtex"]</em></p>
+                  <p><strong>Claude:</strong> Here's your BibTeX citation:</p>
+                  <div class="code-block">
+                    <pre><code>@article{vaswani2017attention,
+  title={Attention is all you need},
+  author={Vaswani, Ashish and Shazeer, Noam and ...},
+  journal={Advances in neural information processing systems},
+  year={2017}
+}</code></pre>
+                  </div>
                 </div>
               </div>
             </div>
-            
+
             <div class="card mb-4">
               <div class="card-header">
-                <h3 class="h5 mb-0">Organizing Your Library</h3>
+                <h5 class="mb-0">Tag-Based Organization</h5>
               </div>
               <div class="card-body">
-                <p>You can ask Claude to help organize your Zotero library:</p>
-                <div class="mb-3 p-3 bg-light rounded">
-                  <p><strong>You:</strong> Tag all my papers about deep learning with the tags "neural-networks" and "ai"</p>
-                  <p><strong>Claude:</strong> I'll help you tag those papers.</p>
-                  <p>[Claude uses <code>zotero_batch_update_tags</code> with query "deep learning" and add_tags ["neural-networks", "ai"]]</p>
-                  <p><strong>Claude:</strong> I've updated the tags for 15 papers about deep learning in your library. All of them now have the tags "neural-networks" and "ai". Would you like me to show you the list of updated papers?</p>
+                <div class="p-3 bg-light rounded">
+                  <p><strong>You:</strong> Show me all papers tagged with #ML but not #reviewed</p>
+                  <p><strong>Claude:</strong> I'll search using tag filters.</p>
+                  <p><em>[Uses zotero_search_by_tag with tag=["#ML", "-#reviewed"]]</em></p>
+                  <p><strong>Claude:</strong> Found 12 papers with #ML that haven't been reviewed yet:</p>
+                  <ol>
+                    <li>"Deep Learning for Natural Language Processing" - Added 3 days ago</li>
+                    <li>"Reinforcement Learning: An Introduction" - Added 1 week ago</li>
+                    <li>...</li>
+                  </ol>
                 </div>
               </div>
             </div>
-          </div>
+
+            <div class="card mb-4">
+              <div class="card-header">
+                <h5 class="mb-0">Extracting and Summarizing Annotations</h5>
+              </div>
+              <div class="card-body">
+                <div class="p-3 bg-light rounded">
+                  <p><strong>You:</strong> Extract my annotations from the quantum computing paper and create a summary note</p>
+                  <p><strong>Claude:</strong> I'll extract your annotations and create a summary.</p>
+                  <p><em>[Uses zotero_search_items to find the paper]</em></p>
+                  <p><em>[Uses zotero_get_annotations to extract highlights and notes]</em></p>
+                  <p><em>[Uses zotero_create_note to save the summary]</em></p>
+                  <p><strong>Claude:</strong> I found 15 annotations in your paper. Key themes:</p>
+                  <ul>
+                    <li>5 highlights on quantum circuit optimization</li>
+                    <li>3 notes about error correction methods</li>
+                    <li>7 highlights on experimental results</li>
+                  </ul>
+                  <p>I've created a summary note attached to the paper with all your annotations organized by topic.</p>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>
-            <div class="card mb-4">
-              <div class="card-header">
-                <h3 class="h5 mb-0">Working with Annotations</h3>
-              </div>
-              <div class="card-body">
-                <p>You can ask Claude to work with your PDF annotations:</p>
-                <div class="mb-3 p-3 bg-light rounded">
-                  <p><strong>You:</strong> Extract all annotations from my recent paper on quantum computing</p>
-                  <p><strong>Claude:</strong> I'll help you extract those annotations.</p>
-                  <p>[Claude first uses <code>zotero_search_items</code> to find the paper, then <code>zotero_get_annotations</code> to extract annotations]</p>
-                  <p><strong>Claude:</strong> I've found 12 annotations in your quantum computing paper. Here are the highlights:</p>
-                  <ul>
-                    <li>4 highlights on quantum circuit optimization</li>
-                    <li>2 text annotations discussing error correction</li>
-                    <li>3 notes on future research directions</li>
-                    <li>3 highlighted equations with your comments</li>
-                  </ul>
-                  <p>Would you like me to summarize these annotations or organize them by topic?</p>
-                </div>
-              </div>
-            </div>
   </section>
 
-  <footer class="py-5 bg-dark text-white">
+  <footer>
     <div class="container text-center">
-      <p>Zotero MCP - Your Research Library in Claude</p>
-      <p class="mb-0">
-        <a href="https://github.com/54yyyu/zotero-mcp" class="text-white" target="_blank">
-          <i class="fab fa-github me-2"></i>GitHub
+      <div class="footer-brand">Zotero MCP</div>
+      <p>Your Research Library, Powered by AI</p>
+      <div class="footer-links">
+        <a href="https://github.com/54yyyu/zotero-mcp" target="_blank">
+          <i class="fab fa-github"></i> GitHub
         </a>
-        <span class="mx-2">|</span>
-        <a href="https://github.com/54yyyu/zotero-mcp/issues" class="text-white" target="_blank">
-          <i class="fas fa-bug me-2"></i>Report an Issue
+        <a href="https://github.com/54yyyu/zotero-mcp/issues" target="_blank">
+          <i class="fas fa-bug"></i> Report Issue
         </a>
-      </p>
-      <p class="mt-2 mb-0">
-        <small>License: MIT</small>
-      </p>
+        <a href="installation.html">
+          <i class="fas fa-download"></i> Installation
+        </a>
+      </div>
+      <p class="mb-0"><small>MIT License</small></p>
     </div>
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // Navbar scroll effect
+    window.addEventListener('scroll', function() {
+      const navbar = document.querySelector('.navbar');
+      if (window.scrollY > 50) {
+        navbar.classList.add('scrolled');
+      } else {
+        navbar.classList.remove('scrolled');
+      }
+    });
+
+    // Highlight active section in sidebar
+    const sections = document.querySelectorAll('section[id]');
+    const navLinks = document.querySelectorAll('.list-group-item');
+
+    window.addEventListener('scroll', () => {
+      let current = '';
+      sections.forEach(section => {
+        const sectionTop = section.offsetTop - 150;
+        if (scrollY >= sectionTop) {
+          current = section.getAttribute('id');
+        }
+      });
+
+      navLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.getAttribute('href') === '#' + current) {
+          link.classList.add('active');
+        }
+      });
+    });
+
+    // Add copy buttons to all code blocks
+    document.addEventListener('DOMContentLoaded', function() {
+      document.querySelectorAll('.code-block').forEach(block => {
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+        block.appendChild(btn);
+
+        btn.addEventListener('click', async function() {
+          const code = block.querySelector('code').innerText;
+          try {
+            await navigator.clipboard.writeText(code);
+            btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+              btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+              btn.classList.remove('copied');
+            }, 2000);
+          } catch (err) {
+            btn.innerHTML = '<i class="fas fa-times"></i> Failed';
+            setTimeout(() => {
+              btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+            }, 2000);
+          }
+        });
+      });
+    });
+  </script>
 </body>
 </html>
-                
-                <h4 class="h6">Parameters</h4>
-                <table class="table table-striped">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Description</th>
-                      <th>Default</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td><code>item_key</code></td>
-                      <td>string</td>
-                      <td>Optional Zotero item key/ID to filter annotations by parent item</td>
-                      <td>null</td>
-                    </tr>
-                    <tr>
-                      <td><code>use_pdf_extraction</code></td>
-                      <td>boolean</td>
-                      <td>Whether to attempt direct PDF extraction as a fallback</td>
-                      <td>false</td>
-                    </tr>
-                    <tr>
-                      <td><code>limit</code></td>
-                      <td>integer</td>
-                      <td>Maximum number of annotations to return</td>
-                      <td>null</td>
-                    </tr>
-                  </tbody>
-                </table>
-                
-                <h4 class="h6">Returns</h4>
-                <p>Markdown-formatted list of annotations with context.</p>
-                
-                <div class="alert alert-info">
-                  <i class="fas fa-info-circle me-2"></i>
-                  For optimal annotation extraction, it is <strong>highly recommended</strong> to install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a> for Zotero. The annotation-related functions have been primarily tested with this plugin and provide enhanced functionality when it's available.
-                </div>
-              </div>
-            </div>

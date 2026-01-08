@@ -3,16 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zotero MCP | Your Research Library in Claude</title>
+  <title>Zotero MCP | AI-Powered Research Library Integration</title>
+  <meta name="description" content="Connect your Zotero research library with Claude, ChatGPT, and other AI assistants. Semantic search, annotations, and more.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-  <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+  <nav class="navbar navbar-expand-lg navbar-dark">
     <div class="container">
       <a class="navbar-brand" href="#">
-        <img src="img/logo.svg" alt="Zotero MCP Logo" height="30" class="d-inline-block align-top">
+        <img src="img/logo.svg" alt="Zotero MCP" height="32">
         Zotero MCP
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
@@ -20,24 +24,12 @@
       </button>
       <div class="collapse navbar-collapse" id="navbarNav">
         <ul class="navbar-nav ms-auto">
-          <li class="nav-item">
-            <a class="nav-link active" href="#home">Home</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="#features">Features</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="installation.html">Installation</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="#usage">Usage</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="api.html">API</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="#troubleshooting">Troubleshooting</a>
-          </li>
+          <li class="nav-item"><a class="nav-link active" href="#home">Home</a></li>
+          <li class="nav-item"><a class="nav-link" href="#features">Features</a></li>
+          <li class="nav-item"><a class="nav-link" href="installation.html">Installation</a></li>
+          <li class="nav-item"><a class="nav-link" href="#usage">Usage</a></li>
+          <li class="nav-item"><a class="nav-link" href="api.html">API</a></li>
+          <li class="nav-item"><a class="nav-link" href="#troubleshooting">FAQ</a></li>
           <li class="nav-item">
             <a class="nav-link" href="https://github.com/54yyyu/zotero-mcp" target="_blank">
               <i class="fab fa-github"></i> GitHub
@@ -48,143 +40,259 @@
     </div>
   </nav>
 
-  <header id="home" class="py-5 text-center hero-section">
+  <!-- Hero Section -->
+  <header id="home" class="hero-section">
     <div class="container">
-      <div class="row">
-        <div class="col-lg-10 mx-auto">
-          <h1 class="display-4">Zotero MCP</h1>
-          <p class="lead mb-4">Seamlessly connect your Zotero research library with Claude and other AI assistants via the Model Context Protocol.</p>
-          <div class="d-flex justify-content-center mb-5">
-            <a href="https://www.zotero.org/" class="badge-link me-2" target="_blank">
+      <div class="row justify-content-center">
+        <div class="col-lg-10 text-center hero-content">
+          <h1 class="animate-fade-in">Chat with Your Research Library</h1>
+          <p class="lead animate-slide-up">
+            Seamlessly connect your Zotero library with Claude, ChatGPT, and other AI assistants via the Model Context Protocol. Search, summarize, and analyze your research with AI.
+          </p>
+          <div class="hero-badges">
+            <a href="https://www.zotero.org/" target="_blank">
               <img src="https://img.shields.io/badge/Zotero-CC2936?style=for-the-badge&logo=zotero&logoColor=white" alt="Zotero">
             </a>
-            <a href="https://www.anthropic.com/claude" class="badge-link me-2" target="_blank">
+            <a href="https://www.anthropic.com/claude" target="_blank">
               <img src="https://img.shields.io/badge/Claude-6849C3?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude">
             </a>
-            <a href="https://modelcontextprotocol.io/introduction" class="badge-link" target="_blank">
+            <a href="https://chatgpt.com/" target="_blank">
+              <img src="https://img.shields.io/badge/ChatGPT-74AA9C?style=for-the-badge&logo=openai&logoColor=white" alt="ChatGPT">
+            </a>
+            <a href="https://modelcontextprotocol.io/introduction" target="_blank">
               <img src="https://img.shields.io/badge/MCP-0175C2?style=for-the-badge&logoColor=white" alt="MCP">
             </a>
           </div>
-          <div class="d-flex flex-wrap justify-content-center">
-            <a href="installation.html" class="btn btn-primary btn-lg px-4 me-md-2 mb-2 mb-md-0">Get Started</a>
-            <a href="#features" class="btn btn-outline-secondary btn-lg px-4">Learn More</a>
+          <div class="hero-buttons">
+            <a href="installation.html" class="btn btn-primary btn-lg">
+              <i class="fas fa-rocket"></i> Get Started
+            </a>
+            <a href="#features" class="btn btn-outline-secondary btn-lg">
+              <i class="fas fa-sparkles"></i> Explore Features
+            </a>
           </div>
         </div>
       </div>
     </div>
   </header>
 
-  <section id="features" class="py-5 bg-light">
+  <!-- Supported Clients -->
+  <section class="py-5">
     <div class="container">
-      <h2 class="text-center mb-5">Features</h2>
-      <div class="row g-4">
-        <div class="col-md-4">
-          <div class="card h-100">
-            <div class="card-body">
-              <div class="feature-icon mb-3">
-                <i class="fas fa-search"></i>
-              </div>
-              <h5 class="card-title">Search Your Library</h5>
-              <p class="card-text">Find papers, articles, and books by title, author, or content. Perform complex searches with multiple criteria.</p>
-            </div>
+      <h6 class="text-center text-uppercase mb-4" style="letter-spacing: 0.1em; color: var(--color-gray-500);">Works with your favorite AI clients</h6>
+      <div class="client-grid">
+        <a href="https://claude.ai/download" class="client-item" target="_blank">
+          <svg height="40" viewBox="0 0 35 24" fill="none" class="client-logo-svg"><path d="M24.5475 0H19.3384L28.8374 24H34.0465L24.5475 0Z" fill="currentColor"></path><path d="M9.49897 0L0 24H5.31125L7.25395 18.96H17.1914L19.1341 24H24.4454L14.9464 0H9.49897ZM8.97193 14.5029L12.2227 6.06857L15.4735 14.5029H8.97193Z" fill="currentColor"></path></svg>
+          <span>Claude Desktop</span>
+        </a>
+        <a href="https://chatgpt.com/" class="client-item" target="_blank">
+          <img src="https://upload.wikimedia.org/wikipedia/commons/1/13/ChatGPT-Logo.png" alt="ChatGPT" class="client-logo">
+          <span>ChatGPT</span>
+        </a>
+        <a href="https://cherry-ai.com/" class="client-item" target="_blank">
+          <img src="https://www.cherry-ai.com/assets/cherry-logo-CtmH594q.svg" alt="Cherry Studio" class="client-logo">
+          <span>Cherry Studio</span>
+        </a>
+        <a href="https://www.cursor.com/" class="client-item" target="_blank">
+          <svg fill="none" class="client-logo-svg" viewBox="0 0 500 545" xmlns="http://www.w3.org/2000/svg"><g fill="currentColor"><path d="m466.383 137.073-206.469-119.2034c-6.63-3.8287-14.811-3.8287-21.441 0l-206.4586 119.2034c-5.5734 3.218-9.0144 9.169-9.0144 15.615v240.375c0 6.436 3.441 12.397 9.0144 15.615l206.4686 119.203c6.63 3.829 14.811 3.829 21.441 0l206.468-119.203c5.574-3.218 9.015-9.17 9.015-15.615v-240.375c0-6.436-3.441-12.397-9.015-15.615zm-12.969 25.25-199.316 345.223c-1.347 2.326-4.904 1.376-4.904-1.319v-226.048c0-4.517-2.414-8.695-6.33-10.963l-195.7577-113.019c-2.3263-1.347-1.3764-4.905 1.3182-4.905h398.6305c5.661 0 9.199 6.136 6.368 11.041h-.009z"></path></g></svg>
+          <span>Cursor</span>
+        </a>
+        <a href="https://chorus.sh/" class="client-item" target="_blank">
+          <img src="https://framerusercontent.com/images/y3FBHMp2MSK2fzVRnW2JNXfKU.png?width=128&height=128" alt="Chorus" class="client-logo">
+          <span>Chorus</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="bg-light">
+    <div class="container">
+      <h2>Powerful Features</h2>
+      <p class="section-subtitle">Everything you need to supercharge your research workflow with AI</p>
+
+      <!-- Semantic Search Highlight -->
+      <div class="feature-highlight mb-5">
+        <div class="row align-items-center">
+          <div class="col-lg-6 mb-4 mb-lg-0">
+            <h3>
+              <i class="fas fa-brain" style="color: var(--color-primary)"></i>
+              AI-Powered Semantic Search
+              <span class="badge badge-new">New</span>
+            </h3>
+            <p>Go beyond keyword matching. Our vector-based semantic search understands the meaning behind your queries, finding conceptually related papers even when they use different terminology.</p>
+            <ul class="list-unstyled">
+              <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Multiple embedding models: Local (free), OpenAI, Gemini, HuggingFace</li>
+              <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Intelligent similarity scoring</li>
+              <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Auto-updating database with configurable sync</li>
+              <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Full-text content indexing option</li>
+            </ul>
           </div>
-        </div>
-        <div class="col-md-4">
-          <div class="card h-100">
-            <div class="card-body">
-              <div class="feature-icon mb-3">
-                <i class="fas fa-book-open"></i>
-              </div>
-              <h5 class="card-title">Access Your Content</h5>
-              <p class="card-text">Retrieve detailed metadata for any item. Get full text content (when available). Access attachments, notes, and child items.</p>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-4">
-          <div class="card h-100">
-            <div class="card-body">
-              <div class="feature-icon mb-3">
-                <i class="fas fa-robot"></i>
-              </div>
-              <h5 class="card-title">AI Integration</h5>
-              <p class="card-text">Ask Claude about your research papers. Generate summaries, analysis, and insights from your library.</p>
+          <div class="col-lg-6">
+            <div class="code-block">
+              <pre><code><span class="comment"># Example semantic search queries</span>
+"Find papers similar to machine learning in neuroscience"
+"Research about climate impacts on agriculture"
+"Studies on social media and mental health"
+"Papers conceptually similar to this abstract: [text]"</code></pre>
             </div>
           </div>
         </div>
       </div>
-      <div class="row g-4 mt-3">
-        <div class="col-md-6">
-          <div class="card h-100">
-            <div class="card-body">
-              <div class="feature-icon mb-3">
-                <i class="fas fa-highlighter"></i>
-              </div>
-              <h5 class="card-title">Work with Annotations</h5>
-              <p class="card-text">Extract and search PDF annotations directly. Access Zotero's native annotations or extract directly from PDFs. For optimal annotation extraction, it's highly recommended to install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a> for Zotero.</p>
+
+      <div class="row g-4">
+        <div class="col-md-4">
+          <div class="card h-100 feature-card">
+            <div class="feature-icon">
+              <i class="fas fa-search"></i>
             </div>
+            <h5>Smart Library Search</h5>
+            <p>Find papers by title, author, content, or tags. Advanced multi-criteria search with AND/OR logic and tag filtering.</p>
           </div>
         </div>
-        <div class="col-md-6">
-          <div class="card h-100">
-            <div class="card-body">
-              <div class="feature-icon mb-3">
-                <i class="fas fa-sticky-note"></i>
-              </div>
-              <h5 class="card-title">Note Management</h5>
-              <p class="card-text">Retrieve, search, and create notes for your research items. Extract insights from your notes or create new ones (beta feature). Organize your thoughts and research findings seamlessly with Claude's natural language capabilities.</p>
+        <div class="col-md-4">
+          <div class="card h-100 feature-card">
+            <div class="feature-icon">
+              <i class="fas fa-book-open"></i>
             </div>
+            <h5>Full Content Access</h5>
+            <p>Retrieve detailed metadata, full-text content, and attachments. Extract and analyze your research papers with AI.</p>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card h-100 feature-card">
+            <div class="feature-icon">
+              <i class="fas fa-highlighter"></i>
+            </div>
+            <h5>Annotations & Notes</h5>
+            <p>Extract PDF annotations, search notes, and create new research notes. Works with Zotero's native annotations.</p>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card h-100 feature-card">
+            <div class="feature-icon">
+              <i class="fas fa-tags"></i>
+            </div>
+            <h5>Tag-Based Search</h5>
+            <p>Filter by tags with complex conditions. Support for AND/OR logic and exclusions like "#ML || #AI -#draft".</p>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card h-100 feature-card">
+            <div class="feature-icon">
+              <i class="fas fa-file-export"></i>
+            </div>
+            <h5>BibTeX Export</h5>
+            <p>Export citations in BibTeX format directly through your AI assistant. Perfect for academic writing workflows.</p>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card h-100 feature-card">
+            <div class="feature-icon">
+              <i class="fas fa-sync-alt"></i>
+            </div>
+            <h5>Smart Updates</h5>
+            <p>Auto-detect installation method and preserve configurations. One command to update: <code>zotero-mcp update</code></p>
           </div>
         </div>
       </div>
     </div>
   </section>
 
-  <section id="installation" class="py-5">
+  <!-- Installation Quick Start -->
+  <section id="installation">
     <div class="container">
-      <h2 class="text-center mb-5">Installation</h2>
-      <p class="text-center mb-4">For detailed setup instructions, check out our <a href="installation.html">Installation Guide</a>.</p>
+      <h2>Quick Start</h2>
+      <p class="section-subtitle">Get up and running in under 2 minutes</p>
+
       <div class="row">
-        <div class="col-lg-6 mb-4 mb-lg-0">
-          <h3>Smithery Installation</h3>
-          <div class="card mb-4">
+        <div class="col-lg-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+              <h5 class="mb-0"><i class="fas fa-bolt me-2"></i>Recommended: UV Installation</h5>
+            </div>
             <div class="card-body">
-              <p class="card-text">Install from Smithery for Claude Desktop:</p>
+              <p>The fastest way to get started with Zotero MCP:</p>
+              <div class="code-block">
+                <pre><code>uv tool install "git+https://github.com/54yyyu/zotero-mcp.git"
+zotero-mcp setup</code></pre>
+              </div>
+              <p class="mb-0 text-muted"><small>Requires <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> package manager</small></p>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header">
+              <h5 class="mb-0"><i class="fab fa-python me-2"></i>Pip Installation</h5>
+            </div>
+            <div class="card-body">
+              <p>Classic Python installation:</p>
+              <div class="code-block">
+                <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git
+zotero-mcp setup</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header">
+              <h5 class="mb-0"><i class="fas fa-hammer me-2"></i>Smithery Installation</h5>
+            </div>
+            <div class="card-body">
+              <p>Install via Smithery for Claude Desktop:</p>
               <div class="code-block">
                 <pre><code>npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude</code></pre>
               </div>
             </div>
           </div>
         </div>
-        <div class="col-lg-6">
-          <h3>Pip Installation</h3>
-          <div class="card">
+        <div class="col-lg-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header">
+              <h5 class="mb-0"><i class="fas fa-brain me-2"></i>Enable Semantic Search</h5>
+            </div>
             <div class="card-body">
-              <p class="card-text">Install from GitHub and auto-configure for Claude Desktop:</p>
+              <p>Set up AI-powered semantic search:</p>
               <div class="code-block">
-                <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git
-zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
+                <pre><code><span class="comment"># Configure semantic search</span>
+zotero-mcp setup --semantic-config-only
+
+<span class="comment"># Build the search database</span>
+zotero-mcp update-db --fulltext</code></pre>
               </div>
             </div>
           </div>
         </div>
       </div>
+      <div class="text-center mt-4">
+        <a href="installation.html" class="btn btn-outline-secondary">
+          <i class="fas fa-book me-2"></i>Full Installation Guide
+        </a>
+      </div>
     </div>
   </section>
 
-  <section id="usage" class="py-5 bg-light">
+  <!-- Usage Section -->
+  <section id="usage" class="bg-light">
     <div class="container">
-      <h2 class="text-center mb-5">Setup & Usage</h2>
+      <h2>Setup & Usage</h2>
+      <p class="section-subtitle">Configure for your favorite AI client and start chatting with your research</p>
+
       <div class="row">
         <div class="col-lg-6 mb-4">
-          <h3>For Claude Desktop</h3>
-          <div class="card mb-4">
+          <div class="card h-100">
+            <div class="card-header">
+              <h5 class="mb-0"><i class="fas fa-desktop me-2"></i>Claude Desktop</h5>
+            </div>
             <div class="card-body">
-              <h5>Auto-configure (recommended):</h5>
+              <h6>Auto-configure (recommended):</h6>
               <div class="code-block">
                 <pre><code>zotero-mcp setup</code></pre>
               </div>
-              
-              <h5 class="mt-4">Manual configuration:</h5>
+
+              <h6 class="mt-4">Manual configuration:</h6>
               <p>Add to your <code>claude_desktop_config.json</code>:</p>
               <div class="code-block">
                 <pre><code>{
@@ -201,57 +309,72 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
             </div>
           </div>
         </div>
-        <div class="col-lg-6">
-          <h3>Using Zotero in Claude</h3>
-          <div class="card">
-            <div class="card-body">
-              <h5>Steps:</h5>
-              <ol>
-                <li>Start Zotero desktop (make sure local API is enabled in preferences)</li>
-                <li>Launch Claude Desktop</li>
-                <li>Access the Zotero-MCP tool through Claude Desktop's tools interface</li>
-              </ol>
-              
-              <h5 class="mt-4">Example prompts:</h5>
-              <ul>
-                <li>"Search my library for papers on machine learning"</li>
-                <li>"Find recent articles I've added about climate change"</li>
-                <li>"Summarize the key findings from my paper on quantum computing"</li>
-                <li>"Extract all PDF annotations from my paper on neural networks"</li>
-                <li>"Search my notes and annotations for mentions of 'reinforcement learning'"</li>
-                <li>"Create a detailed note for my climate paper with a summary of key points"</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
 
-  <section id="advanced-config" class="py-5">
-    <div class="container">
-      <h2 class="text-center mb-5">Advanced Configuration</h2>
-      <div class="row">
-        <div class="col-lg-6 mb-4 mb-lg-0">
-          <h3>Using Web API</h3>
-          <div class="card">
+        <div class="col-lg-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header">
+              <h5 class="mb-0"><i class="fas fa-cherry me-2"></i>Cherry Studio</h5>
+            </div>
             <div class="card-body">
-              <p>For accessing your Zotero library via the web API (useful for remote setups):</p>
+              <p>Go to Settings &rarr; MCP Servers &rarr; Edit MCP Configuration:</p>
               <div class="code-block">
-                <pre><code>zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID</code></pre>
+                <pre><code>{
+  "mcpServers": {
+    "zotero": {
+      "name": "zotero",
+      "type": "stdio",
+      "isActive": true,
+      "command": "zotero-mcp",
+      "args": [],
+      "env": {
+        "ZOTERO_LOCAL": "true"
+      }
+    }
+  }
+}</code></pre>
               </div>
             </div>
           </div>
         </div>
-        <div class="col-lg-6">
-          <h3>Environment Variables</h3>
-          <div class="card">
-            <div class="card-body">
-              <ul class="list-unstyled">
-                <li><code>ZOTERO_LOCAL=true</code>: Use the local Zotero API (default: false)</li>
-                <li><code>ZOTERO_API_KEY</code>: Your Zotero API key (for web API)</li>
-                <li><code>ZOTERO_LIBRARY_ID</code>: Your Zotero library ID (for web API)</li>
-                <li><code>ZOTERO_LIBRARY_TYPE</code>: Library type (user or group, default: user)</li>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header">
+          <h5 class="mb-0"><i class="fas fa-comment-dots me-2"></i>Example Prompts</h5>
+        </div>
+        <div class="card-body">
+          <div class="row">
+            <div class="col-md-6">
+              <h6>Basic Search</h6>
+              <ul>
+                <li>"Search my library for papers on machine learning"</li>
+                <li>"Find recent articles about climate change"</li>
+                <li>"Show papers tagged #important"</li>
+                <li>"Export BibTeX for my quantum computing papers"</li>
+              </ul>
+            </div>
+            <div class="col-md-6">
+              <h6>Semantic Search</h6>
+              <ul>
+                <li>"Find papers conceptually similar to deep learning in vision"</li>
+                <li>"Research about AI applications in healthcare"</li>
+                <li>"Papers discussing topics like this abstract: [paste text]"</li>
+              </ul>
+            </div>
+            <div class="col-md-6 mt-3">
+              <h6>Analysis & Summarization</h6>
+              <ul>
+                <li>"Summarize the key findings from my paper on neural networks"</li>
+                <li>"Extract all annotations from my quantum computing paper"</li>
+                <li>"Compare the methodologies across my ML papers"</li>
+              </ul>
+            </div>
+            <div class="col-md-6 mt-3">
+              <h6>Organization</h6>
+              <ul>
+                <li>"Tag all my deep learning papers with 'AI' and 'neural-networks'"</li>
+                <li>"Create a summary note for this paper"</li>
+                <li>"Search my notes for mentions of 'reinforcement learning'"</li>
               </ul>
             </div>
           </div>
@@ -260,55 +383,78 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
     </div>
   </section>
 
-  <section id="tools" class="py-5 bg-light">
+  <!-- Advanced Configuration -->
+  <section id="advanced-config">
     <div class="container">
-      <h2 class="text-center mb-5">Available Tools</h2>
-      <p class="text-center mb-4">Check out our <a href="api.html">API Documentation</a> for detailed information on all available tools.</p>
+      <h2>Advanced Configuration</h2>
+      <p class="section-subtitle">Fine-tune Zotero MCP for your workflow</p>
+
       <div class="row">
-        <div class="col-lg-4">
-          <div class="card mb-4">
-            <div class="card-header bg-primary text-white">
-              <h5 class="mb-0">Search Tools</h5>
+        <div class="col-lg-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header">
+              <h5 class="mb-0"><i class="fas fa-cloud me-2"></i>Web API Access</h5>
             </div>
             <div class="card-body">
-              <ul class="list-group list-group-flush">
-                <li class="list-group-item"><code>zotero_search_items</code>: Search your library</li>
-                <li class="list-group-item"><code>zotero_advanced_search</code>: Perform complex searches</li>
-                <li class="list-group-item"><code>zotero_get_collections</code>: List collections</li>
-                <li class="list-group-item"><code>zotero_get_collection_items</code>: Get items in a collection</li>
-                <li class="list-group-item"><code>zotero_get_tags</code>: List all tags</li>
-                <li class="list-group-item"><code>zotero_get_recent</code>: Get recently added items</li>
+              <p>Access your library remotely via Zotero's Web API:</p>
+              <div class="code-block">
+                <pre><code>zotero-mcp setup --no-local \
+  --api-key YOUR_API_KEY \
+  --library-id YOUR_LIBRARY_ID</code></pre>
+              </div>
+              <p class="mt-3">Get your API key at <a href="https://www.zotero.org/settings/keys" target="_blank">zotero.org/settings/keys</a></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header">
+              <h5 class="mb-0"><i class="fas fa-cog me-2"></i>Environment Variables</h5>
+            </div>
+            <div class="card-body">
+              <h6>Zotero Connection</h6>
+              <ul class="list-unstyled mb-3">
+                <li><code>ZOTERO_LOCAL=true</code> - Use local API</li>
+                <li><code>ZOTERO_API_KEY</code> - Web API key</li>
+                <li><code>ZOTERO_LIBRARY_ID</code> - Library ID</li>
+                <li><code>ZOTERO_LIBRARY_TYPE</code> - user or group</li>
+              </ul>
+              <h6>Semantic Search</h6>
+              <ul class="list-unstyled">
+                <li><code>ZOTERO_EMBEDDING_MODEL</code> - default, openai, gemini, huggingface</li>
+                <li><code>OPENAI_API_KEY</code> - For OpenAI embeddings</li>
+                <li><code>GEMINI_API_KEY</code> - For Gemini embeddings</li>
               </ul>
             </div>
           </div>
         </div>
-        <div class="col-lg-4">
-          <div class="card mb-4">
-            <div class="card-header bg-primary text-white">
-              <h5 class="mb-0">Content Tools</h5>
-            </div>
-            <div class="card-body">
-              <ul class="list-group list-group-flush">
-                <li class="list-group-item"><code>zotero_get_item_metadata</code>: Get detailed metadata</li>
-                <li class="list-group-item"><code>zotero_get_item_fulltext</code>: Get full text content</li>
-                <li class="list-group-item"><code>zotero_get_item_children</code>: Get attachments and notes</li>
-                <li class="list-group-item"><code>zotero_batch_update_tags</code>: Update tags across multiple items</li>
-              </ul>
-            </div>
-          </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0"><i class="fas fa-terminal me-2"></i>CLI Commands</h5>
         </div>
-        <div class="col-lg-4">
-          <div class="card mb-4">
-            <div class="card-header bg-primary text-white">
-              <h5 class="mb-0">Notes & Annotations</h5>
+        <div class="card-body">
+          <div class="row">
+            <div class="col-md-6">
+              <h6>Setup & Server</h6>
+              <div class="code-block">
+                <pre><code>zotero-mcp setup              <span class="comment"># Auto-configure</span>
+zotero-mcp setup-info         <span class="comment"># Show config info</span>
+zotero-mcp serve              <span class="comment"># Run server</span>
+zotero-mcp serve --transport streamable-http</code></pre>
+              </div>
             </div>
-            <div class="card-body">
-              <ul class="list-group list-group-flush">
-                <li class="list-group-item"><code>zotero_get_annotations</code>: Get annotations</li>
-                <li class="list-group-item"><code>zotero_get_notes</code>: Retrieve notes</li>
-                <li class="list-group-item"><code>zotero_search_notes</code>: Search in notes and annotations</li>
-                <li class="list-group-item"><code>zotero_create_note</code>: Create a new note <span class="badge bg-warning text-dark">Beta</span></li>
-              </ul>
+            <div class="col-md-6">
+              <h6>Updates & Database</h6>
+              <div class="code-block">
+                <pre><code>zotero-mcp update             <span class="comment"># Update to latest</span>
+zotero-mcp update --check-only
+zotero-mcp update-db          <span class="comment"># Update search DB</span>
+zotero-mcp update-db --fulltext
+zotero-mcp db-status          <span class="comment"># Check DB status</span></code></pre>
+              </div>
             </div>
           </div>
         </div>
@@ -316,74 +462,177 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
     </div>
   </section>
 
-  <section id="troubleshooting" class="py-5">
+  <!-- Tools Overview -->
+  <section id="tools" class="bg-light">
     <div class="container">
-      <h2 class="text-center mb-5">Troubleshooting</h2>
+      <h2>Available Tools</h2>
+      <p class="section-subtitle">Comprehensive API for interacting with your Zotero library</p>
+
+      <div class="row">
+        <div class="col-lg-3 col-md-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+              <h6 class="mb-0"><i class="fas fa-brain me-2"></i>Semantic Search</h6>
+            </div>
+            <div class="card-body">
+              <ul class="list-unstyled mb-0">
+                <li class="mb-2"><code>zotero_semantic_search</code> <span class="badge badge-new">New</span></li>
+                <li class="mb-2"><code>zotero_update_search_database</code></li>
+                <li><code>zotero_get_search_database_status</code></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-3 col-md-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+              <h6 class="mb-0"><i class="fas fa-search me-2"></i>Search Tools</h6>
+            </div>
+            <div class="card-body">
+              <ul class="list-unstyled mb-0">
+                <li class="mb-2"><code>zotero_search_items</code></li>
+                <li class="mb-2"><code>zotero_search_by_tag</code> <span class="badge badge-new">New</span></li>
+                <li class="mb-2"><code>zotero_advanced_search</code></li>
+                <li class="mb-2"><code>zotero_get_collections</code></li>
+                <li class="mb-2"><code>zotero_get_tags</code></li>
+                <li><code>zotero_get_recent</code></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-3 col-md-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+              <h6 class="mb-0"><i class="fas fa-book me-2"></i>Content Tools</h6>
+            </div>
+            <div class="card-body">
+              <ul class="list-unstyled mb-0">
+                <li class="mb-2"><code>zotero_get_item_metadata</code></li>
+                <li class="mb-2"><code>zotero_get_item_fulltext</code></li>
+                <li class="mb-2"><code>zotero_get_item_children</code></li>
+                <li><code>zotero_batch_update_tags</code></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-3 col-md-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+              <h6 class="mb-0"><i class="fas fa-sticky-note me-2"></i>Notes & Annotations</h6>
+            </div>
+            <div class="card-body">
+              <ul class="list-unstyled mb-0">
+                <li class="mb-2"><code>zotero_get_annotations</code></li>
+                <li class="mb-2"><code>zotero_get_notes</code></li>
+                <li class="mb-2"><code>zotero_search_notes</code></li>
+                <li><code>zotero_create_note</code> <span class="badge badge-beta">Beta</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="text-center mt-3">
+        <a href="api.html" class="btn btn-primary">
+          <i class="fas fa-book-open me-2"></i>Full API Documentation
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Troubleshooting -->
+  <section id="troubleshooting">
+    <div class="container">
+      <h2>FAQ & Troubleshooting</h2>
+      <p class="section-subtitle">Common issues and their solutions</p>
+
       <div class="row">
         <div class="col-lg-8 mx-auto">
-          <div class="card">
-            <div class="card-body">
-              <div class="accordion" id="troubleshootingAccordion">
-                <div class="accordion-item">
-                  <h2 class="accordion-header">
-                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne">
-                      No results found
-                    </button>
-                  </h2>
-                  <div id="collapseOne" class="accordion-collapse collapse show" data-bs-parent="#troubleshootingAccordion">
-                    <div class="accordion-body">
-                      Ensure Zotero is running and the local API is enabled. In Zotero, go to <code>Edit > Preferences > Advanced > API</code> and check "Enable local API".
-                    </div>
+          <div class="accordion" id="faqAccordion">
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#faq1">
+                  No results found / Can't connect to library
+                </button>
+              </h2>
+              <div id="faq1" class="accordion-collapse collapse show" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                  <ol>
+                    <li>Ensure Zotero is running</li>
+                    <li>Enable the local API: Go to <code>Edit > Preferences > Advanced</code> and toggle on "Allow other applications on this computer to communicate with Zotero"</li>
+                    <li>If using Web API, verify your API key and library ID</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq2">
+                  Semantic search not working
+                </button>
+              </h2>
+              <div id="faq2" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                  <ol>
+                    <li>Run <code>zotero-mcp setup</code> to configure your environment</li>
+                    <li>Initialize the database: <code>zotero-mcp update-db</code></li>
+                    <li>Check status: <code>zotero-mcp db-status</code></li>
+                    <li>For better results, use <code>--fulltext</code> flag when building the database</li>
+                    <li>If you have embedding conflicts, use <code>--force-rebuild</code></li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq3">
+                  Full text not available
+                </button>
+              </h2>
+              <div id="faq3" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                  <ul>
+                    <li>Requires Zotero 7+ for local full-text access</li>
+                    <li>Not all items may have full-text content available</li>
+                    <li>Web API has limited attachment access</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq4">
+                  Annotations not appearing
+                </button>
+              </h2>
+              <div id="faq4" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                  <p>For optimal annotation extraction, install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a> for Zotero.</p>
+                  <p>As a fallback, try using the <code>use_pdf_extraction: true</code> parameter with the <code>zotero_get_annotations</code> tool.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq5">
+                  Database or installation issues
+                </button>
+              </h2>
+              <div id="faq5" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                  <p>Problems from changing install methods or search options can often be resolved with:</p>
+                  <div class="code-block">
+                    <pre><code>zotero-mcp update-db --force-rebuild</code></pre>
+                  </div>
+                  <p>For update issues, try:</p>
+                  <div class="code-block">
+                    <pre><code>zotero-mcp update --force</code></pre>
                   </div>
                 </div>
-                <div class="accordion-item">
-                  <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseTwo">
-                      Can't connect to library
-                    </button>
-                  </h2>
-                  <div id="collapseTwo" class="accordion-collapse collapse" data-bs-parent="#troubleshootingAccordion">
-                    <div class="accordion-body">
-                      Check your API key and library ID if using web API. Make sure your API key has the necessary permissions.
-                    </div>
-                  </div>
-                </div>
-                <div class="accordion-item">
-                  <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseThree">
-                      Full text not available
-                    </button>
-                  </h2>
-                  <div id="collapseThree" class="accordion-collapse collapse" data-bs-parent="#troubleshootingAccordion">
-                    <div class="accordion-body">
-                      Make sure you're using Zotero 7+ for local full-text access. Note that not all items in your library may have full-text content available.
-                    </div>
-                  </div>
-                </div>
-                <div class="accordion-item">
-                  <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFour">
-                      Annotations not appearing or incomplete
-                    </button>
-                  </h2>
-                  <div id="collapseFour" class="accordion-collapse collapse" data-bs-parent="#troubleshootingAccordion">
-                    <div class="accordion-body">
-                      For optimal annotation extraction, install the <a href="https://retorque.re/zotero-better-bibtex/installation/" target="_blank">Better BibTeX plugin</a> for Zotero. Try using <code>use_pdf_extraction: true</code> parameter with the <code>zotero_get_annotations</code> tool as a fallback method.
-                    </div>
-                  </div>
-                </div>
-                <div class="accordion-item">
-                  <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFive">
-                      Note creation errors
-                    </button>
-                  </h2>
-                  <div id="collapseFive" class="accordion-collapse collapse" data-bs-parent="#troubleshootingAccordion">
-                    <div class="accordion-body">
-                      The <code>zotero_create_note</code> tool is currently in beta. Make sure you're providing a valid parent item key and the required parameters. Basic HTML formatting (<code>&lt;p&gt;</code>, <code>&lt;br&gt;</code>) is supported in note content.
-                    </div>
-                  </div>
-                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -391,24 +640,79 @@ zotero-mcp setup  # Auto-configure for Claude Desktop</code></pre>
     </div>
   </section>
 
-  <footer class="py-5 bg-dark text-white">
+  <!-- Footer -->
+  <footer>
     <div class="container text-center">
-      <p>Zotero MCP - Your Research Library in Claude</p>
-      <p class="mb-0">
-        <a href="https://github.com/54yyyu/zotero-mcp" class="text-white" target="_blank">
-          <i class="fab fa-github me-2"></i>GitHub
+      <div class="footer-brand">Zotero MCP</div>
+      <p>Your Research Library, Powered by AI</p>
+      <div class="footer-links">
+        <a href="https://github.com/54yyyu/zotero-mcp" target="_blank">
+          <i class="fab fa-github"></i> GitHub
         </a>
-        <span class="mx-2">|</span>
-        <a href="https://github.com/54yyyu/zotero-mcp/issues" class="text-white" target="_blank">
-          <i class="fas fa-bug me-2"></i>Report an Issue
+        <a href="https://github.com/54yyyu/zotero-mcp/issues" target="_blank">
+          <i class="fas fa-bug"></i> Report Issue
         </a>
-      </p>
-      <p class="mt-2 mb-0">
-        <small>License: MIT</small>
-      </p>
+        <a href="api.html">
+          <i class="fas fa-book"></i> Documentation
+        </a>
+      </div>
+      <p class="mb-0"><small>MIT License</small></p>
     </div>
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // Navbar scroll effect
+    window.addEventListener('scroll', function() {
+      const navbar = document.querySelector('.navbar');
+      if (window.scrollY > 50) {
+        navbar.classList.add('scrolled');
+      } else {
+        navbar.classList.remove('scrolled');
+      }
+    });
+
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+          target.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+          });
+        }
+      });
+    });
+
+    // Add copy buttons to all code blocks
+    document.addEventListener('DOMContentLoaded', function() {
+      document.querySelectorAll('.code-block').forEach(block => {
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+        block.appendChild(btn);
+
+        btn.addEventListener('click', async function() {
+          const code = block.querySelector('code').innerText;
+          try {
+            await navigator.clipboard.writeText(code);
+            btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+              btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+              btn.classList.remove('copied');
+            }, 2000);
+          } catch (err) {
+            btn.innerHTML = '<i class="fas fa-times"></i> Failed';
+            setTimeout(() => {
+              btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+            }, 2000);
+          }
+        });
+      });
+    });
+  </script>
 </body>
 </html>

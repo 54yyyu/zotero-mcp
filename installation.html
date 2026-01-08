@@ -3,16 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zotero MCP Installation Guide</title>
+  <title>Installation Guide | Zotero MCP</title>
+  <meta name="description" content="Complete installation guide for Zotero MCP. Set up with UV, pip, or Smithery. Configure semantic search and connect to your favorite AI client.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-  <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+  <nav class="navbar navbar-expand-lg navbar-dark">
     <div class="container">
       <a class="navbar-brand" href="index.html">
-        <img src="img/logo.svg" alt="Zotero MCP Logo" height="30" class="d-inline-block align-top">
+        <img src="img/logo.svg" alt="Zotero MCP" height="32">
         Zotero MCP
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
@@ -20,24 +24,12 @@
       </button>
       <div class="collapse navbar-collapse" id="navbarNav">
         <ul class="navbar-nav ms-auto">
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#home">Home</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#features">Features</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link active" href="installation.html">Installation</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#usage">Usage</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="api.html">API</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="index.html#troubleshooting">Troubleshooting</a>
-          </li>
+          <li class="nav-item"><a class="nav-link" href="index.html#home">Home</a></li>
+          <li class="nav-item"><a class="nav-link" href="index.html#features">Features</a></li>
+          <li class="nav-item"><a class="nav-link active" href="installation.html">Installation</a></li>
+          <li class="nav-item"><a class="nav-link" href="index.html#usage">Usage</a></li>
+          <li class="nav-item"><a class="nav-link" href="api.html">API</a></li>
+          <li class="nav-item"><a class="nav-link" href="index.html#troubleshooting">FAQ</a></li>
           <li class="nav-item">
             <a class="nav-link" href="https://github.com/54yyyu/zotero-mcp" target="_blank">
               <i class="fab fa-github"></i> GitHub
@@ -48,167 +40,252 @@
     </div>
   </nav>
 
-  <header class="py-4 bg-light">
+  <header class="py-5 bg-gradient-mesh" style="margin-top: 76px;">
     <div class="container">
       <h1>Installation Guide</h1>
-      <p class="lead">Detailed instructions to get Zotero MCP up and running.</p>
+      <p class="lead mb-0">Get Zotero MCP up and running in minutes</p>
     </div>
   </header>
 
   <section class="py-5">
     <div class="container">
       <div class="row">
-        <!-- Sidebar with navigation -->
-        <div class="col-lg-3">
-          <div class="sticky-top pt-4">
+        <!-- Sidebar -->
+        <div class="col-lg-3 mb-4">
+          <div class="sticky-top">
             <div class="list-group">
               <a href="#prerequisites" class="list-group-item list-group-item-action">Prerequisites</a>
-              <a href="#smithery-installation" class="list-group-item list-group-item-action">Smithery Installation</a>
+              <a href="#uv-installation" class="list-group-item list-group-item-action">UV Installation</a>
               <a href="#pip-installation" class="list-group-item list-group-item-action">Pip Installation</a>
-              <a href="#configuration" class="list-group-item list-group-item-action">Configuration</a>
+              <a href="#smithery-installation" class="list-group-item list-group-item-action">Smithery Installation</a>
+              <a href="#semantic-search" class="list-group-item list-group-item-action">Semantic Search Setup</a>
+              <a href="#client-configuration" class="list-group-item list-group-item-action">Client Configuration</a>
+              <a href="#chatgpt-setup" class="list-group-item list-group-item-action">ChatGPT Setup</a>
+              <a href="#web-api" class="list-group-item list-group-item-action">Web API Setup</a>
+              <a href="#updating" class="list-group-item list-group-item-action">Updating</a>
               <a href="#verification" class="list-group-item list-group-item-action">Verification</a>
             </div>
           </div>
         </div>
-        
-        <!-- Main content -->
+
+        <!-- Main Content -->
         <div class="col-lg-9">
-          <div id="prerequisites">
+          <!-- Prerequisites -->
+          <section id="prerequisites" class="mb-5">
             <h2 class="border-bottom pb-2">Prerequisites</h2>
-            
-            <div class="card mb-4">
+            <div class="card">
               <div class="card-body">
-                <p>Before installing Zotero MCP, make sure you have the following prerequisites:</p>
-                
-                <h4 class="h5 mt-3">Required Software</h4>
-                <ul>
-                  <li><strong>Python 3.10+</strong> - The tool is built on Python and requires version 3.10 or newer.</li>
-                  <li><strong>Zotero 7+</strong> - For local API with full-text access.</li>
-                  <li><strong>Claude Desktop</strong> - Or another compatible MCP-enabled AI assistant.</li>
+                <h5><i class="fas fa-check-circle text-success me-2"></i>Required Software</h5>
+                <ul class="mb-4">
+                  <li><strong>Python 3.10+</strong> - Required for running Zotero MCP</li>
+                  <li><strong>Zotero 7+</strong> - For local API with full-text access</li>
+                  <li><strong>MCP-compatible AI client</strong> - Claude Desktop, ChatGPT, Cherry Studio, Cursor, or Chorus</li>
                 </ul>
-                
-                <h4 class="h5 mt-3">For Local API Use (Recommended)</h4>
-                <p>To use the local Zotero API:</p>
+
+                <h5><i class="fas fa-desktop text-primary me-2"></i>Enable Local API in Zotero</h5>
+                <p>For the best experience, enable the local Zotero API:</p>
                 <ol>
                   <li>Open Zotero</li>
-                  <li>Go to Edit > Preferences > Advanced > API</li>
-                  <li>Check "Enable local API"</li>
-                  <li>Click OK to save the settings</li>
+                  <li>Go to <code>Edit > Preferences > Advanced</code></li>
+                  <li>Toggle on <strong>"Allow other applications on this computer to communicate with Zotero"</strong></li>
+                  <li>Click OK to save</li>
                 </ol>
-                
+
                 <div class="alert alert-info">
                   <i class="fas fa-info-circle me-2"></i>
-                  Using the local API is recommended for the best experience, as it provides full-text access to your library.
-                </div>
-                
-                <h4 class="h5 mt-3">For Web API Use</h4>
-                <p>If you plan to use the Zotero Web API, you'll need:</p>
-                <ol>
-                  <li><strong>Zotero API Key</strong> - Create one at <a href="https://www.zotero.org/settings/keys" target="_blank">https://www.zotero.org/settings/keys</a></li>
-                  <li><strong>Library ID</strong> - Your user ID or group ID</li>
-                </ol>
-                
-                <div class="alert alert-warning">
-                  <i class="fas fa-exclamation-triangle me-2"></i>
-                  Note that the Web API doesn't provide direct access to attachments, so full-text extraction may not be available.
+                  <strong>Tip:</strong> Local API provides full-text access and is recommended for most users. Web API is useful for remote access but has limited attachment support.
                 </div>
               </div>
             </div>
-          </div>
-          
-          <div id="smithery-installation" class="mt-5">
-            <h2 class="border-bottom pb-2">Smithery Installation</h2>
-            
-            <div class="card mb-4">
+          </section>
+
+          <!-- UV Installation -->
+          <section id="uv-installation" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              UV Installation
+              <span class="badge badge-new ms-2">Recommended</span>
+            </h2>
+            <div class="card">
               <div class="card-body">
-                <p>Smithery is a package manager for AI assistants that makes installing tools like Zotero MCP quick and easy:</p>
-                
-                <h4 class="h5 mt-3">Installation Steps</h4>
-                <ol>
-                  <li>Make sure you have <a href="https://nodejs.org/" target="_blank">Node.js</a> installed on your system (required for the <code>npx</code> command).</li>
-                  <li>Open a terminal or command prompt.</li>
-                  <li>Run the following command:</li>
-                </ol>
-                
+                <p><a href="https://docs.astral.sh/uv/" target="_blank">UV</a> is the fastest Python package manager. It provides quick installation and isolated environments.</p>
+
+                <h5>Step 1: Install UV (if not installed)</h5>
                 <div class="code-block">
-                  <pre><code>npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude</code></pre>
+                  <pre><code><span class="comment"># macOS/Linux</span>
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+<span class="comment"># Windows (PowerShell)</span>
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"</code></pre>
                 </div>
-                
-                <p>This command will:</p>
-                <ul>
-                  <li>Install the latest version of Zotero MCP</li>
-                  <li>Configure it for use with Claude Desktop</li>
-                  <li>Set up everything automatically</li>
-                </ul>
-                
-                <div class="alert alert-success">
+
+                <h5 class="mt-4">Step 2: Install Zotero MCP</h5>
+                <div class="code-block">
+                  <pre><code>uv tool install "git+https://github.com/54yyyu/zotero-mcp.git"</code></pre>
+                </div>
+
+                <h5 class="mt-4">Step 3: Auto-configure for Claude Desktop</h5>
+                <div class="code-block">
+                  <pre><code>zotero-mcp setup</code></pre>
+                </div>
+
+                <div class="alert alert-success mt-4">
                   <i class="fas fa-check-circle me-2"></i>
-                  If the installation completes successfully, you should see a confirmation message. Smithery will handle all the configuration details for you.
+                  <strong>Done!</strong> Restart Claude Desktop and you're ready to go.
                 </div>
               </div>
             </div>
-          </div>
-          
-          <div id="pip-installation" class="mt-5">
+          </section>
+
+          <!-- Pip Installation -->
+          <section id="pip-installation" class="mb-5">
             <h2 class="border-bottom pb-2">Pip Installation</h2>
-            
-            <div class="card mb-4">
+            <div class="card">
               <div class="card-body">
-                <p>Follow these steps to install Zotero MCP using pip:</p>
-                
-                <h4 class="h5 mt-3">Installation Steps</h4>
-                <ol>
-                  <li>Open a terminal or command prompt.</li>
-                  <li>Run the following command to install from GitHub:</li>
-                </ol>
-                
+                <p>Classic Python installation using pip:</p>
+
+                <h5>Install from GitHub</h5>
                 <div class="code-block">
                   <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git</code></pre>
                 </div>
-                
-                <p>Or install a specific version if needed:</p>
-                
-                <div class="code-block">
-                  <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git@v0.1.0</code></pre>
-                </div>
-                
-                <h4 class="h5 mt-3">Auto-Configuration for Claude Desktop</h4>
-                <p>After installation, run the auto-configuration tool to set up Zotero MCP with Claude Desktop:</p>
-                
+
+                <h5 class="mt-4">Auto-configure</h5>
                 <div class="code-block">
                   <pre><code>zotero-mcp setup</code></pre>
                 </div>
-                
-                <p>The setup tool will:</p>
-                <ul>
-                  <li>Find the installed Zotero MCP executable</li>
-                  <li>Locate your Claude Desktop configuration file</li>
-                  <li>Update the configuration to include Zotero MCP</li>
-                  <li>Set up local API access by default</li>
-                </ul>
-                
-                <div class="alert alert-info">
+
+                <div class="alert alert-info mt-4">
                   <i class="fas fa-info-circle me-2"></i>
-                  You'll need to restart Claude Desktop after running the setup command for the changes to take effect.
+                  If you're using a virtual environment or conda, make sure it's activated before installing.
                 </div>
               </div>
             </div>
-          </div>
-          
-          <div id="configuration" class="mt-5">
-            <h2 class="border-bottom pb-2">Configuration Options</h2>
-            
-            <div class="card mb-4">
+          </section>
+
+          <!-- Smithery Installation -->
+          <section id="smithery-installation" class="mb-5">
+            <h2 class="border-bottom pb-2">Smithery Installation</h2>
+            <div class="card">
               <div class="card-body">
-                <h4 class="h5">Local API Configuration</h4>
-                <p>To configure for local API use (default):</p>
-                
+                <p><a href="https://smithery.ai/server/@54yyyu/zotero-mcp" target="_blank">Smithery</a> is a package manager for AI tools. It automatically handles configuration.</p>
+
+                <h5>Requirements</h5>
+                <ul>
+                  <li><a href="https://nodejs.org/" target="_blank">Node.js</a> installed on your system</li>
+                </ul>
+
+                <h5 class="mt-4">Installation</h5>
+                <div class="code-block">
+                  <pre><code>npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude</code></pre>
+                </div>
+
+                <p class="mt-3">Smithery will automatically:</p>
+                <ul>
+                  <li>Install the latest version of Zotero MCP</li>
+                  <li>Configure it for Claude Desktop</li>
+                  <li>Set up all necessary paths</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <!-- Semantic Search Setup -->
+          <section id="semantic-search" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              Semantic Search Setup
+              <span class="badge badge-new ms-2">New Feature</span>
+            </h2>
+            <div class="card">
+              <div class="card-body">
+                <p>Enable AI-powered semantic search to find papers by meaning, not just keywords.</p>
+
+                <h5>Step 1: Configure Semantic Search</h5>
+                <div class="code-block">
+                  <pre><code><span class="comment"># During initial setup (recommended)</span>
+zotero-mcp setup
+
+<span class="comment"># Or configure separately</span>
+zotero-mcp setup --semantic-config-only</code></pre>
+                </div>
+
+                <h5 class="mt-4">Step 2: Choose Embedding Model</h5>
+                <p>During setup, you'll be prompted to select an embedding model:</p>
+                <table class="table table-striped">
+                  <thead>
+                    <tr>
+                      <th>Model</th>
+                      <th>Cost</th>
+                      <th>Quality</th>
+                      <th>Requirements</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><strong>Default (all-MiniLM-L6-v2)</strong></td>
+                      <td>Free</td>
+                      <td>Good</td>
+                      <td>Runs locally, no API key</td>
+                    </tr>
+                    <tr>
+                      <td><strong>HuggingFace</strong></td>
+                      <td>Free</td>
+                      <td>Good</td>
+                      <td>Runs locally, no API key</td>
+                    </tr>
+                    <tr>
+                      <td><strong>OpenAI</strong></td>
+                      <td>Paid</td>
+                      <td>Better</td>
+                      <td>OPENAI_API_KEY required</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Gemini</strong></td>
+                      <td>Paid</td>
+                      <td>Better</td>
+                      <td>GEMINI_API_KEY required</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <h5 class="mt-4">Step 3: Build Search Database</h5>
+                <div class="code-block">
+                  <pre><code><span class="comment"># Quick build (metadata only)</span>
+zotero-mcp update-db
+
+<span class="comment"># Full build with text content (better search results)</span>
+zotero-mcp update-db --fulltext
+
+<span class="comment"># Custom Zotero database path</span>
+zotero-mcp update-db --fulltext --db-path "/path/to/zotero.sqlite"</code></pre>
+                </div>
+
+                <h5 class="mt-4">Update Frequency</h5>
+                <p>Configure how often the database syncs:</p>
+                <ul>
+                  <li><strong>Manual</strong> - Only when you run <code>zotero-mcp update-db</code></li>
+                  <li><strong>Auto on startup</strong> - Every time the server starts</li>
+                  <li><strong>Daily</strong> - Once per day automatically</li>
+                  <li><strong>Every N days</strong> - Custom interval</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <!-- Client Configuration -->
+          <section id="client-configuration" class="mb-5">
+            <h2 class="border-bottom pb-2">Client Configuration</h2>
+
+            <div class="card mb-4">
+              <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-desktop me-2"></i>Claude Desktop</h5>
+              </div>
+              <div class="card-body">
+                <h6>Auto-configure (recommended):</h6>
                 <div class="code-block">
                   <pre><code>zotero-mcp setup</code></pre>
                 </div>
-                
-                <p>This will add the following to your Claude Desktop config:</p>
-                
+
+                <h6 class="mt-4">Manual configuration:</h6>
+                <p>Add to your <code>claude_desktop_config.json</code>:</p>
                 <div class="code-block">
                   <pre><code>{
   "mcpServers": {
@@ -221,102 +298,284 @@
   }
 }</code></pre>
                 </div>
-                
-                <h4 class="h5 mt-4">Web API Configuration</h4>
-                <p>To configure for Web API use:</p>
-                
-                <div class="code-block">
-                  <pre><code>zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID</code></pre>
-                </div>
-                
-                <p>Replace <code>YOUR_API_KEY</code> and <code>YOUR_LIBRARY_ID</code> with your actual Zotero API key and library ID.</p>
-                
-                <h4 class="h5 mt-4">Manual Configuration File Editing</h4>
-                <p>You can also edit your Claude Desktop configuration file manually. The file is located at:</p>
-                
+
+                <p class="mt-3"><strong>Config file locations:</strong></p>
                 <ul>
                   <li><strong>macOS:</strong> <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
                   <li><strong>Windows:</strong> <code>%APPDATA%\Claude\claude_desktop_config.json</code></li>
                   <li><strong>Linux:</strong> <code>~/.config/Claude/claude_desktop_config.json</code></li>
                 </ul>
-                
-                <p>Add the Zotero MCP configuration to the <code>mcpServers</code> section of the file.</p>
-                
-                <h4 class="h5 mt-4">Environment Variables</h4>
-                <p>Instead of using the configuration file, you can also set environment variables:</p>
-                
-                <div class="code-block">
-                  <pre><code># For local API
-export ZOTERO_LOCAL=true
+              </div>
+            </div>
 
-# For web API
-export ZOTERO_API_KEY=your_api_key
-export ZOTERO_LIBRARY_ID=your_library_id
-export ZOTERO_LIBRARY_TYPE=user  # or 'group' for group libraries</code></pre>
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          <div id="verification" class="mt-5">
-            <h2 class="border-bottom pb-2">Verification</h2>
-            
             <div class="card mb-4">
+              <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-cherry me-2"></i>Cherry Studio</h5>
+              </div>
               <div class="card-body">
-                <p>To verify that Zotero MCP is installed and configured correctly:</p>
-                
-                <h4 class="h5 mt-3">Check Installation</h4>
-                <ol>
-                  <li>Open a terminal or command prompt.</li>
-                  <li>Run the following command to check the version:</li>
-                </ol>
-                
+                <p>Go to Settings &rarr; MCP Servers &rarr; Edit MCP Configuration:</p>
                 <div class="code-block">
-                  <pre><code>zotero-mcp version</code></pre>
-                </div>
-                
-                <p>You should see output showing the installed version of Zotero MCP.</p>
-                
-                <h4 class="h5 mt-3">Test with Claude Desktop</h4>
-                <ol>
-                  <li>Make sure Zotero is running and the local API is enabled.</li>
-                  <li>Launch Claude Desktop.</li>
-                  <li>In a conversation with Claude, type: <code>/tools zotero</code> to activate the Zotero tool.</li>
-                  <li>Try a simple query like: "List my recent additions to Zotero"</li>
-                </ol>
-                
-                <p>If everything is set up correctly, Claude should be able to access your Zotero library and display results.</p>
-                
-                <div class="alert alert-warning">
-                  <i class="fas fa-exclamation-triangle me-2"></i>
-                  If you encounter any issues, check the <a href="index.html#troubleshooting">Troubleshooting</a> section or <a href="https://github.com/54yyyu/zotero-mcp/issues" target="_blank">submit an issue on GitHub</a>.
+                  <pre><code>{
+  "mcpServers": {
+    "zotero": {
+      "name": "zotero",
+      "type": "stdio",
+      "isActive": true,
+      "command": "zotero-mcp",
+      "args": [],
+      "env": {
+        "ZOTERO_LOCAL": "true"
+      }
+    }
+  }
+}</code></pre>
                 </div>
               </div>
             </div>
-          </div>
+
+            <div class="card">
+              <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-code me-2"></i>Other MCP Clients (Cursor, Chorus)</h5>
+              </div>
+              <div class="card-body">
+                <p>Most MCP clients use a similar configuration format. The key settings are:</p>
+                <ul>
+                  <li><strong>Command:</strong> <code>zotero-mcp</code></li>
+                  <li><strong>Environment:</strong> <code>ZOTERO_LOCAL=true</code> for local API</li>
+                  <li><strong>Transport:</strong> stdio (default) or streamable-http</li>
+                </ul>
+
+                <p>For streamable HTTP transport:</p>
+                <div class="code-block">
+                  <pre><code>zotero-mcp serve --transport streamable-http</code></pre>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ChatGPT Setup -->
+          <section id="chatgpt-setup" class="mb-5">
+            <h2 class="border-bottom pb-2">
+              ChatGPT Setup
+              <span class="badge badge-new ms-2">New</span>
+            </h2>
+            <div class="card">
+              <div class="card-body">
+                <p>Zotero MCP now supports ChatGPT! The setup requires a few additional steps.</p>
+
+                <h5>Step 1: Install with no-claude flag</h5>
+                <div class="code-block">
+                  <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git
+zotero-mcp setup --no-claude</code></pre>
+                </div>
+
+                <h5 class="mt-4">Step 2: Configure for OpenAI</h5>
+                <p>The setup will create a standalone configuration optimized for ChatGPT.</p>
+
+                <div class="alert alert-info">
+                  <i class="fas fa-info-circle me-2"></i>
+                  ChatGPT requires specific tool names (<code>search</code> and <code>fetch</code>). The no-claude configuration ensures compatibility.
+                </div>
+
+                <p class="mt-3">For detailed ChatGPT configuration, see the <a href="https://github.com/54yyyu/zotero-mcp/blob/main/docs/getting-started.md" target="_blank">Getting Started guide</a>.</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- Web API Setup -->
+          <section id="web-api" class="mb-5">
+            <h2 class="border-bottom pb-2">Web API Setup</h2>
+            <div class="card">
+              <div class="card-body">
+                <p>Use the Zotero Web API for remote access to your library.</p>
+
+                <h5>Step 1: Get API Credentials</h5>
+                <ol>
+                  <li>Go to <a href="https://www.zotero.org/settings/keys" target="_blank">zotero.org/settings/keys</a></li>
+                  <li>Create a new API key with the appropriate permissions</li>
+                  <li>Note your Library ID (shown on the same page)</li>
+                </ol>
+
+                <h5 class="mt-4">Step 2: Configure</h5>
+                <div class="code-block">
+                  <pre><code>zotero-mcp setup --no-local \
+  --api-key YOUR_API_KEY \
+  --library-id YOUR_LIBRARY_ID</code></pre>
+                </div>
+
+                <h5 class="mt-4">Environment Variables</h5>
+                <div class="code-block">
+                  <pre><code>ZOTERO_LOCAL=false
+ZOTERO_API_KEY=your_api_key
+ZOTERO_LIBRARY_ID=your_library_id
+ZOTERO_LIBRARY_TYPE=user  <span class="comment"># or 'group' for group libraries</span></code></pre>
+                </div>
+
+                <div class="alert alert-warning mt-4">
+                  <i class="fas fa-exclamation-triangle me-2"></i>
+                  <strong>Note:</strong> Web API has limited attachment access. Some features like full-text extraction may not work as well as with the local API.
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Updating -->
+          <section id="updating" class="mb-5">
+            <h2 class="border-bottom pb-2">Updating Zotero MCP</h2>
+            <div class="card">
+              <div class="card-body">
+                <p>Keep Zotero MCP up to date with the smart update command:</p>
+
+                <div class="code-block">
+                  <pre><code><span class="comment"># Check for updates without installing</span>
+zotero-mcp update --check-only
+
+<span class="comment"># Update to latest version (preserves configurations)</span>
+zotero-mcp update
+
+<span class="comment"># Force update even if up to date</span>
+zotero-mcp update --force</code></pre>
+                </div>
+
+                <p class="mt-3">The update command will:</p>
+                <ul>
+                  <li>Detect your installation method (uv, pip, conda, pipx)</li>
+                  <li>Preserve all your configurations</li>
+                  <li>Update to the latest version</li>
+                </ul>
+
+                <div class="alert alert-info mt-4">
+                  <i class="fas fa-info-circle me-2"></i>
+                  Configuration backups are stored in <code>~/.config/zotero-mcp/</code>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Verification -->
+          <section id="verification" class="mb-5">
+            <h2 class="border-bottom pb-2">Verification</h2>
+            <div class="card">
+              <div class="card-body">
+                <h5>Check Installation</h5>
+                <div class="code-block">
+                  <pre><code><span class="comment"># Check version</span>
+zotero-mcp version
+
+<span class="comment"># Show installation and config info</span>
+zotero-mcp setup-info
+
+<span class="comment"># Check semantic search database status</span>
+zotero-mcp db-status</code></pre>
+                </div>
+
+                <h5 class="mt-4">Test with Your AI Client</h5>
+                <ol>
+                  <li>Make sure Zotero is running</li>
+                  <li>Restart your AI client (Claude Desktop, etc.)</li>
+                  <li>Try a simple query: "Search my Zotero library for recent papers"</li>
+                </ol>
+
+                <div class="alert alert-success mt-4">
+                  <i class="fas fa-check-circle me-2"></i>
+                  <strong>Success!</strong> If you see search results, everything is working correctly.
+                </div>
+
+                <h5 class="mt-4">Troubleshooting</h5>
+                <p>If you encounter issues:</p>
+                <ul>
+                  <li>Ensure Zotero is running with local API enabled</li>
+                  <li>Restart your AI client after configuration changes</li>
+                  <li>Check the <a href="index.html#troubleshooting">FAQ section</a> for common issues</li>
+                  <li>Run <code>zotero-mcp setup-info</code> to verify your configuration</li>
+                </ul>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>
   </section>
 
-  <footer class="py-5 bg-dark text-white">
+  <footer>
     <div class="container text-center">
-      <p>Zotero MCP - Your Research Library in Claude</p>
-      <p class="mb-0">
-        <a href="https://github.com/54yyyu/zotero-mcp" class="text-white" target="_blank">
-          <i class="fab fa-github me-2"></i>GitHub
+      <div class="footer-brand">Zotero MCP</div>
+      <p>Your Research Library, Powered by AI</p>
+      <div class="footer-links">
+        <a href="https://github.com/54yyyu/zotero-mcp" target="_blank">
+          <i class="fab fa-github"></i> GitHub
         </a>
-        <span class="mx-2">|</span>
-        <a href="https://github.com/54yyyu/zotero-mcp/issues" class="text-white" target="_blank">
-          <i class="fas fa-bug me-2"></i>Report an Issue
+        <a href="https://github.com/54yyyu/zotero-mcp/issues" target="_blank">
+          <i class="fas fa-bug"></i> Report Issue
         </a>
-      </p>
-      <p class="mt-2 mb-0">
-        <small>License: MIT</small>
-      </p>
+        <a href="api.html">
+          <i class="fas fa-book"></i> API Docs
+        </a>
+      </div>
+      <p class="mb-0"><small>MIT License</small></p>
     </div>
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // Navbar scroll effect
+    window.addEventListener('scroll', function() {
+      const navbar = document.querySelector('.navbar');
+      if (window.scrollY > 50) {
+        navbar.classList.add('scrolled');
+      } else {
+        navbar.classList.remove('scrolled');
+      }
+    });
+
+    // Highlight active section in sidebar
+    const sections = document.querySelectorAll('section[id]');
+    const navLinks = document.querySelectorAll('.list-group-item');
+
+    window.addEventListener('scroll', () => {
+      let current = '';
+      sections.forEach(section => {
+        const sectionTop = section.offsetTop - 150;
+        if (scrollY >= sectionTop) {
+          current = section.getAttribute('id');
+        }
+      });
+
+      navLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.getAttribute('href') === '#' + current) {
+          link.classList.add('active');
+        }
+      });
+    });
+
+    // Add copy buttons to all code blocks
+    document.addEventListener('DOMContentLoaded', function() {
+      document.querySelectorAll('.code-block').forEach(block => {
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+        block.appendChild(btn);
+
+        btn.addEventListener('click', async function() {
+          const code = block.querySelector('code').innerText;
+          try {
+            await navigator.clipboard.writeText(code);
+            btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+              btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+              btn.classList.remove('copied');
+            }, 2000);
+          } catch (err) {
+            btn.innerHTML = '<i class="fas fa-times"></i> Failed';
+            setTimeout(() => {
+              btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+            }, 2000);
+          }
+        });
+      });
+    });
+  </script>
 </body>
 </html>
