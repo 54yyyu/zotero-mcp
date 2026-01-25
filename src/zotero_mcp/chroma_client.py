@@ -175,7 +175,12 @@ class ChromaClient:
             # Get or create collection with embedding function handling
             try:
                 # Try to get existing collection first
-                self.collection = self.client.get_collection(name=self.collection_name)
+                # NOTE: Must pass embedding_function here, otherwise ChromaDB uses default
+                # embeddings for queries, causing dimension mismatch with stored embeddings
+                self.collection = self.client.get_collection(
+                    name=self.collection_name,
+                    embedding_function=self.embedding_function
+                )
 
                 # Check if embedding functions are compatible
                 existing_ef = getattr(self.collection, '_embedding_function', None)
