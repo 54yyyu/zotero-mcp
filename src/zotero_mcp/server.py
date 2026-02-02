@@ -29,7 +29,7 @@ from zotero_mcp.utils import format_creators, clean_html
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
     """Manage server startup and shutdown lifecycle."""
-    sys.stderr.write("Starting Stefans Zotero MCP server...\n")
+    sys.stderr.write("Starting Zotero MCP server...\n")
 
     # Check for semantic search auto-update on startup
     try:
