@@ -135,7 +135,12 @@ def main():
         default=8000,
         help="Port to bind to for SSE transport (default: 8000)",
     )
-    
+    server_parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Run in read-only mode (skip all database updates, use pre-built database)",
+    )
+
     # Setup command
     setup_parser = subparsers.add_parser("setup", help="Configure zotero-mcp (Claude Desktop or standalone)")
     setup_parser.add_argument("--no-local", action="store_true", 
@@ -558,6 +563,9 @@ def main():
     elif args.command == "serve":
         # Get transport with a default value if not specified
         transport = getattr(args, "transport", "stdio")
+        # Set read-only mode if requested (disables all database updates)
+        if getattr(args, "read_only", False):
+            os.environ["ZOTERO_MCP_READ_ONLY"] = "true"
         # Ensure environment is initialized (Claude config or standalone config)
         setup_zotero_environment()
         if transport == "stdio":

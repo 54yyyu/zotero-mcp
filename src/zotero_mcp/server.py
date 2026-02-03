@@ -30,42 +30,47 @@ from zotero_mcp.utils import format_creators
 async def server_lifespan(server: FastMCP):
     """Manage server startup and shutdown lifecycle."""
     sys.stderr.write("Starting Zotero MCP server...\n")
-    
-    # Check for semantic search auto-update on startup
-    try:
-        from zotero_mcp.semantic_search import create_semantic_search
-        
-        config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-        
-        if config_path.exists():
-            search = create_semantic_search(str(config_path))
-            
-            if search.should_update_database():
-                sys.stderr.write("Auto-updating semantic search database...\n")
-                
-                # Run update in background to avoid blocking server startup
-                async def background_update():
-                    try:
-                        stats = search.update_database(extract_fulltext=False)
-                        sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
-                    except Exception as e:
-                        sys.stderr.write(f"Background database update failed: {e}\n")
-                
-                # Start background task
-                asyncio.create_task(background_update())
-    
-    except Exception as e:
-        sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
-    
+
+    # Check for read-only mode (skip all database updates)
+    read_only = os.environ.get("ZOTERO_MCP_READ_ONLY", "").lower() in ("true", "1", "yes")
+    if read_only:
+        sys.stderr.write("Running in read-only mode (database updates disabled)\n")
+
+    # Check for semantic search auto-update on startup (skip if read-only)
+    if not read_only:
+        try:
+            from zotero_mcp.semantic_search import create_semantic_search
+
+            config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
+
+            if config_path.exists():
+                search = create_semantic_search(str(config_path))
+
+                if search.should_update_database():
+                    sys.stderr.write("Auto-updating semantic search database...\n")
+
+                    # Run update in background to avoid blocking server startup
+                    async def background_update():
+                        try:
+                            stats = search.update_database(extract_fulltext=False)
+                            sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
+                        except Exception as e:
+                            sys.stderr.write(f"Background database update failed: {e}\n")
+
+                    # Start background task
+                    asyncio.create_task(background_update())
+
+        except Exception as e:
+            sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
+
     yield {}
-    
+
     sys.stderr.write("Shutting down Zotero MCP server...\n")
 
 
-# Create an MCP server with appropriate dependencies
+# Create an MCP server
 mcp = FastMCP(
     "Zotero",
-    dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown", "fastmcp", "chromadb", "sentence-transformers", "openai", "google-genai"],
     lifespan=server_lifespan,
 )
 
