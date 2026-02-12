@@ -243,6 +243,9 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_LIBRARY_ID`: Your Zotero library ID (for web API)
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
 
+**Output:**
+- `ZOTERO_CONCISE_MODE=true`: Enable token-efficient output for LLM integrations. Reduces verbosity in search results, notes, annotations, and trims bibliography sections from full-text content.
+
 **Semantic Search:**
 - `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
 - `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
