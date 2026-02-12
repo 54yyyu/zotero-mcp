@@ -53,3 +53,8 @@ target-version = ["py310"]
 
 [tool.isort]
 profile = "black"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+]
