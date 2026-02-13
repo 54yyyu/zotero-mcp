@@ -24,7 +24,9 @@ from zotero_mcp.client import (
     get_attachment_details,
     get_zotero_client,
 )
-from zotero_mcp.utils import format_creators, clean_html
+import requests
+
+from zotero_mcp.utils import format_creators, clean_html, is_local_mode
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
@@ -1681,19 +1683,46 @@ def create_note(
             "tags": [{"tag": tag} for tag in (tags or [])]
         }
 
-        # Create the note
-        result = zot.create_items([note_data])
-
-        # Check if creation was successful
-        if "success" in result and result["success"]:
-            successful = result["success"]
-            if len(successful) > 0:
-                note_key = next(iter(successful.keys()))
-                return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
+        # Use connector/saveItems for local mode since the local API
+        # does not support POST to /api/users/0/items
+        if is_local_mode():
+            port = os.getenv("ZOTERO_LOCAL_PORT", "23119")
+            connector_url = f"http://127.0.0.1:{port}/connector/saveItems"
+            payload = {
+                "items": [
+                    {
+                        "itemType": "note",
+                        "note": html_content,
+                        "tags": [tag for tag in (tags or [])],
+                        "parentItem": item_key,
+                    }
+                ],
+                "uri": "about:blank",
+            }
+            resp = requests.post(
+                connector_url,
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=30,
+            )
+            if resp.status_code == 201:
+                return f"Successfully created note for \"{parent_title}\" (parent key: {item_key})"
             else:
-                return f"Note creation response was successful but no key was returned: {result}"
+                return f"Failed to create note via local connector (HTTP {resp.status_code}): {resp.text}"
         else:
-            return f"Failed to create note: {result.get('failed', 'Unknown error')}"
+            # Remote API: use pyzotero's create_items
+            result = zot.create_items([note_data])
+
+            # Check if creation was successful
+            if "success" in result and result["success"]:
+                successful = result["success"]
+                if len(successful) > 0:
+                    note_key = next(iter(successful.keys()))
+                    return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
+                else:
+                    return f"Note creation response was successful but no key was returned: {result}"
+            else:
+                return f"Failed to create note: {result.get('failed', 'Unknown error')}"
 
     except Exception as e:
         ctx.error(f"Error creating note: {str(e)}")
