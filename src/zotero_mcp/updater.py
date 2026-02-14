@@ -23,6 +23,23 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _is_uv_tool_installation() -> bool:
+    """Check if zotero-mcp is currently installed as a uv tool."""
+    if not shutil.which("uv"):
+        return False
+
+    try:
+        result = subprocess.run(
+            ["uv", "tool", "list"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and "zotero-mcp" in result.stdout
+    except Exception:
+        return False
+
+
 def detect_installation_method() -> str:
     """
     Detect how zotero-mcp was originally installed.
@@ -30,7 +47,15 @@ def detect_installation_method() -> str:
     Returns:
         Installation method: 'uv', 'pipx', 'conda', or 'pip'
     """
-    # Check for uv
+    # Check for uv tool installs first (most reliable uv signal).
+    if _is_uv_tool_installation():
+        return "uv"
+
+    # Check for pipx installation.
+    if is_pipx_installation():
+        return "pipx"
+
+    # Check for uv virtualenv/project installs.
     if shutil.which("uv"):
         # Check if we're in a uv-managed project
         current_dir = Path.cwd()
@@ -59,10 +84,6 @@ def detect_installation_method() -> str:
                             return "uv"
                 except Exception:
                     pass
-
-    # Check for pipx installation
-    if is_pipx_installation():
-        return "pipx"
 
     # Check for conda environment
     if "CONDA_DEFAULT_ENV" in os.environ or "CONDA_PREFIX" in os.environ:
@@ -267,7 +288,20 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
 
     try:
         if method == "uv":
-            cmd = ["uv", "pip", "install", "--upgrade", repo_url]
+            if _is_uv_tool_installation():
+                upgrade_result = subprocess.run(
+                    ["uv", "tool", "upgrade", "zotero-mcp"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if upgrade_result.returncode == 0:
+                    return True, "Updated successfully via uv tool"
+
+                # Fall back to a force reinstall for uv tool installs.
+                cmd = ["uv", "tool", "install", "--force", repo_url]
+            else:
+                cmd = ["uv", "pip", "install", "--upgrade", repo_url]
         elif method == "pip":
             cmd = [sys.executable, "-m", "pip", "install", "--upgrade", repo_url]
         elif method == "conda":
@@ -293,7 +327,11 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
         else:
             return False, f"Unknown installation method: {method}"
 
-        if force and method != "pipx":
+        if (
+            force
+            and method != "pipx"
+            and cmd[:3] != ["uv", "tool", "install"]
+        ):
             cmd.append("--force-reinstall")
 
         print(f"Running: {' '.join(cmd)}")

@@ -682,8 +682,16 @@ class ZoteroSemanticSearch:
         # Add documents to ChromaDB if any
         if documents:
             try:
+                existing_ids = set()
+                if not force_rebuild:
+                    existing_ids = self.chroma_client.get_existing_ids(ids)
+
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
-                stats["added"] += len(documents)
+                for doc_id in ids:
+                    if doc_id in existing_ids:
+                        stats["updated"] += 1
+                    else:
+                        stats["added"] += 1
             except Exception as e:
                 logger.error(f"Error adding documents to ChromaDB: {e}")
                 stats["errors"] += len(documents)

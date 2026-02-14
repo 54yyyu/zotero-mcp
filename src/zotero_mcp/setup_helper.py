@@ -16,6 +16,15 @@ import sys
 from pathlib import Path
 
 
+def _obfuscate_sensitive(value: str | None, keep_chars: int = 4) -> str:
+    """Obfuscate sensitive values for terminal display."""
+    if not value:
+        return "Not provided"
+    if len(value) <= keep_chars:
+        return "*" * len(value)
+    return value[:keep_chars] + "*" * (len(value) - keep_chars)
+
+
 def find_executable():
     """Find the full path to the zotero-mcp executable."""
     # Try to find the executable in the PATH
@@ -588,7 +597,7 @@ def main(cli_args=None):
     print("\nSetup with the following settings:")
     print(f"  Local API: {use_local}")
     if not use_local:
-        print(f"  API Key: {api_key or 'Not provided'}")
+        print(f"  API Key: {_obfuscate_sensitive(api_key)}")
         print(f"  Library ID: {library_id or 'Not provided'}")
         print(f"  Library Type: {library_type}")
 

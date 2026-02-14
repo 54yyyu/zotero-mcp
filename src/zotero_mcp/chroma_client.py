@@ -375,6 +375,16 @@ class ChromaClient:
         except Exception:
             return None
 
+    def get_existing_ids(self, ids: list[str]) -> set[str]:
+        """Return the subset of ids that already exist in the collection."""
+        if not ids:
+            return set()
+        try:
+            result = self.collection.get(ids=ids, include=[])
+            return set(result.get("ids", []))
+        except Exception:
+            return set()
+
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     """
