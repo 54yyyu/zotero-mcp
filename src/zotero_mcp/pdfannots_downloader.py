@@ -3,14 +3,12 @@ Utility for downloading and installing the pdfannots2json tool.
 """
 
 import os
-import sys
 import platform
-import shutil
 import tempfile
 import tarfile
 import zipfile
+import hashlib
 import urllib.request
-from pathlib import Path
 
 # Constants
 CURRENT_VERSION = "1.0.15"
@@ -29,6 +27,14 @@ DOWNLOAD_URLS = {
         "x86_64": f"{BASE_URL}pdfannots2json.Windows.x64.zip",
         "AMD64": f"{BASE_URL}pdfannots2json.Windows.x64.zip"  # Windows reports AMD64 instead of x86_64
     }
+}
+
+# Pinned SHA256 hashes for upstream release binaries.
+EXPECTED_SHA256 = {
+    "pdfannots2json.Linux.x64.tar.gz": "f5cc05baa70ac15da2cc358c79acb296b8630cdc654ed304acf50bd9489a94bd",
+    "pdfannots2json.Mac.Intel.tar.gz": "ce42fee021b37c38fe131db236ca7711282af899a82eaaaf074bdcc6aebb6c74",
+    "pdfannots2json.Mac.M1.tar.gz": "c230a4e578e1c2ff2475cb7f6f59d5ee92e4769e7a3b0ef1cee96444922bc5d5",
+    "pdfannots2json.Windows.x64.zip": "0d1496dce3518a4f6523af784051ddd1f1a2083690da41d39da7a198199aa4f3",
 }
 
 def get_executable_name():
@@ -76,6 +82,54 @@ def exists():
     """Check if the executable exists"""
     return os.path.exists(get_executable_path())
 
+
+def _verify_archive_checksum(archive_path: str, url: str) -> bool:
+    """Verify downloaded archive checksum against pinned values."""
+    asset_name = os.path.basename(url)
+    expected = EXPECTED_SHA256.get(asset_name)
+    if not expected:
+        print(f"No pinned checksum available for {asset_name}")
+        return False
+
+    hasher = hashlib.sha256()
+    with open(archive_path, "rb") as archive_file:
+        for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+            hasher.update(chunk)
+
+    actual = hasher.hexdigest()
+    if actual != expected:
+        print(
+            f"Checksum mismatch for {asset_name}. "
+            f"Expected {expected}, got {actual}"
+        )
+        return False
+    return True
+
+
+def _safe_extract_tar(archive_path: str, destination: str) -> None:
+    """Safely extract tar archives while blocking path traversal/symlinks."""
+    dest_real = os.path.realpath(destination)
+    with tarfile.open(archive_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            member_path = os.path.realpath(os.path.join(destination, member.name))
+            if not member_path.startswith(dest_real + os.sep) and member_path != dest_real:
+                raise ValueError(f"Unsafe tar member path: {member.name}")
+            if member.issym() or member.islnk():
+                raise ValueError(f"Refusing to extract symlink from archive: {member.name}")
+        tar.extractall(path=destination)
+
+
+def _safe_extract_zip(archive_path: str, destination: str) -> None:
+    """Safely extract zip archives while blocking path traversal."""
+    dest_real = os.path.realpath(destination)
+    with zipfile.ZipFile(archive_path, "r") as zip_file:
+        for member in zip_file.namelist():
+            member_path = os.path.realpath(os.path.join(destination, member))
+            if not member_path.startswith(dest_real + os.sep) and member_path != dest_real:
+                raise ValueError(f"Unsafe zip member path: {member}")
+        zip_file.extractall(path=destination)
+
+
 def download_and_install():
     """Download and extract the executable
 
@@ -103,14 +157,14 @@ def download_and_install():
             # Download the file
             archive_path = os.path.join(temp_dir, "download.archive")
             urllib.request.urlretrieve(url, archive_path)
+            if not _verify_archive_checksum(archive_path, url):
+                return False
 
             # Extract based on file type
             if url.endswith(".tar.gz"):
-                with tarfile.open(archive_path, "r:gz") as tar:
-                    tar.extractall(path=install_dir)
+                _safe_extract_tar(archive_path, install_dir)
             elif url.endswith(".zip"):
-                with zipfile.ZipFile(archive_path, "r") as zip_file:
-                    zip_file.extractall(path=install_dir)
+                _safe_extract_zip(archive_path, install_dir)
 
             # Make sure the executable is executable
             exe_path = get_executable_path()

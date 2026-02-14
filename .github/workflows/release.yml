@@ -11,8 +11,42 @@ on:
     - cron: '0 6 * * 1'
 
 jobs:
-  build-n-publish:
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest fastmcp pyzotero python-dotenv markitdown[pdf] chromadb
+          python -m pip install -e . --no-deps
+      - name: Run tests
+        run: pytest
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+
+  publish:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
     permissions:
       id-token: write
     steps:
@@ -24,7 +58,5 @@ jobs:
         run: |
           pip install build
           python -m build
-      - name: Publish package to PyPI
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@release/v1
 

@@ -151,7 +151,7 @@ To set up Zotero MCP with Chorus.sh:
 
 1. **Find your installation path**:
    - For uv: typically `/Users/USERNAME/.pyenv/versions/3.12.8/bin/zotero-mcp` on macOS
-   - For other methods: use `zotero-mcp --setup-info` to get the exact path and configuration details
+   - For other methods: use `zotero-mcp setup-info` to get the exact path and configuration details
 
 2. **Configure in Chorus.sh preferences**:
    - **Command**: Enter the full path to your zotero-mcp installation
@@ -170,13 +170,13 @@ Many other MCP consumers use similar configuration approaches with command path,
 Zotero MCP works with any MCP-compatible client. You can start the server manually:
 
 ```bash
-zotero-mcp --transport stdio
+zotero-mcp serve --transport stdio
 ```
 
 For HTTP/SSE-based clients:
 
 ```bash
-zotero-mcp --transport sse --host localhost --port 8000
+zotero-mcp serve --transport sse --host localhost --port 8000
 ```
 
 
@@ -228,4 +228,4 @@ zotero-mcp update-db --force-rebuild
 
 Other than time waiting for the rebuild, there is generally little to no risk involved in triggering the rebuild - so if you're experiencing database-related issues, it's worth trying this command.
 
-For more help, try the discussions](https://github.com/54yyyu/zotero-mcp/discussions).
+For more help, try the [discussions](https://github.com/54yyyu/zotero-mcp/discussions).
