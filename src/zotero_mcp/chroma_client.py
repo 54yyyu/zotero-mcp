@@ -172,29 +172,11 @@ class ChromaClient:
             # Set up embedding function
             self.embedding_function = self._create_embedding_function()
 
-            # Get or create collection with embedding function handling
-            try:
-                # Try to get existing collection first
-                self.collection = self.client.get_collection(name=self.collection_name)
-
-                # Check if embedding functions are compatible
-                existing_ef = getattr(self.collection, '_embedding_function', None)
-                if existing_ef is not None:
-                    existing_name = getattr(existing_ef, 'name', lambda: 'default')()
-                    new_name = getattr(self.embedding_function, 'name', lambda: 'default')()
-
-                    if existing_name != new_name:
-                        # Log to stderr instead of letting ChromaDB print to stdout
-                        sys.stderr.write(f"ChromaDB: Collection exists with different embedding function: {existing_name} vs {new_name}\n")
-                        # Use the existing collection's embedding function to avoid conflicts
-                        self.embedding_function = existing_ef
-
-            except Exception:
-                # Collection doesn't exist, create it
-                self.collection = self.client.create_collection(
-                    name=self.collection_name,
-                    embedding_function=self.embedding_function
-                )
+            # Get or create collection with the configured embedding function
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                embedding_function=self.embedding_function
+            )
 
     def _create_embedding_function(self) -> EmbeddingFunction:
         """Create the appropriate embedding function based on configuration."""
