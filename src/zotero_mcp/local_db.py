@@ -262,6 +262,102 @@ class LocalZoteroReader:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def get_libraries(self) -> list[dict[str, Any]]:
+        """Get all libraries (user, group, feed) from the database."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT l.libraryID, l.type, l.editable,
+                   g.groupID, g.name as groupName, g.description as groupDescription,
+                   f.name as feedName, f.url as feedUrl,
+                   f.lastCheck as feedLastCheck, f.lastUpdate as feedLastUpdate,
+                   (SELECT COUNT(*) FROM items i
+                    JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+                    WHERE i.libraryID = l.libraryID
+                    AND it.typeName NOT IN ('attachment', 'note', 'annotation')) as itemCount
+            FROM libraries l
+            LEFT JOIN groups g ON l.libraryID = g.libraryID
+            LEFT JOIN feeds f ON l.libraryID = f.libraryID
+            ORDER BY l.type, l.libraryID
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_groups(self) -> list[dict[str, Any]]:
+        """Get all group libraries with item counts."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT g.groupID, g.libraryID, g.name, g.description,
+                   (SELECT COUNT(*) FROM items i
+                    JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+                    WHERE i.libraryID = g.libraryID
+                    AND it.typeName NOT IN ('attachment', 'note', 'annotation')) as itemCount
+            FROM groups g
+            ORDER BY g.name
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_feeds(self) -> list[dict[str, Any]]:
+        """Get all RSS feed subscriptions with item counts."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT f.libraryID, f.name, f.url,
+                   f.lastCheck, f.lastUpdate, f.lastCheckError,
+                   f.refreshInterval,
+                   (SELECT COUNT(*) FROM feedItems fi
+                    JOIN items i ON fi.itemID = i.itemID
+                    WHERE i.libraryID = f.libraryID) as itemCount
+            FROM feeds f
+            ORDER BY f.name
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_feed_items(
+        self, library_id: int, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Get items from a specific RSS feed by its libraryID."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT i.itemID, i.key, it.typeName as itemType,
+                   i.dateAdded,
+                   fi.readTime, fi.translatedTime,
+                   title_val.value as title,
+                   abstract_val.value as abstract,
+                   url_val.value as url,
+                   GROUP_CONCAT(
+                       CASE
+                           WHEN c.firstName IS NOT NULL AND c.lastName IS NOT NULL
+                           THEN c.lastName || ', ' || c.firstName
+                           WHEN c.lastName IS NOT NULL THEN c.lastName
+                           ELSE NULL
+                       END, '; '
+                   ) as creators
+            FROM feedItems fi
+            JOIN items i ON fi.itemID = i.itemID
+            JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+            LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
+            LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
+            LEFT JOIN itemData abstract_data ON i.itemID = abstract_data.itemID AND abstract_data.fieldID = 2
+            LEFT JOIN itemDataValues abstract_val ON abstract_data.valueID = abstract_val.valueID
+            LEFT JOIN fields url_f ON url_f.fieldName = 'url'
+            LEFT JOIN itemData url_data ON i.itemID = url_data.itemID AND url_data.fieldID = url_f.fieldID
+            LEFT JOIN itemDataValues url_val ON url_data.valueID = url_val.valueID
+            LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
+            LEFT JOIN creators c ON ic.creatorID = c.creatorID
+            WHERE i.libraryID = ?
+            GROUP BY i.itemID
+            ORDER BY i.dateAdded DESC
+            LIMIT ?
+            """,
+            (library_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_item_count(self) -> int:
         """
         Get total count of non-attachment items.
