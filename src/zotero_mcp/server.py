@@ -1,4 +1,4 @@
-"""
+﻿"""
 Zotero MCP server implementation.
 
 Note: ChatGPT requires specific tool names "search" and "fetch", and so they
@@ -12,7 +12,7 @@ import uuid
 import asyncio
 import json
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastmcp import Context, FastMCP
@@ -30,6 +30,7 @@ from zotero_mcp.utils import format_creators, clean_html
 async def server_lifespan(server: FastMCP):
     """Manage server startup and shutdown lifecycle."""
     sys.stderr.write("Starting Zotero MCP server...\n")
+    background_task: asyncio.Task | None = None
 
     # Check for semantic search auto-update on startup
     try:
@@ -46,18 +47,26 @@ async def server_lifespan(server: FastMCP):
                 # Run update in background to avoid blocking server startup
                 async def background_update():
                     try:
-                        stats = search.update_database(extract_fulltext=False)
+                        # Run sync indexing work in a worker thread.
+                        stats = await asyncio.to_thread(
+                            search.update_database, extract_fulltext=False
+                        )
                         sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
                     except Exception as e:
                         sys.stderr.write(f"Background database update failed: {e}\n")
 
                 # Start background task
-                asyncio.create_task(background_update())
+                background_task = asyncio.create_task(background_update())
 
     except Exception as e:
         sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
 
     yield {}
+
+    if background_task and not background_task.done():
+        background_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await background_task
 
     sys.stderr.write("Shutting down Zotero MCP server...\n")
 
@@ -159,8 +168,8 @@ def search_items(
 
 @mcp.tool(
     name="zotero_search_by_tag",
-    description="Search for items in your Zotero library by tag. " \
-    "Conditions are ANDed, each term supports disjunction`||` and exclusion`-`."
+    description="Search for items in your Zotero library by tag. "
+    "Conditions are ANDed, each term supports disjunction (`OR`) and exclusion (`-`)."
 )
 def search_by_tag(
     tag: list[str],
@@ -170,16 +179,16 @@ def search_by_tag(
     ctx: Context
 ) -> str:
     """
-    Search for items in your Zotero library by tag。
-    Conditions are ANDed, each term supports disjunction`||` and exclusion`-`.
+    Search for items in your Zotero library by tag.
+    Conditions are ANDed, each term supports disjunction (`OR`) and exclusion (`-`).
 
     Args:
         tag: List of tag conditions. Items are returned only if they satisfy
             ALL conditions in the list. Each tag condition can be expressed
             in two ways:
-                As alternatives: tag1 || tag2 (matches items with either tag1 OR tag2)
+                As alternatives: tag1 OR tag2 (matches items with either tag1 OR tag2)
                 As exclusions: -tag (matches items that do NOT have this tag)
-            For example, a tag field with ["research || important", "-draft"] would
+            For example, a tag field with ["research OR important", "-draft"] would
             return items that:
                 Have either "research" OR "important" tags, AND
                 Do NOT have the "draft" tag
@@ -795,27 +804,44 @@ def batch_update_tags(
         if not add_tags and not remove_tags:
             return "Error: You must specify either tags to add or tags to remove"
 
-        # Debug logging... commented out for now but could be useful in future.
-        # ctx.info(f"add_tags type: {type(add_tags)}, value: {add_tags}")
-        # ctx.info(f"remove_tags type: {type(remove_tags)}, value: {remove_tags}")
+        def _normalize_tag_list(
+            raw_value: list[str] | str | None, field_name: str
+        ) -> list[str]:
+            if raw_value is None:
+                return []
 
-        # Handle case where add_tags might be a JSON string instead of list
-        if add_tags and isinstance(add_tags, str):
-            try:
-                import json
-                add_tags = json.loads(add_tags)
-                ctx.info(f"Parsed add_tags from JSON string: {add_tags}")
-            except json.JSONDecodeError:
-                return f"Error: add_tags appears to be malformed JSON string: {add_tags}"
+            parsed_value = raw_value
+            if isinstance(parsed_value, str):
+                try:
+                    parsed_value = json.loads(parsed_value)
+                    ctx.info(f"Parsed {field_name} from JSON string: {parsed_value}")
+                except json.JSONDecodeError:
+                    raise ValueError(
+                        f"{field_name} appears to be malformed JSON: {raw_value}"
+                    )
 
-        # Handle case where remove_tags might be a JSON string instead of list
-        if remove_tags and isinstance(remove_tags, str):
-            try:
-                import json
-                remove_tags = json.loads(remove_tags)
-                ctx.info(f"Parsed remove_tags from JSON string: {remove_tags}")
-            except json.JSONDecodeError:
-                return f"Error: remove_tags appears to be malformed JSON string: {remove_tags}"
+            if not isinstance(parsed_value, list):
+                raise ValueError(
+                    f"{field_name} must be a JSON array or a list of strings"
+                )
+
+            normalized = []
+            for tag_value in parsed_value:
+                if not isinstance(tag_value, str):
+                    raise ValueError(f"{field_name} entries must all be strings")
+                stripped = tag_value.strip()
+                if stripped:
+                    normalized.append(stripped)
+            return normalized
+
+        try:
+            add_tags = _normalize_tag_list(add_tags, "add_tags")
+            remove_tags = _normalize_tag_list(remove_tags, "remove_tags")
+        except ValueError as validation_error:
+            return f"Error: {validation_error}"
+
+        if not add_tags and not remove_tags:
+            return "Error: After parsing, no valid tags were provided to add or remove"
 
         ctx.info(f"Batch updating tags for items matching '{query}'")
         zot = get_zotero_client()
@@ -941,99 +967,217 @@ def advanced_search(
         Markdown-formatted search results
     """
     try:
-        if not conditions:
+        if isinstance(conditions, str):
+            try:
+                conditions = json.loads(conditions)
+            except json.JSONDecodeError as parse_error:
+                return (
+                    "Error: conditions must be valid JSON when provided as a string "
+                    f"({parse_error})"
+                )
+
+        if not isinstance(conditions, list) or not conditions:
             return "Error: No search conditions provided"
+
+        if join_mode not in {"all", "any"}:
+            return "Error: join_mode must be either 'all' or 'any'"
+
+        if isinstance(limit, str):
+            limit = int(limit)
+        if limit <= 0:
+            return "Error: limit must be greater than 0"
+        if limit > 500:
+            limit = 500
 
         ctx.info(f"Performing advanced search with {len(conditions)} conditions")
         zot = get_zotero_client()
 
-        # Prepare search parameters
-        params = {}
+        valid_operations = {
+            "is",
+            "isNot",
+            "contains",
+            "doesNotContain",
+            "beginsWith",
+            "endsWith",
+            "isGreaterThan",
+            "isLessThan",
+            "isBefore",
+            "isAfter",
+        }
 
-        # Add sorting parameters if specified
-        if sort_by:
-            params["sort"] = sort_by
-            params["direction"] = sort_direction
-
-        if isinstance(limit, str):
-            limit = int(limit)
-
-        # Add limit parameter
-        params["limit"] = limit
-
-        # Build search conditions
-        search_conditions = []
-        for i, condition in enumerate(conditions):
+        parsed_conditions: list[dict[str, str]] = []
+        for i, condition in enumerate(conditions, 1):
+            if not isinstance(condition, dict):
+                return f"Error: Condition {i} must be an object"
             if "field" not in condition or "operation" not in condition or "value" not in condition:
-                return f"Error: Condition {i+1} is missing required fields (field, operation, value)"
+                return (
+                    f"Error: Condition {i} is missing required fields "
+                    "(field, operation, value)"
+                )
 
-            # Map common field names to Zotero API fields if needed
-            field = condition["field"]
-            operation = condition["operation"]
-            value = condition["value"]
+            field = str(condition["field"]).strip()
+            operation = str(condition["operation"]).strip()
+            value = str(condition["value"]).strip()
 
-            # Handle special fields
-            if field == "author" or field == "creator":
-                field = "creator"
-            elif field == "year":
-                field = "date"
-                # Convert year to partial date format for matching
-                value = str(value)
+            if operation not in valid_operations:
+                return (
+                    f"Error: Unsupported operation '{operation}' in condition {i}. "
+                    f"Supported: {', '.join(sorted(valid_operations))}"
+                )
+            if not field:
+                return f"Error: Condition {i} has an empty field"
 
-            search_conditions.append({
-                "condition": field,
-                "operator": operation,
-                "value": value
-            })
+            parsed_conditions.append(
+                {"field": field, "operation": operation, "value": value}
+            )
 
-        # Add join mode condition
-        search_conditions.append({
-            "condition": "joinMode",
-            "operator": join_mode,
-            "value": ""
-        })
+        def _extract_values(data: dict[str, object], field: str) -> list[str]:
+            field_lower = field.lower()
 
-        # Create a saved search
-        search_name = f"temp_search_{uuid.uuid4().hex[:8]}"
-        saved_search = zot.saved_search(
-            search_name,
-            search_conditions
-        )
+            if field_lower in {"author", "authors", "creator", "creators"}:
+                creators = data.get("creators", []) or []
+                values: list[str] = []
+                for creator in creators:
+                    if not isinstance(creator, dict):
+                        continue
+                    if creator.get("firstName") or creator.get("lastName"):
+                        full_name = " ".join(
+                            [
+                                str(creator.get("firstName", "")).strip(),
+                                str(creator.get("lastName", "")).strip(),
+                            ]
+                        ).strip()
+                        if full_name:
+                            values.append(full_name)
+                    if creator.get("name"):
+                        values.append(str(creator.get("name", "")).strip())
+                return values
 
-        # Extract the search key from the result
-        if not saved_search.get("success"):
-            return f"Error creating saved search: {saved_search.get('failed', 'Unknown error')}"
+            if field_lower in {"tag", "tags"}:
+                tags = data.get("tags", []) or []
+                values = []
+                for tag in tags:
+                    if isinstance(tag, dict) and tag.get("tag"):
+                        values.append(str(tag.get("tag", "")).strip())
+                return values
 
-        search_key = next(iter(saved_search.get("success", {}).values()), None)
+            if field_lower == "year":
+                date_value = str(data.get("date", "")).strip()
+                return [date_value[:4]] if len(date_value) >= 4 else []
 
-        # Execute the saved search
-        try:
-            results = zot.collection_items(search_key)
-        finally:
-            # Clean up the temporary saved search
+            field_aliases = {
+                "itemtype": "itemType",
+                "dateadded": "dateAdded",
+                "datemodified": "dateModified",
+                "doi": "DOI",
+            }
+            source_field = field_aliases.get(field_lower, field)
+            raw_value = data.get(source_field, "")
+            if raw_value is None:
+                return []
+            return [str(raw_value).strip()]
+
+        def _as_float(text: str) -> float | None:
             try:
-                zot.delete_saved_search([search_key])
-            except Exception as cleanup_error:
-                ctx.warn(f"Error cleaning up saved search: {str(cleanup_error)}")
+                return float(text)
+            except ValueError:
+                return None
 
-        # Format the results
+        def _compare(candidate: str, expected: str, operation: str) -> bool:
+            left = candidate.lower()
+            right = expected.lower()
+
+            if operation == "is":
+                return left == right
+            if operation == "isNot":
+                return left != right
+            if operation == "contains":
+                return right in left
+            if operation == "doesNotContain":
+                return right not in left
+            if operation == "beginsWith":
+                return left.startswith(right)
+            if operation == "endsWith":
+                return left.endswith(right)
+
+            left_num = _as_float(left)
+            right_num = _as_float(right)
+            if (
+                operation in {"isGreaterThan", "isLessThan", "isBefore", "isAfter"}
+                and left_num is not None
+                and right_num is not None
+            ):
+                if operation in {"isGreaterThan", "isAfter"}:
+                    return left_num > right_num
+                return left_num < right_num
+
+            if operation in {"isGreaterThan", "isAfter"}:
+                return left > right
+            return left < right
+
+        def _matches_condition(data: dict[str, object], condition: dict[str, str]) -> bool:
+            values = _extract_values(data, condition["field"])
+            if not values:
+                return False
+
+            operation = condition["operation"]
+            target = condition["value"]
+            comparisons = [_compare(value, target, operation) for value in values]
+
+            if operation in {"isNot", "doesNotContain"}:
+                return all(comparisons)
+            return any(comparisons)
+
+        # Execute advanced search by iterating items and filtering client-side.
+        results = []
+        batch_size = 100
+        start = 0
+        while True:
+            batch = zot.items(start=start, limit=batch_size)
+            if not batch:
+                break
+
+            for item in batch:
+                data = item.get("data", {})
+                if data.get("itemType") in {"attachment", "note", "annotation"}:
+                    continue
+
+                checks = [_matches_condition(data, c) for c in parsed_conditions]
+                matched = all(checks) if join_mode == "all" else any(checks)
+                if matched:
+                    results.append(item)
+
+            if len(batch) < batch_size:
+                break
+            start += batch_size
+
+        if sort_by:
+            sort_field = sort_by.strip()
+            reverse = sort_direction == "desc"
+
+            def _sort_key(item: dict[str, object]) -> str:
+                data = item.get("data", {}) if isinstance(item, dict) else {}
+                if sort_field in {"creator", "author"}:
+                    return format_creators(data.get("creators", []))
+                return str(data.get(sort_field, "")).lower()
+
+            results.sort(key=_sort_key, reverse=reverse)
+
         if not results:
             return "No items found matching the search criteria."
+
+        results = results[:limit]
 
         output = ["# Advanced Search Results", ""]
         output.append(f"Found {len(results)} items matching the search criteria:")
         output.append("")
-
-        # Add search criteria summary
         output.append("## Search Criteria")
         output.append(f"Join mode: {join_mode.upper()}")
-
-        for i, condition in enumerate(conditions, 1):
-            output.append(f"{i}. {condition['field']} {condition['operation']} \"{condition['value']}\"")
-
+        for i, condition in enumerate(parsed_conditions, 1):
+            output.append(
+                f"{i}. {condition['field']} {condition['operation']} \"{condition['value']}\""
+            )
         output.append("")
-
-        # Format results
         output.append("## Results")
 
         for i, item in enumerate(results, 1):
@@ -1043,30 +1187,25 @@ def advanced_search(
             date = data.get("date", "No date")
             key = item.get("key", "")
 
-            # Format creators
             creators = data.get("creators", [])
             creators_str = format_creators(creators)
 
-            # Build the formatted entry
             output.append(f"### {i}. {title}")
             output.append(f"**Type:** {item_type}")
             output.append(f"**Item Key:** {key}")
             output.append(f"**Date:** {date}")
             output.append(f"**Authors:** {creators_str}")
 
-            # Add abstract snippet if present
             if abstract := data.get("abstractNote"):
-                # Limit abstract length for search results
                 abstract_snippet = abstract[:150] + "..." if len(abstract) > 150 else abstract
                 output.append(f"**Abstract:** {abstract_snippet}")
 
-            # Add tags if present
             if tags := data.get("tags"):
                 tag_list = [f"`{tag['tag']}`" for tag in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
-            output.append("")  # Empty line between items
+            output.append("")
 
         return "\n".join(output)
 
@@ -1252,7 +1391,11 @@ def get_annotations(
                             with tempfile.TemporaryDirectory() as tmpdir:
                                 att_key = attachment.get("key", "")
                                 file_path = os.path.join(tmpdir, f"{att_key}.pdf")
-                                zot.dump(att_key, file_path)
+                                zot.dump(
+                                    att_key,
+                                    filename=os.path.basename(file_path),
+                                    path=tmpdir,
+                                )
 
                                 if os.path.exists(file_path):
                                     extracted = extract_annotations_from_pdf(file_path, tmpdir)
@@ -1515,9 +1658,7 @@ def search_notes(
             ctx=ctx
         )
 
-        # Parse the annotation results to extract annotation items
-        # This is a bit hacky and depends on the exact formatting of get_annotations
-        # You might want to modify get_annotations to return a more structured result
+        # Parse annotation markdown blocks from get_annotations output.
         annotation_lines = annotation_results.split("\n")
         current_annotation = None
         annotations = []
@@ -1532,9 +1673,6 @@ def search_notes(
 
         if current_annotation:
             annotations.append(current_annotation)
-
-        # Format results
-        output = [f"# Search Results for '{query}'", ""]
 
         # Filter and highlight notes
         query_lower = query.lower()
@@ -1553,8 +1691,20 @@ def search_notes(
                 }
                 note_results.append(note_result)
 
+        # Keep only annotation blocks that contain the query text.
+        annotation_results_filtered = []
+        for annotation in annotations:
+            block_text = "\n".join(annotation.get("lines", []))
+            if query_lower in block_text.lower():
+                annotation_results_filtered.append(annotation)
+
         # Combine and sort results
-        all_results = note_results + annotations
+        all_results = note_results + annotation_results_filtered
+        if not all_results:
+            return f"No results found for '{query}'"
+
+        # Format results
+        output = [f"# Search Results for '{query}'", ""]
 
         for i, result in enumerate(all_results, 1):
             if result["type"] == "note":
@@ -1616,7 +1766,7 @@ def search_notes(
                 output.extend(result["lines"])
                 output.append("")
 
-        return "\n".join(output) if output else f"No results found for '{query}'"
+        return "\n".join(output)
 
     except Exception as e:
         ctx.error(f"Error searching notes: {str(e)}")
@@ -1672,6 +1822,16 @@ def create_note(
                 p_with_br = p.replace("\n", "<br/>")
                 html_parts.append("<p>" + p_with_br + "</p>")
             html_content = "".join(html_parts)
+
+        # Use note_title as a visible heading so the argument is not ignored.
+        clean_title = (note_title or "").strip()
+        if clean_title:
+            safe_title = (
+                clean_title.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            html_content = f"<h1>{safe_title}</h1>{html_content}"
 
         # Prepare the note data
         note_data = {
