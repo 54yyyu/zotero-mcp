@@ -124,8 +124,11 @@ class LocalZoteroReader:
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection, creating if needed."""
         if self._connection is None:
-            # Open in read-only mode for safety
-            uri = f"file:{self.db_path}?mode=ro"
+            # Use immutable=1 to bypass locking entirely. Zotero uses rollback
+            # journal mode and holds a write lock while running, which blocks
+            # even read-only connections. immutable=1 skips all lock checks —
+            # safe here since we only read and tolerate slightly stale data.
+            uri = f"file:{self.db_path}?immutable=1"
             self._connection = sqlite3.connect(uri, uri=True)
             self._connection.row_factory = sqlite3.Row
         return self._connection
