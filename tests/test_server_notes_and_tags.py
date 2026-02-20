@@ -72,7 +72,7 @@ def test_search_notes_filters_annotation_blocks(monkeypatch):
     monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
     monkeypatch.setattr(
         server,
-        "get_annotations",
+        "_get_annotations",
         lambda **_kwargs: (
             "# Annotations\n\n"
             "## Annotation 1\n"
