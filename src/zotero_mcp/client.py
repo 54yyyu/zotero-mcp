@@ -16,6 +16,27 @@ from zotero_mcp.utils import format_creators
 # Load environment variables
 load_dotenv()
 
+# Runtime library override state — set by zotero_switch_library tool.
+# When non-empty, these values override the corresponding environment variables
+# in get_zotero_client(). Keys: "library_id", "library_type".
+_active_library_override: dict[str, str] = {}
+
+
+def set_active_library(library_id: str, library_type: str) -> None:
+    """Set runtime library override for all subsequent get_zotero_client() calls."""
+    _active_library_override["library_id"] = library_id
+    _active_library_override["library_type"] = library_type
+
+
+def clear_active_library() -> None:
+    """Clear runtime library override, reverting to environment variable defaults."""
+    _active_library_override.clear()
+
+
+def get_active_library() -> dict[str, str]:
+    """Return the current active library override (empty dict if using defaults)."""
+    return dict(_active_library_override)
+
 
 @dataclass
 class AttachmentDetails:
@@ -31,14 +52,19 @@ def get_zotero_client() -> zotero.Zotero:
     """
     Get authenticated Zotero client using environment variables.
 
+    If a runtime library override is active (via set_active_library()),
+    those values take precedence over environment variables.
+
     Returns:
         A configured Zotero client instance.
 
     Raises:
         ValueError: If required environment variables are missing.
     """
-    library_id = os.getenv("ZOTERO_LIBRARY_ID")
-    library_type = os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+    # Runtime overrides take precedence over environment variables
+    override = _active_library_override
+    library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID")
+    library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
     api_key = os.getenv("ZOTERO_API_KEY")
     local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
 
