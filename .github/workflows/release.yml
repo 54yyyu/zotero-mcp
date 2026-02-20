@@ -42,6 +42,11 @@ jobs:
         run: |
           pip install build
           python -m build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
   publish:
     needs: [test, build]
@@ -49,14 +54,14 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
     permissions:
       id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/zotero-mcp-server/
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.x"
-      - name: Build package
-        run: |
-          pip install build
-          python -m build
+          name: dist
+          path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 

@@ -42,3 +42,4 @@ uv.lock
 
 # Local project docs
 CLAUDE.md
+.claude/

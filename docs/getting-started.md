@@ -7,7 +7,7 @@ This guide will walk you through the setup and basic usage of the Zotero MCP ser
 First, install the Zotero MCP server using pip:
 
 ```bash
-pip install zotero-mcp
+pip install zotero-mcp-server
 ```
 
 ## Configuration

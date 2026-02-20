@@ -276,11 +276,11 @@ def main():
         try:
             # Check if installed via uv
             result = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=5)
-            if "zotero-mcp" in result.stdout:
+            if "zotero-mcp-server" in result.stdout or "zotero-mcp" in result.stdout:
                 print("  Installation method: uv tool")
             else:
                 # Check pip
-                result = subprocess.run([sys.executable, "-m", "pip", "show", "zotero-mcp"],
+                result = subprocess.run([sys.executable, "-m", "pip", "show", "zotero-mcp-server"],
                                       capture_output=True, text=True, timeout=5)
                 if result.returncode == 0:
                     print("  Installation method: pip")

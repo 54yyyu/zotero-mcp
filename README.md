@@ -13,6 +13,9 @@
   <a href="https://modelcontextprotocol.io/introduction">
     <img src="https://img.shields.io/badge/MCP-0175C2?style=for-the-badge&logoColor=white" alt="MCP">
   </a>
+  <a href="https://pypi.org/project/zotero-mcp-server/">
+    <img src="https://img.shields.io/pypi/v/zotero-mcp-server?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI">
+  </a>
 </p>
 
 **Zotero MCP** seamlessly connects your [Zotero](https://www.zotero.org/) research library with [ChatGPT](https://openai.com), [Claude](https://www.anthropic.com/claude), and other AI assistants (e.g., [Cherry Studio](https://cherry-ai.com/), [Chorus](https://chorus.sh), [Cursor](https://www.cursor.com/)) via the [Model Context Protocol](https://modelcontextprotocol.io/introduction). Review papers, get summaries, analyze citations, extract PDF annotations, and more!
@@ -55,17 +58,24 @@
 
 ### Default Installation
 
-#### Installing via uv
+#### Installing via uv (recommended)
 
 ```bash
-uv tool install "git+https://github.com/54yyyu/zotero-mcp.git"
+uv tool install zotero-mcp-server
 zotero-mcp setup  # Auto-configure (Claude Desktop supported)
 ```
 
 #### Installing via pip
 
 ```bash
-pip install git+https://github.com/54yyyu/zotero-mcp.git
+pip install zotero-mcp-server
+zotero-mcp setup  # Auto-configure (Claude Desktop supported)
+```
+
+#### Installing via pipx
+
+```bash
+pipx install zotero-mcp-server
 zotero-mcp setup  # Auto-configure (Claude Desktop supported)
 ```
 
