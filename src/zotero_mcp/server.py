@@ -1574,6 +1574,20 @@ def get_annotations(
     Returns:
         Markdown-formatted list of annotations
     """
+    return _get_annotations(
+        item_key=item_key,
+        use_pdf_extraction=use_pdf_extraction,
+        limit=limit,
+        ctx=ctx
+    )
+
+def _get_annotations(
+    item_key: str | None = None,
+    use_pdf_extraction: bool = False,
+    limit: int | str | None = None,
+    *,
+    ctx: Context
+) -> str:
     try:
         # Initialize Zotero client
         zot = get_zotero_client()
@@ -1988,7 +2002,7 @@ def search_notes(
         notes = zot.items()
 
         # Then search annotations (reusing the get_annotations function)
-        annotation_results = get_annotations(
+        annotation_results = _get_annotations(
             item_key=None,  # Search all annotations
             use_pdf_extraction=True,
             limit=limit or 20,
