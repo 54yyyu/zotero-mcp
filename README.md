@@ -348,6 +348,14 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - **Update command fails**: Check your internet connection and try `zotero-mcp update --force`
 - **Configuration lost after update**: The update process preserves configs automatically, but check `~/.config/zotero-mcp/` for backup files
 
+## ☕ Support
+
+If you find Zotero MCP useful, consider buying me a coffee!
+
+<a href="https://buymeacoffee.com/stevenyuyy">
+  <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
+</a>
+
 ## 📄 License
 
 MIT
