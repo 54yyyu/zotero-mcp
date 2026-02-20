@@ -79,14 +79,6 @@ pipx install zotero-mcp-server
 zotero-mcp setup  # Auto-configure (Claude Desktop supported)
 ```
 
-### Installing via Smithery
-
-To install Zotero MCP via [Smithery](https://smithery.ai/server/@54yyyu/zotero-mcp) for Claude Desktop:
-
-```bash
-npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude
-```
-
 #### Updating Your Installation
 
 Keep zotero-mcp up to date with the smart update command:
