@@ -82,7 +82,7 @@ def test_search_notes_filters_annotation_blocks(monkeypatch):
         ),
     )
 
-    result = server.search_notes.fn(query="quantum", limit=20, ctx=DummyContext())
+    result = server.search_notes(query="quantum", limit=20, ctx=DummyContext())
 
     assert "Annotation 1" in result
     assert "Annotation 2" not in result
@@ -102,7 +102,7 @@ def test_batch_update_tags_validates_json_array(monkeypatch):
     ]
     monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZoteroForTags(items))
 
-    result = server.batch_update_tags.fn(
+    result = server.batch_update_tags(
         query="anything",
         add_tags='{"not":"a-list"}',
         remove_tags=None,

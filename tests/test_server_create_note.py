@@ -28,7 +28,7 @@ def test_create_note_includes_title_heading(monkeypatch):
     fake_zot = FakeZotero()
     monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
 
-    result = server.create_note.fn(
+    result = server.create_note(
         item_key="ITEM0001",
         note_title="<Unsafe Title>",
         note_text="Line one\n\nLine two",

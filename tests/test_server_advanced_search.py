@@ -55,7 +55,7 @@ def test_advanced_search_filters_items(monkeypatch):
     ]
     monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZotero(fake_items))
 
-    result = server.advanced_search.fn(
+    result = server.advanced_search(
         conditions=[
             {"field": "title", "operation": "contains", "value": "quantum"},
             {"field": "year", "operation": "isGreaterThan", "value": "2020"},
@@ -73,7 +73,7 @@ def test_advanced_search_filters_items(monkeypatch):
 def test_advanced_search_rejects_unknown_operation(monkeypatch):
     monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZotero([]))
 
-    result = server.advanced_search.fn(
+    result = server.advanced_search(
         conditions=[{"field": "title", "operation": "regex", "value": ".*"}],
         ctx=DummyContext(),
     )
