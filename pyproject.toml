@@ -28,6 +28,8 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "openai>=1.0.0",
     "google-genai>=0.7.0",
+    "pymupdf>=1.24.0",
+    "ebooklib>=0.18",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +48,9 @@ zotero-mcp = "zotero_mcp.cli:main"
 
 [tool.hatch.version]
 path = "src/zotero_mcp/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zotero_mcp"]
 
 [tool.black]
 line-length = 88
