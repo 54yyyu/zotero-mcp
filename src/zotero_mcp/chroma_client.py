@@ -67,7 +67,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 class GeminiEmbeddingFunction(EmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai."""
 
-    def __init__(self, model_name: str = "models/text-embedding-004", api_key: str | None = None, base_url: str | None = None):
+    def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None, base_url: str | None = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self.base_url = base_url or os.getenv("GEMINI_BASE_URL")
@@ -204,7 +204,7 @@ class ChromaClient:
             return OpenAIEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
 
         elif self.embedding_model == "gemini":
-            model_name = self.embedding_config.get("model_name", "models/text-embedding-004")
+            model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
             api_key = self.embedding_config.get("api_key")
             base_url = self.embedding_config.get("base_url")
             return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
@@ -431,7 +431,7 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
 
     elif config["embedding_model"] == "gemini":
         gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        gemini_model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
+        gemini_model = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
         gemini_base_url = os.getenv("GEMINI_BASE_URL")
         if gemini_api_key:
             config["embedding_config"] = {

@@ -205,21 +205,7 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
     elif choice == "3":
         config["embedding_model"] = "gemini"
 
-        # Choose Gemini model
-        print("\nGemini embedding models:")
-        print("1. models/text-embedding-004 (recommended)")
-        print("2. models/gemini-embedding-exp-03-07 (experimental)")
-
-        while True:
-            model_choice = input("Choose Gemini model (1-2): ").strip()
-            if model_choice in ["1", "2"]:
-                break
-            print("Please enter 1 or 2")
-
-        if model_choice == "1":
-            config["embedding_config"] = {"model_name": "models/text-embedding-004"}
-        else:
-            config["embedding_config"] = {"model_name": "models/gemini-embedding-exp-03-07"}
+        config["embedding_config"] = {"model_name": "gemini-embedding-001"}
 
         # Get API key
         api_key = getpass.getpass("Enter your Gemini API key (hidden): ").strip()

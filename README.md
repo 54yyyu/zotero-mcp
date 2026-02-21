@@ -110,7 +110,7 @@ zotero-mcp setup --semantic-config-only
 **Available Embedding Models:**
 - **Default (all-MiniLM-L6-v2)**: Free, runs locally, good for most use cases
 - **OpenAI**: Better quality, requires API key (`text-embedding-3-small` or `text-embedding-3-large`)
-- **Gemini**: Better quality, requires API key (`models/text-embedding-004` or experimental models)
+- **Gemini**: Better quality, requires API key (`gemini-embedding-001`)
 
 **Update Frequency Options:**
 - **Manual**: Update only when you run `zotero-mcp update-db`
@@ -251,7 +251,7 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model name (text-embedding-3-small, text-embedding-3-large)
 - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
 - `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
-- `GEMINI_EMBEDDING_MODEL`: Gemini model name (models/text-embedding-004, etc.)
+- `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
 
