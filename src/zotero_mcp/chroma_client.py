@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import logging
 
+from typing import Dict
+
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from chromadb.config import Settings
@@ -51,9 +53,19 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         except ImportError:
             raise ImportError("openai package is required for OpenAI embeddings")
 
-    def name(self) -> str:
-        """Return the name of this embedding function."""
+    @staticmethod
+    def name() -> str:
         return "openai"
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"model_name": self.model_name, "base_url": self.base_url}
+
+    @staticmethod
+    def build_from_config(config: Dict[str, Any]) -> "OpenAIEmbeddingFunction":
+        return OpenAIEmbeddingFunction(
+            model_name=config.get("model_name", "text-embedding-3-small"),
+            base_url=config.get("base_url"),
+        )
 
     def __call__(self, input: Documents) -> Embeddings:
         """Generate embeddings using OpenAI API."""
@@ -86,9 +98,19 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         except ImportError:
             raise ImportError("google-genai package is required for Gemini embeddings")
 
-    def name(self) -> str:
-        """Return the name of this embedding function."""
+    @staticmethod
+    def name() -> str:
         return "gemini"
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"model_name": self.model_name, "base_url": self.base_url}
+
+    @staticmethod
+    def build_from_config(config: Dict[str, Any]) -> "GeminiEmbeddingFunction":
+        return GeminiEmbeddingFunction(
+            model_name=config.get("model_name", "gemini-embedding-001"),
+            base_url=config.get("base_url"),
+        )
 
     def __call__(self, input: Documents) -> Embeddings:
         """Generate embeddings using Gemini API."""
@@ -119,9 +141,18 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
         except ImportError:
             raise ImportError("sentence-transformers package is required for HuggingFace embeddings. Install with: pip install sentence-transformers")
 
-    def name(self) -> str:
-        """Return the name of this embedding function."""
-        return f"huggingface-{self.model_name}"
+    @staticmethod
+    def name() -> str:
+        return "huggingface"
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"model_name": self.model_name}
+
+    @staticmethod
+    def build_from_config(config: Dict[str, Any]) -> "HuggingFaceEmbeddingFunction":
+        return HuggingFaceEmbeddingFunction(
+            model_name=config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"),
+        )
 
     def __call__(self, input: Documents) -> Embeddings:
         """Generate embeddings using HuggingFace model."""
