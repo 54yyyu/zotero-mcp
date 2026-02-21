@@ -172,11 +172,28 @@ class ChromaClient:
             # Set up embedding function
             self.embedding_function = self._create_embedding_function()
 
-            # Get or create collection with the configured embedding function
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                embedding_function=self.embedding_function
-            )
+            # Get or create collection with the configured embedding function.
+            # If the user switched embedding models, the persisted collection
+            # will conflict with the new function.  Drop and recreate in that
+            # case so the database is rebuilt with the correct embeddings.
+            try:
+                self.collection = self.client.get_or_create_collection(
+                    name=self.collection_name,
+                    embedding_function=self.embedding_function
+                )
+            except Exception as e:
+                if "embedding function conflict" in str(e).lower():
+                    logger.warning(
+                        f"Embedding model changed to '{self.embedding_model}'. "
+                        "Resetting collection for rebuild."
+                    )
+                    self.client.delete_collection(name=self.collection_name)
+                    self.collection = self.client.create_collection(
+                        name=self.collection_name,
+                        embedding_function=self.embedding_function
+                    )
+                else:
+                    raise
 
     def _create_embedding_function(self) -> EmbeddingFunction:
         """Create the appropriate embedding function based on configuration."""
