@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -29,9 +30,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--limit",
-        default=20,
+        default=2,
         type=int,
-        help="Limit items for update-db test (default: 20)",
+        help="Limit items for update-db test (default: 2)",
     )
     parser.add_argument(
         "--force-rebuild",
@@ -125,34 +126,55 @@ def ensure_mineru_token() -> int:
     return count
 
 
-def build_auto_config(project_root: Path) -> Path:
+def build_auto_config(project_root: Path, real_home: Path) -> tuple[Path, dict[str, str]]:
     tmp_dir = project_root / ".tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    config_path = tmp_dir / "mineru-test-config.json"
-    locator_db_path = tmp_dir / "locator.db"
-    md_store_dir = tmp_dir / "md_store"
-    chroma_db_dir = tmp_dir / "chroma_db"
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_home = tmp_dir / f"mineru-home-{run_id}"
+    config_dir = run_home / ".config" / "zotero-mcp"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = config_dir / "config.json"
+
+    default_db_path = real_home / "Zotero" / "zotero.sqlite"
+    zotero_db_path = str(default_db_path) if default_db_path.exists() else ""
 
     config = {
         "semantic_search": {
             "embedding_model": "default",
             "collection_name": "zotero_library_chunks_v2",
-            "persist_directory": str(chroma_db_dir),
             "extraction_mode": "mineru",
             "mineru": {"enabled": True},
-            "locator_db": {"path": str(locator_db_path)},
-            "md_store": {"base_dir": str(md_store_dir)},
+            "zotero_db_path": zotero_db_path,
         }
     }
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-    return config_path
+    env_overrides = {
+        "HOME": str(run_home),
+        "XDG_CONFIG_HOME": str(run_home / ".config"),
+        # Keep model caches on the real user cache to avoid re-downloading in isolated HOME.
+        "HF_HOME": str(real_home / ".cache" / "huggingface"),
+        "TRANSFORMERS_CACHE": str(real_home / ".cache" / "huggingface" / "hub"),
+        "SENTENCE_TRANSFORMERS_HOME": str(real_home / ".cache" / "torch" / "sentence_transformers"),
+    }
+    return config_path, env_overrides
 
 
-def run_cli(project_root: Path, runner: list[str], args: list[str]) -> None:
+def run_cli(
+    project_root: Path,
+    runner: list[str],
+    args: list[str],
+    env_overrides: dict[str, str] | None = None,
+) -> None:
     cmd = runner + args
     env = os.environ.copy()
     env["PYTHONPATH"] = str(project_root / "src")
-    printable = " ".join(shlex.quote(x) for x in (["env", f"PYTHONPATH={env['PYTHONPATH']}"] + cmd))
+    if env_overrides:
+        env.update(env_overrides)
+    env_prefix = ["env", f"PYTHONPATH={env['PYTHONPATH']}"]
+    if env_overrides:
+        env_prefix.extend([f"{k}={v}" for k, v in env_overrides.items()])
+    printable = " ".join(shlex.quote(x) for x in (env_prefix + cmd))
     print()
     print(f"Running: {printable}")
     subprocess.run(cmd, env=env, check=True)
@@ -161,6 +183,7 @@ def run_cli(project_root: Path, runner: list[str], args: list[str]) -> None:
 def main() -> int:
     ns = parse_args()
     project_root = Path(__file__).resolve().parent.parent
+    real_home = Path.home()
     os.chdir(project_root)
 
     try:
@@ -172,12 +195,14 @@ def main() -> int:
         return 1
 
     config_path = Path(ns.config_path) if ns.config_path else None
+    isolated_env: dict[str, str] = {}
     if not config_path and not ns.no_auto_config:
-        config_path = build_auto_config(project_root)
+        config_path, isolated_env = build_auto_config(project_root, real_home)
         print(f"Auto config: {config_path}")
 
     common_args: list[str] = []
-    if config_path:
+    # Auto-config simulates real default path under isolated HOME, so no --config-path needed.
+    if config_path and not isolated_env:
         common_args.extend(["--config-path", str(config_path)])
 
     print("== MinerU UV Test ==")
@@ -186,12 +211,23 @@ def main() -> int:
     print(f"Detected token count: {detected_tokens}")
     print(f"Limit: {ns.limit}")
     print(f"Runner: {' '.join(runner)}")
+    if isolated_env and not ns.db_path:
+        cfg_json = json.loads(config_path.read_text(encoding="utf-8"))
+        if not cfg_json.get("semantic_search", {}).get("zotero_db_path"):
+            print("Warning: auto config could not detect zotero.sqlite; pass --db-path for update-db.")
 
     try:
+        # Keep local DB lock check on real HOME for realism and stability.
         run_cli(
             project_root,
             runner,
-            ["doctor", "--check-local-db-lock", "--check-mineru-config", *common_args],
+            ["doctor", "--check-local-db-lock"],
+        )
+        run_cli(
+            project_root,
+            runner,
+            ["doctor", "--check-mineru-config", *common_args],
+            env_overrides=isolated_env or None,
         )
 
         if not ns.skip_update:
@@ -201,9 +237,9 @@ def main() -> int:
             if ns.db_path:
                 update_args.extend(["--db-path", ns.db_path])
             update_args.extend(common_args)
-            run_cli(project_root, runner, update_args)
+            run_cli(project_root, runner, update_args, env_overrides=isolated_env or None)
 
-        run_cli(project_root, runner, ["db-status", *common_args])
+        run_cli(project_root, runner, ["db-status", *common_args], env_overrides=isolated_env or None)
     except subprocess.CalledProcessError as exc:
         print(f"Command failed with exit code {exc.returncode}", file=sys.stderr)
         return exc.returncode
