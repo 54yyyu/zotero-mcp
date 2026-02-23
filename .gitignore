@@ -48,3 +48,6 @@ CLAUDE.md
 
 # Local planning docs (do not publish)
 docs/*plan*.md
+
+# Local test helper scripts (do not publish)
+scripts/test_*.sh
