@@ -164,7 +164,7 @@ class ChromaClient:
     """ChromaDB client for Zotero semantic search."""
 
     def __init__(self,
-                 collection_name: str = "zotero_library",
+                 collection_name: str = "zotero_library_chunks_v2",
                  persist_directory: str | None = None,
                  embedding_model: str = "default",
                  embedding_config: dict[str, Any] | None = None):
@@ -428,7 +428,7 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     """
     # Default configuration
     config = {
-        "collection_name": "zotero_library",
+        "collection_name": "zotero_library_chunks_v2",
         "embedding_model": "default",
         "embedding_config": {}
     }
