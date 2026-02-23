@@ -45,3 +45,6 @@ CLAUDE.md
 .claude/
 # Local test artifacts
 .tmp/
+
+# Local planning docs (do not publish)
+docs/*plan*.md
