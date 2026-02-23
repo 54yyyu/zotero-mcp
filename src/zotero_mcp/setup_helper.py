@@ -327,7 +327,11 @@ def setup_semantic_search(
 
     config["update_config"] = update_config
     config["extraction"] = {"pdf_max_pages": pdf_max_pages}
-    config["collection_name"] = existing_semantic_config.get("collection_name", "zotero_library_chunks_v2") if existing_semantic_config else "zotero_library_chunks_v2"
+    config["collection_name"] = (
+        existing_semantic_config.get("collection_name", "zotero_library")
+        if existing_semantic_config
+        else "zotero_library"
+    )
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
 
