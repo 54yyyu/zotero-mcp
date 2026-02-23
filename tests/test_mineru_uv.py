@@ -171,12 +171,10 @@ def run_cli(
     env["PYTHONPATH"] = str(project_root / "src")
     if env_overrides:
         env.update(env_overrides)
-    env_prefix = ["env", f"PYTHONPATH={env['PYTHONPATH']}"]
-    if env_overrides:
-        env_prefix.extend([f"{k}={v}" for k, v in env_overrides.items()])
-    printable = " ".join(shlex.quote(x) for x in (env_prefix + cmd))
-    print()
-    print(f"Running: {printable}")
+    mode_hint = " (isolated HOME)" if env_overrides else ""
+    printable = " ".join(shlex.quote(x) for x in cmd)
+    print("", flush=True)
+    print(f"Running{mode_hint}: {printable}", flush=True)
     subprocess.run(cmd, env=env, check=True)
 
 
@@ -198,23 +196,26 @@ def main() -> int:
     isolated_env: dict[str, str] = {}
     if not config_path and not ns.no_auto_config:
         config_path, isolated_env = build_auto_config(project_root, real_home)
-        print(f"Auto config: {config_path}")
+        print(f"Auto config: {config_path}", flush=True)
 
     common_args: list[str] = []
     # Auto-config simulates real default path under isolated HOME, so no --config-path needed.
     if config_path and not isolated_env:
         common_args.extend(["--config-path", str(config_path)])
 
-    print("== MinerU UV Test ==")
-    print(f"Project: {project_root}")
-    print(f"Env file: {ns.env_file}")
-    print(f"Detected token count: {detected_tokens}")
-    print(f"Limit: {ns.limit}")
-    print(f"Runner: {' '.join(runner)}")
+    print("== MinerU UV Test ==", flush=True)
+    print(f"Project: {project_root}", flush=True)
+    print(f"Env file: {ns.env_file}", flush=True)
+    print(f"Detected token count: {detected_tokens}", flush=True)
+    print(f"Limit: {ns.limit}", flush=True)
+    print(f"Runner: {' '.join(runner)}", flush=True)
     if isolated_env and not ns.db_path:
         cfg_json = json.loads(config_path.read_text(encoding="utf-8"))
         if not cfg_json.get("semantic_search", {}).get("zotero_db_path"):
-            print("Warning: auto config could not detect zotero.sqlite; pass --db-path for update-db.")
+            print(
+                "Warning: auto config could not detect zotero.sqlite; pass --db-path for update-db.",
+                flush=True,
+            )
 
     try:
         # Keep local DB lock check on real HOME for realism and stability.
@@ -244,8 +245,8 @@ def main() -> int:
         print(f"Command failed with exit code {exc.returncode}", file=sys.stderr)
         return exc.returncode
 
-    print()
-    print("Done.")
+    print("", flush=True)
+    print("Done.", flush=True)
     return 0
 
 
