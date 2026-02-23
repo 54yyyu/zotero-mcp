@@ -3,6 +3,18 @@
 
 This script replaces `scripts/test_mineru_uv.sh` with a Python equivalent.
 It is intended for manual local verification, not CI execution.
+
+Usage examples:
+  - Full flow (doctor + update-db --fulltext + db-status, default limit=2):
+      .venv/bin/python tests/test_mineru_uv.py
+  - With explicit zotero.sqlite path:
+      .venv/bin/python tests/test_mineru_uv.py --db-path "$HOME/Zotero/zotero.sqlite"
+  - Config checks only (skip update-db):
+      .venv/bin/python tests/test_mineru_uv.py --skip-update
+
+Behavior:
+  - Reads MinerU token(s) from project `.env`.
+  - Writes isolated runtime artifacts under `.tmp/mineru-home-<timestamp>/`.
 """
 
 from __future__ import annotations

@@ -353,20 +353,6 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - **Semantic search returns no results**: Ensure the database is initialized with `zotero-mcp update-db` and check status with `zotero-mcp db-status`
 - **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
 
-### Local MinerU Integration Test
-
-Use the local integration runner to validate semantic full-text pipeline behavior (reads MinerU token(s) from `.env`, writes test artifacts under `.tmp`):
-
-```bash
-# Full flow: doctor + update-db --fulltext + db-status (default limit=2)
-.venv/bin/python tests/test_mineru_uv.py
-
-# Optional: pass explicit zotero.sqlite if auto-detect is unavailable
-.venv/bin/python tests/test_mineru_uv.py --db-path "$HOME/Zotero/zotero.sqlite"
-
-# Optional: config-only checks without update-db
-.venv/bin/python tests/test_mineru_uv.py --skip-update
-```
 - **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
 
 ### Update Issues
