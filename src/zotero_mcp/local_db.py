@@ -143,30 +143,6 @@ class LocalZoteroReader:
             self.connection_mode = "immutable"
         return self._connection
 
-    def _force_reopen_immutable(self) -> sqlite3.Connection:
-        if self._connection is not None:
-            try:
-                self._connection.close()
-            except Exception:
-                pass
-        uri_immutable = f"file:{self.db_path}?mode=ro&immutable=1"
-        conn = sqlite3.connect(uri_immutable, uri=True, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=30000")
-        self._connection = conn
-        self.connection_mode = "immutable"
-        return conn
-
-    def _execute_with_lock_fallback(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
-        conn = self._get_connection()
-        try:
-            return conn.execute(query, params)
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower():
-                raise
-            conn = self._force_reopen_immutable()
-            return conn.execute(query, params)
-
     def _get_storage_dir(self) -> Path:
         """Return the Zotero storage directory path based on database location."""
         # Infer storage directory from database path (same parent directory)
@@ -478,7 +454,8 @@ class LocalZoteroReader:
         Returns:
             Number of items in the library.
         """
-        cursor = self._execute_with_lock_fallback(
+        conn = self._get_connection()
+        cursor = conn.execute(
             """
             SELECT COUNT(*)
             FROM items i
@@ -559,7 +536,8 @@ class LocalZoteroReader:
         if limit:
             query += f" LIMIT {limit}"
 
-        cursor = self._execute_with_lock_fallback(query)
+        conn = self._get_connection()
+        cursor = conn.execute(query)
         items = []
 
         for row in cursor:
