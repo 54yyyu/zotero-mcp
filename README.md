@@ -118,6 +118,12 @@ zotero-mcp setup --semantic-config-only
 - **Daily**: Update once per day automatically
 - **Every N days**: Set custom interval
 
+**Full-text Extraction Modes:**
+- **local** (default): Keeps original behavior and local PDF/HTML extraction flow
+- **mineru** (optional): Enables chunk-level indexing with MinerU-first PDF parsing and local fallback
+
+When `extraction_mode` is not configured, behavior remains backward-compatible with existing `mineru.enabled` settings.
+
 ### Using Semantic Search
 
 After setup, initialize your search database:
@@ -136,6 +142,9 @@ If you have embedding confilts when using `zotero-mcp update-db --fulltext`, use
 
 # Check database status
 zotero-mcp db-status
+
+# Run diagnostics for local DB lock status and semantic/mineru config
+zotero-mcp doctor --check-local-db-lock --check-mineru-config
 ```
 
 **Example Semantic Queries in your AI assistant:**
@@ -281,6 +290,7 @@ zotero-mcp update-db --force-rebuild       # Force complete database rebuild
 zotero-mcp update-db --fulltext --force-rebuild  # Rebuild with full-text extraction
 zotero-mcp update-db --fulltext --db-path "your_path_to/zotero.sqlite" # Customize your zotero database path
 zotero-mcp db-status                       # Show database status and info
+zotero-mcp doctor --check-local-db-lock --check-mineru-config  # Diagnose local DB and MinerU status
 
 # General
 zotero-mcp version                         # Show current version
@@ -342,6 +352,21 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - **Database update takes long**: By default, `update-db` is fast (metadata-only). For comprehensive indexing with full-text, use `--fulltext` flag. Use `--limit` parameter for testing: `zotero-mcp update-db --limit 100`
 - **Semantic search returns no results**: Ensure the database is initialized with `zotero-mcp update-db` and check status with `zotero-mcp db-status`
 - **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
+
+### Local MinerU Integration Test
+
+Use the local integration runner to validate semantic full-text pipeline behavior (reads MinerU token(s) from `.env`, writes test artifacts under `.tmp`):
+
+```bash
+# Full flow: doctor + update-db --fulltext + db-status (default limit=2)
+.venv/bin/python tests/test_mineru_uv.py
+
+# Optional: pass explicit zotero.sqlite if auto-detect is unavailable
+.venv/bin/python tests/test_mineru_uv.py --db-path "$HOME/Zotero/zotero.sqlite"
+
+# Optional: config-only checks without update-db
+.venv/bin/python tests/test_mineru_uv.py --skip-update
+```
 - **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
 
 ### Update Issues

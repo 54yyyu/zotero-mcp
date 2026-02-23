@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- Optional MinerU full-text extraction mode for semantic indexing (`extraction_mode=mineru`) with backward-compatible default local behavior.
+- Chunk-level indexing support with metadata pseudo-chunks and item-level score fusion in semantic search results.
+- New semantic diagnostics command: `zotero-mcp doctor --check-local-db-lock --check-mineru-config`.
+- Local integration test runner: `tests/test_mineru_uv.py` (reads MinerU token(s) from `.env`, writes under `.tmp`).
+
+### Changed
+- Semantic setup flow now includes extraction mode selection and MinerU token configuration.
+- Semantic status output includes extraction mode, MinerU status/token count, locator row count, and markdown store path.
+
 ## [0.1.3] - 2026-02-20
 
 ### Changed
