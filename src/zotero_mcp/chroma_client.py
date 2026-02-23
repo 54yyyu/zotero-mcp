@@ -430,8 +430,7 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     config = {
         "collection_name": "zotero_library",
         "embedding_model": "default",
-        "embedding_config": {},
-        "persist_directory": None,
+        "embedding_config": {}
     }
 
     # Load configuration from file if it exists
@@ -475,7 +474,6 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
 
     return ChromaClient(
         collection_name=config["collection_name"],
-        persist_directory=config.get("persist_directory"),
         embedding_model=config["embedding_model"],
         embedding_config=config["embedding_config"]
     )

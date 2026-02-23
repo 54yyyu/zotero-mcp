@@ -2643,19 +2643,6 @@ def semantic_search(
                 if matched_text:
                     snippet = matched_text[:300] + "..." if len(matched_text) > 300 else matched_text
                     output.append(f"**Matched Content:** {snippet}")
-                metadata = result.get("metadata", {}) or {}
-                locator = result.get("locator", {}) or {}
-                section_path = metadata.get("section_path") or locator.get("section_path")
-                page_start = metadata.get("page_start", locator.get("page_start"))
-                page_end = metadata.get("page_end", locator.get("page_end"))
-                char_start = metadata.get("char_start", locator.get("char_start"))
-                char_end = metadata.get("char_end", locator.get("char_end"))
-                if section_path:
-                    output.append(f"**Section:** {section_path}")
-                if page_start not in (None, "", -1):
-                    output.append(f"**Pages:** {page_start}-{page_end if page_end not in (None, '', -1) else page_start}")
-                if char_start is not None and char_end is not None:
-                    output.append(f"**Offsets:** {char_start}-{char_end}")
 
                 output.append("")  # Empty line between items
             else:
