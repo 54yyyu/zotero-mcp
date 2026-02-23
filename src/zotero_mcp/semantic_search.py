@@ -14,13 +14,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import logging
+import hashlib
 
 from pyzotero import zotero
+from dotenv import load_dotenv
 
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .utils import format_creators, is_local_mode
 from .local_db import LocalZoteroReader, get_local_zotero_reader
+from .markdown_processor import chunk_markdown
+from .md_store import MarkdownStore
+from .locator_store import LocatorStore
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +57,15 @@ class ZoteroSemanticSearch:
             config_path: Path to configuration file
             db_path: Optional path to Zotero database (overrides config file)
         """
+        load_dotenv()
         self.chroma_client = chroma_client or create_chroma_client(config_path)
         self.zotero_client = get_zotero_client()
         self.config_path = config_path
         self.db_path = db_path  # CLI override for Zotero database path
+        self.semantic_config = self._load_semantic_config()
+        self.mineru_config = self._resolve_mineru_config(self.semantic_config.get("mineru", {}))
+        self.md_store = MarkdownStore(self.semantic_config.get("md_store", {}).get("base_dir"))
+        self.locator_store = LocatorStore(self.semantic_config.get("locator_db", {}).get("path"))
 
         # Load update configuration
         self.update_config = self._load_update_config()
@@ -78,6 +88,35 @@ class ZoteroSemanticSearch:
                 logger.warning(f"Error loading update config: {e}")
 
         return config
+
+    def _load_semantic_config(self) -> dict[str, Any]:
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f)
+                return file_config.get("semantic_search", {}) or {}
+            except Exception as e:
+                logger.warning(f"Error loading semantic config: {e}")
+        return {}
+
+    def _resolve_mineru_config(self, mineru_cfg: dict[str, Any]) -> dict[str, Any]:
+        cfg = dict(mineru_cfg or {})
+        # Env fallback for local testing.
+        env_tokens = os.getenv("MINERU_TOKENS", "").strip()
+        single_token = os.getenv("MINERU_TOKEN", "").strip()
+        tokens = cfg.get("tokens") or []
+        if not tokens and env_tokens:
+            tokens = [t.strip() for t in env_tokens.split(",") if t.strip()]
+        if not tokens and single_token:
+            tokens = [single_token]
+        cfg["tokens"] = tokens
+        # Default to enabled when tokens are available unless explicitly disabled.
+        explicit_enabled = cfg.get("enabled", None)
+        if explicit_enabled is None:
+            cfg["enabled"] = bool(tokens)
+        else:
+            cfg["enabled"] = bool(explicit_enabled) and bool(tokens)
+        return cfg
 
     def _save_update_config(self) -> None:
         """Save update configuration to file."""
@@ -174,6 +213,7 @@ class ZoteroSemanticSearch:
             "publication": data.get("publicationTitle", ""),
             "url": data.get("url", ""),
             "doi": data.get("DOI", ""),
+            "attachment_key": data.get("attachmentKey", ""),
         }
         # If local fulltext field exists, add markers so we can filter later
         if data.get("fulltext"):
@@ -275,6 +315,7 @@ class ZoteroSemanticSearch:
             # Load per-run config, including extraction limits and db path if provided
             pdf_max_pages = None
             zotero_db_path = self.db_path  # CLI override takes precedence
+            mineru_cfg = self.mineru_config
             # If semantic_search config file exists, prefer its setting
             try:
                 if self.config_path and os.path.exists(self.config_path):
@@ -285,10 +326,16 @@ class ZoteroSemanticSearch:
                         # Use config db_path only if no CLI override
                         if not zotero_db_path:
                             zotero_db_path = semantic_cfg.get('zotero_db_path')
+                        if semantic_cfg.get("mineru"):
+                            mineru_cfg = self._resolve_mineru_config(semantic_cfg.get("mineru", {}))
             except Exception:
                 pass
 
-            with suppress_stdout(), LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
+            with suppress_stdout(), LocalZoteroReader(
+                db_path=zotero_db_path,
+                pdf_max_pages=pdf_max_pages,
+                mineru_config=mineru_cfg,
+            ) as reader:
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
@@ -386,9 +433,13 @@ class ZoteroSemanticSearch:
                             if not getattr(it, "fulltext", None):
                                 text = reader.extract_fulltext_for_item(it.item_id)
                                 if text:
-                                    # Support new (text, source) return format
-                                    if isinstance(text, tuple) and len(text) == 2:
-                                        it.fulltext, it.fulltext_source = text[0], text[1]
+                                    # Support tuple return format:
+                                    # (text, source) or (text, source, attachment_key)
+                                    if isinstance(text, tuple):
+                                        if len(text) >= 2:
+                                            it.fulltext, it.fulltext_source = text[0], text[1]
+                                        if len(text) >= 3:
+                                            setattr(it, "attachment_key", text[2])
                                     else:
                                         it.fulltext = text
                             extracted += 1
@@ -436,6 +487,7 @@ class ZoteroSemanticSearch:
                             # Include fulltext only when extracted
                             "fulltext": getattr(item, 'fulltext', None) or "" if extract_fulltext else "",
                             "fulltextSource": getattr(item, 'fulltext_source', None) or "" if extract_fulltext else "",
+                            "attachmentKey": getattr(item, 'attachment_key', None) or "",
                             "dateAdded": item.date_added,
                             "dateModified": item.date_modified,
                             "creators": self._parse_creators_string(item.creators) if item.creators else []
@@ -580,6 +632,7 @@ class ZoteroSemanticSearch:
             if force_full_rebuild:
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
+                self.locator_store.reset()
 
             # Get all items from either local DB or API
             all_items = self._get_items_from_source(
@@ -651,6 +704,7 @@ class ZoteroSemanticSearch:
         documents = []
         metadatas = []
         ids = []
+        locator_records: list[dict[str, Any]] = []
 
         for item in items:
             try:
@@ -659,15 +713,35 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
-                # Create document text and metadata
-                # Prefer fulltext if available, else fall back to structured fields
                 fulltext = item.get("data", {}).get("fulltext", "")
-                doc_text = fulltext if fulltext.strip() else self._create_document_text(item)
-                metadata = self._create_metadata(item)
+                if fulltext.strip():
+                    # Ensure we don't keep stale item-level records alongside chunk records.
+                    try:
+                        self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
+                    except Exception:
+                        try:
+                            self.chroma_client.delete_documents([item_key])
+                        except Exception:
+                            pass
+                    self.locator_store.delete_item(item_key)
 
+                    chunk_docs, chunk_meta, chunk_ids, chunk_locators = self._build_chunk_records(item)
+                    if not chunk_docs:
+                        stats["skipped"] += 1
+                        continue
+                    documents.extend(chunk_docs)
+                    metadatas.extend(chunk_meta)
+                    ids.extend(chunk_ids)
+                    locator_records.extend(chunk_locators)
+                    stats["processed"] += 1
+                    continue
+
+                # Fallback path for metadata-only indexing.
+                doc_text = self._create_document_text(item)
                 if not doc_text.strip():
                     stats["skipped"] += 1
                     continue
+                metadata = self._create_metadata(item)
 
                 documents.append(doc_text)
                 metadatas.append(metadata)
@@ -687,16 +761,89 @@ class ZoteroSemanticSearch:
                     existing_ids = self.chroma_client.get_existing_ids(ids)
 
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
-                for doc_id in ids:
-                    if doc_id in existing_ids:
-                        stats["updated"] += 1
-                    else:
-                        stats["added"] += 1
+                if locator_records:
+                    self.locator_store.upsert_many(locator_records)
+                    stats["added"] += len(documents)
+                else:
+                    for doc_id in ids:
+                        if doc_id in existing_ids:
+                            stats["updated"] += 1
+                        else:
+                            stats["added"] += 1
             except Exception as e:
                 logger.error(f"Error adding documents to ChromaDB: {e}")
                 stats["errors"] += len(documents)
 
         return stats
+
+    def _build_chunk_records(
+        self, item: dict[str, Any]
+    ) -> tuple[list[str], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+        data = item.get("data", {})
+        item_key = item.get("key", "")
+        attachment_key = data.get("attachmentKey", "default")
+        fulltext = data.get("fulltext", "") or ""
+        source = data.get("fulltextSource", "") or "pdf"
+        base_meta = self._create_metadata(item)
+
+        if not fulltext.strip():
+            return [], [], [], []
+
+        md_path = ""
+        md_hash = hashlib.sha256(fulltext.encode("utf-8", errors="ignore")).hexdigest()
+        if source == "mineru_md":
+            md_path, md_hash = self.md_store.write(item_key, attachment_key, fulltext)
+            chunks = chunk_markdown(fulltext)
+        else:
+            chunks = chunk_markdown(fulltext)
+            md_path, md_hash = self.md_store.write(item_key, attachment_key, fulltext)
+
+        if not chunks:
+            return [], [], [], []
+
+        docs: list[str] = []
+        metas: list[dict[str, Any]] = []
+        ids: list[str] = []
+        locators: list[dict[str, Any]] = []
+        for idx, chunk in enumerate(chunks):
+            chunk_id = f"{item_key}:{attachment_key}:{idx}"
+            chunk_text = chunk.text.strip()
+            if not chunk_text:
+                continue
+            preview = chunk_text[:500]
+            meta = dict(base_meta)
+            meta.update(
+                {
+                    "chunk_index": idx,
+                    "attachment_key": attachment_key,
+                    "source_type": source,
+                    "section_path": chunk.section_path,
+                    "char_start": chunk.char_start,
+                    "char_end": chunk.char_end,
+                    "page_start": chunk.page_start or -1,
+                    "page_end": chunk.page_end or -1,
+                    "md_hash": md_hash,
+                }
+            )
+            docs.append(preview)
+            metas.append(meta)
+            ids.append(chunk_id)
+            locators.append(
+                {
+                    "chunk_id": chunk_id,
+                    "item_key": item_key,
+                    "attachment_key": attachment_key,
+                    "md_store_path": md_path,
+                    "char_start": int(chunk.char_start),
+                    "char_end": int(chunk.char_end),
+                    "page_start": chunk.page_start,
+                    "page_end": chunk.page_end,
+                    "section_path": chunk.section_path,
+                    "md_hash": md_hash,
+                    "pdf_hash": "",
+                }
+            )
+        return docs, metas, ids, locators
 
     def search(self,
                query: str,
@@ -757,14 +904,30 @@ class ZoteroSemanticSearch:
 
         for i, item_key in enumerate(ids):
             try:
+                metadata = metadatas[i] if i < len(metadatas) else {}
+                raw_id = item_key
+                if ":" in item_key:
+                    item_key = metadata.get("item_key") or item_key.split(":", 1)[0]
                 # Get full item data from Zotero
                 zotero_item = self.zotero_client.item(item_key)
+                matched_text = documents[i] if i < len(documents) else ""
+                locator = self.locator_store.get(raw_id)
+                if locator:
+                    try:
+                        md_text = self.md_store.read(locator["md_store_path"])
+                        cs = int(locator["char_start"])
+                        ce = int(locator["char_end"])
+                        matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
+                    except Exception:
+                        pass
 
                 enriched_result = {
                     "item_key": item_key,
+                    "chunk_id": raw_id,
                     "similarity_score": 1 - distances[i] if i < len(distances) else 0,
-                    "matched_text": documents[i] if i < len(documents) else "",
-                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                    "matched_text": matched_text,
+                    "metadata": metadata,
+                    "locator": locator or {},
                     "zotero_item": zotero_item,
                     "query": query
                 }
@@ -794,12 +957,20 @@ class ZoteroSemanticSearch:
             "update_config": self.update_config,
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
+            "locator_count": self.locator_store.count(),
+            "md_store_dir": str(self.md_store.base_dir),
+            "mineru_enabled": bool(self.mineru_config.get("enabled", False)),
+            "mineru_token_count": len(self.mineru_config.get("tokens", [])),
         }
 
     def delete_item(self, item_key: str) -> bool:
         """Delete an item from the semantic search database."""
         try:
-            self.chroma_client.delete_documents([item_key])
+            try:
+                self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
+            except Exception:
+                self.chroma_client.delete_documents([item_key])
+            self.locator_store.delete_item(item_key)
             return True
         except Exception as e:
             logger.error(f"Error deleting item {item_key}: {e}")
