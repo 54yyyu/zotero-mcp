@@ -95,6 +95,35 @@ zotero-mcp update
 
 Zotero MCP now includes powerful AI-powered semantic search capabilities that let you find research based on concepts and meaning, not just keywords.
 
+### What's Added In This Branch (vs upstream `/Users/liam/projects/zotero-mcp`)
+
+This repository currently includes additional semantic indexing capabilities beyond the upstream baseline:
+
+- **Configurable extraction mode** for full-text vectorization:
+  - `semantic_search.extraction_mode = "local" | "mineru"` (default `local`)
+- **MinerU-aware full-text pipeline**:
+  - In `mineru` mode, PDF parsing prefers cached markdown in `~/.config/zotero-mcp/md_store`
+  - Falls back to MinerU API parsing when cache is missing
+  - Falls back to local PDF extraction when MinerU is unavailable
+- **Chunk-level vectorization with locator mapping**:
+  - Full text is chunked and indexed with chunk metadata
+  - Locator DB maps chunk IDs to markdown offsets for late materialization
+- **Dual-index retrieval mode (mineru mode)**:
+  - Adds a metadata pseudo-chunk (`{item_key}:meta:0`) in addition to content chunks
+  - Search results are deduplicated at item level with content-first score fusion
+- **Improved UX during indexing**:
+  - Clear extraction progress output (`processed/total`) during `update-db --fulltext`
+- **Additional diagnostics and status fields**:
+  - `db-status`, `setup-info`, and `doctor` report:
+    - `extraction_mode`
+    - `meta_chunk_enabled`
+    - MinerU enablement/token count
+    - locator row count and markdown store path
+
+For implementation details and rollout notes, see:
+- `docs/mineru-vectorization-plan.md`
+- `CHANGELOG.md`
+
 ### Setup Semantic Search
 
 During setup or separately, configure semantic search:
@@ -254,6 +283,15 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
+- `MINERU_TOKEN`: Single MinerU API token (optional)
+- `MINERU_TOKENS`: Comma-separated MinerU API tokens (optional; overrides single token)
+
+**Branch-specific semantic config keys (`~/.config/zotero-mcp/config.json`):**
+- `semantic_search.extraction_mode`: `local` or `mineru`
+- `semantic_search.mineru.enabled`: enable/disable MinerU path
+- `semantic_search.mineru.tokens`: token list (can be overridden by env vars)
+- `semantic_search.md_store.base_dir`: markdown cache directory
+- `semantic_search.locator_db.path`: SQLite path for chunk locator mapping
 
 ### Command-Line Options
 
