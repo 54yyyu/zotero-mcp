@@ -43,11 +43,3 @@ uv.lock
 # Local project docs
 CLAUDE.md
 .claude/
-# Local test artifacts
-.tmp/
-
-# Local planning docs (do not publish)
-docs/*plan*.md
-
-# Local test helper scripts (do not publish)
-scripts/test_*.sh
