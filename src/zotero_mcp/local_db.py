@@ -338,15 +338,20 @@ class LocalZoteroReader:
         source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
         text = ""
         if source == "pdf":
-            if item_key and target_key:
+            mineru_enabled = bool(self.mineru_config and self.mineru_config.get("enabled"))
+            if mineru_enabled and item_key and target_key:
                 cached = self._read_cached_mineru_markdown(item_key, target_key)
                 if cached.strip():
                     return (cached, "mineru_md", target_key)
-            data_id = hashlib.sha1(f"{item_id}:{target}".encode("utf-8")).hexdigest()[:16]
-            mineru_text = self._extract_text_from_pdf_via_mineru(target, data_id=data_id)
-            if mineru_text.strip():
-                text = mineru_text
-                source = "mineru_md"
+            if mineru_enabled:
+                data_id = hashlib.sha1(f"{item_id}:{target}".encode("utf-8")).hexdigest()[:16]
+                mineru_text = self._extract_text_from_pdf_via_mineru(target, data_id=data_id)
+                if mineru_text.strip():
+                    text = mineru_text
+                    source = "mineru_md"
+                else:
+                    text = self._extract_text_from_pdf_local(target)
+                    source = "pdf"
             else:
                 text = self._extract_text_from_pdf_local(target)
                 source = "pdf"
@@ -426,9 +431,7 @@ class LocalZoteroReader:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_feed_items(
-        self, library_id: int, limit: int = 20
-    ) -> list[dict[str, Any]]:
+    def get_feed_items(self, library_id: int, limit: int = 20) -> list[dict[str, Any]]:
         """Get items from a specific RSS feed by its libraryID."""
         conn = self._get_connection()
         rows = conn.execute(
