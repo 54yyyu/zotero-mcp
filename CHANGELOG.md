@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- Semantic full-text extraction mode switch with `semantic_search.extraction_mode` (`local`/`mineru`).
+- MinerU-enhanced PDF ingestion path with md_store cache preference and token compatibility.
+- Chunk-level semantic indexing plus locator DB mapping and markdown late-materialization store.
+- Metadata pseudo-chunk indexing (`{item_key}:meta:0`) and item-level score fusion.
+- Progress output improvements for long-running `update-db --fulltext`.
+
+### Changed
+- Setup flow supports extraction mode selection while keeping backward compatibility.
+- `db-status`, `setup-info`, and `doctor` include extraction/mineru/locator observability fields.
+- Chroma client config respects configured persist directory.
+
 ## [0.1.3] - 2026-02-20
 
 ### Changed
