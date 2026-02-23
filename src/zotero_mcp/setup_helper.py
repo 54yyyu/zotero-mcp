@@ -141,6 +141,7 @@ def setup_semantic_search(
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
         db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
+        extraction_mode = existing_semantic_config.get("extraction_mode", "local")
         mineru_cfg = existing_semantic_config.get("mineru", {})
         mineru_enabled = mineru_cfg.get("enabled", False)
         mineru_token_count = len(mineru_cfg.get("tokens", []) or [])
@@ -149,6 +150,7 @@ def setup_semantic_search(
         print(f"  - Embedding model name: {name}")
         print(f"  - Update frequency: {update_freq}")
         print(f"  - Zotero database path: {db_path}")
+        print(f"  - Extraction mode: {extraction_mode}")
         print(f"  - MinerU enabled: {mineru_enabled} (tokens: {mineru_token_count})")
         print("You can keep it or change it.")
         print("If you change to a new configuration, a database rebuild is advised.")
@@ -329,6 +331,26 @@ def setup_semantic_search(
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
 
+    # Select extraction mode while preserving original default behavior.
+    existing_mode = existing_semantic_config.get("extraction_mode") if existing_semantic_config else None
+    if existing_mode not in ["local", "mineru"]:
+        existing_mode = "mineru" if existing_semantic_config and (existing_semantic_config.get("mineru", {}) or {}).get("enabled", False) else "local"
+
+    print("\n=== Fulltext Extraction Mode ===")
+    print("Choose how PDF fulltext is extracted during vectorization:")
+    print("1. Local parser (default/original behavior)")
+    print("2. MinerU mode (prefer md_store cache and MinerU API)")
+    default_mode_choice = "2" if existing_mode == "mineru" else "1"
+    while True:
+        mode_choice = input(f"Choose extraction mode [default {default_mode_choice}]: ").strip()
+        if mode_choice == "":
+            mode_choice = default_mode_choice
+        if mode_choice in ["1", "2"]:
+            break
+        print("Please enter 1 or 2")
+    extraction_mode = "mineru" if mode_choice == "2" else "local"
+    config["extraction_mode"] = extraction_mode
+
     # MinerU configuration
     print("\n=== MinerU PDF Parsing Configuration ===")
     existing_mineru = existing_semantic_config.get("mineru", {}) if existing_semantic_config else {}
@@ -338,6 +360,10 @@ def setup_semantic_search(
 
     if cli_enable_mineru or cli_tokens:
         mineru_enabled = True
+        config["extraction_mode"] = "mineru"
+    elif extraction_mode == "local":
+        # Keep mineru config for compatibility, but disable interactive prompt in local mode.
+        mineru_enabled = bool(existing_mineru.get("enabled", False) and (existing_mineru.get("tokens") or []))
     else:
         default_enabled = bool(existing_mineru.get("enabled", False))
         prompt = f"Enable MinerU (upload-batch) for PDF parsing? ({'Y/n' if default_enabled else 'y/N'}): "
@@ -359,7 +385,7 @@ def setup_semantic_search(
         "token_cooldown_seconds": int(existing_mineru.get("token_cooldown_seconds", 120)),
     }
 
-    if mineru_enabled:
+    if mineru_enabled and config["extraction_mode"] == "mineru":
         if cli_tokens:
             tokens = [t.strip() for t in cli_tokens if t and t.strip()]
         else:
@@ -388,6 +414,7 @@ def setup_semantic_search(
         mineru_cfg["enabled"] = mineru_enabled and bool(tokens if 'tokens' in locals() else [])
         mineru_cfg["tokens"] = tokens if 'tokens' in locals() else []
     else:
+        mineru_cfg["enabled"] = bool(existing_mineru.get("enabled", False) and (existing_mineru.get("tokens") or []))
         mineru_cfg["tokens"] = existing_mineru.get("tokens", [])
 
     config["mineru"] = mineru_cfg
