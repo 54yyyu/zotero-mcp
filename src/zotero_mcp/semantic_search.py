@@ -353,7 +353,7 @@ class ZoteroSemanticSearch:
                 db_path=zotero_db_path,
                 pdf_max_pages=pdf_max_pages,
                 mineru_config=mineru_cfg,
-                md_store_base_dir=str(self.md_store.base_dir),
+                md_store_base_dir=str(self.md_store.base_dir) if self.extraction_mode == "mineru" else None,
             ) as reader:
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
@@ -745,26 +745,13 @@ class ZoteroSemanticSearch:
                     continue
 
                 fulltext = item.get("data", {}).get("fulltext", "")
-                if dual_index_mode:
+                if dual_index_mode and fulltext.strip():
                     # In dual-index mode, each update rewrites all chunks for the item.
                     try:
                         self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
                     except Exception:
                         pass
                     self.locator_store.delete_item(item_key)
-
-                if fulltext.strip():
-                    if not dual_index_mode:
-                        # Ensure we don't keep stale item-level records alongside chunk records.
-                        try:
-                            self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
-                        except Exception:
-                            try:
-                                self.chroma_client.delete_documents([item_key])
-                            except Exception:
-                                pass
-                        self.locator_store.delete_item(item_key)
-
                     chunk_docs, chunk_meta, chunk_ids, chunk_locators = self._build_chunk_records(item)
                     meta_doc = self._build_metadata_chunk_record(item) if dual_index_mode else None
                     if not chunk_docs and not meta_doc:
@@ -782,8 +769,8 @@ class ZoteroSemanticSearch:
                     stats["processed"] += 1
                     continue
 
-                # Fallback path for metadata-only indexing.
-                doc_text = self._create_document_text(item)
+                # Preserve original item-level indexing behavior outside dual-index mode.
+                doc_text = fulltext if fulltext.strip() else self._create_document_text(item)
                 if not doc_text.strip():
                     stats["skipped"] += 1
                     continue
@@ -810,12 +797,12 @@ class ZoteroSemanticSearch:
         # Add documents to ChromaDB if any
         if documents:
             try:
-                existing_ids = set()
-                if not force_rebuild:
+                existing_ids: set[str] = set()
+                if not force_rebuild and not dual_index_mode:
                     existing_ids = self.chroma_client.get_existing_ids(ids)
 
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
-                if locator_records:
+                if dual_index_mode:
                     self.locator_store.upsert_many(locator_records)
                     stats["added"] += len(documents)
                 else:
