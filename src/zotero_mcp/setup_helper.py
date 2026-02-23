@@ -127,7 +127,11 @@ def find_claude_config():
     print(f"Claude Desktop config not found. Using default path: {default_path}")
     return default_path
 
-def setup_semantic_search(existing_semantic_config: dict = None, semantic_config_only_arg: bool = False) -> dict:
+def setup_semantic_search(
+    existing_semantic_config: dict = None,
+    semantic_config_only_arg: bool = False,
+    cli_args=None,
+) -> dict:
     """Interactive setup for semantic search configuration."""
     print("\n=== Semantic Search Configuration ===")
 
@@ -137,11 +141,15 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
         db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
+        mineru_cfg = existing_semantic_config.get("mineru", {})
+        mineru_enabled = mineru_cfg.get("enabled", False)
+        mineru_token_count = len(mineru_cfg.get("tokens", []) or [])
         print("Found existing semantic search configuration:")
         print(f"  - Embedding model: {model}")
         print(f"  - Embedding model name: {name}")
         print(f"  - Update frequency: {update_freq}")
         print(f"  - Zotero database path: {db_path}")
+        print(f"  - MinerU enabled: {mineru_enabled} (tokens: {mineru_token_count})")
         print("You can keep it or change it.")
         print("If you change to a new configuration, a database rebuild is advised.")
         print("Would you like to keep your existing configuration? (y/n): ", end="")
@@ -317,8 +325,72 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
 
     config["update_config"] = update_config
     config["extraction"] = {"pdf_max_pages": pdf_max_pages}
+    config["collection_name"] = existing_semantic_config.get("collection_name", "zotero_library_chunks_v2") if existing_semantic_config else "zotero_library_chunks_v2"
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
+
+    # MinerU configuration
+    print("\n=== MinerU PDF Parsing Configuration ===")
+    existing_mineru = existing_semantic_config.get("mineru", {}) if existing_semantic_config else {}
+    cli_enable_mineru = bool(getattr(cli_args, "mineru_enabled", False)) if cli_args is not None else False
+    cli_tokens = list(getattr(cli_args, "mineru_token", []) or []) if cli_args is not None else []
+    cli_model_version = getattr(cli_args, "mineru_model_version", "vlm") if cli_args is not None else "vlm"
+
+    if cli_enable_mineru or cli_tokens:
+        mineru_enabled = True
+    else:
+        default_enabled = bool(existing_mineru.get("enabled", False))
+        prompt = f"Enable MinerU (upload-batch) for PDF parsing? ({'Y/n' if default_enabled else 'y/N'}): "
+        resp = input(prompt).strip().lower()
+        mineru_enabled = default_enabled if resp == "" else resp in ["y", "yes"]
+
+    mineru_cfg = {
+        "enabled": mineru_enabled,
+        "mode": "upload_batch",
+        "batch_file_url": existing_mineru.get("batch_file_url", "https://mineru.net/api/v4/file-urls/batch"),
+        "batch_result_url_template": existing_mineru.get(
+            "batch_result_url_template",
+            "https://mineru.net/api/v4/extract-results/batch/{batch_id}",
+        ),
+        "model_version": existing_mineru.get("model_version", cli_model_version or "vlm"),
+        "poll_interval_seconds": int(existing_mineru.get("poll_interval_seconds", 3)),
+        "poll_timeout_seconds": int(existing_mineru.get("poll_timeout_seconds", 300)),
+        "max_retries": int(existing_mineru.get("max_retries", 2)),
+        "token_cooldown_seconds": int(existing_mineru.get("token_cooldown_seconds", 120)),
+    }
+
+    if mineru_enabled:
+        if cli_tokens:
+            tokens = [t.strip() for t in cli_tokens if t and t.strip()]
+        else:
+            existing_tokens = existing_mineru.get("tokens", []) if existing_mineru else []
+            print("Configure one or more MinerU API tokens (for auto-rotation).")
+            if existing_tokens:
+                masked = [f"{t[:4]}***" if len(t) > 4 else "***" for t in existing_tokens]
+                print(f"Existing tokens: {', '.join(masked)}")
+                keep = input("Keep existing MinerU tokens? (Y/n): ").strip().lower()
+                if keep in ["", "y", "yes"]:
+                    tokens = existing_tokens
+                else:
+                    tokens = []
+            else:
+                tokens = []
+            if not tokens:
+                while True:
+                    token = getpass.getpass("Enter MinerU token (leave empty to stop): ").strip()
+                    if not token:
+                        break
+                    tokens.append(token)
+                if not tokens:
+                    print("No MinerU token entered. MinerU will be disabled.")
+                    mineru_enabled = False
+
+        mineru_cfg["enabled"] = mineru_enabled and bool(tokens if 'tokens' in locals() else [])
+        mineru_cfg["tokens"] = tokens if 'tokens' in locals() else []
+    else:
+        mineru_cfg["tokens"] = existing_mineru.get("tokens", [])
+
+    config["mineru"] = mineru_cfg
 
     return config
 
@@ -502,6 +574,12 @@ def main(cli_args=None):
                         help="Skip semantic search configuration")
     parser.add_argument("--semantic-config-only", action="store_true",
                         help="Only configure semantic search, skip Zotero setup")
+    parser.add_argument("--mineru-enabled", action="store_true",
+                        help="Enable MinerU PDF parsing in semantic search configuration")
+    parser.add_argument("--mineru-token", action="append",
+                        help="MinerU API token. Pass multiple times to configure multiple tokens.")
+    parser.add_argument("--mineru-model-version", default="vlm",
+                        help="MinerU model version (default: vlm)")
 
     # If this is being called from CLI with existing args
     if cli_args is not None and hasattr(cli_args, 'no_local'):
@@ -521,7 +599,7 @@ def main(cli_args=None):
     # Handle semantic search only configuration
     if args.semantic_config_only:
         print("Configuring semantic search only...")
-        new_semantic_config = setup_semantic_search(existing_semantic_config)
+        new_semantic_config = setup_semantic_search(existing_semantic_config, cli_args=args)
         semantic_config_changed = existing_semantic_config != new_semantic_config
         # only save if semantic config changed
         if semantic_config_changed:
@@ -574,7 +652,7 @@ def main(cli_args=None):
             print("\nWould you like to configure semantic search? (y/n): ", end="")
         # Either way:
         if input().strip().lower() in ['y', 'yes']:
-            new_semantic_config = setup_semantic_search(existing_semantic_config)
+            new_semantic_config = setup_semantic_search(existing_semantic_config, cli_args=args)
             if existing_semantic_config != new_semantic_config:
                 semantic_config_changed = True
                 existing_semantic_config = new_semantic_config  # Update the config to use
