@@ -9,6 +9,7 @@ import os
 import sqlite3
 import platform
 import logging
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ class ZoteroItem:
     creators: str | None = None
     fulltext: str | None = None
     fulltext_source: str | None = None  # 'pdf' or 'html'
+    attachment_key: str | None = None
     notes: str | None = None
     extra: str | None = None
     date_added: str | None = None
@@ -74,7 +76,12 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
 
-    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None):
+    def __init__(
+        self,
+        db_path: str | None = None,
+        pdf_max_pages: int | None = None,
+        mineru_config: dict[str, Any] | None = None,
+    ):
         """
         Initialize the local database reader.
 
@@ -84,6 +91,8 @@ class LocalZoteroReader:
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
+        self.mineru_config = mineru_config or {}
+        self.connection_mode: str = "uninitialized"
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -124,14 +133,36 @@ class LocalZoteroReader:
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection, creating if needed."""
         if self._connection is None:
-            # Use immutable=1 to bypass locking entirely. Zotero uses rollback
-            # journal mode and holds a write lock while running, which blocks
-            # even read-only connections. immutable=1 skips all lock checks —
-            # safe here since we only read and tolerate slightly stale data.
+            # Keep original behavior: immutable read-only avoids lock waits.
             uri = f"file:{self.db_path}?immutable=1"
             self._connection = sqlite3.connect(uri, uri=True)
             self._connection.row_factory = sqlite3.Row
+            self.connection_mode = "immutable"
         return self._connection
+
+    def _force_reopen_immutable(self) -> sqlite3.Connection:
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except Exception:
+                pass
+        uri_immutable = f"file:{self.db_path}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri_immutable, uri=True, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        self._connection = conn
+        self.connection_mode = "immutable"
+        return conn
+
+    def _execute_with_lock_fallback(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
+        conn = self._get_connection()
+        try:
+            return conn.execute(query, params)
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            conn = self._force_reopen_immutable()
+            return conn.execute(query, params)
 
     def _get_storage_dir(self) -> Path:
         """Return the Zotero storage directory path based on database location."""
@@ -170,8 +201,8 @@ class LocalZoteroReader:
         # External links not supported in first pass
         return None
 
-    def _extract_text_from_pdf(self, file_path: Path) -> str:
-        """Extract text from a PDF using pdfminer with a page cap to avoid stalls."""
+    def _extract_text_from_pdf_local(self, file_path: Path) -> str:
+        """Extract text from a PDF locally using pdfminer with a page cap to avoid stalls."""
         try:
             from pdfminer.high_level import extract_text  # type: ignore
             # Determine page cap: config value > env > default (10)
@@ -185,6 +216,36 @@ class LocalZoteroReader:
                     maxpages = 10
             text = extract_text(str(file_path), maxpages=maxpages)
             return text or ""
+        except Exception:
+            return ""
+
+    def _extract_text_from_pdf_via_mineru(self, file_path: Path, data_id: str) -> str:
+        """Try MinerU upload-batch parsing and return markdown text."""
+        if not self.mineru_config or not self.mineru_config.get("enabled"):
+            return ""
+        tokens = self.mineru_config.get("tokens") or []
+        if not tokens:
+            return ""
+        try:
+            from .mineru_client import MinerUConfig, MinerUBatchClient
+
+            cfg = MinerUConfig(
+                tokens=tokens,
+                model_version=self.mineru_config.get("model_version", "vlm"),
+                batch_file_url=self.mineru_config.get(
+                    "batch_file_url", "https://mineru.net/api/v4/file-urls/batch"
+                ),
+                batch_result_url_template=self.mineru_config.get(
+                    "batch_result_url_template",
+                    "https://mineru.net/api/v4/extract-results/batch/{batch_id}",
+                ),
+                poll_interval_seconds=int(self.mineru_config.get("poll_interval_seconds", 3)),
+                poll_timeout_seconds=int(self.mineru_config.get("poll_timeout_seconds", 300)),
+                max_retries=int(self.mineru_config.get("max_retries", 2)),
+                token_cooldown_seconds=int(self.mineru_config.get("token_cooldown_seconds", 120)),
+            )
+            client = MinerUBatchClient(cfg)
+            return client.parse_pdf_to_markdown(file_path=file_path, data_id=data_id)
         except Exception:
             return ""
 
@@ -210,7 +271,7 @@ class LocalZoteroReader:
         """Extract text content from a file based on extension, with fallbacks."""
         suffix = file_path.suffix.lower()
         if suffix == ".pdf":
-            return self._extract_text_from_pdf(file_path)
+            return self._extract_text_from_pdf_local(file_path)
         if suffix in {".html", ".htm"}:
             return self._extract_text_from_html(file_path)
         # Generic best-effort
@@ -226,32 +287,51 @@ class LocalZoteroReader:
 
         return meta
 
-    def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
+    def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference: use PDF when available; fall back to HTML when no PDF exists.
         Returns (text, source) where source is 'pdf' or 'html'.
         """
         best_pdf = None
+        best_pdf_key = None
         best_html = None
+        best_html_key = None
         for key, path, ctype in self._iter_parent_attachments(item_id):
             resolved = self._resolve_attachment_path(key, path or "")
             if not resolved or not resolved.exists():
                 continue
             if ctype == "application/pdf" and best_pdf is None:
                 best_pdf = resolved
+                best_pdf_key = key
             elif (ctype or "").startswith("text/html") and best_html is None:
                 best_html = resolved
+                best_html_key = key
         # Prefer PDF, otherwise fall back to HTML
         target = best_pdf or best_html
+        target_key = best_pdf_key or best_html_key or ""
         if not target:
             return None
-        text = self._extract_text_from_file(target)
+        source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
+        text = ""
+        if source == "pdf":
+            data_id = hashlib.sha1(f"{item_id}:{target}".encode("utf-8")).hexdigest()[:16]
+            mineru_text = self._extract_text_from_pdf_via_mineru(target, data_id=data_id)
+            if mineru_text.strip():
+                text = mineru_text
+                source = "mineru_md"
+            else:
+                text = self._extract_text_from_pdf_local(target)
+                source = "pdf"
+        else:
+            text = self._extract_text_from_file(target)
         if not text:
             return None
-        # Truncate to keep embeddings reasonable
-        source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
-        return (text[:10000], source)
+        # Don't truncate MinerU results - they return high-quality full Markdown
+        if source == "mineru_md":
+            return (text, source, target_key)
+        # Truncate other sources to keep embeddings reasonable
+        return (text[:10000], source, target_key)
 
     def close(self):
         """Close database connection."""
@@ -368,8 +448,7 @@ class LocalZoteroReader:
         Returns:
             Number of items in the library.
         """
-        conn = self._get_connection()
-        cursor = conn.execute(
+        cursor = self._execute_with_lock_fallback(
             """
             SELECT COUNT(*)
             FROM items i
@@ -389,8 +468,6 @@ class LocalZoteroReader:
         Returns:
             List of ZoteroItem objects with text content.
         """
-        conn = self._get_connection()
-
         # Query to get items with their text content (simplified for now)
         query = """
         SELECT
@@ -452,7 +529,7 @@ class LocalZoteroReader:
         if limit:
             query += f" LIMIT {limit}"
 
-        cursor = conn.execute(query)
+        cursor = self._execute_with_lock_fallback(query)
         items = []
 
         for row in cursor:
@@ -481,7 +558,7 @@ class LocalZoteroReader:
         return self._get_fulltext_meta_for_item(item_id)
 
     # Public helper to extract fulltext on demand for a specific item
-    def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
+    def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str, str] | None:
         return self._extract_fulltext_for_item(item_id)
 
     def get_item_by_key(self, key: str) -> ZoteroItem | None:
