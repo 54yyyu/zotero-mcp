@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
+from .md_store import MarkdownStore
 from .utils import is_local_mode
 
 
@@ -81,6 +82,7 @@ class LocalZoteroReader:
         db_path: str | None = None,
         pdf_max_pages: int | None = None,
         mineru_config: dict[str, Any] | None = None,
+        md_store_base_dir: str | None = None,
     ):
         """
         Initialize the local database reader.
@@ -92,6 +94,7 @@ class LocalZoteroReader:
         self._connection: sqlite3.Connection | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
         self.mineru_config = mineru_config or {}
+        self.md_store = MarkdownStore(md_store_base_dir) if md_store_base_dir else None
         self.connection_mode: str = "uninitialized"
         # Reduce noise from pdfminer warnings
         try:
@@ -249,6 +252,26 @@ class LocalZoteroReader:
         except Exception:
             return ""
 
+    def _read_cached_mineru_markdown(self, item_key: str, attachment_key: str) -> str:
+        """Read previously parsed MinerU markdown from md_store when available."""
+        if not self.md_store:
+            return ""
+        target_dir = self.md_store.base_dir / item_key / attachment_key
+        if not target_dir.exists():
+            return ""
+        candidates = list(target_dir.glob("*.md")) + list(target_dir.glob("*.md.zst"))
+        if not candidates:
+            return ""
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for candidate in candidates:
+            try:
+                text = self.md_store.read(str(candidate))
+                if text.strip():
+                    return text
+            except Exception:
+                continue
+        return ""
+
     def _extract_text_from_html(self, file_path: Path) -> str:
         """Extract text from HTML using markitdown if available; fallback to stripping tags."""
         # Try markitdown first
@@ -287,7 +310,7 @@ class LocalZoteroReader:
 
         return meta
 
-    def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str, str] | None:
+    def _extract_fulltext_for_item(self, item_id: int, item_key: str | None = None) -> tuple[str, str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference: use PDF when available; fall back to HTML when no PDF exists.
@@ -315,6 +338,10 @@ class LocalZoteroReader:
         source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
         text = ""
         if source == "pdf":
+            if item_key and target_key:
+                cached = self._read_cached_mineru_markdown(item_key, target_key)
+                if cached.strip():
+                    return (cached, "mineru_md", target_key)
             data_id = hashlib.sha1(f"{item_id}:{target}".encode("utf-8")).hexdigest()[:16]
             mineru_text = self._extract_text_from_pdf_via_mineru(target, data_id=data_id)
             if mineru_text.strip():
@@ -542,7 +569,7 @@ class LocalZoteroReader:
                 title=row['title'],
                 abstract=row['abstract'],
                 creators=row['creators'],
-                fulltext=(res := (self._extract_fulltext_for_item(row['itemID']) if include_fulltext else None)) and res[0],
+                fulltext=(res := (self._extract_fulltext_for_item(row['itemID'], row['key']) if include_fulltext else None)) and res[0],
                 fulltext_source=res[1] if include_fulltext and res else None,
                 notes=row['notes'],
                 extra=row['extra'],
@@ -558,8 +585,8 @@ class LocalZoteroReader:
         return self._get_fulltext_meta_for_item(item_id)
 
     # Public helper to extract fulltext on demand for a specific item
-    def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str, str] | None:
-        return self._extract_fulltext_for_item(item_id)
+    def extract_fulltext_for_item(self, item_id: int, item_key: str | None = None) -> tuple[str, str, str] | None:
+        return self._extract_fulltext_for_item(item_id, item_key=item_key)
 
     def get_item_by_key(self, key: str) -> ZoteroItem | None:
         """

@@ -11,6 +11,7 @@ import os
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import logging
@@ -63,7 +64,9 @@ class ZoteroSemanticSearch:
         self.config_path = config_path
         self.db_path = db_path  # CLI override for Zotero database path
         self.semantic_config = self._load_semantic_config()
+        self.extraction_mode = self._resolve_extraction_mode(self.semantic_config)
         self.mineru_config = self._resolve_mineru_config(self.semantic_config.get("mineru", {}))
+        self.meta_chunk_enabled = self.extraction_mode == "mineru"
         self.md_store = MarkdownStore(self.semantic_config.get("md_store", {}).get("base_dir"))
         self.locator_store = LocatorStore(self.semantic_config.get("locator_db", {}).get("path"))
 
@@ -98,6 +101,16 @@ class ZoteroSemanticSearch:
             except Exception as e:
                 logger.warning(f"Error loading semantic config: {e}")
         return {}
+
+    def _resolve_extraction_mode(self, semantic_cfg: dict[str, Any]) -> str:
+        mode = str((semantic_cfg or {}).get("extraction_mode", "")).strip().lower()
+        if mode in {"local", "mineru"}:
+            return mode
+        # Backward compatibility for old configs.
+        mineru_cfg = (semantic_cfg or {}).get("mineru", {}) or {}
+        if mineru_cfg.get("enabled"):
+            return "mineru"
+        return "local"
 
     def _resolve_mineru_config(self, mineru_cfg: dict[str, Any]) -> dict[str, Any]:
         cfg = dict(mineru_cfg or {})
@@ -315,7 +328,9 @@ class ZoteroSemanticSearch:
             # Load per-run config, including extraction limits and db path if provided
             pdf_max_pages = None
             zotero_db_path = self.db_path  # CLI override takes precedence
-            mineru_cfg = self.mineru_config
+            mineru_cfg = dict(self.mineru_config)
+            if self.extraction_mode != "mineru":
+                mineru_cfg["enabled"] = False
             # If semantic_search config file exists, prefer its setting
             try:
                 if self.config_path and os.path.exists(self.config_path):
@@ -328,6 +343,9 @@ class ZoteroSemanticSearch:
                             zotero_db_path = semantic_cfg.get('zotero_db_path')
                         if semantic_cfg.get("mineru"):
                             mineru_cfg = self._resolve_mineru_config(semantic_cfg.get("mineru", {}))
+                        mode = self._resolve_extraction_mode(semantic_cfg)
+                        if mode != "mineru":
+                            mineru_cfg["enabled"] = False
             except Exception:
                 pass
 
@@ -335,6 +353,7 @@ class ZoteroSemanticSearch:
                 db_path=zotero_db_path,
                 pdf_max_pages=pdf_max_pages,
                 mineru_config=mineru_cfg,
+                md_store_base_dir=str(self.md_store.base_dir),
             ) as reader:
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
@@ -409,6 +428,7 @@ class ZoteroSemanticSearch:
                     skipped_existing = 0
                     updated_existing = 0
                     items_to_process = []
+                    progress_every = 1 if self.extraction_mode == "mineru" else 25
 
                     for it in local_items:
                         should_extract = True
@@ -431,7 +451,7 @@ class ZoteroSemanticSearch:
                         if should_extract:
                             # Extract fulltext if item doesn't have it yet
                             if not getattr(it, "fulltext", None):
-                                text = reader.extract_fulltext_for_item(it.item_id)
+                                text = reader.extract_fulltext_for_item(it.item_id, it.key)
                                 if text:
                                     # Support tuple return format:
                                     # (text, source) or (text, source, attachment_key)
@@ -445,9 +465,12 @@ class ZoteroSemanticSearch:
                             extracted += 1
                             items_to_process.append(it)
 
-                            if extracted % 25 == 0 and total_to_extract:
+                            if extracted % progress_every == 0 and total_to_extract:
                                 try:
-                                    sys.stderr.write(f"Extracted content for {extracted}/{total_to_extract} items (skipped {skipped_existing} existing, updating {updated_existing})...\n")
+                                    sys.stderr.write(
+                                        f"Fulltext extraction progress: {extracted}/{total_to_extract} "
+                                        f"(skipped {skipped_existing}, updating {updated_existing})\n"
+                                    )
                                 except Exception:
                                     pass
 
@@ -463,6 +486,13 @@ class ZoteroSemanticSearch:
                             if updated_existing > 0:
                                 msg_parts.append(f"Updated {updated_existing} items with new fulltext")
                             sys.stderr.write(", ".join(msg_parts) + "\n")
+                        except Exception:
+                            pass
+                    if total_to_extract:
+                        try:
+                            sys.stderr.write(
+                                f"Fulltext extraction completed: {extracted}/{total_to_extract}\n"
+                            )
                         except Exception:
                             pass
                 else:
@@ -700,6 +730,7 @@ class ZoteroSemanticSearch:
     def _process_item_batch(self, items: list[dict[str, Any]], force_rebuild: bool = False) -> dict[str, int]:
         """Process a batch of items."""
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
+        dual_index_mode = self.meta_chunk_enabled
 
         documents = []
         metadatas = []
@@ -714,25 +745,40 @@ class ZoteroSemanticSearch:
                     continue
 
                 fulltext = item.get("data", {}).get("fulltext", "")
-                if fulltext.strip():
-                    # Ensure we don't keep stale item-level records alongside chunk records.
+                if dual_index_mode:
+                    # In dual-index mode, each update rewrites all chunks for the item.
                     try:
                         self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
                     except Exception:
-                        try:
-                            self.chroma_client.delete_documents([item_key])
-                        except Exception:
-                            pass
+                        pass
                     self.locator_store.delete_item(item_key)
 
+                if fulltext.strip():
+                    if not dual_index_mode:
+                        # Ensure we don't keep stale item-level records alongside chunk records.
+                        try:
+                            self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
+                        except Exception:
+                            try:
+                                self.chroma_client.delete_documents([item_key])
+                            except Exception:
+                                pass
+                        self.locator_store.delete_item(item_key)
+
                     chunk_docs, chunk_meta, chunk_ids, chunk_locators = self._build_chunk_records(item)
-                    if not chunk_docs:
+                    meta_doc = self._build_metadata_chunk_record(item) if dual_index_mode else None
+                    if not chunk_docs and not meta_doc:
                         stats["skipped"] += 1
                         continue
-                    documents.extend(chunk_docs)
-                    metadatas.extend(chunk_meta)
-                    ids.extend(chunk_ids)
-                    locator_records.extend(chunk_locators)
+                    if chunk_docs:
+                        documents.extend(chunk_docs)
+                        metadatas.extend(chunk_meta)
+                        ids.extend(chunk_ids)
+                        locator_records.extend(chunk_locators)
+                    if meta_doc:
+                        documents.append(meta_doc[0])
+                        metadatas.append(meta_doc[1])
+                        ids.append(meta_doc[2])
                     stats["processed"] += 1
                     continue
 
@@ -742,10 +788,18 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
                 metadata = self._create_metadata(item)
-
-                documents.append(doc_text)
-                metadatas.append(metadata)
-                ids.append(item_key)
+                if dual_index_mode:
+                    meta_doc = self._build_metadata_chunk_record(item)
+                    if not meta_doc:
+                        stats["skipped"] += 1
+                        continue
+                    documents.append(meta_doc[0])
+                    metadatas.append(meta_doc[1])
+                    ids.append(meta_doc[2])
+                else:
+                    documents.append(doc_text)
+                    metadatas.append(metadata)
+                    ids.append(item_key)
 
                 stats["processed"] += 1
 
@@ -775,6 +829,32 @@ class ZoteroSemanticSearch:
                 stats["errors"] += len(documents)
 
         return stats
+
+    def _build_metadata_chunk_record(
+        self, item: dict[str, Any]
+    ) -> tuple[str, dict[str, Any], str] | None:
+        item_key = item.get("key", "")
+        if not item_key:
+            return None
+        doc_text = self._create_document_text(item)
+        if not doc_text.strip():
+            return None
+        meta = self._create_metadata(item)
+        meta.update(
+            {
+                "chunk_kind": "meta",
+                "chunk_index": 0,
+                "attachment_key": "meta",
+                "source_type": "metadata",
+                "section_path": "metadata",
+                "char_start": 0,
+                "char_end": len(doc_text),
+                "page_start": -1,
+                "page_end": -1,
+            }
+        )
+        chunk_id = f"{item_key}:meta:0"
+        return doc_text, meta, chunk_id
 
     def _build_chunk_records(
         self, item: dict[str, Any]
@@ -814,6 +894,7 @@ class ZoteroSemanticSearch:
             meta = dict(base_meta)
             meta.update(
                 {
+                    "chunk_kind": "content",
                     "chunk_index": idx,
                     "attachment_key": attachment_key,
                     "source_type": source,
@@ -892,7 +973,7 @@ class ZoteroSemanticSearch:
 
     def _enrich_search_results(self, chroma_results: dict[str, Any], query: str) -> list[dict[str, Any]]:
         """Enrich ChromaDB results with full Zotero item data."""
-        enriched = []
+        enriched: list[dict[str, Any]] = []
 
         if not chroma_results.get("ids") or not chroma_results["ids"][0]:
             return enriched
@@ -902,50 +983,132 @@ class ZoteroSemanticSearch:
         documents = chroma_results.get("documents", [[]])[0]
         metadatas = chroma_results.get("metadatas", [[]])[0]
 
-        for i, item_key in enumerate(ids):
+        # Preserve the original behavior for legacy item-level documents.
+        has_chunk_docs = any(":" in str(doc_id) for doc_id in ids)
+        if not has_chunk_docs and not self.meta_chunk_enabled:
+            for i, item_key in enumerate(ids):
+                try:
+                    metadata = metadatas[i] if i < len(metadatas) else {}
+                    raw_id = item_key
+                    zotero_item = self.zotero_client.item(item_key)
+                    matched_text = documents[i] if i < len(documents) else ""
+                    locator = self.locator_store.get(raw_id)
+                    if locator:
+                        try:
+                            md_text = self.md_store.read(locator["md_store_path"])
+                            cs = int(locator["char_start"])
+                            ce = int(locator["char_end"])
+                            matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
+                        except Exception:
+                            pass
+
+                    enriched.append(
+                        {
+                            "item_key": item_key,
+                            "chunk_id": raw_id,
+                            "similarity_score": 1 - distances[i] if i < len(distances) else 0,
+                            "matched_text": matched_text,
+                            "metadata": metadata,
+                            "locator": locator or {},
+                            "zotero_item": zotero_item,
+                            "query": query,
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Error enriching result for item {item_key}: {e}")
+                    enriched.append(
+                        {
+                            "item_key": item_key,
+                            "similarity_score": 1 - distances[i] if i < len(distances) else 0,
+                            "matched_text": documents[i] if i < len(documents) else "",
+                            "metadata": metadatas[i] if i < len(metadatas) else {},
+                            "query": query,
+                            "error": f"Could not fetch full item data: {e}",
+                        }
+                    )
+            return enriched
+
+        grouped_hits: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "content_hits": [],
+                "meta_hits": [],
+                "best_content_score": 0.0,
+                "best_meta_score": 0.0,
+            }
+        )
+
+        for i, raw_id in enumerate(ids):
+            metadata = metadatas[i] if i < len(metadatas) else {}
+            item_key = metadata.get("item_key") or str(raw_id).split(":", 1)[0]
+            score = 1 - distances[i] if i < len(distances) else 0
+            matched_text = documents[i] if i < len(documents) else ""
+            chunk_kind = metadata.get("chunk_kind", "meta" if ":meta:" in str(raw_id) else "content")
+            locator = self.locator_store.get(raw_id)
+            if locator and chunk_kind == "content":
+                try:
+                    md_text = self.md_store.read(locator["md_store_path"])
+                    cs = int(locator["char_start"])
+                    ce = int(locator["char_end"])
+                    matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
+                except Exception:
+                    pass
+
+            hit = {
+                "chunk_id": raw_id,
+                "similarity_score": score,
+                "matched_text": matched_text,
+                "metadata": metadata,
+                "locator": locator or {},
+                "chunk_kind": chunk_kind,
+            }
+            if chunk_kind == "meta":
+                grouped_hits[item_key]["meta_hits"].append(hit)
+                grouped_hits[item_key]["best_meta_score"] = max(grouped_hits[item_key]["best_meta_score"], score)
+            else:
+                grouped_hits[item_key]["content_hits"].append(hit)
+                grouped_hits[item_key]["best_content_score"] = max(grouped_hits[item_key]["best_content_score"], score)
+
+        for item_key, bucket in grouped_hits.items():
             try:
-                metadata = metadatas[i] if i < len(metadatas) else {}
-                raw_id = item_key
-                if ":" in item_key:
-                    item_key = metadata.get("item_key") or item_key.split(":", 1)[0]
-                # Get full item data from Zotero
                 zotero_item = self.zotero_client.item(item_key)
-                matched_text = documents[i] if i < len(documents) else ""
-                locator = self.locator_store.get(raw_id)
-                if locator:
-                    try:
-                        md_text = self.md_store.read(locator["md_store_path"])
-                        cs = int(locator["char_start"])
-                        ce = int(locator["char_end"])
-                        matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
-                    except Exception:
-                        pass
-
-                enriched_result = {
-                    "item_key": item_key,
-                    "chunk_id": raw_id,
-                    "similarity_score": 1 - distances[i] if i < len(distances) else 0,
-                    "matched_text": matched_text,
-                    "metadata": metadata,
-                    "locator": locator or {},
-                    "zotero_item": zotero_item,
-                    "query": query
-                }
-
-                enriched.append(enriched_result)
+                content_hits = sorted(bucket["content_hits"], key=lambda x: x["similarity_score"], reverse=True)
+                meta_hits = sorted(bucket["meta_hits"], key=lambda x: x["similarity_score"], reverse=True)
+                best_content = float(bucket["best_content_score"])
+                best_meta = float(bucket["best_meta_score"])
+                item_score = max(best_content, 0.85 * best_meta)
+                primary = content_hits[0] if content_hits else (meta_hits[0] if meta_hits else None)
+                if not primary:
+                    continue
+                enriched.append(
+                    {
+                        "item_key": item_key,
+                        "chunk_id": primary["chunk_id"],
+                        "similarity_score": item_score,
+                        "matched_text": primary["matched_text"],
+                        "metadata": primary["metadata"],
+                        "locator": primary["locator"],
+                        "zotero_item": zotero_item,
+                        "query": query,
+                        "content_evidence": content_hits[:2],
+                        "meta_evidence": meta_hits[:1],
+                    }
+                )
 
             except Exception as e:
                 logger.error(f"Error enriching result for item {item_key}: {e}")
-                # Include basic result even if enrichment fails
                 enriched.append({
                     "item_key": item_key,
-                    "similarity_score": 1 - distances[i] if i < len(distances) else 0,
-                    "matched_text": documents[i] if i < len(documents) else "",
-                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                    "similarity_score": max(
+                        float(bucket.get("best_content_score", 0)),
+                        0.85 * float(bucket.get("best_meta_score", 0)),
+                    ),
+                    "matched_text": "",
+                    "metadata": {},
                     "query": query,
                     "error": f"Could not fetch full item data: {e}"
                 })
 
+        enriched.sort(key=lambda r: float(r.get("similarity_score", 0)), reverse=True)
         return enriched
 
     def get_database_status(self) -> dict[str, Any]:
@@ -959,6 +1122,8 @@ class ZoteroSemanticSearch:
             "last_update": self.update_config.get("last_update"),
             "locator_count": self.locator_store.count(),
             "md_store_dir": str(self.md_store.base_dir),
+            "extraction_mode": self.extraction_mode,
+            "meta_chunk_enabled": self.meta_chunk_enabled,
             "mineru_enabled": bool(self.mineru_config.get("enabled", False)),
             "mineru_token_count": len(self.mineru_config.get("tokens", [])),
         }

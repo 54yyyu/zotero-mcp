@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import logging
 import subprocess
+import sys
 import time
 import zipfile
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ class MinerUConfig:
     poll_timeout_seconds: int = 300
     max_retries: int = 2
     token_cooldown_seconds: int = 120
+    show_progress: bool = False
 
 
 class MinerUTokenPool:
@@ -68,6 +70,15 @@ class MinerUBatchClient:
         self.config = config
         self.pool = MinerUTokenPool(config.tokens, config.token_cooldown_seconds)
 
+    def _progress(self, message: str) -> None:
+        if not self.config.show_progress:
+            return
+        try:
+            sys.stderr.write(f"[MinerU] {message}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
     def _auth_headers(self, token: str) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {token}",
@@ -83,6 +94,7 @@ class MinerUBatchClient:
         raise MinerUError(f"MinerU request failed: HTTP {code} {response.text[:300]}")
 
     def _create_batch(self, token: str, file_name: str, data_id: str) -> tuple[str, str]:
+        self._progress(f"Creating parse batch for '{file_name}'...")
         payload = {
             "files": [{"name": file_name, "data_id": data_id}],
             "model_version": self.config.model_version,
@@ -109,17 +121,22 @@ class MinerUBatchClient:
                 upload_url = first.get("url") or first.get("upload_url") or ""
         if not batch_id or not upload_url:
             raise MinerUError(f"Unexpected MinerU create-batch response: {resp.text[:400]}")
+        self._progress(f"Batch created: {batch_id}")
         return str(batch_id), upload_url
 
     def _upload_file(self, upload_url: str, file_path: Path) -> None:
+        self._progress(f"Uploading PDF ({file_path.name})...")
         with open(file_path, "rb") as f:
             resp = requests.put(upload_url, data=f, timeout=120)
         if resp.status_code >= 400:
             raise RecoverableMinerUError(f"MinerU upload failed: HTTP {resp.status_code}")
+        self._progress("Upload complete.")
 
     def _poll_batch(self, token: str, batch_id: str) -> dict[str, Any]:
         start = time.time()
         poll_url = self.config.batch_result_url_template.format(batch_id=batch_id)
+        next_status_log_at = 0.0
+        self._progress("Polling parse status...")
         while True:
             resp = requests.get(
                 poll_url,
@@ -135,11 +152,16 @@ class MinerUBatchClient:
             if not results:
                 if time.time() - start > self.config.poll_timeout_seconds:
                     raise RecoverableMinerUError("MinerU poll timeout: no result entries")
+                elapsed = int(time.time() - start)
+                if time.time() >= next_status_log_at:
+                    self._progress(f"Still waiting for result... {elapsed}s elapsed")
+                    next_status_log_at = time.time() + 15
                 time.sleep(self.config.poll_interval_seconds)
                 continue
             result = results[0] if isinstance(results, list) else results
             state = str(result.get("state", "")).lower()
             if state == "done":
+                self._progress("Parse finished.")
                 return result
             if state in {"failed", "error"}:
                 raise RecoverableMinerUError(
@@ -147,9 +169,14 @@ class MinerUBatchClient:
                 )
             if time.time() - start > self.config.poll_timeout_seconds:
                 raise RecoverableMinerUError("MinerU poll timeout")
+            elapsed = int(time.time() - start)
+            if time.time() >= next_status_log_at:
+                self._progress(f"Current state: {state or 'processing'} ({elapsed}s elapsed)")
+                next_status_log_at = time.time() + 15
             time.sleep(self.config.poll_interval_seconds)
 
     def _download_zip_bytes(self, zip_url: str) -> bytes:
+        self._progress("Downloading parsed result package...")
         last_exc: Exception | None = None
         for attempt in range(max(2, self.config.max_retries + 1)):
             try:
@@ -160,14 +187,17 @@ class MinerUBatchClient:
                     )
                 if resp.status_code >= 400:
                     raise MinerUError(f"MinerU zip download failed: HTTP {resp.status_code}")
+                self._progress("Result download complete.")
                 return resp.content
             except requests.RequestException as exc:
                 last_exc = exc
                 if attempt < max(1, self.config.max_retries):
+                    self._progress(f"Download retry {attempt + 1}...")
                     time.sleep(min(3, 1 + attempt))
                     continue
                 # Fallback to curl for SSL EOF cases seen on some Python/OpenSSL builds.
                 try:
+                    self._progress("Network fallback: trying curl...")
                     proc = subprocess.run(
                         ["curl", "-fsSL", zip_url],
                         capture_output=True,
@@ -175,6 +205,7 @@ class MinerUBatchClient:
                         check=False,
                     )
                     if proc.returncode == 0 and proc.stdout:
+                        self._progress("Result download complete (curl fallback).")
                         return proc.stdout
                 except Exception:
                     pass
@@ -182,6 +213,7 @@ class MinerUBatchClient:
         raise RecoverableMinerUError(str(last_exc) if last_exc else "MinerU zip download failed")
 
     def _extract_best_markdown(self, zip_bytes: bytes) -> str:
+        self._progress("Extracting markdown from result package...")
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
             md_names = [n for n in zf.namelist() if n.lower().endswith(".md")]
             if not md_names:
@@ -192,11 +224,13 @@ class MinerUBatchClient:
                 text = fp.read().decode("utf-8", errors="ignore")
             if not text.strip():
                 raise MinerUError("MinerU markdown output is empty")
+            self._progress(f"Markdown extracted: {len(text)} chars.")
             return text
 
     def parse_pdf_to_markdown(self, file_path: Path, data_id: str) -> str:
         last_error: Exception | None = None
         max_attempts = max(len(self.config.tokens), 1) * max(self.config.max_retries + 1, 1)
+        self._progress(f"Starting MinerU parsing for '{file_path.name}'...")
         for _ in range(max_attempts):
             token = self.pool.next_available()
             if not token:
@@ -214,17 +248,21 @@ class MinerUBatchClient:
                 if not zip_url:
                     raise MinerUError("MinerU result missing full_zip_url")
                 zip_bytes = self._download_zip_bytes(zip_url)
-                return self._extract_best_markdown(zip_bytes)
+                text = self._extract_best_markdown(zip_bytes)
+                self._progress("MinerU parsing completed successfully.")
+                return text
             except RecoverableMinerUError as exc:
                 last_error = exc
                 # With a single token, keep retrying instead of cooling it out.
                 if len(self.config.tokens) > 1:
                     self.pool.mark_failed(token)
+                self._progress(f"Recoverable error; rotating token/retrying: {exc}")
                 logger.warning("MinerU token temporarily failed; rotating token: %s", exc)
             except requests.RequestException as exc:
                 last_error = exc
                 if len(self.config.tokens) > 1:
                     self.pool.mark_failed(token)
+                self._progress(f"Network error; rotating token/retrying: {exc}")
                 logger.warning("MinerU network error; rotating token: %s", exc)
             except Exception as exc:
                 # Non recoverable parser errors: stop fast and fall back locally.
