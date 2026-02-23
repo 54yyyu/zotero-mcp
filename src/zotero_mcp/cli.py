@@ -192,6 +192,12 @@ def main():
                              help="Skip semantic search configuration")
     setup_parser.add_argument("--semantic-config-only", action="store_true",
                              help="Only configure semantic search, skip Zotero setup")
+    setup_parser.add_argument("--mineru-enabled", action="store_true",
+                             help="Enable MinerU PDF parsing in semantic search config")
+    setup_parser.add_argument("--mineru-token", action="append",
+                             help="MinerU API token. Pass multiple times to configure token rotation.")
+    setup_parser.add_argument("--mineru-model-version", default="vlm",
+                             help="MinerU model version (default: vlm)")
 
     # Update database command
     update_db_parser = subparsers.add_parser("update-db", help="Update semantic search database")
@@ -218,6 +224,14 @@ def main():
     inspect_parser.add_argument("--show-documents", action="store_true", help="Show beginning of stored document text")
     inspect_parser.add_argument("--stats", action="store_true", help="Show aggregate stats (formerly db-stats)")
     inspect_parser.add_argument("--config-path", help="Path to semantic search configuration file")
+
+    # Doctor command
+    doctor_parser = subparsers.add_parser("doctor", help="Run diagnostics for local Zotero and semantic index")
+    doctor_parser.add_argument("--check-local-db-lock", action="store_true",
+                               help="Check if local Zotero database is readable and whether immutable fallback is used")
+    doctor_parser.add_argument("--check-mineru-config", action="store_true",
+                               help="Show MinerU enablement and token count from semantic search status")
+    doctor_parser.add_argument("--config-path", help="Path to semantic search configuration file")
 
     # Update command
     update_parser = subparsers.add_parser("update", help="Update zotero-mcp to the latest version")
@@ -342,6 +356,9 @@ def main():
                 print(f"  Update frequency: {update_config.get('update_frequency', 'manual')}")
                 print(f"  Last update: {update_config.get('last_update', 'Never')}")
                 print(f"  Should update: {status.get('should_update', False)}")
+                print(f"  MinerU enabled: {status.get('mineru_enabled', False)}")
+                print(f"  MinerU tokens: {status.get('mineru_token_count', 0)}")
+                print(f"  Locator rows: {status.get('locator_count', 0)}")
 
                 if collection_info.get('error'):
                     print(f"  Error: {collection_info['error']}")
@@ -445,6 +462,10 @@ def main():
             print(f"- Frequency: {update_config.get('update_frequency', 'manual')}")
             print(f"- Last update: {update_config.get('last_update', 'Never')}")
             print(f"- Should update: {status.get('should_update', False)}")
+            print(f"- MinerU enabled: {status.get('mineru_enabled', False)}")
+            print(f"- MinerU tokens: {status.get('mineru_token_count', 0)}")
+            print(f"- Locator rows: {status.get('locator_count', 0)}")
+            print(f"- Markdown store: {status.get('md_store_dir', 'Unknown')}")
 
             if collection_info.get('error'):
                 print(f"\nError: {collection_info['error']}")
@@ -553,6 +574,55 @@ def main():
 
         except Exception as e:
             print(f"Error inspecting database: {e}")
+            sys.exit(1)
+
+    elif args.command == "doctor":
+        setup_zotero_environment()
+        from zotero_mcp.local_db import LocalZoteroReader
+        from zotero_mcp.semantic_search import create_semantic_search
+
+        config_path = args.config_path
+        if not config_path:
+            config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
+        else:
+            config_path = Path(config_path)
+
+        ran_any = False
+        failed = False
+
+        if args.check_local_db_lock or (not args.check_local_db_lock and not args.check_mineru_config):
+            ran_any = True
+            print("=== Doctor: Local Zotero DB ===")
+            try:
+                with LocalZoteroReader() as reader:
+                    count = reader.get_item_count()
+                    print(f"Status: OK")
+                    print(f"Connection mode: {reader.connection_mode}")
+                    print(f"Item count: {count}")
+            except Exception as e:
+                failed = True
+                print(f"Status: FAIL")
+                print(f"Error: {e}")
+
+        if args.check_mineru_config or (not args.check_local_db_lock and not args.check_mineru_config):
+            ran_any = True
+            print("\n=== Doctor: MinerU Config ===")
+            try:
+                search = create_semantic_search(str(config_path))
+                status = search.get_database_status()
+                print(f"MinerU enabled: {status.get('mineru_enabled', False)}")
+                print(f"MinerU tokens: {status.get('mineru_token_count', 0)}")
+                print(f"Locator rows: {status.get('locator_count', 0)}")
+                print(f"Markdown store: {status.get('md_store_dir', 'Unknown')}")
+            except Exception as e:
+                failed = True
+                print(f"Status: FAIL")
+                print(f"Error: {e}")
+
+        if not ran_any:
+            print("No checks selected.")
+            sys.exit(1)
+        if failed:
             sys.exit(1)
 
     elif args.command == "update":
