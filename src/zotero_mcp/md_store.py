@@ -29,7 +29,14 @@ class MarkdownStore:
     def content_hash(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
+    def _validate_key(self, key: str, label: str) -> None:
+        """Reject keys containing path separators or traversal sequences."""
+        if not key or "/" in key or "\\" in key or ".." in key:
+            raise ValueError(f"Invalid {label}: {key!r} contains unsafe characters")
+
     def _target_path(self, item_key: str, attachment_key: str, doc_hash: str) -> Path:
+        self._validate_key(item_key, "item_key")
+        self._validate_key(attachment_key, "attachment_key")
         dir_path = self.base_dir / item_key / attachment_key
         dir_path.mkdir(parents=True, exist_ok=True)
         if zstd is not None:
@@ -60,8 +67,14 @@ class MarkdownStore:
 
         return str(path), doc_hash
 
+    def close(self) -> None:
+        """No-op close; MarkdownStore holds no persistent file handles."""
+        pass
+
     def read(self, path: str) -> str:
-        p = Path(path)
+        p = Path(path).resolve()
+        if not str(p).startswith(str(self.base_dir.resolve())):
+            raise ValueError(f"Path {path!r} is outside the md_store directory")
         data = p.read_bytes()
         if p.suffix == ".zst":
             if zstd is None:

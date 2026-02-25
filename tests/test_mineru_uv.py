@@ -261,6 +261,9 @@ def main() -> int:
     except subprocess.CalledProcessError as exc:
         print(f"Command failed with exit code {exc.returncode}", file=sys.stderr)
         return exc.returncode
+    except OSError as exc:
+        print(f"Failed to execute command: {exc}", file=sys.stderr)
+        return 1
 
     print("", flush=True)
     print("Done.", flush=True)

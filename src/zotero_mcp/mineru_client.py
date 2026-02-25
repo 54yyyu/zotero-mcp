@@ -5,6 +5,8 @@ MinerU batch-upload client with token rotation.
 from __future__ import annotations
 
 import io
+import ipaddress
+import socket
 from urllib.parse import urlparse
 import logging
 import subprocess
@@ -18,6 +20,26 @@ from typing import Any
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_external_https_url(url: str, label: str = "URL") -> None:
+    """Raise MinerUError if url is not HTTPS or resolves to a private/loopback address."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise MinerUError(f"Invalid {label} scheme: {parsed.scheme!r}. Only HTTPS is allowed.")
+    if not parsed.netloc or "@" in parsed.netloc:
+        raise MinerUError(f"Invalid {label} netloc: {parsed.netloc!r}")
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise MinerUError(f"Missing hostname in {label}: {url!r}")
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            raise MinerUError(f"{label} hostname resolves to a non-public address: {hostname!r}")
+    except ValueError:
+        # Not a bare IP — check well-known private hostnames
+        if hostname.lower() in {"localhost", "localhost.localdomain"}:
+            raise MinerUError(f"{label} hostname is not allowed: {hostname!r}")
 
 
 class MinerUError(Exception):
@@ -127,10 +149,7 @@ class MinerUBatchClient:
         return str(batch_id), upload_url
 
     def _upload_file(self, upload_url: str, file_path: Path) -> None:
-        # Validate URL scheme to prevent redirects to unintended destinations
-        parsed_url = urlparse(upload_url)
-        if parsed_url.scheme != "https":
-            raise MinerUError(f"Invalid upload URL scheme: {parsed_url.scheme}. Only HTTPS is allowed.")
+        _validate_external_https_url(upload_url, "upload_url")
 
         self._progress(f"Uploading PDF ({file_path.name})...")
         with open(file_path, "rb") as f:
@@ -183,13 +202,7 @@ class MinerUBatchClient:
             time.sleep(self.config.poll_interval_seconds)
 
     def _download_zip_bytes(self, zip_url: str) -> bytes:
-        # Validate URL to prevent SSRF risks
-        parsed_url = urlparse(zip_url)
-        if parsed_url.scheme != "https":
-            raise MinerUError(f"Invalid zip URL scheme: {parsed_url.scheme}. Only HTTPS is allowed.")
-        # Validate netloc: ensure it's not empty and doesn't contain auth (@)
-        if not parsed_url.netloc or "@" in parsed_url.netloc:
-            raise MinerUError(f"Invalid zip URL netloc: {parsed_url.netloc}")
+        _validate_external_https_url(zip_url, "zip_url")
 
         self._progress("Downloading parsed result package...")
         last_exc: Exception | None = None

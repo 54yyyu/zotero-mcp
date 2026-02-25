@@ -116,6 +116,13 @@ class LocatorStore:
             conn.execute("DELETE FROM chunk_locator")
 
     def close(self) -> None:
+        """No-op close.
+
+        LocatorStore opens and closes SQLite connections per operation,
+        so there is no long-lived connection to close here. This method
+        exists for API compatibility and to support use as a context
+        manager via __enter__/__exit__.
+        """
         pass
 
     def __enter__(self) -> "LocatorStore":

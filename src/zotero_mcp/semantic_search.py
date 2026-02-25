@@ -909,6 +909,12 @@ class ZoteroSemanticSearch:
             if not chunk_text:
                 continue
             preview = chunk_text[:CHUNK_EMBED_MAX_CHARS]
+            if len(chunk_text) > CHUNK_EMBED_MAX_CHARS:
+                logger.debug(
+                    "Truncating chunk preview for embedding: item_key=%s, attachment_key=%s, "
+                    "chunk_index=%d, original_length=%d, truncated_length=%d",
+                    item_key, attachment_key, idx, len(chunk_text), CHUNK_EMBED_MAX_CHARS,
+                )
             meta = dict(base_meta)
             meta.update(
                 {
@@ -1197,6 +1203,8 @@ class ZoteroSemanticSearch:
         """Close database connections and release resources."""
         if self.locator_store is not None:
             self.locator_store.close()
+        if self.md_store is not None and hasattr(self.md_store, "close"):
+            self.md_store.close()
 
     def __enter__(self) -> "ZoteroSemanticSearch":
         return self

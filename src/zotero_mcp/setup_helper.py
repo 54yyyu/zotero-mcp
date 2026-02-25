@@ -402,7 +402,7 @@ def setup_semantic_search(
                 print(f"Existing tokens: {', '.join(masked)}")
                 keep = input("Keep existing MinerU tokens? (Y/n): ").strip().lower()
                 if keep in ["", "y", "yes"]:
-                    tokens = existing_tokens
+                    tokens = [t for t in existing_tokens if t and t.strip()]
                 else:
                     tokens = []
             else:
@@ -421,7 +421,7 @@ def setup_semantic_search(
         mineru_cfg["tokens"] = tokens
     else:
         mineru_cfg["enabled"] = bool(existing_mineru.get("enabled", False) and (existing_mineru.get("tokens") or []))
-        mineru_cfg["tokens"] = existing_mineru.get("tokens", [])
+        mineru_cfg["tokens"] = [t for t in (existing_mineru.get("tokens") or []) if t and t.strip()]
 
     config["mineru"] = mineru_cfg
 
