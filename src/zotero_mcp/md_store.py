@@ -63,7 +63,12 @@ class MarkdownStore:
     def read(self, path: str) -> str:
         p = Path(path)
         data = p.read_bytes()
-        if p.suffix == ".zst" and zstd is not None:
+        if p.suffix == ".zst":
+            if zstd is None:
+                raise RuntimeError(
+                    "Cannot read compressed markdown artifact: 'zstandard' is not installed "
+                    f"but file has '.zst' suffix: {p}"
+                )
             dctx = zstd.ZstdDecompressor()
             return dctx.decompress(data).decode("utf-8", errors="ignore")
         return data.decode("utf-8", errors="ignore")
