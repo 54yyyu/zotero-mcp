@@ -134,7 +134,7 @@ class MinerUBatchClient:
 
         self._progress(f"Uploading PDF ({file_path.name})...")
         with open(file_path, "rb") as f:
-            resp = requests.put(upload_url, data=f, timeout=120)
+            resp = requests.put(upload_url, data=f, timeout=120, allow_redirects=False)
         if resp.status_code >= 400:
             raise RecoverableMinerUError(f"MinerU upload failed: HTTP {resp.status_code}")
         self._progress("Upload complete.")
@@ -195,7 +195,7 @@ class MinerUBatchClient:
         last_exc: Exception | None = None
         for attempt in range(max(2, self.config.max_retries + 1)):
             try:
-                resp = requests.get(zip_url, timeout=120)
+                resp = requests.get(zip_url, timeout=120, allow_redirects=False)
                 if resp.status_code >= 500:
                     raise RecoverableMinerUError(
                         f"MinerU zip download failed: HTTP {resp.status_code}"

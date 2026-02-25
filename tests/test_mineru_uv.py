@@ -106,12 +106,17 @@ def resolve_runner(project_root: Path, python_exe: str, use_uv: bool) -> list[st
     if use_uv:
         if not uv_bin:
             raise RuntimeError("--use-uv specified but uv is not installed or not in PATH.")
-        return ["uv", "run", resolved_python, "-m", "zotero_mcp.cli"]
+        if python_exe:
+            return ["uv", "run", python_exe, "-m", "zotero_mcp.cli"]
+        venv_python = project_root / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return ["uv", "run", str(venv_python), "-m", "zotero_mcp.cli"]
+        return ["uv", "run", "python", "-m", "zotero_mcp.cli"]
 
     if Path(resolved_python).exists():
         return [resolved_python, "-m", "zotero_mcp.cli"]
     if uv_bin:
-        return ["uv", "run", resolved_python, "-m", "zotero_mcp.cli"]
+        return ["uv", "run", "python", "-m", "zotero_mcp.cli"]
     raise RuntimeError(f"python executable not found: {resolved_python}")
 
 

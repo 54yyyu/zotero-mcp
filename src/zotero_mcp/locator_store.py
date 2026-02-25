@@ -5,9 +5,9 @@ SQLite locator store for chunk-to-source mapping.
 from __future__ import annotations
 
 import sqlite3
-import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 
 class LocatorStore:
@@ -16,42 +16,51 @@ class LocatorStore:
             db_path = str(Path.home() / ".config" / "zotero-mcp" / "locator.db")
         self.db_path = db_path
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        # Use check_same_thread=False to allow access from asyncio worker threads
-        # Use a lock to protect concurrent write operations
-        self._lock = threading.Lock()
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
+    @contextmanager
+    def _write_conn(self) -> Generator[sqlite3.Connection, None, None]:
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _init_schema(self) -> None:
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chunk_locator (
-                chunk_id TEXT PRIMARY KEY,
-                item_key TEXT NOT NULL,
-                attachment_key TEXT NOT NULL,
-                md_store_path TEXT NOT NULL,
-                char_start INTEGER NOT NULL,
-                char_end INTEGER NOT NULL,
-                page_start INTEGER,
-                page_end INTEGER,
-                section_path TEXT,
-                md_hash TEXT,
-                pdf_hash TEXT,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        with self._write_conn() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chunk_locator (
+                    chunk_id TEXT PRIMARY KEY,
+                    item_key TEXT NOT NULL,
+                    attachment_key TEXT NOT NULL,
+                    md_store_path TEXT NOT NULL,
+                    char_start INTEGER NOT NULL,
+                    char_end INTEGER NOT NULL,
+                    page_start INTEGER,
+                    page_end INTEGER,
+                    section_path TEXT,
+                    md_hash TEXT,
+                    pdf_hash TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chunk_locator_item ON chunk_locator(item_key)"
-        )
-        self.conn.commit()
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunk_locator_item ON chunk_locator(item_key)"
+            )
 
     def upsert_many(self, records: list[dict[str, Any]]) -> None:
         if not records:
             return
-        with self._lock:
-            self.conn.executemany(
+        with self._write_conn() as conn:
+            conn.executemany(
                 """
                 INSERT INTO chunk_locator (
                     chunk_id, item_key, attachment_key, md_store_path,
@@ -75,33 +84,39 @@ class LocatorStore:
                 """,
                 records,
             )
-            self.conn.commit()
 
     def get(self, chunk_id: str) -> dict[str, Any] | None:
-        cur = self.conn.execute(
-            "SELECT * FROM chunk_locator WHERE chunk_id = ?",
-            (chunk_id,),
-        )
-        row = cur.fetchone()
-        return dict(row) if row else None
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.execute(
+                "SELECT * FROM chunk_locator WHERE chunk_id = ?",
+                (chunk_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
 
     def count(self) -> int:
-        cur = self.conn.execute("SELECT COUNT(*) FROM chunk_locator")
-        return int(cur.fetchone()[0])
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            cur = conn.execute("SELECT COUNT(*) FROM chunk_locator")
+            return int(cur.fetchone()[0])
+        finally:
+            conn.close()
 
     def delete_item(self, item_key: str) -> int:
-        with self._lock:
-            cur = self.conn.execute("DELETE FROM chunk_locator WHERE item_key = ?", (item_key,))
-            self.conn.commit()
+        with self._write_conn() as conn:
+            cur = conn.execute("DELETE FROM chunk_locator WHERE item_key = ?", (item_key,))
             return cur.rowcount
 
     def reset(self) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM chunk_locator")
-            self.conn.commit()
+        with self._write_conn() as conn:
+            conn.execute("DELETE FROM chunk_locator")
 
     def close(self) -> None:
-        self.conn.close()
+        pass
 
     def __enter__(self) -> "LocatorStore":
         return self

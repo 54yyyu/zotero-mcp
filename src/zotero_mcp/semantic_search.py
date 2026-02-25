@@ -1155,8 +1155,8 @@ class ZoteroSemanticSearch:
             "md_store_dir": str(self.md_store.base_dir) if self.md_store else "",
             "extraction_mode": self.extraction_mode,
             "meta_chunk_enabled": self.meta_chunk_enabled,
-            "mineru_enabled": bool(self.mineru_config.get("enabled", False)),
-            "mineru_token_count": len(self.mineru_config.get("tokens", [])),
+            "mineru_enabled": self.extraction_mode == "mineru" and bool(self.mineru_config.get("enabled", False)),
+            "mineru_token_count": len(self.mineru_config.get("tokens", [])) if self.extraction_mode == "mineru" else 0,
         }
 
     def delete_item(self, item_key: str) -> bool:
