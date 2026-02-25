@@ -867,24 +867,13 @@ class ZoteroSemanticSearch:
                 if not doc_text.strip():
                     stats["skipped"] += 1
                     continue
-                metadata = self._create_metadata(item)
-                if dual_index_mode:
-                    meta_doc = self._build_metadata_chunk_record(item)
-                    if not meta_doc:
-                        stats["skipped"] += 1
-                        continue
-                    documents.append(meta_doc[0])
-                    metadatas.append(meta_doc[1])
-                    ids.append(meta_doc[2])
-                else:
-                    documents.append(doc_text)
-                    metadatas.append(metadata)
-                    ids.append(item_key)
-
+                documents.append(doc_text)
+                metadatas.append(self._create_metadata(item))
+                ids.append(item_key)
                 stats["processed"] += 1
 
             except Exception as e:
-                logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
+                logger.error("Error processing item %s: %s", item.get('key', 'unknown'), e)
                 stats["errors"] += 1
 
         # Add documents to ChromaDB if any
@@ -907,7 +896,7 @@ class ZoteroSemanticSearch:
                         else:
                             stats["added"] += 1
             except Exception as e:
-                logger.error(f"Error adding documents to ChromaDB: {e}")
+                logger.error("Error adding documents to ChromaDB: %s", e)
                 stats["errors"] += len(documents)
 
         return stats
@@ -1112,7 +1101,7 @@ class ZoteroSemanticSearch:
                         }
                     )
                 except Exception as e:
-                    logger.error(f"Error enriching result for item {item_key}: {e}")
+                    logger.error("Error enriching result for item %s: %s", item_key, e)
                     enriched.append(
                         {
                             "item_key": item_key,
@@ -1199,7 +1188,7 @@ class ZoteroSemanticSearch:
                 )
 
             except Exception as e:
-                logger.error(f"Error enriching result for item {item_key}: {e}")
+                logger.error("Error enriching result for item %s: %s", item_key, e)
                 enriched.append({
                     "item_key": item_key,
                     "similarity_score": max(

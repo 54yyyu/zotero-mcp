@@ -230,8 +230,18 @@ class LocalZoteroReader:
         candidates = list(target_dir.glob("*.md")) + list(target_dir.glob("*.md.zst"))
         if not candidates:
             return ""
-        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        for candidate in candidates:
+
+        # Prefer content-addressed files whose stem is a lowercase hex SHA-256 hash.
+        # The MarkdownStore names files by SHA-256(content), so a hex-named file is
+        # authoritative. Fall back to mtime ordering only when no hex-named file exists.
+        def _is_hex_hash(p: Path) -> bool:
+            stem = p.name.split(".")[0]  # handle .md.zst double extension
+            return bool(stem) and all(c in "0123456789abcdef" for c in stem)
+
+        hash_files = [p for p in candidates if _is_hex_hash(p)]
+        ordered = hash_files if hash_files else sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+
+        for candidate in ordered:
             try:
                 text = self.md_store.read(str(candidate))
                 if text.strip():

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Zotero MCP server implementation.
 
 Note: ChatGPT requires specific tool names "search" and "fetch", and so they

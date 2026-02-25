@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import logging
 
-from typing import Dict
-
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from chromadb.config import Settings

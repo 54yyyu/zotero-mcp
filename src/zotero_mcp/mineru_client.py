@@ -109,6 +109,8 @@ class MinerUTokenPool:
 class MinerUBatchClient:
     """Client for MinerU upload-batch parsing flow."""
 
+    name = "official_upload_batch"
+
     def __init__(self, config: MinerUConfig):
         if not config.tokens:
             raise ValueError("MinerU requires at least one token")
@@ -154,7 +156,11 @@ class MinerUBatchClient:
         )
         self._check_response(resp)
         root = resp.json() or {}
-        if int(root.get("code", 0)) != 0:
+        try:
+            code = int(root.get("code", 0) or 0)
+        except (TypeError, ValueError):
+            code = -1
+        if code != 0:
             error_code = root.get("code")
             error_msg = root.get("msg") or root.get("message") or "unknown error"
             raise MinerUError(f"MinerU create-batch returned non-zero code {error_code}: {error_msg}")
@@ -197,7 +203,11 @@ class MinerUBatchClient:
             )
             self._check_response(resp)
             root = resp.json() or {}
-            if int(root.get("code", 0)) not in (0,):
+            try:
+                code = int(root.get("code", 0) or 0)
+            except (TypeError, ValueError):
+                code = -1
+            if code not in (0,):
                 raise RecoverableMinerUError(f"MinerU poll returned non-zero code: {root.get('code')}")
             data = root.get("data", {})
             results = data.get("extract_result") or data.get("results") or []
@@ -335,6 +345,8 @@ class MinerUBatchClient:
 
 class MinerULocalApiClient:
     """Client for local MinerU docker API flow."""
+
+    name = "local_api"
 
     def __init__(self, config: MinerULocalApiConfig):
         self.config = config

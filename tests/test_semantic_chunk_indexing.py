@@ -337,22 +337,18 @@ class TestProcessItemBatchDualIndex:
     def test_stale_chunks_deleted_when_fulltext_empty(self):
         """Old chunks must be deleted even when the current extraction yields no fulltext."""
         search = _make_search_for_batch()
-        item = _batch_item("KEYDEL", fulltext="")  # empty fulltext this run
+        # Provide abstract so meta chunk is produced even with empty fulltext,
+        # ensuring the delete path is exercised (not a vacuous pass).
+        item = _batch_item("KEYDEL", fulltext="")
+        item["data"]["abstractNote"] = "An abstract that produces a meta chunk."
 
         stats = search._process_item_batch([item], force_rebuild=False)
 
-        # With empty fulltext _build_chunk_records returns nothing and
-        # _build_metadata_chunk_record may or may not produce a meta doc.
-        # Either way the collection.delete call must NOT be skipped solely
-        # because fulltext is empty — the guard is now on dual_index_mode only.
-        # If both chunk and meta records are empty the item is skipped (no delete needed),
-        # which is also acceptable.  What must NOT happen is skipping delete while
-        # upsert still runs.
-        delete_called = search.chroma_client.collection.delete.called
-        upsert_called = search.chroma_client.upsert_documents.called
-        # If upsert happened, delete must also have been called (no orphan old chunks)
-        if upsert_called:
-            assert delete_called, "delete must precede upsert to avoid stale chunks"
+        # A meta chunk should have been upserted, and delete must have preceded it.
+        assert search.chroma_client.collection.delete.called, (
+            "Stale chunks must be deleted in dual-index mode even when fulltext is empty"
+        )
+        assert search.chroma_client.upsert_documents.called
 
     def test_no_delete_on_build_failure(self):
         """If _build_chunk_records raises, existing index entries must not be deleted."""
