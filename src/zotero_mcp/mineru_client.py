@@ -286,5 +286,8 @@ class MinerUBatchClient:
                 # Non recoverable parser errors: stop fast and fall back locally.
                 raise MinerUError(str(exc)) from exc
         if last_error:
-            raise RecoverableMinerUError(str(last_error))
+            error_type = last_error.__class__.__name__
+            raise RecoverableMinerUError(
+                f"MinerU request failed after multiple attempts (last error type: {error_type})"
+            )
         raise RecoverableMinerUError("No available MinerU token")

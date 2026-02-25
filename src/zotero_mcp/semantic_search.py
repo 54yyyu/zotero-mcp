@@ -884,12 +884,9 @@ class ZoteroSemanticSearch:
 
         md_path = ""
         md_hash = ""
-        # md_store.write() computes the hash internally, so no need to compute it here
-        if source == "mineru_md":
-            md_path, md_hash = self.md_store.write(item_key, attachment_key, fulltext)
-            chunks = chunk_markdown(fulltext)
-        else:
-            chunks = chunk_markdown(fulltext)
+        # Generate chunks first, then write to store (consistent order for both paths)
+        chunks = chunk_markdown(fulltext)
+        if self.md_store is not None:
             md_path, md_hash = self.md_store.write(item_key, attachment_key, fulltext)
 
         if not chunks:
@@ -1072,8 +1069,13 @@ class ZoteroSemanticSearch:
                         cs = int(locator["char_start"])
                         ce = int(locator["char_end"])
                         matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "Failed to enrich search result for chunk %r with locator %r: %s",
+                            raw_id,
+                            locator,
+                            exc,
+                        )
 
             hit = {
                 "chunk_id": raw_id,

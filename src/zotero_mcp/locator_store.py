@@ -5,6 +5,7 @@ SQLite locator store for chunk-to-source mapping.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ class LocatorStore:
         self.db_path = db_path
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         # Use check_same_thread=False to allow access from asyncio worker threads
+        # Use a lock to protect concurrent write operations
+        self._lock = threading.Lock()
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -47,31 +50,32 @@ class LocatorStore:
     def upsert_many(self, records: list[dict[str, Any]]) -> None:
         if not records:
             return
-        self.conn.executemany(
-            """
-            INSERT INTO chunk_locator (
-                chunk_id, item_key, attachment_key, md_store_path,
-                char_start, char_end, page_start, page_end, section_path, md_hash, pdf_hash
-            ) VALUES (
-                :chunk_id, :item_key, :attachment_key, :md_store_path,
-                :char_start, :char_end, :page_start, :page_end, :section_path, :md_hash, :pdf_hash
+        with self._lock:
+            self.conn.executemany(
+                """
+                INSERT INTO chunk_locator (
+                    chunk_id, item_key, attachment_key, md_store_path,
+                    char_start, char_end, page_start, page_end, section_path, md_hash, pdf_hash
+                ) VALUES (
+                    :chunk_id, :item_key, :attachment_key, :md_store_path,
+                    :char_start, :char_end, :page_start, :page_end, :section_path, :md_hash, :pdf_hash
+                )
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                    item_key=excluded.item_key,
+                    attachment_key=excluded.attachment_key,
+                    md_store_path=excluded.md_store_path,
+                    char_start=excluded.char_start,
+                    char_end=excluded.char_end,
+                    page_start=excluded.page_start,
+                    page_end=excluded.page_end,
+                    section_path=excluded.section_path,
+                    md_hash=excluded.md_hash,
+                    pdf_hash=excluded.pdf_hash,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                records,
             )
-            ON CONFLICT(chunk_id) DO UPDATE SET
-                item_key=excluded.item_key,
-                attachment_key=excluded.attachment_key,
-                md_store_path=excluded.md_store_path,
-                char_start=excluded.char_start,
-                char_end=excluded.char_end,
-                page_start=excluded.page_start,
-                page_end=excluded.page_end,
-                section_path=excluded.section_path,
-                md_hash=excluded.md_hash,
-                pdf_hash=excluded.pdf_hash,
-                updated_at=CURRENT_TIMESTAMP
-            """,
-            records,
-        )
-        self.conn.commit()
+            self.conn.commit()
 
     def get(self, chunk_id: str) -> dict[str, Any] | None:
         cur = self.conn.execute(
@@ -86,13 +90,15 @@ class LocatorStore:
         return int(cur.fetchone()[0])
 
     def delete_item(self, item_key: str) -> int:
-        cur = self.conn.execute("DELETE FROM chunk_locator WHERE item_key = ?", (item_key,))
-        self.conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM chunk_locator WHERE item_key = ?", (item_key,))
+            self.conn.commit()
+            return cur.rowcount
 
     def reset(self) -> None:
-        self.conn.execute("DELETE FROM chunk_locator")
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("DELETE FROM chunk_locator")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

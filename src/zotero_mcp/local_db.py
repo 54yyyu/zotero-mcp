@@ -326,7 +326,7 @@ class LocalZoteroReader:
                 if cached.strip():
                     return (cached, "mineru_md", target_key)
             if mineru_enabled:
-                data_id = hashlib.sha1(f"{item_id}:{target}".encode("utf-8")).hexdigest()[:16]
+                data_id = hashlib.sha256(f"{item_id}:{target}".encode("utf-8")).hexdigest()[:16]
                 mineru_text = self._extract_text_from_pdf_via_mineru(target, data_id=data_id)
                 if mineru_text.strip():
                     text = mineru_text
