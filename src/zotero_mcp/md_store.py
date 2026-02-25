@@ -73,7 +73,10 @@ class MarkdownStore:
 
     def read(self, path: str) -> str:
         p = Path(path).resolve()
-        if not str(p).startswith(str(self.base_dir.resolve())):
+        base_resolved = self.base_dir.resolve()
+        try:
+            p.relative_to(base_resolved)
+        except ValueError:
             raise ValueError(f"Path {path!r} is outside the md_store directory")
         data = p.read_bytes()
         if p.suffix == ".zst":

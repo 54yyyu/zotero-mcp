@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import io
 import ipaddress
-import socket
 from urllib.parse import urlparse
 import logging
 import subprocess
@@ -128,6 +127,7 @@ class MinerUBatchClient:
             headers=self._auth_headers(token),
             json=payload,
             timeout=30,
+            allow_redirects=False,
         )
         self._check_response(resp)
         root = resp.json() or {}
@@ -168,6 +168,7 @@ class MinerUBatchClient:
                 poll_url,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=30,
+                allow_redirects=False,
             )
             self._check_response(resp)
             root = resp.json() or {}

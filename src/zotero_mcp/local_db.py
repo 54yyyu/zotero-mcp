@@ -547,10 +547,10 @@ class LocalZoteroReader:
         """
 
         if limit:
-            query += f" LIMIT {limit}"
+            query += " LIMIT ?"
 
         conn = self._get_connection()
-        cursor = conn.execute(query)
+        cursor = conn.execute(query, (limit,) if limit else ())
         items = []
 
         for row in cursor:

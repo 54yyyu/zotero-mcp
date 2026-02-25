@@ -86,25 +86,21 @@ class LocatorStore:
             )
 
     def get(self, chunk_id: str) -> dict[str, Any] | None:
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.row_factory = sqlite3.Row
             cur = conn.execute(
                 "SELECT * FROM chunk_locator WHERE chunk_id = ?",
                 (chunk_id,),
             )
             row = cur.fetchone()
             return dict(row) if row else None
-        finally:
-            conn.close()
 
     def count(self) -> int:
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        try:
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             cur = conn.execute("SELECT COUNT(*) FROM chunk_locator")
             return int(cur.fetchone()[0])
-        finally:
-            conn.close()
 
     def delete_item(self, item_key: str) -> int:
         with self._write_conn() as conn:
