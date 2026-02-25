@@ -15,7 +15,8 @@ class LocatorStore:
             db_path = str(Path.home() / ".config" / "zotero-mcp" / "locator.db")
         self.db_path = db_path
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
+        # Use check_same_thread=False to allow access from asyncio worker threads
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
