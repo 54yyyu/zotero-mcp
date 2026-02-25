@@ -22,7 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_external_https_url(url: str, label: str = "URL") -> None:
-    """Raise MinerUError if url is not HTTPS or resolves to a private/loopback address."""
+    """Raise MinerUError if url is not HTTPS or uses a private/loopback address.
+
+    Note: this performs literal hostname checks only (bare IP classification and a
+    known-hostname blocklist). It does NOT perform DNS resolution, so it will not
+    catch hostnames that resolve to private IPs at lookup time.
+    """
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise MinerUError(f"Invalid {label} scheme: {parsed.scheme!r}. Only HTTPS is allowed.")

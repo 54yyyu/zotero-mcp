@@ -19,6 +19,9 @@ Behavior:
 
 from __future__ import annotations
 
+# Prevent pytest from collecting this file as a test module; it is a manual CLI runner.
+__test__ = False
+
 import argparse
 import json
 import os

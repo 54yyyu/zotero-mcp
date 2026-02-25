@@ -415,6 +415,27 @@ class ChromaClient:
         except Exception:
             return set()
 
+    def get_item_chunk_metadata(self, item_key: str) -> dict[str, Any] | None:
+        """Return metadata from any chunk belonging to *item_key*, or None if absent.
+
+        Used in chunk/MinerU mode where document IDs are ``ITEM:attachment:idx``
+        rather than bare item keys.  Queries the ``item_key`` metadata field so
+        the existing-item fast-path still works when chunk IDs are stored.
+
+        Returns the metadata dict of the first matching chunk, or None.
+        """
+        try:
+            result = self.collection.get(
+                where={"item_key": {"$eq": item_key}},
+                limit=1,
+                include=["metadatas"],
+            )
+            if result["ids"] and result["metadatas"]:
+                return result["metadatas"][0]
+            return None
+        except Exception:
+            return None
+
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     """

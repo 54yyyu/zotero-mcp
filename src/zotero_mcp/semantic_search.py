@@ -508,6 +508,11 @@ class ZoteroSemanticSearch:
                         # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
                         if chroma_client and not force_rebuild:
                             existing_metadata = chroma_client.get_document_metadata(it.key)
+                            # In chunk/MinerU mode document IDs are "KEY:attachment:0", not bare
+                            # item keys, so the above lookup will always return None.  Fall back to
+                            # a metadata-filter query that works for both legacy and chunk modes.
+                            if existing_metadata is None and self.meta_chunk_enabled:
+                                existing_metadata = chroma_client.get_item_chunk_metadata(it.key)
                             if existing_metadata:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
                                 local_has_fulltext = len(reader.get_fulltext_meta_for_item(it.item_id)) > 0

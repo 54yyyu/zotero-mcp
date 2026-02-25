@@ -548,6 +548,7 @@ class LocalZoteroReader:
                 creators=row['creators'],
                 fulltext=(res := (self._extract_fulltext_for_item(row['itemID'], row['key']) if include_fulltext else None)) and res[0],
                 fulltext_source=res[1] if include_fulltext and res else None,
+                attachment_key=res[2] if include_fulltext and res else None,
                 notes=row['notes'],
                 extra=row['extra'],
                 date_added=row['dateAdded'],
