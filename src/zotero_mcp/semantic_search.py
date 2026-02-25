@@ -823,8 +823,17 @@ class ZoteroSemanticSearch:
                     continue
 
                 fulltext = item.get("data", {}).get("fulltext", "")
-                if dual_index_mode and fulltext.strip():
-                    # In dual-index mode, each update rewrites all chunks for the item.
+                if dual_index_mode:
+                    # Build new records first; only delete existing entries once
+                    # construction succeeds to avoid leaving the index empty on error.
+                    chunk_docs, chunk_meta, chunk_ids, chunk_locators = self._build_chunk_records(item)
+                    meta_doc = self._build_metadata_chunk_record(item)
+                    if not chunk_docs and not meta_doc:
+                        stats["skipped"] += 1
+                        continue
+                    # Delete stale entries for this item regardless of whether the
+                    # current extraction produced fulltext — old content chunks must
+                    # not survive an update that now returns empty fulltext.
                     try:
                         self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
                     except Exception as e:
@@ -838,11 +847,6 @@ class ZoteroSemanticSearch:
                         continue
                     if self.locator_store is not None:
                         self.locator_store.delete_item(item_key)
-                    chunk_docs, chunk_meta, chunk_ids, chunk_locators = self._build_chunk_records(item)
-                    meta_doc = self._build_metadata_chunk_record(item) if dual_index_mode else None
-                    if not chunk_docs and not meta_doc:
-                        stats["skipped"] += 1
-                        continue
                     if chunk_docs:
                         documents.extend(chunk_docs)
                         metadatas.extend(chunk_meta)
