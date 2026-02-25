@@ -228,7 +228,7 @@ def main():
     # Doctor command
     doctor_parser = subparsers.add_parser("doctor", help="Run diagnostics for local Zotero and semantic index")
     doctor_parser.add_argument("--check-local-db-lock", action="store_true",
-                               help="Check if local Zotero database is readable and whether immutable fallback is used")
+                               help="Check if the local Zotero database is readable using an immutable (safe, read-only) connection")
     doctor_parser.add_argument("--check-mineru-config", action="store_true",
                                help="Show MinerU enablement and token count from semantic search status")
     doctor_parser.add_argument("--config-path", help="Path to semantic search configuration file")
