@@ -92,7 +92,8 @@ class MinerUBatchClient:
             return
         if code in (401, 403, 429) or code >= 500:
             raise RecoverableMinerUError(f"Recoverable MinerU error: HTTP {code}")
-        raise MinerUError(f"MinerU request failed: HTTP {code} {response.text[:300]}")
+        # Avoid logging response body as it may contain sensitive information
+        raise MinerUError(f"MinerU request failed: HTTP {code}")
 
     def _create_batch(self, token: str, file_name: str, data_id: str) -> tuple[str, str]:
         self._progress(f"Creating parse batch for '{file_name}'...")

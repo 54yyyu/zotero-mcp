@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 # balances relevance from both meta and content chunks.
 META_CHUNK_SCORE_WEIGHT = 0.85
 
+# Maximum characters per chunk stored in ChromaDB. Chunks are truncated to this
+# length for embedding; the full text is still available via the locator store.
+CHUNK_EMBED_MAX_CHARS = 500
+
 
 @contextmanager
 def suppress_stdout():
@@ -366,7 +370,7 @@ class ZoteroSemanticSearch:
                 db_path=zotero_db_path,
                 pdf_max_pages=pdf_max_pages,
                 mineru_config=mineru_cfg,
-                md_store_base_dir=str(self.md_store.base_dir) if self.extraction_mode == "mineru" else None,
+                md_store_base_dir=str(self.md_store.base_dir) if self.md_store and self.extraction_mode == "mineru" else None,
             ) as reader:
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
@@ -826,7 +830,9 @@ class ZoteroSemanticSearch:
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
                 if dual_index_mode and self.locator_store is not None:
                     self.locator_store.upsert_many(locator_records)
-                    stats["added"] += len(documents)
+                    # Count at item level (not chunk level) to keep stats consistent
+                    item_keys_added = {m.get("item_key") for m in metadatas if m.get("item_key")}
+                    stats["added"] += len(item_keys_added)
                 else:
                     for doc_id in ids:
                         if doc_id in existing_ids:
@@ -870,6 +876,7 @@ class ZoteroSemanticSearch:
     ) -> tuple[list[str], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
         # Defensive check: ensure md_store is initialized
         if self.md_store is None:
+            logger.warning("_build_chunk_records called but md_store is not initialized; returning empty.")
             return [], [], [], []
 
         data = item.get("data", {})
@@ -901,7 +908,7 @@ class ZoteroSemanticSearch:
             chunk_text = chunk.text.strip()
             if not chunk_text:
                 continue
-            preview = chunk_text[:500]
+            preview = chunk_text[:CHUNK_EMBED_MAX_CHARS]
             meta = dict(base_meta)
             meta.update(
                 {

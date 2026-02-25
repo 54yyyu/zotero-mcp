@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from .md_store import MarkdownStore
 from .utils import is_local_mode
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ZoteroItem:
@@ -200,7 +202,8 @@ class LocalZoteroReader:
                     maxpages = 10
             text = extract_text(str(file_path), maxpages=maxpages)
             return text or ""
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to extract text from PDF %s: %s", file_path, e)
             return ""
 
     def _extract_text_from_pdf_via_mineru(self, file_path: Path, data_id: str) -> str:
@@ -230,7 +233,8 @@ class LocalZoteroReader:
             )
             client = MinerUBatchClient(cfg)
             return client.parse_pdf_to_markdown(file_path=file_path, data_id=data_id)
-        except Exception:
+        except Exception as e:
+            logger.debug("MinerU parsing failed for %s: %s", file_path, e)
             return ""
 
     def _read_cached_mineru_markdown(self, item_key: str, attachment_key: str) -> str:
@@ -249,7 +253,8 @@ class LocalZoteroReader:
                 text = self.md_store.read(str(candidate))
                 if text.strip():
                     return text
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to read cached markdown %s: %s", candidate, e)
                 continue
         return ""
 
@@ -261,14 +266,15 @@ class LocalZoteroReader:
             md = MarkItDown()
             result = md.convert(str(file_path))
             return result.text_content or ""
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("markitdown failed for %s: %s", file_path, e)
         # Fallback using a simple parser
         try:
             from bs4 import BeautifulSoup  # type: ignore
             html = file_path.read_text(errors="ignore")
             return BeautifulSoup(html, "html.parser").get_text(" ")
-        except Exception:
+        except Exception as e:
+            logger.debug("HTML fallback extraction failed for %s: %s", file_path, e)
             return ""
 
     def _extract_text_from_file(self, file_path: Path) -> str:
@@ -281,7 +287,8 @@ class LocalZoteroReader:
         # Generic best-effort
         try:
             return file_path.read_text(errors="ignore")
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to read file %s: %s", file_path, e)
             return ""
 
     def _get_fulltext_meta_for_item(self, item_id: int):
