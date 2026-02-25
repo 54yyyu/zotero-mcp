@@ -15,7 +15,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import logging
-import hashlib
 
 from pyzotero import zotero
 from dotenv import load_dotenv
@@ -73,8 +72,16 @@ class ZoteroSemanticSearch:
         self.extraction_mode = self._resolve_extraction_mode(self.semantic_config)
         self.mineru_config = self._resolve_mineru_config(self.semantic_config.get("mineru", {}))
         self.meta_chunk_enabled = self.extraction_mode == "mineru"
-        self.md_store = MarkdownStore(self.semantic_config.get("md_store", {}).get("base_dir"))
-        self.locator_store = LocatorStore(self.semantic_config.get("locator_db", {}).get("path"))
+
+        # Lazily/conditionally initialize stores to avoid creating files
+        # (e.g., ~/.config/zotero-mcp/md_store, locator.db) when not needed.
+        self.md_store: MarkdownStore | None = None
+        self.locator_store: LocatorStore | None = None
+
+        # Initialize stores only when MinerU mode is enabled
+        if self.meta_chunk_enabled:
+            self.md_store = MarkdownStore(self.semantic_config.get("md_store", {}).get("base_dir"))
+            self.locator_store = LocatorStore(self.semantic_config.get("locator_db", {}).get("path"))
 
         # Load update configuration
         self.update_config = self._load_update_config()
@@ -1113,8 +1120,8 @@ class ZoteroSemanticSearch:
             "update_config": self.update_config,
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
-            "locator_count": self.locator_store.count(),
-            "md_store_dir": str(self.md_store.base_dir),
+            "locator_count": self.locator_store.count() if self.locator_store else 0,
+            "md_store_dir": str(self.md_store.base_dir) if self.md_store else "",
             "extraction_mode": self.extraction_mode,
             "meta_chunk_enabled": self.meta_chunk_enabled,
             "mineru_enabled": bool(self.mineru_config.get("enabled", False)),
@@ -1136,7 +1143,8 @@ class ZoteroSemanticSearch:
 
     def close(self) -> None:
         """Close database connections and release resources."""
-        self.locator_store.close()
+        if self.locator_store is not None:
+            self.locator_store.close()
 
     def __enter__(self) -> "ZoteroSemanticSearch":
         return self
