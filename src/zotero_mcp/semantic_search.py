@@ -675,7 +675,8 @@ class ZoteroSemanticSearch:
             if force_full_rebuild:
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
-                self.locator_store.reset()
+                if self.locator_store is not None:
+                    self.locator_store.reset()
 
             # Get all items from either local DB or API
             all_items = self._get_items_from_source(
@@ -764,7 +765,8 @@ class ZoteroSemanticSearch:
                         self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
                     except Exception:
                         pass
-                    self.locator_store.delete_item(item_key)
+                    if self.locator_store is not None:
+                        self.locator_store.delete_item(item_key)
                     chunk_docs, chunk_meta, chunk_ids, chunk_locators = self._build_chunk_records(item)
                     meta_doc = self._build_metadata_chunk_record(item) if dual_index_mode else None
                     if not chunk_docs and not meta_doc:
@@ -815,7 +817,7 @@ class ZoteroSemanticSearch:
                     existing_ids = self.chroma_client.get_existing_ids(ids)
 
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
-                if dual_index_mode:
+                if dual_index_mode and self.locator_store is not None:
                     self.locator_store.upsert_many(locator_records)
                     stats["added"] += len(documents)
                 else:
@@ -992,15 +994,21 @@ class ZoteroSemanticSearch:
                     raw_id = item_key
                     zotero_item = self.zotero_client.item(item_key)
                     matched_text = documents[i] if i < len(documents) else ""
-                    locator = self.locator_store.get(raw_id)
-                    if locator:
-                        try:
-                            md_text = self.md_store.read(locator["md_store_path"])
-                            cs = int(locator["char_start"])
-                            ce = int(locator["char_end"])
-                            matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
-                        except Exception:
-                            pass
+                    # Only attempt locator enrichment if stores are initialized (MinerU mode)
+                    locator = None
+                    if self.locator_store and self.md_store:
+                        locator = self.locator_store.get(raw_id)
+                        if locator:
+                            try:
+                                md_text = self.md_store.read(locator["md_store_path"])
+                                cs = int(locator["char_start"])
+                                ce = int(locator["char_end"])
+                                matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
+                            except Exception:
+                                # Best-effort enrichment from markdown; fall back to original matched_text.
+                                logger.debug(
+                                    "Failed to read or apply locator for %s", raw_id, exc_info=True
+                                )
 
                     enriched.append(
                         {
@@ -1043,15 +1051,17 @@ class ZoteroSemanticSearch:
             score = 1 - distances[i] if i < len(distances) else 0
             matched_text = documents[i] if i < len(documents) else ""
             chunk_kind = metadata.get("chunk_kind", "meta" if ":meta:" in str(raw_id) else "content")
-            locator = self.locator_store.get(raw_id)
-            if locator and chunk_kind == "content":
-                try:
-                    md_text = self.md_store.read(locator["md_store_path"])
-                    cs = int(locator["char_start"])
-                    ce = int(locator["char_end"])
-                    matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
-                except Exception:
-                    pass
+            locator = None
+            if self.locator_store and self.md_store:
+                locator = self.locator_store.get(raw_id)
+                if locator and chunk_kind == "content":
+                    try:
+                        md_text = self.md_store.read(locator["md_store_path"])
+                        cs = int(locator["char_start"])
+                        ce = int(locator["char_end"])
+                        matched_text = md_text[max(0, cs): max(cs, ce)].strip() or matched_text
+                    except Exception:
+                        pass
 
             hit = {
                 "chunk_id": raw_id,
@@ -1135,7 +1145,8 @@ class ZoteroSemanticSearch:
                 self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
             except Exception:
                 self.chroma_client.delete_documents([item_key])
-            self.locator_store.delete_item(item_key)
+            if self.locator_store is not None:
+                self.locator_store.delete_item(item_key)
             return True
         except Exception as e:
             logger.error(f"Error deleting item {item_key}: {e}")
