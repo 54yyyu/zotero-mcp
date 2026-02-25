@@ -30,6 +30,12 @@ from .locator_store import LocatorStore
 
 logger = logging.getLogger(__name__)
 
+# Weight for meta chunk scores in score fusion.
+# Meta chunks (title, abstract, authors) are weighted slightly lower than content
+# because they tend to have higher baseline similarity scores. The 0.85 factor
+# balances relevance from both meta and content chunks.
+META_CHUNK_SCORE_WEIGHT = 0.85
+
 
 @contextmanager
 def suppress_stdout():
@@ -857,7 +863,7 @@ class ZoteroSemanticSearch:
             return [], [], [], []
 
         md_path = ""
-        md_hash = hashlib.sha256(fulltext.encode("utf-8", errors="ignore")).hexdigest()
+        # md_store.write() computes the hash internally, so no need to compute it here
         if source == "mineru_md":
             md_path, md_hash = self.md_store.write(item_key, attachment_key, fulltext)
             chunks = chunk_markdown(fulltext)
@@ -1062,7 +1068,7 @@ class ZoteroSemanticSearch:
                 meta_hits = sorted(bucket["meta_hits"], key=lambda x: x["similarity_score"], reverse=True)
                 best_content = float(bucket["best_content_score"])
                 best_meta = float(bucket["best_meta_score"])
-                item_score = max(best_content, 0.85 * best_meta)
+                item_score = max(best_content, META_CHUNK_SCORE_WEIGHT * best_meta)
                 primary = content_hits[0] if content_hits else (meta_hits[0] if meta_hits else None)
                 if not primary:
                     continue
@@ -1087,7 +1093,7 @@ class ZoteroSemanticSearch:
                     "item_key": item_key,
                     "similarity_score": max(
                         float(bucket.get("best_content_score", 0)),
-                        0.85 * float(bucket.get("best_meta_score", 0)),
+                        META_CHUNK_SCORE_WEIGHT * float(bucket.get("best_meta_score", 0)),
                     ),
                     "matched_text": "",
                     "metadata": {},
@@ -1127,6 +1133,16 @@ class ZoteroSemanticSearch:
         except Exception as e:
             logger.error(f"Error deleting item {item_key}: {e}")
             return False
+
+    def close(self) -> None:
+        """Close database connections and release resources."""
+        self.locator_store.close()
+
+    def __enter__(self) -> "ZoteroSemanticSearch":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
 
 def create_semantic_search(config_path: str | None = None, db_path: str | None = None) -> ZoteroSemanticSearch:

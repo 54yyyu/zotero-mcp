@@ -5,6 +5,7 @@ MinerU batch-upload client with token rotation.
 from __future__ import annotations
 
 import io
+from urllib.parse import urlparse
 import logging
 import subprocess
 import sys
@@ -125,6 +126,11 @@ class MinerUBatchClient:
         return str(batch_id), upload_url
 
     def _upload_file(self, upload_url: str, file_path: Path) -> None:
+        # Validate URL scheme to prevent redirects to unintended destinations
+        parsed_url = urlparse(upload_url)
+        if parsed_url.scheme != "https":
+            raise MinerUError(f"Invalid upload URL scheme: {parsed_url.scheme}. Only HTTPS is allowed.")
+
         self._progress(f"Uploading PDF ({file_path.name})...")
         with open(file_path, "rb") as f:
             resp = requests.put(upload_url, data=f, timeout=120)
@@ -256,14 +262,18 @@ class MinerUBatchClient:
                 # With a single token, keep retrying instead of cooling it out.
                 if len(self.config.tokens) > 1:
                     self.pool.mark_failed(token)
-                self._progress(f"Recoverable error; rotating token/retrying: {exc}")
-                logger.warning("MinerU token temporarily failed; rotating token: %s", exc)
+                # Sanitize error message to avoid token leakage in logs
+                error_type = exc.__class__.__name__
+                self._progress(f"Recoverable error; rotating token/retrying (error type: {error_type})")
+                logger.warning("MinerU token temporarily failed; rotating token (error type: %s)", error_type)
             except requests.RequestException as exc:
                 last_error = exc
                 if len(self.config.tokens) > 1:
                     self.pool.mark_failed(token)
-                self._progress(f"Network error; rotating token/retrying: {exc}")
-                logger.warning("MinerU network error; rotating token: %s", exc)
+                # Sanitize error message to avoid token leakage in logs
+                error_type = exc.__class__.__name__
+                self._progress(f"Network error; rotating token/retrying (error type: {error_type})")
+                logger.warning("MinerU network error; rotating token (error type: %s)", error_type)
             except Exception as exc:
                 # Non recoverable parser errors: stop fast and fall back locally.
                 raise MinerUError(str(exc)) from exc

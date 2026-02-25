@@ -95,3 +95,9 @@ class LocatorStore:
 
     def close(self) -> None:
         self.conn.close()
+
+    def __enter__(self) -> "LocatorStore":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()

@@ -389,6 +389,8 @@ def setup_semantic_search(
         "token_cooldown_seconds": int(existing_mineru.get("token_cooldown_seconds", 120)),
     }
 
+    tokens = []  # Initialize to avoid NameError in all branches
+
     if mineru_enabled and config["extraction_mode"] == "mineru":
         if cli_tokens:
             tokens = [t.strip() for t in cli_tokens if t and t.strip()]
@@ -415,8 +417,8 @@ def setup_semantic_search(
                     print("No MinerU token entered. MinerU will be disabled.")
                     mineru_enabled = False
 
-        mineru_cfg["enabled"] = mineru_enabled and bool(tokens if 'tokens' in locals() else [])
-        mineru_cfg["tokens"] = tokens if 'tokens' in locals() else []
+        mineru_cfg["enabled"] = mineru_enabled and bool(tokens)
+        mineru_cfg["tokens"] = tokens
     else:
         mineru_cfg["enabled"] = bool(existing_mineru.get("enabled", False) and (existing_mineru.get("tokens") or []))
         mineru_cfg["tokens"] = existing_mineru.get("tokens", [])

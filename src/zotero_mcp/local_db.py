@@ -290,7 +290,8 @@ class LocalZoteroReader:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference: use PDF when available; fall back to HTML when no PDF exists.
-        Returns (text, source) where source is 'pdf' or 'html'.
+        Returns (text, source, attachment_key) where source is typically 'pdf', 'html',
+        'file', or 'mineru_md'. Returns None if no suitable fulltext can be extracted.
         """
         best_pdf = None
         best_pdf_key = None

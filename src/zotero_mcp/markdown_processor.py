@@ -68,6 +68,13 @@ def _token_windows(text: str, window: int, overlap: int) -> list[tuple[int, int,
     words = re.findall(r"\S+\s*", text)
     if not words:
         return []
+
+    # Pre-compute cumulative character positions for O(n) performance
+    # cumulative_chars[i] = total length of all words from 0 to i-1
+    cumulative_chars = [0]
+    for word in words:
+        cumulative_chars.append(cumulative_chars[-1] + len(word))
+
     out: list[tuple[int, int, str]] = []
     i = 0
     step = max(1, window - overlap)
@@ -77,8 +84,8 @@ def _token_windows(text: str, window: int, overlap: int) -> list[tuple[int, int,
             break
         segment = "".join(segment_words).strip()
         if segment:
-            char_s = len("".join(words[:i]))
-            char_e = char_s + len("".join(segment_words))
+            char_s = cumulative_chars[i]
+            char_e = cumulative_chars[i + len(segment_words)]
             out.append((char_s, char_e, segment))
         i += step
     return out

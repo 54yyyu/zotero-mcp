@@ -39,14 +39,25 @@ class MarkdownStore:
     def write(self, item_key: str, attachment_key: str, markdown_text: str) -> tuple[str, str]:
         doc_hash = self.content_hash(markdown_text)
         path = self._target_path(item_key, attachment_key, doc_hash)
+
+        # Check if already exists (fast path to avoid redundant work)
         if path.exists():
             return str(path), doc_hash
+
         raw = markdown_text.encode("utf-8", errors="ignore")
         if zstd is not None:
-            cctx = zstd.ZstdCompressor(level=3)
-            path.write_bytes(cctx.compress(raw))
+            data = zstd.ZstdCompressor(level=3).compress(raw)
         else:
-            path.write_bytes(raw)
+            data = raw
+
+        # Use exclusive creation to avoid race conditions with concurrent writers
+        try:
+            with path.open("xb") as f:
+                f.write(data)
+        except FileExistsError:
+            # Another process created the same content concurrently - that's fine
+            pass
+
         return str(path), doc_hash
 
     def read(self, path: str) -> str:
