@@ -45,7 +45,7 @@ def _split_sections(markdown_text: str) -> list[tuple[str, str, int, int]]:
             if len(heading_stack) >= level:
                 heading_stack = heading_stack[: level - 1]
             heading_stack.append(title)
-            current_path = " > ".join(heading_stack) if heading_stack else "Document"
+            current_path = " → ".join(heading_stack) if heading_stack else "Document"
             current_text = []
             current_start = cursor
         current_text.append(line)

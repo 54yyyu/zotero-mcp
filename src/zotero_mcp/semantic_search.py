@@ -861,6 +861,10 @@ class ZoteroSemanticSearch:
     def _build_chunk_records(
         self, item: dict[str, Any]
     ) -> tuple[list[str], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+        # Defensive check: ensure md_store is initialized
+        if self.md_store is None:
+            return [], [], [], []
+
         data = item.get("data", {})
         item_key = item.get("key", "")
         attachment_key = data.get("attachmentKey", "default")
@@ -872,6 +876,7 @@ class ZoteroSemanticSearch:
             return [], [], [], []
 
         md_path = ""
+        md_hash = ""
         # md_store.write() computes the hash internally, so no need to compute it here
         if source == "mineru_md":
             md_path, md_hash = self.md_store.write(item_key, attachment_key, fulltext)
@@ -1109,8 +1114,8 @@ class ZoteroSemanticSearch:
                 enriched.append({
                     "item_key": item_key,
                     "similarity_score": max(
-                        float(bucket.get("best_content_score", 0)),
-                        META_CHUNK_SCORE_WEIGHT * float(bucket.get("best_meta_score", 0)),
+                        float(bucket["best_content_score"]),
+                        META_CHUNK_SCORE_WEIGHT * float(bucket["best_meta_score"]),
                     ),
                     "matched_text": "",
                     "metadata": {},
@@ -1143,8 +1148,16 @@ class ZoteroSemanticSearch:
         try:
             try:
                 self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
-            except Exception:
-                self.chroma_client.delete_documents([item_key])
+            except Exception as e:
+                # The fallback to delete_documents doesn't work in chunk mode
+                # because document IDs are like "ITEM:attachment:0", not just "ITEM".
+                # Log and continue - either way the chunks are already deleted.
+                logger.warning(
+                    "Failed to delete chunks for item %s via metadata filter: %s; "
+                    "this is expected in chunk mode where document IDs differ from item keys.",
+                    item_key,
+                    e,
+                )
             if self.locator_store is not None:
                 self.locator_store.delete_item(item_key)
             return True
