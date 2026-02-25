@@ -763,8 +763,15 @@ class ZoteroSemanticSearch:
                     # In dual-index mode, each update rewrites all chunks for the item.
                     try:
                         self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to delete existing chunks for item %s from Chroma collection: %s",
+                            item_key,
+                            e,
+                        )
+                        stats["errors"] += 1
+                        # Skip further processing for this item to avoid mixing old and new chunks.
+                        continue
                     if self.locator_store is not None:
                         self.locator_store.delete_item(item_key)
                     chunk_docs, chunk_meta, chunk_ids, chunk_locators = self._build_chunk_records(item)
@@ -1145,22 +1152,34 @@ class ZoteroSemanticSearch:
 
     def delete_item(self, item_key: str) -> bool:
         """Delete an item from the semantic search database."""
+        success = False
         try:
             try:
+                # Primary deletion: delete all chunks/documents with matching item_key metadata.
                 self.chroma_client.collection.delete(where={"item_key": item_key})  # type: ignore[attr-defined]
+                success = True
             except Exception as e:
-                # The fallback to delete_documents doesn't work in chunk mode
+                # The metadata-filter delete can fail in some configurations (e.g. chunk mode)
                 # because document IDs are like "ITEM:attachment:0", not just "ITEM".
-                # Log and continue - either way the chunks are already deleted.
                 logger.warning(
                     "Failed to delete chunks for item %s via metadata filter: %s; "
-                    "this is expected in chunk mode where document IDs differ from item keys.",
+                    "this may be expected in chunk mode where document IDs differ from item keys.",
                     item_key,
                     e,
                 )
+                # Fallback for non-chunk (legacy) documents: delete by document ID.
+                try:
+                    self.chroma_client.delete_documents([item_key])
+                    success = True
+                except Exception as e_fallback:
+                    logger.warning(
+                        "Fallback deletion by document ID also failed for item %s: %s",
+                        item_key,
+                        e_fallback,
+                    )
             if self.locator_store is not None:
                 self.locator_store.delete_item(item_key)
-            return True
+            return success
         except Exception as e:
             logger.error(f"Error deleting item {item_key}: {e}")
             return False

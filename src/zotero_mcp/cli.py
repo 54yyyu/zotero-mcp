@@ -612,14 +612,14 @@ def main():
             ran_any = True
             print("\n=== Doctor: MinerU Config ===")
             try:
-                search = create_semantic_search(str(config_path))
-                status = search.get_database_status()
-                print(f"Extraction mode: {status.get('extraction_mode', 'local')}")
-                print(f"Meta chunk enabled: {status.get('meta_chunk_enabled', False)}")
-                print(f"MinerU enabled: {status.get('mineru_enabled', False)}")
-                print(f"MinerU tokens: {status.get('mineru_token_count', 0)}")
-                print(f"Locator rows: {status.get('locator_count', 0)}")
-                print(f"Markdown store: {status.get('md_store_dir', 'Unknown')}")
+                with create_semantic_search(str(config_path)) as search:
+                    status = search.get_database_status()
+                    print(f"Extraction mode: {status.get('extraction_mode', 'local')}")
+                    print(f"Meta chunk enabled: {status.get('meta_chunk_enabled', False)}")
+                    print(f"MinerU enabled: {status.get('mineru_enabled', False)}")
+                    print(f"MinerU tokens: {status.get('mineru_token_count', 0)}")
+                    print(f"Locator rows: {status.get('locator_count', 0)}")
+                    print(f"Markdown store: {status.get('md_store_dir', 'Unknown')}")
             except Exception as e:
                 failed = True
                 print(f"Status: FAIL")

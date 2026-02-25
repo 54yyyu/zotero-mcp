@@ -182,10 +182,13 @@ class MinerUBatchClient:
             time.sleep(self.config.poll_interval_seconds)
 
     def _download_zip_bytes(self, zip_url: str) -> bytes:
-        # Validate URL scheme to prevent SSRF risks
+        # Validate URL to prevent SSRF risks
         parsed_url = urlparse(zip_url)
         if parsed_url.scheme != "https":
             raise MinerUError(f"Invalid zip URL scheme: {parsed_url.scheme}. Only HTTPS is allowed.")
+        # Validate netloc to ensure it's a proper domain (not empty or IP)
+        if not parsed_url.netloc or "@" in parsed_url.netloc:
+            raise MinerUError(f"Invalid zip URL netloc: {parsed_url.netloc}")
 
         self._progress("Downloading parsed result package...")
         last_exc: Exception | None = None
