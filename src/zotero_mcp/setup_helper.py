@@ -145,6 +145,8 @@ def setup_semantic_search(
         mineru_cfg = existing_semantic_config.get("mineru", {})
         mineru_enabled = mineru_cfg.get("enabled", False)
         mineru_token_count = len(mineru_cfg.get("tokens", []) or [])
+        mineru_provider = mineru_cfg.get("provider", "official_upload_batch")
+        mineru_local_base = (mineru_cfg.get("local_api", {}) or {}).get("base_url", "")
         print("Found existing semantic search configuration:")
         print(f"  - Embedding model: {model}")
         print(f"  - Embedding model name: {name}")
@@ -152,6 +154,9 @@ def setup_semantic_search(
         print(f"  - Zotero database path: {db_path}")
         print(f"  - Extraction mode: {extraction_mode}")
         print(f"  - MinerU enabled: {mineru_enabled} (tokens: {mineru_token_count})")
+        print(f"  - MinerU provider: {mineru_provider}")
+        if mineru_local_base:
+            print(f"  - MinerU local base URL: {mineru_local_base}")
         print("You can keep it or change it.")
         print("If you change to a new configuration, a database rebuild is advised.")
         print("Would you like to keep your existing configuration? (y/n): ", end="")
@@ -361,13 +366,28 @@ def setup_semantic_search(
     cli_enable_mineru = bool(getattr(cli_args, "mineru_enabled", False)) if cli_args is not None else False
     cli_tokens = list(getattr(cli_args, "mineru_token", []) or []) if cli_args is not None else []
     cli_model_version = getattr(cli_args, "mineru_model_version", "vlm") if cli_args is not None else "vlm"
+    cli_provider = str(getattr(cli_args, "mineru_provider", "") or "").strip().lower() if cli_args is not None else ""
+    cli_local_base_url = str(getattr(cli_args, "mineru_local_base_url", "") or "").strip() if cli_args is not None else ""
+    cli_local_backend = str(getattr(cli_args, "mineru_local_backend", "vlm") or "vlm").strip() if cli_args is not None else "vlm"
 
-    if cli_enable_mineru or cli_tokens:
+    cli_provider_selected = cli_provider in {"official_upload_batch", "local_api"}
+    cli_local_selected = bool(cli_local_base_url)
+
+    if cli_enable_mineru or cli_tokens or cli_provider_selected or cli_local_selected:
         mineru_enabled = True
         config["extraction_mode"] = "mineru"
     elif extraction_mode == "local":
         # Keep mineru config for compatibility, but disable interactive prompt in local mode.
-        mineru_enabled = bool(existing_mineru.get("enabled", False) and (existing_mineru.get("tokens") or []))
+        existing_local = existing_mineru.get("local_api", {}) if existing_mineru else {}
+        existing_local_ready = bool(
+            isinstance(existing_local, dict)
+            and existing_local.get("enabled")
+            and str(existing_local.get("base_url", "")).strip()
+        )
+        mineru_enabled = bool(
+            existing_mineru.get("enabled", False)
+            and ((existing_mineru.get("tokens") or []) or existing_local_ready)
+        )
     else:
         default_enabled = bool(existing_mineru.get("enabled", False))
         prompt = f"Enable MinerU (upload-batch) for PDF parsing? ({'Y/n' if default_enabled else 'y/N'}): "
@@ -376,7 +396,9 @@ def setup_semantic_search(
 
     mineru_cfg = {
         "enabled": mineru_enabled,
+        "provider": existing_mineru.get("provider", "official_upload_batch"),
         "mode": "upload_batch",
+        "fallback_providers": existing_mineru.get("fallback_providers", ["official_upload_batch"]),
         "batch_file_url": existing_mineru.get("batch_file_url", "https://mineru.net/api/v4/file-urls/batch"),
         "batch_result_url_template": existing_mineru.get(
             "batch_result_url_template",
@@ -387,11 +409,75 @@ def setup_semantic_search(
         "poll_timeout_seconds": int(existing_mineru.get("poll_timeout_seconds", 300)),
         "max_retries": int(existing_mineru.get("max_retries", 2)),
         "token_cooldown_seconds": int(existing_mineru.get("token_cooldown_seconds", 120)),
+        "local_api": existing_mineru.get("local_api", {
+            "enabled": False,
+            "base_url": "http://localhost:8000",
+            "submit_path": "/api/v1/tasks/submit",
+            "status_path_template": "/api/v1/tasks/{task_id}",
+            "data_path_template": "/api/v1/tasks/{task_id}/data",
+            "backend": "vlm",
+            "lang": "ch",
+            "method": "auto",
+            "formula_enable": True,
+            "table_enable": True,
+            "priority": 0,
+            "include_fields": "md",
+            "poll_interval_seconds": 2,
+            "poll_timeout_seconds": 300,
+        }),
     }
 
     tokens = []  # Initialize to avoid NameError in all branches
 
     if mineru_enabled and config["extraction_mode"] == "mineru":
+        current_provider = cli_provider or str(existing_mineru.get("provider", "official_upload_batch")).strip().lower()
+        if current_provider in {"upload_batch", "batch", "official"}:
+            current_provider = "official_upload_batch"
+        if current_provider not in {"official_upload_batch", "local_api"}:
+            current_provider = "official_upload_batch"
+        if cli_provider in {"official_upload_batch", "local_api"}:
+            use_local_provider = cli_provider == "local_api"
+        else:
+            print("Select MinerU provider:")
+            print("1. Official upload-batch API (requires token)")
+            print("2. Local docker API (no token required)")
+            provider_default = "2" if current_provider == "local_api" else "1"
+            while True:
+                provider_choice = input(f"Choose provider [default {provider_default}]: ").strip()
+                if provider_choice == "":
+                    provider_choice = provider_default
+                if provider_choice in {"1", "2"}:
+                    break
+                print("Please enter 1 or 2")
+            use_local_provider = provider_choice == "2"
+        mineru_cfg["provider"] = "local_api" if use_local_provider else "official_upload_batch"
+        mineru_cfg["fallback_providers"] = (
+            ["local_api", "official_upload_batch"]
+            if use_local_provider
+            else ["official_upload_batch", "local_api"]
+        )
+        local_cfg = dict(mineru_cfg.get("local_api", {}) or {})
+        local_cfg["enabled"] = use_local_provider
+        if use_local_provider:
+            default_base_url = str(local_cfg.get("base_url", "http://localhost:8000")).strip() or "http://localhost:8000"
+            entered_base_url = cli_local_base_url or input(f"Local MinerU base URL [{default_base_url}]: ").strip()
+            local_cfg["base_url"] = entered_base_url or default_base_url
+            default_backend = cli_local_backend or str(local_cfg.get("backend", "vlm")).strip() or "vlm"
+            entered_backend = (
+                cli_local_backend
+                if cli_provider in {"official_upload_batch", "local_api"}
+                else input(f"Local MinerU backend [{default_backend}]: ").strip()
+            )
+            local_cfg["backend"] = entered_backend or default_backend
+        mineru_cfg["local_api"] = local_cfg
+
+        if use_local_provider:
+            tokens = [t for t in (existing_mineru.get("tokens", []) or []) if t and t.strip()]
+            mineru_cfg["enabled"] = bool(local_cfg.get("base_url"))
+            mineru_cfg["tokens"] = tokens
+            config["mineru"] = mineru_cfg
+            return config
+
         if cli_tokens:
             tokens = [t.strip() for t in cli_tokens if t and t.strip()]
         else:
@@ -420,7 +506,16 @@ def setup_semantic_search(
         mineru_cfg["enabled"] = mineru_enabled and bool(tokens)
         mineru_cfg["tokens"] = tokens
     else:
-        mineru_cfg["enabled"] = bool(existing_mineru.get("enabled", False) and (existing_mineru.get("tokens") or []))
+        existing_local = existing_mineru.get("local_api", {}) if existing_mineru else {}
+        existing_local_ready = bool(
+            isinstance(existing_local, dict)
+            and existing_local.get("enabled")
+            and str(existing_local.get("base_url", "")).strip()
+        )
+        mineru_cfg["enabled"] = bool(
+            existing_mineru.get("enabled", False)
+            and ((existing_mineru.get("tokens") or []) or existing_local_ready)
+        )
         mineru_cfg["tokens"] = [t for t in (existing_mineru.get("tokens") or []) if t and t.strip()]
 
     config["mineru"] = mineru_cfg
@@ -613,6 +708,12 @@ def main(cli_args=None):
                         help="MinerU API token. Pass multiple times to configure multiple tokens.")
     parser.add_argument("--mineru-model-version", default="vlm",
                         help="MinerU model version (default: vlm)")
+    parser.add_argument("--mineru-provider", choices=["official_upload_batch", "local_api"],
+                        help="MinerU provider to use")
+    parser.add_argument("--mineru-local-base-url",
+                        help="Base URL for local MinerU docker API (e.g. http://localhost:8000)")
+    parser.add_argument("--mineru-local-backend", default="vlm",
+                        help="Local MinerU backend (default: vlm)")
 
     # If this is being called from CLI with existing args
     if cli_args is not None and hasattr(cli_args, 'no_local'):

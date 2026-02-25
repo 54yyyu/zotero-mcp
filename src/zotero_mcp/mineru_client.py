@@ -62,6 +62,24 @@ class MinerUConfig:
     show_progress: bool = False
 
 
+@dataclass
+class MinerULocalApiConfig:
+    base_url: str = "http://localhost:8000"
+    submit_path: str = "/api/v1/tasks/submit"
+    status_path_template: str = "/api/v1/tasks/{task_id}"
+    data_path_template: str = "/api/v1/tasks/{task_id}/data"
+    backend: str = "vlm"
+    lang: str = "ch"
+    method: str = "auto"
+    formula_enable: bool = True
+    table_enable: bool = True
+    priority: int = 0
+    include_fields: str = "md"
+    poll_interval_seconds: int = 2
+    poll_timeout_seconds: int = 300
+    show_progress: bool = False
+
+
 class MinerUTokenPool:
     """A tiny in-process token pool with cooldown."""
 
@@ -306,3 +324,131 @@ class MinerUBatchClient:
                 f"MinerU request failed after multiple attempts (last error type: {error_type})"
             )
         raise RecoverableMinerUError("No available MinerU token")
+
+
+class MinerULocalApiClient:
+    """Client for local MinerU docker API flow."""
+
+    def __init__(self, config: MinerULocalApiConfig):
+        self.config = config
+        self.base_url = (config.base_url or "").strip().rstrip("/")
+        if not self.base_url:
+            raise ValueError("MinerU local_api requires a non-empty base_url")
+
+    def _progress(self, message: str) -> None:
+        if not self.config.show_progress:
+            return
+        try:
+            sys.stderr.write(f"[MinerU:local] {message}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    def _url(self, path: str) -> str:
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self.base_url}{path}"
+
+    @staticmethod
+    def _extract_md(root: dict[str, Any]) -> str:
+        data = root.get("data")
+        if isinstance(data, dict):
+            # Local API status endpoint usually returns markdown in data.content.
+            for key in ("content", "md", "markdown", "text"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+        # Rare responses may return markdown at top level.
+        for key in ("md", "markdown", "text"):
+            value = root.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
+    def _submit(self, file_path: Path) -> str:
+        url = self._url(self.config.submit_path)
+        self._progress(f"Submitting task for '{file_path.name}'...")
+        with open(file_path, "rb") as f:
+            resp = requests.post(
+                url,
+                files={"file": (file_path.name, f, "application/pdf")},
+                data={
+                    "backend": self.config.backend,
+                    "lang": self.config.lang,
+                    "method": self.config.method,
+                    "formula_enable": str(bool(self.config.formula_enable)).lower(),
+                    "table_enable": str(bool(self.config.table_enable)).lower(),
+                    "priority": str(int(self.config.priority)),
+                },
+                timeout=60,
+            )
+        if resp.status_code >= 500:
+            raise RecoverableMinerUError(f"Local MinerU submit failed: HTTP {resp.status_code}")
+        if resp.status_code >= 400:
+            raise MinerUError(f"Local MinerU submit failed: HTTP {resp.status_code}")
+        root = resp.json() or {}
+        task_id = root.get("task_id")
+        if not task_id and isinstance(root.get("data"), dict):
+            task_id = root["data"].get("task_id")
+        if not task_id:
+            raise MinerUError("Local MinerU submit response missing task_id")
+        return str(task_id)
+
+    def _fetch_data_md(self, task_id: str) -> str:
+        path = self.config.data_path_template.format(task_id=task_id)
+        url = self._url(path)
+        resp = requests.get(
+            url,
+            params={"include_fields": self.config.include_fields, "include_metadata": "true"},
+            timeout=30,
+        )
+        if resp.status_code >= 500:
+            raise RecoverableMinerUError(f"Local MinerU data fetch failed: HTTP {resp.status_code}")
+        if resp.status_code >= 400:
+            raise MinerUError(f"Local MinerU data fetch failed: HTTP {resp.status_code}")
+        return self._extract_md(resp.json() or {})
+
+    def _poll(self, task_id: str) -> str:
+        path = self.config.status_path_template.format(task_id=task_id)
+        url = self._url(path)
+        start = time.time()
+        next_status_log_at = 0.0
+        self._progress("Polling local task status...")
+        while True:
+            resp = requests.get(url, timeout=30)
+            if resp.status_code >= 500:
+                raise RecoverableMinerUError(f"Local MinerU status failed: HTTP {resp.status_code}")
+            if resp.status_code >= 400:
+                raise MinerUError(f"Local MinerU status failed: HTTP {resp.status_code}")
+            root = resp.json() or {}
+            status = str(root.get("status", "")).strip().lower()
+            if status == "completed":
+                text = self._extract_md(root)
+                if text.strip():
+                    return text
+                text = self._fetch_data_md(task_id)
+                if text.strip():
+                    return text
+                raise MinerUError("Local MinerU completed but markdown is empty")
+            if status in {"failed", "error", "cancelled"}:
+                raise RecoverableMinerUError(
+                    f"Local MinerU task failed: {root.get('error_message') or root.get('message') or status}"
+                )
+            if time.time() - start > self.config.poll_timeout_seconds:
+                raise RecoverableMinerUError("Local MinerU poll timeout")
+            elapsed = int(time.time() - start)
+            if time.time() >= next_status_log_at:
+                self._progress(f"Current local status: {status or 'pending'} ({elapsed}s elapsed)")
+                next_status_log_at = time.time() + 15
+            time.sleep(max(1, int(self.config.poll_interval_seconds)))
+
+    def parse_pdf_to_markdown(self, file_path: Path, data_id: str) -> str:
+        del data_id  # local API does not use data_id
+        self._progress(f"Starting local MinerU parsing for '{file_path.name}'...")
+        try:
+            task_id = self._submit(file_path)
+            text = self._poll(task_id)
+            self._progress("Local MinerU parsing completed successfully.")
+            return text
+        except requests.RequestException as exc:
+            raise RecoverableMinerUError(f"Local MinerU network error: {exc.__class__.__name__}") from exc

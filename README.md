@@ -124,6 +124,12 @@ zotero-mcp setup --semantic-config-only
 
 When `extraction_mode` is not configured, behavior remains backward-compatible with existing `mineru.enabled` settings.
 
+**MinerU Providers (in `semantic_search.mineru`):**
+- `official_upload_batch` (default/compatible): official MinerU upload-batch API with token(s)
+- `local_api`: local docker API (`http://localhost:8000` by default)
+
+Local MinerU default backend is `vlm` (config path: `semantic_search.mineru.local_api.backend`).
+
 ### Using Semantic Search
 
 After setup, initialize your search database:

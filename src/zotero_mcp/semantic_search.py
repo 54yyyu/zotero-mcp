@@ -131,6 +131,7 @@ class ZoteroSemanticSearch:
 
     def _resolve_mineru_config(self, mineru_cfg: dict[str, Any]) -> dict[str, Any]:
         cfg = dict(mineru_cfg or {})
+        original_cfg = dict(mineru_cfg or {})
         # Env fallback for local testing.
         env_tokens = os.getenv("MINERU_TOKENS", "").strip()
         single_token = os.getenv("MINERU_TOKEN", "").strip()
@@ -140,12 +141,66 @@ class ZoteroSemanticSearch:
         if not tokens and single_token:
             tokens = [single_token]
         cfg["tokens"] = tokens
-        # Default to enabled when tokens are available unless explicitly disabled.
+
+        provider = str(cfg.get("provider") or "").strip().lower()
+        if provider in {"upload_batch", "batch", "official"}:
+            provider = "official_upload_batch"
+        if provider not in {"official_upload_batch", "local_api"}:
+            provider = "official_upload_batch"
+        cfg["provider"] = provider
+
+        local_cfg_raw = cfg.get("local_api") or {}
+        if not isinstance(local_cfg_raw, dict):
+            local_cfg_raw = {}
+        local_cfg = {
+            "enabled": bool(local_cfg_raw.get("enabled", provider == "local_api")),
+            "base_url": str(local_cfg_raw.get("base_url", "http://localhost:8000")).strip(),
+            "submit_path": str(local_cfg_raw.get("submit_path", "/api/v1/tasks/submit")).strip(),
+            "status_path_template": str(
+                local_cfg_raw.get("status_path_template", "/api/v1/tasks/{task_id}")
+            ).strip(),
+            "data_path_template": str(
+                local_cfg_raw.get("data_path_template", "/api/v1/tasks/{task_id}/data")
+            ).strip(),
+            # Keep local API backend default as vlm.
+            "backend": str(local_cfg_raw.get("backend", "vlm")).strip() or "vlm",
+            "lang": str(local_cfg_raw.get("lang", "ch")).strip() or "ch",
+            "method": str(local_cfg_raw.get("method", "auto")).strip() or "auto",
+            "formula_enable": bool(local_cfg_raw.get("formula_enable", True)),
+            "table_enable": bool(local_cfg_raw.get("table_enable", True)),
+            "priority": int(local_cfg_raw.get("priority", 0)),
+            "include_fields": str(local_cfg_raw.get("include_fields", "md")).strip() or "md",
+            "poll_interval_seconds": int(local_cfg_raw.get("poll_interval_seconds", 2)),
+            "poll_timeout_seconds": int(local_cfg_raw.get("poll_timeout_seconds", 300)),
+        }
+        cfg["local_api"] = local_cfg
+
+        explicit_fallbacks = cfg.get("fallback_providers")
+        if isinstance(explicit_fallbacks, list) and explicit_fallbacks:
+            fallbacks = [
+                str(v).strip().lower()
+                for v in explicit_fallbacks
+                if str(v).strip().lower() in {"local_api", "official_upload_batch"}
+            ]
+            cfg["fallback_providers"] = fallbacks if fallbacks else [provider]
+        else:
+            if provider == "local_api":
+                cfg["fallback_providers"] = ["local_api", "official_upload_batch"]
+            elif "local_api" in original_cfg:
+                cfg["fallback_providers"] = ["official_upload_batch", "local_api"]
+            else:
+                # Backward compatible default.
+                cfg["fallback_providers"] = ["official_upload_batch"]
+
+        has_official = bool(tokens)
+        has_local = bool(local_cfg.get("enabled") and local_cfg.get("base_url"))
+        has_any_provider = has_official or has_local
+        # Default to enabled when at least one provider is available unless explicitly disabled.
         explicit_enabled = cfg.get("enabled", None)
         if explicit_enabled is None:
-            cfg["enabled"] = bool(tokens)
+            cfg["enabled"] = has_any_provider
         else:
-            cfg["enabled"] = bool(explicit_enabled) and bool(tokens)
+            cfg["enabled"] = bool(explicit_enabled) and has_any_provider
         return cfg
 
     def _save_update_config(self) -> None:
@@ -1163,6 +1218,9 @@ class ZoteroSemanticSearch:
             "meta_chunk_enabled": self.meta_chunk_enabled,
             "mineru_enabled": self.extraction_mode == "mineru" and bool(self.mineru_config.get("enabled", False)),
             "mineru_token_count": len(self.mineru_config.get("tokens", [])) if self.extraction_mode == "mineru" else 0,
+            "mineru_provider": self.mineru_config.get("provider", "official_upload_batch"),
+            "mineru_fallback_providers": self.mineru_config.get("fallback_providers", []),
+            "mineru_local_base_url": (self.mineru_config.get("local_api", {}) or {}).get("base_url", ""),
         }
 
     def delete_item(self, item_key: str) -> bool:

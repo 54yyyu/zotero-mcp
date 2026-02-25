@@ -198,6 +198,12 @@ def main():
                              help="MinerU API token. Pass multiple times to configure token rotation.")
     setup_parser.add_argument("--mineru-model-version", default="vlm",
                              help="MinerU model version (default: vlm)")
+    setup_parser.add_argument("--mineru-provider", choices=["official_upload_batch", "local_api"],
+                             help="MinerU provider to use")
+    setup_parser.add_argument("--mineru-local-base-url",
+                             help="Base URL for local MinerU docker API (e.g. http://localhost:8000)")
+    setup_parser.add_argument("--mineru-local-backend", default="vlm",
+                             help="Local MinerU backend (default: vlm)")
 
     # Update database command
     update_db_parser = subparsers.add_parser("update-db", help="Update semantic search database")
@@ -360,6 +366,9 @@ def main():
                 print(f"  Meta chunk enabled: {status.get('meta_chunk_enabled', False)}")
                 print(f"  MinerU enabled: {status.get('mineru_enabled', False)}")
                 print(f"  MinerU tokens: {status.get('mineru_token_count', 0)}")
+                print(f"  MinerU provider: {status.get('mineru_provider', 'official_upload_batch')}")
+                print(f"  MinerU fallback: {status.get('mineru_fallback_providers', [])}")
+                print(f"  MinerU local base URL: {status.get('mineru_local_base_url', '')}")
                 print(f"  Locator rows: {status.get('locator_count', 0)}")
 
                 if collection_info.get('error'):
@@ -468,6 +477,9 @@ def main():
             print(f"- Meta chunk enabled: {status.get('meta_chunk_enabled', False)}")
             print(f"- MinerU enabled: {status.get('mineru_enabled', False)}")
             print(f"- MinerU tokens: {status.get('mineru_token_count', 0)}")
+            print(f"- MinerU provider: {status.get('mineru_provider', 'official_upload_batch')}")
+            print(f"- MinerU fallback: {status.get('mineru_fallback_providers', [])}")
+            print(f"- MinerU local base URL: {status.get('mineru_local_base_url', '')}")
             print(f"- Locator rows: {status.get('locator_count', 0)}")
             print(f"- Markdown store: {status.get('md_store_dir', 'Unknown')}")
 
@@ -618,6 +630,9 @@ def main():
                     print(f"Meta chunk enabled: {status.get('meta_chunk_enabled', False)}")
                     print(f"MinerU enabled: {status.get('mineru_enabled', False)}")
                     print(f"MinerU tokens: {status.get('mineru_token_count', 0)}")
+                    print(f"MinerU provider: {status.get('mineru_provider', 'official_upload_batch')}")
+                    print(f"MinerU fallback: {status.get('mineru_fallback_providers', [])}")
+                    print(f"MinerU local base URL: {status.get('mineru_local_base_url', '')}")
                     print(f"Locator rows: {status.get('locator_count', 0)}")
                     print(f"Markdown store: {status.get('md_store_dir', 'Unknown')}")
             except Exception as e:

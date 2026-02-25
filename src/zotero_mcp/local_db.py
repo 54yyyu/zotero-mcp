@@ -207,32 +207,15 @@ class LocalZoteroReader:
             return ""
 
     def _extract_text_from_pdf_via_mineru(self, file_path: Path, data_id: str) -> str:
-        """Try MinerU upload-batch parsing and return markdown text."""
+        """Try MinerU parsing via provider service and return markdown text."""
         if not self.mineru_config or not self.mineru_config.get("enabled"):
             return ""
-        tokens = self.mineru_config.get("tokens") or []
-        if not tokens:
-            return ""
         try:
-            from .mineru_client import MinerUConfig, MinerUBatchClient
+            from .mineru_service import MinerUService
 
-            cfg = MinerUConfig(
-                tokens=tokens,
-                model_version=self.mineru_config.get("model_version", "vlm"),
-                batch_file_url=self.mineru_config.get(
-                    "batch_file_url", "https://mineru.net/api/v4/file-urls/batch"
-                ),
-                batch_result_url_template=self.mineru_config.get(
-                    "batch_result_url_template",
-                    "https://mineru.net/api/v4/extract-results/batch/{batch_id}",
-                ),
-                poll_interval_seconds=int(self.mineru_config.get("poll_interval_seconds", 3)),
-                poll_timeout_seconds=int(self.mineru_config.get("poll_timeout_seconds", 300)),
-                max_retries=int(self.mineru_config.get("max_retries", 2)),
-                token_cooldown_seconds=int(self.mineru_config.get("token_cooldown_seconds", 120)),
+            return MinerUService(self.mineru_config).parse_pdf_to_markdown(
+                file_path=file_path, data_id=data_id
             )
-            client = MinerUBatchClient(cfg)
-            return client.parse_pdf_to_markdown(file_path=file_path, data_id=data_id)
         except Exception as e:
             logger.debug("MinerU parsing failed for %s: %s", file_path, e)
             return ""
