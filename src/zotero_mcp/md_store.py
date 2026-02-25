@@ -34,9 +34,16 @@ class MarkdownStore:
         if not key or "/" in key or "\\" in key or ".." in key:
             raise ValueError(f"Invalid {label}: {key!r} contains unsafe characters")
 
+    @staticmethod
+    def _validate_hash(doc_hash: str) -> None:
+        """Reject doc_hash values that are not lowercase hex strings."""
+        if not doc_hash or not all(c in "0123456789abcdef" for c in doc_hash):
+            raise ValueError(f"Invalid doc_hash: {doc_hash!r} must be a lowercase hex string")
+
     def _target_path(self, item_key: str, attachment_key: str, doc_hash: str) -> Path:
         self._validate_key(item_key, "item_key")
         self._validate_key(attachment_key, "attachment_key")
+        self._validate_hash(doc_hash)
         dir_path = self.base_dir / item_key / attachment_key
         dir_path.mkdir(parents=True, exist_ok=True)
         if zstd is not None:

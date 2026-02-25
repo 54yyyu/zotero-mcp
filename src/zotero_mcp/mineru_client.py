@@ -155,7 +155,9 @@ class MinerUBatchClient:
         self._check_response(resp)
         root = resp.json() or {}
         if int(root.get("code", 0)) != 0:
-            raise MinerUError(f"MinerU create-batch returned non-zero code: {root}")
+            error_code = root.get("code")
+            error_msg = root.get("msg") or root.get("message") or "unknown error"
+            raise MinerUError(f"MinerU create-batch returned non-zero code {error_code}: {error_msg}")
         data = root.get("data", {})
         batch_id = data.get("batch_id")
         urls = data.get("file_urls", [])
@@ -167,7 +169,7 @@ class MinerUBatchClient:
             elif isinstance(first, dict):
                 upload_url = first.get("url") or first.get("upload_url") or ""
         if not batch_id or not upload_url:
-            raise MinerUError(f"Unexpected MinerU create-batch response: {resp.text[:400]}")
+            raise MinerUError("Unexpected MinerU create-batch response: missing batch_id or upload_url")
         self._progress(f"Batch created: {batch_id}")
         return str(batch_id), upload_url
 

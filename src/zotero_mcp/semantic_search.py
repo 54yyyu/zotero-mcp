@@ -845,6 +845,9 @@ class ZoteroSemanticSearch:
                         stats["errors"] += 1
                         # Skip further processing for this item to avoid mixing old and new chunks.
                         continue
+                    # NOTE: ChromaDB has no transaction support. If the upsert below fails
+                    # after this deletion, the item's chunks will be absent from the index
+                    # until the next successful update-db run. This is a known limitation.
                     if self.locator_store is not None:
                         self.locator_store.delete_item(item_key)
                     if chunk_docs:
