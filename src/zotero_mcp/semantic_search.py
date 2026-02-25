@@ -915,8 +915,8 @@ class ZoteroSemanticSearch:
                     "section_path": chunk.section_path,
                     "char_start": chunk.char_start,
                     "char_end": chunk.char_end,
-                    "page_start": chunk.page_start or -1,
-                    "page_end": chunk.page_end or -1,
+                    "page_start": chunk.page_start if chunk.page_start is not None else -1,
+                    "page_end": chunk.page_end if chunk.page_end is not None else -1,
                     "md_hash": md_hash,
                 }
             )

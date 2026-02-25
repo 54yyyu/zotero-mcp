@@ -186,7 +186,7 @@ class MinerUBatchClient:
         parsed_url = urlparse(zip_url)
         if parsed_url.scheme != "https":
             raise MinerUError(f"Invalid zip URL scheme: {parsed_url.scheme}. Only HTTPS is allowed.")
-        # Validate netloc to ensure it's a proper domain (not empty or IP)
+        # Validate netloc: ensure it's not empty and doesn't contain auth (@)
         if not parsed_url.netloc or "@" in parsed_url.netloc:
             raise MinerUError(f"Invalid zip URL netloc: {parsed_url.netloc}")
 
