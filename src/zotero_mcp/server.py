@@ -12,6 +12,8 @@ import uuid
 import asyncio
 import json
 import re
+import xml.etree.ElementTree as ET
+from urllib.parse import urljoin
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -93,6 +95,47 @@ async def server_lifespan(server: FastMCP):
 
 # Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
 mcp = FastMCP("Zotero", lifespan=server_lifespan)
+
+
+def _normalize_str_list_input(
+    value: Union[List[str], str, None],
+    *,
+    field_name: str
+) -> List[str]:
+    """Normalize list-like user input into a trimmed list of non-empty strings."""
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+
+        parsed: object = None
+        parsed_ok = False
+        try:
+            parsed = json.loads(raw)
+            parsed_ok = True
+        except json.JSONDecodeError:
+            parsed_ok = False
+
+        if parsed_ok:
+            if isinstance(parsed, list):
+                return [str(v).strip() for v in parsed if str(v).strip()]
+            if isinstance(parsed, str):
+                parsed_str = parsed.strip()
+                return [parsed_str] if parsed_str else []
+            raise ValueError(f"{field_name} must be a list of strings or a string")
+
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        if len(parts) > 1:
+            return parts
+        return [raw]
+
+    raise ValueError(f"{field_name} must be a list of strings or a string")
 
 
 @mcp.tool(
@@ -2305,30 +2348,35 @@ def search_notes(
 
 @mcp.tool(
     name="zotero_add_by_identifier",
-    description="Add new Zotero item(s) by identifier (DOI, ISBN, arXiv ID, or PMID)."
+    description="Add new Zotero item(s) by DOI or arXiv identifier."
 )
 def add_by_identifier(
     identifiers: Union[List[str], str],
-    collections: Optional[List[str]] = None,
+    collections: Optional[Union[List[str], str]] = None,
     collection_names: Optional[Union[List[str], str]] = None,
     tags: Optional[Union[List[str], str]] = None,
     attach_pdfs: bool = True,
+    attach_mode: Literal["auto", "import_file", "linked_url"] = "auto",
     *,
     ctx: Context
 ) -> str:
     """
-    Create Zotero items using identifiers like DOI, ISBN, arXiv, or PMID.
+    Create Zotero items using DOI or arXiv identifiers.
 
     Args:
         identifiers: Single identifier or list/JSON string of identifiers
         collections: Collection keys to add created items to
         collection_names: Collection names to resolve and add created items to
         tags: Optional tags to apply to the created items
-        attach_pdfs: If true, attempts to attach a PDF as a linked URL when discoverable
+        attach_pdfs: If true, attempts to attach a PDF when discoverable
+        attach_mode: PDF attachment mode:
+            - auto: try imported file attachment first, then linked URL fallback
+            - import_file: try imported file only
+            - linked_url: use linked URL attachment only
         ctx: MCP context
 
     Returns:
-        Markdown summary with created item keys or errors per identifier
+        Markdown summary with created item keys or errors per identifier.
     """
     def _as_list(value) -> List[str]:
         if value is None:
@@ -2352,47 +2400,67 @@ def add_by_identifier(
             return [s]
         return [str(value).strip()]
 
-    def _detect_id_type(raw: str) -> (str, str):
-        s = raw.strip()
-        s_low = s.lower()
-        # Remove common prefixes
-        for pref in ["doi:", "pmid:", "arxiv:"]:
-            if s_low.startswith(pref):
-                s = s[len(pref):].strip()
-                s_low = s.lower()
-                break
-        # URL forms
-        try:
-            if s_low.startswith("http://") or s_low.startswith("https://"):
-                # DOI URL
-                m = re.search(r"doi\.org/(10\.[^\s/#]+/.+)$", s_low)
-                if m:
-                    return ("doi", m.group(1))
-                # arXiv URL
-                m = re.search(r"arxiv\.org/(abs|pdf)/([\w\.-]+)", s_low)
-                if m:
-                    return ("arxiv", m.group(2).replace('.pdf',''))
-                # PubMed URL
-                m = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)/?", s_low)
-                if m:
-                    return ("pmid", m.group(1))
-        except Exception:
-            pass
-        # DOI
-        if s_low.startswith("10.") and "/" in s:
-            return ("doi", s)
-        # arXiv ID
-        # Accept forms like 2101.00001, 2101.00001v2, hep-th/9901001
-        if re.match(r"^(\d{4}\.\d{4,5}(v\d+)?)$", s) or re.match(r"^[a-zA-Z-]+/\d{7}$", s):
-            return ("arxiv", s)
-        # PMID (all digits, reasonable length)
-        if re.match(r"^\d{5,9}$", s):
-            return ("pmid", s)
-        # ISBN 10/13 (strip hyphens/spaces, allow trailing X)
-        s_isbn = re.sub(r"[^0-9Xx]", "", s)
-        if re.match(r"^(\d{9}[\dXx]|\d{13})$", s_isbn):
-            return ("isbn", s_isbn.upper())
-        return ("unknown", s)
+    def _normalize_doi_candidate(raw: str) -> Optional[str]:
+        s = (raw or "").strip()
+        if not s:
+            return None
+
+        # Strip common prefix
+        if s.lower().startswith("doi:"):
+            s = s[4:].strip()
+
+        # DOI URL format
+        if s.lower().startswith("http://") or s.lower().startswith("https://"):
+            m = re.search(r"doi\.org/(10\.\d{4,9}/[^\s?#]+)", s, flags=re.IGNORECASE)
+            if not m:
+                return None
+            s = m.group(1)
+
+        # Trim common trailing punctuation from copied text
+        s = s.rstrip(".,);]")
+
+        # Basic DOI shape validation
+        if re.match(r"^10\.\d{4,9}/\S+$", s):
+            return s
+        return None
+
+    def _normalize_arxiv_candidate(raw: str) -> Optional[str]:
+        s = (raw or "").strip()
+        if not s:
+            return None
+
+        if s.lower().startswith("arxiv:"):
+            s = s[6:].strip()
+
+        # URL forms:
+        # - https://arxiv.org/abs/2401.00001
+        # - https://arxiv.org/pdf/2401.00001.pdf
+        if s.lower().startswith("http://") or s.lower().startswith("https://"):
+            m = re.search(
+                r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|[a-z\-]+/\d{7}(?:v\d+)?)(?:\.pdf)?",
+                s,
+                flags=re.IGNORECASE,
+            )
+            if not m:
+                return None
+            s = m.group(1)
+
+        if re.match(r"^[0-9]{4}\.[0-9]{4,5}(?:v\d+)?$", s):
+            return s
+        if re.match(r"^[a-z\-]+/\d{7}(?:v\d+)?$", s, flags=re.IGNORECASE):
+            return s
+        return None
+
+    def _arxiv_id_from_doi_namespace(doi: str) -> Optional[str]:
+        """
+        Detect arXiv DOI namespace forms like:
+        - 10.48550/arXiv.2603.02553
+        - 10.48550/arXiv.hep-th/9901001
+        """
+        m = re.match(r"^10\.48550/arxiv\.(.+)$", doi or "", flags=re.IGNORECASE)
+        if not m:
+            return None
+        return _normalize_arxiv_candidate(m.group(1))
 
     def _first_or(seq, default=""):
         if isinstance(seq, list) and seq:
@@ -2441,7 +2509,7 @@ def add_by_identifier(
             })
         return creators
 
-    def _fetch_crossref(doi: str) -> Tuple[Optional[Dict[str, any]], Optional[str]]:
+    def _fetch_crossref(doi: str) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
         url = f"https://api.crossref.org/works/{requests.utils.quote(doi)}"
         headers = {"User-Agent": "zotero-mcp (identifier import)"}
         r = requests.get(url, headers=headers, timeout=20)
@@ -2469,7 +2537,7 @@ def add_by_identifier(
         issue = msg.get('issue') or ''
         publisher = msg.get('publisher') or ''
         url_final = msg.get('URL') or (f"https://doi.org/{doi}")
-        data: Dict[str, any] = {
+        data: Dict[str, object] = {
             "itemType": item_type,
             "title": title or f"DOI {doi}",
             "creators": creators,
@@ -2504,103 +2572,180 @@ def add_by_identifier(
             pass
         return data, pdf_url
 
-    def _fetch_openlibrary(isbn: str) -> Optional[Dict[str, any]]:
-        # Prefer the data endpoint that includes author names
-        url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
-        r = requests.get(url, timeout=20)
+    def _fetch_arxiv(arxiv_id: str) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+        url = (
+            "https://export.arxiv.org/api/query"
+            f"?search_query=id:{requests.utils.quote(arxiv_id)}&max_results=1"
+        )
+        r = requests.get(
+            url,
+            timeout=20,
+            headers={"User-Agent": "zotero-mcp (identifier import)"},
+        )
         r.raise_for_status()
-        blob = r.json() or {}
-        entry = blob.get(f"ISBN:{isbn}") or {}
-        title = entry.get('title', '')
-        authors = entry.get('authors', [])
-        creators = _authors_from_names([
-            {"literal": a.get('name', '')} for a in authors
-        ])
-        publishers = entry.get('publishers', [])
-        publisher = publishers[0].get('name') if publishers else ''
-        pub_date = entry.get('publish_date', '')
-        pages = (entry.get('pagination') or '').strip()
-        data = {
-            "itemType": "book",
-            "title": title or f"ISBN {isbn}",
-            "creators": creators,
-            "ISBN": isbn,
-        }
-        if publisher:
-            data["publisher"] = publisher
-        if pub_date:
-            data["date"] = pub_date
-        if pages:
-            data["pages"] = pages
-        return data
 
-    def _fetch_pmid(pmid: str) -> Optional[Dict[str, any]]:
-        url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={pmid}&retmode=json"
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        data = r.json() or {}
-        res = (data.get('result') or {}).get(pmid, {})
-        if not res:
-            return None
-        title = res.get('title', '')
-        journal = res.get('fulljournalname', '')
-        pubdate = res.get('pubdate', '')
-        volume = res.get('volume', '')
-        issue = res.get('issue', '')
-        pages = res.get('pages', '')
-        authors = res.get('authors', [])
-        creators = _authors_from_names([
-            {"literal": a.get('name', '')} for a in authors if a.get('name')
-        ])
-        url_pm = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-        item = {
-            "itemType": "journalArticle",
-            "title": title or f"PMID {pmid}",
-            "creators": creators,
-            "url": url_pm,
-        }
-        if journal:
-            item["publicationTitle"] = journal
-        if pubdate:
-            item["date"] = pubdate
-        if volume:
-            item["volume"] = volume
-        if issue:
-            item["issue"] = issue
-        if pages:
-            item["pages"] = pages
-        return item
-
-    def _fetch_arxiv(arx: str) -> Optional[Dict[str, any]]:
-        url = f"http://export.arxiv.org/api/query?search_query=id:{arx}"
-        r = requests.get(url, timeout=20, headers={"User-Agent": "zotero-mcp (identifier import)"})
-        r.raise_for_status()
         root = ET.fromstring(r.text)
-        # Namespaces
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        entry = root.find('atom:entry', ns)
-        if entry is None:
-            return None
-        title = (entry.findtext('atom:title', default='', namespaces=ns) or '').strip()
-        pub = (entry.findtext('atom:published', default='', namespaces=ns) or '').strip()
-        url_final = (entry.findtext('atom:id', default='', namespaces=ns) or '').strip()
-        authors = [a.findtext('atom:name', default='', namespaces=ns) or '' for a in entry.findall('atom:author', ns)]
-        creators = _authors_from_names([{ "literal": n } for n in authors if n])
-        item = {
-            "itemType": "preprint",
-            "title": title or f"arXiv:{arx}",
-            "creators": creators,
-            "url": url_final or f"https://arxiv.org/abs/{arx}",
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "arxiv": "http://arxiv.org/schemas/atom",
         }
-        if pub:
-            item["date"] = pub
-        return item
+        entry = root.find("atom:entry", ns)
+        if entry is None:
+            return None, None
+
+        title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
+        published = (entry.findtext("atom:published", default="", namespaces=ns) or "").strip()
+        abs_url = (entry.findtext("atom:id", default="", namespaces=ns) or "").strip()
+        summary = (entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
+        doi = (entry.findtext("arxiv:doi", default="", namespaces=ns) or "").strip()
+
+        authors = []
+        for author in entry.findall("atom:author", ns):
+            name = (author.findtext("atom:name", default="", namespaces=ns) or "").strip()
+            if name:
+                authors.append({"literal": name})
+
+        creators = _authors_from_names(authors)
+        item_data: Dict[str, object] = {
+            "itemType": "preprint",
+            "title": title or f"arXiv:{arxiv_id}",
+            "creators": creators,
+            "url": abs_url or f"https://arxiv.org/abs/{arxiv_id}",
+        }
+        if published:
+            item_data["date"] = published[:10]
+        if summary:
+            item_data["abstractNote"] = summary
+        if doi:
+            item_data["DOI"] = doi
+
+        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+        return item_data, pdf_url
+
+    def _discover_pdf_from_landing_page(landing_url: str) -> Optional[str]:
+        """Best-effort PDF discovery from DOI landing pages."""
+        try:
+            resp = requests.get(
+                landing_url,
+                timeout=20,
+                headers={"User-Agent": "zotero-mcp (identifier import)"},
+                allow_redirects=True,
+            )
+            if not resp.ok:
+                return None
+
+            html = resp.text or ""
+
+            # Common scholarly metadata tag
+            m_meta = re.search(
+                r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)["\']',
+                html,
+                flags=re.IGNORECASE,
+            )
+            if m_meta:
+                return urljoin(resp.url, m_meta.group(1).strip())
+
+            # Generic href fallback
+            m_href = re.search(
+                r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']',
+                html,
+                flags=re.IGNORECASE,
+            )
+            if m_href:
+                return urljoin(resp.url, m_href.group(1).strip())
+        except Exception:
+            return None
+        return None
+
+    def _download_pdf_to_temp(pdf_url: str) -> Tuple[Optional[str], bool, Optional[str]]:
+        """Download candidate PDF URL to a temporary file."""
+        import tempfile
+
+        try:
+            resp = requests.get(
+                pdf_url,
+                timeout=30,
+                allow_redirects=True,
+                headers={"User-Agent": "zotero-mcp (identifier import)"},
+                stream=True,
+            )
+            if not resp.ok:
+                return None, False, f"download failed (HTTP {resp.status_code})"
+
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            mime_ok = "pdf" in ctype or pdf_url.lower().endswith(".pdf")
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpf:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        tmpf.write(chunk)
+                return tmpf.name, mime_ok, None
+        except Exception as e:
+            return None, False, f"download error: {e}"
+
+    def _attach_pdf_linked_url(zot_client, parent_item_key: str, pdf_url: str) -> Tuple[bool, str]:
+        """Attach PDF as linked URL."""
+        try:
+            probe = requests.head(pdf_url, timeout=10, allow_redirects=True)
+            ctype = (probe.headers.get("Content-Type") or "").lower()
+            if not (probe.ok and ("pdf" in ctype or pdf_url.lower().endswith(".pdf"))):
+                return False, "linked_url rejected (not a PDF URL)"
+
+            attachment_item = {
+                "itemType": "attachment",
+                "parentItem": parent_item_key,
+                "linkMode": "linked_url",
+                "title": "PDF",
+                "url": pdf_url,
+                "contentType": "application/pdf",
+            }
+            att_res = zot_client.create_items([attachment_item])
+            if att_res.get("success"):
+                return True, "linked_url"
+            return False, f"linked_url create failed: {att_res}"
+        except Exception as e:
+            return False, f"linked_url error: {e}"
+
+    def _attach_pdf_imported(zot_client, parent_item_key: str, pdf_path: str) -> Tuple[bool, str]:
+        """Attempt imported file attachment through available pyzotero upload helpers."""
+        fn = getattr(zot_client, "attachment_simple", None)
+        if not callable(fn):
+            return False, "import_file unsupported by active zotero client"
+
+        call_attempts = [
+            lambda: fn([pdf_path], parentid=parent_item_key),
+            lambda: fn([pdf_path], parent_item=parent_item_key),
+            lambda: fn([pdf_path], parent_item_key),
+            lambda: fn(pdf_path, parentid=parent_item_key),
+            lambda: fn(pdf_path, parent_item=parent_item_key),
+            lambda: fn(pdf_path, parent_item_key),
+        ]
+        last_err: Optional[Exception] = None
+        for attempt in call_attempts:
+            try:
+                result = attempt()
+                # pyzotero upload helpers may return dict/None/other truthy values on success
+                if isinstance(result, dict):
+                    if result.get("success") or result.get("successful") or result.get("key"):
+                        return True, "imported"
+                else:
+                    return True, "imported"
+            except TypeError as e:
+                last_err = e
+                continue
+            except Exception as e:
+                last_err = e
+                continue
+        return False, f"import_file failed: {last_err or 'unknown error'}"
 
     try:
         # Prepare inputs
         id_list = _as_list(identifiers)
         if not id_list:
             return "Error: identifiers cannot be empty"
+        if attach_mode not in {"auto", "import_file", "linked_url"}:
+            return "Error: attach_mode must be one of: auto, import_file, linked_url"
+        ctx.info(f"PDF attachment configuration: attach_pdfs={attach_pdfs}, attach_mode={attach_mode}")
 
         tag_list = _as_list(tags)
 
@@ -2608,7 +2753,7 @@ def add_by_identifier(
         zot = get_zotero_client()
         resolved_collections: List[str] = []
         if collections:
-            resolved_collections.extend(collections)
+            resolved_collections.extend(_as_list(collections))
         if collection_names:
             names = _as_list(collection_names)
             if names:
@@ -2636,46 +2781,36 @@ def add_by_identifier(
         created_count = 0
 
         for ident in id_list:
-            id_type, value = _detect_id_type(ident)
-            ctx.info(f"Processing identifier '{ident}' detected as {id_type}")
+            doi = _normalize_doi_candidate(ident)
+            arxiv_id = _normalize_arxiv_candidate(ident)
+            if doi and not arxiv_id:
+                arxiv_id = _arxiv_id_from_doi_namespace(doi)
+            ctx.info(f"Processing identifier '{ident}'")
 
             try:
-                item_data = None
-                pdf_hint: Optional[str] = None
-                if id_type == 'doi':
-                    item_data, pdf_hint = _fetch_crossref(value)
-                elif id_type == 'isbn':
-                    item_data = _fetch_openlibrary(value)
-                elif id_type == 'pmid':
-                    item_data = _fetch_pmid(value)
-                elif id_type == 'arxiv':
-                    item_data = _fetch_arxiv(value)
-                    pdf_hint = f"https://arxiv.org/pdf/{value}.pdf"
-                elif value.lower().startswith("http://") or value.lower().startswith("https://"):
-                    # Try to discover an embedded DOI in the page content
-                    try:
-                        resp = requests.get(value, timeout=20, headers={"User-Agent": "zotero-mcp (identifier import)"})
-                        if resp.ok:
-                            # ACL Anthology heuristic
-                            m_acl = re.search(r"aclanthology\.org/([A-Za-z0-9\-]+)/?", value, flags=re.IGNORECASE)
-                            if m_acl:
-                                slug = m_acl.group(1)
-                                pdf_hint = f"https://aclanthology.org/{slug}.pdf"
-                            m = re.search(r'''doi.org/(10.[^\s'"<>#]+/[\w-./:;()]+)''', resp.text, flags=re.IGNORECASE)
-                            if m:
-                                discovered_doi = m.group(1)
-                                ctx.info(f"Discovered DOI {discovered_doi} in page; importing via Crossref")
-                                item_data, cr_pdf = _fetch_crossref(discovered_doi)
-                                pdf_hint = pdf_hint or cr_pdf
-                    except requests.RequestException as page_err:
-                        ctx.warn(f"Could not fetch page to discover DOI: {page_err}")
-                else:
-                    results_md.append(f"- {ident}: Unsupported or unrecognized identifier format")
+                if not doi and not arxiv_id:
+                    results_md.append(
+                        f"- {ident}: Unsupported identifier format. "
+                        "Supported formats: DOI (`10.x/...`, `https://doi.org/...`) "
+                        "or arXiv (`arXiv:2401.00001`, `https://arxiv.org/abs/...`)."
+                    )
                     continue
+
+                pdf_hint: Optional[str] = None
+                if doi and not arxiv_id:
+                    item_data, pdf_hint = _fetch_crossref(doi)
+                else:
+                    item_data, pdf_hint = _fetch_arxiv(arxiv_id or "")
+                    if doi and item_data and not item_data.get("DOI"):
+                        item_data["DOI"] = doi
 
                 if not item_data:
                     results_md.append(f"- {ident}: No metadata found")
                     continue
+
+                if doi and attach_pdfs and not pdf_hint:
+                    landing_url = str(item_data.get("url") or f"https://doi.org/{doi}")
+                    pdf_hint = _discover_pdf_from_landing_page(landing_url)
 
                 # Attach tags if given
                 if tag_list:
@@ -2689,29 +2824,36 @@ def add_by_identifier(
                 if "success" in result and result["success"]:
                     item_key = next(iter(result["success"].values()))
 
-                    # Attach PDF as linked URL if requested and available
-                    if attach_pdfs and pdf_hint:
-                        try:
-                            probe = requests.head(pdf_hint, timeout=10, allow_redirects=True)
-                            ctype = (probe.headers.get('Content-Type') or '').lower()
-                            if probe.ok and ('pdf' in ctype or pdf_hint.lower().endswith('.pdf')):
-                                attachment_item = {
-                                    "itemType": "attachment",
-                                    "parentItem": item_key,
-                                    "linkMode": "linked_url",
-                                    "title": "PDF",
-                                    "url": pdf_hint,
-                                    "contentType": "application/pdf",
-                                }
-                                att_res = zot.create_items([attachment_item])
-                                if att_res.get('success'):
-                                    ctx.info("Attached PDF as linked URL")
+                    # Attach PDF according to attachment mode
+                    pdf_status = "not requested"
+                    if attach_pdfs:
+                        if not pdf_hint:
+                            pdf_status = "failed (no discoverable PDF URL)"
+                        elif attach_mode == "linked_url":
+                            ok, detail = _attach_pdf_linked_url(zot, item_key, pdf_hint)
+                            pdf_status = "linked_url" if ok else f"failed ({detail})"
+                        else:
+                            file_path = None
+                            try:
+                                file_path, mime_ok, dl_err = _download_pdf_to_temp(pdf_hint)
+                                if not file_path:
+                                    pdf_status = f"failed ({dl_err})"
+                                elif not mime_ok:
+                                    pdf_status = "failed (downloaded resource is not PDF)"
                                 else:
-                                    ctx.warn(f"Failed to attach PDF link: {att_res}")
-                            else:
-                                ctx.warn(f"PDF URL not accessible or not a PDF: {pdf_hint}")
-                        except Exception as attach_err:
-                            ctx.warn(f"Error attaching PDF: {attach_err}")
+                                    ok, detail = _attach_pdf_imported(zot, item_key, file_path)
+                                    if ok:
+                                        pdf_status = "imported"
+                                    elif attach_mode == "auto":
+                                        ctx.warn(f"import_file path failed; falling back to linked_url: {detail}")
+                                        ok2, detail2 = _attach_pdf_linked_url(zot, item_key, pdf_hint)
+                                        pdf_status = "linked_url" if ok2 else f"failed ({detail}; fallback {detail2})"
+                                    else:
+                                        pdf_status = f"failed ({detail})"
+                            finally:
+                                if file_path and os.path.exists(file_path):
+                                    with suppress(Exception):
+                                        os.remove(file_path)
 
                     # Add to collections
                     added_to = []
@@ -2732,7 +2874,7 @@ def add_by_identifier(
                     extra = f" (collections: {', '.join(added_to)})" if added_to else ""
                     if errors:
                         extra += f"; warnings: {'; '.join(errors)}"
-                    results_md.append(f"- {ident}: created item key `{item_key}`{extra}")
+                    results_md.append(f"- {ident}: created item key `{item_key}`{extra}; pdf: {pdf_status}")
                 else:
                     error_details = result.get('failed', {})
                     if error_details:
@@ -2954,16 +3096,18 @@ def create_item(
             if not isinstance(collections, list):
                 return f"Error: collections must be a Python list of strings"
 
-        # Fix collection_names if passed as JSON string
+        # Fix collection_names if passed as JSON string / plain string / comma-separated string
         if collection_names is not None:
-            if isinstance(collection_names, str):
-                try:
-                    collection_names = json.loads(collection_names.strip())
-                    ctx.info(f"✓ Auto-corrected collection_names from JSON string to Python list")
-                except json.JSONDecodeError as e:
-                    return f"Error: collection_names must be a list of strings. Parse error: {str(e)}"
-            if not isinstance(collection_names, list):
-                return f"Error: collection_names must be a Python list of strings"
+            try:
+                collection_names = _normalize_str_list_input(
+                    collection_names, field_name="collection_names"
+                )
+                ctx.info(
+                    "✓ Auto-corrected collection_names to Python list "
+                    f"({len(collection_names)} value(s))"
+                )
+            except ValueError as e:
+                return f"Error: {str(e)}"
 
         # Fix extra_fields if passed as JSON string
         if extra_fields is not None:
@@ -3235,50 +3379,68 @@ def update_item(
         zot = get_zotero_client()
 
         # Input validation and auto-correction for common mistakes
-        # Fix tags if passed as JSON string
-        if tags is not None:
-            if isinstance(tags, str):
-                tags_stripped = tags.strip()
-                try:
-                    tags = json.loads(tags_stripped)
-                    ctx.info(f"✓ Auto-corrected tags from JSON string to Python list")
-                except json.JSONDecodeError:
-                    if ',' in tags_stripped:
-                        tags = [tag.strip() for tag in tags_stripped.split(',') if tag.strip()]
-                        ctx.info(f"✓ Auto-corrected tags from comma-separated string to Python list")
-                    else:
-                        tags = [tags_stripped] if tags_stripped else []
-                        ctx.info(f"✓ Auto-corrected tags from single string to Python list")
+        def _normalize_update_tags_input(
+            value: Optional[Union[List[str], str]],
+            field_name: str,
+        ) -> Tuple[Optional[List[str]], Optional[str]]:
+            if value is None:
+                return None, None
 
-        # Fix add_tags if passed as JSON string
-        if add_tags is not None:
-            if isinstance(add_tags, str):
-                add_tags_stripped = add_tags.strip()
+            parsed_value: object = value
+            parsed_from_json = False
+            if isinstance(value, str):
+                raw = value.strip()
                 try:
-                    add_tags = json.loads(add_tags_stripped)
-                    ctx.info(f"✓ Auto-corrected add_tags from JSON string to Python list")
+                    parsed_value = json.loads(raw)
+                    parsed_from_json = True
+                    ctx.info(f"✓ Auto-corrected {field_name} from JSON string to Python list")
                 except json.JSONDecodeError:
-                    if ',' in add_tags_stripped:
-                        add_tags = [tag.strip() for tag in add_tags_stripped.split(',') if tag.strip()]
-                        ctx.info(f"✓ Auto-corrected add_tags from comma-separated string to Python list")
+                    if "," in raw:
+                        parsed_value = [tag.strip() for tag in raw.split(",") if tag.strip()]
+                        ctx.info(
+                            f"✓ Auto-corrected {field_name} from comma-separated string to Python list"
+                        )
                     else:
-                        add_tags = [add_tags_stripped] if add_tags_stripped else []
-                        ctx.info(f"✓ Auto-corrected add_tags from single string to Python list")
+                        parsed_value = [raw] if raw else []
+                        ctx.info(f"✓ Auto-corrected {field_name} from single string to Python list")
 
-        # Fix remove_tags if passed as JSON string
-        if remove_tags is not None:
-            if isinstance(remove_tags, str):
-                remove_tags_stripped = remove_tags.strip()
-                try:
-                    remove_tags = json.loads(remove_tags_stripped)
-                    ctx.info(f"✓ Auto-corrected remove_tags from JSON string to Python list")
-                except json.JSONDecodeError:
-                    if ',' in remove_tags_stripped:
-                        remove_tags = [tag.strip() for tag in remove_tags_stripped.split(',') if tag.strip()]
-                        ctx.info(f"✓ Auto-corrected remove_tags from comma-separated string to Python list")
-                    else:
-                        remove_tags = [remove_tags_stripped] if remove_tags_stripped else []
-                        ctx.info(f"✓ Auto-corrected remove_tags from single string to Python list")
+            if parsed_from_json and not isinstance(parsed_value, list):
+                return (
+                    None,
+                    f"Error: {field_name} must be a list of strings "
+                    "(JSON arrays only when passing JSON).",
+                )
+
+            if not isinstance(parsed_value, list):
+                return None, f"Error: {field_name} must be a list of strings."
+
+            normalized: List[str] = []
+            for i, tag_value in enumerate(parsed_value):
+                if not isinstance(tag_value, str):
+                    return (
+                        None,
+                        f"Error: {field_name} entries must all be strings. "
+                        f"Entry {i + 1} is {type(tag_value).__name__}.",
+                    )
+                stripped = tag_value.strip()
+                if stripped:
+                    normalized.append(stripped)
+
+            return normalized, None
+
+        tags, tags_error = _normalize_update_tags_input(tags, "tags")
+        if tags_error:
+            return tags_error
+
+        add_tags, add_tags_error = _normalize_update_tags_input(add_tags, "add_tags")
+        if add_tags_error:
+            return add_tags_error
+
+        remove_tags, remove_tags_error = _normalize_update_tags_input(
+            remove_tags, "remove_tags"
+        )
+        if remove_tags_error:
+            return remove_tags_error
 
         # Fix creators if passed as JSON string
         if creators is not None:
@@ -3315,23 +3477,29 @@ def update_item(
 
                 ctx.info(f"Validated {len(creators)} creator(s) successfully")
 
-        # Fix collections if passed as JSON string
+        # Fix collections if passed as JSON string / plain string / comma-separated string
         if collections is not None:
-            if isinstance(collections, str):
-                try:
-                    collections = json.loads(collections)
-                    ctx.info(f"Auto-corrected collections from JSON string to list")
-                except json.JSONDecodeError:
-                    return f"Error: collections parameter must be a list of strings, not a JSON string."
+            try:
+                collections = _normalize_str_list_input(collections, field_name="collections")
+                ctx.info(
+                    "Auto-corrected collections to list "
+                    f"({len(collections)} value(s))"
+                )
+            except ValueError as e:
+                return f"Error: {str(e)}"
 
-        # Fix collection_names if passed as JSON string
+        # Fix collection_names if passed as JSON string / plain string / comma-separated string
         if collection_names is not None:
-            if isinstance(collection_names, str):
-                try:
-                    collection_names = json.loads(collection_names)
-                    ctx.info(f"Auto-corrected collection_names from JSON string to list")
-                except json.JSONDecodeError:
-                    return f"Error: collection_names parameter must be a list of strings, not a JSON string."
+            try:
+                collection_names = _normalize_str_list_input(
+                    collection_names, field_name="collection_names"
+                )
+                ctx.info(
+                    "Auto-corrected collection_names to list "
+                    f"({len(collection_names)} value(s))"
+                )
+            except ValueError as e:
+                return f"Error: {str(e)}"
 
         # Fix extra_fields if passed as JSON string
         if extra_fields is not None:
@@ -3341,6 +3509,8 @@ def update_item(
                     ctx.info(f"Auto-corrected extra_fields from JSON string to dict")
                 except json.JSONDecodeError:
                     return f"Error: extra_fields parameter must be a dictionary, not a JSON string."
+            if not isinstance(extra_fields, dict):
+                return f"Error: extra_fields must be a dictionary. Example: {{'ISBN': '123-456'}}"
 
         # First, fetch the existing item
         try:
@@ -3430,13 +3600,19 @@ def update_item(
                         current_tag_values.add(tag)
                 updates.append(f"added {len(add_tags)} tag(s)")
 
-        # Track collections to add (don't modify item_data["collections"] directly)
-        collections_to_add = []
+        # Track collection operations (don't modify item_data["collections"] directly)
+        collections_to_set: List[str] = []
+        collections_to_add: List[str] = []
 
         if collections is not None:
             # User wants to replace collections - we'll handle this after update
-            collections_to_add = collections
-            updates.append(f"collections will be set to {len(collections)} collection(s)")
+            deduped = []
+            seen = set()
+            for key in collections:
+                if key and key not in seen:
+                    deduped.append(key)
+                    seen.add(key)
+            collections_to_set = deduped
         elif collection_names:
             # Resolve collection names to add
             ctx.info(f"Resolving collection names: {collection_names}")
@@ -3467,8 +3643,10 @@ def update_item(
                 item_data[key] = value
                 updates.append(f"{key}: '{value}'")
 
+        collection_change_requested = collections is not None or bool(collections_to_add)
+
         # Check if there are any updates
-        if not updates and not collections_to_add:
+        if not updates and not collection_change_requested:
             return f"No updates specified for item: \"{original_title}\" (Key: {item_key})"
 
         # Update the item in Zotero (if there are field updates)
@@ -3480,9 +3658,82 @@ def update_item(
                 ctx.error(f"Failed to update item: {str(update_error)}")
                 return f"Failed to update item: {str(update_error)}"
 
-        # Now add to collections if specified
+        # Apply collection changes
         collection_info = ""
-        if collections_to_add:
+        if collections is not None:
+            collection_errors = []
+            added_collections = []
+            removed_collections = []
+
+            current_collection_keys = []
+            for coll_key in item_data.get("collections", []) or []:
+                coll_key_str = str(coll_key).strip()
+                if coll_key_str and coll_key_str not in current_collection_keys:
+                    current_collection_keys.append(coll_key_str)
+
+            target_set = set(collections_to_set)
+            current_set = set(current_collection_keys)
+            to_add = [key for key in collections_to_set if key not in current_set]
+            to_remove = [key for key in current_collection_keys if key not in target_set]
+
+            if to_remove:
+                if not hasattr(zot, "deletefrom_collection"):
+                    collection_errors.append(
+                        "Collection removal is not supported by the current Zotero client. "
+                        f"Could not remove: {', '.join(to_remove)}"
+                    )
+                    ctx.warn("deletefrom_collection not available; cannot remove existing collections")
+                else:
+                    for coll_key in to_remove:
+                        try:
+                            coll_name = coll_key
+                            try:
+                                coll = zot.collection(coll_key)
+                                coll_name = coll["data"].get("name", coll_key)
+                            except Exception:
+                                pass
+
+                            remove_result = zot.deletefrom_collection(coll_key, [item_key])
+                            if remove_result:
+                                removed_collections.append(coll_name)
+                                ctx.info(f"Removed item from collection: {coll_name}")
+                            else:
+                                collection_errors.append(f"Failed to remove from '{coll_name}'")
+                                ctx.warn(f"Failed to remove item from collection: {coll_name}")
+                        except Exception as coll_error:
+                            collection_errors.append(f"Error removing from {coll_key}: {str(coll_error)}")
+                            ctx.warn(f"Error removing from collection {coll_key}: {str(coll_error)}")
+
+            for coll_key in to_add:
+                try:
+                    coll = zot.collection(coll_key)
+                    coll_name = coll["data"].get("name", coll_key)
+                    add_result = zot.addto_collection(coll_key, [item_key])
+
+                    if add_result:
+                        added_collections.append(coll_name)
+                        ctx.info(f"Added item to collection: {coll_name}")
+                    else:
+                        collection_errors.append(f"Failed to add to '{coll_name}'")
+                        ctx.warn(f"Failed to add item to collection: {coll_name}")
+                except Exception as coll_error:
+                    collection_errors.append(f"Error with collection {coll_key}: {str(coll_error)}")
+                    ctx.warn(f"Error adding to collection {coll_key}: {str(coll_error)}")
+
+            if added_collections:
+                collection_info += (
+                    f"\n\n**Added to collection(s):** {', '.join(added_collections)}"
+                )
+            if removed_collections:
+                collection_info += (
+                    f"\n\n**Removed from collection(s):** {', '.join(removed_collections)}"
+                )
+            if collection_errors:
+                collection_info += (
+                    f"\n\n**Collection warnings:**\n"
+                    + "\n".join(f"- {err}" for err in collection_errors)
+                )
+        elif collections_to_add:
             collection_errors = []
             successfully_added = []
 
@@ -3501,7 +3752,7 @@ def update_item(
                         ctx.warn(f"Failed to add item to collection: {coll_name}")
                 except Exception as coll_error:
                     collection_errors.append(f"Error with collection {coll_key}: {str(coll_error)}")
-                    ctx.error(f"Error adding to collection {coll_key}: {str(coll_error)}")
+                    ctx.warn(f"Error adding to collection {coll_key}: {str(coll_error)}")
 
             if successfully_added:
                 collection_info = f"\n\n**Added to collection(s):** {', '.join(successfully_added)}"
@@ -3512,11 +3763,12 @@ def update_item(
         response = [
             f"Successfully updated item: \"{original_title}\"",
             f"Item key: `{item_key}`",
-            "",
-            "**Updated fields:**"
         ]
-        for update in updates:
-            response.append(f"- {update}")
+        if updates:
+            response.append("")
+            response.append("**Updated fields:**")
+            for update in updates:
+                response.append(f"- {update}")
 
         if collection_info:
             response.append(collection_info)

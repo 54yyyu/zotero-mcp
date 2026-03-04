@@ -199,6 +199,10 @@ Example prompts:
 - "Search for papers on operating system with tag '#Arm'"
 - "Export the BibTeX citation for papers on machine learning"
 - "Create a new journal article in my library titled 'Deep Learning Applications'"
+- "Add a paper by DOI 10.1038/nphys1170"
+- "Import this DOI URL into Zotero: https://doi.org/10.1145/3368089.3409715"
+- "Import this arXiv paper: arXiv:2401.00001"
+- "Add paper from URL: https://arxiv.org/abs/2301.12345"
 - "Update item ABCD1234 to add author Jane Smith"
 - "Update the abstract for item EFGH5678 with the new abstract text"
 - "Add a new book to my library with author John Doe and add it to my 'Reading List' collection"
@@ -331,6 +335,13 @@ zotero_create_item(
     collection_names=["PhD Research", "Machine Learning"]
 )
 
+# Single collection name string is also accepted
+zotero_create_item(
+    item_type="journalArticle",
+    title="Transformer Survey",
+    collection_names="PhD Research"
+)
+
 # Using collection keys (if you already know them)
 zotero_create_item(
     item_type="book",
@@ -404,10 +415,19 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_create_note`: Create a new note for an item
 
 ### ✍️ Item & Collection Management Tools
+- `zotero_add_by_identifier`: Add items by DOI or arXiv (`10.x/...`, `https://doi.org/...`, `arXiv:...`, `https://arxiv.org/abs/...`)
 - `zotero_create_item`: Create new items in your library (articles, books, webpages, etc.)
 - `zotero_update_item`: Update existing items (modify title, authors, date, abstract, tags, etc.)
 - `zotero_create_collection`: Create new collections (projects/folders)
 - `zotero_add_items_to_collection`: Add existing items to a collection
+
+`zotero_update_item` collection behavior: passing `collections=[...]` replaces existing collection membership with exactly the provided keys.
+
+`zotero_add_by_identifier` PDF attachment behavior:
+- `attach_mode="auto"` (default): try imported file first, then linked URL fallback.
+- `attach_mode="import_file"`: try imported file only.
+- `attach_mode="linked_url"`: linked URL attachment only.
+- Tool output includes per-item status: `pdf: imported`, `pdf: linked_url`, or `pdf: failed (...)`.
 
 ## 🔍 Troubleshooting
 
@@ -415,6 +435,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - **No results found**: Ensure Zotero is running and the local API is enabled. You need to toggle on `Allow other applications on this computer to communicate with Zotero` in Zotero preferences.
 - **Can't connect to library**: Check your API key and library ID if using web API
 - **Full text not available**: Make sure you're using Zotero 7+ for local full-text access
+- **PDF opens in browser instead of Zotero reader**: Use `attach_mode="import_file"` when adding by identifier so Zotero stores a real file attachment.
 - **Local library limitations**: Some functionality (tagging, library modifications) may not work with local JS API. Consider using web library setup for full functionality. (See the [docs](docs/getting-started.md#local-library-limitations) for more info.)
 - **Installation/search option switching issues**: Database problems from changing install methods or search options can often be resolved with `zotero-mcp update-db --force-rebuild`
 
