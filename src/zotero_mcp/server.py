@@ -2201,6 +2201,15 @@ def create_note(
             web_zot = get_web_zotero_client()
             if web_zot is not None:
                 result = web_zot.create_items([note_data])
+                if "success" in result and result["success"]:
+                    successful = result["success"]
+                    if len(successful) > 0:
+                        note_key = next(iter(successful.keys()))
+                        return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
+                    else:
+                        return f"Note creation response was successful but no key was returned: {result}"
+                else:
+                    return f"Failed to create note: {result.get('failed', 'Unknown error')}"
             else:
                 # Fallback: connector endpoint (note will NOT be attached as child)
                 port = os.getenv("ZOTERO_LOCAL_PORT", "23119")
