@@ -24,7 +24,6 @@ from zotero_mcp.client import (
     generate_bibtex,
     get_active_library,
     get_attachment_details,
-    get_web_zotero_client,
     get_zotero_client,
     set_active_library,
 )
@@ -2194,42 +2193,32 @@ def create_note(
             "tags": [{"tag": tag} for tag in (tags or [])]
         }
 
-        # In local mode, the local API does not support POST to create items,
-        # and the connector/saveItems endpoint ignores parentItem (creating
-        # standalone notes instead of child notes). If an API key is available,
-        # use the web API which properly supports parentItem.
+        # Use connector/saveItems for local mode since the local API
+        # does not support POST to /api/users/0/items
         if is_local_mode():
-            web_zot = get_web_zotero_client()
-            if web_zot is not None:
-                result = web_zot.create_items([note_data])
+            port = os.getenv("ZOTERO_LOCAL_PORT", "23119")
+            connector_url = f"http://127.0.0.1:{port}/connector/saveItems"
+            payload = {
+                "items": [
+                    {
+                        "itemType": "note",
+                        "note": html_content,
+                        "tags": [tag for tag in (tags or [])],
+                        "parentItem": item_key,
+                    }
+                ],
+                "uri": "about:blank",
+            }
+            resp = requests.post(
+                connector_url,
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=30,
+            )
+            if resp.status_code == 201:
+                return f"Successfully created note for \"{parent_title}\" (parent key: {item_key})"
             else:
-                # Fallback: connector endpoint (note will NOT be attached as child)
-                port = os.getenv("ZOTERO_LOCAL_PORT", "23119")
-                connector_url = f"http://127.0.0.1:{port}/connector/saveItems"
-                payload = {
-                    "items": [
-                        {
-                            "itemType": "note",
-                            "note": html_content,
-                            "tags": [tag for tag in (tags or [])],
-                            "parentItem": item_key,
-                        }
-                    ],
-                    "uri": "about:blank",
-                }
-                resp = requests.post(
-                    connector_url,
-                    headers={"Content-Type": "application/json"},
-                    json=payload,
-                    timeout=30,
-                )
-                if resp.status_code == 201:
-                    return (
-                        f"Note created for \"{parent_title}\" but may not be attached as a child item. "
-                        f"Set ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable proper child note creation."
-                    )
-                else:
-                    return f"Failed to create note via local connector (HTTP {resp.status_code}): {resp.text}"
+                return f"Failed to create note via local connector (HTTP {resp.status_code}): {resp.text}"
         else:
             # Remote API: use pyzotero's create_items
             result = zot.create_items([note_data])
