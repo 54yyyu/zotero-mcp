@@ -15,6 +15,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import logging
 
+try:
+    import tiktoken
+    _tokenizer = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    tiktoken = None
+    _tokenizer = None
+
 from pyzotero import zotero
 
 from .chroma_client import ChromaClient, create_chroma_client
@@ -35,6 +42,25 @@ def suppress_stdout():
             yield
         finally:
             sys.stdout = old_stdout
+
+
+def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
+    """Truncate text to fit within embedding model token limit.
+
+    Uses tiktoken for accurate token counting when available,
+    falls back to conservative character-based estimation.
+    """
+    if _tokenizer is not None:
+        tokens = _tokenizer.encode(text)
+        if len(tokens) > max_tokens:
+            tokens = tokens[:max_tokens]
+            text = _tokenizer.decode(tokens)
+    else:
+        # Fallback: conservative char limit (~1.5 chars/token for non-Latin scripts)
+        max_chars = max_tokens * 2
+        if len(text) > max_chars:
+            text = text[:max_chars]
+    return text
 
 
 class ZoteroSemanticSearch:
@@ -669,6 +695,9 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
+                # Truncate to fit embedding model token limit (8191 for text-embedding-3-*)
+                doc_text = _truncate_to_tokens(doc_text, max_tokens=8000)
+
                 documents.append(doc_text)
                 metadatas.append(metadata)
                 ids.append(item_key)
@@ -681,11 +710,11 @@ class ZoteroSemanticSearch:
 
         # Add documents to ChromaDB if any
         if documents:
-            try:
-                existing_ids = set()
-                if not force_rebuild:
-                    existing_ids = self.chroma_client.get_existing_ids(ids)
+            existing_ids = set()
+            if not force_rebuild:
+                existing_ids = self.chroma_client.get_existing_ids(ids)
 
+            try:
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
                 for doc_id in ids:
                     if doc_id in existing_ids:
@@ -693,8 +722,21 @@ class ZoteroSemanticSearch:
                     else:
                         stats["added"] += 1
             except Exception as e:
-                logger.error(f"Error adding documents to ChromaDB: {e}")
-                stats["errors"] += len(documents)
+                # Batch failed — fall back to per-document upsert so one bad
+                # document doesn't prevent the rest of the batch from indexing.
+                logger.warning(f"Batch upsert failed ({e}), retrying per-document")
+                for j in range(len(documents)):
+                    try:
+                        self.chroma_client.upsert_documents(
+                            [documents[j]], [metadatas[j]], [ids[j]]
+                        )
+                        if ids[j] in existing_ids:
+                            stats["updated"] += 1
+                        else:
+                            stats["added"] += 1
+                    except Exception as e2:
+                        logger.error(f"Error upserting {ids[j]}: {e2}")
+                        stats["errors"] += 1
 
         return stats
 
