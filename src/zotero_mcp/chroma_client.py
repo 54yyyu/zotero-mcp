@@ -37,6 +37,8 @@ def suppress_stdout():
 class OpenAIEmbeddingFunction(EmbeddingFunction):
     """Custom OpenAI embedding function for ChromaDB."""
 
+    max_input_tokens = 8000  # text-embedding-3-* limit is 8191
+
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None, base_url: str | None = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -78,6 +80,8 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 
 class GeminiEmbeddingFunction(EmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai."""
+
+    max_input_tokens = 2000  # gemini-embedding-001 limit is 2048
 
     def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None, base_url: str | None = None):
         self.model_name = model_name
@@ -140,6 +144,9 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
             self.model = SentenceTransformer(model_name, trust_remote_code=True)
         except ImportError:
             raise ImportError("sentence-transformers package is required for HuggingFace embeddings. Install with: pip install sentence-transformers")
+
+        # Read limit from model metadata; conservative fallback
+        self.max_input_tokens = getattr(self.model, "max_seq_length", 500)
 
     @staticmethod
     def name() -> str:
@@ -254,7 +261,14 @@ class ChromaClient:
 
         else:
             # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
-            return chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
+            ef = chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
+            ef.max_input_tokens = 256  # all-MiniLM-L6-v2 max_seq_length
+            return ef
+
+    @property
+    def embedding_max_tokens(self) -> int:
+        """Maximum input tokens supported by the configured embedding model."""
+        return getattr(self.embedding_function, "max_input_tokens", 8000)
 
     def add_documents(self,
                      documents: list[str],

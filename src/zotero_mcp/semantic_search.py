@@ -695,8 +695,10 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
-                # Truncate to fit embedding model token limit (8191 for text-embedding-3-*)
-                doc_text = _truncate_to_tokens(doc_text, max_tokens=8000)
+                # Truncate to fit the configured embedding model's token limit
+                doc_text = _truncate_to_tokens(
+                    doc_text, max_tokens=self.chroma_client.embedding_max_tokens
+                )
 
                 documents.append(doc_text)
                 metadatas.append(metadata)
