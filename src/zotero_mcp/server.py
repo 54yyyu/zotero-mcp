@@ -1999,7 +1999,7 @@ def search_notes(
             limit = int(limit)
 
         # First search notes
-        zot.add_parameters(q=query, itemType="note", limit=limit or 20)
+        zot.add_parameters(q=query, qmode="everything", itemType="note", limit=limit or 20)
         notes = zot.items()
 
         # Then search annotations (reusing the get_annotations function)
@@ -2028,13 +2028,14 @@ def search_notes(
 
         # Filter and highlight notes
         query_lower = query.lower()
+        query_terms = query_lower.split()
         note_results = []
 
         for note in notes:
             data = note.get("data", {})
             note_text = data.get("note", "").lower()
 
-            if query_lower in note_text:
+            if all(term in note_text for term in query_terms):
                 # Prepare full note details
                 note_result = {
                     "type": "note",
