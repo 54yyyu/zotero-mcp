@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-03-09
+
+### Added
+- Model-aware token truncation for embedding models.
+
+### Fixed
+- Truncate documents to embedding model token limit to prevent failures with large texts.
+- Search notes now correctly finds notes by content.
+- Note creation properly attaches notes as child items via web API.
+- Auto-reset ChromaDB collection on embedding model change.
+- Updated default Gemini model to `gemini-embedding-001`.
+- Implemented `get_config`/`build_from_config` for ChromaDB embedding functions.
+- Fixed test `FakeChromaClient` missing `embedding_max_tokens` attribute.
+
 ## [0.1.3] - 2026-02-20
 
 ### Changed
