@@ -253,7 +253,8 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
     elif update_choice == "3":
         update_config = {
             "auto_update": True,
-            "update_frequency": "daily"
+            "update_frequency": "daily",
+            "update_days": None
         }
         print("Database will be updated once per day.")
     elif update_choice == "4":
