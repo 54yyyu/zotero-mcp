@@ -2973,3 +2973,421 @@ def connector_fetch(
             "url": "",
             "metadata": {"error": str(e)}
         }, separators=(",", ":"))
+
+
+# =============================================================================
+# WRITE OPERATIONS
+# =============================================================================
+
+@mcp.tool(
+    name="zotero_list_item_types",
+    description="List all available Zotero item types (journalArticle, book, webpage, etc.)"
+)
+def list_item_types(*, ctx: Context) -> str:
+    """List all available item types"""
+    zot = get_zotero_client()
+
+    try:
+        item_types = zot.item_types()
+
+        formatted = ["# Available Zotero Item Types\n"]
+        for it in item_types:
+            formatted.append(f"- `{it['itemType']}`")
+
+        return "\n".join(formatted)
+
+    except Exception as e:
+        ctx.error(f"Error listing item types: {str(e)}")
+        return f"Error listing item types: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_get_item_template",
+    description="Get the template/schema for a Zotero item type, showing all available fields. Use this before creating items to see what fields are supported."
+)
+def get_item_template(item_type: str, *, ctx: Context) -> str:
+    """Get the template for a specific item type"""
+    zot = get_zotero_client()
+
+    try:
+        template = zot.item_template(item_type)
+
+        # Format nicely
+        fields = []
+        for key, value in template.items():
+            if key == "creators":
+                fields.append(f"- **creators**: list of {{creatorType, firstName, lastName}}")
+            elif key == "tags":
+                fields.append(f"- **tags**: list of tag strings")
+            elif key == "collections":
+                fields.append(f"- **collections**: list of collection keys")
+            elif value == "":
+                fields.append(f"- **{key}**: (text field)")
+            else:
+                fields.append(f"- **{key}**: {value}")
+
+        return f"# Template for: {item_type}\n\n" + "\n".join(fields)
+
+    except Exception as e:
+        ctx.error(f"Error getting template: {str(e)}")
+        return f"Error getting template: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_item",
+    description="Create a new item in your Zotero library. Requires item_type (e.g., 'journalArticle', 'book', 'webpage') and title. Use zotero_get_item_template first to see available fields for the item type."
+)
+def create_item(
+    item_type: str,
+    title: str,
+    creators: Optional[List[Dict[str, str]]] = None,
+    abstract: Optional[str] = None,
+    date: Optional[str] = None,
+    url: Optional[str] = None,
+    doi: Optional[str] = None,
+    publication_title: Optional[str] = None,
+    volume: Optional[str] = None,
+    issue: Optional[str] = None,
+    pages: Optional[str] = None,
+    publisher: Optional[str] = None,
+    place: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    collections: Optional[List[str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """Create a new Zotero library item"""
+    zot = get_zotero_client()
+
+    try:
+        # Get the template for this item type
+        template = zot.item_template(item_type)
+
+        # Populate fields
+        template["title"] = title
+
+        if creators:
+            template["creators"] = creators
+        if abstract:
+            template["abstractNote"] = abstract
+        if date:
+            template["date"] = date
+        if url:
+            template["url"] = url
+        if doi:
+            template["DOI"] = doi
+        if publication_title:
+            template["publicationTitle"] = publication_title
+        if volume:
+            template["volume"] = volume
+        if issue:
+            template["issue"] = issue
+        if pages:
+            template["pages"] = pages
+        if publisher:
+            template["publisher"] = publisher
+        if place:
+            template["place"] = place
+        if tags:
+            template["tags"] = [{"tag": t} for t in tags]
+        if collections:
+            template["collections"] = collections
+
+        # Create the item
+        response = zot.create_items([template])
+
+        if "successful" in response and response["successful"]:
+            created_key = list(response["successful"].values())[0]["key"]
+            return f"Item created successfully!\n\nItem Key: `{created_key}`\nTitle: {title}\nType: {item_type}"
+        else:
+            failed_msg = response.get("failed", {})
+            return f"Failed to create item: {failed_msg}"
+
+    except Exception as e:
+        ctx.error(f"Error creating item: {str(e)}")
+        return f"Error creating item: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_item",
+    description="Update an existing Zotero item's metadata. Provide the item_key and any fields to update."
+)
+def update_item(
+    item_key: str,
+    title: Optional[str] = None,
+    abstract: Optional[str] = None,
+    date: Optional[str] = None,
+    url: Optional[str] = None,
+    doi: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """Update an existing Zotero item"""
+    zot = get_zotero_client()
+
+    try:
+        # Fetch current item
+        item = zot.item(item_key)
+        if not item:
+            return f"No item found with key: {item_key}"
+
+        # Update fields
+        if title:
+            item["data"]["title"] = title
+        if abstract:
+            item["data"]["abstractNote"] = abstract
+        if date:
+            item["data"]["date"] = date
+        if url:
+            item["data"]["url"] = url
+        if doi:
+            item["data"]["DOI"] = doi
+        if tags is not None:
+            item["data"]["tags"] = [{"tag": t} for t in tags]
+
+        # Save changes
+        zot.update_item(item)
+
+        return f"Item `{item_key}` updated successfully!"
+
+    except Exception as e:
+        ctx.error(f"Error updating item: {str(e)}")
+        return f"Error updating item: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_note",
+    description="Add a note to an existing Zotero item. Notes support HTML formatting."
+)
+def add_note(
+    parent_item_key: str,
+    note_content: str,
+    tags: Optional[List[str]] = None,
+    *,
+    ctx: Context
+) -> str:
+    """Add a note to an existing item"""
+    zot = get_zotero_client()
+
+    try:
+        # Create note template
+        template = zot.item_template("note")
+        template["parentItem"] = parent_item_key
+        template["note"] = note_content
+
+        if tags:
+            template["tags"] = [{"tag": t} for t in tags]
+
+        response = zot.create_items([template])
+
+        if "successful" in response and response["successful"]:
+            note_key = list(response["successful"].values())[0]["key"]
+            return f"Note added successfully!\n\nNote Key: `{note_key}`\nParent Item: `{parent_item_key}`"
+        else:
+            failed_msg = response.get("failed", {})
+            return f"Failed to add note: {failed_msg}"
+
+    except Exception as e:
+        ctx.error(f"Error adding note: {str(e)}")
+        return f"Error adding note: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_tags",
+    description="Add tags to an existing Zotero item."
+)
+def add_tags_to_item(
+    item_key: str,
+    tags: List[str],
+    *,
+    ctx: Context
+) -> str:
+    """Add tags to an item"""
+    zot = get_zotero_client()
+
+    try:
+        item = zot.item(item_key)
+        if not item:
+            return f"No item found with key: {item_key}"
+
+        # Get existing tags and add new ones
+        existing_tags = {t["tag"] for t in item["data"].get("tags", [])}
+        new_tags = [{"tag": t} for t in tags if t not in existing_tags]
+
+        if not new_tags:
+            return f"All tags already exist on item `{item_key}`"
+
+        item["data"]["tags"].extend(new_tags)
+        zot.update_item(item)
+
+        added = [t["tag"] for t in new_tags]
+        return f"Added tags to `{item_key}`: {', '.join(added)}"
+
+    except Exception as e:
+        ctx.error(f"Error adding tags: {str(e)}")
+        return f"Error adding tags: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_delete_item",
+    description="Delete an item from your Zotero library. Requires confirm=true to proceed. This is permanent!"
+)
+def delete_item(
+    item_key: str,
+    confirm: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """Delete a Zotero item"""
+    if not confirm:
+        return "Deletion requires confirmation. Call again with confirm=true to permanently delete this item."
+
+    zot = get_zotero_client()
+
+    try:
+        item = zot.item(item_key)
+        if not item:
+            return f"No item found with key: {item_key}"
+
+        zot.delete_item(item)
+        return f"Item `{item_key}` deleted permanently."
+
+    except Exception as e:
+        ctx.error(f"Error deleting item: {str(e)}")
+        return f"Error deleting item: {str(e)}"
+
+
+# =============================================================================
+# COLLECTION OPERATIONS
+# =============================================================================
+
+@mcp.tool(
+    name="zotero_list_collections",
+    description="List all collections in your Zotero library."
+)
+def list_collections(*, ctx: Context) -> str:
+    """List all collections"""
+    zot = get_zotero_client()
+
+    try:
+        collections = zot.collections()
+
+        if not collections:
+            return "No collections found in your library."
+
+        formatted = ["# Zotero Collections\n"]
+        for coll in collections:
+            data = coll["data"]
+            key = coll["key"]
+            name = data.get("name", "Unnamed")
+            parent = data.get("parentCollection", None)
+            num_items = coll.get("meta", {}).get("numItems", 0)
+
+            indent = "  " if parent else ""
+            formatted.append(f"{indent}- **{name}** (`{key}`) - {num_items} items")
+
+        return "\n".join(formatted)
+
+    except Exception as e:
+        ctx.error(f"Error listing collections: {str(e)}")
+        return f"Error listing collections: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_collection",
+    description="Create a new collection in your Zotero library."
+)
+def create_collection(
+    name: str,
+    parent_collection_key: Optional[str] = None,
+    *,
+    ctx: Context
+) -> str:
+    """Create a new collection"""
+    zot = get_zotero_client()
+
+    try:
+        payload = {"name": name}
+        if parent_collection_key:
+            payload["parentCollection"] = parent_collection_key
+
+        response = zot.create_collections([payload])
+
+        if "successful" in response and response["successful"]:
+            coll_key = list(response["successful"].values())[0]["key"]
+            return f"Collection created!\n\nCollection Key: `{coll_key}`\nName: {name}"
+        else:
+            failed_msg = response.get("failed", {})
+            return f"Failed to create collection: {failed_msg}"
+
+    except Exception as e:
+        ctx.error(f"Error creating collection: {str(e)}")
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_add_to_collection",
+    description="Add an existing item to a collection."
+)
+def add_to_collection(
+    item_key: str,
+    collection_key: str,
+    *,
+    ctx: Context
+) -> str:
+    """Add an item to a collection"""
+    zot = get_zotero_client()
+
+    try:
+        item = zot.item(item_key)
+        if not item:
+            return f"No item found with key: {item_key}"
+
+        # Add collection to item's collections list
+        collections = item["data"].get("collections", [])
+        if collection_key in collections:
+            return f"Item `{item_key}` is already in collection `{collection_key}`"
+
+        collections.append(collection_key)
+        item["data"]["collections"] = collections
+        zot.update_item(item)
+
+        return f"Added item `{item_key}` to collection `{collection_key}`"
+
+    except Exception as e:
+        ctx.error(f"Error adding to collection: {str(e)}")
+        return f"Error adding to collection: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_remove_from_collection",
+    description="Remove an item from a collection (does not delete the item)."
+)
+def remove_from_collection(
+    item_key: str,
+    collection_key: str,
+    *,
+    ctx: Context
+) -> str:
+    """Remove an item from a collection"""
+    zot = get_zotero_client()
+
+    try:
+        item = zot.item(item_key)
+        if not item:
+            return f"No item found with key: {item_key}"
+
+        collections = item["data"].get("collections", [])
+        if collection_key not in collections:
+            return f"Item `{item_key}` is not in collection `{collection_key}`"
+
+        collections.remove(collection_key)
+        item["data"]["collections"] = collections
+        zot.update_item(item)
+
+        return f"Removed item `{item_key}` from collection `{collection_key}`"
+
+    except Exception as e:
+        ctx.error(f"Error removing from collection: {str(e)}")
+        return f"Error removing from collection: {str(e)}"
