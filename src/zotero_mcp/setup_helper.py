@@ -205,7 +205,7 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
     elif choice == "3":
         config["embedding_model"] = "gemini"
 
-        config["embedding_config"] = {"model_name": "gemini-embedding-001"}
+        config["embedding_config"] = {"model_name": "gemini-embedding-002"}
 
         # Get API key
         api_key = getpass.getpass("Enter your Gemini API key (hidden): ").strip()
