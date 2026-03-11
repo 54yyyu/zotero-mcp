@@ -54,9 +54,32 @@
 - Web API for cloud library access
 - Perfect for both local research and remote collaboration
 
+### ✏️ Write Operations (This Fork)
+This fork adds full write support to Zotero MCP:
+- **Create items** - Add new references (articles, books, etc.) directly from AI conversations
+- **Update items** - Modify metadata, abstracts, dates, and more
+- **Manage tags** - Add tags to organize your research
+- **Add notes** - Create notes attached to any item
+- **Delete items** - Remove items (with confirmation)
+- **Collections** - Create collections, add/remove items from collections
+
+> **Note**: Write operations require the Zotero Web API with an API key. See [Web API Setup](#web-api-setup-for-write-operations) below.
+
 ## 🚀 Quick Install
 
-### Default Installation
+### Install This Fork (with Write Support)
+
+```bash
+# Install directly from this fork
+pip install git+https://github.com/eawanders/zotero-mcp.git
+
+# Or clone and install in editable mode
+git clone https://github.com/eawanders/zotero-mcp.git
+cd zotero-mcp
+pip install -e .
+```
+
+### Default Installation (Upstream, Read-Only)
 
 #### Installing via uv (recommended)
 
@@ -77,6 +100,38 @@ zotero-mcp setup  # Auto-configure (Claude Desktop supported)
 ```bash
 pipx install zotero-mcp-server
 zotero-mcp setup  # Auto-configure (Claude Desktop supported)
+```
+
+### Web API Setup (For Write Operations)
+
+To use write operations, you need a Zotero Web API key:
+
+1. Go to https://www.zotero.org/settings/keys
+2. Click **Create new private key**
+3. Enable **Allow library access** and **Allow write access**
+4. Save and copy the key
+5. Note your **userID** shown at the top of the page
+
+Configure Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "command": "zotero-mcp",
+      "env": {
+        "ZOTERO_API_KEY": "your-api-key-here",
+        "ZOTERO_LIBRARY_ID": "your-user-id",
+        "ZOTERO_LIBRARY_TYPE": "user"
+      }
+    }
+  }
+}
+```
+
+For Claude Code:
+```bash
+claude mcp add-json "zotero" '{"command":"zotero-mcp","env":{"ZOTERO_API_KEY":"your-key","ZOTERO_LIBRARY_ID":"your-id","ZOTERO_LIBRARY_TYPE":"user"}}'
 ```
 
 #### Updating Your Installation
