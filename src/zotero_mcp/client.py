@@ -3,6 +3,7 @@ Zotero client wrapper for MCP server.
 """
 
 import os
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -38,6 +39,27 @@ def get_active_library() -> dict[str, str]:
     return dict(_active_library_override)
 
 
+def _get_wsl_host_ip() -> str | None:
+    """Return the Windows host IP when running inside WSL2 (NAT mode), or None otherwise.
+
+    In WSL2 NAT mode the Windows host is the default gateway. Its IP is read
+    from /proc/net/route (the gateway field of the default route entry).
+    Returns None on non-WSL systems or if the file cannot be parsed.
+    """
+    try:
+        with open("/proc/net/route") as f:
+            for line in f:
+                fields = line.strip().split()
+                if len(fields) >= 3 and fields[1] == "00000000":
+                    gateway_int = int(fields[2], 16)
+                    return ".".join(
+                        str((gateway_int >> (8 * i)) & 0xFF) for i in range(4)
+                    )
+    except Exception:
+        pass
+    return None
+
+
 @dataclass
 class AttachmentDetails:
     """Details about a Zotero attachment."""
@@ -54,6 +76,10 @@ def get_zotero_client() -> zotero.Zotero:
 
     If a runtime library override is active (via set_active_library()),
     those values take precedence over environment variables.
+
+    When ZOTERO_LOCAL=true and running inside WSL2, the client is automatically
+    patched to connect to the Windows host IP instead of localhost, and the
+    correct Host header is injected so Zotero's local API accepts the request.
 
     Returns:
         A configured Zotero client instance.
@@ -79,12 +105,32 @@ def get_zotero_client() -> zotero.Zotero:
             "or use ZOTERO_LOCAL=true for local Zotero instance."
         )
 
-    return zotero.Zotero(
+    client = zotero.Zotero(
         library_id=library_id,
         library_type=library_type,
         api_key=api_key,
         local=local,
     )
+
+    # WSL2 NAT fix: pyzotero hardcodes 'localhost:23119', but inside WSL2 the
+    # Zotero process runs on the Windows host (reachable via the default gateway).
+    # We also inject 'Host: localhost:23119' because Zotero's local API rejects
+    # requests whose Host header does not match localhost.
+    if local:
+        wsl_ip = _get_wsl_host_ip()
+        if wsl_ip and wsl_ip not in ("127.0.0.1", "localhost"):
+            client.endpoint = f"http://{wsl_ip}:23119/api"
+
+            _original_default_headers = client.default_headers.__func__
+
+            def _patched_default_headers(self):
+                headers = _original_default_headers(self)
+                headers["Host"] = "localhost:23119"
+                return headers
+
+            client.default_headers = types.MethodType(_patched_default_headers, client)
+
+    return client
 
 
 def get_local_zotero_client() -> zotero.Zotero | None:
