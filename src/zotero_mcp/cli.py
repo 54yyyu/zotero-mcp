@@ -387,7 +387,15 @@ def main():
 
             print("Starting database update...")
             if args.fulltext:
-                print("Note: --fulltext flag enabled. Will extract content from local database if available.")
+                from zotero_mcp.utils import is_local_mode
+                if not is_local_mode():
+                    print(
+                        "Error: --fulltext requires local mode but ZOTERO_LOCAL is not enabled.\n"
+                        "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                print("Extracting fulltext from local Zotero database...", file=sys.stderr)
             stats = search.update_database(
                 force_full_rebuild=args.force_rebuild,
                 limit=args.limit,
