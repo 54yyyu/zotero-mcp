@@ -624,7 +624,9 @@ class ZoteroSemanticSearch:
                 pass
 
             # Process items in batches
-            batch_size = 50
+            # Keep batch size under OpenAI's 300k token-per-request limit
+            # (25 × 8000 max tokens = 200k, well within the limit)
+            batch_size = 25
             # Track next milestone for progress printing (every 10 items)
             next_milestone = 10 if stats["total_items"] >= 10 else stats["total_items"]
             # Count of items seen (including skipped), used for progress milestones
