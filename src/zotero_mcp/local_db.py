@@ -59,8 +59,9 @@ class ZoteroItem:
             parts.append(f"Notes: {self.notes}")
 
         if self.fulltext:
-            # Truncate fulltext to avoid overly long documents
-            truncated_fulltext = self.fulltext[:5000] + "..." if len(self.fulltext) > 5000 else self.fulltext
+            # Truncate very long fulltext for simple text search
+            max_chars = 50000
+            truncated_fulltext = self.fulltext[:max_chars] + "..." if len(self.fulltext) > max_chars else self.fulltext
             parts.append(f"Content: {truncated_fulltext}")
 
         return "\n\n".join(parts)
@@ -249,9 +250,9 @@ class LocalZoteroReader:
         text = self._extract_text_from_file(target)
         if not text:
             return None
-        # Truncate to keep embeddings reasonable
+        # Determine source type
         source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
-        return (text[:10000], source)
+        return (text, source)
 
     def close(self):
         """Close database connection."""
