@@ -23,6 +23,9 @@ class FakeChromaClient:
     def upsert_documents(self, documents, metadatas, ids):
         self.upserted_ids.extend(ids)
 
+    def truncate_text(self, text, max_tokens=None):
+        return text
+
 
 def test_process_item_batch_tracks_added_vs_updated(monkeypatch):
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())

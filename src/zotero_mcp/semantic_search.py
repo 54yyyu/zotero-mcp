@@ -63,6 +63,24 @@ def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
     return text
 
 
+class CrossEncoderReranker:
+    """Optional cross-encoder re-ranker for semantic search results."""
+
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        from sentence_transformers import CrossEncoder
+        self.model = CrossEncoder(model_name)
+
+    def rerank(self, query: str, documents: List[str], top_k: int) -> List[int]:
+        """Re-rank documents by relevance to query.
+
+        Returns indices of top_k documents in descending relevance order.
+        """
+        pairs = [[query, doc] for doc in documents]
+        scores = self.model.predict(pairs)
+        ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        return ranked_indices[:top_k]
+
+
 class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
@@ -85,6 +103,35 @@ class ZoteroSemanticSearch:
 
         # Load update configuration
         self.update_config = self._load_update_config()
+
+        # Reranker (lazy-initialized on first search)
+        self._reranker: CrossEncoderReranker | None = None
+        self._reranker_config = self._load_reranker_config()
+
+    def _load_reranker_config(self) -> dict[str, Any]:
+        """Load reranker configuration from file or use defaults."""
+        config: dict[str, Any] = {
+            "enabled": False,
+            "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "candidate_multiplier": 3,
+        }
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f)
+                    config.update(file_config.get("semantic_search", {}).get("reranker", {}))
+            except Exception as e:
+                logger.warning(f"Error loading reranker config: {e}")
+        return config
+
+    def _get_reranker(self) -> Optional[CrossEncoderReranker]:
+        """Get the reranker instance, lazily initializing if enabled."""
+        if not self._reranker_config.get("enabled", False):
+            return None
+        if self._reranker is None:
+            model = self._reranker_config.get("model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+            self._reranker = CrossEncoderReranker(model_name=model)
+        return self._reranker
 
     def _load_update_config(self) -> dict[str, Any]:
         """Load update configuration from file or use defaults."""
@@ -688,9 +735,13 @@ class ZoteroSemanticSearch:
                     continue
 
                 # Create document text and metadata
-                # Prefer fulltext if available, else fall back to structured fields
+                # Always include structured fields; append fulltext when available
                 fulltext = item.get("data", {}).get("fulltext", "")
-                doc_text = fulltext if fulltext.strip() else self._create_document_text(item)
+                structured_text = self._create_document_text(item)
+                if fulltext.strip():
+                    doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
+                else:
+                    doc_text = structured_text
                 metadata = self._create_metadata(item)
 
                 if not doc_text.strip():
@@ -698,9 +749,7 @@ class ZoteroSemanticSearch:
                     continue
 
                 # Truncate to fit the configured embedding model's token limit
-                doc_text = _truncate_to_tokens(
-                    doc_text, max_tokens=self.chroma_client.embedding_max_tokens
-                )
+                doc_text = self.chroma_client.truncate_text(doc_text)
 
                 documents.append(doc_text)
                 metadatas.append(metadata)
@@ -760,12 +809,27 @@ class ZoteroSemanticSearch:
             Search results with Zotero item details
         """
         try:
+            # Over-fetch candidates when re-ranking is enabled
+            reranker = self._get_reranker()
+            fetch_limit = limit
+            if reranker:
+                multiplier = self._reranker_config.get("candidate_multiplier", 3)
+                fetch_limit = limit * multiplier
+
             # Perform semantic search
             results = self.chroma_client.search(
                 query_texts=[query],
-                n_results=limit,
+                n_results=fetch_limit,
                 where=filters
             )
+
+            # Re-rank results with cross-encoder if enabled
+            if reranker and results.get("documents") and results["documents"][0]:
+                documents = results["documents"][0]
+                ranked_indices = reranker.rerank(query, documents, top_k=limit)
+                for key in ["ids", "distances", "documents", "metadatas"]:
+                    if results.get(key) and results[key][0]:
+                        results[key][0] = [results[key][0][i] for i in ranked_indices]
 
             # Enrich results with full Zotero item data
             enriched_results = self._enrich_search_results(results, query)
