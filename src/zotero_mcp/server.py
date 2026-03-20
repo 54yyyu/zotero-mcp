@@ -1136,6 +1136,8 @@ def batch_update_tags(
         Summary of the batch update
     """
     try:
+        import httpx
+
         if not query:
             return "Error: Search query cannot be empty"
 
@@ -1184,10 +1186,30 @@ def batch_update_tags(
         ctx.info(f"Batch updating tags for items matching '{query}'")
         zot = get_zotero_client()
 
+        # In local mode, the local API is read-only and cannot update items.
+        # If web API credentials are available, use the web client for writes.
+        # The local client is still used for reading/searching (faster).
+        write_zot = zot
+        if is_local_mode():
+            web_zot = get_web_zotero_client()
+            if web_zot is not None:
+                write_zot = web_zot
+                ctx.info("Local mode: using web API for tag writes")
+            else:
+                return (
+                    "Error: Cannot update tags in local-only mode.\n\n"
+                    "Zotero's local API is read-only. To enable tag updates, add these "
+                    "environment variables to your Claude Desktop config:\n"
+                    "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
+                    "- ZOTERO_LIBRARY_ID: Your library ID (from the same page)\n"
+                    "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'\n\n"
+                    "You can keep ZOTERO_LOCAL=true alongside these for fast reads."
+                )
+
         if isinstance(limit, str):
             limit = int(limit)
 
-        # Search for items matching the query
+        # Search for items matching the query (uses local client for speed)
         zot.add_parameters(q=query, limit=limit)
         items = zot.items()
 
@@ -1225,6 +1247,8 @@ def batch_update_tags(
                     else:
                         new_tags.append(tag_obj)
                 current_tags = new_tags
+                # Refresh the set of current tag values after removal
+                current_tag_values = {t["tag"] for t in current_tags}
 
             # Process tags to add
             if add_tags:
@@ -1235,14 +1259,40 @@ def batch_update_tags(
                         needs_update = True
 
             # Update the item if needed
-            # Since we are logging errors we might as well log the update.
             if needs_update:
                 try:
-                    item["data"]["tags"] = current_tags
-                    ctx.info(f"Updating item {item.get('key', 'unknown')} with tags: {current_tags}")
-                    result = zot.update_item(item)
+                    item_key = item.get("key", "unknown")
+
+                    # If writing via web API, re-fetch the item from web to get
+                    # the correct version number for the update
+                    if write_zot is not zot:
+                        try:
+                            web_item = write_zot.item(item_key)
+                            web_item["data"]["tags"] = current_tags
+                            ctx.info(f"Updating item {item_key} via web API with tags: {current_tags}")
+                            result = write_zot.update_item(web_item)
+                        except Exception as e:
+                            ctx.error(f"Failed to fetch/update item {item_key} via web API: {str(e)}")
+                            skipped_count += 1
+                            continue
+                    else:
+                        item["data"]["tags"] = current_tags
+                        ctx.info(f"Updating item {item_key} with tags: {current_tags}")
+                        result = write_zot.update_item(item)
+
                     ctx.info(f"Update result: {result}")
-                    updated_count += 1
+                    # pyzotero's update_item returns an httpx.Response.
+                    # Success = 204 No Content. The response is truthy for 2xx codes.
+                    if isinstance(result, httpx.Response) and result.is_success:
+                        updated_count += 1
+                    elif isinstance(result, dict) and result.get("success"):
+                        # Fallback check in case pyzotero behavior changes
+                        updated_count += 1
+                    elif result is True:
+                        updated_count += 1
+                    else:
+                        ctx.error(f"Update may have failed for item {item_key}: {result}")
+                        skipped_count += 1
                 except Exception as e:
                     ctx.error(f"Failed to update item {item.get('key', 'unknown')}: {str(e)}")
                     # Continue with other items instead of failing completely
@@ -2234,8 +2284,13 @@ def create_note(
                 )
                 if resp.status_code == 201:
                     return (
-                        f"Note created for \"{parent_title}\" but may not be attached as a child item. "
-                        f"Set ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable proper child note creation."
+                        f"Note created for \"{parent_title}\" but it is a standalone note, not attached "
+                        f"to the paper.\n\n"
+                        f"To create properly attached child notes, add these environment variables "
+                        f"to your Claude Desktop config alongside ZOTERO_LOCAL=true:\n"
+                        f"- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
+                        f"- ZOTERO_LIBRARY_ID: Your library ID (from the same page)\n"
+                        f"- ZOTERO_LIBRARY_TYPE: 'user' or 'group'"
                     )
                 else:
                     return f"Failed to create note via local connector (HTTP {resp.status_code}): {resp.text}"
