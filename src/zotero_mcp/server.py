@@ -254,15 +254,24 @@ def _try_arxiv_from_crossref(crossref_metadata, ctx):
     if not crossref_metadata:
         return None
     try:
-        # Check relation field
+        # Check relation field for arXiv references
+        # Two formats exist:
+        #   id-type: "arxiv", id: "2307.02743"
+        #   id-type: "doi", id: "10.48550/arXiv.2307.02743"
         relations = crossref_metadata.get("relation", {})
         for rel_type in ("has-preprint", "is-preprint-of", "is-identical-to",
                          "is-version-of", "has-version"):
             for rel in relations.get(rel_type, []):
-                if rel.get("id-type") == "arxiv":
-                    arxiv_id = rel.get("id", "")
-                    if arxiv_id:
-                        ctx.info(f"CrossRef relation contains arXiv ID: {arxiv_id}")
+                rel_id = rel.get("id", "")
+                if rel.get("id-type") == "arxiv" and rel_id:
+                    ctx.info(f"CrossRef relation contains arXiv ID: {rel_id}")
+                    return f"https://arxiv.org/pdf/{rel_id}.pdf"
+                # Handle DOI format: 10.48550/arXiv.XXXX.XXXXX
+                if rel.get("id-type") == "doi" and "arxiv" in rel_id.lower():
+                    m = re.search(r"arXiv\.(\d{4}\.\d{4,5}(?:v\d+)?)", rel_id, re.IGNORECASE)
+                    if m:
+                        arxiv_id = m.group(1)
+                        ctx.info(f"CrossRef relation contains arXiv DOI: {rel_id} -> {arxiv_id}")
                         return f"https://arxiv.org/pdf/{arxiv_id}.pdf"
 
         # Check alternative-id for arXiv patterns
