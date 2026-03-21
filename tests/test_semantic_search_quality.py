@@ -173,9 +173,9 @@ class TestGeminiQueryEmbedding:
 
 
 class TestSearchUsesEmbedQuery:
-    def test_search_uses_query_embeddings_when_embed_query_available(self):
-        """ChromaClient.search should use query_embeddings when embed_query exists."""
-        from zotero_mcp.chroma_client import ChromaClient
+    def test_search_uses_query_embeddings_for_custom_ef(self):
+        """ChromaClient.search should use query_embeddings for custom embedding functions."""
+        from zotero_mcp.chroma_client import ChromaClient, HuggingFaceEmbeddingFunction
 
         mock_collection = MagicMock()
         mock_collection.query.return_value = {
@@ -185,7 +185,8 @@ class TestSearchUsesEmbedQuery:
             "metadatas": [[{}]],
         }
 
-        mock_ef = MagicMock()
+        # Must be an instance of one of our custom classes for embed_query path
+        mock_ef = MagicMock(spec=HuggingFaceEmbeddingFunction)
         mock_ef.embed_query.return_value = [0.1, 0.2, 0.3]
 
         client = ChromaClient.__new__(ChromaClient)
