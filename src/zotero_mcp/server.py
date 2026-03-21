@@ -202,6 +202,28 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
         return False
 
 
+def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):
+    """Create a linked-URL attachment (bookmarks the PDF URL without downloading).
+
+    The PDF opens in the user's browser rather than Zotero's reader.
+    Uses no Zotero storage quota.
+    """
+    try:
+        template = write_zot.item_template("attachment", "linked_url")
+        template["url"] = pdf_url
+        template["title"] = "PDF (linked URL)"
+        template["contentType"] = "application/pdf"
+        template["parentItem"] = parent_key
+        result = write_zot.create_items([template])
+        if result.get("success"):
+            ctx.info(f"Linked URL attachment created for {pdf_url}")
+            return True
+        return False
+    except Exception as e:
+        ctx.info(f"Linked URL attachment failed: {e}")
+        return False
+
+
 def _try_unpaywall(doi, ctx):
     """Try Unpaywall API for open-access PDF URLs.
 
@@ -350,7 +372,8 @@ def _try_pmc(doi, ctx):
         return None
 
 
-def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None):
+def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
+                       attach_mode="auto"):
     """Attempt to find and attach an open-access PDF for a DOI.
 
     Uses a cascading strategy across multiple sources:
@@ -358,6 +381,11 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None):
     2. arXiv (if CrossRef metadata contains an arXiv ID)
     3. Semantic Scholar
     4. PubMed Central
+
+    attach_mode controls how the PDF is attached:
+    - "auto" (default): try importing the file, fall back to linked URL
+    - "import_file": only try importing (download + store in Zotero)
+    - "linked_url": only create a URL bookmark (no download, opens in browser)
 
     Each source is only tried if the previous ones failed.
     Fails gracefully — item creation is never affected by PDF failure.
@@ -374,8 +402,19 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None):
             pdf_url = find_url()
             if pdf_url:
                 ctx.info(f"Trying PDF from {source_name}: {pdf_url}")
-                if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
-                    return f"PDF attached (source: {source_name})"
+
+                if attach_mode == "linked_url":
+                    if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                        return f"PDF linked (source: {source_name})"
+                elif attach_mode == "import_file":
+                    if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+                        return f"PDF attached (source: {source_name})"
+                else:  # "auto" — try import, fall back to linked URL
+                    if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+                        return f"PDF attached (source: {source_name})"
+                    if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                        return f"PDF linked as URL (source: {source_name})"
+
                 ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next source")
         except Exception as e:
             ctx.info(f"{source_name} failed: {e}")
@@ -454,8 +493,9 @@ async def server_lifespan(server: FastMCP):
                 async def background_update():
                     try:
                         # Run sync indexing work in a worker thread.
+                        # Use fulltext extraction when in local mode (has access to PDFs).
                         stats = await asyncio.to_thread(
-                            search.update_database, extract_fulltext=False
+                            search.update_database, extract_fulltext=is_local_mode()
                         )
                         sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
                     except Exception as e:
@@ -3183,11 +3223,11 @@ def update_search_database(
         # Create semantic search instance
         search = create_semantic_search(str(config_path))
 
-        # Perform update with no fulltext extraction (for speed)
+        # Use fulltext extraction when in local mode (has access to PDFs)
         stats = search.update_database(
             force_full_rebuild=force_rebuild,
             limit=limit,
-            extract_fulltext=False
+            extract_fulltext=is_local_mode()
         )
 
         # Format results
@@ -3629,6 +3669,7 @@ def add_by_doi(
     doi: str,
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
     *,
     ctx: Context
 ) -> str:
@@ -3749,7 +3790,8 @@ def add_by_doi(
 
             # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
             pdf_status = _try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
-                                            crossref_metadata=cr)
+                                            crossref_metadata=cr,
+                                            attach_mode=attach_mode)
 
             return (
                 f"Successfully added: **{title}**\n\n"
@@ -3783,6 +3825,7 @@ def add_by_url(
     url: str,
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
     *,
     ctx: Context
 ) -> str:
@@ -3799,7 +3842,8 @@ def add_by_url(
         # DOI URL routing
         doi = _normalize_doi(url)
         if doi:
-            return add_by_doi(doi=url, collections=collections, tags=tags, ctx=ctx)
+            return add_by_doi(doi=url, collections=collections, tags=tags,
+                              attach_mode=attach_mode, ctx=ctx)
 
         # arXiv URL routing
         arxiv_id = _normalize_arxiv_id(url)

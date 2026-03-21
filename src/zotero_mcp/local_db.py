@@ -159,16 +159,35 @@ class LocalZoteroReader:
             yield row["attachmentKey"], row["path"], row["contentType"]
 
     def _resolve_attachment_path(self, attachment_key: str, zotero_path: str) -> Path | None:
-        """Resolve a Zotero attachment path like 'storage:filename.pdf' to a filesystem path."""
+        """Resolve a Zotero attachment path to a filesystem path.
+
+        Handles three formats:
+        - 'storage:filename.pdf' — Zotero-managed storage (most common)
+        - 'file:///path/to/file.pdf' — linked file as URL
+        - '/absolute/path/to/file.pdf' — linked file as absolute path
+        """
         if not zotero_path:
             return None
+
         storage_dir = self._get_storage_dir()
+
+        # Zotero-managed storage: 'storage:filename.pdf'
         if zotero_path.startswith("storage:"):
             rel = zotero_path.split(":", 1)[1]
-            # Handle nested paths if present
             parts = [p for p in rel.split("/") if p]
             return storage_dir / attachment_key / Path(*parts)
-        # External links not supported in first pass
+
+        # Linked file as URL: 'file:///path/to/file.pdf'
+        if zotero_path.startswith("file://"):
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(zotero_path)
+            decoded_path = unquote(parsed.path)
+            return Path(decoded_path)
+
+        # Linked file as absolute path: '/Users/me/papers/file.pdf'
+        if os.path.isabs(zotero_path):
+            return Path(zotero_path)
+
         return None
 
     def _extract_text_from_pdf(self, file_path: Path) -> str:
