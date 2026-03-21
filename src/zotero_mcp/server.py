@@ -4426,6 +4426,8 @@ def add_from_file(
         file_path = os.path.realpath(file_path)
         if not os.path.isabs(file_path):
             return "Error: file_path must be an absolute path."
+        # Resolve any ".." components before symlink/file checks
+        file_path = os.path.realpath(file_path)
         if os.path.islink(file_path):
             return "Error: Symlinks are not allowed for security reasons."
         if not os.path.isfile(file_path):
