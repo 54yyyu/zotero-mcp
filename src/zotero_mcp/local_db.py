@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
+from urllib.parse import urlparse, unquote
 
 from .utils import is_local_mode
 
@@ -179,10 +180,11 @@ class LocalZoteroReader:
     def _resolve_attachment_path(self, attachment_key: str, zotero_path: str) -> Path | None:
         """Resolve a Zotero attachment path to a filesystem path.
 
-        Handles three formats:
+        Handles four formats:
         - 'storage:filename.pdf' — Zotero-managed storage (most common)
         - 'file:///path/to/file.pdf' — linked file as URL
         - '/absolute/path/to/file.pdf' — linked file as absolute path
+        - 'attachments:relative/path.pdf' — Zotero linked attachment base dir
         """
         if not zotero_path:
             return None
@@ -199,12 +201,23 @@ class LocalZoteroReader:
         if zotero_path.startswith("file://"):
             from urllib.parse import urlparse, unquote
             parsed = urlparse(zotero_path)
-            decoded_path = unquote(parsed.path)
+            decoded_path = unquote(parsed.path or "")
+            # file:///C:/... on Windows
+            if os.name == "nt" and decoded_path.startswith("/") and len(decoded_path) > 2 and decoded_path[2] == ":":
+                decoded_path = decoded_path[1:]
+            if not decoded_path:
+                return None
             return Path(decoded_path)
 
         # Linked file as absolute path: '/Users/me/papers/file.pdf'
         if os.path.isabs(zotero_path):
             return Path(zotero_path)
+
+        # Zotero 'attachments:' relative path prefix
+        if zotero_path.startswith("attachments:"):
+            rel = zotero_path.split(":", 1)[1]
+            parts = [p for p in rel.split("/") if p]
+            return storage_dir / attachment_key / Path(*parts)
 
         return None
 
