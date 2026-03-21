@@ -165,40 +165,20 @@ def _strip_xml_tags(text):
     return cleaned
 
 
-def _try_attach_oa_pdf(write_zot, item_key, doi, ctx):
-    """Attempt to find and attach an open-access PDF for a DOI.
+def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+    """Download a PDF from a URL and attach it to a Zotero item.
 
-    Checks Unpaywall for OA availability, downloads to temp file,
-    and attaches via pyzotero. Returns a status string for the user.
-    Fails gracefully — item creation is never affected by PDF failure.
+    Returns True on success, False on failure. Verifies the response
+    is actually a PDF before attaching.
     """
     try:
-        # Query Unpaywall
-        unpaywall_resp = requests.get(
-            f"https://api.unpaywall.org/v2/{doi}",
-            params={"email": "zotero-mcp@users.noreply.github.com"},
-            timeout=10,
-        )
-        if unpaywall_resp.status_code != 200:
-            return "no open-access PDF found"
-
-        oa_data = unpaywall_resp.json()
-        best = oa_data.get("best_oa_location") or {}
-        pdf_url = best.get("url_for_pdf") or best.get("url")
-
-        if not pdf_url:
-            return "no open-access PDF found"
-
-        ctx.info(f"Found OA PDF: {pdf_url}")
-
-        # Download PDF to temp file
         pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
         pdf_resp.raise_for_status()
 
-        # Verify it's actually a PDF (check content-type or magic bytes)
         content_type = pdf_resp.headers.get("Content-Type", "")
         if "pdf" not in content_type and "octet-stream" not in content_type:
-            return "OA link found but was not a PDF"
+            ctx.info(f"URL did not return a PDF (Content-Type: {content_type})")
+            return False
 
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = f"{doi.replace('/', '_')}.pdf"
@@ -207,17 +187,191 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx):
                 for chunk in pdf_resp.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            # Attach to item
+            # Verify file is non-empty
+            if os.path.getsize(filepath) < 1000:
+                ctx.info("Downloaded file too small, likely not a real PDF")
+                return False
+
             write_zot.attachment_both(
                 [(filename, filepath)],
                 parentid=item_key,
             )
+        return True
+    except Exception as e:
+        ctx.info(f"PDF download/attach failed: {e}")
+        return False
 
-        return "open-access PDF attached"
+
+def _try_unpaywall(doi, ctx):
+    """Try Unpaywall API for open-access PDF URLs.
+
+    Iterates all oa_locations (not just best_oa_location) for robustness.
+    Returns a PDF URL or None.
+    """
+    try:
+        resp = requests.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": "zotero-mcp@users.noreply.github.com"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        oa_data = resp.json()
+
+        # Try best_oa_location first
+        best = oa_data.get("best_oa_location") or {}
+        pdf_url = best.get("url_for_pdf")
+        if pdf_url:
+            ctx.info(f"Unpaywall: found PDF via best_oa_location")
+            return pdf_url
+
+        # Iterate all oa_locations for alternatives
+        for loc in oa_data.get("oa_locations", []):
+            pdf_url = loc.get("url_for_pdf")
+            if pdf_url:
+                ctx.info(f"Unpaywall: found PDF via alternate oa_location")
+                return pdf_url
+
+        # Last resort: landing page URL from best location
+        landing = best.get("url")
+        if landing:
+            ctx.info(f"Unpaywall: no direct PDF URL, trying landing page")
+            return landing
+
+        return None
+    except Exception as e:
+        ctx.info(f"Unpaywall lookup failed: {e}")
+        return None
+
+
+def _try_arxiv_from_crossref(crossref_metadata, ctx):
+    """Check CrossRef metadata for an arXiv ID and return a PDF URL.
+
+    CrossRef sometimes includes arXiv IDs in the 'relation' field
+    (e.g., has-preprint, is-preprint-of) or in 'alternative-id'.
+    """
+    if not crossref_metadata:
+        return None
+    try:
+        # Check relation field
+        relations = crossref_metadata.get("relation", {})
+        for rel_type in ("has-preprint", "is-preprint-of", "is-identical-to",
+                         "is-version-of", "has-version"):
+            for rel in relations.get(rel_type, []):
+                if rel.get("id-type") == "arxiv":
+                    arxiv_id = rel.get("id", "")
+                    if arxiv_id:
+                        ctx.info(f"CrossRef relation contains arXiv ID: {arxiv_id}")
+                        return f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+        # Check alternative-id for arXiv patterns
+        for alt_id in crossref_metadata.get("alternative-id", []):
+            if re.match(r"\d{4}\.\d{4,5}", str(alt_id)):
+                ctx.info(f"CrossRef alternative-id looks like arXiv: {alt_id}")
+                return f"https://arxiv.org/pdf/{alt_id}.pdf"
+
+        # Check link array for arXiv URLs
+        for link in crossref_metadata.get("link", []):
+            url = link.get("URL", "")
+            if "arxiv.org" in url:
+                m = re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)", url)
+                if m:
+                    ctx.info(f"CrossRef link contains arXiv URL")
+                    return f"https://arxiv.org/pdf/{m.group(1)}.pdf"
+
+        return None
+    except Exception as e:
+        ctx.info(f"arXiv-from-CrossRef check failed: {e}")
+        return None
+
+
+def _try_semantic_scholar(doi, ctx):
+    """Try Semantic Scholar API for an open-access PDF URL."""
+    try:
+        resp = requests.get(
+            f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
+            params={"fields": "openAccessPdf"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        oa_pdf = data.get("openAccessPdf") or {}
+        pdf_url = oa_pdf.get("url")
+        if pdf_url:
+            ctx.info(f"Semantic Scholar: found OA PDF")
+            return pdf_url
+        return None
+    except Exception as e:
+        ctx.info(f"Semantic Scholar lookup failed: {e}")
+        return None
+
+
+def _try_pmc(doi, ctx):
+    """Try PubMed Central for a free PDF via DOI-to-PMCID conversion."""
+    try:
+        # Step 1: Convert DOI to PMCID via NCBI ID converter
+        conv_resp = requests.get(
+            "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
+            params={"ids": doi, "format": "json", "tool": "zotero-mcp",
+                    "email": "zotero-mcp@users.noreply.github.com"},
+            timeout=10,
+        )
+        if conv_resp.status_code != 200:
+            return None
+
+        records = conv_resp.json().get("records", [])
+        if not records:
+            return None
+
+        pmcid = records[0].get("pmcid")
+        if not pmcid:
+            return None
+
+        ctx.info(f"PMC: found PMCID {pmcid}")
+
+        # Construct the standard PMC PDF URL directly
+        # (The OA service API is unreliable and often redirects)
+        return f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/pdf/"
 
     except Exception as e:
-        ctx.info(f"PDF attachment failed (non-fatal): {e}")
-        return f"no PDF attached ({e})"
+        ctx.info(f"PMC lookup failed: {e}")
+        return None
+
+
+def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None):
+    """Attempt to find and attach an open-access PDF for a DOI.
+
+    Uses a cascading strategy across multiple sources:
+    1. Unpaywall (all OA locations, not just best)
+    2. arXiv (if CrossRef metadata contains an arXiv ID)
+    3. Semantic Scholar
+    4. PubMed Central
+
+    Each source is only tried if the previous ones failed.
+    Fails gracefully — item creation is never affected by PDF failure.
+    """
+    sources = [
+        ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
+        ("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)),
+        ("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)),
+        ("PubMed Central", lambda: _try_pmc(doi, ctx)),
+    ]
+
+    for source_name, find_url in sources:
+        try:
+            pdf_url = find_url()
+            if pdf_url:
+                ctx.info(f"Trying PDF from {source_name}: {pdf_url}")
+                if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+                    return f"PDF attached (source: {source_name})"
+                ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next source")
+        except Exception as e:
+            ctx.info(f"{source_name} failed: {e}")
+
+    return "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
 
 
 def _normalize_doi(raw):
@@ -3576,8 +3730,9 @@ def add_by_doi(
             item_key = next(iter(result["success"].values()))
             title = item_data.get("title", normalized)
 
-            # Attempt open-access PDF attachment
-            pdf_status = _try_attach_oa_pdf(write_zot, item_key, normalized, ctx)
+            # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
+            pdf_status = _try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
+                                            crossref_metadata=cr)
 
             return (
                 f"Successfully added: **{title}**\n\n"
