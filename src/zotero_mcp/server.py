@@ -1589,25 +1589,11 @@ def batch_update_tags(
         ctx.info(f"Batch updating tags for items matching '{query}'")
         zot = get_zotero_client()
 
-        # In local mode, the local API is read-only and cannot update items.
-        # If web API credentials are available, use the web client for writes.
-        # The local client is still used for reading/searching (faster).
-        write_zot = zot
-        if is_local_mode():
-            web_zot = get_web_zotero_client()
-            if web_zot is not None:
-                write_zot = web_zot
-                ctx.info("Local mode: using web API for tag writes")
-            else:
-                return (
-                    "Error: Cannot update tags in local-only mode.\n\n"
-                    "Zotero's local API is read-only. To enable tag updates, add these "
-                    "environment variables to your Claude Desktop config:\n"
-                    "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
-                    "- ZOTERO_LIBRARY_ID: Your library ID (from the same page)\n"
-                    "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'\n\n"
-                    "You can keep ZOTERO_LOCAL=true alongside these for fast reads."
-                )
+        # Use shared hybrid-mode helper for correct library override propagation
+        try:
+            _, write_zot = _get_write_client(ctx)
+        except ValueError as e:
+            return str(e)
 
         if isinstance(limit, str):
             limit = int(limit)
@@ -2661,6 +2647,11 @@ def create_note(
         if is_local_mode():
             web_zot = get_web_zotero_client()
             if web_zot is not None:
+                # Propagate library override if user switched libraries
+                override = get_active_library()
+                if override:
+                    web_zot.library_id = override.get("library_id", web_zot.library_id)
+                    web_zot.library_type = override.get("library_type", web_zot.library_type)
                 result = web_zot.create_items([note_data])
                 if "success" in result and result["success"]:
                     successful = result["success"]
@@ -2775,6 +2766,13 @@ def create_annotation(
         # Get clients for different operations
         local_client = get_local_zotero_client()
         web_client = get_web_zotero_client()
+
+        # Propagate library override if user switched libraries
+        if web_client:
+            override = get_active_library()
+            if override:
+                web_client.library_id = override.get("library_id", web_client.library_id)
+                web_client.library_type = override.get("library_type", web_client.library_type)
 
         # REQUIREMENT: Web API is required for creating annotations
         # Zotero's local API (port 23119) is read-only
@@ -3582,21 +3580,31 @@ def manage_collections(
 
         results = []
 
+        # Cache item fetches to avoid repeated API calls for the same key
+        item_cache = {}
+        def _get_item(key):
+            if key not in item_cache:
+                item_cache[key] = write_zot.item(key)
+            return item_cache[key]
+
         for coll_key in add_colls:
             for item_key in keys:
-                item_dict = write_zot.item(item_key)
+                item_dict = _get_item(item_key)
                 resp = write_zot.addto_collection(coll_key, item_dict)
                 if _handle_write_response(resp, ctx):
                     results.append(f"Added {item_key} to {coll_key}")
+                    # Invalidate cache — version changed after addto_collection
+                    item_cache.pop(item_key, None)
                 else:
                     results.append(f"Failed to add {item_key} to {coll_key}")
 
         for coll_key in remove_colls:
             for item_key in keys:
-                item_dict = write_zot.item(item_key)
+                item_dict = _get_item(item_key)
                 resp = write_zot.deletefrom_collection(coll_key, item_dict)
                 if _handle_write_response(resp, ctx):
                     results.append(f"Removed {item_key} from {coll_key}")
+                    item_cache.pop(item_key, None)
                 else:
                     results.append(f"Failed to remove {item_key} from {coll_key}")
 
@@ -4414,7 +4422,8 @@ def add_from_file(
         return str(e)
 
     try:
-        # Path validation
+        # Path validation — resolve ".." components before checks
+        file_path = os.path.realpath(file_path)
         if not os.path.isabs(file_path):
             return "Error: file_path must be an absolute path."
         if os.path.islink(file_path):

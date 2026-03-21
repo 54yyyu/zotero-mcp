@@ -227,6 +227,42 @@ class TestSearchUsesEmbedQuery:
         assert call_kwargs["query_texts"] == ["hello"]
 
 
+class TestDefaultEFUsesQueryTexts:
+    """Verify that DefaultEmbeddingFunction (or any non-custom EF) uses query_texts,
+    not embed_query.  This confirms the _is_custom_ef guard prevents calling the
+    broken embed_query on ChromaDB's built-in DefaultEmbeddingFunction."""
+
+    def test_default_ef_uses_query_texts_not_embed_query(self):
+        from zotero_mcp.chroma_client import ChromaClient
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "ids": [["id1"]],
+            "distances": [[0.1]],
+            "documents": [["text"]],
+            "metadatas": [[{}]],
+        }
+
+        # A plain MagicMock is NOT an instance of any custom embedding class,
+        # mimicking DefaultEmbeddingFunction which also has an embed_query attr.
+        mock_ef = MagicMock()
+        mock_ef.embed_query = MagicMock(return_value=[0.1, 0.2, 0.3])
+
+        client = ChromaClient.__new__(ChromaClient)
+        client.collection = mock_collection
+        client.embedding_function = mock_ef
+
+        client.search(query_texts=["hello"])
+
+        # embed_query must NOT have been called — default EF path uses query_texts
+        mock_ef.embed_query.assert_not_called()
+
+        call_kwargs = mock_collection.query.call_args.kwargs
+        assert "query_texts" in call_kwargs
+        assert call_kwargs["query_texts"] == ["hello"]
+        assert "query_embeddings" not in call_kwargs
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: Model-aware tokenizer
 # ---------------------------------------------------------------------------
