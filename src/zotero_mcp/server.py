@@ -2985,7 +2985,12 @@ def semantic_search(
 
 @mcp.tool(
     name="zotero_update_search_database",
-    description="Update the semantic search database with latest Zotero items."
+    description=(
+        "Update the semantic search database with latest Zotero items. "
+        "Run this after adding items (via add_by_doi, add_by_url, or add_from_file) "
+        "to make them immediately available for semantic search. Also useful if the "
+        "user has added items directly in Zotero since the last update."
+    )
 )
 def update_search_database(
     force_rebuild: bool = False,
@@ -3579,7 +3584,9 @@ def add_by_doi(
                 f"Item key: `{item_key}`\n"
                 f"Type: {zot_type}\n"
                 f"DOI: {normalized}\n"
-                f"PDF: {pdf_status}"
+                f"PDF: {pdf_status}\n\n"
+                "_Note: To include this item in semantic search, run "
+                "zotero_update_search_database._"
             )
         return f"Failed to create item: {result}"
 
@@ -3644,7 +3651,11 @@ def add_by_url(
         result = write_zot.create_items([template])
         if isinstance(result, dict) and result.get("success"):
             item_key = next(iter(result["success"].values()))
-            return f"Created webpage item for: {url}\n\nItem key: `{item_key}`"
+            return (
+                f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n\n"
+                "_Note: To include this item in semantic search, run "
+                "zotero_update_search_database._"
+            )
         return f"Failed to create item: {result}"
 
     except Exception as e:
@@ -3742,7 +3753,9 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
             f"Successfully added arXiv paper: **{title}**\n\n"
             f"Item key: `{item_key}`\n"
             f"arXiv ID: {arxiv_id}\n"
-            f"PDF: {pdf_status}"
+            f"PDF: {pdf_status}\n\n"
+            "_Note: To include this item in semantic search, run "
+            "zotero_update_search_database._"
         )
     return f"Failed to create arXiv item: {result}"
 
@@ -4324,7 +4337,9 @@ def add_from_file(
         return (
             f"Item key: `{parent_key}`\n"
             f"{'DOI: ' + extracted_doi + chr(10) if extracted_doi else ''}"
-            f"{attach_info}"
+            f"{attach_info}\n\n"
+            "_Note: To include this item in semantic search, run "
+            "zotero_update_search_database._"
         )
 
     except Exception as e:
