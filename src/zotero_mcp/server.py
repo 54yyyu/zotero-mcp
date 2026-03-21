@@ -335,6 +335,44 @@ def get_item_fulltext(
         # Get item metadata in markdown format
         metadata = format_item_metadata(item, include_abstract=True)
 
+        # In local mode, prefer direct local DB/storage extraction first.
+        # This avoids pyzotero dump() failures on linked file:// attachments
+        # when using remote clients over SSE/HTTP.
+        local_extract_error_msg = None
+        try:
+            from zotero_mcp.local_db import LocalZoteroReader
+            from zotero_mcp.utils import is_local_mode
+            from pathlib import Path
+            import json
+            import os
+
+            if is_local_mode():
+                config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
+                zotero_db_path = None
+                pdf_max_pages = None
+
+                if config_path.exists():
+                    try:
+                        with open(config_path, encoding="utf-8") as _f:
+                            _cfg = json.load(_f)
+                            semantic_cfg = _cfg.get("semantic_search", {})
+                            zotero_db_path = semantic_cfg.get("zotero_db_path")
+                            pdf_max_pages = semantic_cfg.get("extraction", {}).get("pdf_max_pages")
+                    except Exception:
+                        pass
+
+                with LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
+                    local_item = reader.get_item_by_key(item_key)
+                    if local_item:
+                        extracted = reader.extract_fulltext_for_item(local_item.item_id)
+                        if extracted and extracted[0]:
+                            source = extracted[1] if len(extracted) > 1 else "file"
+                            ctx.info(f"Retrieved full text from local storage ({source})")
+                            return f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}"
+        except Exception as local_extract_error:
+            local_extract_error_msg = str(local_extract_error)
+            ctx.info(f"Local extraction fallback not available: {str(local_extract_error)}")
+
         # Try to get attachment details
         attachment = get_attachment_details(zot, item)
         if not attachment:
@@ -371,6 +409,11 @@ def get_item_fulltext(
                     return f"{metadata}\n\n---\n\nFile download failed."
         except Exception as download_error:
             ctx.error(f"Error downloading/converting file: {str(download_error)}")
+            if local_extract_error_msg:
+                return (
+                    f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}\n\n"
+                    f"Local extraction fallback error: {local_extract_error_msg}"
+                )
             return f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}"
 
     except Exception as e:

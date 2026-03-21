@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
+from urllib.parse import urlparse, unquote
 
 from .utils import is_local_mode
 
@@ -167,7 +168,28 @@ class LocalZoteroReader:
             # Handle nested paths if present
             parts = [p for p in rel.split("/") if p]
             return storage_dir / attachment_key / Path(*parts)
-        # External links not supported in first pass
+
+        if zotero_path.startswith("file://"):
+            parsed = urlparse(zotero_path)
+            if parsed.scheme != "file":
+                return None
+            file_path = unquote(parsed.path or "")
+            # file:///C:/... on Windows
+            if os.name == "nt" and file_path.startswith("/") and len(file_path) > 2 and file_path[2] == ":":
+                file_path = file_path[1:]
+            if not file_path:
+                return None
+            return Path(file_path)
+
+        direct = Path(zotero_path)
+        if direct.is_absolute():
+            return direct
+
+        if zotero_path.startswith("attachments:"):
+            rel = zotero_path.split(":", 1)[1]
+            parts = [p for p in rel.split("/") if p]
+            return storage_dir / attachment_key / Path(*parts)
+
         return None
 
     def _extract_text_from_pdf(self, file_path: Path) -> str:
