@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-03-22
+
+### Added
+- **Write operations** — 10+ new tools: `create_item`, `update_item`, `create_note`, `add_tags`, `batch_update_tags`, `create_collection`, `add_to_collection`, `remove_from_collection`, `add_by_doi`, `add_by_url`, `add_from_file` (PR #165).
+- **BetterBibTeX citation key lookup** — `search_by_citation_key` searches both BetterBibTeX JSON-RPC and the Extra field (#72).
+- **PDF outline extraction** — `get_pdf_outline` returns table of contents from PDFs.
+- **Annotation page labels** — `get_annotations` now includes `annotationPageLabel` and `annotationPosition` data (#159).
+- **PDF timeout** — configurable `pdf_timeout` (default 30s) skips slow PDFs during fulltext extraction (#74).
+- **Semantic search quality** — combined field+fulltext embeddings, Gemini `retrieval_query`/`retrieval_document` fix, model-aware tokenizer, optional cross-encoder re-ranking (PR #154).
+- **Abstracts in collection items** — `get_collection_items` now includes abstracts (#143).
+- **Local-first fulltext extraction** — prefers local DB/storage before remote `dump()` for file-backed attachments (PR #166).
+- **`--fulltext` guard** — aborts with clear error when used without `ZOTERO_LOCAL` enabled (PR #156).
+
+### Fixed
+- **search_notes** — fixed `qmode` and client-side filter to actually find notes (#137).
+- **batch_update_tags** — fixed stale tag set, response type check, and added hybrid local+web mode (#162).
+- **get_tags pagination** — uses `zot.everything()` for reliable tag retrieval (#70).
+- **Fulltext truncation** — removed hardcoded 10k/5k char caps; model-aware truncation via `embedding_max_tokens` (#153, #134).
+- **Local mode file:// paths** — resolves `file://`, absolute paths, and `attachments:` prefixes (#116).
+- **Child notes** — `create_note` properly attaches as child via web API in local mode (#133).
+- **ChromaDB embedding conflict** — auto-detects and resets collection on model change (#109).
+- **FastMCP compatibility** — removed deprecated `dependencies` parameter (#117, #61).
+- **PDF outline import order** — defers PyMuPDF import until after attachment check.
+- **Update interval display** — fixed misleading display for daily schedule (PR #144).
+- **Config loading** — embedding model config now loads correctly from config file (#76).
+
 ## [0.1.4] - 2026-03-09
 
 ### Added
