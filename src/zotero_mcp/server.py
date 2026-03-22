@@ -32,7 +32,7 @@ from zotero_mcp.client import (
 import requests
 import xml.etree.ElementTree as ET
 
-from zotero_mcp.utils import format_creators, clean_html, is_local_mode
+from zotero_mcp.utils import format_creators, format_item_result, clean_html, is_local_mode
 
 
 # ---------------------------------------------------------------------------
@@ -577,36 +577,7 @@ def search_items(
         output = [f"# Search Results for '{query}'", f"{tag_condition_str}", ""]
 
         for i, item in enumerate(results, 1):
-            data = item.get("data", {})
-            title = data.get("title", "Untitled")
-            entry_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
-
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {entry_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Authors:** {creators_str}")
-
-            # Add abstract snippet if present
-            if abstract := data.get("abstractNote"):
-                # Limit abstract length for search results
-                abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                output.append(f"**Abstract:** {abstract_snippet}")
-
-            # Add tags if present
-            if tags := data.get("tags"):
-                tag_list = [f"`{t['tag']}`" for t in tags]
-                if tag_list:
-                    output.append(f"**Tags:** {' '.join(tag_list)}")
-
-            output.append("")  # Empty line between items
+            output.extend(format_item_result(item, index=i))
 
         return "\n".join(output)
 
@@ -667,36 +638,7 @@ def search_by_tag(
         output = [f"# Search Results for Tag: '{tag}'", ""]
 
         for i, item in enumerate(results, 1):
-            data = item.get("data", {})
-            title = data.get("title", "Untitled")
-            entry_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
-
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {entry_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Authors:** {creators_str}")
-
-            # Add abstract snippet if present
-            if abstract := data.get("abstractNote"):
-                # Limit abstract length for search results
-                abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                output.append(f"**Abstract:** {abstract_snippet}")
-
-            # Add tags if present
-            if tags := data.get("tags"):
-                tag_list = [f"`{t['tag']}`" for t in tags]
-                if tag_list:
-                    output.append(f"**Tags:** {' '.join(tag_list)}")
-
-            output.append("")  # Empty line between items
+            output.extend(format_item_result(item, index=i))
 
         return "\n".join(output)
 
@@ -717,37 +659,12 @@ def _extra_has_citekey(extra: str, citekey: str) -> bool:
 
 def _format_citekey_result(item: dict, citekey: str) -> str:
     """Format a Zotero item found by citation key as markdown."""
-    data = item.get("data", {})
-    title = data.get("title", "Untitled")
-    item_type = data.get("itemType", "unknown")
-    date = data.get("date", "No date")
-    key = item.get("key", "")
-    creators = data.get("creators", [])
-    creators_str = format_creators(creators)
-
-    output = [
-        f"# Citation Key: {citekey}",
-        "",
-        f"## {title}",
-        f"**Type:** {item_type}",
-        f"**Item Key:** {key}",
-        f"**Citation Key:** {citekey}",
-        f"**Date:** {date}",
-        f"**Authors:** {creators_str}",
-    ]
-
-    if abstract := data.get("abstractNote"):
-        abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
-        output.append(f"**Abstract:** {abstract_snippet}")
-    if tags := data.get("tags"):
-        tag_list = [f"`{tag['tag']}`" for tag in tags]
-        if tag_list:
-            output.append(f"**Tags:** {' '.join(tag_list)}")
-    if doi := data.get("DOI"):
-        output.append(f"**DOI:** {doi}")
-
-    output.append("")
-    return "\n".join(output)
+    extra = {"Citation Key": citekey}
+    if doi := item.get("data", {}).get("DOI"):
+        extra["DOI"] = doi
+    lines = [f"# Citation Key: {citekey}", ""]
+    lines.extend(format_item_result(item, extra_fields=extra))
+    return "\n".join(lines)
 
 
 def _format_bbt_result(bbt_item: dict, citekey: str) -> str:
@@ -1137,28 +1054,7 @@ def get_collection_items(
         output = [f"# Items in Collection: {collection_name}", ""]
 
         for i, item in enumerate(items, 1):
-            data = item.get("data", {})
-            title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
-
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Authors:** {creators_str}")
-
-            abstract = data.get("abstractNote", "")
-            if abstract:
-                output.append(f"**Abstract:** {abstract}")
-
-            output.append("")  # Empty line between items
+            output.extend(format_item_result(item, index=i, abstract_len=None, include_tags=False))
 
         return "\n".join(output)
 
@@ -1705,26 +1601,11 @@ def get_recent(
         output = [f"# {limit} Most Recently Added Items", ""]
 
         for i, item in enumerate(items, 1):
-            data = item.get("data", {})
-            title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
-            date_added = data.get("dateAdded", "Unknown")
-
-            # Format creators
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-
-            # Build the formatted entry
-            output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Added:** {date_added}")
-            output.append(f"**Authors:** {creators_str}")
-
-            output.append("")  # Empty line between items
+            added = item.get("data", {}).get("dateAdded", "Unknown")
+            output.extend(format_item_result(
+                item, index=i, abstract_len=0, include_tags=False,
+                extra_fields={"Added": added},
+            ))
 
         return "\n".join(output)
 
@@ -2140,31 +2021,7 @@ def advanced_search(
         output.append("## Results")
 
         for i, item in enumerate(results, 1):
-            data = item.get("data", {})
-            title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
-            date = data.get("date", "No date")
-            key = item.get("key", "")
-
-            creators = data.get("creators", [])
-            creators_str = format_creators(creators)
-
-            output.append(f"### {i}. {title}")
-            output.append(f"**Type:** {item_type}")
-            output.append(f"**Item Key:** {key}")
-            output.append(f"**Date:** {date}")
-            output.append(f"**Authors:** {creators_str}")
-
-            if abstract := data.get("abstractNote"):
-                abstract_snippet = abstract[:150] + "..." if len(abstract) > 150 else abstract
-                output.append(f"**Abstract:** {abstract_snippet}")
-
-            if tags := data.get("tags"):
-                tag_list = [f"`{t['tag']}`" for t in tags]
-                if tag_list:
-                    output.append(f"**Tags:** {' '.join(tag_list)}")
-
-            output.append("")
+            output.extend(format_item_result(item, index=i))
 
         return "\n".join(output)
 
@@ -3340,47 +3197,17 @@ def semantic_search(
 
         for i, result in enumerate(search_results, 1):
             similarity_score = result.get("similarity_score", 0)
-            _ = result.get("metadata", {})
             zotero_item = result.get("zotero_item", {})
 
             if zotero_item:
-                data = zotero_item.get("data", {})
-                title = data.get("title", "Untitled")
-                item_type = data.get("itemType", "unknown")
-                key = result.get("item_key", "")
-
-                # Format creators
-                creators = data.get("creators", [])
-                creators_str = format_creators(creators)
-
-                output.append(f"## {i}. {title}")
-                output.append(f"**Similarity Score:** {similarity_score:.3f}")
-                output.append(f"**Type:** {item_type}")
-                output.append(f"**Item Key:** {key}")
-                output.append(f"**Authors:** {creators_str}")
-
-                # Add date if available
-                if date := data.get("date"):
-                    output.append(f"**Date:** {date}")
-
-                # Add abstract snippet if present
-                if abstract := data.get("abstractNote"):
-                    abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                    output.append(f"**Abstract:** {abstract_snippet}")
-
-                # Add tags if present
-                if tags := data.get("tags"):
-                    tag_list = [f"`{t['tag']}`" for t in tags]
-                    if tag_list:
-                        output.append(f"**Tags:** {' '.join(tag_list)}")
-
-                # Show matched text snippet
+                extra = {"Similarity Score": f"{similarity_score:.3f}"}
                 matched_text = result.get("matched_text", "")
                 if matched_text:
                     snippet = matched_text[:300] + "..." if len(matched_text) > 300 else matched_text
-                    output.append(f"**Matched Content:** {snippet}")
-
-                output.append("")  # Empty line between items
+                    extra["Matched Content"] = snippet
+                # Override key from result since it may differ from item["key"]
+                zotero_item.setdefault("key", result.get("item_key", ""))
+                output.extend(format_item_result(zotero_item, index=i, extra_fields=extra))
             else:
                 # Fallback if full Zotero item not available
                 output.append(f"## {i}. Item {result.get('item_key', 'Unknown')}")

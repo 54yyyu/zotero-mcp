@@ -45,6 +45,59 @@ def is_local_mode() -> bool:
     value = os.getenv("ZOTERO_LOCAL", "")
     return value.lower() in {"true", "yes", "1"}
 
+def format_item_result(
+    item: dict,
+    index: int | None = None,
+    abstract_len: int | None = 200,
+    include_tags: bool = True,
+    extra_fields: dict[str, str] | None = None,
+) -> list[str]:
+    """Format a single Zotero item as markdown lines.
+
+    Args:
+        item: Zotero item dict (with ``data`` and ``key`` keys).
+        index: 1-based position for numbered headings; omit for unnumbered.
+        abstract_len: Max characters for abstract (``None`` = full text,
+            ``0`` = omit entirely).
+        include_tags: Whether to append tags.
+        extra_fields: Additional ``**Label:** value`` pairs inserted after
+            authors (e.g. ``{"Similarity Score": "0.912"}``).
+
+    Returns:
+        List of markdown lines (caller joins with ``"\\n"``).
+    """
+    data = item.get("data", {})
+    title = data.get("title", "Untitled")
+    heading = f"## {index}. {title}" if index is not None else f"## {title}"
+    lines: list[str] = [
+        heading,
+        f"**Type:** {data.get('itemType', 'unknown')}",
+        f"**Item Key:** {item.get('key', '')}",
+        f"**Date:** {data.get('date', 'No date')}",
+        f"**Authors:** {format_creators(data.get('creators', []))}",
+    ]
+
+    if extra_fields:
+        for label, value in extra_fields.items():
+            lines.append(f"**{label}:** {value}")
+
+    if abstract_len != 0:
+        abstract = data.get("abstractNote", "")
+        if abstract:
+            if abstract_len and len(abstract) > abstract_len:
+                abstract = abstract[:abstract_len] + "..."
+            lines.append(f"**Abstract:** {abstract}")
+
+    if include_tags:
+        if tags := data.get("tags"):
+            tag_list = [f"`{t['tag']}`" for t in tags]
+            if tag_list:
+                lines.append(f"**Tags:** {' '.join(tag_list)}")
+
+    lines.append("")  # blank separator
+    return lines
+
+
 def clean_html(raw_html: str, collapse_whitespace: bool = False) -> str:
     """Remove HTML/XML tags from a string.
 
