@@ -4579,9 +4579,6 @@ def get_pdf_outline(
     ctx: Context
 ) -> str:
     try:
-        import fitz
-        import tempfile
-
         zot = get_zotero_client()
         ctx.info(f"Getting PDF outline for item {item_key}")
 
@@ -4595,6 +4592,13 @@ def get_pdf_outline(
 
         if not pdf_child:
             return f"No PDF attachment found for item `{item_key}`."
+
+        try:
+            import fitz
+        except ImportError:
+            return "Error: PyMuPDF (fitz) is required for PDF outline extraction."
+
+        import tempfile
 
         attachment_key = pdf_child["key"]
         filename = pdf_child.get("data", {}).get("filename", "document.pdf")
@@ -4619,8 +4623,6 @@ def get_pdf_outline(
 
         return "\n".join(lines)
 
-    except ImportError:
-        return "Error: PyMuPDF (fitz) is required for PDF outline extraction."
     except Exception as e:
         ctx.error(f"Error extracting PDF outline: {e}")
         return f"Error extracting PDF outline: {e}"
