@@ -347,6 +347,7 @@ class ZoteroSemanticSearch:
         try:
             # Load per-run config, including extraction limits and db path if provided
             pdf_max_pages = None
+            pdf_timeout = 30
             zotero_db_path = self.db_path  # CLI override takes precedence
             # If semantic_search config file exists, prefer its setting
             try:
@@ -354,14 +355,16 @@ class ZoteroSemanticSearch:
                     with open(self.config_path) as _f:
                         _cfg = json.load(_f)
                         semantic_cfg = _cfg.get('semantic_search', {})
-                        pdf_max_pages = semantic_cfg.get('extraction', {}).get('pdf_max_pages')
+                        extraction_cfg = semantic_cfg.get('extraction', {})
+                        pdf_max_pages = extraction_cfg.get('pdf_max_pages')
+                        pdf_timeout = extraction_cfg.get('pdf_timeout', 30)
                         # Use config db_path only if no CLI override
                         if not zotero_db_path:
                             zotero_db_path = semantic_cfg.get('zotero_db_path')
             except Exception:
                 pass
 
-            with suppress_stdout(), LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
+            with suppress_stdout(), LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, pdf_timeout=pdf_timeout) as reader:
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
@@ -436,6 +439,9 @@ class ZoteroSemanticSearch:
                     updated_existing = 0
                     items_to_process = []
 
+                    consecutive_timeouts = 0
+                    MAX_CONSECUTIVE_TIMEOUTS = 5
+
                     for it in local_items:
                         should_extract = True
 
@@ -458,6 +464,19 @@ class ZoteroSemanticSearch:
                             # Extract fulltext if item doesn't have it yet
                             if not getattr(it, "fulltext", None):
                                 text = reader.extract_fulltext_for_item(it.item_id)
+                                # Circuit breaker: stop PDF extraction after consecutive timeouts
+                                if isinstance(text, tuple) and len(text) == 2 and text[1] == "timeout":
+                                    consecutive_timeouts += 1
+                                    if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
+                                        logger.warning(
+                                            f"Stopping PDF extraction after {MAX_CONSECUTIVE_TIMEOUTS} "
+                                            f"consecutive timeouts — remaining items will use metadata only"
+                                        )
+                                        break
+                                    continue  # Skip this item's fulltext
+                                # Reset counter on successful extraction
+                                if text:
+                                    consecutive_timeouts = 0
                                 if text:
                                     # Support new (text, source) return format
                                     if isinstance(text, tuple) and len(text) == 2:

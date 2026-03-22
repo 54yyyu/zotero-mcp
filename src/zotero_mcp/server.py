@@ -577,7 +577,7 @@ def search_items(
         for i, item in enumerate(results, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
+            entry_type = data.get("itemType", "unknown")
             date = data.get("date", "No date")
             key = item.get("key", "")
 
@@ -587,7 +587,7 @@ def search_items(
 
             # Build the formatted entry
             output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
+            output.append(f"**Type:** {entry_type}")
             output.append(f"**Item Key:** {key}")
             output.append(f"**Date:** {date}")
             output.append(f"**Authors:** {creators_str}")
@@ -600,7 +600,7 @@ def search_items(
 
             # Add tags if present
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -668,7 +668,7 @@ def search_by_tag(
         for i, item in enumerate(results, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
+            entry_type = data.get("itemType", "unknown")
             date = data.get("date", "No date")
             key = item.get("key", "")
 
@@ -678,7 +678,7 @@ def search_by_tag(
 
             # Build the formatted entry
             output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
+            output.append(f"**Type:** {entry_type}")
             output.append(f"**Item Key:** {key}")
             output.append(f"**Date:** {date}")
             output.append(f"**Authors:** {creators_str}")
@@ -691,7 +691,7 @@ def search_by_tag(
 
             # Add tags if present
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -702,6 +702,150 @@ def search_by_tag(
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
         return f"Error searching Zotero: {str(e)}"
+
+def _extra_has_citekey(extra: str, citekey: str) -> bool:
+    """Check if the Extra field contains the given citation key."""
+    for line in extra.splitlines():
+        lower = line.lower().strip()
+        if lower.startswith("citation key:") or lower.startswith("citationkey:"):
+            value = line.split(":", 1)[1].strip()
+            if value == citekey:
+                return True
+    return False
+
+
+def _format_citekey_result(item: dict, citekey: str) -> str:
+    """Format a Zotero item found by citation key as markdown."""
+    data = item.get("data", {})
+    title = data.get("title", "Untitled")
+    item_type = data.get("itemType", "unknown")
+    date = data.get("date", "No date")
+    key = item.get("key", "")
+    creators = data.get("creators", [])
+    creators_str = format_creators(creators)
+
+    output = [
+        f"# Citation Key: {citekey}",
+        "",
+        f"## {title}",
+        f"**Type:** {item_type}",
+        f"**Item Key:** {key}",
+        f"**Citation Key:** {citekey}",
+        f"**Date:** {date}",
+        f"**Authors:** {creators_str}",
+    ]
+
+    if abstract := data.get("abstractNote"):
+        abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
+        output.append(f"**Abstract:** {abstract_snippet}")
+    if tags := data.get("tags"):
+        tag_list = [f"`{tag['tag']}`" for tag in tags]
+        if tag_list:
+            output.append(f"**Tags:** {' '.join(tag_list)}")
+    if doi := data.get("DOI"):
+        output.append(f"**DOI:** {doi}")
+
+    output.append("")
+    return "\n".join(output)
+
+
+def _format_bbt_result(bbt_item: dict, citekey: str) -> str:
+    """Format a BetterBibTeX search result (when pyzotero item is unavailable)."""
+    title = bbt_item.get("title", "Untitled")
+    year = bbt_item.get("year", "N/A")
+    creators = bbt_item.get("creators", [])
+
+    creator_names = []
+    for c in creators:
+        if isinstance(c, dict):
+            if "lastName" in c:
+                creator_names.append(f"{c.get('lastName', '')}, {c.get('firstName', '')}")
+            elif "name" in c:
+                creator_names.append(c["name"])
+        elif isinstance(c, str):
+            creator_names.append(c)
+    creators_str = "; ".join(creator_names) if creator_names else "No authors listed"
+
+    output = [
+        f"# Citation Key: {citekey}",
+        "",
+        f"## {title}",
+        f"**Citation Key:** {citekey}",
+        f"**Year:** {year}",
+        f"**Authors:** {creators_str}",
+        "",
+        "*Note: Item found via BetterBibTeX. Use the citation key with other tools for full details.*",
+        "",
+    ]
+    return "\n".join(output)
+
+
+@mcp.tool(
+    name="zotero_search_by_citation_key",
+    description="Look up a Zotero item by its BetterBibTeX citation key (e.g., 'Smith2024'). "
+    "Works in local mode via the BetterBibTeX API, or in web mode by searching the Extra field."
+)
+def search_by_citation_key(
+    citekey: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Look up a Zotero item by its BetterBibTeX citation key.
+
+    Args:
+        citekey: The BetterBibTeX citation key to search for (e.g., 'Smith2024')
+        ctx: MCP context
+
+    Returns:
+        Formatted item details or error message
+    """
+    try:
+        if not citekey.strip():
+            return "Error: Citation key cannot be empty"
+
+        citekey = citekey.strip()
+        ctx.info(f"Looking up citation key: {citekey}")
+
+        # Strategy A: Try BetterBibTeX JSON-RPC API (local mode only)
+        if is_local_mode():
+            try:
+                from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
+                bibtex = ZoteroBetterBibTexAPI()
+                if bibtex.is_zotero_running():
+                    search_results = bibtex._make_request("item.search", [citekey])
+                    if search_results:
+                        matched = next(
+                            (item for item in search_results if item.get("citekey") == citekey),
+                            None,
+                        )
+                        if matched:
+                            item_key = matched.get("itemKey") or matched.get("key")
+                            if item_key:
+                                zot = get_zotero_client()
+                                item = zot.item(item_key)
+                                if item:
+                                    return _format_citekey_result(item, citekey)
+                            return _format_bbt_result(matched, citekey)
+            except Exception as e:
+                ctx.warn(f"BetterBibTeX lookup failed, falling back to Extra field search: {e}")
+
+        # Strategy B: Search via pyzotero Extra field
+        zot = get_zotero_client()
+        zot.add_parameters(q=citekey, qmode="everything", itemType="-attachment", limit=25)
+        results = zot.items()
+
+        for item in results:
+            extra = item.get("data", {}).get("extra", "")
+            if _extra_has_citekey(extra, citekey):
+                return _format_citekey_result(item, citekey)
+
+        return f"No item found with citation key: '{citekey}'"
+
+    except Exception as e:
+        ctx.error(f"Error looking up citation key: {str(e)}")
+        return f"Error looking up citation key: {str(e)}"
+
 
 @mcp.tool(
     name="zotero_get_item_metadata",
@@ -2023,7 +2167,7 @@ def advanced_search(
                 output.append(f"**Abstract:** {abstract_snippet}")
 
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -2332,6 +2476,21 @@ def _get_annotations(
             if "_pdf_page" in data:
                 label = data.get("_pageLabel", str(data["_pdf_page"]))
                 output.append(f"**Page:** {data['_pdf_page']} (Label: {label})")
+            elif data.get("annotationPageLabel"):
+                page_label = data["annotationPageLabel"]
+                page_index = None
+                position_raw = data.get("annotationPosition", "")
+                if position_raw:
+                    try:
+                        position = json.loads(position_raw) if isinstance(position_raw, str) else position_raw
+                        if "pageIndex" in position:
+                            page_index = position["pageIndex"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                if page_index is not None:
+                    output.append(f"**Page:** {page_label} (index: {page_index})")
+                else:
+                    output.append(f"**Page:** {page_label}")
 
             # Annotation content
             if anno_text:
@@ -2346,7 +2505,7 @@ def _get_annotations(
 
             # Tags
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -2435,7 +2594,7 @@ def get_notes(
 
             # Tags
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -2591,7 +2750,7 @@ def search_notes(
 
                 # Tags
                 if tags := data.get("tags"):
-                    tag_list = [f"`{tag['tag']}`" for tag in tags]
+                    tag_list = [f"`{t['tag']}`" for t in tags]
                     if tag_list:
                         output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -3158,7 +3317,7 @@ def semantic_search(
 
                 # Add tags if present
                 if tags := data.get("tags"):
-                    tag_list = [f"`{tag['tag']}`" for tag in tags]
+                    tag_list = [f"`{t['tag']}`" for t in tags]
                     if tag_list:
                         output.append(f"**Tags:** {' '.join(tag_list)}")
 

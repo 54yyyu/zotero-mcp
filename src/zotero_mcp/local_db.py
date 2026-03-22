@@ -15,6 +15,21 @@ from dataclasses import dataclass
 
 from .utils import is_local_mode
 
+logger = logging.getLogger(__name__)
+
+# Sentinel returned by _extract_text_from_pdf on timeout
+_EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
+
+
+def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
+    """Worker: extract text from a PDF in a separate process."""
+    try:
+        from pdfminer.high_level import extract_text
+        text = extract_text(file_path, maxpages=maxpages) or ""
+        result_queue.put(text)
+    except Exception:
+        result_queue.put("")
+
 
 @dataclass
 class ZoteroItem:
@@ -75,16 +90,19 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
 
-    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None):
+    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None, pdf_timeout: int = 30):
         """
         Initialize the local database reader.
 
         Args:
             db_path: Optional path to zotero.sqlite. If None, auto-detect.
+            pdf_max_pages: Maximum pages to extract from PDFs.
+            pdf_timeout: Seconds to wait for PDF extraction before killing the process.
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
+        self.pdf_timeout: int = pdf_timeout
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -191,22 +209,60 @@ class LocalZoteroReader:
         return None
 
     def _extract_text_from_pdf(self, file_path: Path) -> str:
-        """Extract text from a PDF using pdfminer with a page cap to avoid stalls."""
+        """Extract text from a PDF using pdfminer in a subprocess with timeout.
+
+        Returns the extracted text, empty string on failure, or
+        _EXTRACTION_TIMEOUT sentinel if the process was killed due to timeout.
+        """
+        import multiprocessing
+
+        # Page limit (preserve existing fallback chain)
+        if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
+            maxpages = self.pdf_max_pages
+        else:
+            max_pages_env = os.getenv("ZOTERO_PDF_MAXPAGES")
+            try:
+                maxpages = int(max_pages_env) if max_pages_env else 10
+            except ValueError:
+                maxpages = 10
+
+        timeout = self.pdf_timeout or 30
+
+        result_queue = None
+        process = None
         try:
-            from pdfminer.high_level import extract_text  # type: ignore
-            # Determine page cap: config value > env > default (10)
-            if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
-                maxpages = self.pdf_max_pages
-            else:
-                max_pages_env = os.getenv("ZOTERO_PDF_MAXPAGES")
-                try:
-                    maxpages = int(max_pages_env) if max_pages_env else 10
-                except ValueError:
-                    maxpages = 10
-            text = extract_text(str(file_path), maxpages=maxpages)
-            return text or ""
-        except Exception:
+            result_queue = multiprocessing.Queue()
+            process = multiprocessing.Process(
+                target=_extract_pdf_worker,
+                args=(str(file_path), maxpages, result_queue),
+            )
+            process.start()
+            process.join(timeout=timeout)
+
+            if process.is_alive():
+                logger.warning(f"PDF extraction timed out after {timeout}s: {file_path.name}")
+                process.kill()
+                process.join(timeout=5)
+                return _EXTRACTION_TIMEOUT
+
+            if not result_queue.empty():
+                return result_queue.get_nowait()
             return ""
+        except Exception as e:
+            logger.warning(f"PDF extraction failed: {file_path.name}: {e}")
+            return ""
+        finally:
+            if result_queue is not None:
+                try:
+                    result_queue.close()
+                    result_queue.join_thread()
+                except Exception:
+                    pass
+            if process is not None:
+                try:
+                    process.close()
+                except Exception:
+                    pass
 
     def _extract_text_from_html(self, file_path: Path) -> str:
         """Extract text from HTML using markitdown if available; fallback to stripping tags."""
@@ -267,6 +323,8 @@ class LocalZoteroReader:
         if not target:
             return None
         text = self._extract_text_from_file(target)
+        if text == _EXTRACTION_TIMEOUT:
+            return (_EXTRACTION_TIMEOUT, "timeout")
         if not text:
             return None
         # Determine source type
@@ -399,7 +457,7 @@ class LocalZoteroReader:
         )
         return cursor.fetchone()[0]
 
-    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False) -> list[ZoteroItem]:
+    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
 
@@ -462,7 +520,14 @@ class LocalZoteroReader:
         LEFT JOIN creators c ON ic.creatorID = c.creatorID
 
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
+        """
 
+        params = []
+        if key_filter:
+            query += " AND i.key = ?"
+            params.append(key_filter)
+
+        query += """
         GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
                  title_val.value, abstract_val.value, extra_val.value
 
@@ -472,7 +537,7 @@ class LocalZoteroReader:
         if limit:
             query += f" LIMIT {limit}"
 
-        cursor = conn.execute(query)
+        cursor = conn.execute(query, params)
         items = []
 
         for row in cursor:
@@ -514,11 +579,8 @@ class LocalZoteroReader:
         Returns:
             ZoteroItem if found, None otherwise.
         """
-        items = self.get_items_with_text()
-        for item in items:
-            if item.key == key:
-                return item
-        return None
+        items = self.get_items_with_text(key_filter=key)
+        return items[0] if items else None
 
     def search_items_by_text(self, query: str, limit: int = 50) -> list[ZoteroItem]:
         """

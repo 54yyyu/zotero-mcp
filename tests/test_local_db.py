@@ -13,6 +13,7 @@ class FakeLocalZoteroReader(LocalZoteroReader):
         self.db_path = "/dev/null"
         self._connection = None
         self.pdf_max_pages = 10
+        self.pdf_timeout = 30
         self._fake_text = fake_text
         self._fake_pdf_path = fake_pdf_path
 
