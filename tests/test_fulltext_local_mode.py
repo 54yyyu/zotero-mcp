@@ -28,12 +28,12 @@ class FakeChromaClient:
 
 
 def test_get_items_from_source_aborts_when_fulltext_without_local_mode(monkeypatch):
-    """Requesting fulltext extraction without local mode should raise SystemExit."""
+    """Requesting fulltext extraction without local mode should raise RuntimeError."""
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
     monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
     search = semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
 
-    with pytest.raises(SystemExit, match="ZOTERO_LOCAL"):
+    with pytest.raises(RuntimeError, match="ZOTERO_LOCAL"):
         search._get_items_from_source(extract_fulltext=True)
 
 
