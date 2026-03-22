@@ -7,8 +7,6 @@ for semantic search over Zotero libraries.
 
 import json
 import os
-import sys
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import logging
@@ -17,19 +15,9 @@ import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from chromadb.config import Settings
 
+from zotero_mcp.utils import suppress_stdout
+
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def suppress_stdout():
-    """Context manager to suppress stdout temporarily."""
-    with open(os.devnull, 'w') as devnull:
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
 
 
 class OpenAIEmbeddingFunction(EmbeddingFunction):

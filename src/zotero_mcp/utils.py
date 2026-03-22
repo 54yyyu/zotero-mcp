@@ -1,7 +1,21 @@
 import os
 import re
+import sys
+from contextlib import contextmanager
 
 html_re = re.compile(r"<.*?>")
+
+
+@contextmanager
+def suppress_stdout():
+    """Context manager to suppress stdout temporarily."""
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
 
 def format_creators(creators: list[dict[str, str]]) -> str:
     """

@@ -9,7 +9,6 @@ over research libraries.
 import json
 import os
 import sys
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -32,16 +31,7 @@ from .local_db import LocalZoteroReader, get_local_zotero_reader
 logger = logging.getLogger(__name__)
 
 
-@contextmanager
-def suppress_stdout():
-    """Context manager to suppress stdout temporarily."""
-    with open(os.devnull, 'w') as devnull:
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
+from zotero_mcp.utils import suppress_stdout
 
 
 def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
