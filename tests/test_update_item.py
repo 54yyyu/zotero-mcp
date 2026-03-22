@@ -68,7 +68,7 @@ class TestUpdateItemHappyPath:
         item = _make_item(title="Old Title")
         fake = FakeZoteroForUpdate(items=[item])
 
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -92,7 +92,7 @@ class TestUpdateMultipleFields:
     def test_update_title_date_abstract(self, monkeypatch):
         item = _make_item(title="Old", date="2020-01-01", abstract="old abs")
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -119,7 +119,7 @@ class TestUpdateItemTags:
         """tags= replaces ALL existing tags."""
         item = _make_item(tags=["old1", "old2"])
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -135,7 +135,7 @@ class TestUpdateItemTags:
         """add_tags= adds to existing tags without removing any."""
         item = _make_item(tags=["existing"])
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -152,7 +152,7 @@ class TestUpdateItemTags:
         """remove_tags= removes specified tags, keeps the rest."""
         item = _make_item(tags=["keep", "old", "also-keep"])
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -170,7 +170,7 @@ class TestUpdateItemTags:
         """Providing both tags= and add_tags= should produce an error."""
         item = _make_item(tags=["x"])
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -189,7 +189,7 @@ class TestUpdateItemTags:
         """Providing both tags= and remove_tags= should produce an error."""
         item = _make_item(tags=["x"])
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -219,7 +219,7 @@ class TestUpdateItemCollections:
                 {"key": "COL002", "data": {"name": "Reviews"}},
             ],
         )
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -242,7 +242,7 @@ class TestUpdateItemCollections:
                 {"key": "COL001", "data": {"name": "My Papers"}},
             ],
         )
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -266,7 +266,7 @@ class TestUpdateItemExtra:
         """extra param should be stored as-is (string)."""
         item = _make_item(extra="old extra")
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -292,7 +292,7 @@ class TestUpdateItemVersion:
         read_fake = FakeZoteroForUpdate(items=[read_item])
         write_fake = FakeZoteroForUpdate(items=[write_item])
 
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (read_fake, write_fake))
 
         server.update_item(
@@ -318,7 +318,7 @@ class TestUpdateItemDiff:
         """Result should show before/after for changed fields."""
         item = _make_item(title="Old Title", date="2020-01-01")
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -340,7 +340,7 @@ class TestUpdateItemHybridMode:
 
     def test_local_only_rejected(self, monkeypatch):
         """Local-only mode (no web credentials) should return clear error."""
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (_ for _ in ()).throw(
                                 ValueError(
                                     "Cannot perform write operations in local-only mode. "
@@ -364,7 +364,7 @@ class TestUpdateItemHybridMode:
         read_zot = FakeZoteroForUpdate(items=[read_item])
         write_zot = FakeZoteroForUpdate(items=[write_item])
 
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (read_zot, write_zot))
 
         server.update_item(
@@ -388,7 +388,7 @@ class TestUpdateItemErrors:
         """An item key that doesn't exist should produce a clear error."""
         fake = FakeZoteroForUpdate(items=[])  # no items at all
 
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -403,7 +403,7 @@ class TestUpdateItemErrors:
         """Calling update_item with no fields to change should give feedback."""
         item = _make_item()
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -425,7 +425,7 @@ class TestUpdateItemErrors:
                 return _FakeResponse(412, text="Precondition Failed")
 
         fake = FailingZotero(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
@@ -446,7 +446,7 @@ class TestUpdateItemFieldVariants:
     def test_update_doi(self, monkeypatch):
         item = _make_item(doi="10.1234/old")
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -460,7 +460,7 @@ class TestUpdateItemFieldVariants:
     def test_update_url(self, monkeypatch):
         item = _make_item(url="https://old.example.com")
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -474,7 +474,7 @@ class TestUpdateItemFieldVariants:
     def test_update_publication_title(self, monkeypatch):
         item = _make_item()
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(
@@ -488,7 +488,7 @@ class TestUpdateItemFieldVariants:
     def test_update_creators(self, monkeypatch):
         item = _make_item()
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         new_creators = [
@@ -508,7 +508,7 @@ class TestUpdateItemFieldVariants:
         """collections= adds to existing collections (does not replace)."""
         item = _make_item(collections=["OLD_COL"])
         fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr(server, "_get_write_client",
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
         server.update_item(

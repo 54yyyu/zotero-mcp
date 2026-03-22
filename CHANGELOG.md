@@ -5,10 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.6] - 2026-03-22
+## [0.2.0] - 2026-03-22
 
-### Changed
-- Updated README to remove outdated fork section and reflect current feature set.
+### Architecture
+- **Split `server.py` (4,800 lines) into `tools/` subpackage** — search, retrieval, annotations, write, connectors, and shared helpers are now separate modules. `server.py` is a 109-line re-export shim.
+- **Removed `_ServerModule` sys.modules hack** — tool modules use module-level attribute access; tests patch canonical locations directly.
+- **Optional dependency groups** — `[semantic]` (ChromaDB, embeddings), `[pdf]` (PyMuPDF, EPUB), `[all]`. Base install is lightweight with no ML dependencies.
+
+### Refactored
+- Deduplicated 7 item-formatting functions into single `format_item_result()` with configurable abstract length, tags, and extra fields.
+- Extracted `_normalize_limit()` helper replacing 12 copy-pasted `isinstance(limit, str)` blocks.
+- Consolidated duplicate `suppress_stdout()` into `utils.py`.
+- Merged `_strip_xml_tags()` into `clean_html()` with `collapse_whitespace` parameter.
+- Extended `format_creators()` to handle string creators; `_format_bbt_result()` now delegates to it.
+- Collapsed `get_annotations`/`_get_annotations` wrapper into single function.
+- Modernized typing in 5 modules: `Optional[X]` → `X | None`, `Dict` → `dict`, `List` → `list`.
+- Removed dead code: unused `_extract_item_key_from_input()` function, stale typing imports across 7 modules.
+
+### Fixed
+- **Stale embedding model detection** — ChromaDB collections created with a deprecated model (e.g., `text-embedding-004`) are now auto-detected and recreated on startup.
+- **Bare `except:` clauses** — replaced with specific exception types in `better_bibtex_client.py`.
+- **PDF outline import order** — defers PyMuPDF import until after attachment check.
+- **Suppressed noisy pdfminer warnings** during PDF text extraction.
+
+### Docs
+- README documents optional extras (`[semantic]`, `[pdf]`, `[all]`), write operations, and embedding model troubleshooting.
+- Removed stale fork enhancements section.
 
 ## [0.1.5] - 2026-03-22
 

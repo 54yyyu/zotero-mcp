@@ -8,7 +8,7 @@ import platform
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Any
+from typing import Any
 
 # Constants
 PDFANNOTS_VERSION = "1.0.15"

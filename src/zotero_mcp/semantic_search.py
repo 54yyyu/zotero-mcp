@@ -9,10 +9,9 @@ over research libraries.
 import json
 import os
 import sys
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any
 import logging
 
 try:
@@ -32,16 +31,7 @@ from .local_db import LocalZoteroReader, get_local_zotero_reader
 logger = logging.getLogger(__name__)
 
 
-@contextmanager
-def suppress_stdout():
-    """Context manager to suppress stdout temporarily."""
-    with open(os.devnull, 'w') as devnull:
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
+from zotero_mcp.utils import suppress_stdout
 
 
 def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
@@ -70,7 +60,7 @@ class CrossEncoderReranker:
         from sentence_transformers import CrossEncoder
         self.model = CrossEncoder(model_name)
 
-    def rerank(self, query: str, documents: List[str], top_k: int) -> List[int]:
+    def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
         """Re-rank documents by relevance to query.
 
         Returns indices of top_k documents in descending relevance order.
@@ -124,7 +114,7 @@ class ZoteroSemanticSearch:
                 logger.warning(f"Error loading reranker config: {e}")
         return config
 
-    def _get_reranker(self) -> Optional[CrossEncoderReranker]:
+    def _get_reranker(self) -> CrossEncoderReranker | None:
         """Get the reranker instance, lazily initializing if enabled."""
         if not self._reranker_config.get("enabled", False):
             return None

@@ -90,7 +90,7 @@ class TestFindDuplicates:
             _make_item("A2", "Machine Learning Basics"),
             _make_item("A3", "Deep Learning Overview"),
         ]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         result = server.find_duplicates(method="title", ctx=dummy_ctx)
 
@@ -109,7 +109,7 @@ class TestFindDuplicates:
             _make_item("B2", "Title Beta", doi="10.1234/abc"),
             _make_item("B3", "Title Gamma", doi="10.5678/xyz"),
         ]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         result = server.find_duplicates(method="doi", ctx=dummy_ctx)
 
@@ -126,7 +126,7 @@ class TestFindDuplicates:
             _make_item("C2", "quick brown fox"),
             _make_item("C3", "  QUICK  BROWN  FOX!  "),
         ]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         result = server.find_duplicates(method="title", ctx=dummy_ctx)
 
@@ -143,7 +143,7 @@ class TestFindDuplicates:
             _make_item("D2", "Unique Title Two"),
             _make_item("D3", "Unique Title Three"),
         ]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         result = server.find_duplicates(method="both", ctx=dummy_ctx)
 
@@ -157,7 +157,7 @@ class TestFindDuplicates:
             _make_item("E2", "Same Title", collections=["COL1"]),
             _make_item("E3", "Same Title", collections=["COL2"]),  # different collection
         ]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         result = server.find_duplicates(
             method="title", collection_key="COL1", ctx=dummy_ctx
@@ -173,7 +173,7 @@ class TestFindDuplicates:
         fake = FakeZoteroForDuplicates()
         # Simulate a large library by returning 5001 items
         fake._items = [_make_item(f"X{i:04d}", f"Item {i}") for i in range(5001)]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         result = server.find_duplicates(method="both", ctx=dummy_ctx)
 
@@ -189,7 +189,7 @@ class TestFindDuplicates:
             _make_item("F3", "Beta Paper"),
             _make_item("F4", "Beta Paper"),  # same title
         ]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         result = server.find_duplicates(method="both", ctx=dummy_ctx)
 
@@ -222,8 +222,8 @@ class TestMergeDuplicatesDryRun:
                 }},
             ],
         }
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.merge_duplicates(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=False, ctx=dummy_ctx
@@ -247,8 +247,8 @@ class TestMergeDuplicatesDryRun:
             "DUP1": [{"key": "CH1", "version": 1, "data": {"itemType": "note", "parentItem": "DUP1"}}],
             "DUP2": [],
         }
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         server.merge_duplicates(
             keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=False, ctx=dummy_ctx
@@ -286,8 +286,8 @@ class TestMergeDuplicatesConfirm:
             "DUP1": [note1, att1],
             "DUP2": [annot1],
         }
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
         return fake
 
     def test_tags_merged(self, monkeypatch, dummy_ctx):
@@ -368,8 +368,8 @@ class TestMergeDuplicatesConfirm:
             _make_item("DUP1", "Dup Item", version=2),
         ]
         fake._children = {"KEEP": [], "DUP1": []}
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         # Pass keeper_key inside duplicate_keys too
         result = server.merge_duplicates(
@@ -389,8 +389,8 @@ class TestMergeDuplicatesConfirm:
         """Empty duplicate_keys returns an error, no writes performed."""
         fake = FakeZoteroForDuplicates()
         fake._items = [_make_item("KEEP", "Keeper", version=1)]
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.merge_duplicates(
             keeper_key="KEEP", duplicate_keys=[], confirm=True, ctx=dummy_ctx
@@ -404,8 +404,8 @@ class TestMergeDuplicatesConfirm:
         fake = FakeZoteroForDuplicates()
         fake._items = [_make_item("KEEP", "Keeper", version=1)]
         fake._children = {"KEEP": []}
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.merge_duplicates(
             keeper_key="KEEP", duplicate_keys=["KEEP"], confirm=True, ctx=dummy_ctx
@@ -431,8 +431,8 @@ class TestMergeDuplicatesConfirm:
         fake._children = {
             "DUP1": [child_ok, child_fail],
         }
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         # Make update_item fail for the second child
         original_update = fake.update_item
@@ -464,8 +464,8 @@ class TestMergeDuplicatesConfirm:
             _make_item("DUP1", "Dup", tags=["t2"], collections=["C2"], version=2),
         ]
         fake._children = {"DUP1": []}
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         # Track item() fetches to verify re-fetching
         fetch_log = []
@@ -495,8 +495,8 @@ class TestMergeDuplicatesConfirm:
             _make_item("DUP1", "Dup", version=2),
         ]
         fake._children = {"DUP1": []}
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         # Pass a single string instead of a list
         result = server.merge_duplicates(

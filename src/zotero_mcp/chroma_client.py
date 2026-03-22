@@ -7,31 +7,17 @@ for semantic search over Zotero libraries.
 
 import json
 import os
-import sys
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any
 import logging
-
-from typing import Dict
 
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from chromadb.config import Settings
 
+from zotero_mcp.utils import suppress_stdout
+
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def suppress_stdout():
-    """Context manager to suppress stdout temporarily."""
-    with open(os.devnull, 'w') as devnull:
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
 
 
 class OpenAIEmbeddingFunction(EmbeddingFunction):
@@ -59,11 +45,11 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "openai"
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {"model_name": self.model_name, "base_url": self.base_url}
 
     @staticmethod
-    def build_from_config(config: Dict[str, Any]) -> "OpenAIEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
         return OpenAIEmbeddingFunction(
             model_name=config.get("model_name", "text-embedding-3-small"),
             base_url=config.get("base_url"),
@@ -126,11 +112,11 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "gemini"
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {"model_name": self.model_name, "base_url": self.base_url}
 
     @staticmethod
-    def build_from_config(config: Dict[str, Any]) -> "GeminiEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> "GeminiEmbeddingFunction":
         return GeminiEmbeddingFunction(
             model_name=config.get("model_name", "gemini-embedding-001"),
             base_url=config.get("base_url"),
@@ -190,11 +176,11 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "huggingface"
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {"model_name": self.model_name}
 
     @staticmethod
-    def build_from_config(config: Dict[str, Any]) -> "HuggingFaceEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> "HuggingFaceEmbeddingFunction":
         return HuggingFaceEmbeddingFunction(
             model_name=config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"),
         )
@@ -268,13 +254,41 @@ class ChromaClient:
 
             # Get or create collection with the configured embedding function.
             # If the user switched embedding models, the persisted collection
-            # will conflict with the new function.  Drop and recreate in that
-            # case so the database is rebuilt with the correct embeddings.
+            # will have stale config.  Detect the mismatch and drop/recreate.
             try:
                 self.collection = self.client.get_or_create_collection(
                     name=self.collection_name,
                     embedding_function=self.embedding_function
                 )
+
+                # ChromaDB may silently persist the old embedding function config.
+                # Check if the stored config matches what we want; if not, recreate.
+                stored_config = getattr(self.collection, 'metadata', {}) or {}
+                if not stored_config:
+                    # Try reading config from the collection's config_json_str
+                    try:
+                        import json as _json
+                        rows = self.client._sysdb.get_collections(name=self.collection_name)
+                        if rows:
+                            raw = getattr(rows[0], 'config_json_str', None) or '{}'
+                            cfg = _json.loads(raw)
+                            ef_cfg = cfg.get('embedding_function', {}).get('config', {})
+                            stored_model = ef_cfg.get('model_name', '')
+                            # Compare stored model with configured model
+                            configured_model = getattr(self.embedding_function, 'model_name', None)
+                            if stored_model and configured_model and stored_model != configured_model:
+                                logger.warning(
+                                    f"Stored embedding model '{stored_model}' differs from "
+                                    f"configured '{configured_model}'. Resetting collection."
+                                )
+                                self.client.delete_collection(name=self.collection_name)
+                                self.collection = self.client.create_collection(
+                                    name=self.collection_name,
+                                    embedding_function=self.embedding_function
+                                )
+                    except Exception:
+                        pass  # Best-effort check; proceed with existing collection
+
             except Exception as e:
                 if "embedding function conflict" in str(e).lower():
                     logger.warning(

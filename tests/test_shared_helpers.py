@@ -1,9 +1,10 @@
-"""Tests for shared helper functions in server.py."""
+"""Tests for shared helper functions in server.py and utils.py."""
 
 import pytest
 from unittest.mock import patch, MagicMock
 
 from zotero_mcp import server
+from zotero_mcp.utils import clean_html
 from conftest import DummyContext, FakeZotero
 
 
@@ -54,25 +55,25 @@ class TestNormalizeStrListInput:
 
 
 # ---------------------------------------------------------------------------
-# _strip_xml_tags
+# clean_html (with collapse_whitespace=True, replaces _strip_xml_tags)
 # ---------------------------------------------------------------------------
 
 class TestStripXmlTags:
     def test_jats_tags(self):
-        assert server._strip_xml_tags("<jats:p>Hello <jats:italic>world</jats:italic></jats:p>") == "Hello world"
+        assert clean_html("<jats:p>Hello <jats:italic>world</jats:italic></jats:p>", collapse_whitespace=True) == "Hello world"
 
     def test_html_tags(self):
-        assert server._strip_xml_tags("<p>Hello <b>world</b></p>") == "Hello world"
+        assert clean_html("<p>Hello <b>world</b></p>", collapse_whitespace=True) == "Hello world"
 
     def test_none_returns_empty(self):
-        assert server._strip_xml_tags(None) == ""
-        assert server._strip_xml_tags("") == ""
+        assert clean_html(None, collapse_whitespace=True) == ""
+        assert clean_html("", collapse_whitespace=True) == ""
 
     def test_plain_text_unchanged(self):
-        assert server._strip_xml_tags("No tags here") == "No tags here"
+        assert clean_html("No tags here", collapse_whitespace=True) == "No tags here"
 
     def test_whitespace_normalized(self):
-        assert server._strip_xml_tags("a   b\n\nc") == "a b c"
+        assert clean_html("a   b\n\nc", collapse_whitespace=True) == "a b c"
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +192,8 @@ class TestResolveCollectionNames:
 class TestGetWriteClient:
     def test_web_mode_returns_same_client(self, monkeypatch):
         fake = FakeZotero()
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "is_local_mode", lambda: False)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
         read_zot, write_zot = server._get_write_client(DummyContext())
         assert read_zot is write_zot
         assert read_zot is fake
@@ -200,18 +201,18 @@ class TestGetWriteClient:
     def test_hybrid_mode_different_clients(self, monkeypatch):
         local = FakeZotero()
         web = FakeZotero()
-        monkeypatch.setattr(server, "get_zotero_client", lambda: local)
-        monkeypatch.setattr(server, "is_local_mode", lambda: True)
-        monkeypatch.setattr(server, "get_web_zotero_client", lambda: web)
-        monkeypatch.setattr(server, "get_active_library", lambda: {})
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: local)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
+        monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: web)
+        monkeypatch.setattr("zotero_mcp.client.get_active_library", lambda: {})
         read_zot, write_zot = server._get_write_client(DummyContext())
         assert read_zot is local
         assert write_zot is web
 
     def test_local_only_raises(self, monkeypatch):
-        monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZotero())
-        monkeypatch.setattr(server, "is_local_mode", lambda: True)
-        monkeypatch.setattr(server, "get_web_zotero_client", lambda: None)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: FakeZotero())
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
+        monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: None)
         with pytest.raises(ValueError, match="Cannot perform write"):
             server._get_write_client(DummyContext())
 
@@ -220,10 +221,10 @@ class TestGetWriteClient:
         web = FakeZotero()
         web.library_id = "personal"
         web.library_type = "user"
-        monkeypatch.setattr(server, "get_zotero_client", lambda: local)
-        monkeypatch.setattr(server, "is_local_mode", lambda: True)
-        monkeypatch.setattr(server, "get_web_zotero_client", lambda: web)
-        monkeypatch.setattr(server, "get_active_library", lambda: {
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: local)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
+        monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: web)
+        monkeypatch.setattr("zotero_mcp.client.get_active_library", lambda: {
             "library_id": "group123", "library_type": "group"
         })
         _, write_zot = server._get_write_client(DummyContext())
@@ -235,10 +236,10 @@ class TestGetWriteClient:
         web = FakeZotero()
         web.library_id = "personal"
         web.library_type = "user"
-        monkeypatch.setattr(server, "get_zotero_client", lambda: local)
-        monkeypatch.setattr(server, "is_local_mode", lambda: True)
-        monkeypatch.setattr(server, "get_web_zotero_client", lambda: web)
-        monkeypatch.setattr(server, "get_active_library", lambda: {})
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: local)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
+        monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: web)
+        monkeypatch.setattr("zotero_mcp.client.get_active_library", lambda: {})
         _, write_zot = server._get_write_client(DummyContext())
         assert write_zot.library_id == "personal"
         assert write_zot.library_type == "user"

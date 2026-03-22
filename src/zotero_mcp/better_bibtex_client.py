@@ -7,7 +7,7 @@ import json
 import requests
 import os
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 class ZoteroBetterBibTexAPI:
     """Class to interact with Zotero's local Better BibTeX JSON-RPC API"""
@@ -81,7 +81,7 @@ class ZoteroBetterBibTexAPI:
                 timeout=5
             )
             return response.text == "ready"
-        except:
+        except Exception:
             return False
 
     def get_item_by_citekey(self, citekey: str) -> dict[str, Any]:
@@ -122,7 +122,7 @@ class ZoteroBetterBibTexAPI:
                 if len(export_result) > 2 and export_result[2]:
                     try:
                         return json.loads(export_result[2]).get('items', [])[0]
-                    except:
+                    except (json.JSONDecodeError, IndexError, KeyError):
                         # Try to use the first element if it's a string
                         if isinstance(export_result[0], str):
                             return json.loads(export_result[0]).get('items', [])[0]
@@ -291,7 +291,7 @@ def process_annotation(annotation: dict[str, Any], attachment: dict[str, Any], f
         if isinstance(position, str):
             try:
                 position = json.loads(position)
-            except:
+            except (json.JSONDecodeError, ValueError):
                 position = {}
 
         if position:

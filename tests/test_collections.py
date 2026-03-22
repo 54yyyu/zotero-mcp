@@ -105,21 +105,21 @@ def ctx():
 def _patch_hybrid(monkeypatch, read_zot, write_zot):
     """Patch _get_write_client to return the given read/write pair."""
     monkeypatch.setattr(
-        server, "_get_write_client", lambda ctx: (read_zot, write_zot)
+        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (read_zot, write_zot)
     )
 
 
 def _patch_web_only(monkeypatch, fake_zot):
     """Patch for web-only mode: same client for read and write."""
-    monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
     monkeypatch.setattr(
-        server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
     )
 
 
 def _patch_local_only(monkeypatch, fake_zot):
     """Patch _get_write_client to raise ValueError (local-only mode)."""
-    monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
     def _raise_local_only(ctx):
         raise ValueError(
@@ -127,7 +127,7 @@ def _patch_local_only(monkeypatch, fake_zot):
             "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
         )
 
-    monkeypatch.setattr(server, "_get_write_client", _raise_local_only)
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", _raise_local_only)
 
 
 # ===========================================================================
@@ -248,7 +248,7 @@ class TestSearchCollections:
 
     def test_happy_path_find_by_name(self, monkeypatch, fake_zot, ctx):
         """Search for a collection by exact name substring."""
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.search_collections(query="Machine Learning", ctx=ctx)
 
@@ -257,7 +257,7 @@ class TestSearchCollections:
 
     def test_case_insensitive_search(self, monkeypatch, fake_zot, ctx):
         """Search is case-insensitive."""
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.search_collections(query="machine learning", ctx=ctx)
 
@@ -265,7 +265,7 @@ class TestSearchCollections:
 
     def test_partial_match(self, monkeypatch, fake_zot, ctx):
         """Search for a substring should match collections containing it."""
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.search_collections(query="Learning", ctx=ctx)
 
@@ -275,7 +275,7 @@ class TestSearchCollections:
 
     def test_no_matches_returns_message(self, monkeypatch, fake_zot, ctx):
         """When no collections match, return an informative message."""
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.search_collections(query="Quantum Physics", ctx=ctx)
 
@@ -285,7 +285,7 @@ class TestSearchCollections:
         """Empty library (no collections) returns an informative message."""
         empty_zot = FakeZoteroCollections()
         empty_zot._collections = []
-        monkeypatch.setattr(server, "get_zotero_client", lambda: empty_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: empty_zot)
 
         result = server.search_collections(query="anything", ctx=ctx)
 
@@ -293,7 +293,7 @@ class TestSearchCollections:
 
     def test_returns_parent_info(self, monkeypatch, fake_zot, ctx):
         """Results should include parent collection info when present."""
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.search_collections(query="Deep Learning", ctx=ctx)
 
@@ -303,7 +303,7 @@ class TestSearchCollections:
 
     def test_returns_item_count(self, monkeypatch, fake_zot, ctx):
         """Results should include number of items in each collection."""
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.search_collections(query="NLP", ctx=ctx)
 

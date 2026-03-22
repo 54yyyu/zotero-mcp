@@ -101,8 +101,8 @@ def test_search_notes_filters_by_query(monkeypatch):
     }
     fake_zot = FakeZoteroForNotes(notes, annotations, parent_items)
 
-    monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
-    monkeypatch.setattr(server, "is_local_mode", lambda: False)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
     result = server.search_notes(query="quantum", limit=20, ctx=DummyContext())
 
@@ -141,8 +141,8 @@ def test_search_notes_note_results_survive_annotation_crash(monkeypatch):
             return self._notes
 
     fake_zot = CrashingAnnotationZot(notes, [], parent_items)
-    monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
-    monkeypatch.setattr(server, "is_local_mode", lambda: False)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
     result = server.search_notes(query="mindfulness", limit=20, ctx=DummyContext())
 
@@ -161,7 +161,7 @@ def test_batch_update_tags_validates_json_array(monkeypatch):
             },
         }
     ]
-    monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZoteroForTags(items))
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: FakeZoteroForTags(items))
 
     result = server.batch_update_tags(
         query="anything",

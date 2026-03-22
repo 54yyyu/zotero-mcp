@@ -25,8 +25,8 @@
 ## ✨ Features
 
 ### 🧠 AI-Powered Semantic Search
-- **Vector-based similarity search** over your entire research library
-- **Multiple embedding models**: Default (free), OpenAI, and Gemini options
+- **Vector-based similarity search** over your entire research library (requires `[semantic]` extra)
+- **Multiple embedding models**: Default (free, local), OpenAI, and Gemini
 - **Intelligent results** with similarity scores and contextual matching
 - **Auto-updating database** with configurable sync schedules
 
@@ -34,31 +34,36 @@
 - Find papers, articles, and books by title, author, or content
 - Perform complex searches with multiple criteria
 - Browse collections, tags, and recent additions
-- **NEW**: Semantic search for conceptual and topic-based discovery
+- Semantic search for conceptual and topic-based discovery
 
 ### 📚 Access Your Content
-- Retrieve detailed metadata for any item
+- Retrieve detailed metadata for any item (markdown or BibTeX export)
 - Get full text content (when available)
-- Access attachments, notes, and child items
+- Look up items by BetterBibTeX citation key
 
 ### 📝 Work with Annotations
-- Extract and search PDF annotations directly
+- Extract and search PDF annotations with page numbers
 - Access Zotero's native annotations
 - Create and update notes and annotations
+- Extract PDF table of contents / outlines (requires `[pdf]` extra)
 
-### 🔄 Easy Updates
-- **Smart update system** that detects your installation method (uv, pip, conda, pipx)
-- **Configuration preservation** - all settings maintained during updates
-- **Version checking** and automatic update notifications
+### ✏️ Write Operations
+- **Add papers by DOI** with auto-fetched metadata and open-access PDF cascade (Unpaywall, arXiv, Semantic Scholar, PMC)
+- **Add papers by URL** (arXiv, DOI links, generic webpages) or from local files
+- Create and manage collections, update item metadata, batch-update tags
+- Find and merge duplicate items with dry-run preview
+- **Hybrid mode**: local reads + web API writes for local-mode users
 
 ### 🌐 Flexible Access Methods
-- Local method for offline access (no API key needed)
+- Local mode for offline access (no API key needed)
 - Web API for cloud library access
-- Perfect for both local research and remote collaboration
+- Hybrid mode: read from local Zotero, write via web API
 
 ## 🚀 Quick Install
 
-### Default Installation
+### Default Installation (core tools only)
+
+The base install is lightweight — it includes search, metadata retrieval, annotations, and write operations. No ML/AI dependencies are pulled in.
 
 #### Installing via uv (recommended)
 
@@ -80,6 +85,24 @@ zotero-mcp setup  # Auto-configure (Claude Desktop supported)
 pipx install zotero-mcp-server
 zotero-mcp setup  # Auto-configure (Claude Desktop supported)
 ```
+
+### Optional Extras
+
+Heavy ML/PDF dependencies are separated into optional extras so the base install stays fast and small:
+
+| Extra | What it adds | Install command |
+|-------|-------------|-----------------|
+| `semantic` | Semantic search via ChromaDB, sentence-transformers, OpenAI/Gemini embeddings | `pip install "zotero-mcp-server[semantic]"` |
+| `pdf` | PDF outline extraction (PyMuPDF) and EPUB annotation support | `pip install "zotero-mcp-server[pdf]"` |
+| `all` | Everything above | `pip install "zotero-mcp-server[all]"` |
+
+For example, with uv:
+```bash
+uv tool install "zotero-mcp-server[all]"    # Full install with all features
+uv tool install "zotero-mcp-server[semantic]" # Just semantic search
+```
+
+If you only need basic library access (search, read, annotate, write), the default install with no extras is all you need.
 
 #### Updating Your Installation
 
@@ -134,7 +157,8 @@ zotero-mcp update-db --fulltext
 # Use your custom zotero.sqlite path
 zotero-mcp update-db --fulltext --db-path "/Your_custom_path/zotero.sqlite"
 
-If you have embedding confilts when using `zotero-mcp update-db --fulltext`, use `--force-rebuild` to force a rebuild.
+# If you have embedding conflicts or changed models, force a rebuild
+zotero-mcp update-db --force-rebuild
 
 # Check database status
 zotero-mcp db-status
@@ -363,7 +387,7 @@ A 45-point live integration test plan is included at `docs/integration-test-plan
 
 ### Semantic Search Issues
 - **"Missing required environment variables" when running update-db**: Run `zotero-mcp setup` to configure your environment, or the CLI will automatically load settings from your MCP client config (e.g., Claude Desktop)
-- **ChromaDB warnings**: Update to the latest version - deprecation warnings have been fixed
+- **ChromaDB / stale embedding model errors**: If you changed embedding models and see 404 errors (e.g., `text-embedding-004 is not found`), run `zotero-mcp update-db --force-rebuild` to recreate the collection with your current model. If that doesn't work, delete `~/.config/zotero-mcp/chroma_db/` and rebuild.
 - **Database update takes long**: By default, `update-db` is fast (metadata-only). For comprehensive indexing with full-text, use `--fulltext` flag. Use `--limit` parameter for testing: `zotero-mcp update-db --limit 100`
 - **Semantic search returns no results**: Ensure the database is initialized with `zotero-mcp update-db` and check status with `zotero-mcp db-status`
 - **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)

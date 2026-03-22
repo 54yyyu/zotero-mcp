@@ -98,7 +98,7 @@ def _patch_hybrid_mode(monkeypatch, fake_write_zot):
     """Patch _get_write_client to return (read_zot, write_zot)."""
     read_zot = FakeZoteroForFile()
     monkeypatch.setattr(
-        server, "_get_write_client",
+        "zotero_mcp.tools._helpers._get_write_client",
         lambda ctx: (read_zot, fake_write_zot),
     )
     return read_zot
@@ -194,7 +194,7 @@ class TestDoiFromMetadata:
             doi_called_with["tags"] = tags
             return "Added by DOI: 10.1234/test.2024.001"
 
-        monkeypatch.setattr(server, "add_by_doi", mock_add_by_doi)
+        monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
         result = server.add_from_file(
             file_path="/Users/test/Documents/paper.pdf",
@@ -228,7 +228,7 @@ class TestDoiFromMetadata:
             doi_captured["doi"] = doi
             return "Added by DOI: Item key: `KEY0001`"
 
-        monkeypatch.setattr(server, "add_by_doi", mock_add_by_doi)
+        monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
         server.add_from_file(
             file_path="/Users/test/Documents/paper.pdf",
@@ -269,7 +269,7 @@ class TestDoiFromFirstPageText:
             doi_captured["doi"] = doi
             return "Added by DOI"
 
-        monkeypatch.setattr(server, "add_by_doi", mock_add_by_doi)
+        monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
         server.add_from_file(
             file_path="/Users/test/Documents/paper.pdf",
@@ -302,7 +302,7 @@ class TestDoiFromFirstPageText:
             add_by_doi_called = True
             return "should not happen"
 
-        monkeypatch.setattr(server, "add_by_doi", mock_add_by_doi)
+        monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
         server.add_from_file(
             file_path="/Users/test/Documents/paper.pdf",
@@ -522,7 +522,7 @@ class TestHybridModeRejection:
                 "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
             )
 
-        monkeypatch.setattr(server, "_get_write_client", raise_local_only)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local_only)
 
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
@@ -543,7 +543,7 @@ class TestHybridModeRejection:
         write_zot = FakeZoteroForFile()
         read_zot = FakeZoteroForFile()
         monkeypatch.setattr(
-            server, "_get_write_client",
+            "zotero_mcp.tools._helpers._get_write_client",
             lambda ctx: (read_zot, write_zot),
         )
         _patch_path_valid(monkeypatch)
