@@ -156,15 +156,6 @@ def _resolve_collection_names(zot, names, ctx=None):
     return results
 
 
-def _strip_xml_tags(text):
-    """Strip XML/HTML tags from text (e.g., JATS tags in CrossRef abstracts)."""
-    if not text:
-        return ""
-    cleaned = re.sub(r'<[^>]+>', '', text)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned
-
-
 def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
     """Download a PDF from a URL and attach it to a Zotero item.
 
@@ -4003,7 +3994,7 @@ def add_by_doi(
         if container:
             field_map["publicationTitle"] = container
 
-        abstract = _strip_xml_tags(cr.get("abstract", ""))
+        abstract = clean_html(cr.get("abstract", ""), collapse_whitespace=True)
         if abstract:
             field_map["abstractNote"] = abstract
 

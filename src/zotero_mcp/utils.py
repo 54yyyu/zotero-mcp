@@ -45,14 +45,20 @@ def is_local_mode() -> bool:
     value = os.getenv("ZOTERO_LOCAL", "")
     return value.lower() in {"true", "yes", "1"}
 
-def clean_html(raw_html: str) -> str:
-    """
-    Remove HTML tags from a string.
+def clean_html(raw_html: str, collapse_whitespace: bool = False) -> str:
+    """Remove HTML/XML tags from a string.
 
     Args:
         raw_html: String containing HTML content.
+        collapse_whitespace: If True, collapse runs of whitespace into a
+            single space and strip leading/trailing whitespace. Useful for
+            cleaning JATS XML from CrossRef abstracts.
     Returns:
         Cleaned string without HTML tags.
     """
+    if not raw_html:
+        return ""
     clean_text = re.sub(html_re, "", raw_html)
+    if collapse_whitespace:
+        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
     return clean_text
