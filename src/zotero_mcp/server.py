@@ -1159,6 +1159,10 @@ def get_collection_items(
             output.append(f"**Date:** {date}")
             output.append(f"**Authors:** {creators_str}")
 
+            abstract = data.get("abstractNote", "")
+            if abstract:
+                output.append(f"**Abstract:** {abstract}")
+
             output.append("")  # Empty line between items
 
         return "\n".join(output)
@@ -1308,7 +1312,8 @@ def get_tags(
         if isinstance(limit, str):
             limit = int(limit)
 
-        tags = zot.tags(limit=limit)
+        # Use everything() to paginate through all tags reliably
+        tags = zot.everything(zot.tags())
         if not tags:
             return "No tags found in your Zotero library."
 
@@ -1317,6 +1322,10 @@ def get_tags(
 
         # Sort tags alphabetically
         sorted_tags = sorted(tags)
+
+        # Apply limit after collecting all tags
+        if limit:
+            sorted_tags = sorted_tags[:limit]
 
         # Group tags alphabetically
         current_letter = None
