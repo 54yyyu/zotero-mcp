@@ -25,6 +25,10 @@ _EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
 def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
     """Worker: extract text from a PDF in a separate process."""
     try:
+        # Suppress pdfminer warnings about malformed PDF color spaces, fonts, etc.
+        import logging as _logging
+        _logging.getLogger("pdfminer").setLevel(_logging.ERROR)
+
         from pdfminer.high_level import extract_text
         text = extract_text(file_path, maxpages=maxpages) or ""
         result_queue.put(text)
