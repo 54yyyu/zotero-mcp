@@ -607,6 +607,85 @@ class LocalZoteroReader:
 
         return matching_items
 
+    def search_notes_local(self, query: str, limit: int = 20) -> list[dict]:
+        """Search notes in the local Zotero database by text content."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        pattern = f"%{query}%"
+        cursor.execute("""
+            SELECT i.key, n.note, n.title,
+                   pi.key as parentKey,
+                   pdv.value as parentTitle
+            FROM itemNotes n
+            JOIN items i ON n.itemID = i.itemID
+            LEFT JOIN items pi ON n.parentItemID = pi.itemID
+            LEFT JOIN itemData pd ON pi.itemID = pd.itemID AND pd.fieldID = 1
+            LEFT JOIN itemDataValues pdv ON pd.valueID = pdv.valueID
+            WHERE n.note LIKE ?
+            AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            LIMIT ?
+        """, (pattern, limit))
+
+        results = []
+        for row in cursor.fetchall():
+            note_html = row[1] or ""
+            # Post-filter: skip if query only matches HTML tags, not content
+            from zotero_mcp.utils import clean_html
+            clean_text = clean_html(note_html)
+            if query.lower() not in clean_text.lower():
+                continue
+            results.append({
+                "type": "note",
+                "key": row[0],
+                "text": note_html,
+                "parent_key": row[3],
+                "parent_title": row[4] or ("Unknown" if row[3] else None),
+                "tags": [],  # Tags require a separate query; omitted for speed
+            })
+        return results
+
+    def search_annotations_local(self, query: str, limit: int = 20) -> list[dict]:
+        """Search annotations in the local Zotero database by text or comment."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        pattern = f"%{query}%"
+        # Two-hop join: annotation -> attachment -> grandparent item (for title)
+        cursor.execute("""
+            SELECT i.key, ia.text, ia.comment, ia.type, ia.color, ia.pageLabel,
+                   att.key as attachmentKey,
+                   gpi.key as parentKey,
+                   gpdv.value as parentTitle
+            FROM itemAnnotations ia
+            JOIN items i ON ia.itemID = i.itemID
+            LEFT JOIN items att ON ia.parentItemID = att.itemID
+            LEFT JOIN itemAttachments iatt ON ia.parentItemID = iatt.itemID
+            LEFT JOIN items gpi ON iatt.parentItemID = gpi.itemID
+            LEFT JOIN itemData gpd ON gpi.itemID = gpd.itemID AND gpd.fieldID = 1
+            LEFT JOIN itemDataValues gpdv ON gpd.valueID = gpdv.valueID
+            WHERE (ia.text LIKE ? OR ia.comment LIKE ?)
+            AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            LIMIT ?
+        """, (pattern, pattern, limit))
+
+        # Map integer annotation types to names
+        type_map = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}
+
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                "type": "annotation",
+                "key": row[0],
+                "text": row[1] or "",
+                "comment": row[2] or "",
+                "annotation_type": type_map.get(row[3], "unknown"),
+                "color": row[4] or "",
+                "page_label": row[5] or None,
+                "attachment_key": row[6],
+                "parent_key": row[7],
+                "parent_title": row[8] or ("Unknown" if row[7] else None),
+            })
+        return results
+
 
 def get_local_zotero_reader() -> LocalZoteroReader | None:
     """

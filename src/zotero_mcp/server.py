@@ -2419,8 +2419,20 @@ def _get_annotations(
             # Retrieve all annotations in the library
             if isinstance(limit, str):
                 limit = int(limit)
-            zot.add_parameters(itemType="annotation", limit=limit or 50)
-            annotations = zot.everything(zot.items())
+            # Manual pagination instead of zot.everything() to avoid
+            # RLock pickling issues in MCP contexts.
+            annotations = []
+            start = 0
+            page_limit = limit or 50
+            while True:
+                batch = zot.items(start=start, limit=min(100, page_limit - len(annotations)),
+                                  itemType="annotation")
+                if not batch:
+                    break
+                annotations.extend(batch)
+                if len(batch) < 100 or len(annotations) >= page_limit:
+                    break
+                start += 100
 
         # Handle no annotations found
         if not annotations:
@@ -2608,9 +2620,85 @@ def get_notes(
         return f"Error fetching notes: {str(e)}"
 
 
+# ---------------------------------------------------------------------------
+# Helpers for search_notes
+# ---------------------------------------------------------------------------
+
+def _batch_resolve_parent_titles(
+    zot, parent_keys: set[str], ctx: Context
+) -> dict[str, str]:
+    """Fetch parent item titles in batch instead of one-by-one (N+1 fix)."""
+    titles: dict[str, str] = {}
+    keys_list = list(parent_keys)
+    BATCH_SIZE = 50  # Zotero API limit for itemKey parameter
+    for i in range(0, len(keys_list), BATCH_SIZE):
+        batch = keys_list[i:i + BATCH_SIZE]
+        try:
+            items = zot.items(itemKey=",".join(batch))
+            for item in items:
+                titles[item.get("key", "")] = item.get("data", {}).get("title", "Untitled")
+        except Exception as e:
+            ctx.warn(f"Batch parent lookup failed: {e}")
+            for k in batch:
+                titles.setdefault(k, f"(parent key: {k})")
+    return titles
+
+
+def _format_search_results(
+    query: str, note_results: list[dict], annotation_results: list[dict]
+) -> str:
+    """Format note and annotation search results as consistent markdown."""
+    all_results = note_results + annotation_results
+    if not all_results:
+        return f"No results found for '{query}'"
+
+    output = [f"# Search Results for '{query}'", ""]
+    for i, result in enumerate(all_results, 1):
+        parent_title = result.get("parent_title")
+        parent_info = f' (from "{parent_title}")' if parent_title else ""
+        key = result.get("key", "")
+
+        if result.get("type") == "note":
+            note_text = clean_html(result.get("text", ""))
+            # Show context around match
+            pos = note_text.lower().find(query.lower())
+            if pos >= 0:
+                start = max(0, pos - 100)
+                end = min(len(note_text), pos + len(query) + 200)
+                note_text = note_text[start:end] + "..."
+            else:
+                note_text = note_text[:500] + "..."
+
+            output.append(f"## Note {i}{parent_info}")
+            output.append(f"**Key:** {key}")
+            if tags := result.get("tags"):
+                tag_list = [f"`{t}`" for t in tags]
+                output.append(f"**Tags:** {' '.join(tag_list)}")
+            output.append(f"**Content:**\n{note_text}")
+            output.append("")
+
+        elif result.get("type") == "annotation":
+            anno_type = result.get("annotation_type", "highlight")
+            anno_text = result.get("text", "")
+            anno_comment = result.get("comment", "")
+            page_label = result.get("page_label")
+            output.append(f"## Annotation {i}{parent_info}")
+            output.append(f"**Type:** {anno_type}")
+            output.append(f"**Key:** {key}")
+            if page_label:
+                output.append(f"**Page:** {page_label}")
+            if anno_text:
+                output.append(f"**Text:** {anno_text}")
+            if anno_comment:
+                output.append(f"**Comment:** {anno_comment}")
+            output.append("")
+
+    return "\n".join(output)
+
+
 @mcp.tool(
     name="zotero_search_notes",
-    description="Search for notes across your Zotero library."
+    description="Search for notes and annotations across your Zotero library."
 )
 def search_notes(
     query: str,
@@ -2619,7 +2707,7 @@ def search_notes(
     ctx: Context
 ) -> str:
     """
-    Search for notes in your Zotero library.
+    Search for notes and annotations in your Zotero library.
 
     Args:
         query: Search query string
@@ -2629,144 +2717,124 @@ def search_notes(
     Returns:
         Markdown-formatted search results
     """
+    if not query or not query.strip():
+        return "Error: Search query cannot be empty"
+
+    ctx.info(f"Searching Zotero notes for '{query}'")
+
+    if isinstance(limit, str):
+        limit = int(limit)
+    limit = limit or 20
+
+    note_results: list[dict] = []
+    annotation_results: list[dict] = []
+
+    # ---------- Local mode: fast SQLite queries ----------
+    if is_local_mode():
+        try:
+            from zotero_mcp.local_db import get_local_zotero_reader
+            reader = get_local_zotero_reader()
+            if reader:
+                try:
+                    note_results = reader.search_notes_local(query, limit)
+                    ctx.info(f"Local note search: {len(note_results)} results")
+                except Exception as e:
+                    ctx.warn(f"Local note search failed: {e}")
+
+                try:
+                    annotation_results = reader.search_annotations_local(query, limit)
+                    ctx.info(f"Local annotation search: {len(annotation_results)} results")
+                except Exception as e:
+                    ctx.warn(f"Local annotation search failed: {e}")
+                finally:
+                    reader.close()
+
+                return _format_search_results(query, note_results, annotation_results)
+        except Exception as e:
+            ctx.warn(f"Local search unavailable, falling back to API: {e}")
+
+    # ---------- API mode: separate try/except blocks ----------
+    zot = get_zotero_client()
+
+    # Notes — always try (this works since upstream PR #136)
     try:
-        if not query.strip():
-            return "Error: Search query cannot be empty"
-
-        ctx.info(f"Searching Zotero notes for '{query}'")
-        zot = get_zotero_client()
-
-        # Search for notes and annotations
-
-        if isinstance(limit, str):
-            limit = int(limit)
-
-        # First search notes
-        zot.add_parameters(q=query, qmode="everything", itemType="note", limit=limit or 20)
+        zot.add_parameters(q=query, qmode="everything", itemType="note", limit=limit)
         notes = zot.items()
 
-        # Then search annotations (reusing the get_annotations function)
-        annotation_results = _get_annotations(
-            item_key=None,  # Search all annotations
-            use_pdf_extraction=True,
-            limit=limit or 20,
-            ctx=ctx
-        )
+        # Batch-resolve parent titles
+        parent_keys = {n.get("data", {}).get("parentItem") for n in notes
+                       if n.get("data", {}).get("parentItem")}
+        parent_titles = _batch_resolve_parent_titles(zot, parent_keys, ctx) if parent_keys else {}
 
-        # Parse annotation markdown blocks from get_annotations output.
-        annotation_lines = annotation_results.split("\n")
-        current_annotation = None
-        annotations = []
-
-        for line in annotation_lines:
-            if line.startswith("## "):
-                if current_annotation:
-                    annotations.append(current_annotation)
-                current_annotation = {"lines": [line], "type": "annotation"}
-            elif current_annotation is not None:
-                current_annotation["lines"].append(line)
-
-        if current_annotation:
-            annotations.append(current_annotation)
-
-        # Filter and highlight notes
         query_lower = query.lower()
-        query_terms = query_lower.split()
-        note_results = []
-
         for note in notes:
             data = note.get("data", {})
-            note_text = data.get("note", "").lower()
+            note_html = data.get("note", "")
+            clean_text = clean_html(note_html)
+            if query_lower not in clean_text.lower():
+                continue
 
-            if all(term in note_text for term in query_terms):
-                # Prepare full note details
-                note_result = {
-                    "type": "note",
-                    "key": note.get("key", ""),
-                    "data": data
-                }
-                note_results.append(note_result)
-
-        # Keep only annotation blocks that contain the query text.
-        annotation_results_filtered = []
-        for annotation in annotations:
-            block_text = "\n".join(annotation.get("lines", []))
-            if query_lower in block_text.lower():
-                annotation_results_filtered.append(annotation)
-
-        # Combine and sort results
-        all_results = note_results + annotation_results_filtered
-        if not all_results:
-            return f"No results found for '{query}'"
-
-        # Format results
-        output = [f"# Search Results for '{query}'", ""]
-
-        for i, result in enumerate(all_results, 1):
-            if result["type"] == "note":
-                # Note formatting
-                data = result["data"]
-                key = result["key"]
-
-                # Parent item context
-                parent_info = ""
-                if parent_key := data.get("parentItem"):
-                    try:
-                        parent = zot.item(parent_key)
-                        parent_title = parent["data"].get("title", "Untitled")
-                        parent_info = f" (from \"{parent_title}\")"
-                    except Exception:
-                        parent_info = f" (parent key: {parent_key})"
-
-                # Note text with query highlight
-                note_text = data.get("note", "")
-                note_text = note_text.replace("<p>", "").replace("</p>", "\n\n")
-                note_text = note_text.replace("<br/>", "\n").replace("<br>", "\n")
-
-                # Highlight query in note text
-                try:
-                    # Find first occurrence of query and extract context
-                    text_lower = note_text.lower()
-                    pos = text_lower.find(query_lower)
-                    if pos >= 0:
-                        # Extract context around the query
-                        start = max(0, pos - 100)
-                        end = min(len(note_text), pos + 200)
-                        context = note_text[start:end]
-
-                        # Highlight the query in the context
-                        highlighted = context.replace(
-                            context[context.lower().find(query_lower):context.lower().find(query_lower)+len(query)],
-                            f"**{context[context.lower().find(query_lower):context.lower().find(query_lower)+len(query)]}**"
-                        )
-
-                        note_text = highlighted + "..."
-                except Exception:
-                    # Fallback to first 500 characters if highlighting fails
-                    note_text = note_text[:500] + "..."
-
-                output.append(f"## Note {i}{parent_info}")
-                output.append(f"**Key:** {key}")
-
-                # Tags
-                if tags := data.get("tags"):
-                    tag_list = [f"`{t['tag']}`" for t in tags]
-                    if tag_list:
-                        output.append(f"**Tags:** {' '.join(tag_list)}")
-
-                output.append(f"**Content:**\n{note_text}")
-                output.append("")
-
-            elif result["type"] == "annotation":
-                # Add the entire annotation block
-                output.extend(result["lines"])
-                output.append("")
-
-        return "\n".join(output)
-
+            parent_key = data.get("parentItem")
+            tags = [t["tag"] for t in data.get("tags", [])]
+            note_results.append({
+                "type": "note",
+                "key": note.get("key", ""),
+                "text": note_html,
+                "tags": tags,
+                "parent_key": parent_key,
+                "parent_title": parent_titles.get(parent_key) if parent_key else None,
+            })
+        ctx.info(f"API note search: {len(note_results)} results")
     except Exception as e:
-        ctx.error(f"Error searching notes: {str(e)}")
-        return f"Error searching notes: {str(e)}"
+        ctx.warn(f"Note search failed: {e}")
+
+    # Annotations — separate block so note results survive if this crashes
+    try:
+        # Manual pagination (same fix as _get_annotations)
+        annotations = []
+        start = 0
+        while True:
+            batch = zot.items(start=start, limit=min(100, limit - len(annotations)),
+                              itemType="annotation")
+            if not batch:
+                break
+            annotations.extend(batch)
+            if len(batch) < 100 or len(annotations) >= limit:
+                break
+            start += 100
+
+        # Batch-resolve parent titles for annotations
+        anno_parent_keys = set()
+        for anno in annotations:
+            pk = anno.get("data", {}).get("parentItem")
+            if pk:
+                anno_parent_keys.add(pk)
+        anno_parent_titles = _batch_resolve_parent_titles(zot, anno_parent_keys, ctx) if anno_parent_keys else {}
+
+        query_lower = query.lower()
+        for anno in annotations:
+            data = anno.get("data", {})
+            anno_text = data.get("annotationText", "")
+            anno_comment = data.get("annotationComment", "")
+            if query_lower not in (anno_text + " " + anno_comment).lower():
+                continue
+
+            parent_key = data.get("parentItem")
+            annotation_results.append({
+                "type": "annotation",
+                "key": anno.get("key", ""),
+                "text": anno_text,
+                "comment": anno_comment,
+                "annotation_type": data.get("annotationType", "highlight"),
+                "page_label": data.get("annotationPageLabel"),
+                "parent_key": parent_key,
+                "parent_title": anno_parent_titles.get(parent_key) if parent_key else None,
+            })
+        ctx.info(f"API annotation search: {len(annotation_results)} results")
+    except Exception as e:
+        ctx.warn(f"Annotation search failed: {e}")
+
+    return _format_search_results(query, note_results, annotation_results)
 
 
 @mcp.tool(
