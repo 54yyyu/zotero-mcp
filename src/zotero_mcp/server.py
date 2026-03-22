@@ -1723,47 +1723,15 @@ def batch_update_tags(
         Summary of the batch update
     """
     try:
-        import httpx
-
         if not query and not tag:
             return "Error: Must provide a search query and/or tag filter"
 
         if not add_tags and not remove_tags:
             return "Error: You must specify either tags to add or tags to remove"
 
-        def _normalize_tag_list(
-            raw_value: list[str] | str | None, field_name: str
-        ) -> list[str]:
-            if raw_value is None:
-                return []
-
-            parsed_value = raw_value
-            if isinstance(parsed_value, str):
-                try:
-                    parsed_value = json.loads(parsed_value)
-                    ctx.info(f"Parsed {field_name} from JSON string: {parsed_value}")
-                except json.JSONDecodeError:
-                    raise ValueError(
-                        f"{field_name} appears to be malformed JSON: {raw_value}"
-                    )
-
-            if not isinstance(parsed_value, list):
-                raise ValueError(
-                    f"{field_name} must be a JSON array or a list of strings"
-                )
-
-            normalized = []
-            for tag_value in parsed_value:
-                if not isinstance(tag_value, str):
-                    raise ValueError(f"{field_name} entries must all be strings")
-                stripped = tag_value.strip()
-                if stripped:
-                    normalized.append(stripped)
-            return normalized
-
         try:
-            add_tags = _normalize_tag_list(add_tags, "add_tags")
-            remove_tags = _normalize_tag_list(remove_tags, "remove_tags")
+            add_tags = _normalize_str_list_input(add_tags, "add_tags")
+            remove_tags = _normalize_str_list_input(remove_tags, "remove_tags")
         except ValueError as validation_error:
             return f"Error: {validation_error}"
 
@@ -1858,15 +1826,7 @@ def batch_update_tags(
                         ctx.info(f"Updating item {item_key} with tags: {current_tags}")
                         result = write_zot.update_item(item)
 
-                    ctx.info(f"Update result: {result}")
-                    # pyzotero's update_item returns an httpx.Response.
-                    # Success = 204 No Content. The response is truthy for 2xx codes.
-                    if isinstance(result, httpx.Response) and result.is_success:
-                        updated_count += 1
-                    elif isinstance(result, dict) and result.get("success"):
-                        # Fallback check in case pyzotero behavior changes
-                        updated_count += 1
-                    elif result is True:
+                    if _handle_write_response(result, ctx):
                         updated_count += 1
                     else:
                         ctx.error(f"Update may have failed for item {item_key}: {result}")
@@ -4693,14 +4653,13 @@ def add_from_file(
         return str(e)
 
     try:
-        # Path validation — resolve ".." components before checks
-        file_path = os.path.realpath(file_path)
-        if not os.path.isabs(file_path):
-            return "Error: file_path must be an absolute path."
-        # Resolve any ".." components before symlink/file checks
-        file_path = os.path.realpath(file_path)
+        # Path validation — check symlink BEFORE resolving
         if os.path.islink(file_path):
             return "Error: Symlinks are not allowed for security reasons."
+        if not os.path.isabs(file_path):
+            return "Error: file_path must be an absolute path."
+        # Resolve ".." components after symlink check
+        file_path = os.path.realpath(file_path)
         if not os.path.isfile(file_path):
             return f"Error: File not found: {file_path}"
 

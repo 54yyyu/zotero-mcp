@@ -171,4 +171,4 @@ def test_batch_update_tags_validates_json_array(monkeypatch):
         ctx=DummyContext(),
     )
 
-    assert "must be a JSON array or a list of strings" in result
+    assert "must be a list of strings" in result
