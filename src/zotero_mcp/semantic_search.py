@@ -12,7 +12,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any, List, Optional, Tuple
 import logging
 
 try:

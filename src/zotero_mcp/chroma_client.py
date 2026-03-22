@@ -10,10 +10,8 @@ import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 import logging
-
-from typing import Dict
 
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
