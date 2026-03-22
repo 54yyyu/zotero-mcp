@@ -26,20 +26,27 @@ dependencies = [
     "pydantic>=2.0.0",
     "requests>=2.28.0",
     "fastmcp>=2.14.0",
+]
+
+[project.optional-dependencies]
+semantic = [
     "chromadb>=0.4.0",
     "sentence-transformers>=2.2.0",
     "openai>=1.0.0",
     "google-genai>=0.7.0",
-    "pymupdf>=1.24.0",
-    "ebooklib>=0.18",
     "tiktoken>=0.7.0",
 ]
-
-[project.optional-dependencies]
+pdf = [
+    "pymupdf>=1.24.0",
+    "ebooklib>=0.18",
+]
+all = [
+    "zotero-mcp-server[semantic,pdf]",
+]
 dev = [
+    "zotero-mcp-server[all]",
     "pytest>=7.0.0",
-    "black>=23.0.0",
-    "isort>=5.12.0",
+    "ruff>=0.9.0",
 ]
 
 [project.urls]
@@ -57,9 +64,10 @@ path = "src/zotero_mcp/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/zotero_mcp"]
 
-[tool.black]
-line-length = 88
-target-version = ["py310"]
+[tool.ruff]
+target-version = "py310"
+line-length = 120
 
-[tool.isort]
-profile = "black"
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
