@@ -70,3 +70,70 @@ def test_get_searchable_text_truncates_at_limit():
     assert "z" * 50000 in text
     assert "z" * 50001 not in text
     assert "..." in text
+
+
+class TestResolveAttachmentPath:
+    """Tests for _resolve_attachment_path handling of various Zotero path formats."""
+
+    def _make_reader(self, tmp_path):
+        """Create a LocalZoteroReader-like object for path resolution tests.
+
+        Uses the real _resolve_attachment_path (not the fake override).
+        """
+        reader = FakeLocalZoteroReader()
+        reader.db_path = str(tmp_path / "zotero.sqlite")
+        # Bind the real method so we test actual path resolution
+        reader._resolve_attachment_path = LocalZoteroReader._resolve_attachment_path.__get__(reader)
+        reader._get_storage_dir = LocalZoteroReader._get_storage_dir.__get__(reader)
+        reader._get_base_attachment_path = LocalZoteroReader._get_base_attachment_path.__get__(reader)
+        return reader
+
+    def test_storage_path(self, tmp_path):
+        """'storage:file.pdf' resolves to <storage_dir>/<key>/file.pdf."""
+        reader = self._make_reader(tmp_path)
+        (tmp_path / "storage" / "ABC123").mkdir(parents=True)
+        result = reader._resolve_attachment_path("ABC123", "storage:paper.pdf")
+        assert result == tmp_path / "storage" / "ABC123" / "paper.pdf"
+
+    def test_absolute_path(self, tmp_path):
+        """Absolute path passes through unchanged."""
+        reader = self._make_reader(tmp_path)
+        result = reader._resolve_attachment_path("X", "/home/user/papers/file.pdf")
+        assert result == Path("/home/user/papers/file.pdf")
+
+    def test_file_url(self, tmp_path):
+        """'file:///path/to/file.pdf' resolves to the decoded path."""
+        reader = self._make_reader(tmp_path)
+        result = reader._resolve_attachment_path("X", "file:///home/user/my%20paper.pdf")
+        assert result == Path("/home/user/my paper.pdf")
+
+    def test_attachments_with_base_path(self, tmp_path):
+        """'attachments:rel/path.pdf' resolves against baseAttachmentPath from prefs.js."""
+        reader = self._make_reader(tmp_path)
+        base_dir = tmp_path / "linked_papers"
+        base_dir.mkdir()
+        # Write a prefs.js with baseAttachmentPath
+        prefs = tmp_path / "prefs.js"
+        prefs.write_text(
+            f'user_pref("extensions.zotero.baseAttachmentPath", "{base_dir}");\n'
+        )
+        result = reader._resolve_attachment_path("X", "attachments:subfolder/paper.pdf")
+        assert result == base_dir / "subfolder" / "paper.pdf"
+
+    def test_attachments_without_base_path_returns_none(self, tmp_path):
+        """'attachments:' path returns None when no baseAttachmentPath is configured."""
+        reader = self._make_reader(tmp_path)
+        # No prefs.js exists
+        result = reader._resolve_attachment_path("X", "attachments:subfolder/paper.pdf")
+        assert result is None
+
+    def test_empty_path_returns_none(self, tmp_path):
+        """Empty/None path returns None."""
+        reader = self._make_reader(tmp_path)
+        assert reader._resolve_attachment_path("X", "") is None
+        assert reader._resolve_attachment_path("X", None) is None
+
+    def test_unknown_prefix_returns_none(self, tmp_path):
+        """Unknown path format returns None."""
+        reader = self._make_reader(tmp_path)
+        assert reader._resolve_attachment_path("X", "ftp://something") is None

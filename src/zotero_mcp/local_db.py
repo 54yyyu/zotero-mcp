@@ -163,6 +163,28 @@ class LocalZoteroReader:
         db_parent = Path(self.db_path).parent
         return db_parent / "storage"
 
+    def _get_base_attachment_path(self) -> Path | None:
+        """Read the linked attachment base directory from Zotero's prefs.js.
+
+        Returns the configured ``extensions.zotero.baseAttachmentPath`` or
+        ``None`` if the preference is not set or the file cannot be read.
+        """
+        prefs_path = Path(self.db_path).parent / "prefs.js"
+        if not prefs_path.exists():
+            return None
+        try:
+            import re
+            text = prefs_path.read_text(encoding="utf-8", errors="replace")
+            m = re.search(
+                r'user_pref\("extensions\.zotero\.baseAttachmentPath",\s*"([^"]+)"\)',
+                text,
+            )
+            if m:
+                return Path(m.group(1))
+        except Exception:
+            pass
+        return None
+
     def _iter_parent_attachments(self, parent_item_id: int):
         """Yield tuples (attachment_key, path, content_type) for a parent item."""
         conn = self._get_connection()
@@ -217,11 +239,16 @@ class LocalZoteroReader:
         if os.path.isabs(zotero_path):
             return Path(zotero_path)
 
-        # Zotero 'attachments:' relative path prefix
+        # Zotero 'attachments:' relative path — resolve against the linked
+        # attachment base directory configured in Zotero preferences.
         if zotero_path.startswith("attachments:"):
             rel = zotero_path.split(":", 1)[1]
             parts = [p for p in rel.split("/") if p]
-            return storage_dir / attachment_key / Path(*parts)
+            base = self._get_base_attachment_path()
+            if base and base.exists():
+                return base / Path(*parts)
+            # Fallback: cannot resolve without base path
+            return None
 
         return None
 
