@@ -298,7 +298,7 @@ class ZoteroSemanticSearch:
         Get items from either local database or API.
 
         When extract_fulltext=True, requires local mode (ZOTERO_LOCAL=true);
-        raises SystemExit if local mode is not enabled.
+        raises RuntimeError if local mode is not enabled.
         Otherwise uses API (faster, metadata-only).
 
         Args:
@@ -312,8 +312,8 @@ class ZoteroSemanticSearch:
         """
         if extract_fulltext:
             if not is_local_mode():
-                raise SystemExit(
-                    "Error: --fulltext requires local mode but ZOTERO_LOCAL is not enabled.\n"
+                raise RuntimeError(
+                    "Fulltext extraction requires local mode but ZOTERO_LOCAL is not enabled. "
                     "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode."
                 )
             return self._get_items_from_local_db(
