@@ -845,11 +845,11 @@ def create_annotation(
 
         # Get clients for different operations
         local_client = _client.get_local_zotero_client()
-        web_client = _client._client.get_web_zotero_client()
+        web_client = _client.get_web_zotero_client()
 
         # Propagate library override if user switched libraries
         if web_client:
-            override = _client._client.get_active_library()
+            override = _client.get_active_library()
             if override:
                 web_client.library_id = override.get("library_id", web_client.library_id)
                 web_client.library_type = override.get("library_type", web_client.library_type)
