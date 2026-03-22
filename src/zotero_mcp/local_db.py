@@ -15,6 +15,21 @@ from dataclasses import dataclass
 
 from .utils import is_local_mode
 
+logger = logging.getLogger(__name__)
+
+# Sentinel returned by _extract_text_from_pdf on timeout
+_EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
+
+
+def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
+    """Worker: extract text from a PDF in a separate process."""
+    try:
+        from pdfminer.high_level import extract_text
+        text = extract_text(file_path, maxpages=maxpages) or ""
+        result_queue.put(text)
+    except Exception:
+        result_queue.put("")
+
 
 @dataclass
 class ZoteroItem:
@@ -59,8 +74,9 @@ class ZoteroItem:
             parts.append(f"Notes: {self.notes}")
 
         if self.fulltext:
-            # Truncate fulltext to avoid overly long documents
-            truncated_fulltext = self.fulltext[:5000] + "..." if len(self.fulltext) > 5000 else self.fulltext
+            # Truncate very long fulltext for simple text search
+            max_chars = 50000
+            truncated_fulltext = self.fulltext[:max_chars] + "..." if len(self.fulltext) > max_chars else self.fulltext
             parts.append(f"Content: {truncated_fulltext}")
 
         return "\n\n".join(parts)
@@ -74,16 +90,19 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
 
-    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None):
+    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None, pdf_timeout: int = 30):
         """
         Initialize the local database reader.
 
         Args:
             db_path: Optional path to zotero.sqlite. If None, auto-detect.
+            pdf_max_pages: Maximum pages to extract from PDFs.
+            pdf_timeout: Seconds to wait for PDF extraction before killing the process.
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
+        self.pdf_timeout: int = pdf_timeout
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -158,35 +177,92 @@ class LocalZoteroReader:
             yield row["attachmentKey"], row["path"], row["contentType"]
 
     def _resolve_attachment_path(self, attachment_key: str, zotero_path: str) -> Path | None:
-        """Resolve a Zotero attachment path like 'storage:filename.pdf' to a filesystem path."""
+        """Resolve a Zotero attachment path to a filesystem path.
+
+        Handles three formats:
+        - 'storage:filename.pdf' — Zotero-managed storage (most common)
+        - 'file:///path/to/file.pdf' — linked file as URL
+        - '/absolute/path/to/file.pdf' — linked file as absolute path
+        """
         if not zotero_path:
             return None
+
         storage_dir = self._get_storage_dir()
+
+        # Zotero-managed storage: 'storage:filename.pdf'
         if zotero_path.startswith("storage:"):
             rel = zotero_path.split(":", 1)[1]
-            # Handle nested paths if present
             parts = [p for p in rel.split("/") if p]
             return storage_dir / attachment_key / Path(*parts)
-        # External links not supported in first pass
+
+        # Linked file as URL: 'file:///path/to/file.pdf'
+        if zotero_path.startswith("file://"):
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(zotero_path)
+            decoded_path = unquote(parsed.path)
+            return Path(decoded_path)
+
+        # Linked file as absolute path: '/Users/me/papers/file.pdf'
+        if os.path.isabs(zotero_path):
+            return Path(zotero_path)
+
         return None
 
     def _extract_text_from_pdf(self, file_path: Path) -> str:
-        """Extract text from a PDF using pdfminer with a page cap to avoid stalls."""
+        """Extract text from a PDF using pdfminer in a subprocess with timeout.
+
+        Returns the extracted text, empty string on failure, or
+        _EXTRACTION_TIMEOUT sentinel if the process was killed due to timeout.
+        """
+        import multiprocessing
+
+        # Page limit (preserve existing fallback chain)
+        if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
+            maxpages = self.pdf_max_pages
+        else:
+            max_pages_env = os.getenv("ZOTERO_PDF_MAXPAGES")
+            try:
+                maxpages = int(max_pages_env) if max_pages_env else 10
+            except ValueError:
+                maxpages = 10
+
+        timeout = self.pdf_timeout or 30
+
+        result_queue = None
+        process = None
         try:
-            from pdfminer.high_level import extract_text  # type: ignore
-            # Determine page cap: config value > env > default (10)
-            if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
-                maxpages = self.pdf_max_pages
-            else:
-                max_pages_env = os.getenv("ZOTERO_PDF_MAXPAGES")
-                try:
-                    maxpages = int(max_pages_env) if max_pages_env else 10
-                except ValueError:
-                    maxpages = 10
-            text = extract_text(str(file_path), maxpages=maxpages)
-            return text or ""
-        except Exception:
+            result_queue = multiprocessing.Queue()
+            process = multiprocessing.Process(
+                target=_extract_pdf_worker,
+                args=(str(file_path), maxpages, result_queue),
+            )
+            process.start()
+            process.join(timeout=timeout)
+
+            if process.is_alive():
+                logger.warning(f"PDF extraction timed out after {timeout}s: {file_path.name}")
+                process.kill()
+                process.join(timeout=5)
+                return _EXTRACTION_TIMEOUT
+
+            if not result_queue.empty():
+                return result_queue.get_nowait()
             return ""
+        except Exception as e:
+            logger.warning(f"PDF extraction failed: {file_path.name}: {e}")
+            return ""
+        finally:
+            if result_queue is not None:
+                try:
+                    result_queue.close()
+                    result_queue.join_thread()
+                except Exception:
+                    pass
+            if process is not None:
+                try:
+                    process.close()
+                except Exception:
+                    pass
 
     def _extract_text_from_html(self, file_path: Path) -> str:
         """Extract text from HTML using markitdown if available; fallback to stripping tags."""
@@ -247,11 +323,13 @@ class LocalZoteroReader:
         if not target:
             return None
         text = self._extract_text_from_file(target)
+        if text == _EXTRACTION_TIMEOUT:
+            return (_EXTRACTION_TIMEOUT, "timeout")
         if not text:
             return None
-        # Truncate to keep embeddings reasonable
+        # Determine source type
         source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
-        return (text[:10000], source)
+        return (text, source)
 
     def close(self):
         """Close database connection."""
@@ -379,7 +457,7 @@ class LocalZoteroReader:
         )
         return cursor.fetchone()[0]
 
-    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False) -> list[ZoteroItem]:
+    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
 
@@ -442,7 +520,14 @@ class LocalZoteroReader:
         LEFT JOIN creators c ON ic.creatorID = c.creatorID
 
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
+        """
 
+        params = []
+        if key_filter:
+            query += " AND i.key = ?"
+            params.append(key_filter)
+
+        query += """
         GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
                  title_val.value, abstract_val.value, extra_val.value
 
@@ -452,7 +537,7 @@ class LocalZoteroReader:
         if limit:
             query += f" LIMIT {limit}"
 
-        cursor = conn.execute(query)
+        cursor = conn.execute(query, params)
         items = []
 
         for row in cursor:
@@ -494,11 +579,8 @@ class LocalZoteroReader:
         Returns:
             ZoteroItem if found, None otherwise.
         """
-        items = self.get_items_with_text()
-        for item in items:
-            if item.key == key:
-                return item
-        return None
+        items = self.get_items_with_text(key_filter=key)
+        return items[0] if items else None
 
     def search_items_by_text(self, query: str, limit: int = 50) -> list[ZoteroItem]:
         """
@@ -524,6 +606,85 @@ class LocalZoteroReader:
                     break
 
         return matching_items
+
+    def search_notes_local(self, query: str, limit: int = 20) -> list[dict]:
+        """Search notes in the local Zotero database by text content."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        pattern = f"%{query}%"
+        cursor.execute("""
+            SELECT i.key, n.note, n.title,
+                   pi.key as parentKey,
+                   pdv.value as parentTitle
+            FROM itemNotes n
+            JOIN items i ON n.itemID = i.itemID
+            LEFT JOIN items pi ON n.parentItemID = pi.itemID
+            LEFT JOIN itemData pd ON pi.itemID = pd.itemID AND pd.fieldID = 1
+            LEFT JOIN itemDataValues pdv ON pd.valueID = pdv.valueID
+            WHERE n.note LIKE ?
+            AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            LIMIT ?
+        """, (pattern, limit))
+
+        results = []
+        for row in cursor.fetchall():
+            note_html = row[1] or ""
+            # Post-filter: skip if query only matches HTML tags, not content
+            from zotero_mcp.utils import clean_html
+            clean_text = clean_html(note_html)
+            if query.lower() not in clean_text.lower():
+                continue
+            results.append({
+                "type": "note",
+                "key": row[0],
+                "text": note_html,
+                "parent_key": row[3],
+                "parent_title": row[4] or ("Unknown" if row[3] else None),
+                "tags": [],  # Tags require a separate query; omitted for speed
+            })
+        return results
+
+    def search_annotations_local(self, query: str, limit: int = 20) -> list[dict]:
+        """Search annotations in the local Zotero database by text or comment."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        pattern = f"%{query}%"
+        # Two-hop join: annotation -> attachment -> grandparent item (for title)
+        cursor.execute("""
+            SELECT i.key, ia.text, ia.comment, ia.type, ia.color, ia.pageLabel,
+                   att.key as attachmentKey,
+                   gpi.key as parentKey,
+                   gpdv.value as parentTitle
+            FROM itemAnnotations ia
+            JOIN items i ON ia.itemID = i.itemID
+            LEFT JOIN items att ON ia.parentItemID = att.itemID
+            LEFT JOIN itemAttachments iatt ON ia.parentItemID = iatt.itemID
+            LEFT JOIN items gpi ON iatt.parentItemID = gpi.itemID
+            LEFT JOIN itemData gpd ON gpi.itemID = gpd.itemID AND gpd.fieldID = 1
+            LEFT JOIN itemDataValues gpdv ON gpd.valueID = gpdv.valueID
+            WHERE (ia.text LIKE ? OR ia.comment LIKE ?)
+            AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            LIMIT ?
+        """, (pattern, pattern, limit))
+
+        # Map integer annotation types to names
+        type_map = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}
+
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                "type": "annotation",
+                "key": row[0],
+                "text": row[1] or "",
+                "comment": row[2] or "",
+                "annotation_type": type_map.get(row[3], "unknown"),
+                "color": row[4] or "",
+                "page_label": row[5] or None,
+                "attachment_key": row[6],
+                "parent_key": row[7],
+                "parent_title": row[8] or ("Unknown" if row[7] else None),
+            })
+        return results
 
 
 def get_local_zotero_reader() -> LocalZoteroReader | None:

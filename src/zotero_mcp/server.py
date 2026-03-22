@@ -12,6 +12,7 @@ import uuid
 import asyncio
 import json
 import re
+import tempfile
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -29,8 +30,446 @@ from zotero_mcp.client import (
     set_active_library,
 )
 import requests
+import httpx
+import xml.etree.ElementTree as ET
 
 from zotero_mcp.utils import format_creators, clean_html, is_local_mode
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for write operations
+# ---------------------------------------------------------------------------
+
+CROSSREF_TYPE_MAP = {
+    "journal-article": "journalArticle",
+    "book": "book",
+    "book-chapter": "bookSection",
+    "proceedings-article": "conferencePaper",
+    "report": "report",
+    "dissertation": "thesis",
+    "posted-content": "preprint",
+    "monograph": "book",
+    "reference-entry": "encyclopediaArticle",
+    "dataset": "document",
+    "peer-review": "document",
+    "edited-book": "book",
+    "standard": "document",
+}
+
+
+def _get_write_client(ctx):
+    """Return (read_client, write_client) for hybrid-mode operations.
+
+    In web-only mode: both are the web client.
+    In local mode with web credentials: read from local, write to web.
+    In local-only mode: raises ValueError with clear message.
+    """
+    read_zot = get_zotero_client()
+    if not is_local_mode():
+        return read_zot, read_zot
+    web_zot = get_web_zotero_client()
+    if web_zot is not None:
+        override = get_active_library()
+        if override:
+            web_zot.library_id = override.get("library_id", web_zot.library_id)
+            web_zot.library_type = override.get("library_type", web_zot.library_type)
+        return read_zot, web_zot
+    raise ValueError(
+        "Cannot perform write operations in local-only mode. "
+        "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
+    )
+
+
+def _handle_write_response(response, ctx=None):
+    """Check if a pyzotero write operation succeeded.
+
+    Handles httpx.Response, dict (from create_items/create_collections),
+    or bool. Logs error details on failure if ctx is provided.
+    """
+    if hasattr(response, "status_code"):
+        ok = response.status_code in (200, 204)
+        if not ok and ctx is not None:
+            ctx.error(f"Write failed ({response.status_code}): {response.text[:500]}")
+        return ok
+    if isinstance(response, dict):
+        return bool(response.get("success"))
+    return bool(response)
+
+
+def _normalize_str_list_input(value, field_name="value"):
+    """Normalize list-like user input into a list of non-empty strings.
+
+    Handles: None, list, JSON string, comma-separated string, single string.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(v).strip() for v in parsed if str(v).strip()]
+            if isinstance(parsed, str):
+                s = parsed.strip()
+                return [s] if s else []
+            raise ValueError(
+                f"{field_name} must be a list of strings or a string, "
+                f"got JSON {type(parsed).__name__}"
+            )
+        except json.JSONDecodeError:
+            pass
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        if len(parts) > 1:
+            return parts
+        return [raw]
+    raise ValueError(f"{field_name} must be a list of strings or a string")
+
+
+def _resolve_collection_names(zot, names, ctx=None):
+    """Resolve collection names to keys (case-insensitive).
+
+    Returns a list of collection keys. If a name matches multiple collections,
+    all are returned with a warning. Raises ValueError if a name has zero matches.
+    """
+    if not names:
+        return []
+    all_collections = zot.collections()
+    results = []
+    for name in names:
+        name_lower = name.lower()
+        matches = [
+            c["key"] for c in all_collections
+            if c.get("data", {}).get("name", "").lower() == name_lower
+        ]
+        if not matches:
+            raise ValueError(f"No collection found matching name '{name}'")
+        if len(matches) > 1 and ctx is not None:
+            ctx.warn(
+                f"Multiple collections match '{name}': {matches}. "
+                "Using all. Pass collection keys directly to disambiguate."
+            )
+        results.extend(matches)
+    return results
+
+
+def _strip_xml_tags(text):
+    """Strip XML/HTML tags from text (e.g., JATS tags in CrossRef abstracts)."""
+    if not text:
+        return ""
+    cleaned = re.sub(r'<[^>]+>', '', text)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
+def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+    """Download a PDF from a URL and attach it to a Zotero item.
+
+    Returns True on success, False on failure. Verifies the response
+    is actually a PDF before attaching.
+    """
+    try:
+        pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+        pdf_resp.raise_for_status()
+
+        content_type = pdf_resp.headers.get("Content-Type", "")
+        if "pdf" not in content_type and "octet-stream" not in content_type:
+            ctx.info(f"URL did not return a PDF (Content-Type: {content_type})")
+            return False
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = f"{doi.replace('/', '_')}.pdf"
+            filepath = os.path.join(tmpdir, filename)
+            with open(filepath, "wb") as f:
+                for chunk in pdf_resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            # Verify file is non-empty
+            if os.path.getsize(filepath) < 1000:
+                ctx.info("Downloaded file too small, likely not a real PDF")
+                return False
+
+            write_zot.attachment_both(
+                [(filename, filepath)],
+                parentid=item_key,
+            )
+        return True
+    except Exception as e:
+        ctx.info(f"PDF download/attach failed: {e}")
+        return False
+
+
+def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):
+    """Create a linked-URL attachment (bookmarks the PDF URL without downloading).
+
+    The PDF opens in the user's browser rather than Zotero's reader.
+    Uses no Zotero storage quota.
+    """
+    try:
+        template = write_zot.item_template("attachment", "linked_url")
+        template["url"] = pdf_url
+        template["title"] = "PDF (linked URL)"
+        template["contentType"] = "application/pdf"
+        template["parentItem"] = parent_key
+        result = write_zot.create_items([template])
+        if result.get("success"):
+            ctx.info(f"Linked URL attachment created for {pdf_url}")
+            return True
+        return False
+    except Exception as e:
+        ctx.info(f"Linked URL attachment failed: {e}")
+        return False
+
+
+def _try_unpaywall(doi, ctx):
+    """Try Unpaywall API for open-access PDF URLs.
+
+    Iterates all oa_locations (not just best_oa_location) for robustness.
+    Returns a PDF URL or None.
+    """
+    try:
+        resp = requests.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": "zotero-mcp@users.noreply.github.com"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        oa_data = resp.json()
+
+        # Try best_oa_location first
+        best = oa_data.get("best_oa_location") or {}
+        pdf_url = best.get("url_for_pdf")
+        if pdf_url:
+            ctx.info(f"Unpaywall: found PDF via best_oa_location")
+            return pdf_url
+
+        # Iterate all oa_locations for alternatives
+        for loc in oa_data.get("oa_locations", []):
+            pdf_url = loc.get("url_for_pdf")
+            if pdf_url:
+                ctx.info(f"Unpaywall: found PDF via alternate oa_location")
+                return pdf_url
+
+        # Last resort: landing page URL from best location
+        landing = best.get("url")
+        if landing:
+            ctx.info(f"Unpaywall: no direct PDF URL, trying landing page")
+            return landing
+
+        return None
+    except Exception as e:
+        ctx.info(f"Unpaywall lookup failed: {e}")
+        return None
+
+
+def _try_arxiv_from_crossref(crossref_metadata, ctx):
+    """Check CrossRef metadata for an arXiv ID and return a PDF URL.
+
+    CrossRef sometimes includes arXiv IDs in the 'relation' field
+    (e.g., has-preprint, is-preprint-of) or in 'alternative-id'.
+    """
+    if not crossref_metadata:
+        return None
+    try:
+        # Check relation field for arXiv references
+        # Two formats exist:
+        #   id-type: "arxiv", id: "2307.02743"
+        #   id-type: "doi", id: "10.48550/arXiv.2307.02743"
+        relations = crossref_metadata.get("relation", {})
+        for rel_type in ("has-preprint", "is-preprint-of", "is-identical-to",
+                         "is-version-of", "has-version"):
+            for rel in relations.get(rel_type, []):
+                rel_id = rel.get("id", "")
+                if rel.get("id-type") == "arxiv" and rel_id:
+                    ctx.info(f"CrossRef relation contains arXiv ID: {rel_id}")
+                    return f"https://arxiv.org/pdf/{rel_id}.pdf"
+                # Handle DOI format: 10.48550/arXiv.XXXX.XXXXX
+                if rel.get("id-type") == "doi" and "arxiv" in rel_id.lower():
+                    m = re.search(r"arXiv\.(\d{4}\.\d{4,5}(?:v\d+)?)", rel_id, re.IGNORECASE)
+                    if m:
+                        arxiv_id = m.group(1)
+                        ctx.info(f"CrossRef relation contains arXiv DOI: {rel_id} -> {arxiv_id}")
+                        return f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+        # Check alternative-id for arXiv patterns
+        for alt_id in crossref_metadata.get("alternative-id", []):
+            if re.match(r"\d{4}\.\d{4,5}", str(alt_id)):
+                ctx.info(f"CrossRef alternative-id looks like arXiv: {alt_id}")
+                return f"https://arxiv.org/pdf/{alt_id}.pdf"
+
+        # Check link array for arXiv URLs
+        for link in crossref_metadata.get("link", []):
+            url = link.get("URL", "")
+            if "arxiv.org" in url:
+                m = re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)", url)
+                if m:
+                    ctx.info(f"CrossRef link contains arXiv URL")
+                    return f"https://arxiv.org/pdf/{m.group(1)}.pdf"
+
+        return None
+    except Exception as e:
+        ctx.info(f"arXiv-from-CrossRef check failed: {e}")
+        return None
+
+
+def _try_semantic_scholar(doi, ctx):
+    """Try Semantic Scholar API for an open-access PDF URL."""
+    try:
+        resp = requests.get(
+            f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
+            params={"fields": "openAccessPdf"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        oa_pdf = data.get("openAccessPdf") or {}
+        pdf_url = oa_pdf.get("url")
+        if pdf_url:
+            ctx.info(f"Semantic Scholar: found OA PDF")
+            return pdf_url
+        return None
+    except Exception as e:
+        ctx.info(f"Semantic Scholar lookup failed: {e}")
+        return None
+
+
+def _try_pmc(doi, ctx):
+    """Try PubMed Central for a free PDF via DOI-to-PMCID conversion."""
+    try:
+        # Step 1: Convert DOI to PMCID via NCBI ID converter
+        conv_resp = requests.get(
+            "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
+            params={"ids": doi, "format": "json", "tool": "zotero-mcp",
+                    "email": "zotero-mcp@users.noreply.github.com"},
+            timeout=10,
+        )
+        if conv_resp.status_code != 200:
+            return None
+
+        records = conv_resp.json().get("records", [])
+        if not records:
+            return None
+
+        pmcid = records[0].get("pmcid")
+        if not pmcid:
+            return None
+
+        ctx.info(f"PMC: found PMCID {pmcid}")
+
+        # Construct the standard PMC PDF URL directly
+        # (The OA service API is unreliable and often redirects)
+        return f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/pdf/"
+
+    except Exception as e:
+        ctx.info(f"PMC lookup failed: {e}")
+        return None
+
+
+def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
+                       attach_mode="auto"):
+    """Attempt to find and attach an open-access PDF for a DOI.
+
+    Uses a cascading strategy across multiple sources:
+    1. Unpaywall (all OA locations, not just best)
+    2. arXiv (if CrossRef metadata contains an arXiv ID)
+    3. Semantic Scholar
+    4. PubMed Central
+
+    attach_mode controls how the PDF is attached:
+    - "auto" (default): try importing the file, fall back to linked URL
+    - "import_file": only try importing (download + store in Zotero)
+    - "linked_url": only create a URL bookmark (no download, opens in browser)
+
+    Each source is only tried if the previous ones failed.
+    Fails gracefully — item creation is never affected by PDF failure.
+    """
+    sources = [
+        ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
+        ("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)),
+        ("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)),
+        ("PubMed Central", lambda: _try_pmc(doi, ctx)),
+    ]
+
+    for source_name, find_url in sources:
+        try:
+            pdf_url = find_url()
+            if pdf_url:
+                ctx.info(f"Trying PDF from {source_name}: {pdf_url}")
+
+                if attach_mode == "linked_url":
+                    if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                        return f"PDF linked (source: {source_name})"
+                elif attach_mode == "import_file":
+                    if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+                        return f"PDF attached (source: {source_name})"
+                else:  # "auto" — try import, fall back to linked URL
+                    if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+                        return f"PDF attached (source: {source_name})"
+                    if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                        return f"PDF linked as URL (source: {source_name})"
+
+                ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next source")
+        except Exception as e:
+            ctx.info(f"{source_name} failed: {e}")
+
+    return "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
+
+
+def _normalize_doi(raw):
+    """Normalize a DOI string from various input formats.
+
+    Handles: doi:10.xxx, https://doi.org/10.xxx, http://dx.doi.org/10.xxx,
+    bare 10.xxx/yyy, and strips trailing punctuation.
+    Returns the bare DOI or None if not a valid DOI.
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.lower().startswith("doi:"):
+        s = s[4:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(r"doi\.org/(10\.\d{4,9}/[^\s?#]+)", s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        s = m.group(1)
+    s = s.rstrip(".,);]")
+    if re.match(r"^10\.\d{4,9}/\S+$", s):
+        return s
+    return None
+
+
+def _normalize_arxiv_id(raw):
+    """Normalize an arXiv ID from various input formats.
+
+    Handles: arXiv:2401.00001, https://arxiv.org/abs/2401.00001,
+    https://arxiv.org/pdf/2401.00001.pdf, old format hep-ph/9901234.
+    Returns the bare arXiv ID or None.
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.lower().startswith("arxiv:"):
+        s = s[6:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(
+            r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|[a-z\-]+/\d{7}(?:v\d+)?)(?:\.pdf)?",
+            s, flags=re.IGNORECASE,
+        )
+        if not m:
+            return None
+        s = m.group(1)
+    if re.match(r"^[0-9]{4}\.[0-9]{4,5}(?:v\d+)?$", s):
+        return s
+    if re.match(r"^[a-z\-]+/\d{7}(?:v\d+)?$", s, flags=re.IGNORECASE):
+        return s
+    return None
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
@@ -54,8 +493,9 @@ async def server_lifespan(server: FastMCP):
                 async def background_update():
                     try:
                         # Run sync indexing work in a worker thread.
+                        # Use fulltext extraction when in local mode (has access to PDFs).
                         stats = await asyncio.to_thread(
-                            search.update_database, extract_fulltext=False
+                            search.update_database, extract_fulltext=is_local_mode()
                         )
                         sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
                     except Exception as e:
@@ -137,7 +577,7 @@ def search_items(
         for i, item in enumerate(results, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
+            entry_type = data.get("itemType", "unknown")
             date = data.get("date", "No date")
             key = item.get("key", "")
 
@@ -147,7 +587,7 @@ def search_items(
 
             # Build the formatted entry
             output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
+            output.append(f"**Type:** {entry_type}")
             output.append(f"**Item Key:** {key}")
             output.append(f"**Date:** {date}")
             output.append(f"**Authors:** {creators_str}")
@@ -160,7 +600,7 @@ def search_items(
 
             # Add tags if present
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -228,7 +668,7 @@ def search_by_tag(
         for i, item in enumerate(results, 1):
             data = item.get("data", {})
             title = data.get("title", "Untitled")
-            item_type = data.get("itemType", "unknown")
+            entry_type = data.get("itemType", "unknown")
             date = data.get("date", "No date")
             key = item.get("key", "")
 
@@ -238,7 +678,7 @@ def search_by_tag(
 
             # Build the formatted entry
             output.append(f"## {i}. {title}")
-            output.append(f"**Type:** {item_type}")
+            output.append(f"**Type:** {entry_type}")
             output.append(f"**Item Key:** {key}")
             output.append(f"**Date:** {date}")
             output.append(f"**Authors:** {creators_str}")
@@ -251,7 +691,7 @@ def search_by_tag(
 
             # Add tags if present
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -262,6 +702,150 @@ def search_by_tag(
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
         return f"Error searching Zotero: {str(e)}"
+
+def _extra_has_citekey(extra: str, citekey: str) -> bool:
+    """Check if the Extra field contains the given citation key."""
+    for line in extra.splitlines():
+        lower = line.lower().strip()
+        if lower.startswith("citation key:") or lower.startswith("citationkey:"):
+            value = line.split(":", 1)[1].strip()
+            if value == citekey:
+                return True
+    return False
+
+
+def _format_citekey_result(item: dict, citekey: str) -> str:
+    """Format a Zotero item found by citation key as markdown."""
+    data = item.get("data", {})
+    title = data.get("title", "Untitled")
+    item_type = data.get("itemType", "unknown")
+    date = data.get("date", "No date")
+    key = item.get("key", "")
+    creators = data.get("creators", [])
+    creators_str = format_creators(creators)
+
+    output = [
+        f"# Citation Key: {citekey}",
+        "",
+        f"## {title}",
+        f"**Type:** {item_type}",
+        f"**Item Key:** {key}",
+        f"**Citation Key:** {citekey}",
+        f"**Date:** {date}",
+        f"**Authors:** {creators_str}",
+    ]
+
+    if abstract := data.get("abstractNote"):
+        abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
+        output.append(f"**Abstract:** {abstract_snippet}")
+    if tags := data.get("tags"):
+        tag_list = [f"`{tag['tag']}`" for tag in tags]
+        if tag_list:
+            output.append(f"**Tags:** {' '.join(tag_list)}")
+    if doi := data.get("DOI"):
+        output.append(f"**DOI:** {doi}")
+
+    output.append("")
+    return "\n".join(output)
+
+
+def _format_bbt_result(bbt_item: dict, citekey: str) -> str:
+    """Format a BetterBibTeX search result (when pyzotero item is unavailable)."""
+    title = bbt_item.get("title", "Untitled")
+    year = bbt_item.get("year", "N/A")
+    creators = bbt_item.get("creators", [])
+
+    creator_names = []
+    for c in creators:
+        if isinstance(c, dict):
+            if "lastName" in c:
+                creator_names.append(f"{c.get('lastName', '')}, {c.get('firstName', '')}")
+            elif "name" in c:
+                creator_names.append(c["name"])
+        elif isinstance(c, str):
+            creator_names.append(c)
+    creators_str = "; ".join(creator_names) if creator_names else "No authors listed"
+
+    output = [
+        f"# Citation Key: {citekey}",
+        "",
+        f"## {title}",
+        f"**Citation Key:** {citekey}",
+        f"**Year:** {year}",
+        f"**Authors:** {creators_str}",
+        "",
+        "*Note: Item found via BetterBibTeX. Use the citation key with other tools for full details.*",
+        "",
+    ]
+    return "\n".join(output)
+
+
+@mcp.tool(
+    name="zotero_search_by_citation_key",
+    description="Look up a Zotero item by its BetterBibTeX citation key (e.g., 'Smith2024'). "
+    "Works in local mode via the BetterBibTeX API, or in web mode by searching the Extra field."
+)
+def search_by_citation_key(
+    citekey: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Look up a Zotero item by its BetterBibTeX citation key.
+
+    Args:
+        citekey: The BetterBibTeX citation key to search for (e.g., 'Smith2024')
+        ctx: MCP context
+
+    Returns:
+        Formatted item details or error message
+    """
+    try:
+        if not citekey.strip():
+            return "Error: Citation key cannot be empty"
+
+        citekey = citekey.strip()
+        ctx.info(f"Looking up citation key: {citekey}")
+
+        # Strategy A: Try BetterBibTeX JSON-RPC API (local mode only)
+        if is_local_mode():
+            try:
+                from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
+                bibtex = ZoteroBetterBibTexAPI()
+                if bibtex.is_zotero_running():
+                    search_results = bibtex._make_request("item.search", [citekey])
+                    if search_results:
+                        matched = next(
+                            (item for item in search_results if item.get("citekey") == citekey),
+                            None,
+                        )
+                        if matched:
+                            item_key = matched.get("itemKey") or matched.get("key")
+                            if item_key:
+                                zot = get_zotero_client()
+                                item = zot.item(item_key)
+                                if item:
+                                    return _format_citekey_result(item, citekey)
+                            return _format_bbt_result(matched, citekey)
+            except Exception as e:
+                ctx.warn(f"BetterBibTeX lookup failed, falling back to Extra field search: {e}")
+
+        # Strategy B: Search via pyzotero Extra field
+        zot = get_zotero_client()
+        zot.add_parameters(q=citekey, qmode="everything", itemType="-attachment", limit=25)
+        results = zot.items()
+
+        for item in results:
+            extra = item.get("data", {}).get("extra", "")
+            if _extra_has_citekey(extra, citekey):
+                return _format_citekey_result(item, citekey)
+
+        return f"No item found with citation key: '{citekey}'"
+
+    except Exception as e:
+        ctx.error(f"Error looking up citation key: {str(e)}")
+        return f"Error looking up citation key: {str(e)}"
+
 
 @mcp.tool(
     name="zotero_get_item_metadata",
@@ -1112,23 +1696,26 @@ def get_recent(
 
 @mcp.tool(
     name="zotero_batch_update_tags",
-    description="Batch update tags across multiple items matching a search query."
+    description="Batch update tags across multiple items matching a search query or tag filter."
 )
 def batch_update_tags(
-    query: str,
+    query: str = "",
     add_tags: list[str] | str | None = None,
     remove_tags: list[str] | str | None = None,
+    tag: str | None = None,
     limit: int | str = 50,
     *,
     ctx: Context
 ) -> str:
     """
-    Batch update tags across multiple items matching a search query.
+    Batch update tags across multiple items matching a search query or tag filter.
 
     Args:
-        query: Search query to find items to update
+        query: Search query to find items to update (text search)
         add_tags: List of tags to add to matched items (can be list or JSON string)
         remove_tags: List of tags to remove from matched items (can be list or JSON string)
+        tag: Filter by existing tag name (e.g., "test" finds items with that exact tag).
+             When provided alongside query, both filters are applied (AND).
         limit: Maximum number of items to process
         ctx: MCP context
 
@@ -1136,45 +1723,15 @@ def batch_update_tags(
         Summary of the batch update
     """
     try:
-        if not query:
-            return "Error: Search query cannot be empty"
+        if not query and not tag:
+            return "Error: Must provide a search query and/or tag filter"
 
         if not add_tags and not remove_tags:
             return "Error: You must specify either tags to add or tags to remove"
 
-        def _normalize_tag_list(
-            raw_value: list[str] | str | None, field_name: str
-        ) -> list[str]:
-            if raw_value is None:
-                return []
-
-            parsed_value = raw_value
-            if isinstance(parsed_value, str):
-                try:
-                    parsed_value = json.loads(parsed_value)
-                    ctx.info(f"Parsed {field_name} from JSON string: {parsed_value}")
-                except json.JSONDecodeError:
-                    raise ValueError(
-                        f"{field_name} appears to be malformed JSON: {raw_value}"
-                    )
-
-            if not isinstance(parsed_value, list):
-                raise ValueError(
-                    f"{field_name} must be a JSON array or a list of strings"
-                )
-
-            normalized = []
-            for tag_value in parsed_value:
-                if not isinstance(tag_value, str):
-                    raise ValueError(f"{field_name} entries must all be strings")
-                stripped = tag_value.strip()
-                if stripped:
-                    normalized.append(stripped)
-            return normalized
-
         try:
-            add_tags = _normalize_tag_list(add_tags, "add_tags")
-            remove_tags = _normalize_tag_list(remove_tags, "remove_tags")
+            add_tags = _normalize_str_list_input(add_tags, "add_tags")
+            remove_tags = _normalize_str_list_input(remove_tags, "remove_tags")
         except ValueError as validation_error:
             return f"Error: {validation_error}"
 
@@ -1184,11 +1741,22 @@ def batch_update_tags(
         ctx.info(f"Batch updating tags for items matching '{query}'")
         zot = get_zotero_client()
 
+        # Use shared hybrid-mode helper for correct library override propagation
+        try:
+            _, write_zot = _get_write_client(ctx)
+        except ValueError as e:
+            return str(e)
+
         if isinstance(limit, str):
             limit = int(limit)
 
-        # Search for items matching the query
-        zot.add_parameters(q=query, limit=limit)
+        # Search for items matching the query and/or tag filter
+        params = {"limit": limit}
+        if query:
+            params["q"] = query
+        if tag:
+            params["tag"] = tag
+        zot.add_parameters(**params)
         items = zot.items()
 
         if not items:
@@ -1225,6 +1793,8 @@ def batch_update_tags(
                     else:
                         new_tags.append(tag_obj)
                 current_tags = new_tags
+                # Refresh the set of current tag values after removal
+                current_tag_values = {t["tag"] for t in current_tags}
 
             # Process tags to add
             if add_tags:
@@ -1235,14 +1805,32 @@ def batch_update_tags(
                         needs_update = True
 
             # Update the item if needed
-            # Since we are logging errors we might as well log the update.
             if needs_update:
                 try:
-                    item["data"]["tags"] = current_tags
-                    ctx.info(f"Updating item {item.get('key', 'unknown')} with tags: {current_tags}")
-                    result = zot.update_item(item)
-                    ctx.info(f"Update result: {result}")
-                    updated_count += 1
+                    item_key = item.get("key", "unknown")
+
+                    # If writing via web API, re-fetch the item from web to get
+                    # the correct version number for the update
+                    if write_zot is not zot:
+                        try:
+                            web_item = write_zot.item(item_key)
+                            web_item["data"]["tags"] = current_tags
+                            ctx.info(f"Updating item {item_key} via web API with tags: {current_tags}")
+                            result = write_zot.update_item(web_item)
+                        except Exception as e:
+                            ctx.error(f"Failed to fetch/update item {item_key} via web API: {str(e)}")
+                            skipped_count += 1
+                            continue
+                    else:
+                        item["data"]["tags"] = current_tags
+                        ctx.info(f"Updating item {item_key} with tags: {current_tags}")
+                        result = write_zot.update_item(item)
+
+                    if _handle_write_response(result, ctx):
+                        updated_count += 1
+                    else:
+                        ctx.error(f"Update may have failed for item {item_key}: {result}")
+                        skipped_count += 1
                 except Exception as e:
                     ctx.error(f"Failed to update item {item.get('key', 'unknown')}: {str(e)}")
                     # Continue with other items instead of failing completely
@@ -1539,7 +2127,7 @@ def advanced_search(
                 output.append(f"**Abstract:** {abstract_snippet}")
 
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -1791,8 +2379,20 @@ def _get_annotations(
             # Retrieve all annotations in the library
             if isinstance(limit, str):
                 limit = int(limit)
-            zot.add_parameters(itemType="annotation", limit=limit or 50)
-            annotations = zot.everything(zot.items())
+            # Manual pagination instead of zot.everything() to avoid
+            # RLock pickling issues in MCP contexts.
+            annotations = []
+            start = 0
+            page_limit = limit or 50
+            while True:
+                batch = zot.items(start=start, limit=min(100, page_limit - len(annotations)),
+                                  itemType="annotation")
+                if not batch:
+                    break
+                annotations.extend(batch)
+                if len(batch) < 100 or len(annotations) >= page_limit:
+                    break
+                start += 100
 
         # Handle no annotations found
         if not annotations:
@@ -1848,6 +2448,21 @@ def _get_annotations(
             if "_pdf_page" in data:
                 label = data.get("_pageLabel", str(data["_pdf_page"]))
                 output.append(f"**Page:** {data['_pdf_page']} (Label: {label})")
+            elif data.get("annotationPageLabel"):
+                page_label = data["annotationPageLabel"]
+                page_index = None
+                position_raw = data.get("annotationPosition", "")
+                if position_raw:
+                    try:
+                        position = json.loads(position_raw) if isinstance(position_raw, str) else position_raw
+                        if "pageIndex" in position:
+                            page_index = position["pageIndex"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                if page_index is not None:
+                    output.append(f"**Page:** {page_label} (index: {page_index})")
+                else:
+                    output.append(f"**Page:** {page_label}")
 
             # Annotation content
             if anno_text:
@@ -1862,7 +2477,7 @@ def _get_annotations(
 
             # Tags
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -1951,7 +2566,7 @@ def get_notes(
 
             # Tags
             if tags := data.get("tags"):
-                tag_list = [f"`{tag['tag']}`" for tag in tags]
+                tag_list = [f"`{t['tag']}`" for t in tags]
                 if tag_list:
                     output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -1965,9 +2580,85 @@ def get_notes(
         return f"Error fetching notes: {str(e)}"
 
 
+# ---------------------------------------------------------------------------
+# Helpers for search_notes
+# ---------------------------------------------------------------------------
+
+def _batch_resolve_parent_titles(
+    zot, parent_keys: set[str], ctx: Context
+) -> dict[str, str]:
+    """Fetch parent item titles in batch instead of one-by-one (N+1 fix)."""
+    titles: dict[str, str] = {}
+    keys_list = list(parent_keys)
+    BATCH_SIZE = 50  # Zotero API limit for itemKey parameter
+    for i in range(0, len(keys_list), BATCH_SIZE):
+        batch = keys_list[i:i + BATCH_SIZE]
+        try:
+            items = zot.items(itemKey=",".join(batch))
+            for item in items:
+                titles[item.get("key", "")] = item.get("data", {}).get("title", "Untitled")
+        except Exception as e:
+            ctx.warn(f"Batch parent lookup failed: {e}")
+            for k in batch:
+                titles.setdefault(k, f"(parent key: {k})")
+    return titles
+
+
+def _format_search_results(
+    query: str, note_results: list[dict], annotation_results: list[dict]
+) -> str:
+    """Format note and annotation search results as consistent markdown."""
+    all_results = note_results + annotation_results
+    if not all_results:
+        return f"No results found for '{query}'"
+
+    output = [f"# Search Results for '{query}'", ""]
+    for i, result in enumerate(all_results, 1):
+        parent_title = result.get("parent_title")
+        parent_info = f' (from "{parent_title}")' if parent_title else ""
+        key = result.get("key", "")
+
+        if result.get("type") == "note":
+            note_text = clean_html(result.get("text", ""))
+            # Show context around match
+            pos = note_text.lower().find(query.lower())
+            if pos >= 0:
+                start = max(0, pos - 100)
+                end = min(len(note_text), pos + len(query) + 200)
+                note_text = note_text[start:end] + "..."
+            else:
+                note_text = note_text[:500] + "..."
+
+            output.append(f"## Note {i}{parent_info}")
+            output.append(f"**Key:** {key}")
+            if tags := result.get("tags"):
+                tag_list = [f"`{t}`" for t in tags]
+                output.append(f"**Tags:** {' '.join(tag_list)}")
+            output.append(f"**Content:**\n{note_text}")
+            output.append("")
+
+        elif result.get("type") == "annotation":
+            anno_type = result.get("annotation_type", "highlight")
+            anno_text = result.get("text", "")
+            anno_comment = result.get("comment", "")
+            page_label = result.get("page_label")
+            output.append(f"## Annotation {i}{parent_info}")
+            output.append(f"**Type:** {anno_type}")
+            output.append(f"**Key:** {key}")
+            if page_label:
+                output.append(f"**Page:** {page_label}")
+            if anno_text:
+                output.append(f"**Text:** {anno_text}")
+            if anno_comment:
+                output.append(f"**Comment:** {anno_comment}")
+            output.append("")
+
+    return "\n".join(output)
+
+
 @mcp.tool(
     name="zotero_search_notes",
-    description="Search for notes across your Zotero library."
+    description="Search for notes and annotations across your Zotero library."
 )
 def search_notes(
     query: str,
@@ -1976,7 +2667,7 @@ def search_notes(
     ctx: Context
 ) -> str:
     """
-    Search for notes in your Zotero library.
+    Search for notes and annotations in your Zotero library.
 
     Args:
         query: Search query string
@@ -1986,144 +2677,124 @@ def search_notes(
     Returns:
         Markdown-formatted search results
     """
+    if not query or not query.strip():
+        return "Error: Search query cannot be empty"
+
+    ctx.info(f"Searching Zotero notes for '{query}'")
+
+    if isinstance(limit, str):
+        limit = int(limit)
+    limit = limit or 20
+
+    note_results: list[dict] = []
+    annotation_results: list[dict] = []
+
+    # ---------- Local mode: fast SQLite queries ----------
+    if is_local_mode():
+        try:
+            from zotero_mcp.local_db import get_local_zotero_reader
+            reader = get_local_zotero_reader()
+            if reader:
+                try:
+                    note_results = reader.search_notes_local(query, limit)
+                    ctx.info(f"Local note search: {len(note_results)} results")
+                except Exception as e:
+                    ctx.warn(f"Local note search failed: {e}")
+
+                try:
+                    annotation_results = reader.search_annotations_local(query, limit)
+                    ctx.info(f"Local annotation search: {len(annotation_results)} results")
+                except Exception as e:
+                    ctx.warn(f"Local annotation search failed: {e}")
+                finally:
+                    reader.close()
+
+                return _format_search_results(query, note_results, annotation_results)
+        except Exception as e:
+            ctx.warn(f"Local search unavailable, falling back to API: {e}")
+
+    # ---------- API mode: separate try/except blocks ----------
+    zot = get_zotero_client()
+
+    # Notes — always try (this works since upstream PR #136)
     try:
-        if not query.strip():
-            return "Error: Search query cannot be empty"
-
-        ctx.info(f"Searching Zotero notes for '{query}'")
-        zot = get_zotero_client()
-
-        # Search for notes and annotations
-
-        if isinstance(limit, str):
-            limit = int(limit)
-
-        # First search notes
-        zot.add_parameters(q=query, qmode="everything", itemType="note", limit=limit or 20)
+        zot.add_parameters(q=query, qmode="everything", itemType="note", limit=limit)
         notes = zot.items()
 
-        # Then search annotations (reusing the get_annotations function)
-        annotation_results = _get_annotations(
-            item_key=None,  # Search all annotations
-            use_pdf_extraction=True,
-            limit=limit or 20,
-            ctx=ctx
-        )
+        # Batch-resolve parent titles
+        parent_keys = {n.get("data", {}).get("parentItem") for n in notes
+                       if n.get("data", {}).get("parentItem")}
+        parent_titles = _batch_resolve_parent_titles(zot, parent_keys, ctx) if parent_keys else {}
 
-        # Parse annotation markdown blocks from get_annotations output.
-        annotation_lines = annotation_results.split("\n")
-        current_annotation = None
-        annotations = []
-
-        for line in annotation_lines:
-            if line.startswith("## "):
-                if current_annotation:
-                    annotations.append(current_annotation)
-                current_annotation = {"lines": [line], "type": "annotation"}
-            elif current_annotation is not None:
-                current_annotation["lines"].append(line)
-
-        if current_annotation:
-            annotations.append(current_annotation)
-
-        # Filter and highlight notes
         query_lower = query.lower()
-        query_terms = query_lower.split()
-        note_results = []
-
         for note in notes:
             data = note.get("data", {})
-            note_text = data.get("note", "").lower()
+            note_html = data.get("note", "")
+            clean_text = clean_html(note_html)
+            if query_lower not in clean_text.lower():
+                continue
 
-            if all(term in note_text for term in query_terms):
-                # Prepare full note details
-                note_result = {
-                    "type": "note",
-                    "key": note.get("key", ""),
-                    "data": data
-                }
-                note_results.append(note_result)
-
-        # Keep only annotation blocks that contain the query text.
-        annotation_results_filtered = []
-        for annotation in annotations:
-            block_text = "\n".join(annotation.get("lines", []))
-            if query_lower in block_text.lower():
-                annotation_results_filtered.append(annotation)
-
-        # Combine and sort results
-        all_results = note_results + annotation_results_filtered
-        if not all_results:
-            return f"No results found for '{query}'"
-
-        # Format results
-        output = [f"# Search Results for '{query}'", ""]
-
-        for i, result in enumerate(all_results, 1):
-            if result["type"] == "note":
-                # Note formatting
-                data = result["data"]
-                key = result["key"]
-
-                # Parent item context
-                parent_info = ""
-                if parent_key := data.get("parentItem"):
-                    try:
-                        parent = zot.item(parent_key)
-                        parent_title = parent["data"].get("title", "Untitled")
-                        parent_info = f" (from \"{parent_title}\")"
-                    except Exception:
-                        parent_info = f" (parent key: {parent_key})"
-
-                # Note text with query highlight
-                note_text = data.get("note", "")
-                note_text = note_text.replace("<p>", "").replace("</p>", "\n\n")
-                note_text = note_text.replace("<br/>", "\n").replace("<br>", "\n")
-
-                # Highlight query in note text
-                try:
-                    # Find first occurrence of query and extract context
-                    text_lower = note_text.lower()
-                    pos = text_lower.find(query_lower)
-                    if pos >= 0:
-                        # Extract context around the query
-                        start = max(0, pos - 100)
-                        end = min(len(note_text), pos + 200)
-                        context = note_text[start:end]
-
-                        # Highlight the query in the context
-                        highlighted = context.replace(
-                            context[context.lower().find(query_lower):context.lower().find(query_lower)+len(query)],
-                            f"**{context[context.lower().find(query_lower):context.lower().find(query_lower)+len(query)]}**"
-                        )
-
-                        note_text = highlighted + "..."
-                except Exception:
-                    # Fallback to first 500 characters if highlighting fails
-                    note_text = note_text[:500] + "..."
-
-                output.append(f"## Note {i}{parent_info}")
-                output.append(f"**Key:** {key}")
-
-                # Tags
-                if tags := data.get("tags"):
-                    tag_list = [f"`{tag['tag']}`" for tag in tags]
-                    if tag_list:
-                        output.append(f"**Tags:** {' '.join(tag_list)}")
-
-                output.append(f"**Content:**\n{note_text}")
-                output.append("")
-
-            elif result["type"] == "annotation":
-                # Add the entire annotation block
-                output.extend(result["lines"])
-                output.append("")
-
-        return "\n".join(output)
-
+            parent_key = data.get("parentItem")
+            tags = [t["tag"] for t in data.get("tags", [])]
+            note_results.append({
+                "type": "note",
+                "key": note.get("key", ""),
+                "text": note_html,
+                "tags": tags,
+                "parent_key": parent_key,
+                "parent_title": parent_titles.get(parent_key) if parent_key else None,
+            })
+        ctx.info(f"API note search: {len(note_results)} results")
     except Exception as e:
-        ctx.error(f"Error searching notes: {str(e)}")
-        return f"Error searching notes: {str(e)}"
+        ctx.warn(f"Note search failed: {e}")
+
+    # Annotations — separate block so note results survive if this crashes
+    try:
+        # Manual pagination (same fix as _get_annotations)
+        annotations = []
+        start = 0
+        while True:
+            batch = zot.items(start=start, limit=min(100, limit - len(annotations)),
+                              itemType="annotation")
+            if not batch:
+                break
+            annotations.extend(batch)
+            if len(batch) < 100 or len(annotations) >= limit:
+                break
+            start += 100
+
+        # Batch-resolve parent titles for annotations
+        anno_parent_keys = set()
+        for anno in annotations:
+            pk = anno.get("data", {}).get("parentItem")
+            if pk:
+                anno_parent_keys.add(pk)
+        anno_parent_titles = _batch_resolve_parent_titles(zot, anno_parent_keys, ctx) if anno_parent_keys else {}
+
+        query_lower = query.lower()
+        for anno in annotations:
+            data = anno.get("data", {})
+            anno_text = data.get("annotationText", "")
+            anno_comment = data.get("annotationComment", "")
+            if query_lower not in (anno_text + " " + anno_comment).lower():
+                continue
+
+            parent_key = data.get("parentItem")
+            annotation_results.append({
+                "type": "annotation",
+                "key": anno.get("key", ""),
+                "text": anno_text,
+                "comment": anno_comment,
+                "annotation_type": data.get("annotationType", "highlight"),
+                "page_label": data.get("annotationPageLabel"),
+                "parent_key": parent_key,
+                "parent_title": anno_parent_titles.get(parent_key) if parent_key else None,
+            })
+        ctx.info(f"API annotation search: {len(annotation_results)} results")
+    except Exception as e:
+        ctx.warn(f"Annotation search failed: {e}")
+
+    return _format_search_results(query, note_results, annotation_results)
 
 
 @mcp.tool(
@@ -2134,7 +2805,7 @@ def create_note(
     item_key: str,
     note_title: str,
     note_text: str,
-    tags: list[str] | None = None,
+    tags: list[str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -2153,6 +2824,8 @@ def create_note(
     """
     try:
         ctx.info(f"Creating note for item {item_key}")
+        # Normalize tags (LLMs often pass JSON strings instead of lists)
+        tags = _normalize_str_list_input(tags, "tags") if tags is not None else []
         zot = get_zotero_client()
 
         # First verify the parent item exists
@@ -2201,11 +2874,16 @@ def create_note(
         if is_local_mode():
             web_zot = get_web_zotero_client()
             if web_zot is not None:
+                # Propagate library override if user switched libraries
+                override = get_active_library()
+                if override:
+                    web_zot.library_id = override.get("library_id", web_zot.library_id)
+                    web_zot.library_type = override.get("library_type", web_zot.library_type)
                 result = web_zot.create_items([note_data])
                 if "success" in result and result["success"]:
                     successful = result["success"]
                     if len(successful) > 0:
-                        note_key = next(iter(successful.keys()))
+                        note_key = next(iter(successful.values()))
                         return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
                     else:
                         return f"Note creation response was successful but no key was returned: {result}"
@@ -2234,8 +2912,13 @@ def create_note(
                 )
                 if resp.status_code == 201:
                     return (
-                        f"Note created for \"{parent_title}\" but may not be attached as a child item. "
-                        f"Set ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable proper child note creation."
+                        f"Note created for \"{parent_title}\" but it is a standalone note, not attached "
+                        f"to the paper.\n\n"
+                        f"To create properly attached child notes, add these environment variables "
+                        f"to your Claude Desktop config alongside ZOTERO_LOCAL=true:\n"
+                        f"- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
+                        f"- ZOTERO_LIBRARY_ID: Your library ID (from the same page)\n"
+                        f"- ZOTERO_LIBRARY_TYPE: 'user' or 'group'"
                     )
                 else:
                     return f"Failed to create note via local connector (HTTP {resp.status_code}): {resp.text}"
@@ -2247,7 +2930,7 @@ def create_note(
             if "success" in result and result["success"]:
                 successful = result["success"]
                 if len(successful) > 0:
-                    note_key = next(iter(successful.keys()))
+                    note_key = next(iter(successful.values()))
                     return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
                 else:
                     return f"Note creation response was successful but no key was returned: {result}"
@@ -2310,6 +2993,13 @@ def create_annotation(
         # Get clients for different operations
         local_client = get_local_zotero_client()
         web_client = get_web_zotero_client()
+
+        # Propagate library override if user switched libraries
+        if web_client:
+            override = get_active_library()
+            if override:
+                web_client.library_id = override.get("library_id", web_client.library_id)
+                web_client.library_type = override.get("library_type", web_client.library_type)
 
         # REQUIREMENT: Web API is required for creating annotations
         # Zotero's local API (port 23119) is read-only
@@ -2655,7 +3345,7 @@ def semantic_search(
 
                 # Add tags if present
                 if tags := data.get("tags"):
-                    tag_list = [f"`{tag['tag']}`" for tag in tags]
+                    tag_list = [f"`{t['tag']}`" for t in tags]
                     if tag_list:
                         output.append(f"**Tags:** {' '.join(tag_list)}")
 
@@ -2683,7 +3373,12 @@ def semantic_search(
 
 @mcp.tool(
     name="zotero_update_search_database",
-    description="Update the semantic search database with latest Zotero items."
+    description=(
+        "Update the semantic search database with latest Zotero items. "
+        "Run this after adding items (via add_by_doi, add_by_url, or add_from_file) "
+        "to make them immediately available for semantic search. Also useful if the "
+        "user has added items directly in Zotero since the last update."
+    )
 )
 def update_search_database(
     force_rebuild: bool = False,
@@ -2715,11 +3410,11 @@ def update_search_database(
         # Create semantic search instance
         search = create_semantic_search(str(config_path))
 
-        # Perform update with no fulltext extraction (for speed)
+        # Use fulltext extraction when in local mode (has access to PDFs)
         stats = search.update_database(
             force_full_rebuild=force_rebuild,
             limit=limit,
-            extract_fulltext=False
+            extract_fulltext=is_local_mode()
         )
 
         # Format results
@@ -2973,3 +3668,1085 @@ def connector_fetch(
             "url": "",
             "metadata": {"error": str(e)}
         }, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: Create Collection
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_create_collection",
+    description="Create a new collection (project/folder) in your Zotero library."
+)
+def create_collection(
+    name: str,
+    parent_collection: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        ctx.info(f"Creating collection '{name}'")
+
+        # Resolve parent_collection name if it doesn't look like a key
+        parent_key = parent_collection
+        if parent_collection and not re.match(r'^[A-Z0-9]{8}$', parent_collection):
+            try:
+                keys = _resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
+                parent_key = keys[0] if keys else None
+            except ValueError as e:
+                return f"Error resolving parent collection: {e}"
+
+        coll_data = {"name": name}
+        if parent_key:
+            coll_data["parentCollection"] = parent_key
+        else:
+            coll_data["parentCollection"] = False
+
+        result = write_zot.create_collections([coll_data])
+
+        if isinstance(result, dict) and result.get("success"):
+            coll_key = next(iter(result["success"].values()))
+            parent_info = f" under parent '{parent_collection}'" if parent_collection else ""
+            return (
+                f"Successfully created collection \"{name}\"{parent_info}\n\n"
+                f"Collection key: `{coll_key}`"
+            )
+        return f"Failed to create collection: {result}"
+
+    except Exception as e:
+        ctx.error(f"Error creating collection: {e}")
+        return f"Error creating collection: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 2: Search Collections
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_search_collections",
+    description="Search for collections by name to find their keys."
+)
+def search_collections(
+    query: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        zot = get_zotero_client()
+        ctx.info(f"Searching collections for '{query}'")
+
+        collections = zot.collections()
+        if not collections:
+            return "No collections found in your Zotero library."
+
+        query_lower = query.lower()
+        matching = [
+            c for c in collections
+            if query_lower in c.get("data", {}).get("name", "").lower()
+        ]
+
+        if not matching:
+            return f"No collections found matching '{query}'"
+
+        lines = [f"# Collections matching '{query}'", ""]
+        for i, coll in enumerate(matching, 1):
+            name = coll["data"].get("name", "Unnamed")
+            key = coll["key"]
+            parent_key = coll["data"].get("parentCollection")
+            lines.append(f"## {i}. {name}")
+            lines.append(f"**Key:** `{key}`")
+            if parent_key:
+                try:
+                    parent = zot.collection(parent_key)
+                    lines.append(f"**Parent:** {parent['data'].get('name', parent_key)}")
+                except Exception:
+                    lines.append(f"**Parent key:** {parent_key}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        ctx.error(f"Error searching collections: {e}")
+        return f"Error searching collections: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 3: Manage Collection Membership
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_manage_collections",
+    description="Add or remove items from collections."
+)
+def manage_collections(
+    item_keys: list[str] | str,
+    add_to: list[str] | str | None = None,
+    remove_from: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        keys = _normalize_str_list_input(item_keys, "item_keys")
+        add_colls = _normalize_str_list_input(add_to, "add_to")
+        remove_colls = _normalize_str_list_input(remove_from, "remove_from")
+
+        if not keys:
+            return "Error: No item keys provided."
+        if not add_colls and not remove_colls:
+            return "Error: Must specify add_to and/or remove_from."
+
+        results = []
+
+        # Cache item fetches to avoid repeated API calls for the same key
+        item_cache = {}
+        def _get_item(key):
+            if key not in item_cache:
+                item_cache[key] = write_zot.item(key)
+            return item_cache[key]
+
+        for coll_key in add_colls:
+            for item_key in keys:
+                item_dict = _get_item(item_key)
+                resp = write_zot.addto_collection(coll_key, item_dict)
+                if _handle_write_response(resp, ctx):
+                    results.append(f"Added {item_key} to {coll_key}")
+                    # Invalidate cache — version changed after addto_collection
+                    item_cache.pop(item_key, None)
+                else:
+                    results.append(f"Failed to add {item_key} to {coll_key}")
+
+        for coll_key in remove_colls:
+            for item_key in keys:
+                item_dict = _get_item(item_key)
+                resp = write_zot.deletefrom_collection(coll_key, item_dict)
+                if _handle_write_response(resp, ctx):
+                    results.append(f"Removed {item_key} from {coll_key}")
+                    item_cache.pop(item_key, None)
+                else:
+                    results.append(f"Failed to remove {item_key} from {coll_key}")
+
+        return "\n".join(results)
+
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error managing collections: {e}")
+        return f"Error managing collections: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 4: Add by DOI
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_add_by_doi",
+    description="Add a paper to your Zotero library by DOI. Fetches metadata from CrossRef."
+)
+def add_by_doi(
+    doi: str,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        normalized = _normalize_doi(doi)
+        if not normalized:
+            return f"Error: '{doi}' does not appear to be a valid DOI."
+
+        ctx.info(f"Fetching metadata for DOI: {normalized}")
+
+        resp = requests.get(
+            f"https://api.crossref.org/works/{normalized}",
+            headers={
+                "User-Agent": "zotero-mcp/1.0 (https://github.com/ehawkin/zotero-mcp)",
+                "Accept": "application/json",
+            },
+            timeout=15,
+        )
+
+        if resp.status_code == 404:
+            return f"DOI not found on CrossRef: {normalized}"
+        resp.raise_for_status()
+
+        cr = resp.json().get("message", {})
+
+        # Determine Zotero item type
+        cr_type = cr.get("type", "")
+        zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
+
+        # Get valid fields from item template
+        template = write_zot.item_template(zot_type)
+        item_data = dict(template)
+
+        # Map fields
+        title_list = cr.get("title", [])
+        if title_list and "title" in item_data:
+            item_data["title"] = title_list[0]
+
+        # Creators
+        creators = []
+        for author in cr.get("author", []):
+            if "family" in author:
+                creators.append({
+                    "creatorType": "author",
+                    "firstName": author.get("given", ""),
+                    "lastName": author["family"],
+                })
+            elif "name" in author:
+                creators.append({
+                    "creatorType": "author",
+                    "name": author["name"],
+                })
+        for editor in cr.get("editor", []):
+            if "family" in editor:
+                creators.append({
+                    "creatorType": "editor",
+                    "firstName": editor.get("given", ""),
+                    "lastName": editor["family"],
+                })
+            elif "name" in editor:
+                creators.append({
+                    "creatorType": "editor",
+                    "name": editor["name"],
+                })
+        if creators:
+            item_data["creators"] = creators
+
+        # Date
+        date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
+        if date_parts and date_parts[0]:
+            parts = date_parts[0]
+            item_data["date"] = "-".join(str(p) for p in parts)
+
+        # Simple string fields
+        field_map = {
+            "DOI": normalized,
+            "url": cr.get("URL", ""),
+            "volume": cr.get("volume", ""),
+            "issue": cr.get("issue", ""),
+            "pages": cr.get("page", ""),
+            "publisher": cr.get("publisher", ""),
+            "ISSN": (cr.get("ISSN") or [""])[0],
+        }
+
+        container = (cr.get("container-title") or [""])[0]
+        if container:
+            field_map["publicationTitle"] = container
+
+        abstract = _strip_xml_tags(cr.get("abstract", ""))
+        if abstract:
+            field_map["abstractNote"] = abstract
+
+        for field, value in field_map.items():
+            if field in item_data and value:
+                item_data[field] = value
+
+        # Tags
+        tag_list = _normalize_str_list_input(tags, "tags")
+        if tag_list:
+            item_data["tags"] = [{"tag": t} for t in tag_list]
+
+        # Collections
+        coll_keys = _normalize_str_list_input(collections, "collections")
+        if coll_keys:
+            item_data["collections"] = coll_keys
+
+        # Create item
+        result = write_zot.create_items([item_data])
+
+        if isinstance(result, dict) and result.get("success"):
+            item_key = next(iter(result["success"].values()))
+            title = item_data.get("title", normalized)
+
+            # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
+            pdf_status = _try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
+                                            crossref_metadata=cr,
+                                            attach_mode=attach_mode)
+
+            return (
+                f"Successfully added: **{title}**\n\n"
+                f"Item key: `{item_key}`\n"
+                f"Type: {zot_type}\n"
+                f"DOI: {normalized}\n"
+                f"PDF: {pdf_status}\n\n"
+                "_Note: To include this item in semantic search, run "
+                "zotero_update_search_database._"
+            )
+        return f"Failed to create item: {result}"
+
+    except requests.Timeout:
+        return "Error: CrossRef API request timed out. Please try again."
+    except requests.RequestException as e:
+        return f"Error fetching from CrossRef: {e}"
+    except Exception as e:
+        ctx.error(f"Error adding by DOI: {e}")
+        return f"Error adding by DOI: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 5: Add by URL
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_add_by_url",
+    description="Add a paper by URL. Supports DOI URLs, arXiv URLs, and general web pages."
+)
+def add_by_url(
+    url: str,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        url = (url or "").strip()
+        if not url:
+            return "Error: No URL provided."
+
+        # DOI URL routing
+        doi = _normalize_doi(url)
+        if doi:
+            return add_by_doi(doi=url, collections=collections, tags=tags,
+                              attach_mode=attach_mode, ctx=ctx)
+
+        # arXiv URL routing
+        arxiv_id = _normalize_arxiv_id(url)
+        if arxiv_id:
+            return _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx)
+
+        # Generic webpage
+        ctx.info(f"Creating webpage item for: {url}")
+        template = write_zot.item_template("webpage")
+        template["url"] = url
+        template["title"] = url
+        template["accessDate"] = ""
+
+        tag_list = _normalize_str_list_input(tags, "tags")
+        if tag_list:
+            template["tags"] = [{"tag": t} for t in tag_list]
+        coll_keys = _normalize_str_list_input(collections, "collections")
+        if coll_keys:
+            template["collections"] = coll_keys
+
+        result = write_zot.create_items([template])
+        if isinstance(result, dict) and result.get("success"):
+            item_key = next(iter(result["success"].values()))
+            return (
+                f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n\n"
+                "_Note: To include this item in semantic search, run "
+                "zotero_update_search_database._"
+            )
+        return f"Failed to create item: {result}"
+
+    except Exception as e:
+        ctx.error(f"Error adding by URL: {e}")
+        return f"Error adding by URL: {e}"
+
+
+def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
+    """Add an arXiv paper by ID. Internal helper for add_by_url."""
+    ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
+
+    resp = requests.get(
+        f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+    root = ET.fromstring(resp.text)
+    ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+
+    entries = root.findall("atom:entry", ns)
+    if not entries:
+        return f"No arXiv paper found for ID: {arxiv_id}"
+
+    entry = entries[0]
+
+    # Check for error response
+    id_elem = entry.find("atom:id", ns)
+    if id_elem is not None and "api/errors" in (id_elem.text or ""):
+        return f"arXiv API error for ID: {arxiv_id}"
+
+    title = (entry.findtext("atom:title", "", ns) or "").strip().replace("\n", " ")
+    abstract = (entry.findtext("atom:summary", "", ns) or "").strip()
+    published = (entry.findtext("atom:published", "", ns) or "")[:10]
+
+    authors = []
+    for author_elem in entry.findall("atom:author", ns):
+        name = (author_elem.findtext("atom:name", "", ns) or "").strip()
+        if name:
+            parts = name.rsplit(" ", 1)
+            if len(parts) == 2:
+                authors.append({
+                    "creatorType": "author",
+                    "firstName": parts[0],
+                    "lastName": parts[1],
+                })
+            else:
+                authors.append({"creatorType": "author", "name": name})
+
+    template = write_zot.item_template("preprint")
+    template["title"] = title
+    if authors:
+        template["creators"] = authors
+    if abstract and "abstractNote" in template:
+        template["abstractNote"] = abstract
+    if published and "date" in template:
+        template["date"] = published
+    template["url"] = f"https://arxiv.org/abs/{arxiv_id}"
+    if "extra" in template:
+        template["extra"] = f"arXiv:{arxiv_id}"
+
+    tag_list = _normalize_str_list_input(tags, "tags")
+    if tag_list:
+        template["tags"] = [{"tag": t} for t in tag_list]
+    coll_keys = _normalize_str_list_input(collections, "collections")
+    if coll_keys:
+        template["collections"] = coll_keys
+
+    result = write_zot.create_items([template])
+    if isinstance(result, dict) and result.get("success"):
+        item_key = next(iter(result["success"].values()))
+
+        # arXiv always has a free PDF — try to attach it
+        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+        pdf_status = "no PDF attached"
+        try:
+            pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+            pdf_resp.raise_for_status()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
+                filepath = os.path.join(tmpdir, filename)
+                with open(filepath, "wb") as f:
+                    for chunk in pdf_resp.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                write_zot.attachment_both(
+                    [(filename, filepath)],
+                    parentid=item_key,
+                )
+            pdf_status = "PDF attached"
+        except Exception as e:
+            ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
+            pdf_status = f"no PDF attached ({e})"
+
+        return (
+            f"Successfully added arXiv paper: **{title}**\n\n"
+            f"Item key: `{item_key}`\n"
+            f"arXiv ID: {arxiv_id}\n"
+            f"PDF: {pdf_status}\n\n"
+            "_Note: To include this item in semantic search, run "
+            "zotero_update_search_database._"
+        )
+    return f"Failed to create arXiv item: {result}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 6: Update Item Metadata
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_update_item",
+    description="Update metadata for an existing item in your Zotero library."
+)
+def update_item(
+    item_key: str,
+    title: str | None = None,
+    creators: list[dict] | str | None = None,
+    date: str | None = None,
+    publication_title: str | None = None,
+    abstract: str | None = None,
+    tags: list[str] | str | None = None,
+    add_tags: list[str] | str | None = None,
+    remove_tags: list[str] | str | None = None,
+    collections: list[str] | str | None = None,
+    collection_names: list[str] | str | None = None,
+    doi: str | None = None,
+    url: str | None = None,
+    extra: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        # Mutual exclusivity check
+        if tags is not None and (add_tags is not None or remove_tags is not None):
+            return (
+                "Error: Cannot use 'tags' (replace all) together with "
+                "'add_tags'/'remove_tags' (incremental). Use one approach or the other."
+            )
+
+        ctx.info(f"Updating item {item_key}")
+
+        # Fetch current item from write client for correct version
+        item = write_zot.item(item_key)
+        data = item.get("data", {})
+        changes = []
+
+        # Apply field updates
+        field_updates = {}
+        if title is not None:
+            field_updates["title"] = title
+        if date is not None:
+            field_updates["date"] = date
+        if publication_title is not None:
+            field_updates["publicationTitle"] = publication_title
+        if abstract is not None:
+            field_updates["abstractNote"] = abstract
+        if doi is not None:
+            field_updates["DOI"] = doi
+        if url is not None:
+            field_updates["url"] = url
+        if extra is not None:
+            field_updates["extra"] = extra
+
+        for field, value in field_updates.items():
+            if field in data:
+                old = data[field]
+                if old != value:
+                    changes.append(f"- **{field}**: '{old}' -> '{value}'")
+                data[field] = value
+
+        # Creators
+        if creators is not None:
+            if isinstance(creators, str):
+                creators = json.loads(creators)
+            data["creators"] = creators
+            changes.append("- **creators**: updated")
+
+        # Tags
+        if tags is not None:
+            tag_list = _normalize_str_list_input(tags, "tags")
+            data["tags"] = [{"tag": t} for t in tag_list]
+            changes.append(f"- **tags**: replaced with {tag_list}")
+        elif add_tags is not None or remove_tags is not None:
+            existing = {t["tag"] for t in data.get("tags", [])}
+            if add_tags is not None:
+                to_add = _normalize_str_list_input(add_tags, "add_tags")
+                existing.update(to_add)
+                changes.append(f"- **tags**: added {to_add}")
+            if remove_tags is not None:
+                to_remove = set(_normalize_str_list_input(remove_tags, "remove_tags"))
+                existing -= to_remove
+                changes.append(f"- **tags**: removed {list(to_remove)}")
+            data["tags"] = [{"tag": t} for t in sorted(existing)]
+
+        # Collections — both params ADD to existing collections (never replace)
+        if collections is not None:
+            coll_keys = _normalize_str_list_input(collections, "collections")
+            existing_colls = set(data.get("collections", []))
+            existing_colls.update(coll_keys)
+            data["collections"] = list(existing_colls)
+            changes.append(f"- **collections**: added {coll_keys}")
+        if collection_names is not None:
+            names = _normalize_str_list_input(collection_names, "collection_names")
+            resolved = _resolve_collection_names(read_zot, names, ctx=ctx)
+            existing_colls = set(data.get("collections", []))
+            existing_colls.update(resolved)
+            data["collections"] = list(existing_colls)
+            changes.append(f"- **collections**: added {resolved}")
+
+        if not changes:
+            return "No changes to apply."
+
+        resp = write_zot.update_item(item)
+        if _handle_write_response(resp, ctx):
+            return f"Successfully updated item `{item_key}`:\n\n" + "\n".join(changes)
+        return f"Failed to update item: write operation returned failure"
+
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error updating item: {e}")
+        return f"Error updating item: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 7: Find Duplicates
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_find_duplicates",
+    description="Find duplicate items in your library by title and/or DOI."
+)
+def find_duplicates(
+    method: Literal["title", "doi", "both"] = "both",
+    collection_key: str | None = None,
+    limit: int = 50,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        zot = get_zotero_client()
+        ctx.info(f"Searching for duplicates (method={method})")
+
+        # Paginate manually instead of using zot.everything() which can
+        # cause "cannot pickle '_thread.RLock' object" in MCP contexts.
+        items = []
+        start = 0
+        page_size = 100
+        while True:
+            if collection_key:
+                batch = zot.collection_items(collection_key, start=start, limit=page_size)
+            else:
+                batch = zot.items(start=start, limit=page_size)
+            if not batch:
+                break
+            items.extend(batch)
+            if len(batch) < page_size:
+                break
+            start += page_size
+            if len(items) > 5000:
+                break
+
+        if len(items) > 5000:
+            return (
+                f"Library has {len(items)} items — too large for duplicate scan. "
+                "Please scope by collection_key to reduce the search."
+            )
+
+        # Normalize and group
+        def normalize_title(t):
+            t = (t or "").lower().strip()
+            t = re.sub(r'[^\w\s]', '', t)
+            t = re.sub(r'\s+', ' ', t).strip()
+            for article in ("a ", "an ", "the "):
+                if t.startswith(article):
+                    t = t[len(article):]
+            return t
+
+        groups = {}
+        for item in items:
+            data = item.get("data", {})
+            if data.get("itemType") in ("attachment", "note", "annotation"):
+                continue
+
+            keys_to_check = []
+            if method in ("title", "both"):
+                nt = normalize_title(data.get("title", ""))
+                if nt:
+                    keys_to_check.append(("title", nt))
+            if method in ("doi", "both"):
+                doi_val = (data.get("DOI") or "").strip().lower()
+                if doi_val:
+                    keys_to_check.append(("doi", doi_val))
+
+            for group_type, group_key in keys_to_check:
+                full_key = f"{group_type}:{group_key}"
+                if full_key not in groups:
+                    groups[full_key] = []
+                groups[full_key].append(item)
+
+        # Filter to groups with duplicates
+        dups = {k: v for k, v in groups.items() if len(v) >= 2}
+
+        if not dups:
+            return "No duplicates found."
+
+        lines = [f"# Found {len(dups)} duplicate groups", ""]
+        shown = 0
+        for group_key, group_items in sorted(dups.items()):
+            if shown >= limit:
+                lines.append(f"\n... and {len(dups) - shown} more groups")
+                break
+            shown += 1
+            lines.append(f"## Group: {group_key}")
+            for item in group_items:
+                d = item.get("data", {})
+                key = item.get("key", "?")
+                t = d.get("title", "Untitled")
+                dt = d.get("date", "")
+                doi_val = d.get("DOI", "")
+                lines.append(f"- `{key}` — {t} ({dt}) {f'DOI:{doi_val}' if doi_val else ''}")
+            lines.append("")
+
+        lines.append(
+            "\nTo merge, call `zotero_merge_duplicates` with the key you want to keep "
+            "and the keys to merge into it."
+        )
+        return "\n".join(lines)
+
+    except Exception as e:
+        ctx.error(f"Error finding duplicates: {e}")
+        return f"Error finding duplicates: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 8: Merge Duplicates
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_merge_duplicates",
+    description=(
+        "Merge duplicate items. Consolidates tags, collections, notes, annotations, "
+        "and all child items into the keeper. Duplicates are moved to Trash (recoverable). "
+        "Dry-run by default — call with confirm=True to execute."
+    )
+)
+def merge_duplicates(
+    keeper_key: str,
+    duplicate_keys: list[str] | str,
+    confirm: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        dup_keys = _normalize_str_list_input(duplicate_keys, "duplicate_keys")
+
+        # Safety: remove keeper from duplicates
+        if keeper_key in dup_keys:
+            dup_keys.remove(keeper_key)
+            ctx.warn(f"Keeper key '{keeper_key}' was in duplicate list — removed.")
+
+        if not dup_keys:
+            return "Error: No duplicate keys to merge (after removing keeper if present)."
+
+        # Fetch all items and children
+        keeper = write_zot.item(keeper_key)
+        keeper_children = write_zot.children(keeper_key)
+        duplicates = []
+        for dk in dup_keys:
+            dup_item = write_zot.item(dk)
+            dup_children = write_zot.children(dk)
+            duplicates.append({"item": dup_item, "children": dup_children})
+
+        # Compute what will be merged
+        all_tags = set()
+        for t in keeper.get("data", {}).get("tags", []):
+            all_tags.add(t.get("tag", ""))
+        all_collections = set(keeper.get("data", {}).get("collections", []))
+        total_children_to_move = 0
+
+        for dup in duplicates:
+            for t in dup["item"].get("data", {}).get("tags", []):
+                all_tags.add(t.get("tag", ""))
+            all_collections.update(dup["item"].get("data", {}).get("collections", []))
+            total_children_to_move += len(dup["children"])
+
+        all_tags.discard("")
+        new_tags = all_tags - {t.get("tag", "") for t in keeper.get("data", {}).get("tags", [])}
+        new_collections = all_collections - set(keeper.get("data", {}).get("collections", []))
+
+        # DRY RUN
+        if not confirm:
+            lines = [
+                "# Merge Preview (dry run)",
+                "",
+                f"**Keeper:** `{keeper_key}` — {keeper.get('data', {}).get('title', 'Untitled')}",
+                f"**Duplicates to merge:** {', '.join(f'`{k}`' for k in dup_keys)}",
+                "",
+                f"**Tags to add:** {sorted(new_tags) if new_tags else 'none'}",
+                f"**Collections to add:** {sorted(new_collections) if new_collections else 'none'}",
+                f"**Child items to re-parent:** {total_children_to_move}",
+                f"  (notes, PDFs, annotations, highlights, etc.)",
+                "",
+                "Duplicates will be moved to **Trash** (recoverable in Zotero).",
+                "",
+                "**Call again with `confirm=True` to execute.**",
+            ]
+            return "\n".join(lines)
+
+        # EXECUTE MERGE
+        ctx.info(f"Merging {len(dup_keys)} duplicates into {keeper_key}")
+
+        # Step 3: Consolidate tags
+        if new_tags:
+            keeper_data = keeper.get("data", {})
+            existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
+            keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | all_tags)]
+            resp = write_zot.update_item(keeper)
+            if not _handle_write_response(resp, ctx):
+                return "Error: Failed to merge tags into keeper."
+            keeper = write_zot.item(keeper_key)  # re-fetch for version
+
+        # Step 4: Consolidate collections
+        for coll_key in new_collections:
+            resp = write_zot.addto_collection(coll_key, keeper)
+            if not _handle_write_response(resp, ctx):
+                ctx.warn(f"Failed to add keeper to collection {coll_key}")
+            keeper = write_zot.item(keeper_key)  # re-fetch for version
+
+        # Step 5: Re-parent children
+        moved = []
+        failed = []
+        for dup in duplicates:
+            for child in dup["children"]:
+                child_key = child.get("key", "?")
+                try:
+                    fresh_child = write_zot.item(child_key)
+                    fresh_child.get("data", {})["parentItem"] = keeper_key
+                    resp = write_zot.update_item(fresh_child)
+                    if _handle_write_response(resp, ctx):
+                        moved.append(child_key)
+                    else:
+                        failed.append(child_key)
+                except Exception as e:
+                    failed.append(f"{child_key} ({e})")
+
+        if failed:
+            return (
+                f"Merge partially completed. Moved {len(moved)} children, "
+                f"but {len(failed)} failed: {failed}\n\n"
+                "Duplicates were NOT trashed. Fix the failures and retry."
+            )
+
+        # Step 6: Trash duplicates (move to Zotero Trash, NOT permanent delete)
+        # pyzotero's update_item() strips "deleted" and delete_item() permanently
+        # destroys items. We send a direct PATCH with {"deleted": 1} which moves
+        # items to Zotero's Trash — recoverable by the user.
+        trashed = []
+        for dup in duplicates:
+            dup_key = dup["item"]["key"]
+            try:
+                dup_item = write_zot.item(dup_key)
+                version = dup_item["version"]
+                from pyzotero.zotero import build_url
+                url = build_url(
+                    write_zot.endpoint,
+                    f"/{write_zot.library_type}/{write_zot.library_id}/items/{dup_key}",
+                )
+                headers = {"If-Unmodified-Since-Version": str(version)}
+                resp = write_zot.client.patch(
+                    url=url,
+                    headers=headers,
+                    content=json.dumps({"deleted": 1}),
+                )
+                if resp.status_code in (200, 204):
+                    trashed.append(dup_key)
+                else:
+                    ctx.warn(f"Failed to trash {dup_key}: HTTP {resp.status_code}")
+            except Exception as e:
+                ctx.warn(f"Failed to trash {dup_key}: {e}")
+
+        return (
+            f"Merge complete.\n\n"
+            f"- Tags merged: {len(new_tags)} new\n"
+            f"- Collections added: {len(new_collections)} new\n"
+            f"- Children re-parented: {len(moved)}\n"
+            f"- Duplicates trashed: {', '.join(f'`{k}`' for k in trashed)}\n\n"
+            "Trashed items can be restored from Zotero's Trash."
+        )
+
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error merging duplicates: {e}")
+        return f"Error merging duplicates: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 9: PDF Outline Extraction
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_get_pdf_outline",
+    description="Extract the table of contents / outline from a PDF attachment."
+)
+def get_pdf_outline(
+    item_key: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        import fitz
+        import tempfile
+
+        zot = get_zotero_client()
+        ctx.info(f"Getting PDF outline for item {item_key}")
+
+        # Find PDF attachment
+        children = zot.children(item_key)
+        pdf_child = None
+        for child in children:
+            if child.get("data", {}).get("contentType") == "application/pdf":
+                pdf_child = child
+                break
+
+        if not pdf_child:
+            return f"No PDF attachment found for item `{item_key}`."
+
+        attachment_key = pdf_child["key"]
+        filename = pdf_child.get("data", {}).get("filename", "document.pdf")
+
+        # Download PDF (works for both local/WebDAV/web storage)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zot.dump(attachment_key, filename=filename, path=tmpdir)
+            pdf_path = os.path.join(tmpdir, filename)
+            if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+                return f"Could not download PDF for attachment `{attachment_key}`."
+            doc = fitz.open(pdf_path)
+            toc = doc.get_toc()
+            doc.close()
+
+        if not toc:
+            return "This PDF does not contain a table of contents/outline."
+
+        lines = [f"# PDF Outline for item `{item_key}`", ""]
+        for level, title, page in toc:
+            indent = "  " * (level - 1)
+            lines.append(f"{indent}- {title} (p. {page})")
+
+        return "\n".join(lines)
+
+    except ImportError:
+        return "Error: PyMuPDF (fitz) is required for PDF outline extraction."
+    except Exception as e:
+        ctx.error(f"Error extracting PDF outline: {e}")
+        return f"Error extracting PDF outline: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 10: Add from File
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="zotero_add_from_file",
+    description=(
+        "Add an item to Zotero from a local PDF file. "
+        "Attempts DOI extraction for rich metadata. "
+        "File path must be absolute and point to a .pdf or .epub file."
+    )
+)
+def add_from_file(
+    file_path: str,
+    title: str | None = None,
+    item_type: str = "document",
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        # Path validation — check symlink BEFORE resolving
+        if os.path.islink(file_path):
+            return "Error: Symlinks are not allowed for security reasons."
+        if not os.path.isabs(file_path):
+            return "Error: file_path must be an absolute path."
+        # Resolve ".." components after symlink check
+        file_path = os.path.realpath(file_path)
+        if not os.path.isfile(file_path):
+            return f"Error: File not found: {file_path}"
+
+        ext = os.path.splitext(file_path)[1].lower()
+        allowed_exts = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf"}
+        if ext not in allowed_exts:
+            return f"Error: Unsupported file type '{ext}'. Allowed: {', '.join(sorted(allowed_exts))}"
+
+        ctx.info(f"Adding file: {file_path}")
+
+        # Try DOI extraction from PDF
+        extracted_doi = None
+        if ext == ".pdf":
+            try:
+                import fitz
+                doc = fitz.open(file_path)
+
+                # Check metadata
+                meta = doc.metadata or {}
+                for field in ("subject", "keywords", "title"):
+                    candidate = meta.get(field, "")
+                    if candidate:
+                        found_doi = _normalize_doi(candidate)
+                        if found_doi:
+                            extracted_doi = found_doi
+                            break
+
+                # Scan first page text
+                if not extracted_doi and doc.page_count > 0:
+                    text = doc[0].get_text()[:3000]
+                    m = re.search(r'10\.\d{4,9}/[^\s]+', text)
+                    if m:
+                        found_doi = _normalize_doi(m.group(0))
+                        if found_doi:
+                            extracted_doi = found_doi
+
+                doc.close()
+            except Exception as e:
+                ctx.info(f"DOI extraction failed (non-fatal): {e}")
+
+        # Create the metadata item
+        if extracted_doi:
+            ctx.info(f"Found DOI: {extracted_doi}")
+            result_msg = add_by_doi(doi=extracted_doi, collections=collections, tags=tags, ctx=ctx)
+            # Extract item key from result
+            key_match = re.search(r'Item key: `([^`]+)`', result_msg)
+            if key_match:
+                parent_key = key_match.group(1)
+            else:
+                return f"DOI lookup succeeded but couldn't extract item key.\n\n{result_msg}"
+        else:
+            # Create a basic item
+            template = write_zot.item_template(item_type)
+            template["title"] = title or os.path.basename(file_path)
+
+            tag_list = _normalize_str_list_input(tags, "tags")
+            if tag_list:
+                template["tags"] = [{"tag": t} for t in tag_list]
+            coll_keys = _normalize_str_list_input(collections, "collections")
+            if coll_keys:
+                template["collections"] = coll_keys
+
+            result = write_zot.create_items([template])
+            if isinstance(result, dict) and result.get("success"):
+                parent_key = next(iter(result["success"].values()))
+            else:
+                return f"Failed to create item: {result}"
+
+        # Attach the file
+        try:
+            display_name = os.path.basename(file_path)
+            attach_result = write_zot.attachment_both(
+                [(display_name, file_path)],
+                parentid=parent_key,
+            )
+            attach_info = f"File attached: {display_name}"
+        except Exception as e:
+            attach_info = f"Item created but file attachment failed: {e}"
+
+        return (
+            f"Item key: `{parent_key}`\n"
+            f"{'DOI: ' + extracted_doi + chr(10) if extracted_doi else ''}"
+            f"{attach_info}\n\n"
+            "_Note: To include this item in semantic search, run "
+            "zotero_update_search_database._"
+        )
+
+    except Exception as e:
+        ctx.error(f"Error adding from file: {e}")
+        return f"Error adding from file: {e}"

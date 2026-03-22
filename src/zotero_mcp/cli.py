@@ -139,13 +139,15 @@ def setup_zotero_environment():
         claude_env_vars = load_claude_desktop_env_vars()
         apply_environment_variables(claude_env_vars)
 
-    # Apply fallback defaults for local Zotero if no config found
-    fallback_env_vars = {
-        "ZOTERO_LOCAL": "true",
-        "ZOTERO_LIBRARY_ID": "0",
-    }
-    # Apply fallbacks only if not already set
-    apply_environment_variables(fallback_env_vars)
+    # Apply fallback defaults for local Zotero if no config found.
+    # Only apply when no API key is configured — if an API key exists,
+    # the user intends web API mode and we should not force local mode.
+    if not os.environ.get("ZOTERO_API_KEY"):
+        fallback_env_vars = {
+            "ZOTERO_LOCAL": "true",
+            "ZOTERO_LIBRARY_ID": "0",
+        }
+        apply_environment_variables(fallback_env_vars)
 
 
 def main():
@@ -387,7 +389,16 @@ def main():
 
             print("Starting database update...")
             if args.fulltext:
-                print("Note: --fulltext flag enabled. Will extract content from local database if available.")
+                from zotero_mcp.utils import is_local_mode
+                if not is_local_mode():
+                    print(
+                        "Error: --fulltext requires local mode but ZOTERO_LOCAL is not enabled.\n"
+                        "Full-text indexing needs access to Zotero's local database.\n"
+                        "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                print("Extracting full-text content from local Zotero database...")
             stats = search.update_database(
                 force_full_rebuild=args.force_rebuild,
                 limit=args.limit,
