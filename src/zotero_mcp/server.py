@@ -1,11 +1,11 @@
-﻿"""
+"""
 Zotero MCP server implementation.
 
 Note: ChatGPT requires specific tool names "search" and "fetch", and so they
 are defined and used and piped through to the main server tools. See bottom of file for details.
 """
 
-from typing import Dict, List, Literal, Optional, Union
+from typing import Literal
 import os
 import sys
 import uuid
@@ -30,7 +30,6 @@ from zotero_mcp.client import (
     set_active_library,
 )
 import requests
-import httpx
 import xml.etree.ElementTree as ET
 
 from zotero_mcp.utils import format_creators, clean_html, is_local_mode
@@ -94,6 +93,19 @@ def _handle_write_response(response, ctx=None):
     if isinstance(response, dict):
         return bool(response.get("success"))
     return bool(response)
+
+
+def _normalize_limit(limit: int | str | None, default: int = 10, max_val: int = 100) -> int:
+    """Coerce *limit* to a bounded int.
+
+    Handles string-typed values from LLM callers, ``None`` fallback, and
+    clamping to ``[1, max_val]``.
+    """
+    if limit is None:
+        return default
+    if isinstance(limit, str):
+        limit = int(limit)
+    return max(1, min(limit, max_val))
 
 
 def _normalize_str_list_input(value, field_name="value"):
@@ -552,8 +564,7 @@ def search_items(
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
         zot = get_zotero_client()
 
-        if isinstance(limit, str):
-            limit = int(limit)
+        limit = _normalize_limit(limit, default=10)
 
         # Search using the query parameters
         zot.add_parameters(q=query, qmode=qmode, itemType=item_type, limit=limit, tag=tag)
@@ -643,8 +654,7 @@ def search_by_tag(
         ctx.info(f"Searching Zotero for tag '{tag}'")
         zot = get_zotero_client()
 
-        if isinstance(limit, str):
-            limit = int(limit)
+        limit = _normalize_limit(limit, default=10)
 
         # Search using the query parameters
         zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
@@ -917,8 +927,6 @@ def get_item_fulltext(
         try:
             from zotero_mcp.local_db import LocalZoteroReader
             from zotero_mcp.utils import is_local_mode
-            from pathlib import Path
-            import json
             import os
 
             if is_local_mode():
@@ -969,8 +977,6 @@ def get_item_fulltext(
             ctx.info(f"Attempting to download and convert attachment {attachment.key}")
 
             # Download the file to a temporary location
-            import tempfile
-            import os
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 file_path = os.path.join(tmpdir, attachment.filename or f"{attachment.key}.pdf")
@@ -1019,8 +1025,7 @@ def get_collections(
         ctx.info("Fetching collections")
         zot = get_zotero_client()
 
-        if isinstance(limit, str):
-            limit = int(limit)
+        limit = _normalize_limit(limit, default=100)
 
         collections = zot.collections(limit=limit)
 
@@ -1121,8 +1126,7 @@ def get_collection_items(
         except Exception:
             collection_name = f"Collection {collection_key}"
 
-        if isinstance(limit, str):
-            limit = int(limit)
+        limit = _normalize_limit(limit, default=50)
 
         # Then get the items
         items = zot.collection_items(collection_key, limit=limit)
@@ -1300,8 +1304,7 @@ def get_tags(
         ctx.info("Fetching tags")
         zot = get_zotero_client()
 
-        if isinstance(limit, str):
-            limit = int(limit)
+        limit = _normalize_limit(limit, default=100)
 
         # Use everything() to paginate through all tags reliably
         tags = zot.everything(zot.tags())
@@ -1691,14 +1694,7 @@ def get_recent(
         ctx.info(f"Fetching {limit} recent items")
         zot = get_zotero_client()
 
-        if isinstance(limit, str):
-            limit = int(limit)
-
-        # Ensure limit is a reasonable number
-        if limit <= 0:
-            limit = 10
-        elif limit > 100:
-            limit = 100
+        limit = _normalize_limit(limit, default=10)
 
         # Get recent items
         items = zot.items(limit=limit, sort="dateAdded", direction="desc")
@@ -1790,8 +1786,7 @@ def batch_update_tags(
         except ValueError as e:
             return str(e)
 
-        if isinstance(limit, str):
-            limit = int(limit)
+        limit = _normalize_limit(limit, default=50)
 
         # Search for items matching the query and/or tag filter
         params = {"limit": limit}
@@ -1951,12 +1946,7 @@ def advanced_search(
         if join_mode not in {"all", "any"}:
             return "Error: join_mode must be either 'all' or 'any'"
 
-        if isinstance(limit, str):
-            limit = int(limit)
-        if limit <= 0:
-            return "Error: limit must be greater than 0"
-        if limit > 500:
-            limit = 500
+        limit = _normalize_limit(limit, default=50, max_val=500)
 
         ctx.info(f"Performing advanced search with {len(conditions)} conditions")
         zot = get_zotero_client()
@@ -2357,8 +2347,6 @@ def _get_annotations(
             if use_pdf_extraction and not (better_bibtex_annotations or zotero_api_annotations):
                 try:
                     from zotero_mcp.pdfannots_helper import extract_annotations_from_pdf, ensure_pdfannots_installed
-                    import tempfile
-                    import uuid
 
                     # Ensure PDF annotation tool is installed
                     if ensure_pdfannots_installed():
@@ -2420,8 +2408,7 @@ def _get_annotations(
 
         else:
             # Retrieve all annotations in the library
-            if isinstance(limit, str):
-                limit = int(limit)
+            limit = _normalize_limit(limit, default=100)
             # Manual pagination instead of zot.everything() to avoid
             # RLock pickling issues in MCP contexts.
             annotations = []
@@ -2563,8 +2550,7 @@ def get_notes(
         # Prepare search parameters
         params = {"itemType": "note"}
 
-        if isinstance(limit, str):
-            limit = int(limit)
+        limit = _normalize_limit(limit, default=20)
 
         # Get notes
         notes = []
@@ -2725,9 +2711,7 @@ def search_notes(
 
     ctx.info(f"Searching Zotero notes for '{query}'")
 
-    if isinstance(limit, str):
-        limit = int(limit)
-    limit = limit or 20
+    limit = _normalize_limit(limit, default=20)
 
     note_results: list[dict] = []
     annotation_results: list[dict] = []
@@ -3017,7 +3001,6 @@ def create_annotation(
     Returns:
         Confirmation message with the new annotation key
     """
-    import tempfile
 
     from zotero_mcp.client import (
         get_local_zotero_client,
@@ -3332,7 +3315,6 @@ def semantic_search(
 
         # Import semantic search module
         from zotero_mcp.semantic_search import create_semantic_search
-        from pathlib import Path
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
@@ -3445,7 +3427,6 @@ def update_search_database(
 
         # Import semantic search module
         from zotero_mcp.semantic_search import create_semantic_search
-        from pathlib import Path
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
@@ -3505,7 +3486,6 @@ def get_search_database_status(*, ctx: Context) -> str:
 
         # Import semantic search module
         from zotero_mcp.semantic_search import create_semantic_search
-        from pathlib import Path
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
@@ -3553,31 +3533,6 @@ def get_search_database_status(*, ctx: Context) -> str:
 # These are required for ChatGPT custom MCP servers via web "connectors"
 # specific tools required are "search" and "fetch"
 # See: https://platform.openai.com/docs/mcp
-
-def _extract_item_key_from_input(value: str) -> str | None:
-    """Extract a Zotero item key from a Zotero URL, web URL, or bare key.
-    Returns None if no plausible key is found.
-    """
-    if not value:
-        return None
-    text = value.strip()
-
-    # Common patterns:
-    # - zotero://select/items/<KEY>
-    # - zotero://select/library/items/<KEY>
-    # - https://www.zotero.org/.../items/<KEY>
-    # - bare <KEY>
-    patterns = [
-        r"zotero://select/(?:library/)?items/([A-Za-z0-9]{8})",
-        r"/items/([A-Za-z0-9]{8})(?:[^A-Za-z0-9]|$)",
-        r"\b([A-Za-z0-9]{8})\b",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1)
-    return None
 
 @mcp.tool(
     name="search",
@@ -4641,8 +4596,6 @@ def get_pdf_outline(
             import fitz
         except ImportError:
             return "Error: PyMuPDF (fitz) is required for PDF outline extraction."
-
-        import tempfile
 
         attachment_key = pdf_child["key"]
         filename = pdf_child.get("data", {}).get("filename", "document.pdf")
