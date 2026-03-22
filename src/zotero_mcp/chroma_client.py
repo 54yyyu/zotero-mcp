@@ -254,13 +254,41 @@ class ChromaClient:
 
             # Get or create collection with the configured embedding function.
             # If the user switched embedding models, the persisted collection
-            # will conflict with the new function.  Drop and recreate in that
-            # case so the database is rebuilt with the correct embeddings.
+            # will have stale config.  Detect the mismatch and drop/recreate.
             try:
                 self.collection = self.client.get_or_create_collection(
                     name=self.collection_name,
                     embedding_function=self.embedding_function
                 )
+
+                # ChromaDB may silently persist the old embedding function config.
+                # Check if the stored config matches what we want; if not, recreate.
+                stored_config = getattr(self.collection, 'metadata', {}) or {}
+                if not stored_config:
+                    # Try reading config from the collection's config_json_str
+                    try:
+                        import json as _json
+                        rows = self.client._sysdb.get_collections(name=self.collection_name)
+                        if rows:
+                            raw = getattr(rows[0], 'config_json_str', None) or '{}'
+                            cfg = _json.loads(raw)
+                            ef_cfg = cfg.get('embedding_function', {}).get('config', {})
+                            stored_model = ef_cfg.get('model_name', '')
+                            # Compare stored model with configured model
+                            configured_model = getattr(self.embedding_function, 'model_name', None)
+                            if stored_model and configured_model and stored_model != configured_model:
+                                logger.warning(
+                                    f"Stored embedding model '{stored_model}' differs from "
+                                    f"configured '{configured_model}'. Resetting collection."
+                                )
+                                self.client.delete_collection(name=self.collection_name)
+                                self.collection = self.client.create_collection(
+                                    name=self.collection_name,
+                                    embedding_function=self.embedding_function
+                                )
+                    except Exception:
+                        pass  # Best-effort check; proceed with existing collection
+
             except Exception as e:
                 if "embedding function conflict" in str(e).lower():
                     logger.warning(
