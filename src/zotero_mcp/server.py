@@ -2,13 +2,12 @@
 
 The actual tool implementations live in :mod:`zotero_mcp.tools.*`.
 This module re-exports public names so that existing callers
-(``from zotero_mcp.server import mcp``, tests that ``@patch``
-``zotero_mcp.server.get_zotero_client``, etc.) keep working.
-"""
+(``from zotero_mcp.server import mcp``, tests that call
+``server.some_function()``, etc.) keep working.
 
-import sys as _sys
-import types as _types
-import requests  # noqa: F401 — tests patch zotero_mcp.server.requests.get
+Tool modules use module-level attribute access (e.g. ``_client.get_zotero_client()``)
+so that tests can patch the canonical location directly.
+"""
 
 # -- FastMCP app instance ---------------------------------------------------
 from zotero_mcp._app import mcp  # noqa: F401 — re-export
@@ -16,7 +15,7 @@ from zotero_mcp._app import mcp  # noqa: F401 — re-export
 # -- Register every tool module by importing the package --------------------
 import zotero_mcp.tools  # noqa: F401 — side-effect: registers all @mcp.tool
 
-# -- Re-export client helpers so @patch("zotero_mcp.server.X") still works --
+# -- Re-export client helpers (used by tests as server.X) -------------------
 from zotero_mcp.client import (  # noqa: F401
     get_zotero_client,
     get_web_zotero_client,
@@ -108,65 +107,3 @@ from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,
     connector_fetch,
 )
-
-# ---------------------------------------------------------------------------
-# Backward-compatibility: forward setattr to canonical modules so that
-# ``monkeypatch.setattr(server, "get_zotero_client", mock)`` propagates
-# to the module where tool code actually looks the name up.
-# ---------------------------------------------------------------------------
-import zotero_mcp.client as _client  # noqa: E402
-import zotero_mcp.utils as _utils  # noqa: E402
-from zotero_mcp.tools import _helpers as _helpers_mod  # noqa: E402
-import zotero_mcp.tools.search as _search  # noqa: E402
-import zotero_mcp.tools.retrieval as _retrieval  # noqa: E402
-import zotero_mcp.tools.annotations as _annotations  # noqa: E402
-import zotero_mcp.tools.write as _write  # noqa: E402
-import zotero_mcp.tools.connectors as _connectors  # noqa: E402
-
-_FORWARD_MAP: dict[str, list[_types.ModuleType]] = {}
-
-
-def _fwd(*modules):
-    """Return list of modules to forward to."""
-    return list(modules)
-
-
-for _n in ("get_zotero_client", "get_web_zotero_client", "get_active_library",
-           "set_active_library", "clear_active_library", "convert_to_markdown",
-           "format_item_metadata", "generate_bibtex", "get_attachment_details"):
-    _FORWARD_MAP[_n] = _fwd(_client, _search, _retrieval, _annotations, _write, _connectors)
-for _n in ("format_creators", "format_item_result", "clean_html", "is_local_mode"):
-    _FORWARD_MAP[_n] = _fwd(_utils, _search, _retrieval, _annotations, _write, _connectors)
-for _n in ("_get_write_client", "_handle_write_response", "_normalize_limit",
-           "_normalize_str_list_input", "_resolve_collection_names",
-           "_normalize_doi", "_normalize_arxiv_id", "_download_and_attach_pdf",
-           "_attach_pdf_linked_url", "_try_unpaywall", "_try_arxiv_from_crossref",
-           "_try_semantic_scholar", "_try_pmc", "_try_attach_oa_pdf",
-           "_extra_has_citekey", "_format_citekey_result", "_format_bbt_result"):
-    _FORWARD_MAP[_n] = _fwd(_helpers_mod)
-# Tool functions that are called cross-function within the same module
-for _n in ("add_by_doi",):
-    _FORWARD_MAP[_n] = _fwd(_write)
-
-
-class _ServerModule(_types.ModuleType):
-    """Module subclass that forwards setattr to canonical locations."""
-
-    def __setattr__(self, name, value):
-        targets = _FORWARD_MAP.get(name)
-        if targets:
-            for target in targets:
-                if hasattr(target, name):
-                    setattr(target, name, value)
-        super().__setattr__(name, value)
-
-
-# Replace this module in sys.modules with an instance of _ServerModule
-_this = _sys.modules[__name__]
-_new = _ServerModule(__name__, __doc__)
-_new.__dict__.update({k: v for k, v in _this.__dict__.items() if not k.startswith("__") or k in ("__all__", "__file__", "__spec__", "__path__", "__loader__", "__package__")})
-_new.__file__ = _this.__file__
-_new.__spec__ = _this.__spec__
-_new.__package__ = _this.__package__
-_new.__loader__ = _this.__loader__
-_sys.modules[__name__] = _new

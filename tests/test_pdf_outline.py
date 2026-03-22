@@ -91,9 +91,9 @@ class TestGetPdfOutlineHappyPath:
         ]
         fake_zot._children["PARENT01"] = [_pdf_child()]
 
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
         _patch_fitz(monkeypatch, toc)
-        monkeypatch.setattr(server, "is_local_mode", lambda: False)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="PARENT01", ctx=dummy_ctx)
 
@@ -116,9 +116,9 @@ class TestNestedToc:
         ]
         fake_zot._children["ITEM01"] = [_pdf_child()]
 
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
         _patch_fitz(monkeypatch, toc)
-        monkeypatch.setattr(server, "is_local_mode", lambda: False)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
 
@@ -138,9 +138,9 @@ class TestEmptyToc:
     def test_empty_toc_message(self, monkeypatch, dummy_ctx, fake_zot):
         fake_zot._children["ITEM01"] = [_pdf_child()]
 
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
         _patch_fitz(monkeypatch, toc=[])
-        monkeypatch.setattr(server, "is_local_mode", lambda: False)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
 
@@ -154,7 +154,7 @@ class TestNoPdfAttachment:
     def test_no_children_at_all(self, monkeypatch, dummy_ctx, fake_zot):
         fake_zot._children["ITEM01"] = []
 
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
 
@@ -163,7 +163,7 @@ class TestNoPdfAttachment:
     def test_only_note_children(self, monkeypatch, dummy_ctx, fake_zot):
         fake_zot._children["ITEM01"] = [_note_child()]
 
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
 
@@ -184,9 +184,9 @@ class TestMultipleChildrenOnlyPdfUsed:
             _note_child(key="NOTE02"),
         ]
 
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
         _patch_fitz(monkeypatch, toc)
-        monkeypatch.setattr(server, "is_local_mode", lambda: False)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
 
@@ -203,9 +203,9 @@ class TestMultipleChildrenOnlyPdfUsed:
             _pdf_child(key="PDF02", filename="second.pdf"),
         ]
 
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
         _patch_fitz(monkeypatch, toc)
-        monkeypatch.setattr(server, "is_local_mode", lambda: False)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
 

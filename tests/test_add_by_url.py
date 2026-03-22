@@ -100,8 +100,8 @@ def fake_zot_url():
 @pytest.fixture
 def patch_write_client(fake_zot_url):
     """Patch _get_write_client to return (fake_zot, fake_zot) for web-only mode."""
-    with patch.object(
-        server, "_get_write_client", return_value=(fake_zot_url, fake_zot_url)
+    with patch(
+        "zotero_mcp.tools._helpers._get_write_client", return_value=(fake_zot_url, fake_zot_url)
     ):
         yield fake_zot_url
 
@@ -116,7 +116,7 @@ class TestDoiUrlRouting:
     def test_doi_org_url_delegates(self, dummy_ctx, patch_write_client):
         """https://doi.org/10.xxx should be routed through DOI handling."""
         fake_zot = patch_write_client
-        with patch.object(server, "add_by_doi") as mock_doi:
+        with patch("zotero_mcp.tools.write.add_by_doi") as mock_doi:
             mock_doi.return_value = "Added via DOI: 10.1234/test.2024"
             result = server.add_by_url(
                 url="https://doi.org/10.1234/test.2024",
@@ -129,7 +129,7 @@ class TestDoiUrlRouting:
 
     def test_dx_doi_org_url_delegates(self, dummy_ctx, patch_write_client):
         """http://dx.doi.org/10.xxx should also route to DOI logic."""
-        with patch.object(server, "add_by_doi") as mock_doi:
+        with patch("zotero_mcp.tools.write.add_by_doi") as mock_doi:
             mock_doi.return_value = "Added via DOI"
             result = server.add_by_url(
                 url="http://dx.doi.org/10.1038/nature12373",
@@ -150,7 +150,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp) as mock_get:
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get:
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 ctx=dummy_ctx,
@@ -172,7 +172,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp) as mock_get:
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get:
             result = server.add_by_url(
                 url="https://arxiv.org/pdf/2401.00001.pdf",
                 ctx=dummy_ctx,
@@ -187,7 +187,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_OLD_FORMAT_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp) as mock_get:
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get:
             result = server.add_by_url(
                 url="https://arxiv.org/abs/hep-ph/9901234",
                 ctx=dummy_ctx,
@@ -205,7 +205,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             result = server.add_by_url(
                 url="arXiv:2401.00001",
                 ctx=dummy_ctx,
@@ -218,7 +218,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
 
         item = fake_zot.created[0]
@@ -236,7 +236,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
 
         item = fake_zot.created[0]
@@ -247,7 +247,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
 
         item = fake_zot.created[0]
@@ -258,7 +258,7 @@ class TestArxivUrl:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
 
         item = fake_zot.created[0]
@@ -276,7 +276,7 @@ class TestGenericUrl:
         """A plain URL creates a webpage item."""
         fake_zot = patch_write_client
 
-        with patch("zotero_mcp.server.requests.get") as mock_get:
+        with patch("zotero_mcp.tools.write.requests.get") as mock_get:
             # Don't let it try to actually fetch for arXiv
             result = server.add_by_url(
                 url="https://example.com/interesting-article",
@@ -300,7 +300,7 @@ class TestArxivErrors:
         """arXiv API returning zero entries should produce a clear error message."""
         mock_resp = _make_arxiv_response(ARXIV_EMPTY_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/9999.99999",
                 ctx=dummy_ctx,
@@ -315,7 +315,7 @@ class TestArxivErrors:
         import requests as req_lib
 
         with patch(
-            "zotero_mcp.server.requests.get",
+            "zotero_mcp.tools.write.requests.get",
             side_effect=req_lib.exceptions.Timeout("Connection timed out"),
         ):
             result = server.add_by_url(
@@ -340,7 +340,7 @@ class TestArxivXmlNamespace:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
 
         # If namespace handling is broken, title/authors won't be parsed
@@ -354,7 +354,7 @@ class TestArxivXmlNamespace:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 ctx=dummy_ctx,
@@ -379,7 +379,7 @@ class TestArxivHttps:
         """API call to export.arxiv.org must use HTTPS, not HTTP."""
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp) as mock_get:
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get:
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
             call_url = mock_get.call_args[0][0]
             assert call_url.startswith("https://"), (
@@ -390,7 +390,7 @@ class TestArxivHttps:
         """requests.get for arXiv should include a timeout parameter."""
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp) as mock_get:
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get:
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
             call_kwargs = mock_get.call_args[1]
             assert "timeout" in call_kwargs, "requests.get must include a timeout"
@@ -406,9 +406,8 @@ class TestHybridMode:
 
     def test_local_only_rejected(self, dummy_ctx):
         """In local-only mode (no web credentials), add_by_url should error."""
-        with patch.object(
-            server,
-            "_get_write_client",
+        with patch(
+            "zotero_mcp.tools._helpers._get_write_client",
             side_effect=ValueError(
                 "Cannot perform write operations in local-only mode. "
                 "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
@@ -428,10 +427,10 @@ class TestHybridMode:
 
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch.object(
-            server, "_get_write_client", return_value=(read_zot, write_zot)
+        with patch(
+            "zotero_mcp.tools._helpers._get_write_client", return_value=(read_zot, write_zot)
         ):
-            with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+            with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
                 server.add_by_url(
                     url="https://arxiv.org/abs/2401.00001",
                     ctx=dummy_ctx,
@@ -454,7 +453,7 @@ class TestTagsAndCollections:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 tags=["machine-learning", "transformers"],
@@ -471,7 +470,7 @@ class TestTagsAndCollections:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 tags='["nlp", "deep-learning"]',
@@ -488,7 +487,7 @@ class TestTagsAndCollections:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 collections=["ABC12345"],
@@ -509,7 +508,7 @@ class TestTagsAndCollections:
         ]
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 collections=["My Papers"],
@@ -525,7 +524,7 @@ class TestTagsAndCollections:
         fake_zot = patch_write_client
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch("zotero_mcp.server.requests.get", return_value=mock_resp):
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
             server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 ctx=dummy_ctx,

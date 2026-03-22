@@ -7,7 +7,7 @@ import json
 import requests
 import os
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 class ZoteroBetterBibTexAPI:
     """Class to interact with Zotero's local Better BibTeX JSON-RPC API"""

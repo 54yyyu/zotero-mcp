@@ -8,7 +8,7 @@ for semantic search over Zotero libraries.
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 import logging
 
 import chromadb
@@ -45,11 +45,11 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "openai"
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {"model_name": self.model_name, "base_url": self.base_url}
 
     @staticmethod
-    def build_from_config(config: Dict[str, Any]) -> "OpenAIEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
         return OpenAIEmbeddingFunction(
             model_name=config.get("model_name", "text-embedding-3-small"),
             base_url=config.get("base_url"),
@@ -112,11 +112,11 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "gemini"
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {"model_name": self.model_name, "base_url": self.base_url}
 
     @staticmethod
-    def build_from_config(config: Dict[str, Any]) -> "GeminiEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> "GeminiEmbeddingFunction":
         return GeminiEmbeddingFunction(
             model_name=config.get("model_name", "gemini-embedding-001"),
             base_url=config.get("base_url"),
@@ -176,11 +176,11 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "huggingface"
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {"model_name": self.model_name}
 
     @staticmethod
-    def build_from_config(config: Dict[str, Any]) -> "HuggingFaceEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> "HuggingFaceEmbeddingFunction":
         return HuggingFaceEmbeddingFunction(
             model_name=config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"),
         )

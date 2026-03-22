@@ -9,15 +9,9 @@ import requests
 from fastmcp import Context
 
 from zotero_mcp._app import mcp
-from zotero_mcp.client import (
-    get_active_library,
-    get_attachment_details,
-    get_web_zotero_client,
-    get_zotero_client,
-    convert_to_markdown,
-)
+from zotero_mcp import client as _client
+from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
-from zotero_mcp.utils import clean_html, format_creators, is_local_mode
 
 
 @mcp.tool(
@@ -43,23 +37,9 @@ def get_annotations(
     Returns:
         Markdown-formatted list of annotations
     """
-    return _get_annotations(
-        item_key=item_key,
-        use_pdf_extraction=use_pdf_extraction,
-        limit=limit,
-        ctx=ctx
-    )
-
-def _get_annotations(
-    item_key: str | None = None,
-    use_pdf_extraction: bool = False,
-    limit: int | str | None = None,
-    *,
-    ctx: Context
-) -> str:
     try:
         # Initialize Zotero client
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         # Prepare annotations list
         annotations = []
@@ -367,6 +347,10 @@ def _get_annotations(
         return f"Error fetching annotations: {str(e)}"
 
 
+# Alias kept for backward compatibility (imported by server.py).
+_get_annotations = get_annotations
+
+
 @mcp.tool(
     name="zotero_get_notes",
     description="Retrieve notes from your Zotero library, with options to filter by parent item."
@@ -392,7 +376,7 @@ def get_notes(
     """
     try:
         ctx.info(f"Fetching notes{f' for item {item_key}' if item_key else ''}")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         # Prepare search parameters
         params = {"itemType": "note"}
@@ -430,7 +414,7 @@ def get_notes(
             note_text = data.get("note", "")
 
             # Clean up HTML formatting
-            note_text = clean_html(note_text)
+            note_text = _utils.clean_html(note_text)
 
             # Limit note length for display
             if truncate and len(note_text) > 500:
@@ -495,7 +479,7 @@ def _format_search_results(
         key = result.get("key", "")
 
         if result.get("type") == "note":
-            note_text = clean_html(result.get("text", ""))
+            note_text = _utils.clean_html(result.get("text", ""))
             # Show context around match
             pos = note_text.lower().find(query.lower())
             if pos >= 0:
@@ -564,7 +548,7 @@ def search_notes(
     annotation_results: list[dict] = []
 
     # ---------- Local mode: fast SQLite queries ----------
-    if is_local_mode():
+    if _utils.is_local_mode():
         try:
             from zotero_mcp.local_db import get_local_zotero_reader
             reader = get_local_zotero_reader()
@@ -588,7 +572,7 @@ def search_notes(
             ctx.warn(f"Local search unavailable, falling back to API: {e}")
 
     # ---------- API mode: separate try/except blocks ----------
-    zot = get_zotero_client()
+    zot = _client.get_zotero_client()
 
     # Notes — always try (this works since upstream PR #136)
     try:
@@ -604,7 +588,7 @@ def search_notes(
         for note in notes:
             data = note.get("data", {})
             note_html = data.get("note", "")
-            clean_text = clean_html(note_html)
+            clean_text = _utils.clean_html(note_html)
             if query_lower not in clean_text.lower():
                 continue
 
@@ -700,7 +684,7 @@ def create_note(
         ctx.info(f"Creating note for item {item_key}")
         # Normalize tags (LLMs often pass JSON strings instead of lists)
         tags = _helpers._normalize_str_list_input(tags, "tags") if tags is not None else []
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         # First verify the parent item exists
         try:
@@ -745,11 +729,11 @@ def create_note(
         # and the connector/saveItems endpoint ignores parentItem (creating
         # standalone notes instead of child notes). If an API key is available,
         # use the web API which properly supports parentItem.
-        if is_local_mode():
-            web_zot = get_web_zotero_client()
+        if _utils.is_local_mode():
+            web_zot = _client.get_web_zotero_client()
             if web_zot is not None:
                 # Propagate library override if user switched libraries
-                override = get_active_library()
+                override = _client.get_active_library()
                 if override:
                     web_zot.library_id = override.get("library_id", web_zot.library_id)
                     web_zot.library_type = override.get("library_type", web_zot.library_type)
@@ -849,10 +833,6 @@ def create_annotation(
         Confirmation message with the new annotation key
     """
 
-    from zotero_mcp.client import (
-        get_local_zotero_client,
-        get_web_zotero_client,
-    )
     from zotero_mcp.pdf_utils import (
         find_text_position,
         get_page_label,
@@ -864,12 +844,12 @@ def create_annotation(
         ctx.info(f"Creating annotation on attachment {attachment_key}, page {page}")
 
         # Get clients for different operations
-        local_client = get_local_zotero_client()
-        web_client = get_web_zotero_client()
+        local_client = _client.get_local_zotero_client()
+        web_client = _client._client.get_web_zotero_client()
 
         # Propagate library override if user switched libraries
         if web_client:
-            override = get_active_library()
+            override = _client._client.get_active_library()
             if override:
                 web_client.library_id = override.get("library_id", web_client.library_id)
                 web_client.library_type = override.get("library_type", web_client.library_type)

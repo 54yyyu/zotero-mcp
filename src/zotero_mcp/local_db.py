@@ -10,7 +10,7 @@ import sqlite3
 import platform
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any
 from dataclasses import dataclass
 from urllib.parse import urlparse, unquote
 

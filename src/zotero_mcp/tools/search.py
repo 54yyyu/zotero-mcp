@@ -7,9 +7,9 @@ from typing import Literal
 from fastmcp import Context
 
 from zotero_mcp._app import mcp
-from zotero_mcp.client import get_zotero_client
+from zotero_mcp import client as _client
+from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
-from zotero_mcp.utils import format_creators, format_item_result, is_local_mode
 
 
 @mcp.tool(
@@ -50,7 +50,7 @@ def search_items(
             tag = []
 
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         limit = _helpers._normalize_limit(limit, default=10)
 
@@ -65,7 +65,7 @@ def search_items(
         output = [f"# Search Results for '{query}'", f"{tag_condition_str}", ""]
 
         for i, item in enumerate(results, 1):
-            output.extend(format_item_result(item, index=i))
+            output.extend(_utils.format_item_result(item, index=i))
 
         return "\n".join(output)
 
@@ -111,7 +111,7 @@ def search_by_tag(
             return "Error: Tag cannot be empty"
 
         ctx.info(f"Searching Zotero for tag '{tag}'")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         limit = _helpers._normalize_limit(limit, default=10)
 
@@ -126,7 +126,7 @@ def search_by_tag(
         output = [f"# Search Results for Tag: '{tag}'", ""]
 
         for i, item in enumerate(results, 1):
-            output.extend(format_item_result(item, index=i))
+            output.extend(_utils.format_item_result(item, index=i))
 
         return "\n".join(output)
 
@@ -163,7 +163,7 @@ def search_by_citation_key(
         ctx.info(f"Looking up citation key: {citekey}")
 
         # Strategy A: Try BetterBibTeX JSON-RPC API (local mode only)
-        if is_local_mode():
+        if _utils.is_local_mode():
             try:
                 from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
                 bibtex = ZoteroBetterBibTexAPI()
@@ -177,7 +177,7 @@ def search_by_citation_key(
                         if matched:
                             item_key = matched.get("itemKey") or matched.get("key")
                             if item_key:
-                                zot = get_zotero_client()
+                                zot = _client.get_zotero_client()
                                 item = zot.item(item_key)
                                 if item:
                                     return _helpers._format_citekey_result(item, citekey)
@@ -186,7 +186,7 @@ def search_by_citation_key(
                 ctx.warn(f"BetterBibTeX lookup failed, falling back to Extra field search: {e}")
 
         # Strategy B: Search via pyzotero Extra field
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
         zot.add_parameters(q=citekey, qmode="everything", itemType="-attachment", limit=25)
         results = zot.items()
 
@@ -251,7 +251,7 @@ def advanced_search(
         limit = _helpers._normalize_limit(limit, default=50, max_val=500)
 
         ctx.info(f"Performing advanced search with {len(conditions)} conditions")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         valid_operations = {
             "is",
@@ -419,7 +419,7 @@ def advanced_search(
             def _sort_key(item: dict[str, object]) -> str:
                 data = item.get("data", {}) if isinstance(item, dict) else {}
                 if sort_field in {"creator", "author"}:
-                    return format_creators(data.get("creators", []))
+                    return _utils.format_creators(data.get("creators", []))
                 return str(data.get(sort_field, "")).lower()
 
             results.sort(key=_sort_key, reverse=reverse)
@@ -442,7 +442,7 @@ def advanced_search(
         output.append("## Results")
 
         for i, item in enumerate(results, 1):
-            output.extend(format_item_result(item, index=i))
+            output.extend(_utils.format_item_result(item, index=i))
 
         return "\n".join(output)
 
@@ -540,7 +540,7 @@ def semantic_search(
                     extra["Matched Content"] = snippet
                 # Override key from result since it may differ from item["key"]
                 zotero_item.setdefault("key", result.get("item_key", ""))
-                output.extend(format_item_result(zotero_item, index=i, extra_fields=extra))
+                output.extend(_utils.format_item_result(zotero_item, index=i, extra_fields=extra))
             else:
                 # Fallback if full Zotero item not available
                 output.append(f"## {i}. Item {result.get('item_key', 'Unknown')}")
@@ -598,7 +598,7 @@ def update_search_database(
         stats = search.update_database(
             force_full_rebuild=force_rebuild,
             limit=limit,
-            extract_fulltext=is_local_mode()
+            extract_fulltext=_utils.is_local_mode()
         )
 
         # Format results

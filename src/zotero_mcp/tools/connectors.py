@@ -8,13 +8,9 @@ from pathlib import Path
 from fastmcp import Context
 
 from zotero_mcp._app import mcp
-from zotero_mcp.client import (
-    convert_to_markdown,
-    get_attachment_details,
-    get_zotero_client,
-)
+from zotero_mcp import client as _client
+from zotero_mcp import utils as _utils
 from zotero_mcp.tools.retrieval import get_item_fulltext
-from zotero_mcp.utils import format_creators
 
 
 # These are required for ChatGPT custom MCP servers via web "connectors"
@@ -90,7 +86,7 @@ def connector_fetch(
             }, separators=(",", ":"))
 
         # Fetch item metadata for title and context
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
         try:
             item = zot.item(item_key)
             data = item.get("data", {}) if item else {}
@@ -122,7 +118,7 @@ def connector_fetch(
         if (not text_clean or len(text_clean.strip()) < 40) and data:
             abstract = data.get("abstractNote", "")
             creators = data.get("creators", [])
-            byline = format_creators(creators)
+            byline = _utils.format_creators(creators)
             text_clean = (f"{title}\n\n" + (f"Authors: {byline}\n" if byline else "") +
                           (f"Abstract:\n{abstract}" if abstract else "")) or text_md
 
@@ -131,7 +127,7 @@ def connector_fetch(
             "date": data.get("date", ""),
             "key": item_key,
             "doi": data.get("DOI", ""),
-            "authors": format_creators(data.get("creators", [])),
+            "authors": _utils.format_creators(data.get("creators", [])),
             "tags": [t.get("tag", "") for t in (data.get("tags", []) or [])],
             "zotero_url": zotero_url,
             "web_url": web_url,

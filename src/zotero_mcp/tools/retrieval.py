@@ -9,18 +9,9 @@ from pathlib import Path
 from fastmcp import Context
 
 from zotero_mcp._app import mcp
-from zotero_mcp.client import (
-    clear_active_library,
-    convert_to_markdown,
-    format_item_metadata,
-    generate_bibtex,
-    get_active_library,
-    get_attachment_details,
-    get_zotero_client,
-    set_active_library,
-)
+from zotero_mcp import client as _client
+from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
-from zotero_mcp.utils import clean_html, format_item_result
 
 
 @mcp.tool(
@@ -48,16 +39,16 @@ def get_item_metadata(
     """
     try:
         ctx.info(f"Fetching metadata for item {item_key} in {format} format")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         item = zot.item(item_key)
         if not item:
             return f"No item found with key: {item_key}"
 
         if format == "bibtex":
-            return generate_bibtex(item)
+            return _client.generate_bibtex(item)
         else:
-            return format_item_metadata(item, include_abstract)
+            return _client.format_item_metadata(item, include_abstract)
 
     except Exception as e:
         ctx.error(f"Error fetching item metadata: {str(e)}")
@@ -85,7 +76,7 @@ def get_item_fulltext(
     """
     try:
         ctx.info(f"Fetching full text for item {item_key}")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         # First get the item metadata
         item = zot.item(item_key)
@@ -93,7 +84,7 @@ def get_item_fulltext(
             return f"No item found with key: {item_key}"
 
         # Get item metadata in markdown format
-        metadata = format_item_metadata(item, include_abstract=True)
+        metadata = _client.format_item_metadata(item, include_abstract=True)
 
         # In local mode, prefer direct local DB/storage extraction first.
         # This avoids pyzotero dump() failures on linked file:// attachments
@@ -101,9 +92,8 @@ def get_item_fulltext(
         local_extract_error_msg = None
         try:
             from zotero_mcp.local_db import LocalZoteroReader
-            from zotero_mcp.utils import is_local_mode
 
-            if is_local_mode():
+            if _utils.is_local_mode():
                 config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
                 zotero_db_path = None
                 pdf_max_pages = None
@@ -131,7 +121,7 @@ def get_item_fulltext(
             ctx.info(f"Local extraction fallback not available: {str(local_extract_error)}")
 
         # Try to get attachment details
-        attachment = get_attachment_details(zot, item)
+        attachment = _client.get_attachment_details(zot, item)
         if not attachment:
             return f"{metadata}\n\n---\n\nNo suitable attachment found for this item."
 
@@ -158,7 +148,7 @@ def get_item_fulltext(
 
                 if os.path.exists(file_path):
                     ctx.info(f"Downloaded file to {file_path}, converting to markdown")
-                    converted_text = convert_to_markdown(file_path)
+                    converted_text = _client.convert_to_markdown(file_path)
                     return f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}"
                 else:
                     return f"{metadata}\n\n---\n\nFile download failed."
@@ -197,7 +187,7 @@ def get_collections(
     """
     try:
         ctx.info("Fetching collections")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         limit = _helpers._normalize_limit(limit, default=100)
 
@@ -291,7 +281,7 @@ def get_collection_items(
     """
     try:
         ctx.info(f"Fetching items for collection {collection_key}")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         # First get the collection details
         try:
@@ -311,7 +301,7 @@ def get_collection_items(
         output = [f"# Items in Collection: {collection_name}", ""]
 
         for i, item in enumerate(items, 1):
-            output.extend(format_item_result(item, index=i, abstract_len=None, include_tags=False))
+            output.extend(_utils.format_item_result(item, index=i, abstract_len=None, include_tags=False))
 
         return "\n".join(output)
 
@@ -341,7 +331,7 @@ def get_item_children(
     """
     try:
         ctx.info(f"Fetching children for item {item_key}")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         # First get the parent item details
         try:
@@ -455,7 +445,7 @@ def get_tags(
     """
     try:
         ctx.info("Fetching tags")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         limit = _helpers._normalize_limit(limit, default=100)
 
@@ -509,7 +499,7 @@ def list_libraries(*, ctx: Context) -> str:
     try:
         ctx.info("Listing accessible libraries")
         local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
-        override = get_active_library()
+        override = _client.get_active_library()
 
         output = ["# Zotero Libraries", ""]
 
@@ -565,7 +555,7 @@ def list_libraries(*, ctx: Context) -> str:
                 reader.close()
         else:
             # Web mode: query groups via pyzotero
-            zot = get_zotero_client()
+            zot = _client.get_zotero_client()
             output.append("## User Library")
             output.append(
                 f"- **My Library** (libraryID={os.getenv('ZOTERO_LIBRARY_ID', '?')})"
@@ -626,7 +616,7 @@ def switch_library(
     try:
         # TODO(human): Implement validate_library_switch() below
         if library_type == "default":
-            clear_active_library()
+            _client.clear_active_library()
             ctx.info("Reset to default library configuration")
             return (
                 "Switched back to default library configuration "
@@ -638,12 +628,12 @@ def switch_library(
         if error:
             return error
 
-        set_active_library(library_id, library_type)
+        _client.set_active_library(library_id, library_type)
         ctx.info(f"Switched to library {library_id} (type={library_type})")
 
         # Verify the switch works by making a test call
         try:
-            zot = get_zotero_client()
+            zot = _client.get_zotero_client()
             zot.add_parameters(limit=1)
             zot.items()
             return (
@@ -652,7 +642,7 @@ def switch_library(
             )
         except Exception as e:
             # Roll back on failure
-            clear_active_library()
+            _client.clear_active_library()
             return (
                 f"Error: Could not access library {library_id} "
                 f"(type={library_type}): {e}. Reverted to default library."
@@ -809,7 +799,7 @@ def get_feed_items(
                     output.append(f"- **URL:** {item['url']}")
                 output.append(f"- **Added:** {item.get('dateAdded', 'unknown')}")
                 if item.get("abstract"):
-                    abstract = clean_html(item["abstract"])
+                    abstract = _utils.clean_html(item["abstract"])
                     if len(abstract) > 200:
                         abstract = abstract[:200] + "..."
                     output.append(f"- **Abstract:** {abstract}")
@@ -845,7 +835,7 @@ def get_recent(
     """
     try:
         ctx.info(f"Fetching {limit} recent items")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         limit = _helpers._normalize_limit(limit, default=10)
 
@@ -859,7 +849,7 @@ def get_recent(
 
         for i, item in enumerate(items, 1):
             added = item.get("data", {}).get("dateAdded", "Unknown")
-            output.extend(format_item_result(
+            output.extend(_utils.format_item_result(
                 item, index=i, abstract_len=0, include_tags=False,
                 extra_fields={"Added": added},
             ))

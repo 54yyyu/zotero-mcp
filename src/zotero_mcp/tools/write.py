@@ -11,9 +11,9 @@ import requests
 from fastmcp import Context
 
 from zotero_mcp._app import mcp
-from zotero_mcp.client import get_zotero_client
+from zotero_mcp import client as _client
+from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
-from zotero_mcp.utils import clean_html
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
@@ -64,7 +64,7 @@ def batch_update_tags(
             return "Error: After parsing, no valid tags were provided to add or remove"
 
         ctx.info(f"Batch updating tags for items matching '{query}'")
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
 
         # Use shared hybrid-mode helper for correct library override propagation
         try:
@@ -245,7 +245,7 @@ def search_collections(
     ctx: Context
 ) -> str:
     try:
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
         ctx.info(f"Searching collections for '{query}'")
 
         collections = zot.collections()
@@ -450,7 +450,7 @@ def add_by_doi(
         if container:
             field_map["publicationTitle"] = container
 
-        abstract = clean_html(cr.get("abstract", ""), collapse_whitespace=True)
+        abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
         if abstract:
             field_map["abstractNote"] = abstract
 
@@ -791,7 +791,7 @@ def find_duplicates(
     ctx: Context
 ) -> str:
     try:
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
         ctx.info(f"Searching for duplicates (method={method})")
 
         # Paginate manually instead of using zot.everything() which can
@@ -1059,7 +1059,7 @@ def get_pdf_outline(
     ctx: Context
 ) -> str:
     try:
-        zot = get_zotero_client()
+        zot = _client.get_zotero_client()
         ctx.info(f"Getting PDF outline for item {item_key}")
 
         # Find PDF attachment

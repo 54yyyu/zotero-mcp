@@ -11,7 +11,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any
 import logging
 
 try:
@@ -60,7 +60,7 @@ class CrossEncoderReranker:
         from sentence_transformers import CrossEncoder
         self.model = CrossEncoder(model_name)
 
-    def rerank(self, query: str, documents: List[str], top_k: int) -> List[int]:
+    def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
         """Re-rank documents by relevance to query.
 
         Returns indices of top_k documents in descending relevance order.
@@ -114,7 +114,7 @@ class ZoteroSemanticSearch:
                 logger.warning(f"Error loading reranker config: {e}")
         return config
 
-    def _get_reranker(self) -> Optional[CrossEncoderReranker]:
+    def _get_reranker(self) -> CrossEncoderReranker | None:
         """Get the reranker instance, lazily initializing if enabled."""
         if not self._reranker_config.get("enabled", False):
             return None

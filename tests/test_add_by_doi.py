@@ -64,7 +64,7 @@ def fake_zot():
 @pytest.fixture
 def patch_write_client(monkeypatch, fake_zot):
     """Patch _get_write_client to return (fake_zot, fake_zot)."""
-    monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake_zot, fake_zot))
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
 
 
 @pytest.fixture
@@ -163,7 +163,7 @@ class TestAddByDoiHappyPath:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -190,7 +190,7 @@ class TestAddByDoiHappyPath:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -210,7 +210,7 @@ class TestAddByDoiHappyPath:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -228,7 +228,7 @@ class TestAddByDoiHappyPath:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -252,7 +252,7 @@ class TestFieldMapping:
     ):
         """container-title is an array in CrossRef; should extract [0]."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {"container-title": ["Journal of Testing", "J Test"]}
         monkeypatch.setattr(
@@ -267,7 +267,7 @@ class TestFieldMapping:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {"container-title": []}
         monkeypatch.setattr(
@@ -283,7 +283,7 @@ class TestFieldMapping:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {"ISSN": ["1111-2222", "3333-4444"]}
         monkeypatch.setattr(
@@ -299,7 +299,7 @@ class TestFieldMapping:
     ):
         """Institutional authors have 'name' instead of given/family."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {
             "author": [
@@ -332,7 +332,7 @@ class TestFieldMapping:
     ):
         """CrossRef 'editor' role should map to creatorType 'editor'."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {
             "author": [],
@@ -362,7 +362,7 @@ class TestFieldValidation:
     ):
         """Fields not in the item_template should NOT appear on the item."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         # CrossRef message with fields that don't exist in journalArticle template
         msg = {
@@ -385,7 +385,7 @@ class TestFieldValidation:
     ):
         """posted-content should create a preprint item type."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {"type": "posted-content"}
         monkeypatch.setattr(
@@ -400,7 +400,7 @@ class TestFieldValidation:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {"type": "totally-unknown-type"}
         monkeypatch.setattr(
@@ -419,7 +419,7 @@ class TestFieldValidation:
 class TestTagsAndCollections:
     def test_tags_applied(self, monkeypatch, fake_zot, dummy_ctx):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -439,7 +439,7 @@ class TestTagsAndCollections:
     def test_tags_as_string(self, monkeypatch, fake_zot, dummy_ctx):
         """Tags can be passed as a comma-separated string."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -460,7 +460,7 @@ class TestTagsAndCollections:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -480,7 +480,7 @@ class TestTagsAndCollections:
     ):
         """When tags/collections are None, item should still be created."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -501,7 +501,7 @@ class TestAbstractXmlStripping:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {
             "abstract": (
@@ -524,7 +524,7 @@ class TestAbstractXmlStripping:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {"abstract": "<p>Plain <b>HTML</b> abstract.</p>"}
         monkeypatch.setattr(
@@ -542,7 +542,7 @@ class TestAbstractXmlStripping:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = {}  # no abstract key at all
         # Remove abstract from defaults
@@ -566,7 +566,7 @@ class TestCrossrefNotFound:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         resp_404 = MagicMock()
         resp_404.status_code = 404
@@ -587,7 +587,7 @@ class TestCrossrefNotFound:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
         result = server.add_by_doi(doi="not-a-real-doi", ctx=dummy_ctx)
@@ -609,7 +609,7 @@ class TestCrossrefTimeout:
         import requests as req_lib
 
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
         def timeout_get(*args, **kwargs):
@@ -632,7 +632,7 @@ class TestCrossrefTimeout:
         import requests as req_lib
 
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
         def conn_error(*args, **kwargs):
@@ -663,7 +663,7 @@ class TestHybridMode:
                 "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
             )
 
-        monkeypatch.setattr(server, "_get_write_client", raise_local_only)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local_only)
 
         result = server.add_by_doi(
             doi="10.1234/test.2024.001", ctx=dummy_ctx
@@ -681,7 +681,7 @@ class TestHybridMode:
         write_zot.library_id = "web-99999"
 
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (read_zot, write_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (read_zot, write_zot)
         )
         monkeypatch.setattr(
             "requests.get", lambda *a, **kw: _make_crossref_response()
@@ -703,7 +703,7 @@ class TestCrossrefUserAgent:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
         captured_kwargs = {}
@@ -724,7 +724,7 @@ class TestCrossrefUserAgent:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
         captured_kwargs = {}
@@ -752,7 +752,7 @@ class TestDoiNormalizationInAddByDoi:
     ):
         """A DOI passed as URL should be normalized before calling CrossRef."""
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
         captured_args = []
@@ -776,7 +776,7 @@ class TestDoiNormalizationInAddByDoi:
         self, monkeypatch, fake_zot, dummy_ctx
     ):
         monkeypatch.setattr(
-            server, "_get_write_client", lambda ctx: (fake_zot, fake_zot)
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
         captured_args = []

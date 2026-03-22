@@ -31,7 +31,7 @@ class TestManageCollectionsPayloadShape:
                 return _FakeResponse(204)
 
         fake = FakeZotManage()
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         ctx = DummyContext()
         server.manage_collections(
@@ -98,8 +98,8 @@ class TestMergeTrashMethod:
                 return _FakeResponse(204)
 
         fake = FakeZotMerge()
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "_get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
         return fake
 
     def test_trash_uses_direct_patch_not_update_item(self, monkeypatch):
@@ -148,7 +148,7 @@ class TestFindDuplicatesNoPicle:
                 ]
 
         fake = FakeZotNoPickle()
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
         ctx = DummyContext()
         # Should complete without hitting everything()
@@ -191,8 +191,8 @@ class TestPdfOutlineDownloadMethod:
                         f.write(b"%PDF-1.4 fake")
 
         fake = FakeZotDump()
-        monkeypatch.setattr(server, "get_zotero_client", lambda: fake)
-        monkeypatch.setattr(server, "is_local_mode", lambda: True)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
 
         # Mock fitz
         class FakeDoc:

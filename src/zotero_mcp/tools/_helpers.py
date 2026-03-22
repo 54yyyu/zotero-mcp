@@ -421,18 +421,7 @@ def _format_bbt_result(bbt_item: dict, citekey: str) -> str:
     """Format a BetterBibTeX search result."""
     title = bbt_item.get("title", "Untitled")
     year = bbt_item.get("year", "N/A")
-    creators = bbt_item.get("creators", [])
-
-    creator_names = []
-    for c in creators:
-        if isinstance(c, dict):
-            if "lastName" in c:
-                creator_names.append(f"{c.get('lastName', '')}, {c.get('firstName', '')}")
-            elif "name" in c:
-                creator_names.append(c["name"])
-        elif isinstance(c, str):
-            creator_names.append(c)
-    creators_str = "; ".join(creator_names) if creator_names else "No authors listed"
+    creators_str = _utils.format_creators(bbt_item.get("creators", []))
 
     output = [
         f"# Citation Key: {citekey}",

@@ -17,19 +17,23 @@ def suppress_stdout():
         finally:
             sys.stdout = old_stdout
 
-def format_creators(creators: list[dict[str, str]]) -> str:
+def format_creators(creators: list[dict[str, str] | str]) -> str:
     """
     Format creator names into a string.
 
     Args:
-        creators: List of creator objects from Zotero.
+        creators: List of creator objects from Zotero.  Each element is
+            typically a dict with firstName/lastName or name keys, but may
+            also be a plain string (e.g. from BetterBibTeX results).
 
     Returns:
         Formatted string with creator names.
     """
     names = []
     for creator in creators:
-        if "firstName" in creator and "lastName" in creator:
+        if isinstance(creator, str):
+            names.append(creator)
+        elif "firstName" in creator and "lastName" in creator:
             names.append(f"{creator['lastName']}, {creator['firstName']}")
         elif "name" in creator:
             names.append(creator["name"])
