@@ -118,7 +118,6 @@
             <h3>
               <i class="fas fa-brain" style="color: var(--color-primary)"></i>
               AI-Powered Semantic Search
-              <span class="badge badge-new">New</span>
             </h3>
             <p>Go beyond keyword matching. Our vector-based semantic search understands the meaning behind your queries, finding conceptually related papers even when they use different terminology.</p>
             <ul class="list-unstyled">
@@ -171,10 +170,10 @@
         <div class="col-md-4">
           <div class="card h-100 feature-card">
             <div class="feature-icon">
-              <i class="fas fa-tags"></i>
+              <i class="fas fa-pen-to-square"></i>
             </div>
-            <h5>Tag-Based Search</h5>
-            <p>Filter by tags with complex conditions. Support for AND/OR logic and exclusions like "#ML || #AI -#draft".</p>
+            <h5>Write Operations</h5>
+            <p>Add papers by DOI or URL, manage collections, update metadata, batch tag operations, and find & merge duplicates.</p>
           </div>
         </div>
         <div class="col-md-4">
@@ -192,7 +191,7 @@
               <i class="fas fa-sync-alt"></i>
             </div>
             <h5>Smart Updates</h5>
-            <p>Auto-detect installation method and preserve configurations. One command to update: <code>zotero-mcp update</code></p>
+            <p>Auto-detect installation method and preserve configurations. Install optional extras like <code>[semantic]</code>, <code>[pdf]</code>, or <code>[all]</code> for additional functionality.</p>
           </div>
         </div>
       </div>
@@ -214,7 +213,12 @@
             <div class="card-body">
               <p>The fastest way to get started with Zotero MCP:</p>
               <div class="code-block">
-                <pre><code>uv tool install "git+https://github.com/54yyyu/zotero-mcp.git"
+                <pre><code><span class="comment"># Core install</span>
+uv tool install zotero-mcp-server
+
+<span class="comment"># Full install (semantic search + PDF extraction)</span>
+uv tool install "zotero-mcp-server[all]"
+
 zotero-mcp setup</code></pre>
               </div>
               <p class="mb-0 text-muted"><small>Requires <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> package manager</small></p>
@@ -229,7 +233,12 @@ zotero-mcp setup</code></pre>
             <div class="card-body">
               <p>Classic Python installation:</p>
               <div class="code-block">
-                <pre><code>pip install git+https://github.com/54yyyu/zotero-mcp.git
+                <pre><code><span class="comment"># Core install</span>
+pip install zotero-mcp-server
+
+<span class="comment"># Full install (semantic search + PDF extraction)</span>
+pip install "zotero-mcp-server[all]"
+
 zotero-mcp setup</code></pre>
               </div>
             </div>
@@ -238,13 +247,15 @@ zotero-mcp setup</code></pre>
         <div class="col-lg-6 mb-4">
           <div class="card h-100">
             <div class="card-header">
-              <h5 class="mb-0"><i class="fas fa-hammer me-2"></i>Smithery Installation</h5>
+              <h5 class="mb-0"><i class="fas fa-puzzle-piece me-2"></i>Optional Extras</h5>
             </div>
             <div class="card-body">
-              <p>Install via Smithery for Claude Desktop:</p>
-              <div class="code-block">
-                <pre><code>npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude</code></pre>
-              </div>
+              <p>Install only the extras you need:</p>
+              <ul class="list-unstyled mb-0">
+                <li class="mb-2"><code>[semantic]</code> - Semantic search with vector embeddings (ChromaDB, embedding models)</li>
+                <li class="mb-2"><code>[pdf]</code> - PDF text extraction and outline parsing</li>
+                <li class="mb-2"><code>[all]</code> - Everything above combined</li>
+              </ul>
             </div>
           </div>
         </div>
@@ -377,6 +388,15 @@ zotero-mcp update-db --fulltext</code></pre>
                 <li>"Search my notes for mentions of 'reinforcement learning'"</li>
               </ul>
             </div>
+            <div class="col-md-6 mt-3">
+              <h6>Write & Manage</h6>
+              <ul>
+                <li>"Add this paper by DOI: 10.1234/example"</li>
+                <li>"Create a collection called 'Literature Review'"</li>
+                <li>"Find and merge duplicate papers in my library"</li>
+                <li>"Tag all papers in my 'AI' collection with 'reviewed'"</li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>
@@ -476,7 +496,7 @@ zotero-mcp db-status          <span class="comment"># Check DB status</span></co
             </div>
             <div class="card-body">
               <ul class="list-unstyled mb-0">
-                <li class="mb-2"><code>zotero_semantic_search</code> <span class="badge badge-new">New</span></li>
+                <li class="mb-2"><code>zotero_semantic_search</code></li>
                 <li class="mb-2"><code>zotero_update_search_database</code></li>
                 <li><code>zotero_get_search_database_status</code></li>
               </ul>
@@ -491,11 +511,13 @@ zotero-mcp db-status          <span class="comment"># Check DB status</span></co
             <div class="card-body">
               <ul class="list-unstyled mb-0">
                 <li class="mb-2"><code>zotero_search_items</code></li>
-                <li class="mb-2"><code>zotero_search_by_tag</code> <span class="badge badge-new">New</span></li>
+                <li class="mb-2"><code>zotero_search_by_tag</code></li>
                 <li class="mb-2"><code>zotero_advanced_search</code></li>
                 <li class="mb-2"><code>zotero_get_collections</code></li>
+                <li class="mb-2"><code>zotero_get_collection_items</code></li>
                 <li class="mb-2"><code>zotero_get_tags</code></li>
-                <li><code>zotero_get_recent</code></li>
+                <li class="mb-2"><code>zotero_get_recent</code></li>
+                <li><code>zotero_search_by_citation_key</code></li>
               </ul>
             </div>
           </div>
@@ -510,7 +532,7 @@ zotero-mcp db-status          <span class="comment"># Check DB status</span></co
                 <li class="mb-2"><code>zotero_get_item_metadata</code></li>
                 <li class="mb-2"><code>zotero_get_item_fulltext</code></li>
                 <li class="mb-2"><code>zotero_get_item_children</code></li>
-                <li><code>zotero_batch_update_tags</code></li>
+                <li><code>zotero_get_pdf_outline</code></li>
               </ul>
             </div>
           </div>
@@ -525,7 +547,30 @@ zotero-mcp db-status          <span class="comment"># Check DB status</span></co
                 <li class="mb-2"><code>zotero_get_annotations</code></li>
                 <li class="mb-2"><code>zotero_get_notes</code></li>
                 <li class="mb-2"><code>zotero_search_notes</code></li>
-                <li><code>zotero_create_note</code> <span class="badge badge-beta">Beta</span></li>
+                <li class="mb-2"><code>zotero_create_note</code></li>
+                <li><code>zotero_create_annotation</code></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="row justify-content-center">
+        <div class="col-lg-3 col-md-6 mb-4">
+          <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+              <h6 class="mb-0"><i class="fas fa-pen-to-square me-2"></i>Write & Management</h6>
+            </div>
+            <div class="card-body">
+              <ul class="list-unstyled mb-0">
+                <li class="mb-2"><code>zotero_add_by_doi</code></li>
+                <li class="mb-2"><code>zotero_add_by_url</code></li>
+                <li class="mb-2"><code>zotero_add_from_file</code></li>
+                <li class="mb-2"><code>zotero_create_collection</code></li>
+                <li class="mb-2"><code>zotero_update_item</code></li>
+                <li class="mb-2"><code>zotero_find_duplicates</code></li>
+                <li class="mb-2"><code>zotero_merge_duplicates</code></li>
+                <li class="mb-2"><code>zotero_batch_update_tags</code></li>
+                <li><code>zotero_search_by_citation_key</code></li>
               </ul>
             </div>
           </div>
@@ -630,6 +675,27 @@ zotero-mcp db-status          <span class="comment"># Check DB status</span></co
                   <p>For update issues, try:</p>
                   <div class="code-block">
                     <pre><code>zotero-mcp update --force</code></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq6">
+                  Embedding model errors (404 NOT_FOUND)
+                </button>
+              </h2>
+              <div id="faq6" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                  <p>If you changed embedding models and are seeing 404 or NOT_FOUND errors, the existing database was built with a different model. Rebuild it:</p>
+                  <div class="code-block">
+                    <pre><code>zotero-mcp update-db --force-rebuild</code></pre>
+                  </div>
+                  <p>If that doesn't resolve the issue, delete the database directory and rebuild from scratch:</p>
+                  <div class="code-block">
+                    <pre><code>rm -rf ~/.config/zotero-mcp/chroma_db/
+zotero-mcp update-db --fulltext</code></pre>
                   </div>
                 </div>
               </div>
