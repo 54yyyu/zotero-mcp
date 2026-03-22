@@ -22,49 +22,6 @@
 
 ---
 
-## Fork Enhancements
-
-This fork ([ehawkin/zotero-mcp](https://github.com/ehawkin/zotero-mcp)) adds write operations, bug fixes, and quality improvements to the original [54yyyu/zotero-mcp](https://github.com/54yyyu/zotero-mcp).
-
-### New Features (11 tools)
-- **Add papers by DOI** — auto-fetches metadata from CrossRef, attaches open-access PDFs via 4-source cascade (Unpaywall → arXiv → Semantic Scholar → PMC), configurable `attach_mode` (auto/import/linked_url)
-- **Add papers by URL** — supports arXiv URLs, DOI URLs, and generic webpages
-- **Add from local file** — imports PDFs with automatic DOI extraction
-- **Create collections** — organize research into folders/projects
-- **Search collections** — find collections by name
-- **Manage collection membership** — add/remove items from collections
-- **Update item metadata** — modify titles, tags, abstracts, dates, etc.
-- **Find duplicates** — scan library by title and/or DOI
-- **Merge duplicates** — dry-run preview then confirm; consolidates tags, notes, annotations, attachments; trashes duplicates (recoverable)
-- **PDF outline extraction** — extract table of contents from PDF attachments
-- **Citation key lookup** — find papers by BetterBibTeX citation key (with Extra field fallback)
-
-### Bug Fixes (18)
-- **Hybrid mode** — local reads + web API writes, so local-mode users can modify their library
-- **batch_update_tags** — fixed silent failure, stale tag refresh, wrong response type, now uses shared helpers
-- **create_note** — fixed tags validation error and incorrect key return
-- **Semantic search** — fixed embeddings format error with default ChromaDB embedding function
-- **search_notes** — completely restructured with isolated error handling, local SQLite search, and batch parent title resolution (fixes #137)
-- **find_duplicates** — replaced `zot.everything()` with manual pagination to fix RLock crash
-- **merge_duplicates** — uses direct PATCH for trash (not permanent delete)
-- **PDF timeout** — 30s timeout per PDF with circuit breaker after 5 consecutive hangs (#74)
-- **Annotation page numbers** — now included in annotation output (#159)
-- **Single-item lookup** — targeted SQL query instead of full-library scan (#134)
-- **Variable shadowing** — renamed conflicting loop variables in search functions
-- **CLI fallback guard** — don't force local mode when API key is configured (#146)
-- **Linked file paths** — support `file://` URLs and absolute paths (#166)
-
-### Quality Improvements
-- 291 unit tests across 18 test files (up from ~20 upstream)
-- 45-point live integration test plan (see `docs/integration-test-plan.md`)
-- PDF attachment cascade: Unpaywall → arXiv (from CrossRef metadata) → Semantic Scholar → PubMed Central
-- Fulltext indexing enabled by default in local mode
-- Semantic search auto-update on startup
-- `attach_mode` parameter: auto (default), import_file, linked_url
-- batch_update_tags supports tag-based filtering (not just text search)
-
----
-
 ## ✨ Features
 
 ### 🧠 AI-Powered Semantic Search
@@ -389,7 +346,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 
 ### Unit Tests
 ```bash
-uv run pytest tests/     # 291 tests, ~2 seconds
+uv run pytest tests/     # 294 tests, ~2 seconds
 ```
 
 ### Integration Test Plan
