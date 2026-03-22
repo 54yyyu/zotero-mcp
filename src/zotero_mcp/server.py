@@ -3495,7 +3495,8 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Last Update:** {update_config.get('last_update', 'Never')}")
         output.append(f"**Should Update Now:** {status.get('should_update', False)}")
 
-        if update_config.get('update_days'):
+        frequency = update_config.get('update_frequency', 'manual')
+        if frequency.startswith('every_') and update_config.get('update_days'):
             output.append(f"**Update Interval:** Every {update_config['update_days']} days")
 
         return "\n".join(output)
