@@ -27,7 +27,7 @@ def batch_update_tags(
     query: str = "",
     add_tags: list[str] | str | None = None,
     remove_tags: list[str] | str | None = None,
-    tag: str | None = None,
+    tag: str | list[str] | None = None,
     limit: int | str = 50,
     *,
     ctx: Context
@@ -74,6 +74,26 @@ def batch_update_tags(
 
         limit = _helpers._normalize_limit(limit, default=50)
 
+        # Normalize tag parameter: accept string, list, or JSON string
+        if tag is not None:
+            if isinstance(tag, list):
+                # Pyzotero expects comma-separated tags for AND filtering
+                tag = " || ".join(str(t).strip() for t in tag if str(t).strip())
+            elif isinstance(tag, str):
+                tag = tag.strip()
+                # Handle JSON string like '["test"]'
+                try:
+                    import json
+                    parsed = json.loads(tag)
+                    if isinstance(parsed, list):
+                        tag = " || ".join(str(t).strip() for t in parsed if str(t).strip())
+                    elif isinstance(parsed, str):
+                        tag = parsed.strip()
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Use as-is
+            if not tag:
+                tag = None
+
         # Search for items matching the query and/or tag filter
         params = {"limit": limit}
         if query:
@@ -84,7 +104,12 @@ def batch_update_tags(
         items = zot.items()
 
         if not items:
-            return f"No items found matching query: '{query}'"
+            filter_desc = []
+            if query:
+                filter_desc.append(f"query '{query}'")
+            if tag:
+                filter_desc.append(f"tag '{tag}'")
+            return f"No items found matching {' and '.join(filter_desc) or 'the given filters'}"
 
         # Initialize counters
         updated_count = 0
@@ -248,7 +273,7 @@ def search_collections(
         zot = _client.get_zotero_client()
         ctx.info(f"Searching collections for '{query}'")
 
-        collections = zot.collections()
+        collections = _helpers._paginate(zot.collections)
         if not collections:
             return "No collections found in your Zotero library."
 
@@ -942,6 +967,34 @@ def merge_duplicates(
         new_tags = all_tags - {t.get("tag", "") for t in keeper.get("data", {}).get("tags", [])}
         new_collections = all_collections - set(keeper.get("data", {}).get("collections", []))
 
+        # Build keeper's attachment signatures for deduplication
+        keeper_attachment_sigs = set()
+        for kc in keeper_children:
+            kd = kc.get("data", {})
+            if kd.get("itemType") == "attachment":
+                sig = (
+                    kd.get("contentType", ""),
+                    kd.get("filename", ""),
+                    kd.get("md5", ""),
+                    kd.get("url", ""),
+                )
+                keeper_attachment_sigs.add(sig)
+
+        # Count duplicate attachments that would be skipped
+        skipped_attachment_count = 0
+        for dup in duplicates:
+            for child in dup["children"]:
+                cd = child.get("data", {})
+                if cd.get("itemType") == "attachment":
+                    sig = (
+                        cd.get("contentType", ""),
+                        cd.get("filename", ""),
+                        cd.get("md5", ""),
+                        cd.get("url", ""),
+                    )
+                    if sig in keeper_attachment_sigs:
+                        skipped_attachment_count += 1
+
         # DRY RUN
         if not confirm:
             lines = [
@@ -952,8 +1005,8 @@ def merge_duplicates(
                 "",
                 f"**Tags to add:** {sorted(new_tags) if new_tags else 'none'}",
                 f"**Collections to add:** {sorted(new_collections) if new_collections else 'none'}",
-                f"**Child items to re-parent:** {total_children_to_move}",
-                f"  (notes, PDFs, annotations, highlights, etc.)",
+                f"**Child items to re-parent:** {total_children_to_move - skipped_attachment_count}",
+                f"  ({skipped_attachment_count} duplicate attachment(s) will be skipped)" if skipped_attachment_count else "  (notes, PDFs, annotations, highlights, etc.)",
                 "",
                 "Duplicates will be moved to **Trash** (recoverable in Zotero).",
                 "",
@@ -981,14 +1034,27 @@ def merge_duplicates(
                 ctx.warn(f"Failed to add keeper to collection {coll_key}")
             keeper = write_zot.item(keeper_key)  # re-fetch for version
 
-        # Step 5: Re-parent children
+        # Step 5: Re-parent children (skip duplicate attachments)
         moved = []
         failed = []
+        skipped_dupes = []
         for dup in duplicates:
             for child in dup["children"]:
                 child_key = child.get("key", "?")
                 try:
                     fresh_child = write_zot.item(child_key)
+                    # Skip duplicate attachments — keeper already has this one
+                    child_data = fresh_child.get("data", {})
+                    if child_data.get("itemType") == "attachment":
+                        child_sig = (
+                            child_data.get("contentType", ""),
+                            child_data.get("filename", ""),
+                            child_data.get("md5", ""),
+                            child_data.get("url", ""),
+                        )
+                        if child_sig in keeper_attachment_sigs:
+                            skipped_dupes.append(child_key)
+                            continue  # Skip — keeper already has this attachment
                     fresh_child.get("data", {})["parentItem"] = keeper_key
                     resp = write_zot.update_item(fresh_child)
                     if _helpers._handle_write_response(resp, ctx):
@@ -1033,11 +1099,12 @@ def merge_duplicates(
             except Exception as e:
                 ctx.warn(f"Failed to trash {dup_key}: {e}")
 
+        skip_info = f" ({len(skipped_dupes)} duplicate attachments skipped)" if skipped_dupes else ""
         return (
             f"Merge complete.\n\n"
             f"- Tags merged: {len(new_tags)} new\n"
             f"- Collections added: {len(new_collections)} new\n"
-            f"- Children re-parented: {len(moved)}\n"
+            f"- Children re-parented: {len(moved)}{skip_info}\n"
             f"- Duplicates trashed: {', '.join(f'`{k}`' for k in trashed)}\n\n"
             "Trashed items can be restored from Zotero's Trash."
         )
