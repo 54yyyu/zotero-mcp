@@ -236,24 +236,23 @@ def get_annotations(
         else:
             # Retrieve all annotations in the library
             limit = _helpers._normalize_limit(limit, default=100)
-            # Manual pagination instead of zot.everything() to avoid
-            # RLock pickling issues in MCP contexts.
-            annotations = []
-            start = 0
-            page_limit = limit or 50
-            while True:
-                batch = zot.items(start=start, limit=min(100, page_limit - len(annotations)),
-                                  itemType="annotation")
-                if not batch:
-                    break
-                annotations.extend(batch)
-                if len(batch) < 100 or len(annotations) >= page_limit:
-                    break
-                start += 100
+            # Use _paginate helper instead of inline manual pagination
+            annotations = _helpers._paginate(zot.items, max_items=limit, itemType="annotation")
 
         # Handle no annotations found
         if not annotations:
             return f"No annotations found{f' for item: {parent_title}' if item_key else ''}."
+
+        # Batch-resolve parent titles for library-wide retrieval (Fix 2+5)
+        parent_titles = {}
+        if not item_key:
+            parent_keys = set()
+            for anno in annotations:
+                pk = anno.get("data", {}).get("parentItem")
+                if pk:
+                    parent_keys.add(pk)
+            if parent_keys:
+                parent_titles = _batch_resolve_grandparent_titles(zot, parent_keys, ctx)
 
         # Generate markdown output
         output = [f"# Annotations{f' for: {parent_title}' if item_key else ''}", ""]
@@ -271,12 +270,8 @@ def get_annotations(
             # Parent item context for library-wide retrieval
             parent_info = ""
             if not item_key and (parent_key := data.get("parentItem")):
-                try:
-                    parent = zot.item(parent_key)
-                    parent_title = parent["data"].get("title", "Untitled")
-                    parent_info = f" (from \"{parent_title}\")"
-                except Exception:
-                    parent_info = f" (parent key: {parent_key})"
+                resolved_title = parent_titles.get(parent_key, f"(parent key: {parent_key})")
+                parent_info = f" (from \"{resolved_title}\")"
 
             # Annotation source details
             source_info = ""
@@ -383,15 +378,25 @@ def get_notes(
 
         limit = _helpers._normalize_limit(limit, default=20)
 
-        # Get notes
+        # Get notes (paginated to avoid missing results)
         notes = []
         if item_key:
-            notes = zot.children(item_key, **params) if not limit else zot.children(item_key, limit=limit, **params)
+            notes = _helpers._paginate(zot.children, item_key, max_items=limit, **params)
         else:
-            notes = zot.items(**params) if not limit else zot.items(limit=limit, **params)
+            notes = _helpers._paginate(zot.items, max_items=limit, **params)
 
         if not notes:
             return f"No notes found{f' for item {item_key}' if item_key else ''}."
+
+        # Batch-resolve parent titles (Fix 2)
+        note_parent_titles = {}
+        note_parent_keys = set()
+        for note in notes:
+            pk = note.get("data", {}).get("parentItem")
+            if pk:
+                note_parent_keys.add(pk)
+        if note_parent_keys:
+            note_parent_titles = _batch_resolve_parent_titles(zot, note_parent_keys, ctx)
 
         # Generate markdown output
         output = [f"# Notes{f' for Item: {item_key}' if item_key else ''}", ""]
@@ -403,12 +408,8 @@ def get_notes(
             # Parent item context
             parent_info = ""
             if parent_key := data.get("parentItem"):
-                try:
-                    parent = zot.item(parent_key)
-                    parent_title = parent["data"].get("title", "Untitled")
-                    parent_info = f" (from \"{parent_title}\")"
-                except Exception:
-                    parent_info = f" (parent key: {parent_key})"
+                resolved_title = note_parent_titles.get(parent_key, f"(parent key: {parent_key})")
+                parent_info = f" (from \"{resolved_title}\")"
 
             # Prepare note text
             note_text = data.get("note", "")
@@ -462,6 +463,62 @@ def _batch_resolve_parent_titles(
             for k in batch:
                 titles.setdefault(k, f"(parent key: {k})")
     return titles
+
+
+def _batch_resolve_grandparent_titles(
+    zot, parent_keys: set[str], ctx: Context
+) -> dict[str, str]:
+    """Resolve annotation parent keys to their grandparent (paper) titles.
+
+    Annotations are children of PDF attachments, which are children of papers.
+    This does a two-hop lookup: annotation → attachment → paper.
+    Returns a dict mapping the ATTACHMENT key to the PAPER title.
+    """
+    BATCH_SIZE = 50
+
+    # Step 1: Batch-fetch the immediate parents (attachments)
+    attachment_data: dict[str, dict] = {}
+    grandparent_keys: set[str] = set()
+
+    keys_list = list(parent_keys)
+    for i in range(0, len(keys_list), BATCH_SIZE):
+        batch = keys_list[i:i + BATCH_SIZE]
+        try:
+            items = zot.items(itemKey=",".join(batch))
+            for item in items:
+                key = item.get("key", "")
+                attachment_data[key] = item
+                gp_key = item.get("data", {}).get("parentItem")
+                if gp_key and item.get("data", {}).get("itemType") == "attachment":
+                    grandparent_keys.add(gp_key)
+        except Exception as e:
+            ctx.info(f"Batch attachment lookup failed: {e}")
+
+    # Step 2: Batch-fetch the grandparents (papers)
+    grandparent_titles: dict[str, str] = {}
+    gp_list = list(grandparent_keys)
+    for i in range(0, len(gp_list), BATCH_SIZE):
+        batch = gp_list[i:i + BATCH_SIZE]
+        try:
+            items = zot.items(itemKey=",".join(batch))
+            for item in items:
+                grandparent_titles[item.get("key", "")] = (
+                    item.get("data", {}).get("title", "Untitled")
+                )
+        except Exception as e:
+            ctx.info(f"Batch grandparent lookup failed: {e}")
+
+    # Step 3: Map attachment keys to paper titles
+    result: dict[str, str] = {}
+    for att_key, att_item in attachment_data.items():
+        gp_key = att_item.get("data", {}).get("parentItem")
+        if gp_key and gp_key in grandparent_titles:
+            result[att_key] = grandparent_titles[gp_key]
+        else:
+            # Fallback to attachment title (e.g., "Full Text PDF")
+            result[att_key] = att_item.get("data", {}).get("title", f"(key: {att_key})")
+
+    return result
 
 
 def _format_search_results(
@@ -608,18 +665,8 @@ def search_notes(
 
     # Annotations — separate block so note results survive if this crashes
     try:
-        # Manual pagination (same fix as _get_annotations)
-        annotations = []
-        start = 0
-        while True:
-            batch = zot.items(start=start, limit=min(100, limit - len(annotations)),
-                              itemType="annotation")
-            if not batch:
-                break
-            annotations.extend(batch)
-            if len(batch) < 100 or len(annotations) >= limit:
-                break
-            start += 100
+        # Use _paginate helper for consistent pagination
+        annotations = _helpers._paginate(zot.items, max_items=limit, itemType="annotation")
 
         # Batch-resolve parent titles for annotations
         anno_parent_keys = set()
@@ -627,7 +674,7 @@ def search_notes(
             pk = anno.get("data", {}).get("parentItem")
             if pk:
                 anno_parent_keys.add(pk)
-        anno_parent_titles = _batch_resolve_parent_titles(zot, anno_parent_keys, ctx) if anno_parent_keys else {}
+        anno_parent_titles = _batch_resolve_grandparent_titles(zot, anno_parent_keys, ctx) if anno_parent_keys else {}
 
         query_lower = query.lower()
         for anno in annotations:

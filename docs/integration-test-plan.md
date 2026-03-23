@@ -9,6 +9,15 @@ Use this document as instructions for Claude Co-Work. Copy/paste each section as
 
 **Important:** After each write operation, open Zotero and verify the change appeared. This confirms hybrid mode is working (local reads + web writes syncing back to local).
 
+**Test item tagging and cleanup rules:**
+
+1. **CRITICAL:** Every NEW item CREATED during testing (added by DOI, URL, or file) MUST be tagged with `_MCP-test-to-delete` in addition to any test-specific tags. This applies to ALL phases — even if the test prompt doesn't explicitly mention the tag, add it anyway.
+2. Do NOT add `_MCP-test-to-delete` to items that already exist in the library and are just being modified (title updates, tag changes, collection membership changes).
+3. Any tags that are ADDED to existing items during testing (e.g., "mcp-test-verified", "attention-paper", "neuroscience") must be REMOVED at the end of the phase that added them, restoring the item to its original state.
+4. Collections created during testing should include "MCP Test" in their name.
+5. At the end of each phase that modifies existing items, undo those modifications (remove added tags, restore changed titles, etc.).
+6. At the end of the full test run, tell the user: "To clean up test items, filter by the tag `_MCP-test-to-delete` in Zotero's tag selector, select all items shown, and move them to Trash. Also delete any collections with 'MCP Test' in their name."
+
 ---
 
 ## Phase 1: Read-Only Features (Safe — No Changes to Library)
@@ -76,6 +85,7 @@ Search for collections matching "MCP Test".
 ### Test 3.1: Add by DOI
 ```
 Add this paper to my Zotero library by DOI: 10.1038/nature12373
+Tag it with "_MCP-test-to-delete" for cleanup later.
 
 This is a well-known Nature paper. After adding, tell me the item key
 and what metadata was pulled from CrossRef.
@@ -85,7 +95,7 @@ and what metadata was pulled from CrossRef.
 ### Test 3.2: Add by DOI with Tags and Collection
 ```
 Add this paper by DOI: 10.1126/science.1157996
-Add it to the "MCP Test Collection" and tag it with "test" and "science".
+Add it to the "MCP Test Collection" and tag it with "_MCP-test-to-delete", "test", and "science".
 ```
 **Verify:** Item appears in Zotero with correct metadata, is inside "MCP Test Collection", and has both tags.
 
@@ -145,6 +155,14 @@ Remove the "[TEST]" prefix from that item's title, restoring the
 original title.
 ```
 **Verify:** Title is back to normal.
+
+### Phase 4 Cleanup
+```
+Remove any tags added during Phase 4 testing from the Nature paper
+(remove "neuroscience", "updated-by-mcp", "mcp-test-verified" if present).
+Restore the abstract to its original text (or clear it if it was empty before).
+The item should be back to its pre-test state.
+```
 
 ---
 
@@ -236,6 +254,13 @@ Use zotero_batch_update_tags with query "Attention" (text search)
 and add the tag "attention-paper".
 ```
 **Verify:** The arXiv "Attention Is All You Need" paper gets the new tag.
+
+### Phase 8 Cleanup
+```
+Remove the tag "mcp-test-verified" from all items that received it in test 8.1.
+Remove the tag "attention-paper" from all items that received it in test 8.2.
+These are existing library items — they should be restored to their original tags.
+```
 
 ---
 
@@ -343,12 +368,13 @@ Use attach_mode="linked_url" so it saves the URL without downloading.
 ```
 **Verify:** Item is created. Instead of a downloaded PDF, there should be a linked URL attachment. In Zotero, the attachment icon will look different from a regular PDF — it will show as a link rather than a file.
 
-### Test 11.2: Auto Mode Fallback
+### Test 11.2: Auto Mode Reports URL When Download Fails
 ```
 Add a paywalled paper by DOI: 10.1016/j.cell.2015.11.015
+Tag it with "_MCP-test-to-delete".
 Use attach_mode="auto" (or don't specify, since auto is the default).
 ```
-**Verify:** The cascade tries to download a PDF (fails because it's paywalled), then falls back to creating a linked URL attachment. The response should indicate the fallback happened.
+**Verify:** The cascade tries to download a PDF but fails because it's paywalled. The response should include the URL that was found (so the user can access it through their university library) but should NOT create a linked URL attachment. The item should have no attachment.
 
 ---
 
@@ -395,21 +421,100 @@ discussion, or conclusion that you feel represent the core findings.
 
 ---
 
-## Cleanup
+## Phase 14: Data Completeness (Pagination Fixes)
 
-After all tests pass, clean up the test data:
+These tests verify that the MCP returns ALL items, not a truncated subset.
 
+### Test 14.1: Collection Items Complete Count
 ```
-Please help me clean up the test items:
-1. List all items tagged "mcp-test-verified", "copy-1", "copy-2",
-   "test", or "science" that were created today
-2. I'll delete them manually from Zotero
+Show me all items in my largest collection. Count them and tell me
+how many there are. I'll verify the count matches what Zotero shows.
+```
+**Verify:** The count matches what you see in Zotero's sidebar next to the collection name. Previously this could return fewer items due to missing pagination.
 
-Also, I'll manually delete the "MCP Test Collection" from Zotero's
-left sidebar.
+### Test 14.2: All Collections Listed
+```
+List all my Zotero collections.
+```
+**Verify:** Compare against Zotero's left sidebar. Every collection and subcollection should be listed. If you have more than 25 collections, this specifically tests the pagination fix.
+
+### Test 14.3: All Tags Listed
+```
+List all tags in my library.
+```
+**Verify:** Compare against Zotero's tag selector (bottom-left panel). The count should match.
+
+---
+
+## Phase 15: Annotation Parent Resolution
+
+### Test 15.1: Annotations Show Paper Titles
+```
+Show me all my annotations across my entire library.
+```
+**Verify:** Each annotation should say "(from 'Actual Paper Title')" — NOT "(from 'Full Text PDF')". This tests the two-hop grandparent resolution fix.
+
+### Test 15.2: Notes Show Paper Titles
+```
+Show me all my notes across my entire library.
+```
+**Verify:** Each note should show the parent paper's title, not an attachment title.
+
+---
+
+## Phase 16: Merge Deduplication
+
+### Test 16.1: Merge Doesn't Create Duplicate PDFs
+```
+Add DOI 10.1371/journal.pone.0185809 twice (with tags "dedup-test-1"
+and "dedup-test-2"). Then merge them. Check the keeper item.
+```
+**Verify:** The keeper should have BOTH tags but only ONE PDF attachment — not two copies of the same PDF. Previously merge would create duplicate attachments.
+
+---
+
+## Phase 17: No Linked URL Fallback
+
+### Test 17.1: Paywalled Paper Gets No Fake PDF
+```
+Add this paywalled paper by DOI: 10.1016/j.tetlet.2019.151042
+Check what attachments it has.
+```
+**Verify:** The item should have NO attachment — not a misleading "PDF (linked URL)". The response should say "no open-access PDF found."
+
+---
+
+## Final Cleanup
+
+After all tests are complete, perform these cleanup steps:
+
+### Step 1: Verify all per-phase cleanups were done
+```
+Check that any tags added to EXISTING library items during testing
+(like "mcp-test-verified", "attention-paper", "neuroscience") have
+been removed. These should have been cleaned up at the end of each
+phase, but verify nothing was missed.
 ```
 
-*Note: We don't have a delete-item tool (by design — deletion is too destructive for an MCP tool). Clean up manually in the Zotero app.*
+### Step 2: Identify test-created items
+```
+Search for all items tagged "_MCP-test-to-delete" and list their
+titles and keys.
+```
+
+### Step 3: Tell the user to delete manually
+After listing the items, tell the user:
+
+**To clean up test items from your Zotero library:**
+1. Open Zotero
+2. In the tag selector (bottom-left panel), click on `_MCP-test-to-delete`
+3. This filters to show only items created during testing
+4. Select all (Cmd+A on Mac, Ctrl+A on Windows)
+5. Right-click → "Move Items to Trash"
+6. Also delete any collections with "MCP Test" in their name (right-click → Delete Collection)
+7. Optionally: Right-click "Trash" → "Empty Trash" to permanently delete
+
+**The MCP cannot delete items** (by design — deletion is too destructive for an automated tool). All cleanup must be done manually in Zotero.
 
 ---
 
@@ -463,5 +568,16 @@ After running all tests, fill in this checklist:
 | 12.2 | Citation Key Not Found | Pass / Fail / Skipped |
 | 13.1 | Showcase: Research Collection | Pass / Fail |
 | 13.2 | Showcase: Annotation Highlighting | Pass / Fail |
+| 14.1 | Collection Items Complete Count | Pass / Fail |
+| 14.2 | All Collections Listed | Pass / Fail |
+| 14.3 | All Tags Listed | Pass / Fail |
+| 15.1 | Annotations Show Paper Titles | Pass / Fail |
+| 15.2 | Notes Show Paper Titles | Pass / Fail |
+| 16.1 | Merge No Duplicate PDFs | Pass / Fail |
+| 17.1 | No Linked URL Fallback | Pass / Fail |
 
-**Total: 45 tests**
+**Total: 52 tests**
+
+---
+
+*See the "Final Cleanup" section above for cleanup instructions after testing.*

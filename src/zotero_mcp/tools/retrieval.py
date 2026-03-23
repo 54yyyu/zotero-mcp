@@ -97,6 +97,7 @@ def get_item_fulltext(
                 config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
                 zotero_db_path = None
                 pdf_max_pages = None
+                fulltext_display_max = None
 
                 if config_path.exists():
                     try:
@@ -104,9 +105,23 @@ def get_item_fulltext(
                             _cfg = json.load(_f)
                             semantic_cfg = _cfg.get("semantic_search", {})
                             zotero_db_path = semantic_cfg.get("zotero_db_path")
-                            pdf_max_pages = semantic_cfg.get("extraction", {}).get("pdf_max_pages")
+                            extraction_cfg = semantic_cfg.get("extraction", {})
+                            pdf_max_pages = extraction_cfg.get("pdf_max_pages")
+                            # Separate display limit for when Claude reads papers
+                            # (reduces token usage vs. indexing which can be higher)
+                            fulltext_display_max = extraction_cfg.get(
+                                "fulltext_display_max_pages"
+                            )
                     except Exception:
                         pass
+
+                # Use display limit if configured, otherwise fall back to
+                # pdf_max_pages, with a default cap of 10 pages.
+                DEFAULT_FULLTEXT_DISPLAY_MAX = 10
+                if fulltext_display_max is not None:
+                    pdf_max_pages = fulltext_display_max
+                elif pdf_max_pages is None:
+                    pdf_max_pages = DEFAULT_FULLTEXT_DISPLAY_MAX
 
                 with LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
                     local_item = reader.get_item_by_key(item_key)
@@ -191,9 +206,7 @@ def get_collections(
 
         limit = _helpers._normalize_limit(limit, default=100, max_val=5000)
 
-        # Use everything() to paginate through all collections reliably
-        collections = zot.everything(zot.collections())
-        collections = collections[:limit]
+        collections = _helpers._paginate(zot.collections, max_items=limit)
 
         # Always return the header, even if empty
         output = ["# Zotero Collections", ""]
@@ -294,16 +307,37 @@ def get_collection_items(
 
         limit = _helpers._normalize_limit(limit, default=50)
 
-        # Then get the items
-        items = zot.collection_items(collection_key, limit=limit)
-        if not items:
+        # Fetch all items (includes children mixed in with parents)
+        all_items = _helpers._paginate(zot.collection_items, collection_key)
+        if not all_items:
             return f"No items found in collection: {collection_name} (Key: {collection_key})"
 
-        # Format items as markdown
-        output = [f"# Items in Collection: {collection_name}", ""]
+        # Filter to parent items only (exclude attachments, notes, annotations)
+        child_types = {"attachment", "note", "annotation"}
+        parent_items = [
+            item for item in all_items
+            if item.get("data", {}).get("itemType", "") not in child_types
+        ]
 
-        for i, item in enumerate(items, 1):
+        if not parent_items:
+            return f"No items found in collection: {collection_name} (Key: {collection_key})"
+
+        # Apply display limit after filtering
+        if limit and len(parent_items) > limit:
+            display_items = parent_items[:limit]
+            truncated = True
+        else:
+            display_items = parent_items
+            truncated = False
+
+        # Format items as markdown
+        output = [f"# Items in Collection: {collection_name} ({len(parent_items)} items)", ""]
+
+        for i, item in enumerate(display_items, 1):
             output.extend(_utils.format_item_result(item, index=i, abstract_len=None, include_tags=False))
+
+        if truncated:
+            output.append(f"\n*Showing {limit} of {len(parent_items)} items. Increase the limit parameter to see more.*")
 
         return "\n".join(output)
 
@@ -449,22 +483,25 @@ def get_tags(
         ctx.info("Fetching tags")
         zot = _client.get_zotero_client()
 
-        limit = _helpers._normalize_limit(limit, default=100)
+        limit = _helpers._normalize_limit(limit, default=500, max_val=5000)
 
-        # Use everything() to paginate through all tags reliably
-        tags = zot.everything(zot.tags())
+        # Use _paginate instead of zot.everything() to avoid RLock pickling
+        tags = _helpers._paginate(zot.tags)
         if not tags:
             return "No tags found in your Zotero library."
 
         # Format tags as markdown
-        output = ["# Zotero Tags", ""]
+        total_count = len(tags)
+        output = [f"# Zotero Tags ({total_count} total)", ""]
 
         # Sort tags alphabetically
         sorted_tags = sorted(tags)
 
-        # Apply limit after collecting all tags
-        if limit:
+        # Apply display limit
+        truncated = False
+        if limit and len(sorted_tags) > limit:
             sorted_tags = sorted_tags[:limit]
+            truncated = True
 
         # Group tags alphabetically
         current_letter = None
@@ -476,6 +513,9 @@ def get_tags(
                 output.append(f"## {current_letter}")
 
             output.append(f"- `{tag}`")
+
+        if truncated:
+            output.append(f"\n*Showing {limit} of {total_count} tags. Increase the limit parameter to see more.*")
 
         return "\n".join(output)
 

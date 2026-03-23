@@ -12,6 +12,34 @@ from zotero_mcp import utils as _utils
 
 
 # ---------------------------------------------------------------------------
+# Pagination helper
+# ---------------------------------------------------------------------------
+
+def _paginate(zot_method, *args, max_items=None, **kwargs):
+    """Fetch all results from a pyzotero method using manual pagination.
+
+    Avoids zot.everything() which can cause RLock pickling in MCP contexts.
+    Accepts the same positional and keyword arguments as the wrapped method,
+    plus an optional max_items to cap the total results.
+    """
+    items = []
+    start = 0
+    page_size = 100
+    while True:
+        batch = zot_method(*args, start=start, limit=page_size, **kwargs)
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+        if max_items and len(items) >= max_items:
+            items = items[:max_items]
+            break
+    return items
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -118,7 +146,7 @@ def _resolve_collection_names(zot, names, ctx=None):
     """Resolve collection names to keys (case-insensitive)."""
     if not names:
         return []
-    all_collections = zot.collections()
+    all_collections = _paginate(zot.collections)
     results = []
     for name in names:
         name_lower = name.lower()
@@ -367,27 +395,34 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
         ("PubMed Central", lambda: _try_pmc(doi, ctx)),
     ]
 
+    found_urls = []  # Track URLs found but not downloadable
+
     for source_name, find_url in sources:
         try:
             pdf_url = find_url()
             if pdf_url:
                 ctx.info(f"Trying PDF from {source_name}: {pdf_url}")
+                found_urls.append((source_name, pdf_url))
 
                 if attach_mode == "linked_url":
                     if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
                         return f"PDF linked (source: {source_name})"
-                elif attach_mode == "import_file":
+                else:  # "auto" or "import_file" — try download only
                     if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
                         return f"PDF attached (source: {source_name})"
-                else:  # "auto"
-                    if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
-                        return f"PDF attached (source: {source_name})"
-                    if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
-                        return f"PDF linked as URL (source: {source_name})"
 
                 ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next source")
         except Exception as e:
             ctx.info(f"{source_name} failed: {e}")
+
+    if found_urls:
+        # URLs were found but couldn't be downloaded — report them so the user
+        # can access the paper through their university library
+        url_info = found_urls[0][1]  # Best URL found
+        return (
+            f"no open-access PDF could be downloaded, but a URL was found: {url_info} — "
+            "you may be able to access it through your university library or VPN"
+        )
 
     return "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
 
