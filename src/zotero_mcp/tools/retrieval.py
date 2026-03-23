@@ -189,9 +189,11 @@ def get_collections(
         ctx.info("Fetching collections")
         zot = _client.get_zotero_client()
 
-        limit = _helpers._normalize_limit(limit, default=100)
+        limit = _helpers._normalize_limit(limit, default=100, max_val=5000)
 
-        collections = zot.collections(limit=limit)
+        # Use everything() to paginate through all collections reliably
+        collections = zot.everything(zot.collections())
+        collections = collections[:limit]
 
         # Always return the header, even if empty
         output = ["# Zotero Collections", ""]
