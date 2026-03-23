@@ -248,7 +248,7 @@ def search_collections(
         zot = _client.get_zotero_client()
         ctx.info(f"Searching collections for '{query}'")
 
-        collections = zot.collections()
+        collections = zot.everything(zot.collections())
         if not collections:
             return "No collections found in your Zotero library."
 
