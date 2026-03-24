@@ -54,6 +54,11 @@
 - Find and merge duplicate items with dry-run preview
 - **Hybrid mode**: local reads + web API writes for local-mode users
 
+### 📊 Scite Citation Intelligence (optional `[scite]` extra)
+- **Citation tallies**: See how many papers support, contrast, or mention each item — the MCP version of the [Scite Zotero Plugin](https://github.com/scitedotai/scite-zotero-plugin)
+- **Retraction alerts**: Scan your library for retracted or corrected papers
+- No Scite account required — uses public API endpoints
+
 ### 🌐 Flexible Access Methods
 - Local mode for offline access (no API key needed)
 - Web API for cloud library access
@@ -94,6 +99,7 @@ Heavy ML/PDF dependencies are separated into optional extras so the base install
 |-------|-------------|-----------------|
 | `semantic` | Semantic search via ChromaDB, sentence-transformers, OpenAI/Gemini embeddings | `pip install "zotero-mcp-server[semantic]"` |
 | `pdf` | PDF outline extraction (PyMuPDF) and EPUB annotation support | `pip install "zotero-mcp-server[pdf]"` |
+| `scite` | [Scite](https://scite.ai) citation intelligence — tallies and retraction alerts (no account needed) | `pip install "zotero-mcp-server[scite]"` |
 | `all` | Everything above | `pip install "zotero-mcp-server[all]"` |
 
 For example, with uv:
@@ -352,6 +358,11 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_get_notes`: Retrieve notes from your Zotero library
 - `zotero_search_notes`: Search in notes and annotations (including PDF-extracted)
 - `zotero_create_note`: Create a new note for an item (beta feature)
+
+### 📊 Scite Citation Intelligence Tools
+- `scite_enrich_item`: Get Scite citation tallies and retraction alerts for a paper
+- `scite_enrich_search`: Search your Zotero library with Scite-enriched results (tallies + alerts inline)
+- `scite_check_retractions`: Scan items for retractions and editorial notices
 
 ### 📦 Item & Collection Management Tools
 - `zotero_add_by_doi`: Add a paper by DOI with automatic metadata and open-access PDF attachment
