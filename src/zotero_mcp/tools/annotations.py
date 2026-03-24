@@ -16,7 +16,7 @@ from zotero_mcp.tools import _helpers
 
 @mcp.tool(
     name="zotero_get_annotations",
-    description="Get all annotations for a specific item or across your entire Zotero library."
+    description="Get all annotations for a specific item or across your entire Zotero library. When called without item_key, returns ALL annotations library-wide — this can be very large. Always pass item_key when you know which item you want."
 )
 def get_annotations(
     item_key: str | None = None,
@@ -335,7 +335,14 @@ def get_annotations(
 
             output.append("")  # Empty line between annotations
 
-        return "\n".join(output)
+        result = "\n".join(output)
+        # Warn about large responses for library-wide queries
+        if not item_key:
+            result = _helpers._prepend_size_warning(
+                result,
+                "Pass item_key to get annotations for a specific item instead of library-wide."
+            )
+        return result
 
     except Exception as e:
         ctx.error(f"Error fetching annotations: {str(e)}")

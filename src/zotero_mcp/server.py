@@ -72,6 +72,7 @@ from zotero_mcp.tools.retrieval import (  # noqa: F401
     get_collections,
     get_collection_items,
     get_item_children,
+    get_items_children,
     get_tags,
     list_libraries,
     switch_library,

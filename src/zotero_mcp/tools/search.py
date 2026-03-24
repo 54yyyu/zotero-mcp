@@ -14,7 +14,7 @@ from zotero_mcp.tools import _helpers
 
 @mcp.tool(
     name="zotero_search_items",
-    description="Search for items in your Zotero library, given a query string."
+    description="Search for items in your Zotero library, given a query string. Returns metadata and abstracts. If the abstract doesn't contain the specific information you need (e.g., effect sizes, methods details), use zotero_get_item_fulltext to read the full paper."
 )
 def search_items(
     query: str,
@@ -67,7 +67,7 @@ def search_items(
         for i, item in enumerate(results, 1):
             output.extend(_utils.format_item_result(item, index=i))
 
-        return "\n".join(output)
+        return _helpers._prepend_size_warning("\n".join(output))
 
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
@@ -453,7 +453,7 @@ def advanced_search(
 
 @mcp.tool(
     name="zotero_semantic_search",
-    description="Prioritized search tool. Perform semantic search over your Zotero library using AI-powered embeddings."
+    description="Prioritized search tool. Perform semantic search over your Zotero library using AI-powered embeddings. BEST TOOL for finding papers on a specific topic — much more efficient than scanning collection items or reading abstracts. Works across your entire library."
 )
 def semantic_search(
     query: str,

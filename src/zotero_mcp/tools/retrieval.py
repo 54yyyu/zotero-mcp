@@ -57,7 +57,7 @@ def get_item_metadata(
 
 @mcp.tool(
     name="zotero_get_item_fulltext",
-    description="Get the full text content of a Zotero item by its key."
+    description="Get the full text content of a Zotero item by its key. WARNING: Returns the entire paper text (often 10K+ tokens). Only use when you need to read the actual paper content, not just metadata."
 )
 def get_item_fulltext(
     item_key: str,
@@ -128,9 +128,16 @@ def get_item_fulltext(
                     if local_item:
                         extracted = reader.extract_fulltext_for_item(local_item.item_id)
                         if extracted and extracted[0]:
-                            source = extracted[1] if len(extracted) > 1 else "file"
-                            ctx.info(f"Retrieved full text from local storage ({source})")
-                            return f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}"
+                            # Skip timeout sentinel — don't show "__EXTRACTION_TIMEOUT__" as content
+                            if isinstance(extracted, tuple) and len(extracted) >= 2 and extracted[1] == "timeout":
+                                ctx.info("PDF extraction timed out — skipping local fulltext")
+                            else:
+                                source = extracted[1] if len(extracted) > 1 else "file"
+                                ctx.info(f"Retrieved full text from local storage ({source})")
+                                return _helpers._prepend_size_warning(
+                                    f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}",
+                                    "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                                )
         except Exception as local_extract_error:
             local_extract_error_msg = str(local_extract_error)
             ctx.info(f"Local extraction fallback not available: {str(local_extract_error)}")
@@ -147,7 +154,10 @@ def get_item_fulltext(
             full_text_data = zot.fulltext_item(attachment.key)
             if full_text_data and "content" in full_text_data and full_text_data["content"]:
                 ctx.info("Successfully retrieved full text from Zotero's index")
-                return f"{metadata}\n\n---\n\n## Full Text\n\n{full_text_data['content']}"
+                return _helpers._prepend_size_warning(
+                    f"{metadata}\n\n---\n\n## Full Text\n\n{full_text_data['content']}",
+                    "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                )
         except Exception as fulltext_error:
             ctx.info(f"Couldn't retrieve indexed full text: {str(fulltext_error)}")
 
@@ -164,7 +174,10 @@ def get_item_fulltext(
                 if os.path.exists(file_path):
                     ctx.info(f"Downloaded file to {file_path}, converting to markdown")
                     converted_text = _client.convert_to_markdown(file_path)
-                    return f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}"
+                    return _helpers._prepend_size_warning(
+                        f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}",
+                        "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                    )
                 else:
                     return f"{metadata}\n\n---\n\nFile download failed."
         except Exception as download_error:
@@ -273,12 +286,28 @@ def get_collections(
         return f"# Zotero Collections\n\n{error_msg}"
 
 
+def _build_attachment_extra(info):
+    """Build extra_fields dict from attachment_info for format_item_result."""
+    if not info:
+        return None
+    parts = []
+    if info.get("has_pdf"):
+        parts.append("PDF")
+    att_count = info.get("attachment_count", 0)
+    if att_count:
+        parts.append(f"{att_count} attachment{'s' if att_count != 1 else ''}")
+    if info.get("has_notes"):
+        parts.append("has notes")
+    return {"Attachments": ", ".join(parts)} if parts else None
+
+
 @mcp.tool(
     name="zotero_get_collection_items",
-    description="Get all items in a specific Zotero collection."
+    description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. TIP: To find papers on a specific topic, use zotero_semantic_search instead — it's faster and returns only relevant results."
 )
 def get_collection_items(
     collection_key: str,
+    detail: Literal["keys_only", "summary", "full"] = "summary",
     limit: int | str | None = 50,
     *,
     ctx: Context
@@ -312,6 +341,25 @@ def get_collection_items(
         if not all_items:
             return f"No items found in collection: {collection_name} (Key: {collection_key})"
 
+        # Build attachment/note summary from already-fetched children (zero extra API calls)
+        attachment_info = {}
+        for item in all_items:
+            data = item.get("data", {})
+            item_type = data.get("itemType", "")
+            parent_key = data.get("parentItem", "")
+            if not parent_key:
+                continue
+            if parent_key not in attachment_info:
+                attachment_info[parent_key] = {
+                    "has_pdf": False, "attachment_count": 0, "has_notes": False
+                }
+            if item_type == "attachment":
+                attachment_info[parent_key]["attachment_count"] += 1
+                if data.get("contentType", "") == "application/pdf":
+                    attachment_info[parent_key]["has_pdf"] = True
+            elif item_type == "note":
+                attachment_info[parent_key]["has_notes"] = True
+
         # Filter to parent items only (exclude attachments, notes, annotations)
         child_types = {"attachment", "note", "annotation"}
         parent_items = [
@@ -330,16 +378,49 @@ def get_collection_items(
             display_items = parent_items
             truncated = False
 
-        # Format items as markdown
+        # Format items as markdown based on detail level
         output = [f"# Items in Collection: {collection_name} ({len(parent_items)} items)", ""]
 
         for i, item in enumerate(display_items, 1):
-            output.extend(_utils.format_item_result(item, index=i, abstract_len=None, include_tags=False))
+            key = item.get("key", "")
+            info = attachment_info.get(key, {})
+
+            if detail == "keys_only":
+                data = item.get("data", {})
+                title = data.get("title", "Untitled")
+                date = data.get("date", "")
+                flags = []
+                if info.get("has_pdf"):
+                    flags.append("PDF")
+                if info.get("has_notes"):
+                    flags.append("Notes")
+                flag_str = f" [{', '.join(flags)}]" if flags else ""
+                output.append(f"- `{key}` | {title} ({date}){flag_str}")
+
+            elif detail == "full":
+                extra = _build_attachment_extra(info)
+                output.extend(_utils.format_item_result(
+                    item, index=i, abstract_len=None, include_tags=True,
+                    extra_fields=extra
+                ))
+
+            else:  # "summary" (default)
+                extra = _build_attachment_extra(info)
+                output.extend(_utils.format_item_result(
+                    item, index=i, abstract_len=0, include_tags=True,
+                    extra_fields=extra
+                ))
 
         if truncated:
             output.append(f"\n*Showing {limit} of {len(parent_items)} items. Increase the limit parameter to see more.*")
 
-        return "\n".join(output)
+        result = "\n".join(output)
+        if detail == "full":
+            result = _helpers._prepend_size_warning(
+                result,
+                'Use detail="summary" for a lighter response.'
+            )
+        return result
 
     except Exception as e:
         ctx.error(f"Error fetching collection items: {str(e)}")
@@ -458,6 +539,95 @@ def get_item_children(
     except Exception as e:
         ctx.error(f"Error fetching item children: {str(e)}")
         return f"Error fetching item children: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_get_items_children",
+    description="Get child items (attachments, notes) for MULTIPLE Zotero items in one call. Much more efficient than calling get_item_children repeatedly."
+)
+def get_items_children(
+    item_keys: list[str] | str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Get child items for multiple Zotero items in a single call.
+
+    Args:
+        item_keys: List of item keys (or JSON string, or comma-separated string)
+        ctx: MCP context
+    """
+    try:
+        zot = _client.get_zotero_client()
+        keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+
+        if not keys:
+            return "Error: No item keys provided."
+
+        # Batch-resolve parent titles (50 per API call)
+        parent_titles = {}
+        for batch_start in range(0, len(keys), 50):
+            batch = keys[batch_start:batch_start + 50]
+            try:
+                items = zot.items(itemKey=",".join(batch))
+                for item in items:
+                    k = item.get("key", "")
+                    parent_titles[k] = item.get("data", {}).get("title", "Untitled")
+            except Exception as e:
+                ctx.warn(f"Batch parent lookup failed: {e}")
+                for k in batch:
+                    parent_titles.setdefault(k, f"(key: {k})")
+
+        output = [f"# Children for {len(keys)} items", ""]
+
+        for key in keys:
+            title = parent_titles.get(key, f"(key: {key})")
+            output.append(f"## {title} (`{key}`)")
+
+            try:
+                children = zot.children(key)
+            except Exception as e:
+                output.append(f"  Error fetching children: {e}")
+                output.append("")
+                continue
+
+            if not children:
+                output.append("  No child items.")
+                output.append("")
+                continue
+
+            for child in children:
+                data = child.get("data", {})
+                child_type = data.get("itemType", "unknown")
+                child_key = child.get("key", "")
+
+                if child_type == "attachment":
+                    ct = data.get("contentType", "")
+                    fn = data.get("filename", "")
+                    link = data.get("linkMode", "")
+                    output.append(f"  - [{child_key}] Attachment: {fn or '(no filename)'} ({ct}) [{link}]")
+
+                elif child_type == "note":
+                    note_text = _utils.clean_html(data.get("note", ""))[:150]
+                    output.append(f"  - [{child_key}] Note: {note_text}...")
+
+                elif child_type == "annotation":
+                    ann_text = data.get("annotationText", "")[:100]
+                    ann_type = data.get("annotationType", "")
+                    output.append(f"  - [{child_key}] {ann_type}: {ann_text}...")
+
+                else:
+                    output.append(f"  - [{child_key}] {child_type}: {data.get('title', '')}")
+
+            output.append("")
+
+        return "\n".join(output)
+
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error fetching items children: {str(e)}")
+        return f"Error fetching items children: {str(e)}"
 
 
 @mcp.tool(

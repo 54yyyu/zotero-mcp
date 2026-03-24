@@ -470,3 +470,22 @@ def _format_bbt_result(bbt_item: dict, citekey: str) -> str:
         "",
     ]
     return "\n".join(output)
+
+
+# ---------------------------------------------------------------------------
+# Token estimation helpers
+# ---------------------------------------------------------------------------
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate at ~4 characters per token."""
+    return len(text) // 4
+
+
+def _prepend_size_warning(text: str, suggestions: str = "") -> str:
+    """If text exceeds ~5K tokens, prepend a size warning header."""
+    est = _estimate_tokens(text)
+    if est < 5000:
+        return text
+    suggestion_text = f" {suggestions}" if suggestions else ""
+    warning = f"*Response size: ~{est // 1000}K tokens.{suggestion_text}*\n\n"
+    return warning + text
