@@ -497,6 +497,7 @@ class LocalZoteroReader:
             FROM items i
             JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
             WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
+            AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             """
         )
         return cursor.fetchone()[0]
@@ -564,6 +565,7 @@ class LocalZoteroReader:
         LEFT JOIN creators c ON ic.creatorID = c.creatorID
 
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
+        AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
         """
 
         params = []
