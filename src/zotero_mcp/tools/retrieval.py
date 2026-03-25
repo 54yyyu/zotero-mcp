@@ -2,8 +2,10 @@
 
 from typing import Literal
 import json
+import logging as _logging
 import os
 import tempfile
+import time as _time
 from pathlib import Path
 
 from fastmcp import Context
@@ -37,11 +39,14 @@ def get_item_metadata(
     Returns:
         Formatted item metadata (markdown or BibTeX)
     """
+    _ret_logger = _logging.getLogger("zotero_mcp.retrieval")
     try:
         ctx.info(f"Fetching metadata for item {item_key} in {format} format")
         zot = _client.get_zotero_client()
 
+        t0 = _time.monotonic()
         item = zot.item(item_key)
+        _ret_logger.debug(f"[METADATA] zot.item({item_key}): {_time.monotonic() - t0:.2f}s")
         if not item:
             return f"No item found with key: {item_key}"
 

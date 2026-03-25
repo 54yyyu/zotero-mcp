@@ -1,6 +1,8 @@
 """FastMCP application instance and server lifecycle."""
 
 import asyncio
+import logging
+import os
 import sys
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -8,6 +10,15 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from zotero_mcp.utils import is_local_mode
+
+# Configure logging from environment variable
+# Set ZOTERO_MCP_LOG_LEVEL=DEBUG in Claude Desktop config to enable debug logs
+_log_level = os.environ.get("ZOTERO_MCP_LOG_LEVEL", "WARNING").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.WARNING),
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    stream=sys.stderr,
+)
 
 
 @asynccontextmanager
