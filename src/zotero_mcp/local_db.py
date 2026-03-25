@@ -14,7 +14,7 @@ from typing import Any
 from dataclasses import dataclass
 from urllib.parse import urlparse, unquote
 
-from .utils import is_local_mode
+from .utils import is_local_mode, _normalize_for_search
 
 logger = logging.getLogger(__name__)
 
@@ -626,10 +626,10 @@ class LocalZoteroReader:
         items = self.get_items_with_text()
         matching_items = []
 
-        query_lower = query.lower()
+        query_lower = _normalize_for_search(query).lower()
 
         for item in items:
-            searchable_text = item.get_searchable_text().lower()
+            searchable_text = _normalize_for_search(item.get_searchable_text()).lower()
             if query_lower in searchable_text:
                 matching_items.append(item)
                 if len(matching_items) >= limit:

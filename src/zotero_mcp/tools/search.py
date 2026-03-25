@@ -12,9 +12,44 @@ from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
 
 
+def _search_with_variants(zot, query: str, qmode: str, limit: int,
+                          item_type: str = "-attachment",
+                          tag: list[str] | None = None) -> list:
+    """Search using multiple query variants, deduplicate by key.
+
+    Generates ASCII, dash-to-space, and umlaut-expanded variants of the query
+    and searches for each one.  Results are deduplicated by item key.
+
+    All params (including item_type and tag) are explicitly set on every
+    add_parameters call to avoid stale accumulated params in pyzotero.
+    """
+    variants = _utils._generate_search_variants(query)
+
+    all_items: list[dict] = []
+    seen_keys: set[str] = set()
+    for variant in variants:
+        params: dict = {
+            "q": variant, "qmode": qmode, "limit": limit, "itemType": item_type,
+        }
+        if tag:
+            params["tag"] = tag
+        zot.add_parameters(**params)
+        try:
+            batch = zot.items()
+            for item in batch:
+                key = item.get("key", "")
+                if key and key not in seen_keys:
+                    seen_keys.add(key)
+                    all_items.append(item)
+        except Exception:
+            continue  # Skip failed variant, try next
+
+    return all_items
+
+
 @mcp.tool(
     name="zotero_search_items",
-    description="Search for items in your Zotero library, given a query string. Returns metadata and abstracts. If the abstract doesn't contain the specific information you need (e.g., effect sizes, methods details), use zotero_get_item_fulltext to read the full paper."
+    description="Search for items in your Zotero library, given a query string. Returns metadata and abstracts. IMPORTANT: Use short, simple queries — 'Author Year' (e.g., 'Brewer 2011') or just the author name (e.g., 'Cladder-Micus'). Do NOT add extra keywords like topic words — this is substring matching, not web search. More words make the search STRICTER, not broader. If no results are found, the tool will automatically retry with simplified queries and semantic search."
 )
 def search_items(
     query: str,
@@ -54,18 +89,88 @@ def search_items(
 
         limit = _helpers._normalize_limit(limit, default=10)
 
-        # Search using the query parameters
-        zot.add_parameters(q=query, qmode=qmode, itemType=item_type, limit=limit, tag=tag)
-        results = zot.items()
+        # --- Initial search with variant generation ---
+        items = _search_with_variants(zot, query, qmode, limit,
+                                      item_type=item_type, tag=tag)
 
-        if not results:
+        # --- Fallback cascade (only if initial search returned nothing) ---
+        fallback_strategy = None
+
+        if not items and query.strip():
+            ctx.info("No results with original query, trying fallback strategies...")
+            words = query.strip().split()
+
+            # Strategy 1: Simplify to first + last words (likely "Author Year")
+            if len(words) > 2:
+                simple_query = f"{words[0]} {words[-1]}"
+                ctx.info(f"Retry with simplified query: '{simple_query}'")
+                items = _search_with_variants(zot, simple_query, qmode, limit,
+                                              item_type=item_type, tag=tag)
+                if items:
+                    fallback_strategy = f"simplified to '{simple_query}'"
+
+            # Strategy 2: Author surname only (first word)
+            if not items and len(words) >= 2:
+                author_only = words[0]
+                ctx.info(f"Retry with author only: '{author_only}'")
+                items = _search_with_variants(zot, author_only, qmode, limit,
+                                              item_type=item_type, tag=tag)
+                if items:
+                    fallback_strategy = f"author only '{author_only}'"
+
+            # Strategy 3: qmode="everything" (searches full text on Zotero's side)
+            # Safe — no tokens consumed, only metadata returned
+            if not items and qmode != "everything":
+                ctx.info(f"Retry with qmode='everything': '{query}'")
+                items = _search_with_variants(zot, query, "everything", limit,
+                                              item_type=item_type, tag=tag)
+                if items:
+                    fallback_strategy = "full-text search"
+
+            # Strategy 4: Semantic search (if database exists)
+            if not items:
+                try:
+                    from zotero_mcp.semantic_search import create_semantic_search
+                    config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
+                    if config_path.exists():
+                        ctx.info(f"Retry with semantic search: '{query}'")
+                        sem_search = create_semantic_search(str(config_path))
+                        sem_results = sem_search.search(query=query, limit=limit or 10)
+                        if sem_results and sem_results.get("results"):
+                            seen_keys: set[str] = set()
+                            for sr in sem_results["results"]:
+                                zot_item = sr.get("zotero_item", {})
+                                key = sr.get("item_key", zot_item.get("key", ""))
+                                if key and key not in seen_keys:
+                                    seen_keys.add(key)
+                                    if "key" not in zot_item:
+                                        zot_item["key"] = key
+                                    items.append(zot_item)
+                            if items:
+                                fallback_strategy = "semantic search"
+                except Exception as e:
+                    ctx.info(f"Semantic search fallback failed: {e}")
+
+        # --- No results after all strategies ---
+        if not items:
             return f"No items found matching query: '{query}'{tag_condition_str}"
 
-        # Format results as markdown
+        # --- Format results as markdown ---
         output = [f"# Search Results for '{query}'", f"{tag_condition_str}", ""]
 
-        for i, item in enumerate(results, 1):
+        for i, item in enumerate(items, 1):
             output.extend(_utils.format_item_result(item, index=i))
+
+        # Prepend fallback verification note (AFTER output is built)
+        if fallback_strategy:
+            output.insert(1, "")
+            output.insert(2, (
+                f"*Note: Original search for '{query}' returned no results. "
+                f"Found {len(items)} item(s) via {fallback_strategy} — verify "
+                f"the correct one by year, title, or metadata and abstract "
+                f"content if necessary.*"
+            ))
+            output.insert(3, "")
 
         return _helpers._prepend_size_warning("\n".join(output))
 
@@ -345,8 +450,9 @@ def advanced_search(
                 return None
 
         def _compare(candidate: str, expected: str, operation: str) -> bool:
-            left = candidate.lower()
-            right = expected.lower()
+            # Normalize both sides for diacritics/dashes before comparison
+            left = _utils._normalize_for_search(candidate).lower()
+            right = _utils._normalize_for_search(expected).lower()
 
             if operation == "is":
                 return left == right
