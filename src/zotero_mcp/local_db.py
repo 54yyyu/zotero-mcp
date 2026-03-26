@@ -14,26 +14,12 @@ from typing import Any
 from dataclasses import dataclass
 from urllib.parse import urlparse, unquote
 
-from .utils import is_local_mode
+from .utils import is_local_mode, _normalize_for_search
 
 logger = logging.getLogger(__name__)
 
 # Sentinel returned by _extract_text_from_pdf on timeout
 _EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
-
-
-def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
-    """Worker: extract text from a PDF in a separate process."""
-    try:
-        # Suppress pdfminer warnings about malformed PDF color spaces, fonts, etc.
-        import logging as _logging
-        _logging.getLogger("pdfminer").setLevel(_logging.ERROR)
-
-        from pdfminer.high_level import extract_text
-        text = extract_text(file_path, maxpages=maxpages) or ""
-        result_queue.put(text)
-    except Exception:
-        result_queue.put("")
 
 
 @dataclass
@@ -255,10 +241,17 @@ class LocalZoteroReader:
     def _extract_text_from_pdf(self, file_path: Path) -> str:
         """Extract text from a PDF using pdfminer in a subprocess with timeout.
 
+        Uses subprocess.run instead of multiprocessing.Process to avoid a
+        deadlock on macOS: multiprocessing's 'spawn' start method re-imports
+        the zotero_mcp package in the child process, which triggers FastMCP
+        server initialization and blocks forever. subprocess.run starts a
+        clean Python process that only imports pdfminer.
+
         Returns the extracted text, empty string on failure, or
         _EXTRACTION_TIMEOUT sentinel if the process was killed due to timeout.
         """
-        import multiprocessing
+        import subprocess
+        import sys
 
         # Page limit (preserve existing fallback chain)
         if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
@@ -272,41 +265,36 @@ class LocalZoteroReader:
 
         timeout = self.pdf_timeout or 30
 
-        result_queue = None
-        process = None
+        # Inline script that only imports pdfminer — no zotero_mcp package
+        script = (
+            "import sys, logging; "
+            "logging.getLogger('pdfminer').setLevel(logging.ERROR); "
+            "from pdfminer.high_level import extract_text; "
+            "sys.stdout.write(extract_text(sys.argv[1], maxpages=int(sys.argv[2])) or '')"
+        )
+
         try:
-            result_queue = multiprocessing.Queue()
-            process = multiprocessing.Process(
-                target=_extract_pdf_worker,
-                args=(str(file_path), maxpages, result_queue),
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(file_path), str(maxpages)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
             )
-            process.start()
-            process.join(timeout=timeout)
-
-            if process.is_alive():
-                logger.warning(f"PDF extraction timed out after {timeout}s: {file_path.name}")
-                process.kill()
-                process.join(timeout=5)
-                return _EXTRACTION_TIMEOUT
-
-            if not result_queue.empty():
-                return result_queue.get_nowait()
+            if result.returncode == 0:
+                return result.stdout
+            logger.warning(
+                f"PDF extraction failed (exit {result.returncode}): {file_path.name}: "
+                f"{result.stderr[:200] if result.stderr else 'no error output'}"
+            )
             return ""
+        except subprocess.TimeoutExpired:
+            sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line before warning
+            logger.warning(f"PDF extraction timed out after {timeout}s: {file_path.name}")
+            return _EXTRACTION_TIMEOUT
         except Exception as e:
+            sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line before warning
             logger.warning(f"PDF extraction failed: {file_path.name}: {e}")
             return ""
-        finally:
-            if result_queue is not None:
-                try:
-                    result_queue.close()
-                    result_queue.join_thread()
-                except Exception:
-                    pass
-            if process is not None:
-                try:
-                    process.close()
-                except Exception:
-                    pass
 
     def _extract_text_from_html(self, file_path: Path) -> str:
         """Extract text from HTML using markitdown if available; fallback to stripping tags."""
@@ -640,10 +628,10 @@ class LocalZoteroReader:
         items = self.get_items_with_text()
         matching_items = []
 
-        query_lower = query.lower()
+        query_lower = _normalize_for_search(query).lower()
 
         for item in items:
-            searchable_text = item.get_searchable_text().lower()
+            searchable_text = _normalize_for_search(item.get_searchable_text()).lower()
             if query_lower in searchable_text:
                 matching_items.append(item)
                 if len(matching_items) >= limit:

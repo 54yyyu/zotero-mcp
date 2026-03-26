@@ -238,11 +238,16 @@ class ZoteroSemanticSearch:
             "url": data.get("url", ""),
             "doi": data.get("DOI", ""),
         }
-        # If local fulltext field exists, add markers so we can filter later
+        # If fulltext was extracted (or attempted), mark it so incremental
+        # updates don't keep re-trying items that failed extraction
         if data.get("fulltext"):
             metadata["has_fulltext"] = True
             if data.get("fulltextSource"):
                 metadata["fulltext_source"] = data.get("fulltextSource")
+        elif data.get("fulltext_attempted"):
+            # Extraction was attempted but failed (timeout, empty, etc.)
+            # Mark so we don't retry on every incremental update
+            metadata["has_fulltext"] = "failed"
 
         # Add tags as a single string
         if tags := data.get("tags"):
@@ -437,8 +442,81 @@ class ZoteroSemanticSearch:
 
                     consecutive_timeouts = 0
                     MAX_CONSECUTIVE_TIMEOUTS = 5
+                    _extraction_stopped = False  # Set True when circuit breaker trips
 
-                    for it in local_items:
+                    total_local = len(local_items)
+                    _skipped_pdfs = []  # Collect timeout/error names for summary
+                    _skipped_failed = []  # Items skipped because extraction previously failed
+
+                    # Show startup note
+                    try:
+                        sys.stderr.write(
+                            "\n  Note: Most papers take 1-3 seconds. Some larger or complex PDFs\n"
+                            "  may take up to 30 seconds. Password-protected or corrupted files\n"
+                            "  will be skipped automatically. The system moves on to the next\n"
+                            "  paper if a file can't be processed in time.\n\n"
+                        )
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+
+                    # Temporarily suppress local_db logger to prevent timeout warnings
+                    # from disrupting the progress line — we collect them ourselves
+                    _local_db_logger = logging.getLogger("zotero_mcp.local_db")
+                    _prev_level = _local_db_logger.level
+                    _local_db_logger.setLevel(logging.CRITICAL)
+
+                    for item_idx, it in enumerate(local_items, 1):
+                        # Build display string: Author (Year) — Title
+                        title = getattr(it, "title", "") or ""
+                        creators = getattr(it, "creators", "") or ""
+                        date = getattr(it, "date_added", "") or ""
+                        first_author = ""
+                        if creators:
+                            first_author = creators.split(";")[0].split(",")[0].strip()
+                            if first_author:
+                                first_author += " et al." if ";" in creators else ""
+                        year = ""
+                        if date and len(date) >= 4:
+                            year = date[:4]
+                        citation = ""
+                        if first_author and year:
+                            citation = f"{first_author} ({year}) — "
+                        elif first_author:
+                            citation = f"{first_author} — "
+                        display = f"{citation}{title}"
+                        if len(display) > 60:
+                            display = display[:57] + "..."
+
+                        # Single-line progress with \r overwrite
+                        # MUST fit within terminal width to prevent wrapping
+                        try:
+                            try:
+                                term_width = os.get_terminal_size().columns
+                            except (OSError, ValueError):
+                                term_width = 80
+                            # Build the line and truncate to terminal width - 1
+                            # (- 1 to prevent the cursor from wrapping to next line)
+                            max_len = term_width - 1
+                            status_parts = []
+                            if skipped_existing > 0:
+                                status_parts.append(f"{skipped_existing} up to date")
+                            if extracted > 0:
+                                status_parts.append(f"{extracted} extracted")
+                            status = f" ({', '.join(status_parts)})" if status_parts else ""
+                            prefix = f"  Processing {item_idx}/{total_local}{status} — "
+                            # Truncate display to fit remaining space
+                            remaining = max_len - len(prefix) - 3  # -3 for "..."
+                            if remaining > 0 and display and len(display) > remaining:
+                                display = display[:remaining] + "..."
+                            line = f"{prefix}{display or 'working...'}"
+                            if len(line) > max_len:
+                                line = line[:max_len]
+                            sys.stderr.write(f"\r{line}{' ' * max(0, max_len - len(line))}")
+                            sys.stderr.flush()
+                        except Exception:
+                            pass
+
                         should_extract = True
 
                         # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
@@ -448,8 +526,20 @@ class ZoteroSemanticSearch:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
                                 local_has_fulltext = len(reader.get_fulltext_meta_for_item(it.item_id)) > 0
 
-                                # Skip only if chroma does not have the fulltext embedding but local does (e.g. the users updated it)
-                                if not chroma_has_fulltext and local_has_fulltext:
+                                # Skip if extraction previously failed AND the item hasn't been
+                                # modified since (handles case where user replaces a bad PDF)
+                                if chroma_has_fulltext == "failed":
+                                    chroma_date = existing_metadata.get("date_modified", "")
+                                    item_date = getattr(it, "date_modified", "") or ""
+                                    if chroma_date == item_date:
+                                        # Same modification date — don't retry failed extraction
+                                        should_extract = False
+                                        skipped_existing += 1
+                                        _skipped_failed.append(display or f"item {it.key}")
+                                    else:
+                                        # Item was modified since last failure — retry
+                                        updated_existing += 1
+                                elif not chroma_has_fulltext and local_has_fulltext:
                                     # Document exists but lacks fulltext - we need to update it
                                     updated_existing += 1
                                 else:
@@ -458,50 +548,75 @@ class ZoteroSemanticSearch:
 
                         if should_extract:
                             # Extract fulltext if item doesn't have it yet
-                            if not getattr(it, "fulltext", None):
+                            # (skip if circuit breaker has tripped)
+                            if not getattr(it, "fulltext", None) and not _extraction_stopped:
                                 text = reader.extract_fulltext_for_item(it.item_id)
                                 # Circuit breaker: stop PDF extraction after consecutive timeouts
                                 if isinstance(text, tuple) and len(text) == 2 and text[1] == "timeout":
+                                    _skipped_pdfs.append(display or f"item {it.key}")
                                     consecutive_timeouts += 1
                                     if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
                                         logger.warning(
                                             f"Stopping PDF extraction after {MAX_CONSECUTIVE_TIMEOUTS} "
                                             f"consecutive timeouts — remaining items will use metadata only"
                                         )
-                                        break
-                                    continue  # Skip this item's fulltext
-                                # Reset counter on successful extraction
-                                if text:
-                                    consecutive_timeouts = 0
-                                if text:
-                                    # Support new (text, source) return format
-                                    if isinstance(text, tuple) and len(text) == 2:
-                                        it.fulltext, it.fulltext_source = text[0], text[1]
+                                        try:
+                                            sys.stderr.write(
+                                                f"\n  Warning: PDF extraction stopped after {MAX_CONSECUTIVE_TIMEOUTS} "
+                                                f"consecutive timeouts. Remaining items will be indexed with "
+                                                f"metadata only (titles, abstracts, authors).\n\n"
+                                            )
+                                        except Exception:
+                                            pass
+                                        _extraction_stopped = True
+                                    # Don't skip the item — still add it with metadata only
+                                    it._fulltext_attempted = True  # Mark so metadata knows extraction was tried
+                                else:
+                                    # Reset counter on successful extraction
+                                    if text:
+                                        consecutive_timeouts = 0
+                                    if text:
+                                        # Support new (text, source) return format
+                                        if isinstance(text, tuple) and len(text) == 2:
+                                            it.fulltext, it.fulltext_source = text[0], text[1]
+                                        else:
+                                            it.fulltext = text
                                     else:
-                                        it.fulltext = text
+                                        # Extraction returned empty — mark as attempted
+                                        it._fulltext_attempted = True
                             extracted += 1
                             items_to_process.append(it)
 
-                            if extracted % 25 == 0 and total_to_extract:
-                                try:
-                                    sys.stderr.write(f"Extracted content for {extracted}/{total_to_extract} items (skipped {skipped_existing} existing, updating {updated_existing})...\n")
-                                except Exception:
-                                    pass
+                            # (progress shown inline above via \r)
+
+                    # Restore local_db logger
+                    _local_db_logger.setLevel(_prev_level)
+
+                    # Clear progress line and show extraction summary
+                    try:
+                        sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line
+                        parts = [f"  Extraction complete: {extracted} items to index"]
+                        if skipped_existing > 0:
+                            parts.append(f"{skipped_existing} already up to date")
+                        sys.stderr.write(", ".join(parts) + "\n")
+                        if updated_existing > 0:
+                            sys.stderr.write(f"  ({updated_existing} items updated with new fulltext)\n")
+                        if _skipped_pdfs:
+                            sys.stderr.write(f"  Skipped {len(_skipped_pdfs)} PDF(s) (timed out):\n")
+                            for name in _skipped_pdfs:
+                                sys.stderr.write(f"    - {name}\n")
+                        if _skipped_failed:
+                            sys.stderr.write(f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n")
+                            for name in _skipped_failed[:5]:  # Show first 5
+                                sys.stderr.write(f"    - {name}\n")
+                            if len(_skipped_failed) > 5:
+                                sys.stderr.write(f"    ... and {len(_skipped_failed) - 5} more\n")
+                            sys.stderr.write(f"  (To retry these, run with --force-rebuild)\n")
+                    except Exception:
+                        pass
 
                     # Replace local_items with filtered list
                     local_items = items_to_process
-
-                    # Report final stats
-                    if skipped_existing > 0 or updated_existing > 0:
-                        try:
-                            msg_parts = []
-                            if skipped_existing > 0:
-                                msg_parts.append(f"Skipped {skipped_existing} items with up to date embeddings")
-                            if updated_existing > 0:
-                                msg_parts.append(f"Updated {updated_existing} items with new fulltext")
-                            sys.stderr.write(", ".join(msg_parts) + "\n")
-                        except Exception:
-                            pass
                 else:
                     # Skip fulltext extraction for faster processing
                     for it in local_items:
@@ -524,6 +639,8 @@ class ZoteroSemanticSearch:
                             # Include fulltext only when extracted
                             "fulltext": getattr(item, 'fulltext', None) or "" if extract_fulltext else "",
                             "fulltextSource": getattr(item, 'fulltext_source', None) or "" if extract_fulltext else "",
+                            # Flag if extraction was attempted but failed (timeout, empty)
+                            "fulltext_attempted": getattr(item, '_fulltext_attempted', False),
                             "dateAdded": item.date_added,
                             "dateModified": item.date_modified,
                             "creators": self._parse_creators_string(item.creators) if item.creators else []
@@ -679,9 +796,11 @@ class ZoteroSemanticSearch:
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
-            # Immediate progress line so users see counts up-front
+            # User-friendly progress reporting
+            total = stats['total_items'] = len(all_items)
             try:
-                sys.stderr.write(f"Total items to index: {stats['total_items']}\n")
+                sys.stderr.write(f"\nIndexing {total} items...\n\n")
+                sys.stderr.flush()
             except Exception:
                 pass
 
@@ -689,12 +808,24 @@ class ZoteroSemanticSearch:
             # Keep batch size under OpenAI's 300k token-per-request limit
             # (25 × 8000 max tokens = 200k, well within the limit)
             batch_size = 25
-            # Track next milestone for progress printing (every 10 items)
-            next_milestone = 10 if stats["total_items"] >= 10 else stats["total_items"]
-            # Count of items seen (including skipped), used for progress milestones
             seen_items = 0
+            _failed_docs = []  # Collect failures for end-of-run retry
             for i in range(0, len(all_items), batch_size):
                 batch = all_items[i:i + batch_size]
+
+                # Show per-item progress within this batch
+                for item in batch:
+                    seen_items += 1
+                    title = item.get("data", {}).get("title", "")
+                    if title and len(title) > 60:
+                        title = title[:57] + "..."
+                    pct = int(seen_items / total * 100) if total else 0
+                    try:
+                        sys.stderr.write(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+
                 batch_stats = self._process_item_batch(batch, force_full_rebuild)
 
                 stats["processed_items"] += batch_stats["processed"]
@@ -702,19 +833,47 @@ class ZoteroSemanticSearch:
                 stats["updated_items"] += batch_stats["updated"]
                 stats["skipped_items"] += batch_stats["skipped"]
                 stats["errors"] += batch_stats["errors"]
-                seen_items += len(batch)
 
-                logger.info(f"Processed {seen_items}/{stats['total_items']} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})")
-                # Print progress every 10 seen items (even if all are skipped)
+                logger.info(f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})")
+
+            # Retry any documents that failed during the main run
+            if _failed_docs:
                 try:
-                    while seen_items >= next_milestone and next_milestone > 0:
-                        sys.stderr.write(f"Processed: {next_milestone}/{stats['total_items']} added:{stats['added_items']} skipped:{stats['skipped_items']} errors:{stats['errors']}\n")
-                        next_milestone += 10
-                        if next_milestone > stats["total_items"]:
-                            next_milestone = stats["total_items"]
-                            break
+                    sys.stderr.write(f"\r{' ' * 120}\r")
+                    sys.stderr.write(f"\n  Retrying {len(_failed_docs)} failed items...\n")
                 except Exception:
                     pass
+
+                import time as _retry_time
+                _retry_time.sleep(1)  # Brief pause before retry
+
+                retry_ok = 0
+                retry_fail = 0
+                for doc, meta, doc_id in _failed_docs:
+                    try:
+                        self.chroma_client.upsert_documents([doc], [meta], [doc_id])
+                        retry_ok += 1
+                        stats["errors"] -= 1  # Remove from error count
+                        stats["added_items"] += 1
+                    except Exception as e2:
+                        retry_fail += 1
+                        logger.error(f"Retry failed for {doc_id}: {e2}")
+
+                try:
+                    sys.stderr.write(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
+                except Exception:
+                    pass
+
+            # Clear the progress line and show summary
+            try:
+                sys.stderr.write(f"\r{' ' * 120}\r")  # Clear line
+                sys.stderr.write(
+                    f"  Done: {stats['processed_items']} indexed, "
+                    f"{stats['skipped_items']} skipped, "
+                    f"{stats['errors']} errors\n"
+                )
+            except Exception:
+                pass
 
             # Update last update time
             self.update_config["last_update"] = datetime.now().isoformat()
@@ -790,21 +949,13 @@ class ZoteroSemanticSearch:
                     else:
                         stats["added"] += 1
             except Exception as e:
-                # Batch failed — fall back to per-document upsert so one bad
-                # document doesn't prevent the rest of the batch from indexing.
-                logger.warning(f"Batch upsert failed ({e}), retrying per-document")
+                # Batch failed — collect failures for end-of-run retry.
+                # ChromaDB's ONNX tokenizer can fail intermittently in bursts;
+                # retrying immediately usually fails too. Collecting failures
+                # and retrying after all batches are done is more effective.
+                logger.warning(f"Batch upsert failed ({e}), saving for retry")
                 for j in range(len(documents)):
-                    try:
-                        self.chroma_client.upsert_documents(
-                            [documents[j]], [metadatas[j]], [ids[j]]
-                        )
-                        if ids[j] in existing_ids:
-                            stats["updated"] += 1
-                        else:
-                            stats["added"] += 1
-                    except Exception as e2:
-                        logger.error(f"Error upserting {ids[j]}: {e2}")
-                        stats["errors"] += 1
+                    _failed_docs.append((documents[j], metadatas[j], ids[j]))
 
         return stats
 

@@ -277,10 +277,10 @@ def search_collections(
         if not collections:
             return "No collections found in your Zotero library."
 
-        query_lower = query.lower()
+        words = query.lower().split()
         matching = [
             c for c in collections
-            if query_lower in c.get("data", {}).get("name", "").lower()
+            if all(w in c.get("data", {}).get("name", "").lower() for w in words)
         ]
 
         if not matching:

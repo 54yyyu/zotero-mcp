@@ -3,6 +3,8 @@ import re
 import sys
 from contextlib import contextmanager
 
+from unidecode import unidecode
+
 html_re = re.compile(r"<.*?>")
 
 
@@ -119,3 +121,77 @@ def clean_html(raw_html: str, collapse_whitespace: bool = False) -> str:
     if collapse_whitespace:
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()
     return clean_text
+
+
+# ---------------------------------------------------------------------------
+# Search normalization utilities
+# ---------------------------------------------------------------------------
+
+# German umlaut expansions (common in academic literature)
+_UMLAUT_MAP = {
+    'ü': 'ue', 'ö': 'oe', 'ä': 'ae', 'ß': 'ss',
+    'Ü': 'Ue', 'Ö': 'Oe', 'Ä': 'Ae',
+}
+
+# Dash-like Unicode characters to normalize to ASCII hyphen-minus
+_DASH_PATTERN = re.compile(r'[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]')
+
+MAX_SEARCH_VARIANTS = 15
+
+
+def _normalize_for_search(text: str) -> str:
+    """Normalize text for fuzzy matching: transliterate to ASCII, normalize dashes.
+
+    Uses ``unidecode`` for broad Unicode transliteration (handles CJK, Greek,
+    Cyrillic, diacritics, etc.) and a regex for dash-like characters.
+    """
+    if not text:
+        return text
+    result = unidecode(text)
+    result = _DASH_PATTERN.sub('-', result)
+    return result
+
+
+def _generate_search_variants(query: str) -> list[str]:
+    """Generate variant forms of a search query for fuzzy matching.
+
+    Returns a deduplicated list of query variants, capped at
+    ``MAX_SEARCH_VARIANTS``.  Typically produces 2-5 variants for real
+    author names.
+    """
+    if not query or not query.strip():
+        return [query] if query else []
+
+    variants: set[str] = {query}
+
+    # ASCII transliteration (Müller → Muller, 王 → Wang)
+    ascii_form = _normalize_for_search(query)
+    if ascii_form != query:
+        variants.add(ascii_form)
+
+    # Dashes to spaces (Cladder-Micus → Cladder Micus)
+    dash_to_space = query.replace('-', ' ')
+    if dash_to_space != query:
+        variants.add(dash_to_space)
+    dash_to_space_norm = ascii_form.replace('-', ' ')
+    if dash_to_space_norm not in variants:
+        variants.add(dash_to_space_norm)
+
+    # German umlaut expansions (Müller → Mueller)
+    umlaut_expanded = query
+    for char, expansion in _UMLAUT_MAP.items():
+        umlaut_expanded = umlaut_expanded.replace(char, expansion)
+    if umlaut_expanded != query:
+        variants.add(umlaut_expanded)
+
+    # Spaces to dashes (Cladder Micus → Cladder-Micus)
+    if ' ' in query and '-' not in query:
+        space_to_dash = query.replace(' ', '-')
+        variants.add(space_to_dash)
+
+    # Cap variants
+    result = list(variants)
+    if len(result) > MAX_SEARCH_VARIANTS:
+        result = result[:MAX_SEARCH_VARIANTS]
+
+    return result
