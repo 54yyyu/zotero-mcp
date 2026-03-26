@@ -22,6 +22,26 @@ logger = logging.getLogger(__name__)
 _EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
 
 
+def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
+    """Legacy worker — kept for backward compatibility but no longer used.
+
+    The actual extraction now uses subprocess.run (see _extract_text_from_pdf)
+    to avoid a deadlock on macOS where multiprocessing's 'spawn' start method
+    re-imports the zotero_mcp package, triggering FastMCP server initialization
+    in the child process. See https://github.com/54yyyu/zotero-mcp/issues/178
+    """
+    try:
+        import logging as _logging
+        _logging.getLogger("pdfminer").setLevel(_logging.ERROR)
+
+        from pdfminer.high_level import extract_text
+        text = extract_text(file_path, maxpages=maxpages) or ""
+        result_queue.put(text)
+    except Exception:
+        result_queue.put("")
+
+
+
 @dataclass
 class ZoteroItem:
     """Represents a Zotero item with text content for semantic search."""
@@ -247,6 +267,9 @@ class LocalZoteroReader:
         server initialization and blocks forever. subprocess.run starts a
         clean Python process that only imports pdfminer.
 
+        See: https://github.com/54yyyu/zotero-mcp/issues/178
+
+
         Returns the extracted text, empty string on failure, or
         _EXTRACTION_TIMEOUT sentinel if the process was killed due to timeout.
         """
@@ -265,7 +288,8 @@ class LocalZoteroReader:
 
         timeout = self.pdf_timeout or 30
 
-        # Inline script that only imports pdfminer — no zotero_mcp package
+        # Inline pdfminer script — imports ONLY pdfminer, not zotero_mcp,
+        # so the child process never triggers FastMCP initialization.
         script = (
             "import sys, logging; "
             "logging.getLogger('pdfminer').setLevel(logging.ERROR); "
