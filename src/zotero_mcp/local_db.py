@@ -288,9 +288,11 @@ class LocalZoteroReader:
             )
             return ""
         except subprocess.TimeoutExpired:
+            sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line before warning
             logger.warning(f"PDF extraction timed out after {timeout}s: {file_path.name}")
             return _EXTRACTION_TIMEOUT
         except Exception as e:
+            sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line before warning
             logger.warning(f"PDF extraction failed: {file_path.name}: {e}")
             return ""
 

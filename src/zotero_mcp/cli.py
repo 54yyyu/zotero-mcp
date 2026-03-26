@@ -10,7 +10,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from zotero_mcp.server import mcp
+# NOTE: Do NOT import zotero_mcp.server at module level.
+# That triggers heavy imports (FastMCP, ChromaDB, sentence-transformers, torch)
+# which take several seconds. Import lazily only when needed (serve command).
+# This allows CLI commands like update-db to print "Starting up..." instantly.
 
 
 def obfuscate_sensitive_value(value, keep_chars=4):
@@ -614,6 +617,8 @@ def main():
             sys.exit(1)
 
     elif args.command == "serve":
+        # Lazy import — triggers heavy dependencies (FastMCP, ChromaDB, etc.)
+        from zotero_mcp.server import mcp
         # Get transport with a default value if not specified
         transport = getattr(args, "transport", "stdio")
         # Ensure environment is initialized (Claude config or standalone config)
