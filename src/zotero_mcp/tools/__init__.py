@@ -7,3 +7,9 @@ from zotero_mcp.tools import (  # noqa: F401
     search,
     write,
 )
+
+# Optional: Scite enrichment (requires ``pip install zotero-mcp-server[scite]``)
+try:
+    from zotero_mcp.tools import scite as scite  # noqa: F401
+except ImportError:
+    pass
