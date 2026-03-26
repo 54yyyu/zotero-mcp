@@ -7,12 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-03-26
+
 ### Added
-- **Scite citation intelligence integration** — the MCP counterpart of the [Scite Zotero Plugin](https://github.com/scitedotai/scite-zotero-plugin). New optional `[scite]` extra that enriches Zotero library items with citation data from [scite.ai](https://scite.ai). No Scite account required.
+- **Scite citation intelligence integration** — the MCP counterpart of the [Scite Zotero Plugin](https://github.com/scitedotai/scite-zotero-plugin). New optional `[scite]` extra that enriches Zotero library items with citation data from [scite.ai](https://scite.ai). No Scite account required (#180).
   - `scite_enrich_item`: Get citation tallies (supporting/contrasting/mentioning) and editorial notice alerts for any paper by DOI or Zotero item key.
   - `scite_enrich_search`: Search your Zotero library and see Scite tallies and retraction alerts inline with each result.
   - `scite_check_retractions`: Scan your library (by collection, tag, or recent items) for retractions, corrections, and other editorial notices.
 - New `scite_client.py` module: thin HTTP client for `api.scite.ai` public endpoints (tallies, paper metadata, editorial notices).
+
+### Fixed
+- **macOS PDF extraction deadlock** — replaced `multiprocessing.Process` with `subprocess.run` to prevent FastMCP re-initialization in child process (#178, #173, #181).
+- **Deleted items indexed in semantic search** — excluded trashed items from `get_items_with_text()` and `get_item_count()` (#175).
 
 ## [0.2.1] - 2026-03-22
 
