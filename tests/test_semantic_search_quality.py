@@ -338,20 +338,25 @@ class TestTiktokenSpecialTokenHandling:
         "Other tokens include <|fim_prefix|> and <|fim_suffix|>."
     )
 
+    @staticmethod
+    def _expected_truncation(text, max_tokens):
+        """Compute expected tiktoken truncation for exact-output assertions."""
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        tokens = enc.encode(text, disallowed_special=())[:max_tokens]
+        return enc.decode(tokens)
+
     def test_openai_truncate_with_special_tokens(self):
         from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
 
         ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
-        # Must not raise ValueError
         result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
-        assert len(result) > 0
-        assert len(result) < len(self.SPECIAL_TOKEN_TEXT)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
 
     def test_openai_truncate_preserves_special_token_text(self):
         from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
 
         ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
-        # With a generous limit, text should pass through unchanged
         result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
         assert result == self.SPECIAL_TOKEN_TEXT
 
@@ -363,18 +368,20 @@ class TestTiktokenSpecialTokenHandling:
         client.embedding_function = MagicMock(spec=[])
         client.embedding_function.max_input_tokens = 5000
 
-        # Must not raise ValueError
         result = client.truncate_text(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
-        assert len(result) > 0
-        assert len(result) < len(self.SPECIAL_TOKEN_TEXT)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
 
     def test_truncate_to_tokens_with_special_tokens(self):
         from zotero_mcp.semantic_search import _truncate_to_tokens
 
-        # Must not raise ValueError
         result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
-        assert len(result) > 0
-        assert len(result) < len(self.SPECIAL_TOKEN_TEXT)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
+
+    def test_truncate_to_tokens_preserves_special_token_text(self):
+        from zotero_mcp.semantic_search import _truncate_to_tokens
+
+        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
+        assert result == self.SPECIAL_TOKEN_TEXT
 
 
 # ---------------------------------------------------------------------------
