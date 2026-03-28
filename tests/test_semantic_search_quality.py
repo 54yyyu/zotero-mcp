@@ -7,6 +7,7 @@ Covers:
 - Fix 5: Cross-encoder re-ranking
 """
 
+import importlib.util
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -330,6 +331,10 @@ class TestModelAwareTokenizer:
 # Fix: all encode() call sites pass disallowed_special=().
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    not importlib.util.find_spec("tiktoken"),
+    reason="tiktoken not installed",
+)
 class TestTiktokenSpecialTokenHandling:
     """Text containing tiktoken special tokens must not raise ValueError."""
 
