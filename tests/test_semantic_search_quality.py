@@ -324,6 +324,60 @@ class TestModelAwareTokenizer:
 
 
 # ---------------------------------------------------------------------------
+# Regression: tiktoken special tokens in PDF text must not raise ValueError
+# Bug: tiktoken.encode() defaults to disallowed_special="all", which raises
+# when input contains strings like <|endoftext|> (common in ML papers).
+# Fix: all encode() call sites pass disallowed_special=().
+# ---------------------------------------------------------------------------
+
+class TestTiktokenSpecialTokenHandling:
+    """Text containing tiktoken special tokens must not raise ValueError."""
+
+    SPECIAL_TOKEN_TEXT = (
+        "The model uses <|endoftext|> as a separator token. "
+        "Other tokens include <|fim_prefix|> and <|fim_suffix|>."
+    )
+
+    def test_openai_truncate_with_special_tokens(self):
+        from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+
+        ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+        # Must not raise ValueError
+        result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert len(result) > 0
+        assert len(result) < len(self.SPECIAL_TOKEN_TEXT)
+
+    def test_openai_truncate_preserves_special_token_text(self):
+        from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+
+        ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+        # With a generous limit, text should pass through unchanged
+        result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
+        assert result == self.SPECIAL_TOKEN_TEXT
+
+    def test_chroma_truncate_text_fallback_with_special_tokens(self):
+        from zotero_mcp.chroma_client import ChromaClient
+
+        client = ChromaClient.__new__(ChromaClient)
+        # Use an embedding function without a truncate method to hit fallback
+        client.embedding_function = MagicMock(spec=[])
+        client.embedding_function.max_input_tokens = 5000
+
+        # Must not raise ValueError
+        result = client.truncate_text(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert len(result) > 0
+        assert len(result) < len(self.SPECIAL_TOKEN_TEXT)
+
+    def test_truncate_to_tokens_with_special_tokens(self):
+        from zotero_mcp.semantic_search import _truncate_to_tokens
+
+        # Must not raise ValueError
+        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert len(result) > 0
+        assert len(result) < len(self.SPECIAL_TOKEN_TEXT)
+
+
+# ---------------------------------------------------------------------------
 # Fix 5: Cross-encoder re-ranking
 # ---------------------------------------------------------------------------
 
