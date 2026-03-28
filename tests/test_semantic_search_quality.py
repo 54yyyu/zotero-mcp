@@ -326,7 +326,7 @@ class TestModelAwareTokenizer:
 # ---------------------------------------------------------------------------
 # Regression: tiktoken special tokens in PDF text must not raise ValueError
 # Bug: tiktoken.encode() defaults to disallowed_special="all", which raises
-# when input contains strings like <|endoftext|> (common in ML papers).
+# ValueError when input contains strings like <|endoftext|> (common in ML papers).
 # Fix: all encode() call sites pass disallowed_special=().
 # ---------------------------------------------------------------------------
 
