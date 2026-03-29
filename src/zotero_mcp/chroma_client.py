@@ -11,9 +11,15 @@ from pathlib import Path
 from typing import Any
 import logging
 
-import chromadb
-from chromadb import Documents, EmbeddingFunction, Embeddings
-from chromadb.config import Settings
+try:
+    import chromadb
+    from chromadb import Documents, EmbeddingFunction, Embeddings
+    from chromadb.config import Settings
+except ImportError as e:
+    raise ImportError(
+        "chromadb is required for semantic search. "
+        "Install it with: pip install 'zotero-mcp-server[semantic]'"
+    ) from e
 
 from zotero_mcp.utils import suppress_stdout
 
