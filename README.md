@@ -97,8 +97,7 @@ Heavy ML/PDF dependencies are separated into optional extras so the base install
 
 | Extra | What it adds | Install command |
 |-------|-------------|-----------------|
-| `semantic` | Semantic search via ChromaDB, sentence-transformers, OpenAI/Gemini embeddings | `pip install "zotero-mcp-server[semantic]"` |
-| `pdf` | PDF outline extraction (PyMuPDF) and EPUB annotation support | `pip install "zotero-mcp-server[pdf]"` |
+| `semantic` | Semantic search via ChromaDB, sentence-transformers, OpenAI/Gemini embeddings | `pip install "zotero-mcp-server[semantic]"` || `pinecone` | Semantic search via [Pinecone](https://www.pinecone.io/) cloud vector DB (alternative to ChromaDB) | `pip install "zotero-mcp-server[pinecone]"` || `pdf` | PDF outline extraction (PyMuPDF) and EPUB annotation support | `pip install "zotero-mcp-server[pdf]"` |
 | `scite` | [Scite](https://scite.ai) citation intelligence — tallies and retraction alerts (no account needed) | `pip install "zotero-mcp-server[scite]"` |
 | `all` | Everything above | `pip install "zotero-mcp-server[all]"` |
 
@@ -278,6 +277,7 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
 
 **Semantic Search:**
+- `ZOTERO_VECTOR_BACKEND`: Vector store backend — `chroma` (default) or `pinecone`
 - `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
 - `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model name (text-embedding-3-small, text-embedding-3-large)
@@ -286,6 +286,10 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
+
+**Pinecone (alternative to ChromaDB):**
+- `PINECONE_API_KEY`: Your Pinecone API key
+- `PINECONE_INDEX_NAME`: Pinecone index name (default: `zotero-library`)
 
 ### Command-Line Options
 
@@ -403,6 +407,11 @@ A 45-point live integration test plan is included at `docs/integration-test-plan
 - **Semantic search returns no results**: Ensure the database is initialized with `zotero-mcp update-db` and check status with `zotero-mcp db-status`
 - **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
 - **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
+
+### Pinecone Issues
+- **"PINECONE_API_KEY not found"**: Set the `PINECONE_API_KEY` environment variable or configure it via `zotero-mcp setup`
+- **Index creation fails**: Verify your Pinecone plan supports serverless indexes and the chosen cloud/region is available
+- **Switching from ChromaDB to Pinecone**: Set `ZOTERO_VECTOR_BACKEND=pinecone` and run `zotero-mcp update-db --force-rebuild` to re-index into Pinecone
 
 ### Update Issues
 - **Update command fails**: Check your internet connection and try `zotero-mcp update --force`

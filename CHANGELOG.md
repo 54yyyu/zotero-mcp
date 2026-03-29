@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Pinecone vector store backend** — alternative to ChromaDB for semantic search. New optional `[pinecone]` extra enables cloud-hosted vector search via [Pinecone](https://www.pinecone.io/).
+  - `vector_store.py`: backend-agnostic `VectorStoreClient` protocol and `create_vector_client()` factory; selects backend via `ZOTERO_VECTOR_BACKEND` env var or `vector_backend` config key (default: `"chroma"`).
+  - `pinecone_client.py`: drop-in `PineconeClient` with standalone embedding adapters (default/OpenAI/Gemini/HuggingFace), Chroma-style filter translation, and score-to-distance conversion.
+  - `setup_helper.py`: interactive setup now prompts for vector backend choice (ChromaDB or Pinecone) with API key, index name, cloud, and region configuration.
+  - `cli.py`: `db-inspect` command detects Pinecone backend and adapts stats/document display accordingly.
+
 ## [0.2.2] - 2026-03-26
 
 ### Added

@@ -484,12 +484,23 @@ def main():
         try:
             search = create_semantic_search(str(config_path))
             client = search.chroma_client
-            col = client.collection
+
+            # Detect backend: Pinecone clients expose get_all_documents();
+            # ChromaDB clients expose .collection directly.
+            _is_pinecone = hasattr(client, "get_all_documents")
 
             if args.stats:
-                # Show aggregate stats (merged from former db-stats)
-                meta = col.get(include=["metadatas"])  # type: ignore
-                metas = meta.get("metadatas", [])
+                # Show aggregate stats
+                if _is_pinecone:
+                    # Pinecone: fetch a bigger sample for stats
+                    info = client.get_collection_info()
+                    sample_limit = min(info.get("count", 500), 500)
+                    data = client.get_all_documents(limit=sample_limit)
+                    metas = data.get("metadatas", [])
+                else:
+                    col = client.collection
+                    meta = col.get(include=["metadatas"])  # type: ignore
+                    metas = meta.get("metadatas", [])
                 print("=== Semantic DB Inspection (Stats) ===")
                 info = client.get_collection_info()
                 print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")
@@ -531,12 +542,17 @@ def main():
                         print(f"  {t[:80]}{'...' if len(t)>80 else ''}: {c}")
                 return
 
-            include = ["metadatas"]
-            if args.show_documents:
-                include.append("documents")
-
-            # Fetch up to limit; filter client-side if requested
-            data = col.get(limit=args.limit, include=include)
+            # Non-stats inspection: fetch documents for display
+            if _is_pinecone:
+                data = client.get_all_documents(
+                    limit=args.limit, include_documents=args.show_documents
+                )
+            else:
+                include = ["metadatas"]
+                if args.show_documents:
+                    include.append("documents")
+                col = client.collection
+                data = col.get(limit=args.limit, include=include)
 
             print("=== Semantic DB Inspection ===")
             total = client.get_collection_info().get("count", 0)
