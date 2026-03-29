@@ -89,6 +89,7 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     search_notes,
     create_note,
     create_annotation,
+    create_area_annotation,
 )
 from zotero_mcp.tools.write import (  # noqa: F401
     batch_update_tags,

@@ -1133,3 +1133,191 @@ def create_annotation(
     except Exception as e:
         ctx.error(f"Error creating annotation: {str(e)}")
         return f"Error creating annotation: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_create_area_annotation",
+    description="Create a PDF area/image annotation using normalized page coordinates."
+)
+def create_area_annotation(
+    attachment_key: str,
+    page: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    comment: str | None = None,
+    color: str = "#ffd400",
+    *,
+    ctx: Context
+) -> str:
+    """
+    Create an area/image annotation on a PDF attachment.
+
+    Args:
+        attachment_key: PDF attachment key (e.g., "NHZFE5A7")
+        page: 1-indexed PDF page number
+        x: Normalized left coordinate (0..1)
+        y: Normalized top coordinate (0..1)
+        width: Normalized width (0..1)
+        height: Normalized height (0..1)
+        comment: Optional comment on the annotation
+        color: Annotation color in hex format
+        ctx: MCP context
+
+    Returns:
+        Confirmation message with the new annotation key
+    """
+    from math import isfinite
+
+    from zotero_mcp.pdf_utils import (
+        build_annotation_position,
+        build_area_position_data,
+        get_page_label,
+        verify_pdf_attachment,
+    )
+
+    try:
+        ctx.info(f"Creating area annotation on attachment {attachment_key}, page {page}")
+
+        values = {"x": x, "y": y, "width": width, "height": height}
+        for name, value in values.items():
+            if not isinstance(value, (int, float)) or not isfinite(value):
+                return f"Error: {name} must be a finite number"
+
+        if x < 0 or x > 1:
+            return "Error: x must be between 0 and 1"
+        if y < 0 or y > 1:
+            return "Error: y must be between 0 and 1"
+        if width <= 0 or width > 1:
+            return "Error: width must be greater than 0 and at most 1"
+        if height <= 0 or height > 1:
+            return "Error: height must be greater than 0 and at most 1"
+        if x + width > 1:
+            return "Error: Rectangle must fit within the page width (x + width must be <= 1)"
+        if y + height > 1:
+            return "Error: Rectangle must fit within the page height (y + height must be <= 1)"
+
+        local_client = _client.get_local_zotero_client()
+        web_client = _client.get_web_zotero_client()
+
+        if web_client:
+            override = _client.get_active_library()
+            if override:
+                web_client.library_id = override.get("library_id", web_client.library_id)
+                web_client.library_type = override.get("library_type", web_client.library_type)
+
+        if not web_client:
+            return (
+                "Error: Web API credentials required for creating annotations.\n\n"
+                "Please configure the following environment variables:\n"
+                "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
+                "- ZOTERO_LIBRARY_ID: Your library ID\n"
+                "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'\n\n"
+                "Note: Zotero's local API is read-only and cannot create annotations."
+            )
+
+        try:
+            attachment = web_client.item(attachment_key)
+            attachment_data = attachment.get("data", {})
+
+            if attachment_data.get("itemType") != "attachment":
+                return f"Error: Item {attachment_key} is not an attachment"
+
+            content_type = attachment_data.get("contentType", "")
+            if content_type != "application/pdf":
+                return f"Error: Attachment {attachment_key} is not a PDF attachment (type: {content_type})"
+
+            filename = attachment_data.get("filename", f"{attachment_key}.pdf")
+        except Exception as e:
+            return f"Error: No attachment found with key: {attachment_key} ({e})"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, filename)
+            ctx.info(f"Downloading PDF to {file_path}")
+
+            download_errors = []
+            downloaded = False
+
+            if local_client and not downloaded:
+                try:
+                    ctx.info("Trying local Zotero (WebDAV/local storage)...")
+                    local_client.dump(attachment_key, filename=filename, path=tmpdir)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        downloaded = True
+                        ctx.info("PDF downloaded via local Zotero")
+                except Exception as e:
+                    download_errors.append(f"Local Zotero: {e}")
+
+            if not downloaded:
+                try:
+                    ctx.info("Trying Zotero Web API (cloud storage)...")
+                    web_client.dump(attachment_key, filename=filename, path=tmpdir)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        downloaded = True
+                        ctx.info("PDF downloaded via Web API")
+                except Exception as e:
+                    download_errors.append(f"Web API: {e}")
+
+            if not downloaded:
+                error_details = "\n".join(f"  - {err}" for err in download_errors)
+                return (
+                    f"Error: Could not download PDF attachment.\n\n"
+                    f"Attempted sources:\n{error_details}\n\n"
+                    "Possible solutions:\n"
+                    "- **Zotero Cloud Storage**: Ensure file syncing is enabled in Zotero preferences\n"
+                    "- **WebDAV Storage**: Ensure Zotero desktop is running with "
+                    "'Allow other applications to communicate with Zotero' enabled\n"
+                    "- **Linked files**: Linked attachments (not imported) cannot be accessed remotely"
+                )
+
+            if not verify_pdf_attachment(file_path):
+                return "Error: Downloaded file is not a valid PDF"
+
+            position_data = build_area_position_data(file_path, page, x, y, width, height)
+            if "error" in position_data:
+                return f"Error: {position_data['error']}"
+
+            page_label = get_page_label(file_path, page)
+            annotation_position = build_annotation_position(
+                position_data["pageIndex"],
+                position_data["rects"],
+            )
+
+            annotation_data = {
+                "itemType": "annotation",
+                "parentItem": attachment_key,
+                "annotationType": "image",
+                "annotationComment": comment or "",
+                "annotationColor": color,
+                "annotationSortIndex": position_data["sort_index"],
+                "annotationPosition": annotation_position,
+                "annotationPageLabel": page_label,
+            }
+
+            ctx.info("Creating area annotation via Web API...")
+            result = web_client.create_items([annotation_data])
+
+            if "success" in result and result["success"]:
+                successful = result["success"]
+                if successful:
+                    annotation_key = next(iter(successful.values()))
+                    response = [
+                        "Successfully created area annotation",
+                        "",
+                        f"**Annotation Key:** {annotation_key}",
+                        f"**Page:** {page_label}",
+                        f"**Rect (normalized):** x={x:.4f}, y={y:.4f}, width={width:.4f}, height={height:.4f}",
+                        f"**Color:** {color}",
+                    ]
+                    if comment:
+                        response.append(f"**Comment:** {comment}")
+                    return "\n".join(response)
+                return f"Annotation creation response was successful but no key was returned: {result}"
+
+            failed_info = result.get("failed", {})
+            return f"Failed to create annotation: {failed_info}"
+
+    except Exception as e:
+        ctx.error(f"Error creating area annotation: {str(e)}")
+        return f"Error creating area annotation: {str(e)}"
