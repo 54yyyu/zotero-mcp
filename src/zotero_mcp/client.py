@@ -207,7 +207,7 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
                 key_part = line.split(":", 1)[1].strip() if ":" in line else line.strip()
                 lines.append(f"**Citation Key (from Extra):** {key_part}")
                 break
-    
+
     # Tags
     if tags := data.get("tags"):
         tag_list = [f"`{tag['tag']}`" for tag in tags]
@@ -217,6 +217,14 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     # Abstract
     if include_abstract and (abstract := data.get("abstractNote")):
         lines.extend(["", "## Abstract", abstract])
+
+    # Related Items (dc:relation URIs → item keys)
+    dc_relations = data.get("relations", {}).get("dc:relation", [])
+    if isinstance(dc_relations, str):
+        dc_relations = [dc_relations]
+    if dc_relations:
+        related_keys = [uri.rstrip("/").split("/")[-1] for uri in dc_relations]
+        lines.extend(["", "## Related Items", *[f"- {k}" for k in related_keys]])
 
     # Collections
     if collections := data.get("collections", []):
