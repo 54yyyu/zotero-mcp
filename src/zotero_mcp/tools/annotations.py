@@ -497,6 +497,17 @@ def _batch_resolve_parent_titles(
             ctx.warn(f"Batch parent lookup failed: {e}")
             for k in batch:
                 titles.setdefault(k, f"(parent key: {k})")
+
+    # Individual fallback for keys the batch missed (not in local cache)
+    missing = [k for k in parent_keys if k not in titles]
+    for key in missing:
+        try:
+            item = zot.item(key)
+            if item:
+                titles[key] = item.get("data", {}).get("title", "Untitled")
+        except Exception:
+            titles.setdefault(key, f"(parent key: {key})")
+
     return titles
 
 
@@ -529,6 +540,19 @@ def _batch_resolve_grandparent_titles(
         except Exception as e:
             ctx.info(f"Batch attachment lookup failed: {e}")
 
+    # Step 1b: Individual fallback for attachment keys the batch missed
+    missing_attachments = [k for k in parent_keys if k not in attachment_data]
+    for key in missing_attachments:
+        try:
+            item = zot.item(key)
+            if item:
+                attachment_data[key] = item
+                gp_key = item.get("data", {}).get("parentItem")
+                if gp_key and item.get("data", {}).get("itemType") == "attachment":
+                    grandparent_keys.add(gp_key)
+        except Exception:
+            pass
+
     # Step 2: Batch-fetch the grandparents (papers)
     grandparent_titles: dict[str, str] = {}
     gp_list = list(grandparent_keys)
@@ -542,6 +566,16 @@ def _batch_resolve_grandparent_titles(
                 )
         except Exception as e:
             ctx.info(f"Batch grandparent lookup failed: {e}")
+
+    # Step 2b: Individual fallback for grandparent keys the batch missed
+    missing_gp = [k for k in grandparent_keys if k not in grandparent_titles]
+    for key in missing_gp:
+        try:
+            item = zot.item(key)
+            if item:
+                grandparent_titles[key] = item.get("data", {}).get("title", "Untitled")
+        except Exception:
+            pass
 
     # Step 3: Map attachment keys to paper titles
     result: dict[str, str] = {}
@@ -739,7 +773,11 @@ def search_notes(
 
 @mcp.tool(
     name="zotero_create_note",
-    description="Create a new note for a Zotero item."
+    description=(
+        "Create a new note attached to a Zotero item. "
+        "Parameters: item_key (the key of the parent item to attach the note to), "
+        "note_title (title string), note_text (body text, HTML formatting supported)."
+    )
 )
 def create_note(
     item_key: str,
@@ -884,7 +922,14 @@ def create_note(
 
 @mcp.tool(
     name="zotero_create_annotation",
-    description="Create a highlight annotation on a PDF or EPUB attachment with optional comment."
+    description=(
+        "Create a highlight annotation on a PDF or EPUB attachment with optional comment. "
+        "Parameters: attachment_key (the key of the PDF/EPUB attachment, not the parent item), "
+        "page (integer, 1-indexed — page 1 is the first page), "
+        "text (exact text to highlight), color (hex, default yellow #ffd400), "
+        "comment (optional note on the highlight). "
+        "Requires PyMuPDF: pip install zotero-mcp-server[pdf]"
+    )
 )
 def create_annotation(
     attachment_key: str,

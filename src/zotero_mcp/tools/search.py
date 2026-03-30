@@ -718,7 +718,14 @@ def semantic_search(
         ctx.info(f"Performing semantic search for: '{query}'")
 
         # Import semantic search module
-        from zotero_mcp.semantic_search import create_semantic_search
+        try:
+            from zotero_mcp.semantic_search import create_semantic_search
+        except ImportError:
+            return (
+                "Semantic search is not available. Install the required packages with:\n"
+                "  pip install zotero-mcp-server[semantic]\n\n"
+                "This installs chromadb, sentence-transformers, and related dependencies."
+            )
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
@@ -800,7 +807,14 @@ def update_search_database(
         ctx.info("Starting semantic search database update...")
 
         # Import semantic search module
-        from zotero_mcp.semantic_search import create_semantic_search
+        try:
+            from zotero_mcp.semantic_search import create_semantic_search
+        except ImportError:
+            return (
+                "Semantic search is not available. Install the required packages with:\n"
+                "  pip install zotero-mcp-server[semantic]\n\n"
+                "This installs chromadb, sentence-transformers, and related dependencies."
+            )
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
@@ -859,7 +873,14 @@ def get_search_database_status(*, ctx: Context) -> str:
         ctx.info("Getting semantic search database status...")
 
         # Import semantic search module
-        from zotero_mcp.semantic_search import create_semantic_search
+        try:
+            from zotero_mcp.semantic_search import create_semantic_search
+        except ImportError:
+            return (
+                "Semantic search is not available. Install the required packages with:\n"
+                "  pip install zotero-mcp-server[semantic]\n\n"
+                "This installs chromadb, sentence-transformers, and related dependencies."
+            )
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"

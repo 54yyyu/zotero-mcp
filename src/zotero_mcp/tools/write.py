@@ -7,6 +7,8 @@ import re
 import tempfile
 import xml.etree.ElementTree as ET
 
+import time as _time
+
 import requests
 from fastmcp import Context
 
@@ -213,7 +215,12 @@ def batch_update_tags(
 
 @mcp.tool(
     name="zotero_create_collection",
-    description="Create a new collection (project/folder) in your Zotero library."
+    description=(
+        "Create a new collection (project/folder) in your Zotero library. "
+        "To create a subcollection, pass parent_collection (not parent_key) as either "
+        "a collection key (8-character string like 'KMMQDFQ4') or a collection name. "
+        "Use zotero_search_collections to find collection keys."
+    )
 )
 def create_collection(
     name: str,
@@ -310,7 +317,12 @@ def search_collections(
 
 @mcp.tool(
     name="zotero_manage_collections",
-    description="Add or remove items from collections."
+    description=(
+        "Add or remove one or more items from collections. "
+        "item_keys must be an ARRAY of item keys, e.g. [\"KEY1\", \"KEY2\"] — not a single string. "
+        "add_to and remove_from also accept arrays of collection keys. "
+        "Use zotero_search_items to find item keys and zotero_search_collections to find collection keys."
+    )
 )
 def manage_collections(
     item_keys: list[str] | str,
@@ -591,10 +603,24 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     """Add an arXiv paper by ID. Internal helper for add_by_url."""
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
-    resp = requests.get(
-        f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
-        timeout=15,
-    )
+    resp = None
+    for attempt in range(3):
+        resp = requests.get(
+            f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
+            timeout=30,
+        )
+        if resp.status_code == 429:
+            wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
+            ctx.info(f"arXiv API rate limit hit — waiting {wait}s before retry {attempt + 1}/3...")
+            _time.sleep(wait)
+            continue
+        break
+
+    if resp is None or resp.status_code == 429:
+        return (
+            f"arXiv API is rate-limiting requests. Please wait a moment and try again. "
+            f"(arXiv ID: {arxiv_id})"
+        )
     resp.raise_for_status()
 
     root = ET.fromstring(resp.text)
@@ -686,7 +712,12 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
 
 @mcp.tool(
     name="zotero_update_item",
-    description="Update metadata for an existing item in your Zotero library."
+    description=(
+        "Update metadata for an existing item in your Zotero library. "
+        "To add tags without removing existing ones, use add_tags (not tags). "
+        "To remove specific tags, use remove_tags. "
+        "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes."
+    )
 )
 def update_item(
     item_key: str,
@@ -811,12 +842,13 @@ def update_item(
 def find_duplicates(
     method: Literal["title", "doi", "both"] = "both",
     collection_key: str | None = None,
-    limit: int = 50,
+    limit: int | str | None = 50,
     *,
     ctx: Context
 ) -> str:
     try:
         zot = _client.get_zotero_client()
+        limit = _helpers._normalize_limit(limit, default=50)
         ctx.info(f"Searching for duplicates (method={method})")
 
         # Paginate manually instead of using zot.everything() which can
@@ -915,7 +947,9 @@ def find_duplicates(
     description=(
         "Merge duplicate items. Consolidates tags, collections, notes, annotations, "
         "and all child items into the keeper. Duplicates are moved to Trash (recoverable). "
-        "Dry-run by default — call with confirm=True to execute."
+        "Dry-run by default — call with confirm=True to execute. "
+        "Parameters: keeper_key (the item key to KEEP), "
+        "duplicate_keys (ARRAY of item keys to merge into the keeper and then trash)."
     )
 )
 def merge_duplicates(
