@@ -72,7 +72,7 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
 
 @mcp.tool(
     name="zotero_search_items",
-    description="Search for items in your Zotero library, given a query string. Returns metadata and abstracts. IMPORTANT: Use short, simple queries — 'Author Year' (e.g., 'Brewer 2011') or just the author name (e.g., 'Cladder-Micus'). Do NOT add extra keywords like topic words — this is substring matching, not web search. More words make the search STRICTER, not broader. If no results are found, the tool will automatically retry with simplified queries and semantic search."
+    description="Search for items in your Zotero library, given a query string. Returns metadata and abstracts. IMPORTANT: Use short, simple queries — 'Author Year' (e.g., 'Brewer 2011') or just the author name (e.g., 'Cladder-Micus'). Do NOT add extra keywords like topic words — this is substring matching, not web search. More words make the search STRICTER, not broader. If no results are found, the tool will automatically retry with simplified queries and semantic search. Optionally scope to a specific collection with collection_key."
 )
 def search_items(
     query: str,
@@ -80,6 +80,7 @@ def search_items(
     item_type: str = "-attachment",  # Exclude attachments by default
     limit: int | str | None = 10,
     tag: list[str] | None = None,
+    collection_key: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -92,6 +93,8 @@ def search_items(
         item_type: Type of items to search for. Use "-attachment" to exclude attachments.
         limit: Maximum number of results to return
         tag: List of tags conditions to filter by
+        collection_key: Optional collection key to scope the search to a specific collection.
+            When provided, bypasses the fallback cascade and searches the collection directly.
         ctx: MCP context
 
     Returns:
@@ -112,110 +115,125 @@ def search_items(
 
         limit = _helpers._normalize_limit(limit, default=10)
 
-        # --- Initial search with variant generation ---
-        _cascade_start = _time.monotonic()
-        items = _search_with_variants(zot, query, qmode, limit,
-                                      item_type=item_type, tag=tag,
-                                      cascade_start=_cascade_start,
-                                      cascade_timeout=CASCADE_TIMEOUT)
-        _search_logger.debug(f"[CASCADE] initial: {len(items)} results in {_time.monotonic() - _cascade_start:.2f}s")
+        if collection_key:
+            # Collection-scoped search — query the collection directly, no cascade needed
+            try:
+                _col = zot.collection(collection_key)
+            except Exception:
+                _col = None
+            if not _col or _col.get("key") != collection_key:
+                return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
+            items = _helpers._paginate(
+                zot.collection_items, collection_key,
+                q=query, qmode=qmode, itemType=item_type,
+                max_items=limit, **({"tag": tag} if tag else {}),
+            )
+            fallback_strategy = None
+        else:
+            # --- Initial search with variant generation ---
+            _cascade_start = _time.monotonic()
+            items = _search_with_variants(zot, query, qmode, limit,
+                                          item_type=item_type, tag=tag,
+                                          cascade_start=_cascade_start,
+                                          cascade_timeout=CASCADE_TIMEOUT)
+            _search_logger.debug(f"[CASCADE] initial: {len(items)} results in {_time.monotonic() - _cascade_start:.2f}s")
 
-        # --- Fallback cascade (only if initial search returned nothing) ---
-        fallback_strategy = None
-        _timed_out = False
+            # --- Fallback cascade (only if initial search returned nothing) ---
+            fallback_strategy = None
+            _timed_out = False
 
-        def _check_cascade_timeout():
-            nonlocal _timed_out
-            if _time.monotonic() - _cascade_start > CASCADE_TIMEOUT:
-                _timed_out = True
-                _search_logger.debug("[CASCADE] Timeout — stopping cascade")
-                ctx.info("Search took too long — returning best results found so far")
-            return _timed_out
+            def _check_cascade_timeout():
+                nonlocal _timed_out
+                if _time.monotonic() - _cascade_start > CASCADE_TIMEOUT:
+                    _timed_out = True
+                    _search_logger.debug("[CASCADE] Timeout — stopping cascade")
+                    ctx.info("Search took too long — returning best results found so far")
+                return _timed_out
 
-        if not items and query.strip():
-            ctx.info("No results with original query, trying fallback strategies...")
-            words = query.strip().split()
+            if not items and query.strip():
+                ctx.info("No results with original query, trying fallback strategies...")
+                words = query.strip().split()
 
-            # Strategy 1: Simplify to author + year (P2 fix)
-            if not _check_cascade_timeout() and not items and len(words) > 2:
-                # Extract year-like token (4 digits between 1800-2099)
-                year_token = next((w for w in words if re.match(r'^(1[89]\d{2}|20\d{2})$', w)), None)
-                # Extract author (first non-numeric word)
-                author_token = next((w for w in words if not re.match(r'^\d+$', w)), None)
+                # Strategy 1: Simplify to author + year (P2 fix)
+                if not _check_cascade_timeout() and not items and len(words) > 2:
+                    # Extract year-like token (4 digits between 1800-2099)
+                    year_token = next((w for w in words if re.match(r'^(1[89]\d{2}|20\d{2})$', w)), None)
+                    # Extract author (first non-numeric word)
+                    author_token = next((w for w in words if not re.match(r'^\d+$', w)), None)
 
-                if author_token and year_token:
-                    simple_query = f"{author_token} {year_token}"
-                elif author_token:
-                    simple_query = author_token
-                else:
-                    simple_query = words[0]
+                    if author_token and year_token:
+                        simple_query = f"{author_token} {year_token}"
+                    elif author_token:
+                        simple_query = author_token
+                    else:
+                        simple_query = words[0]
 
-                t0 = _time.monotonic()
-                ctx.info(f"Retry with simplified query: '{simple_query}'")
-                items = _search_with_variants(zot, simple_query, qmode, limit,
-                                              item_type=item_type, tag=tag,
-                                              cascade_start=_cascade_start,
-                                              cascade_timeout=CASCADE_TIMEOUT)
-                _search_logger.debug(f"[CASCADE] strategy 1 (author+year): {len(items)} results in {_time.monotonic() - t0:.2f}s")
-                if items:
-                    fallback_strategy = f"simplified to '{simple_query}'"
+                    t0 = _time.monotonic()
+                    ctx.info(f"Retry with simplified query: '{simple_query}'")
+                    items = _search_with_variants(zot, simple_query, qmode, limit,
+                                                  item_type=item_type, tag=tag,
+                                                  cascade_start=_cascade_start,
+                                                  cascade_timeout=CASCADE_TIMEOUT)
+                    _search_logger.debug(f"[CASCADE] strategy 1 (author+year): {len(items)} results in {_time.monotonic() - t0:.2f}s")
+                    if items:
+                        fallback_strategy = f"simplified to '{simple_query}'"
 
-            # Strategy 2: Author surname only (first non-numeric word)
-            if not _check_cascade_timeout() and not items and len(words) >= 2:
-                author_only = next((w for w in words if not re.match(r'^\d+$', w)), words[0])
-                t0 = _time.monotonic()
-                ctx.info(f"Retry with author only: '{author_only}'")
-                items = _search_with_variants(zot, author_only, qmode, limit,
-                                              item_type=item_type, tag=tag,
-                                              cascade_start=_cascade_start,
-                                              cascade_timeout=CASCADE_TIMEOUT)
-                _search_logger.debug(f"[CASCADE] strategy 2 (author only): {len(items)} results in {_time.monotonic() - t0:.2f}s")
-                if items:
-                    fallback_strategy = f"author only '{author_only}'"
+                # Strategy 2: Author surname only (first non-numeric word)
+                if not _check_cascade_timeout() and not items and len(words) >= 2:
+                    author_only = next((w for w in words if not re.match(r'^\d+$', w)), words[0])
+                    t0 = _time.monotonic()
+                    ctx.info(f"Retry with author only: '{author_only}'")
+                    items = _search_with_variants(zot, author_only, qmode, limit,
+                                                  item_type=item_type, tag=tag,
+                                                  cascade_start=_cascade_start,
+                                                  cascade_timeout=CASCADE_TIMEOUT)
+                    _search_logger.debug(f"[CASCADE] strategy 2 (author only): {len(items)} results in {_time.monotonic() - t0:.2f}s")
+                    if items:
+                        fallback_strategy = f"author only '{author_only}'"
 
-            # Strategy 3: qmode="everything" (searches full text on Zotero's side)
-            # Safe — no tokens consumed, only metadata returned
-            if not _check_cascade_timeout() and not items and qmode != "everything":
-                t0 = _time.monotonic()
-                ctx.info(f"Retry with qmode='everything': '{query}'")
-                items = _search_with_variants(zot, query, "everything", limit,
-                                              item_type=item_type, tag=tag,
-                                              cascade_start=_cascade_start,
-                                              cascade_timeout=CASCADE_TIMEOUT)
-                _search_logger.debug(f"[CASCADE] strategy 3 (everything): {len(items)} results in {_time.monotonic() - t0:.2f}s")
-                if items:
-                    fallback_strategy = "full-text search"
+                # Strategy 3: qmode="everything" (searches full text on Zotero's side)
+                # Safe — no tokens consumed, only metadata returned
+                if not _check_cascade_timeout() and not items and qmode != "everything":
+                    t0 = _time.monotonic()
+                    ctx.info(f"Retry with qmode='everything': '{query}'")
+                    items = _search_with_variants(zot, query, "everything", limit,
+                                                  item_type=item_type, tag=tag,
+                                                  cascade_start=_cascade_start,
+                                                  cascade_timeout=CASCADE_TIMEOUT)
+                    _search_logger.debug(f"[CASCADE] strategy 3 (everything): {len(items)} results in {_time.monotonic() - t0:.2f}s")
+                    if items:
+                        fallback_strategy = "full-text search"
 
-            # Strategy 4: Semantic search (if database exists)
-            if not _check_cascade_timeout() and not items:
-                try:
-                    from zotero_mcp.semantic_search import create_semantic_search
-                    config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-                    if config_path.exists():
-                        ctx.info(f"Retry with semantic search: '{query}'")
-                        t0 = _time.monotonic()
-                        sem_search = create_semantic_search(str(config_path))
-                        _search_logger.debug(f"[CASCADE] semantic init: {_time.monotonic() - t0:.2f}s")
-                        t0 = _time.monotonic()
-                        sem_results = sem_search.search(query=query, limit=limit or 10)
-                        _search_logger.debug(f"[CASCADE] semantic query: {_time.monotonic() - t0:.2f}s")
-                        if sem_results and sem_results.get("results"):
-                            seen_keys: set[str] = set()
-                            for sr in sem_results["results"]:
-                                zot_item = sr.get("zotero_item", {})
-                                key = sr.get("item_key", zot_item.get("key", ""))
-                                if key and key not in seen_keys:
-                                    seen_keys.add(key)
-                                    if "key" not in zot_item:
-                                        zot_item["key"] = key
-                                    items.append(zot_item)
-                            if items:
-                                fallback_strategy = "semantic search"
-                except Exception as e:
-                    _search_logger.debug(f"[CASCADE] semantic failed: {e}")
-                    ctx.info(f"Semantic search fallback failed: {e}")
+                # Strategy 4: Semantic search (if database exists)
+                if not _check_cascade_timeout() and not items:
+                    try:
+                        from zotero_mcp.semantic_search import create_semantic_search
+                        config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
+                        if config_path.exists():
+                            ctx.info(f"Retry with semantic search: '{query}'")
+                            t0 = _time.monotonic()
+                            sem_search = create_semantic_search(str(config_path))
+                            _search_logger.debug(f"[CASCADE] semantic init: {_time.monotonic() - t0:.2f}s")
+                            t0 = _time.monotonic()
+                            sem_results = sem_search.search(query=query, limit=limit or 10)
+                            _search_logger.debug(f"[CASCADE] semantic query: {_time.monotonic() - t0:.2f}s")
+                            if sem_results and sem_results.get("results"):
+                                seen_keys: set[str] = set()
+                                for sr in sem_results["results"]:
+                                    zot_item = sr.get("zotero_item", {})
+                                    key = sr.get("item_key", zot_item.get("key", ""))
+                                    if key and key not in seen_keys:
+                                        seen_keys.add(key)
+                                        if "key" not in zot_item:
+                                            zot_item["key"] = key
+                                        items.append(zot_item)
+                                if items:
+                                    fallback_strategy = "semantic search"
+                    except Exception as e:
+                        _search_logger.debug(f"[CASCADE] semantic failed: {e}")
+                        ctx.info(f"Semantic search fallback failed: {e}")
 
-        _search_logger.debug(f"[CASCADE] total: {_time.monotonic() - _cascade_start:.2f}s, fallback={fallback_strategy}")
+            _search_logger.debug(f"[CASCADE] total: {_time.monotonic() - _cascade_start:.2f}s, fallback={fallback_strategy}")
 
         # --- No results after all strategies ---
         if not items:
@@ -255,13 +273,14 @@ def search_items(
 
 @mcp.tool(
     name="zotero_search_by_tag",
-    description="Search for items in your Zotero library by tag. "
+    description="Search for items in your Zotero library by tag, optionally scoped to a collection. "
     "Conditions are ANDed, each term supports disjunction (`OR`) and exclusion (`-`)."
 )
 def search_by_tag(
     tag: list[str],
     item_type: str = "-attachment",
     limit: int | str | None = 10,
+    collection_key: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -281,6 +300,7 @@ def search_by_tag(
                 Do NOT have the "draft" tag
         item_type: Type of items to search for. Use "-attachment" to exclude attachments.
         limit: Maximum number of results to return
+        collection_key: Optional collection key to scope the search to a specific collection
         ctx: MCP context
 
     Returns:
@@ -295,15 +315,28 @@ def search_by_tag(
 
         limit = _helpers._normalize_limit(limit, default=10)
 
-        # Search using the query parameters
-        zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
-        results = zot.items()
+        # Search library-wide or scoped to a collection
+        if collection_key:
+            try:
+                _col = zot.collection(collection_key)
+            except Exception:
+                _col = None
+            if not _col or _col.get("key") != collection_key:
+                return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
+            results = _helpers._paginate(
+                zot.collection_items, collection_key,
+                tag=tag, itemType=item_type, max_items=limit,
+            )
+        else:
+            zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
+            results = zot.items()
 
         if not results:
             return f"No items found with tag: '{tag}'"
 
         # Format results as markdown
-        output = [f"# Search Results for Tag: '{tag}'", ""]
+        scope = f" in Collection {collection_key}" if collection_key else ""
+        output = [f"# Search Results for Tag: '{tag}'{scope}", ""]
 
         for i, item in enumerate(results, 1):
             output.extend(_utils.format_item_result(item, index=i))

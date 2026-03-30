@@ -55,6 +55,21 @@ def get_annotations(
             except Exception:
                 return f"Error: No item found with key: {item_key}"
 
+            # Determine whether item_key is an attachment or a parent item.
+            # In the Zotero API, annotations are children of attachments, not of
+            # the parent item (two-hop: parent → attachment → annotation).
+            # We need to know this for both the API annotations path and the PDF fallback.
+            _item_data = parent.get("data", {})
+            _is_attachment = _item_data.get("itemType") == "attachment"
+
+            # parent_item_key is used by the PDF fallback to find PDF attachments.
+            # If the caller passed an attachment key, resolve up to the parent item.
+            parent_item_key = (
+                _item_data.get("parentItem", item_key)
+                if _is_attachment
+                else item_key
+            )
+
             # Initialize annotation sources
             better_bibtex_annotations = []
             zotero_api_annotations = []
@@ -160,12 +175,25 @@ def get_annotations(
             # Fallback to Zotero API annotations
             if not better_bibtex_annotations:
                 try:
-                    # Get child annotations via Zotero API
-                    children = zot.children(item_key)
-                    zotero_api_annotations = [
-                        item for item in children
-                        if item.get("data", {}).get("itemType") == "annotation"
-                    ]
+                    if _is_attachment:
+                        # item_key is already a PDF attachment — annotations are its
+                        # direct children, so one call suffices.
+                        zotero_api_annotations = zot.children(item_key, itemType="annotation")
+                    else:
+                        # item_key is a parent item. In the Zotero API, annotations live
+                        # under attachments (two hops: parent → attachment → annotation).
+                        # Only PDF, EPUB, and snapshot attachments support children().
+                        _annotatable = {"application/pdf", "application/epub+zip", "text/html"}
+                        all_children = zot.children(item_key)
+                        att_keys = [
+                            c["key"] for c in all_children
+                            if c.get("data", {}).get("itemType") == "attachment"
+                            and c.get("data", {}).get("contentType") in _annotatable
+                        ]
+                        for att_key in att_keys:
+                            zotero_api_annotations.extend(
+                                zot.children(att_key, itemType="annotation")
+                            )
                     ctx.info(f"Retrieved {len(zotero_api_annotations)} annotations via Zotero API")
                 except Exception as api_error:
                     ctx.warn(f"Error retrieving Zotero API annotations: {api_error}")
@@ -177,8 +205,8 @@ def get_annotations(
 
                     # Ensure PDF annotation tool is installed
                     if ensure_pdfannots_installed():
-                        # Get PDF attachments
-                        children = zot.children(item_key)
+                        # Get PDF attachments via the resolved parent key
+                        children = zot.children(parent_item_key)
                         pdf_attachments = [
                             item for item in children
                             if item.get("data", {}).get("contentType") == "application/pdf"
