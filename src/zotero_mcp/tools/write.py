@@ -684,6 +684,28 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     return f"Failed to create arXiv item: {result}"
 
 
+# Maps Zotero API field names to tool parameter names for user-facing messages
+_UPDATE_ITEM_API_TO_PARAM = {
+    "title": "title",
+    "date": "date",
+    "publicationTitle": "publication_title",
+    "abstractNote": "abstract",
+    "DOI": "doi",
+    "url": "url",
+    "extra": "extra",
+    "volume": "volume",
+    "issue": "issue",
+    "pages": "pages",
+    "publisher": "publisher",
+    "ISSN": "issn",
+    "language": "language",
+    "shortTitle": "short_title",
+    "edition": "edition",
+    "ISBN": "isbn",
+    "bookTitle": "book_title",
+}
+
+
 @mcp.tool(
     name="zotero_update_item",
     description="Update metadata for an existing item in your Zotero library."
@@ -773,30 +795,9 @@ def update_item(
         if book_title is not None:
             field_updates["bookTitle"] = book_title
 
-        # Reverse map: API field name -> tool parameter name for user-facing messages
-        _api_to_param = {
-            "title": "title",
-            "date": "date",
-            "publicationTitle": "publication_title",
-            "abstractNote": "abstract",
-            "DOI": "doi",
-            "url": "url",
-            "extra": "extra",
-            "volume": "volume",
-            "issue": "issue",
-            "pages": "pages",
-            "publisher": "publisher",
-            "ISSN": "issn",
-            "language": "language",
-            "shortTitle": "short_title",
-            "edition": "edition",
-            "ISBN": "isbn",
-            "bookTitle": "book_title",
-        }
-
         skipped = []
         for field, value in field_updates.items():
-            param_name = _api_to_param.get(field, field)
+            param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
             if field in data:
                 old = data[field]
                 if old != value:
