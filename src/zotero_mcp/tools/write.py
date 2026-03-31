@@ -773,12 +773,37 @@ def update_item(
         if book_title is not None:
             field_updates["bookTitle"] = book_title
 
+        # Reverse map: API field name -> tool parameter name for user-facing messages
+        _api_to_param = {
+            "title": "title",
+            "date": "date",
+            "publicationTitle": "publication_title",
+            "abstractNote": "abstract",
+            "DOI": "doi",
+            "url": "url",
+            "extra": "extra",
+            "volume": "volume",
+            "issue": "issue",
+            "pages": "pages",
+            "publisher": "publisher",
+            "ISSN": "issn",
+            "language": "language",
+            "shortTitle": "short_title",
+            "edition": "edition",
+            "ISBN": "isbn",
+            "bookTitle": "book_title",
+        }
+
+        skipped = []
         for field, value in field_updates.items():
+            param_name = _api_to_param.get(field, field)
             if field in data:
                 old = data[field]
                 if old != value:
-                    changes.append(f"- **{field}**: '{old}' -> '{value}'")
+                    changes.append(f"- **{param_name}**: '{old}' -> '{value}'")
                 data[field] = value
+            else:
+                skipped.append(param_name)
 
         # Creators
         if creators is not None:
@@ -819,12 +844,24 @@ def update_item(
             data["collections"] = list(existing_colls)
             changes.append(f"- **collections**: added {resolved}")
 
+        skip_warning = ""
+        if skipped:
+            item_type = data.get("itemType", "unknown")
+            skip_warning = (
+                f"\n\nSkipped (not valid for item type "
+                f"'{item_type}'): {', '.join(skipped)}"
+            )
+
         if not changes:
-            return "No changes to apply."
+            return "No changes to apply." + skip_warning
 
         resp = write_zot.update_item(item)
         if _helpers._handle_write_response(resp, ctx):
-            return f"Successfully updated item `{item_key}`:\n\n" + "\n".join(changes)
+            result = (
+                f"Successfully updated item `{item_key}`:\n\n"
+                + "\n".join(changes)
+            )
+            return result + skip_warning
         return f"Failed to update item: write operation returned failure"
 
     except ValueError as e:

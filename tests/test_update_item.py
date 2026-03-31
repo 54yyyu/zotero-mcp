@@ -810,3 +810,165 @@ class TestUpdateItemNewFields:
         assert d["pages"] == "100-150"
         assert d["ISBN"] == "978-0-000000-00-0"
         assert "Successfully" in result
+
+
+# ---------------------------------------------------------------------------
+# Silent-skip warning: fields not valid for item type
+# ---------------------------------------------------------------------------
+
+class TestUpdateItemSkippedFields:
+
+    def test_skipped_field_warning(self, monkeypatch):
+        """Passing issue= on a book item should produce a skip warning."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            issue="3",
+            ctx=DummyContext(),
+        )
+
+        # No update should happen (only field was skipped)
+        assert len(fake.update_calls) == 0
+        # Warning should mention the param name (snake_case) and item type
+        assert "issue" in result
+        assert "book" in result.lower()
+        assert "skip" in result.lower() or "not valid" in result.lower()
+
+    def test_skipped_uses_param_names(self, monkeypatch):
+        """Warning should use snake_case param names, not camelCase API names."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            short_title="Brief",
+            issue="3",
+            ctx=DummyContext(),
+        )
+
+        # short_title should succeed on book, issue should be skipped
+        assert len(fake.update_calls) == 1
+        # The warning should say "issue" not "issue" (same here), but
+        # for shortTitle -> short_title, if it were skipped it would
+        # use "short_title" not "shortTitle"
+        assert "issue" in result
+
+    def test_mixed_valid_and_skipped(self, monkeypatch):
+        """Valid fields should apply; invalid ones should be warned about."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            edition="2nd",
+            issue="3",
+            pages="100-200",
+            ctx=DummyContext(),
+        )
+
+        # edition should be applied (valid for book)
+        assert len(fake.update_calls) == 1
+        assert fake.update_calls[0]["data"]["edition"] == "2nd"
+        assert "Successfully" in result
+        # issue and pages should be skipped (not valid for book)
+        assert "issue" in result
+        assert "pages" in result
+        assert "book" in result.lower()
+
+    def test_all_fields_skipped(self, monkeypatch):
+        """If all fields are skipped, return no-changes message with warning."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            issue="3",
+            pages="100-200",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.update_calls) == 0
+        assert "No changes" in result
+        assert "issue" in result
+        assert "pages" in result
+
+    def test_existing_field_skipped_on_wrong_type(self, monkeypatch):
+        """Existing fields (e.g., publication_title) should also warn if not valid for type."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            publication_title="Some Journal",
+            edition="2nd",
+            ctx=DummyContext(),
+        )
+
+        # edition should apply, publication_title should be skipped
+        assert len(fake.update_calls) == 1
+        assert "publication_title" in result
+        assert "book" in result.lower()
+
+    def test_same_value_valid_plus_invalid(self, monkeypatch):
+        """Same-value valid field + invalid field: no changes but skip warning shown."""
+        item = _make_book_item(publisher="OUP")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            publisher="OUP",
+            issue="2",
+            ctx=DummyContext(),
+        )
+
+        # publisher value unchanged -> no changes; issue skipped -> warning
+        assert len(fake.update_calls) == 0
+        assert "No changes" in result
+        assert "issue" in result
+
+    def test_clear_field_with_empty_string(self, monkeypatch):
+        """Setting a field to empty string should clear it and show in diff."""
+        item = _make_item(abstract="Some abstract text")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            abstract="",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["abstractNote"] == ""
+        assert "Successfully" in result
+        assert "Some abstract text" in result
+
+    def test_no_op_same_value(self, monkeypatch):
+        """Providing a value identical to existing should return no changes."""
+        item = _make_item(title="Same Title")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            title="Same Title",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.update_calls) == 0
+        assert "No changes" in result
