@@ -703,6 +703,16 @@ def update_item(
     doi: str | None = None,
     url: str | None = None,
     extra: str | None = None,
+    volume: str | None = None,
+    issue: str | None = None,
+    pages: str | None = None,
+    publisher: str | None = None,
+    issn: str | None = None,
+    language: str | None = None,
+    short_title: str | None = None,
+    edition: str | None = None,
+    isbn: str | None = None,
+    book_title: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -742,6 +752,26 @@ def update_item(
             field_updates["url"] = url
         if extra is not None:
             field_updates["extra"] = extra
+        if volume is not None:
+            field_updates["volume"] = volume
+        if issue is not None:
+            field_updates["issue"] = issue
+        if pages is not None:
+            field_updates["pages"] = pages
+        if publisher is not None:
+            field_updates["publisher"] = publisher
+        if issn is not None:
+            field_updates["ISSN"] = issn
+        if language is not None:
+            field_updates["language"] = language
+        if short_title is not None:
+            field_updates["shortTitle"] = short_title
+        if edition is not None:
+            field_updates["edition"] = edition
+        if isbn is not None:
+            field_updates["ISBN"] = isbn
+        if book_title is not None:
+            field_updates["bookTitle"] = book_title
 
         for field, value in field_updates.items():
             if field in data:

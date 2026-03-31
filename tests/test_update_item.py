@@ -606,3 +606,207 @@ class TestUpdateItemFieldVariants:
         assert "OLD_COL" in updated_colls  # existing collection preserved
         assert "NEW_COL1" in updated_colls
         assert "NEW_COL2" in updated_colls
+
+
+# ---------------------------------------------------------------------------
+# New field parameters (volume, issue, pages, publisher, issn, language,
+# short_title, edition, isbn, book_title)
+# ---------------------------------------------------------------------------
+
+class TestUpdateItemNewFields:
+
+    def test_update_volume(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            volume="42",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["volume"] == "42"
+        assert "42" in result
+
+    def test_update_issue(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            issue="3",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["issue"] == "3"
+        assert "3" in result
+
+    def test_update_pages(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            pages="27-61",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["pages"] == "27-61"
+        assert "27-61" in result
+
+    def test_update_publisher(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            publisher="Oxford University Press",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["publisher"] == "Oxford University Press"
+        assert "Oxford University Press" in result
+
+    def test_update_issn(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            issn="0028-0836",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["ISSN"] == "0028-0836"
+        assert "0028-0836" in result
+
+    def test_update_language(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            language="en",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["language"] == "en"
+        assert "en" in result
+
+    def test_update_short_title(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            short_title="Brief",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["shortTitle"] == "Brief"
+        assert "Brief" in result
+
+    def test_update_edition_on_book(self, monkeypatch):
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            edition="3rd",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["edition"] == "3rd"
+        assert "3rd" in result
+
+    def test_update_isbn_on_book(self, monkeypatch):
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            isbn="978-0-123456-78-9",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["ISBN"] == "978-0-123456-78-9"
+        assert "978-0-123456-78-9" in result
+
+    def test_update_book_title_on_book_section(self, monkeypatch):
+        item = _make_book_section_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BSEC1234",
+            book_title="The Oxford Handbook of Philosophy",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["bookTitle"] == "The Oxford Handbook of Philosophy"
+        assert "Oxford Handbook" in result
+
+    def test_update_multiple_new_fields(self, monkeypatch):
+        """Update several new fields simultaneously on a journalArticle."""
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            volume="21",
+            issue="4",
+            pages="27-61",
+            publisher="Springer",
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        assert d["volume"] == "21"
+        assert d["issue"] == "4"
+        assert d["pages"] == "27-61"
+        assert d["publisher"] == "Springer"
+        assert "Successfully" in result
+
+    def test_update_book_section_multiple_fields(self, monkeypatch):
+        """Update bookSection-specific fields together."""
+        item = _make_book_section_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BSEC1234",
+            book_title="Collected Essays",
+            edition="2nd",
+            pages="100-150",
+            isbn="978-0-000000-00-0",
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        assert d["bookTitle"] == "Collected Essays"
+        assert d["edition"] == "2nd"
+        assert d["pages"] == "100-150"
+        assert d["ISBN"] == "978-0-000000-00-0"
+        assert "Successfully" in result
