@@ -181,7 +181,7 @@ The semantic search provides similarity scores and finds papers based on concept
 
 ## 🖥️ Setup & Usage
 
-Full documentation is available at [Zotero MCP docs](https://stevenyuyy.us/zotero-mcp/).
+Full documentation is available at [Zotero MCP docs](https://stevenyuyy.com/zotero-mcp/).
 
 **Requirements**
 - Python 3.10+
