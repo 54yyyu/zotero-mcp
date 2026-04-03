@@ -12,6 +12,7 @@ from fastmcp import Context
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
 
@@ -23,6 +24,7 @@ CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
     name="zotero_batch_update_tags",
     description="Batch update tags across multiple items matching a search query or tag filter."
 )
+@with_zotero_api_lock
 def batch_update_tags(
     query: str = "",
     add_tags: list[str] | str | None = None,
@@ -215,6 +217,7 @@ def batch_update_tags(
     name="zotero_create_collection",
     description="Create a new collection (project/folder) in your Zotero library."
 )
+@with_zotero_api_lock
 def create_collection(
     name: str,
     parent_collection: str | None = None,
@@ -264,6 +267,7 @@ def create_collection(
     name="zotero_search_collections",
     description="Search for collections by name to find their keys."
 )
+@with_zotero_api_lock
 def search_collections(
     query: str,
     *,
@@ -312,6 +316,7 @@ def search_collections(
     name="zotero_manage_collections",
     description="Add or remove items from collections."
 )
+@with_zotero_api_lock
 def manage_collections(
     item_keys: list[str] | str,
     add_to: list[str] | str | None = None,
@@ -377,6 +382,7 @@ def manage_collections(
     name="zotero_add_by_doi",
     description="Add a paper to your Zotero library by DOI. Fetches metadata from CrossRef."
 )
+@with_zotero_api_lock
 def add_by_doi(
     doi: str,
     collections: list[str] | str | None = None,
@@ -529,6 +535,7 @@ def add_by_doi(
     name="zotero_add_by_url",
     description="Add a paper by URL. Supports DOI URLs, arXiv URLs, and general web pages."
 )
+@with_zotero_api_lock
 def add_by_url(
     url: str,
     collections: list[str] | str | None = None,
@@ -587,6 +594,7 @@ def add_by_url(
         return f"Error adding by URL: {e}"
 
 
+@with_zotero_api_lock
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     """Add an arXiv paper by ID. Internal helper for add_by_url."""
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
@@ -688,6 +696,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     name="zotero_update_item",
     description="Update metadata for an existing item in your Zotero library."
 )
+@with_zotero_api_lock
 def update_item(
     item_key: str,
     title: str | None = None,
@@ -808,6 +817,7 @@ def update_item(
     name="zotero_find_duplicates",
     description="Find duplicate items in your library by title and/or DOI."
 )
+@with_zotero_api_lock
 def find_duplicates(
     method: Literal["title", "doi", "both"] = "both",
     collection_key: str | None = None,
@@ -918,6 +928,7 @@ def find_duplicates(
         "Dry-run by default — call with confirm=True to execute."
     )
 )
+@with_zotero_api_lock
 def merge_duplicates(
     keeper_key: str,
     duplicate_keys: list[str] | str,
@@ -1120,6 +1131,7 @@ def merge_duplicates(
     name="zotero_get_pdf_outline",
     description="Extract the table of contents / outline from a PDF attachment."
 )
+@with_zotero_api_lock
 def get_pdf_outline(
     item_key: str,
     *,
@@ -1181,6 +1193,7 @@ def get_pdf_outline(
         "File path must be absolute and point to a .pdf or .epub file."
     )
 )
+@with_zotero_api_lock
 def add_from_file(
     file_path: str,
     title: str | None = None,

@@ -10,6 +10,7 @@ from fastmcp import Context
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
 
@@ -18,6 +19,7 @@ from zotero_mcp.tools import _helpers
     name="zotero_get_annotations",
     description="Get all annotations for a specific item or across your entire Zotero library. When called without item_key, returns ALL annotations library-wide — this can be very large. Always pass item_key when you know which item you want."
 )
+@with_zotero_api_lock
 def get_annotations(
     item_key: str | None = None,
     use_pdf_extraction: bool = False,
@@ -357,6 +359,7 @@ _get_annotations = get_annotations
     name="zotero_get_notes",
     description="Retrieve notes from your Zotero library, with options to filter by parent item."
 )
+@with_zotero_api_lock
 def get_notes(
     item_key: str | None = None,
     limit: int | str | None = 20,
@@ -452,6 +455,7 @@ def get_notes(
 # Helpers for search_notes
 # ---------------------------------------------------------------------------
 
+@with_zotero_api_lock
 def _batch_resolve_parent_titles(
     zot, parent_keys: set[str], ctx: Context
 ) -> dict[str, str]:
@@ -472,6 +476,7 @@ def _batch_resolve_parent_titles(
     return titles
 
 
+@with_zotero_api_lock
 def _batch_resolve_grandparent_titles(
     zot, parent_keys: set[str], ctx: Context
 ) -> dict[str, str]:
@@ -528,6 +533,7 @@ def _batch_resolve_grandparent_titles(
     return result
 
 
+@with_zotero_api_lock
 def _format_search_results(
     query: str, note_results: list[dict], annotation_results: list[dict]
 ) -> str:
@@ -584,6 +590,7 @@ def _format_search_results(
     name="zotero_search_notes",
     description="Search for notes and annotations across your Zotero library."
 )
+@with_zotero_api_lock
 def search_notes(
     query: str,
     limit: int | str | None = 20,
@@ -713,6 +720,7 @@ def search_notes(
     name="zotero_create_note",
     description="Create a new note for a Zotero item."
 )
+@with_zotero_api_lock
 def create_note(
     item_key: str,
     note_title: str,
@@ -858,6 +866,7 @@ def create_note(
     name="zotero_create_annotation",
     description="Create a highlight annotation on a PDF or EPUB attachment with optional comment."
 )
+@with_zotero_api_lock
 def create_annotation(
     attachment_key: str,
     page: int,

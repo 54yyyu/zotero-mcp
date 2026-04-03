@@ -12,6 +12,7 @@ from fastmcp import Context
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
 
@@ -20,6 +21,7 @@ from zotero_mcp.tools import _helpers
     name="zotero_get_item_metadata",
     description="Get detailed metadata for a specific Zotero item by its key. If the metadata and abstract don't contain the specific information you need, use zotero_get_item_fulltext to read the full paper — but note that fulltext retrieval is resource-intensive and should not be used for searching; use zotero_search_items or zotero_semantic_search instead."
 )
+@with_zotero_api_lock
 def get_item_metadata(
     item_key: str,
     include_abstract: bool = True,
@@ -64,6 +66,7 @@ def get_item_metadata(
     name="zotero_get_item_fulltext",
     description="Get the full text content of a Zotero item by its key. WARNING: Returns the entire paper text (often 10K+ tokens). Only use when you need to read the actual paper content, not just metadata. Do NOT use this for searching — use zotero_search_items or zotero_semantic_search instead. Avoid calling this on multiple papers in one conversation unless the user specifically asks to read them."
 )
+@with_zotero_api_lock
 def get_item_fulltext(
     item_key: str,
     *,
@@ -203,6 +206,7 @@ def get_item_fulltext(
     name="zotero_get_collections",
     description="List all collections in your Zotero library."
 )
+@with_zotero_api_lock
 def get_collections(
     limit: int | str | None = None,
     *,
@@ -291,6 +295,7 @@ def get_collections(
         return f"# Zotero Collections\n\n{error_msg}"
 
 
+@with_zotero_api_lock
 def _build_attachment_extra(info):
     """Build extra_fields dict from attachment_info for format_item_result."""
     if not info:
@@ -310,6 +315,7 @@ def _build_attachment_extra(info):
     name="zotero_get_collection_items",
     description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. TIP: To find papers on a specific topic, use zotero_semantic_search instead — it's faster and returns only relevant results."
 )
+@with_zotero_api_lock
 def get_collection_items(
     collection_key: str,
     detail: Literal["keys_only", "summary", "full"] = "summary",
@@ -436,6 +442,7 @@ def get_collection_items(
     name="zotero_get_item_children",
     description="Get all child items (attachments, notes) for a specific Zotero item."
 )
+@with_zotero_api_lock
 def get_item_children(
     item_key: str,
     *,
@@ -550,6 +557,7 @@ def get_item_children(
     name="zotero_get_items_children",
     description="Get child items (attachments, notes) for MULTIPLE Zotero items in one call. Much more efficient than calling get_item_children repeatedly."
 )
+@with_zotero_api_lock
 def get_items_children(
     item_keys: list[str] | str,
     *,
@@ -639,6 +647,7 @@ def get_items_children(
     name="zotero_get_tags",
     description="Get all tags used in your Zotero library."
 )
+@with_zotero_api_lock
 def get_tags(
     limit: int | str | None = None,
     *,
@@ -703,6 +712,7 @@ def get_tags(
     name="zotero_list_libraries",
     description="List all accessible Zotero libraries (user library, group libraries, and RSS feeds). Use this to discover available libraries before switching with zotero_switch_library.",
 )
+@with_zotero_api_lock
 def list_libraries(*, ctx: Context) -> str:
     """
     List all accessible Zotero libraries.
@@ -811,6 +821,7 @@ def list_libraries(*, ctx: Context) -> str:
     name="zotero_switch_library",
     description="Switch the active Zotero library context. All subsequent tool calls will operate on the selected library. Use zotero_list_libraries first to see available options. Pass library_type='default' to reset to the original environment variable configuration.",
 )
+@with_zotero_api_lock
 def switch_library(
     library_id: str,
     library_type: str = "group",
@@ -870,6 +881,7 @@ def switch_library(
         return f"Error switching library: {str(e)}"
 
 
+@with_zotero_api_lock
 def validate_library_switch(library_id: str, library_type: str) -> str | None:
     """Validate a library switch request before applying it.
 
@@ -914,6 +926,7 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
     name="zotero_list_feeds",
     description="List all RSS feed subscriptions in your local Zotero installation. Shows feed names, URLs, item counts, and last check times. Local mode only.",
 )
+@with_zotero_api_lock
 def list_feeds(*, ctx: Context) -> str:
     """
     List all RSS feed subscriptions from the local Zotero database.
@@ -962,6 +975,7 @@ def list_feeds(*, ctx: Context) -> str:
     name="zotero_get_feed_items",
     description="Get items from a specific RSS feed by its library ID. Use zotero_list_feeds first to find feed library IDs. Local mode only.",
 )
+@with_zotero_api_lock
 def get_feed_items(
     library_id: int,
     limit: int = 20,
@@ -1035,6 +1049,7 @@ def get_feed_items(
     name="zotero_get_recent",
     description="Get recently added items to your Zotero library."
 )
+@with_zotero_api_lock
 def get_recent(
     limit: int | str = 10,
     *,
