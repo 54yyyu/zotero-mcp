@@ -314,6 +314,101 @@ def test_update_note_missing_key(monkeypatch):
     assert fake.updated == []
 
 
+class FakePatchResponse:
+    def __init__(self, status_code=204, text=""):
+        self.status_code = status_code
+        self.text = text
+
+
+class FakeHttpxClient:
+    def __init__(self, status_code=204, text=""):
+        self._status_code = status_code
+        self._text = text
+        self.calls = []
+
+    def patch(self, url, headers, content):
+        self.calls.append({"url": url, "headers": headers, "content": content})
+        return FakePatchResponse(self._status_code, self._text)
+
+
+class FakeZoteroForDeleteNote:
+    def __init__(self, items, patch_status=204):
+        self._items = items
+        self.endpoint = "https://api.zotero.org"
+        self.library_type = "users"
+        self.library_id = "12345"
+        self.client = FakeHttpxClient(status_code=patch_status)
+
+    def item(self, key):
+        if key not in self._items:
+            raise KeyError(key)
+        return self._items[key]
+
+
+def test_delete_note_trashes_via_patch(monkeypatch):
+    note = {
+        "key": "NOTE0001",
+        "version": 42,
+        "data": {"key": "NOTE0001", "version": 42, "itemType": "note", "note": "<p>x</p>"},
+    }
+    fake = FakeZoteroForDeleteNote({"NOTE0001": note})
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+
+    result = server.delete_note(item_key="NOTE0001", ctx=DummyContext())
+
+    assert "Successfully trashed" in result
+    assert len(fake.client.calls) == 1
+    call = fake.client.calls[0]
+    assert "NOTE0001" in call["url"]
+    assert call["headers"]["If-Unmodified-Since-Version"] == "42"
+    assert '"deleted": 1' in call["content"]
+
+
+def test_delete_note_rejects_non_note(monkeypatch):
+    parent = {
+        "key": "ITEM0001",
+        "version": 1,
+        "data": {"key": "ITEM0001", "version": 1, "itemType": "journalArticle"},
+    }
+    fake = FakeZoteroForDeleteNote({"ITEM0001": parent})
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+
+    result = server.delete_note(item_key="ITEM0001", ctx=DummyContext())
+
+    assert "is not a note" in result
+    assert fake.client.calls == []
+
+
+def test_delete_note_missing_key(monkeypatch):
+    fake = FakeZoteroForDeleteNote({})
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+
+    result = server.delete_note(item_key="ZZZZZZZZ", ctx=DummyContext())
+
+    assert "No item found" in result
+    assert fake.client.calls == []
+
+
+def test_delete_note_http_error(monkeypatch):
+    note = {
+        "key": "NOTE0001",
+        "version": 5,
+        "data": {"key": "NOTE0001", "version": 5, "itemType": "note", "note": ""},
+    }
+    fake = FakeZoteroForDeleteNote({"NOTE0001": note}, patch_status=412)
+    fake.client._text = "Precondition failed"
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+
+    result = server.delete_note(item_key="NOTE0001", ctx=DummyContext())
+
+    assert "Failed to trash" in result
+    assert "412" in result
+
+
 def test_batch_update_tags_validates_json_array(monkeypatch):
     items = [
         {

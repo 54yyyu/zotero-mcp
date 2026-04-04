@@ -20,6 +20,29 @@ _WEB_API_ENV_VARS = (
 )
 
 
+def _get_note_write_client(op_description: str):
+    """Return (client, None) or (None, error_msg) for note-write operations.
+
+    Zotero's local API is read-only, so in local mode this falls back to the
+    web client and propagates any active library override.
+    """
+    if _utils.is_local_mode():
+        zot = _client.get_web_zotero_client()
+        if zot is None:
+            return None, (
+                f"Error: Web API credentials required for {op_description}.\n\n"
+                "Please configure the following environment variables:\n"
+                + _WEB_API_ENV_VARS
+            )
+        override = _client.get_active_library()
+        if override:
+            zot.library_id = override.get("library_id", zot.library_id)
+            zot.library_type = override.get("library_type", zot.library_type)
+    else:
+        zot = _client.get_zotero_client()
+    return zot, None
+
+
 @mcp.tool(
     name="zotero_get_annotations",
     description="Get all annotations for a specific item or across your entire Zotero library. When called without item_key, returns ALL annotations library-wide — this can be very large. Always pass item_key when you know which item you want."
@@ -900,21 +923,9 @@ def update_note(
     try:
         ctx.info(f"Updating note {item_key} (append={append})")
 
-        # Zotero's local API is read-only; writes must use the web API.
-        if _utils.is_local_mode():
-            zot = _client.get_web_zotero_client()
-            if zot is None:
-                return (
-                    "Error: Web API credentials required for updating notes.\n\n"
-                    "Please configure the following environment variables:\n"
-                    + _WEB_API_ENV_VARS
-                )
-            override = _client.get_active_library()
-            if override:
-                zot.library_id = override.get("library_id", zot.library_id)
-                zot.library_type = override.get("library_type", zot.library_type)
-        else:
-            zot = _client.get_zotero_client()
+        zot, err = _get_note_write_client("updating notes")
+        if err:
+            return err
 
         try:
             item = zot.item(item_key)
@@ -938,6 +949,63 @@ def update_note(
     except Exception as e:
         ctx.error(f"Error updating note: {str(e)}")
         return f"Error updating note: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_delete_note",
+    description="Move a Zotero note to the Trash. Trashed notes are recoverable from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."
+)
+def delete_note(
+    item_key: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Move a Zotero note to the Trash.
+
+    Args:
+        item_key: Zotero item key/ID of the note to trash
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        ctx.info(f"Trashing note {item_key}")
+
+        zot, err = _get_note_write_client("deleting notes")
+        if err:
+            return err
+
+        try:
+            item = zot.item(item_key)
+        except Exception:
+            return f"Error: No item found with key: {item_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "note":
+            return f"Error: Item {item_key} is not a note (itemType={data.get('itemType')})"
+
+        # pyzotero's delete_item() permanently destroys items, and update_item()
+        # strips the "deleted" field. We send a direct PATCH with {"deleted": 1}
+        # to move the note to Zotero's Trash (recoverable by the user).
+        from pyzotero.zotero import build_url
+        url = build_url(
+            zot.endpoint,
+            f"/{zot.library_type}/{zot.library_id}/items/{item_key}",
+        )
+        resp = zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return f"Successfully trashed note {item_key} (recoverable from Zotero's Trash)"
+        return f"Failed to trash note {item_key} (HTTP {resp.status_code}): {resp.text[:200]}"
+
+    except Exception as e:
+        ctx.error(f"Error trashing note: {str(e)}")
+        return f"Error trashing note: {str(e)}"
 
 
 @mcp.tool(
