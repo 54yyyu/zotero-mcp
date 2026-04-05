@@ -157,15 +157,36 @@ def get_annotations(
                 except Exception as bibtex_error:
                     ctx.warn(f"Error initializing Better BibTeX: {bibtex_error}")
 
-            # Fallback to Zotero API annotations
+            # Fallback to Zotero API annotations.
+            #
+            # In Zotero's data model annotations are children of the PDF
+            # attachment, not the parent paper. So if item_key points to a
+            # paper we need to descend through its attachment children.
+            # If item_key is itself an attachment, its annotations are
+            # returned directly. We do both and dedupe by key for safety.
             if not better_bibtex_annotations:
                 try:
-                    # Get child annotations via Zotero API
-                    children = zot.children(item_key)
-                    zotero_api_annotations = [
-                        item for item in children
-                        if item.get("data", {}).get("itemType") == "annotation"
-                    ]
+                    direct = _helpers._paginate(
+                        zot.children, item_key, itemType="annotation"
+                    )
+                    attachments = _helpers._paginate(
+                        zot.children, item_key, itemType="attachment"
+                    )
+                    nested = []
+                    for att in attachments:
+                        att_key = att.get("key")
+                        if att_key:
+                            nested.extend(
+                                _helpers._paginate(
+                                    zot.children, att_key, itemType="annotation"
+                                )
+                            )
+                    seen = set()
+                    for a in direct + nested:
+                        k = a.get("key")
+                        if k and k not in seen:
+                            seen.add(k)
+                            zotero_api_annotations.append(a)
                     ctx.info(f"Retrieved {len(zotero_api_annotations)} annotations via Zotero API")
                 except Exception as api_error:
                     ctx.warn(f"Error retrieving Zotero API annotations: {api_error}")
