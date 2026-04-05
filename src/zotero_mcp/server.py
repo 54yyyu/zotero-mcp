@@ -80,6 +80,7 @@ from zotero_mcp.tools.retrieval import (  # noqa: F401
     list_feeds,
     get_feed_items,
     get_recent,
+    get_item_related,
 )
 from zotero_mcp.tools.annotations import (  # noqa: F401
     get_annotations,
@@ -103,6 +104,8 @@ from zotero_mcp.tools.write import (  # noqa: F401
     merge_duplicates,
     get_pdf_outline,
     add_from_file,
+    add_item_relation,
+    remove_item_relation,
 )
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,

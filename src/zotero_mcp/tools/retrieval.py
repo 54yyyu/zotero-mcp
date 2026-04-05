@@ -4,6 +4,7 @@ from typing import Literal
 import json
 import logging as _logging
 import os
+import re
 import tempfile
 import time as _time
 from pathlib import Path
@@ -1076,3 +1077,112 @@ def get_recent(
     except Exception as e:
         ctx.error(f"Error fetching recent items: {str(e)}")
         return f"Error fetching recent items: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_get_item_related",
+    description="Get all related items for a specific Zotero item. Returns items that are linked via the relations field."
+)
+def get_item_related(
+    item_key: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Get all related items for a specific Zotero item.
+
+    Args:
+        item_key: Zotero item key/ID
+        ctx: MCP context
+
+    Returns:
+        Markdown-formatted list of related items
+    """
+    try:
+        ctx.info(f"Fetching related items for {item_key}")
+        zot = _client.get_zotero_client()
+
+        # Fetch the item
+        try:
+            item = zot.item(item_key)
+        except Exception as e:
+            return f"Error: Item '{item_key}' not found."
+
+        data = item.get("data", {})
+        item_title = data.get("title", "Untitled")
+        relations = data.get("relations", {})
+
+        if not isinstance(relations, dict) or not relations:
+            return f"No related items found for: **{item_title}** (Key: `{item_key}`)"
+
+        # Extract related item keys from URIs
+        # Zotero uses URIs like: http://zotero.org/users/{library_id}/items/{item_key}
+        # or http://zotero.org/groups/{group_id}/items/{item_key}
+
+        related_keys = []
+        seen_keys = set()
+        for rel_type, rel_values in relations.items():
+            if not isinstance(rel_values, list):
+                rel_values = [rel_values]
+            for uri in rel_values:
+                if not isinstance(uri, str):
+                    continue
+                # Extract item key from URI
+                match = re.search(r'/items/([A-Z0-9]{8})$', uri)
+                if match:
+                    key = match.group(1)
+                    # Deduplicate: same key may appear with both users/ and groups/ prefix
+                    dedup_id = (rel_type, key)
+                    if dedup_id not in seen_keys:
+                        seen_keys.add(dedup_id)
+                        related_keys.append((rel_type, key, uri))
+
+        if not related_keys:
+            return f"No related items found for: **{item_title}** (Key: `{item_key}`)"
+
+        # Fetch details for related items
+        output = [f"# Related Items for: {item_title}", f"**Item Key:** `{item_key}`", ""]
+
+        # Group by relation type
+        by_type = {}
+        for rel_type, key, uri in related_keys:
+            if rel_type not in by_type:
+                by_type[rel_type] = []
+            by_type[rel_type].append((key, uri))
+
+        for rel_type, items in by_type.items():
+            output.append(f"## Relation Type: `{rel_type}`")
+            output.append("")
+
+            for rel_key, uri in items:
+                try:
+                    rel_item = zot.item(rel_key)
+                    rel_data = rel_item.get("data", {})
+                    rel_title = rel_data.get("title", "Untitled")
+                    rel_type_name = rel_data.get("itemType", "unknown")
+                    rel_date = rel_data.get("date", "")
+                    rel_creator = ""
+                    if rel_data.get("creators"):
+                        first_creator = rel_data["creators"][0]
+                        if "lastName" in first_creator:
+                            rel_creator = first_creator["lastName"]
+                        elif "name" in first_creator:
+                            rel_creator = first_creator["name"]
+
+                    creator_info = f", {rel_creator}" if rel_creator else ""
+                    date_info = f" ({rel_date})" if rel_date else ""
+
+                    output.append(f"- `{rel_key}` — **{rel_title}**{creator_info}{date_info}")
+                    output.append(f"  - Type: {rel_type_name}")
+                    if doi := rel_data.get("DOI"):
+                        output.append(f"  - DOI: {doi}")
+                    output.append("")
+                except Exception as e:
+                    output.append(f"- `{rel_key}` — (Could not fetch details: {e})")
+                    output.append("")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        ctx.error(f"Error fetching related items: {str(e)}")
+        return f"Error fetching related items: {str(e)}"

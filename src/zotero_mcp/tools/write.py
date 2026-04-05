@@ -1293,3 +1293,264 @@ def add_from_file(
     except Exception as e:
         ctx.error(f"Error adding from file: {e}")
         return f"Error adding from file: {e}"
+
+
+def _build_relation_uri(library_type: str, library_id: str, item_key: str) -> str:
+    """Build a Zotero relation URI for the given item.
+
+    Uses the canonical format based on library_type:
+    - user library  → ``http://zotero.org/users/<id>/items/<key>``
+    - group library → ``http://zotero.org/groups/<id>/items/<key>``
+
+    Note: pyzotero internally pluralises the constructor argument
+    (``'user'`` → ``'users'``, ``'group'`` → ``'groups'``), so we
+    accept both singular and plural forms.
+    """
+    kind = "users" if library_type in ("user", "users") else "groups"
+    return f"http://zotero.org/{kind}/{library_id}/items/{item_key}"
+
+
+def _relation_exists(rel_list: list, library_id: str, item_key: str) -> bool:
+    """Check whether a relation to *item_key* already exists (either URI variant)."""
+    pattern = re.compile(
+        rf"http://zotero\.org/(?:users|groups)/{re.escape(str(library_id))}/items/{re.escape(item_key)}$"
+    )
+    return any(isinstance(uri, str) and pattern.search(uri) for uri in rel_list)
+
+
+def _find_matching_uri(rel_list: list, library_id: str, item_key: str) -> str | None:
+    """Find and return the actual URI string for *item_key* regardless of prefix."""
+    pattern = re.compile(
+        rf"http://zotero\.org/(?:users|groups)/{re.escape(str(library_id))}/items/{re.escape(item_key)}$"
+    )
+    for uri in rel_list:
+        if isinstance(uri, str) and pattern.search(uri):
+            return uri
+    return None
+
+
+@mcp.tool(
+    name="zotero_add_item_relation",
+    description="Add a related item relationship to a Zotero item. Creates a bidirectional link between two items."
+)
+def add_item_relation(
+    item_key: str,
+    related_item_key: str,
+    relation_type: str = "dc:relation",
+    *,
+    ctx: Context
+) -> str:
+    """
+    Add a related item relationship to a Zotero item.
+
+    Args:
+        item_key: The key of the primary item
+        related_item_key: The key of the item to relate to
+        relation_type: The type of relationship (default: "dc:relation").
+                       Common values: "dc:relation", "owl:sameAs"
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if item_key == related_item_key:
+            return "Error: Cannot relate an item to itself."
+
+        ctx.info(f"Adding relation from {item_key} to {related_item_key}")
+
+        # Fetch the primary item
+        try:
+            item = write_zot.item(item_key)
+        except Exception as e:
+            return f"Error: Item '{item_key}' not found."
+
+        # Verify the related item exists
+        try:
+            related_item = write_zot.item(related_item_key)
+        except Exception as e:
+            return f"Error: Related item '{related_item_key}' not found."
+
+        data = item.get("data", {})
+        related_data = related_item.get("data", {})
+
+        # Get current relations or initialize empty dict
+        relations = data.get("relations", {})
+        if not isinstance(relations, dict):
+            relations = {}
+
+        # Build the relation URI using the canonical format for the library type
+        library_type = write_zot.library_type
+        library_id = write_zot.library_id
+        related_uri = _build_relation_uri(library_type, library_id, related_item_key)
+
+        # Add the relation to the primary item
+        if relation_type not in relations:
+            relations[relation_type] = []
+        if not isinstance(relations[relation_type], list):
+            relations[relation_type] = [relations[relation_type]]
+
+        # Check if relation already exists (match both URI prefix variants)
+        if _relation_exists(relations[relation_type], library_id, related_item_key):
+            return f"Relation already exists: '{item_key}' is already related to '{related_item_key}'."
+
+        relations[relation_type].append(related_uri)
+        data["relations"] = relations
+
+        # Update the primary item
+        resp = write_zot.update_item(item)
+        if not _helpers._handle_write_response(resp, ctx):
+            return f"Failed to add relation to item '{item_key}'."
+
+        # Also add reverse relation (bidirectional)
+        try:
+            # Re-fetch to get latest version
+            item = write_zot.item(item_key)
+            related_item = write_zot.item(related_item_key)
+            related_data = related_item.get("data", {})
+            reverse_relations = related_data.get("relations", {})
+            if not isinstance(reverse_relations, dict):
+                reverse_relations = {}
+
+            item_uri = _build_relation_uri(library_type, library_id, item_key)
+
+            if relation_type not in reverse_relations:
+                reverse_relations[relation_type] = []
+            if not isinstance(reverse_relations[relation_type], list):
+                reverse_relations[relation_type] = [reverse_relations[relation_type]]
+
+            if not _relation_exists(reverse_relations[relation_type], library_id, item_key):
+                reverse_relations[relation_type].append(item_uri)
+                related_data["relations"] = reverse_relations
+                write_zot.update_item(related_item)
+        except Exception as e:
+            ctx.warn(f"Could not add reverse relation: {e}")
+
+        item_title = data.get("title", "Untitled")
+        related_title = related_data.get("title", "Untitled")
+
+        return (
+            f"Successfully added relation:\n\n"
+            f"**From:** `{item_key}` — {item_title}\n"
+            f"**To:** `{related_item_key}` — {related_title}\n"
+            f"**Relation type:** `{relation_type}`"
+        )
+
+    except Exception as e:
+        ctx.error(f"Error adding item relation: {e}")
+        return f"Error adding item relation: {e}"
+
+
+@mcp.tool(
+    name="zotero_remove_item_relation",
+    description="Remove a related item relationship from a Zotero item."
+)
+def remove_item_relation(
+    item_key: str,
+    related_item_key: str,
+    relation_type: str = "dc:relation",
+    remove_bidirectional: bool = True,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Remove a related item relationship from a Zotero item.
+
+    Args:
+        item_key: The key of the primary item
+        related_item_key: The key of the related item to unlink
+        relation_type: The type of relationship (default: "dc:relation")
+        remove_bidirectional: Also remove the reverse relation (default: True)
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        ctx.info(f"Removing relation from {item_key} to {related_item_key}")
+
+        # Fetch the primary item
+        try:
+            item = write_zot.item(item_key)
+        except Exception as e:
+            return f"Error: Item '{item_key}' not found."
+
+        data = item.get("data", {})
+        relations = data.get("relations", {})
+
+        if not isinstance(relations, dict):
+            return f"Item '{item_key}' has no relations to remove."
+
+        if relation_type not in relations:
+            return f"Item '{item_key}' has no relations of type '{relation_type}'."
+
+        # Match any URI variant (users/ or groups/) for this library
+        library_id = write_zot.library_id
+
+        rel_list = relations[relation_type]
+        if not isinstance(rel_list, list):
+            rel_list = [rel_list]
+
+        # Find the matching URI regardless of users/ vs groups/ prefix
+        matched_uri = _find_matching_uri(rel_list, library_id, related_item_key)
+        if matched_uri is None:
+            return f"Relation not found: '{item_key}' is not related to '{related_item_key}'."
+
+        # Remove the relation
+        rel_list.remove(matched_uri)
+        if not rel_list:
+            del relations[relation_type]
+        else:
+            relations[relation_type] = rel_list
+
+        data["relations"] = relations
+
+        # Update the item
+        resp = write_zot.update_item(item)
+        if not _helpers._handle_write_response(resp, ctx):
+            return f"Failed to remove relation from item '{item_key}'."
+
+        # Remove bidirectional relation if requested
+        if remove_bidirectional:
+            try:
+                related_item = write_zot.item(related_item_key)
+                related_data = related_item.get("data", {})
+                reverse_relations = related_data.get("relations", {})
+
+                if isinstance(reverse_relations, dict) and relation_type in reverse_relations:
+                    reverse_list = reverse_relations[relation_type]
+                    if not isinstance(reverse_list, list):
+                        reverse_list = [reverse_list]
+
+                    matched_reverse = _find_matching_uri(reverse_list, library_id, item_key)
+                    if matched_reverse is not None:
+                        reverse_list.remove(matched_reverse)
+                        if not reverse_list:
+                            del reverse_relations[relation_type]
+                        else:
+                            reverse_relations[relation_type] = reverse_list
+                        related_data["relations"] = reverse_relations
+                        write_zot.update_item(related_item)
+            except Exception as e:
+                ctx.warn(f"Could not remove reverse relation: {e}")
+
+        return (
+            f"Successfully removed relation:\n\n"
+            f"**From:** `{item_key}`\n"
+            f"**To:** `{related_item_key}`\n"
+            f"**Relation type:** `{relation_type}`"
+        )
+
+    except Exception as e:
+        ctx.error(f"Error removing item relation: {e}")
+        return f"Error removing item relation: {e}"
