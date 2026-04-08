@@ -201,10 +201,14 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string using retrieval_query task type."""
+        # Truncate before any prefix prepending. For v2 models max_input_tokens
+        # already excludes V2_PREFIX_TOKEN_BUDGET (reserved in __init__), so
+        # the post-prefix payload stays under the model's hard cap. For v1
+        # models truncation prevents API errors on pathological queries that
+        # the upstream pipeline does not pre-truncate (queries bypass the
+        # _process_item_batch truncate_text path that documents go through).
+        text = self.truncate(text, self.max_input_tokens)
         if self._is_v2():
-            # V2_PREFIX_TOKEN_BUDGET is reserved from max_input_tokens in
-            # __init__ so any future truncation step will leave room for
-            # this prefix without exceeding the model's hard cap.
             prompt_text = f"{self.V2_QUERY_PREFIX}{text}"
             response = self.client.models.embed_content(
                 model=self.model_name,
