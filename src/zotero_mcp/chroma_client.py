@@ -87,16 +87,42 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 class GeminiEmbeddingFunction(EmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai."""
 
+    # gemini-embedding-2-* models ignore the task_type config field (the API
+    # silently drops it). Google's recommended alternative is to embed the
+    # task instruction in the prompt text itself, which empirically shifts
+    # the embedding space (cos ~0.84 vs raw baseline) and preserves asymmetric
+    # doc/query tuning (cos ~0.94 between doc-prefix and query-prefix).
+    # These are the canonical prefixes; __call__ and embed_query prepend them
+    # to every v2 input. They MUST stay in sync with V2_PREFIX_TOKEN_BUDGET
+    # below: if you lengthen a prefix, bump the budget so truncation still
+    # leaves room for it under the model's hard cap.
+    V2_DOC_PREFIX = "Represent this document for retrieval:\n\n"
+    V2_QUERY_PREFIX = "Represent this query for retrieval:\n\n"
+
+    # Token reservation for the v2 prefix above. The longest prefix is
+    # V2_DOC_PREFIX at 42 chars ~= 11 tokens with typical English tokenization.
+    # We reserve 20 tokens (11 actual + 9 slack) so that truncate() leaves
+    # room for the prefix without ever producing a post-prefix payload that
+    # exceeds the model's 8192 hard cap even on dense text.
+    V2_PREFIX_TOKEN_BUDGET = 20
+
     # Default for gemini-embedding-001 (hard cap 2048 tokens). Per-instance
-    # override in __init__ for models with larger context windows.
+    # override in __init__ for models with larger context windows. NOTE: for
+    # v2 models this value means "effective budget for the TEXT BODY" —
+    # prefix tokens are reserved separately (see V2_PREFIX_TOKEN_BUDGET).
     max_input_tokens = 2000
 
     def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None, base_url: str | None = None):
         self.model_name = model_name
-        # Model-aware token limit — leave headroom below the model's hard cap.
-        # gemini-embedding-2-* supports 8192 tokens; gemini-embedding-001 is 2048.
+        # Model-aware token limit. For v2 models, derive from:
+        #   hard_cap (8192) - safety_margin (192, for char-based truncation
+        #   imprecision) - V2_PREFIX_TOKEN_BUDGET (20, reserved for the
+        #   in-prompt task instruction prepended in __call__/embed_query).
+        # Net effective budget for text body: 8192 - 192 - 20 = 7980 tokens.
+        # This guarantees post-prefix payload <= hard cap even at the
+        # truncation limit, formally closing the cap-enforcement gap.
         if "gemini-embedding-2" in model_name:
-            self.max_input_tokens = 8000
+            self.max_input_tokens = 8000 - self.V2_PREFIX_TOKEN_BUDGET
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self.base_url = base_url or os.getenv("GEMINI_BASE_URL")
         if not self.api_key:
@@ -146,9 +172,10 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         texts = list(input)
         if is_v2:
             # v2 models: task instruction goes in the prompt, no config.
-            prepared = [
-                f"Represent this document for retrieval:\n\n{t}" for t in texts
-            ]
+            # V2_PREFIX_TOKEN_BUDGET is already reserved from max_input_tokens
+            # in __init__, so upstream truncation guarantees the combined
+            # payload stays under the model's hard cap.
+            prepared = [f"{self.V2_DOC_PREFIX}{t}" for t in texts]
         else:
             prepared = texts
 
@@ -175,7 +202,10 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string using retrieval_query task type."""
         if self._is_v2():
-            prompt_text = f"Represent this query for retrieval:\n\n{text}"
+            # V2_PREFIX_TOKEN_BUDGET is reserved from max_input_tokens in
+            # __init__ so any future truncation step will leave room for
+            # this prefix without exceeding the model's hard cap.
+            prompt_text = f"{self.V2_QUERY_PREFIX}{text}"
             response = self.client.models.embed_content(
                 model=self.model_name,
                 contents=[prompt_text],
