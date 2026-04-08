@@ -826,7 +826,7 @@ class ZoteroSemanticSearch:
                     except Exception:
                         pass
 
-                batch_stats = self._process_item_batch(batch, force_full_rebuild)
+                batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
 
                 stats["processed_items"] += batch_stats["processed"]
                 stats["added_items"] += batch_stats["added"]
@@ -893,8 +893,20 @@ class ZoteroSemanticSearch:
             stats["duration"] = str(end_time - start_time)
             return stats
 
-    def _process_item_batch(self, items: list[dict[str, Any]], force_rebuild: bool = False) -> dict[str, int]:
-        """Process a batch of items."""
+    def _process_item_batch(
+        self,
+        items: list[dict[str, Any]],
+        force_rebuild: bool = False,
+        _failed_docs: list | None = None,
+    ) -> dict[str, int]:
+        """Process a batch of items.
+
+        _failed_docs: optional list (passed by reference from update_database)
+        that collects (doc_text, metadata, doc_id) tuples for batches that fail
+        mid-run. Without this, the retry path at update_database:839-865 is
+        dead code — a NameError raised here would crash the whole reindex,
+        making every transient ChromaDB error fatal instead of recoverable.
+        """
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
         documents = []
@@ -954,8 +966,15 @@ class ZoteroSemanticSearch:
                 # retrying immediately usually fails too. Collecting failures
                 # and retrying after all batches are done is more effective.
                 logger.warning(f"Batch upsert failed ({e}), saving for retry")
-                for j in range(len(documents)):
-                    _failed_docs.append((documents[j], metadatas[j], ids[j]))
+                if _failed_docs is not None:
+                    for j in range(len(documents)):
+                        _failed_docs.append((documents[j], metadatas[j], ids[j]))
+                    # Count them as errors so stats are accurate
+                    stats["errors"] += len(documents)
+                else:
+                    # No retry list — this is the legacy crash path; re-raise
+                    # so caller sees the real error instead of hiding it.
+                    raise
 
         return stats
 
