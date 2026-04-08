@@ -52,6 +52,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
     def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
         return OpenAIEmbeddingFunction(
             model_name=config.get("model_name", "text-embedding-3-small"),
+            api_key=config.get("api_key"),
             base_url=config.get("base_url"),
         )
 
@@ -119,6 +120,7 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     def build_from_config(config: dict[str, Any]) -> "GeminiEmbeddingFunction":
         return GeminiEmbeddingFunction(
             model_name=config.get("model_name", "gemini-embedding-001"),
+            api_key=config.get("api_key"),
             base_url=config.get("base_url"),
         )
 
