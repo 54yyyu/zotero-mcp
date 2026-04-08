@@ -774,6 +774,7 @@ class ZoteroSemanticSearch:
             "processed_items": 0,
             "added_items": 0,
             "updated_items": 0,
+            "recovered_items": 0,
             "skipped_items": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
@@ -854,7 +855,11 @@ class ZoteroSemanticSearch:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
                         retry_ok += 1
                         stats["errors"] -= 1  # Remove from error count
-                        stats["added_items"] += 1
+                        # Don't classify as added vs updated — when the
+                        # original batch failed, the add/update lookup never
+                        # ran, so we don't know which category it belongs in.
+                        # Track recovered items in their own bucket.
+                        stats["recovered_items"] += 1
                     except Exception as e2:
                         retry_fail += 1
                         logger.error(f"Retry failed for {doc_id}: {e2}")
@@ -867,11 +872,14 @@ class ZoteroSemanticSearch:
             # Clear the progress line and show summary
             try:
                 sys.stderr.write(f"\r{' ' * 120}\r")  # Clear line
-                sys.stderr.write(
+                summary = (
                     f"  Done: {stats['processed_items']} indexed, "
                     f"{stats['skipped_items']} skipped, "
-                    f"{stats['errors']} errors\n"
+                    f"{stats['errors']} errors"
                 )
+                if stats["recovered_items"]:
+                    summary += f", {stats['recovered_items']} recovered"
+                sys.stderr.write(summary + "\n")
             except Exception:
                 pass
 
