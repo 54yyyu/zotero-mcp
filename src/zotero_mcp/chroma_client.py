@@ -87,10 +87,16 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 class GeminiEmbeddingFunction(EmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai."""
 
-    max_input_tokens = 2000  # gemini-embedding-001 limit is 2048
+    # Default for gemini-embedding-001 (hard cap 2048 tokens). Per-instance
+    # override in __init__ for models with larger context windows.
+    max_input_tokens = 2000
 
     def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None, base_url: str | None = None):
         self.model_name = model_name
+        # Model-aware token limit — leave headroom below the model's hard cap.
+        # gemini-embedding-2-* supports 8192 tokens; gemini-embedding-001 is 2048.
+        if "gemini-embedding-2" in model_name:
+            self.max_input_tokens = 8000
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self.base_url = base_url or os.getenv("GEMINI_BASE_URL")
         if not self.api_key:
@@ -122,30 +128,66 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
             base_url=config.get("base_url"),
         )
 
+    # Gemini's embed_content API caps at 100 items per batch (verified
+    # empirically: batch=100 OK, batch=250 → 400 INVALID_ARGUMENT with
+    # "at most 100 requests can be in one batch").
+    GEMINI_MAX_BATCH = 100
+
+    def _is_v2(self) -> bool:
+        # gemini-embedding-2-* does not support the task_type config field
+        # (it is silently ignored by the API). Google's guidance is to put
+        # the task hint in the prompt text instead.
+        return "gemini-embedding-2" in self.model_name
+
     def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using Gemini API."""
-        embeddings = []
-        for text in input:
-            response = self.client.models.embed_content(
-                model=self.model_name,
-                contents=[text],
-                config=self.types.EmbedContentConfig(
-                    task_type="retrieval_document",
-                    title="Zotero library document"
+        """Generate embeddings using Gemini API, batching up to 100 per call."""
+        is_v2 = self._is_v2()
+        # Materialize once so we can slice regardless of input iterable type.
+        texts = list(input)
+        if is_v2:
+            # v2 models: task instruction goes in the prompt, no config.
+            prepared = [
+                f"Represent this document for retrieval:\n\n{t}" for t in texts
+            ]
+        else:
+            prepared = texts
+
+        embeddings: list = []
+        for start in range(0, len(prepared), self.GEMINI_MAX_BATCH):
+            batch = prepared[start:start + self.GEMINI_MAX_BATCH]
+            if is_v2:
+                response = self.client.models.embed_content(
+                    model=self.model_name,
+                    contents=batch,
                 )
-            )
-            embeddings.append(response.embeddings[0].values)
+            else:
+                response = self.client.models.embed_content(
+                    model=self.model_name,
+                    contents=batch,
+                    config=self.types.EmbedContentConfig(
+                        task_type="retrieval_document",
+                        title="Zotero library document",
+                    ),
+                )
+            embeddings.extend(e.values for e in response.embeddings)
         return embeddings
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string using retrieval_query task type."""
-        response = self.client.models.embed_content(
-            model=self.model_name,
-            contents=[text],
-            config=self.types.EmbedContentConfig(
-                task_type="retrieval_query",
+        if self._is_v2():
+            prompt_text = f"Represent this query for retrieval:\n\n{text}"
+            response = self.client.models.embed_content(
+                model=self.model_name,
+                contents=[prompt_text],
             )
-        )
+        else:
+            response = self.client.models.embed_content(
+                model=self.model_name,
+                contents=[text],
+                config=self.types.EmbedContentConfig(
+                    task_type="retrieval_query",
+                )
+            )
         return response.embeddings[0].values
 
     def truncate(self, text: str, max_tokens: int) -> str:
