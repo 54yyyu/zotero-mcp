@@ -141,6 +141,11 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string using retrieval_query task type."""
+        # Truncate long queries to the model's input limit (fixes latent
+        # bug: prior code embedded query text without any truncation, so
+        # oversized queries would crash with an API error instead of
+        # degrading gracefully).
+        text = self.truncate(text, self.max_input_tokens)
         response = self.client.models.embed_content(
             model=self.model_name,
             contents=[text],
