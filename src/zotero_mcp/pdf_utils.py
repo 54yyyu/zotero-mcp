@@ -814,3 +814,75 @@ def build_annotation_position(page_index: int, rects: list[list[float]]) -> str:
         "pageIndex": page_index,
         "rects": rects,
     })
+
+def build_area_position_data(
+    pdf_path: str,
+    page_num: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> dict:
+    """
+    Build Zotero position data for an area/image annotation on a PDF page.
+
+    Args:
+        pdf_path: Path to the PDF file
+        page_num: 1-indexed page number
+        x: Normalized left coordinate (0..1)
+        y: Normalized top coordinate (0..1)
+        width: Normalized width (0..1)
+        height: Normalized height (0..1)
+
+    Returns:
+        On success:
+            {
+                "pageIndex": int,
+                "rects": [[x1, y1, x2, y2]],
+                "sort_index": str,
+            }
+
+        On failure:
+            {
+                "error": str,
+            }
+    """
+    try:
+        import fitz
+    except ImportError:
+        raise ImportError(
+            "pymupdf is required for PDF area annotations. "
+            "Install it with: pip install pymupdf"
+        )
+
+    doc = fitz.open(pdf_path)
+
+    try:
+        target_index = page_num - 1
+        total_pages = len(doc)
+
+        if target_index < 0 or target_index >= total_pages:
+            return {
+                "error": f"Page {page_num} out of range (PDF has {total_pages} pages)",
+            }
+
+        page = doc[target_index]
+        bbox = [(
+            round(x * page.rect.width, 4),
+            round(y * page.rect.height, 4),
+            round((x + width) * page.rect.width, 4),
+            round((y + height) * page.rect.height, 4),
+        )]
+        rects, min_y, min_x = _convert_rects_to_zotero(
+            bbox,
+            page.rect.height,
+        )
+
+        return {
+            "pageIndex": target_index,
+            "rects": rects,
+            "sort_index": _build_sort_index(target_index, min_y, min_x),
+        }
+
+    finally:
+        doc.close()
