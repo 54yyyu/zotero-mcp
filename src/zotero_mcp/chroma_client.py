@@ -58,6 +58,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
     def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
         return OpenAIEmbeddingFunction(
             model_name=config.get("model_name", "text-embedding-3-small"),
+            api_key=config.get("api_key"),
             base_url=config.get("base_url"),
         )
 
@@ -125,6 +126,7 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     def build_from_config(config: dict[str, Any]) -> "GeminiEmbeddingFunction":
         return GeminiEmbeddingFunction(
             model_name=config.get("model_name", "gemini-embedding-001"),
+            api_key=config.get("api_key"),
             base_url=config.get("base_url"),
         )
 
@@ -145,6 +147,11 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string using retrieval_query task type."""
+        # Truncate long queries to the model's input limit (fixes latent
+        # bug: prior code embedded query text without any truncation, so
+        # oversized queries would crash with an API error instead of
+        # degrading gracefully).
+        text = self.truncate(text, self.max_input_tokens)
         response = self.client.models.embed_content(
             model=self.model_name,
             contents=[text],
@@ -582,30 +589,44 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     if env_embedding_model:
         config["embedding_model"] = env_embedding_model
 
-    # Set up embedding config from environment
+    # Merge embedding config from environment (config.json wins, env fills gaps).
+    # Precedence: explicit config.json value > env var > hardcoded default.
+    # Previous code unconditionally REPLACED config["embedding_config"] with env
+    # values, silently dropping model_name from config.json whenever any
+    # provider env var (e.g. GOOGLE_API_KEY leaked from another tool) was set.
     if config["embedding_model"] == "openai":
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        openai_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-        openai_base_url = os.getenv("OPENAI_BASE_URL")
-        if openai_api_key:
-            config["embedding_config"] = {
-                "api_key": openai_api_key,
-                "model_name": openai_model
-            }
-            if openai_base_url:
-                config["embedding_config"]["base_url"] = openai_base_url
+        ec = dict(config.get("embedding_config") or {})
+        if not ec.get("api_key"):
+            env_key = os.getenv("OPENAI_API_KEY")
+            if env_key:
+                ec["api_key"] = env_key
+        if not ec.get("model_name"):
+            ec["model_name"] = os.getenv(
+                "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
+            )
+        if not ec.get("base_url"):
+            env_base = os.getenv("OPENAI_BASE_URL")
+            if env_base:
+                ec["base_url"] = env_base
+        if ec.get("api_key"):
+            config["embedding_config"] = ec
 
     elif config["embedding_model"] == "gemini":
-        gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        gemini_model = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
-        gemini_base_url = os.getenv("GEMINI_BASE_URL")
-        if gemini_api_key:
-            config["embedding_config"] = {
-                "api_key": gemini_api_key,
-                "model_name": gemini_model
-            }
-            if gemini_base_url:
-                config["embedding_config"]["base_url"] = gemini_base_url
+        ec = dict(config.get("embedding_config") or {})
+        if not ec.get("api_key"):
+            env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            if env_key:
+                ec["api_key"] = env_key
+        if not ec.get("model_name"):
+            ec["model_name"] = os.getenv(
+                "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"
+            )
+        if not ec.get("base_url"):
+            env_base = os.getenv("GEMINI_BASE_URL")
+            if env_base:
+                ec["base_url"] = env_base
+        if ec.get("api_key"):
+            config["embedding_config"] = ec
 
     return ChromaClient(
         collection_name=config["collection_name"],

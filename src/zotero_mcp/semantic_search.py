@@ -774,6 +774,7 @@ class ZoteroSemanticSearch:
             "processed_items": 0,
             "added_items": 0,
             "updated_items": 0,
+            "recovered_items": 0,
             "skipped_items": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
@@ -826,7 +827,7 @@ class ZoteroSemanticSearch:
                     except Exception:
                         pass
 
-                batch_stats = self._process_item_batch(batch, force_full_rebuild)
+                batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
 
                 stats["processed_items"] += batch_stats["processed"]
                 stats["added_items"] += batch_stats["added"]
@@ -854,7 +855,11 @@ class ZoteroSemanticSearch:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
                         retry_ok += 1
                         stats["errors"] -= 1  # Remove from error count
-                        stats["added_items"] += 1
+                        # Don't classify as added vs updated — when the
+                        # original batch failed, the add/update lookup never
+                        # ran, so we don't know which category it belongs in.
+                        # Track recovered items in their own bucket.
+                        stats["recovered_items"] += 1
                     except Exception as e2:
                         retry_fail += 1
                         logger.error(f"Retry failed for {doc_id}: {e2}")
@@ -867,11 +872,14 @@ class ZoteroSemanticSearch:
             # Clear the progress line and show summary
             try:
                 sys.stderr.write(f"\r{' ' * 120}\r")  # Clear line
-                sys.stderr.write(
+                summary = (
                     f"  Done: {stats['processed_items']} indexed, "
                     f"{stats['skipped_items']} skipped, "
-                    f"{stats['errors']} errors\n"
+                    f"{stats['errors']} errors"
                 )
+                if stats["recovered_items"]:
+                    summary += f", {stats['recovered_items']} recovered"
+                sys.stderr.write(summary + "\n")
             except Exception:
                 pass
 
@@ -893,8 +901,20 @@ class ZoteroSemanticSearch:
             stats["duration"] = str(end_time - start_time)
             return stats
 
-    def _process_item_batch(self, items: list[dict[str, Any]], force_rebuild: bool = False) -> dict[str, int]:
-        """Process a batch of items."""
+    def _process_item_batch(
+        self,
+        items: list[dict[str, Any]],
+        force_rebuild: bool = False,
+        _failed_docs: list | None = None,
+    ) -> dict[str, int]:
+        """Process a batch of items.
+
+        _failed_docs: optional list (passed by reference from update_database)
+        that collects (doc_text, metadata, doc_id) tuples for batches that fail
+        mid-run. Without this, the retry path at update_database:839-865 is
+        dead code — a NameError raised here would crash the whole reindex,
+        making every transient ChromaDB error fatal instead of recoverable.
+        """
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
         documents = []
@@ -954,8 +974,15 @@ class ZoteroSemanticSearch:
                 # retrying immediately usually fails too. Collecting failures
                 # and retrying after all batches are done is more effective.
                 logger.warning(f"Batch upsert failed ({e}), saving for retry")
-                for j in range(len(documents)):
-                    _failed_docs.append((documents[j], metadatas[j], ids[j]))
+                if _failed_docs is not None:
+                    for j in range(len(documents)):
+                        _failed_docs.append((documents[j], metadatas[j], ids[j]))
+                    # Count them as errors so stats are accurate
+                    stats["errors"] += len(documents)
+                else:
+                    # No retry list — this is the legacy crash path; re-raise
+                    # so caller sees the real error instead of hiding it.
+                    raise
 
         return stats
 
