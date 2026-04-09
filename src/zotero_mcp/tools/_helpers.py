@@ -79,7 +79,12 @@ def _get_write_client(ctx):
         override = _client.get_active_library()
         if override:
             web_zot.library_id = override.get("library_id", web_zot.library_id)
-            web_zot.library_type = override.get("library_type", web_zot.library_type)
+            # pyzotero stores library_type with trailing "s" (e.g. "users", "groups")
+            # but the override stores the raw value (e.g. "user", "group"),
+            # so we must append "s" to match pyzotero's internal convention.
+            raw_type = override.get("library_type")
+            if raw_type:
+                web_zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
         return read_zot, web_zot
     raise ValueError(
         "Cannot perform write operations in local-only mode. "
