@@ -89,6 +89,8 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     _format_search_results,
     search_notes,
     create_note,
+    update_note,
+    delete_note,
     create_annotation,
 )
 from zotero_mcp.tools.write import (  # noqa: F401

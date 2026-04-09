@@ -13,6 +13,35 @@ from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
 
+_WEB_API_ENV_VARS = (
+    "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
+    "- ZOTERO_LIBRARY_ID: Your library ID\n"
+    "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'"
+)
+
+
+def _get_note_write_client(op_description: str):
+    """Return (client, None) or (None, error_msg) for note-write operations.
+
+    Zotero's local API is read-only, so in local mode this falls back to the
+    web client and propagates any active library override.
+    """
+    if _utils.is_local_mode():
+        zot = _client.get_web_zotero_client()
+        if zot is None:
+            return None, (
+                f"Error: Web API credentials required for {op_description}.\n\n"
+                "Please configure the following environment variables:\n"
+                + _WEB_API_ENV_VARS
+            )
+        override = _client.get_active_library()
+        if override:
+            zot.library_id = override.get("library_id", zot.library_id)
+            zot.library_type = override.get("library_type", zot.library_type)
+    else:
+        zot = _client.get_zotero_client()
+    return zot, None
+
 
 @mcp.tool(
     name="zotero_get_annotations",
@@ -376,12 +405,13 @@ _get_annotations = get_annotations
 
 @mcp.tool(
     name="zotero_get_notes",
-    description="Retrieve notes from your Zotero library, with options to filter by parent item."
+    description="Retrieve notes from your Zotero library, with options to filter by parent item. Set raw_html=True to return the note's original HTML (e.g., for round-tripping through zotero_update_note)."
 )
 def get_notes(
     item_key: str | None = None,
     limit: int | str | None = 20,
     truncate: bool = True,
+    raw_html: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -392,6 +422,8 @@ def get_notes(
         item_key: Optional Zotero item key/ID to filter notes by parent item
         limit: Maximum number of notes to return
         truncate: Whether to truncate long notes for display
+        raw_html: If True, return the note's raw HTML instead of stripped text.
+            Useful for fetching exact content to pass to zotero_update_note.
         ctx: MCP context
 
     Returns:
@@ -442,8 +474,8 @@ def get_notes(
             # Prepare note text
             note_text = data.get("note", "")
 
-            # Clean up HTML formatting
-            note_text = _utils.clean_html(note_text)
+            if not raw_html:
+                note_text = _utils.clean_html(note_text)
 
             # Limit note length for display
             if truncate and len(note_text) > 500:
@@ -550,7 +582,10 @@ def _batch_resolve_grandparent_titles(
 
 
 def _format_search_results(
-    query: str, note_results: list[dict], annotation_results: list[dict]
+    query: str,
+    note_results: list[dict],
+    annotation_results: list[dict],
+    raw_html: bool = False,
 ) -> str:
     """Format note and annotation search results as consistent markdown."""
     all_results = note_results + annotation_results
@@ -564,15 +599,21 @@ def _format_search_results(
         key = result.get("key", "")
 
         if result.get("type") == "note":
-            note_text = _utils.clean_html(result.get("text", ""))
-            # Show context around match
-            pos = note_text.lower().find(query.lower())
-            if pos >= 0:
-                start = max(0, pos - 100)
-                end = min(len(note_text), pos + len(query) + 200)
-                note_text = note_text[start:end] + "..."
+            note_html = result.get("text", "")
+            if raw_html:
+                # Contextual windowing requires plain-text positions, so in
+                # raw mode just emit the full HTML (optionally head-truncated).
+                note_text = note_html if len(note_html) <= 2000 else note_html[:2000] + "..."
             else:
-                note_text = note_text[:500] + "..."
+                note_text = _utils.clean_html(note_html)
+                # Show context around match
+                pos = note_text.lower().find(query.lower())
+                if pos >= 0:
+                    start = max(0, pos - 100)
+                    end = min(len(note_text), pos + len(query) + 200)
+                    note_text = note_text[start:end] + "..."
+                else:
+                    note_text = note_text[:500] + "..."
 
             output.append(f"## Note {i}{parent_info}")
             output.append(f"**Key:** {key}")
@@ -603,11 +644,12 @@ def _format_search_results(
 
 @mcp.tool(
     name="zotero_search_notes",
-    description="Search for notes and annotations across your Zotero library."
+    description="Search for notes and annotations across your Zotero library. Set raw_html=True to return note matches as raw HTML (useful for round-tripping through zotero_update_note)."
 )
 def search_notes(
     query: str,
     limit: int | str | None = 20,
+    raw_html: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -617,6 +659,8 @@ def search_notes(
     Args:
         query: Search query string
         limit: Maximum number of results to return
+        raw_html: If True, return matching notes as raw HTML instead of
+            stripped text. Query matching still uses stripped text.
         ctx: MCP context
 
     Returns:
@@ -652,7 +696,7 @@ def search_notes(
                 finally:
                     reader.close()
 
-                return _format_search_results(query, note_results, annotation_results)
+                return _format_search_results(query, note_results, annotation_results, raw_html=raw_html)
         except Exception as e:
             ctx.warn(f"Local search unavailable, falling back to API: {e}")
 
@@ -727,7 +771,7 @@ def search_notes(
     except Exception as e:
         ctx.warn(f"Annotation search failed: {e}")
 
-    return _format_search_results(query, note_results, annotation_results)
+    return _format_search_results(query, note_results, annotation_results, raw_html=raw_html)
 
 
 @mcp.tool(
@@ -847,11 +891,9 @@ def create_note(
                     return (
                         f"Note created for \"{parent_title}\" but it is a standalone note, not attached "
                         f"to the paper.\n\n"
-                        f"To create properly attached child notes, add these environment variables "
-                        f"to your Claude Desktop config alongside ZOTERO_LOCAL=true:\n"
-                        f"- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
-                        f"- ZOTERO_LIBRARY_ID: Your library ID (from the same page)\n"
-                        f"- ZOTERO_LIBRARY_TYPE: 'user' or 'group'"
+                        "To create properly attached child notes, add these environment variables "
+                        "to your Claude Desktop config alongside ZOTERO_LOCAL=true:\n"
+                        + _WEB_API_ENV_VARS
                     )
                 else:
                     return f"Failed to create note via local connector (HTTP {resp.status_code}): {resp.text}"
@@ -873,6 +915,118 @@ def create_note(
     except Exception as e:
         ctx.error(f"Error creating note: {str(e)}")
         return f"Error creating note: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_note",
+    description="Update the HTML content of an existing Zotero note. Set append=True to concatenate to the existing note; otherwise the note is replaced."
+)
+def update_note(
+    item_key: str,
+    note_text: str,
+    append: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Update an existing Zotero note.
+
+    Args:
+        item_key: Zotero item key/ID of the note to update
+        note_text: New HTML content of the note
+        append: If True, concatenate note_text to existing note content;
+            if False (default), replace existing content.
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        ctx.info(f"Updating note {item_key} (append={append})")
+
+        zot, err = _get_note_write_client("updating notes")
+        if err:
+            return err
+
+        try:
+            item = zot.item(item_key)
+        except Exception:
+            return f"Error: No item found with key: {item_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "note":
+            return f"Error: Item {item_key} is not a note (itemType={data.get('itemType')})"
+
+        if append:
+            data["note"] = (data.get("note", "") or "") + note_text
+        else:
+            data["note"] = note_text
+
+        resp = zot.update_item(item)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Successfully updated note {item_key}"
+        return f"Failed to update note {item_key}"
+
+    except Exception as e:
+        ctx.error(f"Error updating note: {str(e)}")
+        return f"Error updating note: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_delete_note",
+    description="Move a Zotero note to the Trash. Trashed notes are recoverable from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."
+)
+def delete_note(
+    item_key: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Move a Zotero note to the Trash.
+
+    Args:
+        item_key: Zotero item key/ID of the note to trash
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        ctx.info(f"Trashing note {item_key}")
+
+        zot, err = _get_note_write_client("deleting notes")
+        if err:
+            return err
+
+        try:
+            item = zot.item(item_key)
+        except Exception:
+            return f"Error: No item found with key: {item_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "note":
+            return f"Error: Item {item_key} is not a note (itemType={data.get('itemType')})"
+
+        # pyzotero's delete_item() permanently destroys items, and update_item()
+        # strips the "deleted" field. We send a direct PATCH with {"deleted": 1}
+        # to move the note to Zotero's Trash (recoverable by the user).
+        from pyzotero.zotero import build_url
+        url = build_url(
+            zot.endpoint,
+            f"/{zot.library_type}/{zot.library_id}/items/{item_key}",
+        )
+        resp = zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return f"Successfully trashed note {item_key} (recoverable from Zotero's Trash)"
+        return f"Failed to trash note {item_key} (HTTP {resp.status_code}): {resp.text[:200]}"
+
+    except Exception as e:
+        ctx.error(f"Error trashing note: {str(e)}")
+        return f"Error trashing note: {str(e)}"
 
 
 @mcp.tool(
@@ -935,10 +1089,8 @@ def create_annotation(
             return (
                 "Error: Web API credentials required for creating annotations.\n\n"
                 "Please configure the following environment variables:\n"
-                "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
-                "- ZOTERO_LIBRARY_ID: Your library ID\n"
-                "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'\n\n"
-                "Note: Zotero's local API is read-only and cannot create annotations."
+                + _WEB_API_ENV_VARS
+                + "\n\nNote: Zotero's local API is read-only and cannot create annotations."
             )
 
         # Use web client for metadata (it has the credentials)
