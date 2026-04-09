@@ -684,6 +684,28 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     return f"Failed to create arXiv item: {result}"
 
 
+# Maps Zotero API field names to tool parameter names for user-facing messages
+_UPDATE_ITEM_API_TO_PARAM = {
+    "title": "title",
+    "date": "date",
+    "publicationTitle": "publication_title",
+    "abstractNote": "abstract",
+    "DOI": "doi",
+    "url": "url",
+    "extra": "extra",
+    "volume": "volume",
+    "issue": "issue",
+    "pages": "pages",
+    "publisher": "publisher",
+    "ISSN": "issn",
+    "language": "language",
+    "shortTitle": "short_title",
+    "edition": "edition",
+    "ISBN": "isbn",
+    "bookTitle": "book_title",
+}
+
+
 @mcp.tool(
     name="zotero_update_item",
     description="Update metadata for an existing item in your Zotero library."
@@ -703,6 +725,16 @@ def update_item(
     doi: str | None = None,
     url: str | None = None,
     extra: str | None = None,
+    volume: str | None = None,
+    issue: str | None = None,
+    pages: str | None = None,
+    publisher: str | None = None,
+    issn: str | None = None,
+    language: str | None = None,
+    short_title: str | None = None,
+    edition: str | None = None,
+    isbn: str | None = None,
+    book_title: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -742,13 +774,37 @@ def update_item(
             field_updates["url"] = url
         if extra is not None:
             field_updates["extra"] = extra
+        if volume is not None:
+            field_updates["volume"] = volume
+        if issue is not None:
+            field_updates["issue"] = issue
+        if pages is not None:
+            field_updates["pages"] = pages
+        if publisher is not None:
+            field_updates["publisher"] = publisher
+        if issn is not None:
+            field_updates["ISSN"] = issn
+        if language is not None:
+            field_updates["language"] = language
+        if short_title is not None:
+            field_updates["shortTitle"] = short_title
+        if edition is not None:
+            field_updates["edition"] = edition
+        if isbn is not None:
+            field_updates["ISBN"] = isbn
+        if book_title is not None:
+            field_updates["bookTitle"] = book_title
 
+        skipped = []
         for field, value in field_updates.items():
+            param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
             if field in data:
                 old = data[field]
                 if old != value:
-                    changes.append(f"- **{field}**: '{old}' -> '{value}'")
+                    changes.append(f"- **{param_name}**: '{old}' -> '{value}'")
                 data[field] = value
+            else:
+                skipped.append(param_name)
 
         # Creators
         if creators is not None:
@@ -789,12 +845,24 @@ def update_item(
             data["collections"] = list(existing_colls)
             changes.append(f"- **collections**: added {resolved}")
 
+        skip_warning = ""
+        if skipped:
+            item_type = data.get("itemType", "unknown")
+            skip_warning = (
+                f"\n\nSkipped (not valid for item type "
+                f"'{item_type}'): {', '.join(skipped)}"
+            )
+
         if not changes:
-            return "No changes to apply."
+            return "No changes to apply." + skip_warning
 
         resp = write_zot.update_item(item)
         if _helpers._handle_write_response(resp, ctx):
-            return f"Successfully updated item `{item_key}`:\n\n" + "\n".join(changes)
+            result = (
+                f"Successfully updated item `{item_key}`:\n\n"
+                + "\n".join(changes)
+            )
+            return result + skip_warning
         return f"Failed to update item: write operation returned failure"
 
     except ValueError as e:
