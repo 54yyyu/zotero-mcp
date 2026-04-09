@@ -7,6 +7,7 @@ Covers:
 - Fix 5: Cross-encoder re-ranking
 """
 
+import importlib.util
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -321,6 +322,71 @@ class TestModelAwareTokenizer:
 
         mock_ef.truncate.assert_called_once_with("long text", 500)
         assert result == "truncated"
+
+
+# ---------------------------------------------------------------------------
+# Regression: tiktoken special tokens in PDF text must not raise ValueError
+# Bug: tiktoken.encode() defaults to disallowed_special="all", which raises
+# ValueError when input contains strings like <|endoftext|> (common in ML papers).
+# Fix: all encode() call sites pass disallowed_special=().
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("tiktoken"),
+    reason="tiktoken not installed",
+)
+class TestTiktokenSpecialTokenHandling:
+    """Text containing tiktoken special tokens must not raise ValueError."""
+
+    SPECIAL_TOKEN_TEXT = (
+        "The model uses <|endoftext|> as a separator token. "
+        "Other tokens include <|fim_prefix|> and <|fim_suffix|>."
+    )
+
+    @staticmethod
+    def _expected_truncation(text, max_tokens):
+        """Compute expected tiktoken truncation for exact-output assertions."""
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        tokens = enc.encode(text, disallowed_special=())[:max_tokens]
+        return enc.decode(tokens)
+
+    def test_openai_truncate_with_special_tokens(self):
+        from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+
+        ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+        result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
+
+    def test_openai_truncate_preserves_special_token_text(self):
+        from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+
+        ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+        result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
+        assert result == self.SPECIAL_TOKEN_TEXT
+
+    def test_chroma_truncate_text_fallback_with_special_tokens(self):
+        from zotero_mcp.chroma_client import ChromaClient
+
+        client = ChromaClient.__new__(ChromaClient)
+        # Use an embedding function without a truncate method to hit fallback
+        client.embedding_function = MagicMock(spec=[])
+        client.embedding_function.max_input_tokens = 5000
+
+        result = client.truncate_text(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
+
+    def test_truncate_to_tokens_with_special_tokens(self):
+        from zotero_mcp.semantic_search import _truncate_to_tokens
+
+        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
+
+    def test_truncate_to_tokens_preserves_special_token_text(self):
+        from zotero_mcp.semantic_search import _truncate_to_tokens
+
+        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
+        assert result == self.SPECIAL_TOKEN_TEXT
 
 
 # ---------------------------------------------------------------------------

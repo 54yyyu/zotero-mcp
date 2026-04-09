@@ -73,7 +73,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             import tiktoken
             if not hasattr(self, '_tokenizer'):
                 self._tokenizer = tiktoken.get_encoding("cl100k_base")
-            tokens = self._tokenizer.encode(text)
+            tokens = self._tokenizer.encode(text, disallowed_special=())
             if len(tokens) > max_tokens:
                 tokens = tokens[:max_tokens]
                 text = self._tokenizer.decode(tokens)
@@ -354,7 +354,7 @@ class ChromaClient:
         try:
             import tiktoken
             enc = tiktoken.get_encoding("cl100k_base")
-            tokens = enc.encode(text)
+            tokens = enc.encode(text, disallowed_special=())
             if len(tokens) > max_tokens:
                 tokens = tokens[:max_tokens]
                 text = enc.decode(tokens)

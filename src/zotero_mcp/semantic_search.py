@@ -41,7 +41,7 @@ def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
     falls back to conservative character-based estimation.
     """
     if _tokenizer is not None:
-        tokens = _tokenizer.encode(text)
+        tokens = _tokenizer.encode(text, disallowed_special=())
         if len(tokens) > max_tokens:
             tokens = tokens[:max_tokens]
             text = _tokenizer.decode(tokens)
