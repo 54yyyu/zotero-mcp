@@ -84,6 +84,21 @@ def get_annotations(
             except Exception:
                 return f"Error: No item found with key: {item_key}"
 
+            # Determine whether item_key is an attachment or a parent item.
+            # In the Zotero API, annotations are children of attachments, not of
+            # the parent item (two-hop: parent → attachment → annotation).
+            # We need to know this for both the API annotations path and the PDF fallback.
+            _item_data = parent.get("data", {})
+            _is_attachment = _item_data.get("itemType") == "attachment"
+
+            # parent_item_key is used by the PDF fallback to find PDF attachments.
+            # If the caller passed an attachment key, resolve up to the parent item.
+            parent_item_key = (
+                _item_data.get("parentItem", item_key)
+                if _is_attachment
+                else item_key
+            )
+
             # Initialize annotation sources
             better_bibtex_annotations = []
             zotero_api_annotations = []
@@ -195,27 +210,32 @@ def get_annotations(
             # returned directly. We do both and dedupe by key for safety.
             if not better_bibtex_annotations:
                 try:
-                    direct = _helpers._paginate(
-                        zot.children, item_key, itemType="annotation"
-                    )
-                    attachments = _helpers._paginate(
-                        zot.children, item_key, itemType="attachment"
-                    )
-                    nested = []
-                    for att in attachments:
-                        att_key = att.get("key")
-                        if att_key:
-                            nested.extend(
-                                _helpers._paginate(
-                                    zot.children, att_key, itemType="annotation"
-                                )
-                            )
-                    seen = set()
-                    for a in direct + nested:
-                        k = a.get("key")
-                        if k and k not in seen:
-                            seen.add(k)
-                            zotero_api_annotations.append(a)
+                    if _is_attachment:
+                        # item_key is already a PDF attachment -- annotations are
+                        # direct children, so one paginated call suffices.
+                        zotero_api_annotations = _helpers._paginate(
+                            zot.children, item_key, itemType="annotation"
+                        )
+                    else:
+                        # item_key is a parent item. Annotations live under
+                        # attachments (parent -> attachment -> annotation).
+                        # Only PDF, EPUB, and snapshot attachments carry annotations.
+                        _annotatable = {"application/pdf", "application/epub+zip", "text/html"}
+                        all_children = _helpers._paginate(zot.children, item_key)
+                        att_keys = [
+                            c["key"] for c in all_children
+                            if c.get("data", {}).get("itemType") == "attachment"
+                            and c.get("data", {}).get("contentType") in _annotatable
+                        ]
+                        seen = set()
+                        for att_key in att_keys:
+                            for a in _helpers._paginate(
+                                zot.children, att_key, itemType="annotation"
+                            ):
+                                k = a.get("key")
+                                if k and k not in seen:
+                                    seen.add(k)
+                                    zotero_api_annotations.append(a)
                     ctx.info(f"Retrieved {len(zotero_api_annotations)} annotations via Zotero API")
                 except Exception as api_error:
                     ctx.warn(f"Error retrieving Zotero API annotations: {api_error}")
@@ -227,8 +247,8 @@ def get_annotations(
 
                     # Ensure PDF annotation tool is installed
                     if ensure_pdfannots_installed():
-                        # Get PDF attachments
-                        children = zot.children(item_key)
+                        # Get PDF attachments via the resolved parent key
+                        children = zot.children(parent_item_key)
                         pdf_attachments = [
                             item for item in children
                             if item.get("data", {}).get("contentType") == "application/pdf"
@@ -522,6 +542,17 @@ def _batch_resolve_parent_titles(
             ctx.warn(f"Batch parent lookup failed: {e}")
             for k in batch:
                 titles.setdefault(k, f"(parent key: {k})")
+
+    # Individual fallback for keys the batch missed (not in local cache)
+    missing = [k for k in parent_keys if k not in titles]
+    for key in missing:
+        try:
+            item = zot.item(key)
+            if item:
+                titles[key] = item.get("data", {}).get("title", "Untitled")
+        except Exception:
+            titles.setdefault(key, f"(parent key: {key})")
+
     return titles
 
 
@@ -554,6 +585,19 @@ def _batch_resolve_grandparent_titles(
         except Exception as e:
             ctx.info(f"Batch attachment lookup failed: {e}")
 
+    # Step 1b: Individual fallback for attachment keys the batch missed
+    missing_attachments = [k for k in parent_keys if k not in attachment_data]
+    for key in missing_attachments:
+        try:
+            item = zot.item(key)
+            if item:
+                attachment_data[key] = item
+                gp_key = item.get("data", {}).get("parentItem")
+                if gp_key and item.get("data", {}).get("itemType") == "attachment":
+                    grandparent_keys.add(gp_key)
+        except Exception:
+            pass
+
     # Step 2: Batch-fetch the grandparents (papers)
     grandparent_titles: dict[str, str] = {}
     gp_list = list(grandparent_keys)
@@ -567,6 +611,16 @@ def _batch_resolve_grandparent_titles(
                 )
         except Exception as e:
             ctx.info(f"Batch grandparent lookup failed: {e}")
+
+    # Step 2b: Individual fallback for grandparent keys the batch missed
+    missing_gp = [k for k in grandparent_keys if k not in grandparent_titles]
+    for key in missing_gp:
+        try:
+            item = zot.item(key)
+            if item:
+                grandparent_titles[key] = item.get("data", {}).get("title", "Untitled")
+        except Exception:
+            pass
 
     # Step 3: Map attachment keys to paper titles
     result: dict[str, str] = {}
@@ -776,7 +830,11 @@ def search_notes(
 
 @mcp.tool(
     name="zotero_create_note",
-    description="Create a new note for a Zotero item."
+    description=(
+        "Create a new note attached to a Zotero item. "
+        "Parameters: item_key (the key of the parent item to attach the note to), "
+        "note_title (title string), note_text (body text, HTML formatting supported)."
+    )
 )
 def create_note(
     item_key: str,
@@ -1031,7 +1089,14 @@ def delete_note(
 
 @mcp.tool(
     name="zotero_create_annotation",
-    description="Create a highlight annotation on a PDF or EPUB attachment with optional comment."
+    description=(
+        "Create a highlight annotation on a PDF or EPUB attachment with optional comment. "
+        "Parameters: attachment_key (the key of the PDF/EPUB attachment, not the parent item), "
+        "page (integer, 1-indexed — page 1 is the first page), "
+        "text (exact text to highlight), color (hex, default yellow #ffd400), "
+        "comment (optional note on the highlight). "
+        "Requires PyMuPDF: pip install zotero-mcp-server[pdf]"
+    )
 )
 def create_annotation(
     attachment_key: str,

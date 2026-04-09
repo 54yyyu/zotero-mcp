@@ -790,7 +790,12 @@ def verify_pdf_attachment(pdf_path: str) -> bool:
     """
     try:
         import fitz
-
+    except ImportError:
+        raise ImportError(
+            "PDF annotation features require PyMuPDF. "
+            "Install it with: pip install zotero-mcp-server[pdf]"
+        )
+    try:
         doc = fitz.open(pdf_path)
         is_pdf = doc.is_pdf
         doc.close()
