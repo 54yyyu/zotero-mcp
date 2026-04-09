@@ -118,7 +118,7 @@ def test_get_annotations_dedupes_across_paths(monkeypatch):
         # Local API quirk: paper+itemType=annotation returns grandchildren
         "PAPER001": [
             anno,
-            {"key": "ATTACH01", "data": {"itemType": "attachment"}},
+            {"key": "ATTACH01", "data": {"itemType": "attachment", "contentType": "application/pdf"}},
         ],
         "ATTACH01": [anno],
     }
@@ -139,8 +139,8 @@ def test_get_annotations_handles_multiple_attachments(monkeypatch):
     }
     children = {
         "PAPER001": [
-            {"key": "ATTACH01", "data": {"itemType": "attachment"}},
-            {"key": "ATTACH02", "data": {"itemType": "attachment"}},
+            {"key": "ATTACH01", "data": {"itemType": "attachment", "contentType": "application/pdf"}},
+            {"key": "ATTACH02", "data": {"itemType": "attachment", "contentType": "application/pdf"}},
         ],
         "ATTACH01": [_annotation("ANNO0001", "ATTACH01", "from pdf one")],
         "ATTACH02": [_annotation("ANNO0002", "ATTACH02", "from pdf two")],
@@ -161,7 +161,7 @@ def test_get_annotations_reports_none_when_empty(monkeypatch):
         "PAPER001": {"data": {"title": "Bare Paper", "itemType": "journalArticle"}},
     }
     children = {
-        "PAPER001": [{"key": "ATTACH01", "data": {"itemType": "attachment"}}],
+        "PAPER001": [{"key": "ATTACH01", "data": {"itemType": "attachment", "contentType": "application/pdf"}}],
         "ATTACH01": [],
     }
     fake = FakeZoteroForAnnotations(parents, children)
@@ -181,7 +181,7 @@ def test_get_annotations_paginates_through_many_annotations(monkeypatch):
     }
     many = [_annotation(f"A{i:05d}", "ATTACH01", f"hl {i}") for i in range(150)]
     children = {
-        "PAPER001": [{"key": "ATTACH01", "data": {"itemType": "attachment"}}],
+        "PAPER001": [{"key": "ATTACH01", "data": {"itemType": "attachment", "contentType": "application/pdf"}}],
         "ATTACH01": many,
     }
     fake = FakeZoteroForAnnotations(parents, children)

@@ -162,7 +162,7 @@ def _resolve_collection_names(zot, names, ctx=None):
         if not matches:
             raise ValueError(f"No collection found matching name '{name}'")
         if len(matches) > 1 and ctx is not None:
-            ctx.warn(
+            ctx.warning(
                 f"Multiple collections match '{name}': {matches}. "
                 "Using all. Pass collection keys directly to disambiguate."
             )

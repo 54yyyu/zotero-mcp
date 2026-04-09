@@ -19,7 +19,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "pyzotero>=1.5.0",
+    "pyzotero>=1.6.0",
     "mcp>=1.2.0",
     "python-dotenv>=1.0.0",
     "markitdown[pdf]",

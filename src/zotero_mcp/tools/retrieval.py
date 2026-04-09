@@ -579,7 +579,7 @@ def get_items_children(
                     k = item.get("key", "")
                     parent_titles[k] = item.get("data", {}).get("title", "Untitled")
             except Exception as e:
-                ctx.warn(f"Batch parent lookup failed: {e}")
+                ctx.warning(f"Batch parent lookup failed: {e}")
                 for k in batch:
                     parent_titles.setdefault(k, f"(key: {k})")
 

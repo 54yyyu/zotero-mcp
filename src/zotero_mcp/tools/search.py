@@ -396,7 +396,7 @@ def search_by_citation_key(
                                     return _helpers._format_citekey_result(item, citekey)
                             return _helpers._format_bbt_result(matched, citekey)
             except Exception as e:
-                ctx.warn(f"BetterBibTeX lookup failed, falling back to Extra field search: {e}")
+                ctx.warning(f"BetterBibTeX lookup failed, falling back to Extra field search: {e}")
 
         # Strategy B: Search via pyzotero Extra field
         zot = _client.get_zotero_client()

@@ -1038,7 +1038,7 @@ def merge_duplicates(
         # Safety: remove keeper from duplicates
         if keeper_key in dup_keys:
             dup_keys.remove(keeper_key)
-            ctx.warn(f"Keeper key '{keeper_key}' was in duplicate list — removed.")
+            ctx.warning(f"Keeper key '{keeper_key}' was in duplicate list — removed.")
 
         if not dup_keys:
             return "Error: No duplicate keys to merge (after removing keeper if present)."
@@ -1133,7 +1133,7 @@ def merge_duplicates(
         for coll_key in new_collections:
             resp = write_zot.addto_collection(coll_key, keeper)
             if not _helpers._handle_write_response(resp, ctx):
-                ctx.warn(f"Failed to add keeper to collection {coll_key}")
+                ctx.warning(f"Failed to add keeper to collection {coll_key}")
             keeper = write_zot.item(keeper_key)  # re-fetch for version
 
         # Step 5: Re-parent children (skip duplicate attachments)
@@ -1197,9 +1197,9 @@ def merge_duplicates(
                 if resp.status_code in (200, 204):
                     trashed.append(dup_key)
                 else:
-                    ctx.warn(f"Failed to trash {dup_key}: HTTP {resp.status_code}")
+                    ctx.warning(f"Failed to trash {dup_key}: HTTP {resp.status_code}")
             except Exception as e:
-                ctx.warn(f"Failed to trash {dup_key}: {e}")
+                ctx.warning(f"Failed to trash {dup_key}: {e}")
 
         skip_info = f" ({len(skipped_dupes)} duplicate attachments skipped)" if skipped_dupes else ""
         return (

@@ -133,7 +133,7 @@ def get_annotations(
                                     citation_key = line.replace("citationkey:", "").strip()
                                     break
                         except Exception as e:
-                            ctx.warn(f"Error extracting citation key from Extra field: {e}")
+                            ctx.warning(f"Error extracting citation key from Extra field: {e}")
 
                         # Fallback to searching by title if no citation key found
                         if not citation_key:
@@ -152,7 +152,7 @@ def get_annotations(
                                             citation_key = result['citekey']
                                             break
                             except Exception as e:
-                                ctx.warn(f"Error searching for citation key: {e}")
+                                ctx.warning(f"Error searching for citation key: {e}")
 
                         # Process annotations if citation key found
                         if citation_key:
@@ -197,9 +197,9 @@ def get_annotations(
 
                                 ctx.info(f"Retrieved {len(better_bibtex_annotations)} annotations via Better BibTeX")
                             except Exception as e:
-                                ctx.warn(f"Error processing Better BibTeX annotations: {e}")
+                                ctx.warning(f"Error processing Better BibTeX annotations: {e}")
                 except Exception as bibtex_error:
-                    ctx.warn(f"Error initializing Better BibTeX: {bibtex_error}")
+                    ctx.warning(f"Error initializing Better BibTeX: {bibtex_error}")
 
             # Fallback to Zotero API annotations.
             #
@@ -238,7 +238,7 @@ def get_annotations(
                                     zotero_api_annotations.append(a)
                     ctx.info(f"Retrieved {len(zotero_api_annotations)} annotations via Zotero API")
                 except Exception as api_error:
-                    ctx.warn(f"Error retrieving Zotero API annotations: {api_error}")
+                    ctx.warning(f"Error retrieving Zotero API annotations: {api_error}")
 
             # PDF Extraction fallback
             if use_pdf_extraction and not (better_bibtex_annotations or zotero_api_annotations):
@@ -298,7 +298,7 @@ def get_annotations(
 
                         ctx.info(f"Retrieved {len(pdf_annotations)} annotations via PDF extraction")
                 except Exception as pdf_error:
-                    ctx.warn(f"Error during PDF annotation extraction: {pdf_error}")
+                    ctx.warning(f"Error during PDF annotation extraction: {pdf_error}")
 
             # Combine annotations from all sources
             annotations = better_bibtex_annotations + zotero_api_annotations + pdf_annotations
@@ -539,7 +539,7 @@ def _batch_resolve_parent_titles(
             for item in items:
                 titles[item.get("key", "")] = item.get("data", {}).get("title", "Untitled")
         except Exception as e:
-            ctx.warn(f"Batch parent lookup failed: {e}")
+            ctx.warning(f"Batch parent lookup failed: {e}")
             for k in batch:
                 titles.setdefault(k, f"(parent key: {k})")
 
@@ -740,19 +740,19 @@ def search_notes(
                     note_results = reader.search_notes_local(query, limit)
                     ctx.info(f"Local note search: {len(note_results)} results")
                 except Exception as e:
-                    ctx.warn(f"Local note search failed: {e}")
+                    ctx.warning(f"Local note search failed: {e}")
 
                 try:
                     annotation_results = reader.search_annotations_local(query, limit)
                     ctx.info(f"Local annotation search: {len(annotation_results)} results")
                 except Exception as e:
-                    ctx.warn(f"Local annotation search failed: {e}")
+                    ctx.warning(f"Local annotation search failed: {e}")
                 finally:
                     reader.close()
 
                 return _format_search_results(query, note_results, annotation_results, raw_html=raw_html)
         except Exception as e:
-            ctx.warn(f"Local search unavailable, falling back to API: {e}")
+            ctx.warning(f"Local search unavailable, falling back to API: {e}")
 
     # ---------- API mode: separate try/except blocks ----------
     zot = _client.get_zotero_client()
@@ -787,7 +787,7 @@ def search_notes(
             })
         ctx.info(f"API note search: {len(note_results)} results")
     except Exception as e:
-        ctx.warn(f"Note search failed: {e}")
+        ctx.warning(f"Note search failed: {e}")
 
     # Annotations — separate block so note results survive if this crashes
     try:
@@ -823,7 +823,7 @@ def search_notes(
             })
         ctx.info(f"API annotation search: {len(annotation_results)} results")
     except Exception as e:
-        ctx.warn(f"Annotation search failed: {e}")
+        ctx.warning(f"Annotation search failed: {e}")
 
     return _format_search_results(query, note_results, annotation_results, raw_html=raw_html)
 
