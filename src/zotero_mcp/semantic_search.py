@@ -23,7 +23,7 @@ except Exception:
 
 from pyzotero import zotero
 
-from .chroma_client import ChromaClient, create_chroma_client
+from .vector_store import VectorStoreClient, create_vector_client
 from .client import get_zotero_client
 from .utils import format_creators, is_local_mode
 from .local_db import LocalZoteroReader, get_local_zotero_reader
@@ -72,21 +72,28 @@ class CrossEncoderReranker:
 
 
 class ZoteroSemanticSearch:
-    """Semantic search interface for Zotero libraries using ChromaDB."""
+    """Semantic search interface for Zotero libraries.
+
+    Supports ChromaDB and Pinecone as vector store backends.
+    The backend is selected via the ``vector_backend`` config key or the
+    ``ZOTERO_VECTOR_BACKEND`` environment variable (default: ``"chroma"``).
+    """
 
     def __init__(self,
-                 chroma_client: ChromaClient | None = None,
+                 chroma_client: VectorStoreClient | None = None,
+                 vector_client: VectorStoreClient | None = None,
                  config_path: str | None = None,
                  db_path: str | None = None):
         """
         Initialize semantic search.
 
         Args:
-            chroma_client: Optional ChromaClient instance
+            chroma_client: Deprecated alias for vector_client (backward compat)
+            vector_client: Optional VectorStoreClient instance
             config_path: Path to configuration file
             db_path: Optional path to Zotero database (overrides config file)
         """
-        self.chroma_client = chroma_client or create_chroma_client(config_path)
+        self._vector_client = vector_client or chroma_client or create_vector_client(config_path)
         self.zotero_client = get_zotero_client()
         self.config_path = config_path
         self.db_path = db_path  # CLI override for Zotero database path
@@ -97,6 +104,16 @@ class ZoteroSemanticSearch:
         # Reranker (lazy-initialized on first search)
         self._reranker: CrossEncoderReranker | None = None
         self._reranker_config = self._load_reranker_config()
+
+    @property
+    def chroma_client(self) -> VectorStoreClient:
+        """Backward-compatible alias for the vector store client."""
+        return self._vector_client
+
+    @property
+    def vector_client(self) -> VectorStoreClient:
+        """The active vector store client (ChromaDB or Pinecone)."""
+        return self._vector_client
 
     def _load_reranker_config(self) -> dict[str, Any]:
         """Load reranker configuration from file or use defaults."""
@@ -298,7 +315,7 @@ class ZoteroSemanticSearch:
 
         return False
 
-    def _get_items_from_source(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: ChromaClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
+    def _get_items_from_source(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: VectorStoreClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
 
@@ -330,7 +347,7 @@ class ZoteroSemanticSearch:
         else:
             return self._get_items_from_api(limit)
 
-    def _get_items_from_local_db(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: ChromaClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
+    def _get_items_from_local_db(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: VectorStoreClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
         """
         Get items from local Zotero database.
 

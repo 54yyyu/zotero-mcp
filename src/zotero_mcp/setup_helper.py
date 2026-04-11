@@ -150,6 +150,48 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
 
     print("Configure embedding models for semantic search over your Zotero library.")
 
+    # Choose vector backend
+    print("\nVector database backend:")
+    print("1. ChromaDB - Local vector database (default, no account needed)")
+    print("2. Pinecone - Cloud vector database (requires API key)")
+
+    while True:
+        backend_choice = input("\nChoose vector backend (1-2): ").strip()
+        if backend_choice in ["1", "2"]:
+            break
+        print("Please enter 1 or 2")
+
+    config = {}
+
+    if backend_choice == "2":
+        config["vector_backend"] = "pinecone"
+        print("Using Pinecone as vector backend.")
+
+        # Get Pinecone API key
+        api_key = getpass.getpass("Enter your Pinecone API key (hidden): ").strip()
+        pinecone_cfg: dict = {}
+        if api_key:
+            pinecone_cfg["api_key"] = api_key
+        else:
+            print("Warning: No API key provided. Set PINECONE_API_KEY environment variable.")
+
+        # Get index name
+        index_name = input("Pinecone index name [zotero-library]: ").strip()
+        if index_name:
+            pinecone_cfg["index_name"] = index_name
+
+        # Get cloud/region
+        print("\nPinecone serverless cloud options: aws, gcp, azure")
+        cloud = input("Cloud provider [aws]: ").strip() or "aws"
+        region = input("Region [us-east-1]: ").strip() or "us-east-1"
+        pinecone_cfg["cloud"] = cloud
+        pinecone_cfg["region"] = region
+
+        config["pinecone"] = pinecone_cfg
+    else:
+        config["vector_backend"] = "chroma"
+        print("Using ChromaDB as vector backend.")
+
     # Choose embedding model
     print("\nAvailable embedding models:")
     print("1. Default (all-MiniLM-L6-v2) - Free, runs locally")
@@ -161,8 +203,6 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         if choice in ["1", "2", "3"]:
             break
         print("Please enter 1, 2, or 3")
-
-    config = {}
 
     if choice == "1":
         config["embedding_model"] = "default"

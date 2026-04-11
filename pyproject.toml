@@ -37,6 +37,13 @@ semantic = [
     "google-genai>=0.7.0",
     "tiktoken>=0.7.0",
 ]
+pinecone = [
+    "pinecone>=5.0.0",
+    "sentence-transformers>=2.2.0",
+    "openai>=1.0.0",
+    "google-genai>=0.7.0",
+    "tiktoken>=0.7.0",
+]
 pdf = [
     "pymupdf>=1.24.0",
     "ebooklib>=0.18",
@@ -45,7 +52,7 @@ scite = [
     "requests>=2.28.0",
 ]
 all = [
-    "zotero-mcp-server[semantic,pdf,scite]",
+    "zotero-mcp-server[semantic,pinecone,pdf,scite]",
 ]
 dev = [
     "zotero-mcp-server[all]",
