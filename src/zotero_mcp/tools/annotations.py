@@ -1088,6 +1088,125 @@ def delete_note(
 
 
 @mcp.tool(
+    name="zotero_update_annotation",
+    description="Update an existing Zotero annotation's comment, color, or text. Only the fields you provide will be changed."
+)
+def update_annotation(
+    item_key: str,
+    comment: str | None = None,
+    color: str | None = None,
+    text: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Update an existing Zotero annotation.
+
+    Args:
+        item_key: Zotero item key/ID of the annotation to update
+        comment: New comment text (replaces existing comment)
+        color: New highlight color in hex format (e.g. "#ff6666")
+        text: New annotation text (replaces existing annotationText)
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        ctx.info(f"Updating annotation {item_key}")
+
+        zot, err = _get_note_write_client("updating annotations")
+        if err:
+            return err
+
+        try:
+            item = zot.item(item_key)
+        except Exception:
+            return f"Error: No item found with key: {item_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "annotation":
+            return f"Error: Item {item_key} is not an annotation (itemType={data.get('itemType')})"
+
+        if comment is None and color is None and text is None:
+            return "Error: No fields to update. Provide at least one of: comment, color, text."
+
+        changes = []
+        if comment is not None:
+            data["annotationComment"] = comment
+            changes.append(f"comment={'(cleared)' if not comment else repr(comment[:50])}")
+        if color is not None:
+            data["annotationColor"] = color
+            changes.append(f"color={color}")
+        if text is not None:
+            data["annotationText"] = text
+            changes.append(f"text={repr(text[:50])}")
+
+        resp = zot.update_item(item)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Successfully updated annotation {item_key}: {', '.join(changes)}"
+        return f"Failed to update annotation {item_key}"
+
+    except Exception as e:
+        ctx.error(f"Error updating annotation: {str(e)}")
+        return f"Error updating annotation: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_delete_annotation",
+    description="Move a Zotero annotation to the Trash. Trashed annotations are recoverable from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."
+)
+def delete_annotation(
+    item_key: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Move a Zotero annotation to the Trash.
+
+    Args:
+        item_key: Zotero item key/ID of the annotation to trash
+        ctx: MCP context
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        ctx.info(f"Trashing annotation {item_key}")
+
+        zot, err = _get_note_write_client("deleting annotations")
+        if err:
+            return err
+
+        try:
+            item = zot.item(item_key)
+        except Exception:
+            return f"Error: No item found with key: {item_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "annotation":
+            return f"Error: Item {item_key} is not an annotation (itemType={data.get('itemType')})"
+
+        from pyzotero.zotero import build_url
+        url = build_url(
+            zot.endpoint,
+            f"/{zot.library_type}/{zot.library_id}/items/{item_key}",
+        )
+        resp = zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return f"Successfully trashed annotation {item_key} (recoverable from Zotero's Trash)"
+        return f"Failed to trash annotation {item_key} (HTTP {resp.status_code}): {resp.text[:200]}"
+
+    except Exception as e:
+        ctx.error(f"Error trashing annotation: {str(e)}")
+        return f"Error trashing annotation: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_create_annotation",
     description=(
         "Create a highlight annotation on a PDF or EPUB attachment with optional comment. "
