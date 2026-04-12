@@ -2,7 +2,9 @@
 Zotero client wrapper for MCP server.
 """
 
+import functools
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,23 @@ from zotero_mcp.utils import format_creators
 
 # Load environment variables
 load_dotenv()
+
+# Serialize all Zotero API access. The local API (port 23119) is single-threaded;
+# concurrent requests from parallel MCP tool threads queue at the network layer and
+# risk hitting pyzotero's 30s timeout. A process-local semaphore ensures only one
+# request is in-flight at a time — the rest queue in-process (microseconds) instead
+# of at the API (seconds/timeout).
+_zotero_api_lock = threading.Semaphore(1)
+
+
+def with_zotero_api_lock(func):
+    """Serialize Zotero API access across concurrent MCP tool threads."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _zotero_api_lock:
+            return func(*args, **kwargs)
+    return wrapper
+
 
 # Runtime library override state — set by zotero_switch_library tool.
 # When non-empty, these values override the corresponding environment variables

@@ -9,6 +9,7 @@ from fastmcp import Context
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools.retrieval import get_item_fulltext
 
@@ -21,6 +22,7 @@ from zotero_mcp.tools.retrieval import get_item_fulltext
     name="search",
     description="ChatGPT-compatible search wrapper. Performs semantic search and returns JSON results."
 )
+@with_zotero_api_lock
 def chatgpt_connector_search(
     query: str,
     *,
@@ -65,6 +67,7 @@ def chatgpt_connector_search(
     name="fetch",
     description="ChatGPT-compatible fetch wrapper. Retrieves fulltext/metadata for a Zotero item by ID."
 )
+@with_zotero_api_lock
 def connector_fetch(
     id: str,
     *,
