@@ -6,6 +6,7 @@ with the existing Zotero client to enable vector-based similarity search
 over research libraries.
 """
 
+import contextlib
 import json
 import os
 import sys
@@ -29,6 +30,39 @@ from .utils import format_creators, is_local_mode
 from .local_db import LocalZoteroReader, get_local_zotero_reader
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _acquire_update_lock(lock_path: Path):
+    """Non-blocking exclusive flock over an update-database run.
+
+    Yields True if the lock was acquired (caller should proceed), False if
+    another process already holds it (caller should skip). This prevents the
+    MCP server's auto-update in ``server_lifespan`` from racing a manual
+    ``zotero-mcp update-db`` invocation on the same ChromaDB collection.
+
+    Windows lacks ``fcntl``; on that platform the function degrades to a
+    no-op and yields True so behaviour matches pre-lock releases.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        yield True
+        return
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    try:
+        fd = open(lock_path, "w")
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        if fd is not None:
+            fd.close()
 
 
 from zotero_mcp.utils import suppress_stdout
@@ -781,6 +815,24 @@ class ZoteroSemanticSearch:
             "duration": None
         }
 
+        # Guard against concurrent rebuilds: the MCP server auto-launches
+        # update_database on startup while the user may also run
+        # `zotero-mcp update-db` manually. A cross-process flock avoids
+        # double work and potential ChromaDB corruption.
+        lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
+        lock_cm = _acquire_update_lock(lock_path)
+        acquired = lock_cm.__enter__()
+        if not acquired:
+            lock_cm.__exit__(None, None, None)
+            logger.warning(
+                "Another semantic-search update is already running "
+                "(lock held at %s); skipping this invocation.",
+                lock_path,
+            )
+            stats["duration"] = "0:00:00"
+            stats["skipped_reason"] = "another_update_in_progress"
+            return stats
+
         try:
             # Reset collection if force rebuild
             if force_full_rebuild:
@@ -900,6 +952,12 @@ class ZoteroSemanticSearch:
             end_time = datetime.now()
             stats["duration"] = str(end_time - start_time)
             return stats
+        finally:
+            # Release the update flock on every exit path. Paired with the
+            # __enter__ call above; the "not acquired" branch releases
+            # separately before its early return, so this finally only runs
+            # for the path where we actually hold the lock.
+            lock_cm.__exit__(None, None, None)
 
     def _process_item_batch(
         self,
