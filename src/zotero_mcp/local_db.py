@@ -593,7 +593,8 @@ class LocalZoteroReader:
         """
 
         if limit:
-            query += f" LIMIT {limit}"
+            query += " LIMIT ?"
+            params.append(limit)
 
         cursor = conn.execute(query, params)
         items = []
