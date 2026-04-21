@@ -188,6 +188,64 @@ def _normalize_doi(raw):
     return None
 
 
+def _normalize_isbn(raw):
+    """Normalize an ISBN string and validate the checksum.
+
+    Accepts ISBN-10, ISBN-13, and prefixed/URL forms (isbn:, https://isbndb.com/...).
+    Strips hyphens, spaces, and any prefix. Returns the canonical digits-only
+    form (13-digit preferred — ISBN-10 inputs are converted to ISBN-13).
+    Returns None on invalid input or failing checksum.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.lower().startswith("isbn:"):
+        s = s[5:].strip()
+    if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
+        s = s[5:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])",
+                      s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        s = m.group(1)
+    digits = re.sub(r"[\s\-]", "", s)
+    if re.match(r"^\d{9}[\dXx]$", digits):
+        if not _isbn10_checksum_valid(digits):
+            return None
+        return _isbn10_to_isbn13(digits)
+    if re.match(r"^97[89]\d{10}$", digits):
+        if not _isbn13_checksum_valid(digits):
+            return None
+        return digits
+    return None
+
+
+def _isbn10_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = 10 if ch in ("X", "x") else int(ch)
+        total += v * (10 - i)
+    return total % 11 == 0
+
+
+def _isbn13_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = int(ch)
+        total += v if i % 2 == 0 else v * 3
+    return total % 10 == 0
+
+
+def _isbn10_to_isbn13(isbn10):
+    core = "978" + isbn10[:9]
+    total = 0
+    for i, ch in enumerate(core):
+        total += int(ch) * (1 if i % 2 == 0 else 3)
+    check = (10 - total % 10) % 10
+    return core + str(check)
+
+
 def _normalize_arxiv_id(raw):
     """Normalize an arXiv ID from various input formats."""
     if not raw:

@@ -710,6 +710,222 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     return f"Failed to create arXiv item: {result}"
 
 
+# ---------------------------------------------------------------------------
+# ISBN lookup — Open Library (primary) + Google Books (fallback) (#226)
+# ---------------------------------------------------------------------------
+
+def _lookup_isbn_openlibrary(isbn, ctx):
+    """Look up book metadata by ISBN on Open Library. Returns a dict of
+    normalized fields, or None on miss / error. Network errors are logged
+    and surfaced as None so the caller can fall through to Google Books.
+    """
+    try:
+        url = (
+            f"https://openlibrary.org/api/books"
+            f"?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
+        )
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        payload = resp.json() or {}
+        record = payload.get(f"ISBN:{isbn}") or {}
+        if not record:
+            return None
+
+        title = record.get("title", "")
+        if record.get("subtitle"):
+            title = f"{title}: {record['subtitle']}"
+
+        creators = []
+        for author in record.get("authors", []) or []:
+            name = (author.get("name") or "").strip()
+            if not name:
+                continue
+            parts = name.rsplit(" ", 1)
+            if len(parts) == 2:
+                creators.append({
+                    "creatorType": "author",
+                    "firstName": parts[0],
+                    "lastName": parts[1],
+                })
+            else:
+                creators.append({"creatorType": "author", "name": name})
+
+        publisher = ""
+        publishers = record.get("publishers") or []
+        if publishers:
+            publisher = (publishers[0].get("name") or "").strip()
+
+        place = ""
+        places = record.get("publish_places") or []
+        if places:
+            place = (places[0].get("name") or "").strip()
+
+        return {
+            "source": "Open Library",
+            "title": title,
+            "creators": creators,
+            "date": (record.get("publish_date") or "").strip(),
+            "publisher": publisher,
+            "place": place,
+            "num_pages": str(record.get("number_of_pages", "") or "").strip(),
+            "url": (record.get("url") or "").strip(),
+        }
+    except requests.RequestException as e:
+        ctx.info(f"Open Library lookup failed (non-fatal): {e}")
+        return None
+    except Exception as e:
+        ctx.info(f"Open Library parse failed (non-fatal): {e}")
+        return None
+
+
+def _lookup_isbn_google_books(isbn, ctx):
+    """Look up book metadata by ISBN on Google Books. Returns a dict of
+    normalized fields, or None on miss / error."""
+    try:
+        url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        payload = resp.json() or {}
+        items = payload.get("items") or []
+        if not items:
+            return None
+        info = items[0].get("volumeInfo") or {}
+
+        title = info.get("title", "")
+        if info.get("subtitle"):
+            title = f"{title}: {info['subtitle']}"
+
+        creators = []
+        for name in info.get("authors", []) or []:
+            name = (name or "").strip()
+            if not name:
+                continue
+            parts = name.rsplit(" ", 1)
+            if len(parts) == 2:
+                creators.append({
+                    "creatorType": "author",
+                    "firstName": parts[0],
+                    "lastName": parts[1],
+                })
+            else:
+                creators.append({"creatorType": "author", "name": name})
+
+        return {
+            "source": "Google Books",
+            "title": title,
+            "creators": creators,
+            "date": (info.get("publishedDate") or "").strip(),
+            "publisher": (info.get("publisher") or "").strip(),
+            "place": "",  # Google Books doesn't expose publication place
+            "num_pages": str(info.get("pageCount", "") or "").strip(),
+            "url": (info.get("infoLink") or info.get("canonicalVolumeLink") or "").strip(),
+        }
+    except requests.RequestException as e:
+        ctx.info(f"Google Books lookup failed (non-fatal): {e}")
+        return None
+    except Exception as e:
+        ctx.info(f"Google Books parse failed (non-fatal): {e}")
+        return None
+
+
+@mcp.tool(
+    name="zotero_add_by_isbn",
+    description=(
+        "Add a book to your Zotero library by ISBN. Resolves metadata via "
+        "Open Library (primary) and Google Books (fallback). Accepts ISBN-10, "
+        "ISBN-13, with or without hyphens, or a URL/isbn: prefix. Response "
+        "includes the resolver source so you can audit metadata quality."
+    )
+)
+def add_by_isbn(
+    isbn: str,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        normalized = _helpers._normalize_isbn(isbn)
+        if not normalized:
+            return (
+                f"Error: '{isbn}' does not appear to be a valid ISBN "
+                "(checksum failed or wrong length)."
+            )
+
+        ctx.info(f"Resolving ISBN {normalized} via Open Library...")
+        meta = _lookup_isbn_openlibrary(normalized, ctx)
+        if not meta:
+            ctx.info("Open Library miss — falling back to Google Books...")
+            meta = _lookup_isbn_google_books(normalized, ctx)
+        if not meta:
+            return (
+                f"ISBN not found on Open Library or Google Books: {normalized}"
+            )
+
+        # Build Zotero book item
+        template = write_zot.item_template("book")
+        item_data = dict(template)
+        if meta.get("title"):
+            item_data["title"] = meta["title"]
+        if meta.get("creators"):
+            item_data["creators"] = meta["creators"]
+        if meta.get("date") and "date" in item_data:
+            item_data["date"] = meta["date"]
+        if meta.get("publisher") and "publisher" in item_data:
+            item_data["publisher"] = meta["publisher"]
+        if meta.get("place") and "place" in item_data:
+            item_data["place"] = meta["place"]
+        if meta.get("num_pages") and "numPages" in item_data:
+            item_data["numPages"] = meta["num_pages"]
+        if meta.get("url") and "url" in item_data:
+            item_data["url"] = meta["url"]
+        if "ISBN" in item_data:
+            item_data["ISBN"] = normalized
+
+        tag_list = _helpers._normalize_str_list_input(tags, "tags")
+        if tag_list:
+            item_data["tags"] = [{"tag": t} for t in tag_list]
+        coll_keys = _helpers._normalize_str_list_input(collections, "collections")
+        if coll_keys:
+            item_data["collections"] = coll_keys
+
+        result = write_zot.create_items([item_data])
+        if isinstance(result, dict) and result.get("success"):
+            item_key = next(iter(result["success"].values()))
+            return (
+                f"Successfully added: **{item_data.get('title', normalized)}**\n\n"
+                f"Item key: `{item_key}`\n"
+                f"Type: book\n"
+                f"ISBN: {normalized}\n"
+                f"Source: {meta['source']}\n\n"
+                "_Note: Open Library and Google Books metadata can be noisy "
+                "(publisher-as-author, concatenated places, off-by-one dates). "
+                "Verify via `zotero_get_item_metadata` after creation. "
+                "Run `zotero_update_search_database` to include this item "
+                "in semantic search._"
+            )
+        return f"Failed to create item: {result}"
+
+    except Exception as e:
+        ctx.error(f"Error adding by ISBN: {e}")
+        return f"Error adding by ISBN: {e}"
+
+
 # Maps Zotero API field names to tool parameter names for user-facing messages
 _UPDATE_ITEM_API_TO_PARAM = {
     "title": "title",
