@@ -106,6 +106,8 @@ from zotero_mcp.tools.write import (  # noqa: F401
     merge_duplicates,
     get_pdf_outline,
     add_from_file,
+    add_by_bibtex,
+    add_by_csl_json,
 )
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,
