@@ -714,6 +714,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
 _UPDATE_ITEM_API_TO_PARAM = {
     "title": "title",
     "date": "date",
+    "accessDate": "access_date",
     "publicationTitle": "publication_title",
     "abstractNote": "abstract",
     "DOI": "doi",
@@ -723,6 +724,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "issue": "issue",
     "pages": "pages",
     "publisher": "publisher",
+    "place": "place",
     "ISSN": "issn",
     "language": "language",
     "shortTitle": "short_title",
@@ -746,6 +748,7 @@ def update_item(
     title: str | None = None,
     creators: list[dict] | str | None = None,
     date: str | None = None,
+    access_date: str | None = None,
     publication_title: str | None = None,
     abstract: str | None = None,
     tags: list[str] | str | None = None,
@@ -760,6 +763,7 @@ def update_item(
     issue: str | None = None,
     pages: str | None = None,
     publisher: str | None = None,
+    place: str | None = None,
     issn: str | None = None,
     language: str | None = None,
     short_title: str | None = None,
@@ -795,6 +799,8 @@ def update_item(
             field_updates["title"] = title
         if date is not None:
             field_updates["date"] = date
+        if access_date is not None:
+            field_updates["accessDate"] = access_date
         if publication_title is not None:
             field_updates["publicationTitle"] = publication_title
         if abstract is not None:
@@ -813,6 +819,8 @@ def update_item(
             field_updates["pages"] = pages
         if publisher is not None:
             field_updates["publisher"] = publisher
+        if place is not None:
+            field_updates["place"] = place
         if issn is not None:
             field_updates["ISSN"] = issn
         if language is not None:
