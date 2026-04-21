@@ -904,6 +904,86 @@ def update_item(
 
 
 @mcp.tool(
+    name="zotero_delete_item",
+    description=(
+        "Move a Zotero item to the Trash. Works for any item type (book, "
+        "journalArticle, webpage, attachment, etc.). For notes, use "
+        "zotero_delete_note — identical mechanism, constrained to notes "
+        "for safety. Trashed items are recoverable from Zotero's Trash — "
+        "empty the Trash in the Zotero UI for permanent deletion. "
+        "By default refuses to trash notes; set allow_note=True to override."
+    )
+)
+def delete_item(
+    item_key: str,
+    allow_note: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Move a Zotero item to the Trash.
+
+    Args:
+        item_key: Zotero item key/ID to trash
+        allow_note: If True, permits trashing note items. Default False
+            directs callers to zotero_delete_note for notes (which has the
+            same mechanism but is explicit about what it affects).
+        ctx: MCP context
+
+    Returns:
+        Confirmation message, or an error if the item cannot be trashed.
+    """
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        ctx.info(f"Trashing item {item_key}")
+
+        try:
+            item = write_zot.item(item_key)
+        except Exception:
+            return f"Error: No item found with key: {item_key}"
+
+        data = item.get("data", {})
+        item_type = data.get("itemType", "unknown")
+
+        if item_type == "note" and not allow_note:
+            return (
+                f"Error: Item {item_key} is a note. Use zotero_delete_note "
+                "for notes, or pass allow_note=True to override."
+            )
+
+        # pyzotero's delete_item() permanently destroys items, and update_item()
+        # strips the "deleted" field. Send a direct PATCH with {"deleted": 1}
+        # to move the item to Zotero's Trash (recoverable by the user).
+        from pyzotero.zotero import build_url
+        url = build_url(
+            write_zot.endpoint,
+            f"/{write_zot.library_type}/{write_zot.library_id}/items/{item_key}",
+        )
+        resp = write_zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return (
+                f"Successfully trashed item {item_key} "
+                f"(type={item_type}, recoverable from Zotero's Trash)"
+            )
+        return (
+            f"Failed to trash item {item_key} (HTTP {resp.status_code}): "
+            f"{resp.text[:200]}"
+        )
+
+    except Exception as e:
+        ctx.error(f"Error trashing item: {str(e)}")
+        return f"Error trashing item: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_find_duplicates",
     description="Find duplicate items in your library by title and/or DOI."
 )
