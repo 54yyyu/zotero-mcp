@@ -47,6 +47,33 @@ def _make_item(key="ABCD1234", version=10, title="Original Title",
     }
 
 
+def _make_webpage_item(key="WEBP1234", version=10, title="A Web Page",
+                      access_date="", url="https://example.com",
+                      tags=None, collections=None, extra=""):
+    """Build a realistic Zotero webpage item dict (supports accessDate)."""
+    return {
+        "key": key,
+        "version": version,
+        "data": {
+            "key": key,
+            "version": version,
+            "itemType": "webpage",
+            "title": title,
+            "creators": [],
+            "date": "",
+            "accessDate": access_date,
+            "abstractNote": "",
+            "url": url,
+            "language": "",
+            "shortTitle": "",
+            "tags": [{"tag": t} for t in (tags or [])],
+            "collections": list(collections or []),
+            "extra": extra,
+            "relations": {},
+        },
+    }
+
+
 def _make_book_item(key="BOOK1234", version=10, title="Original Book",
                     tags=None, collections=None, extra="",
                     publisher="", edition="", isbn="", volume="",
@@ -750,6 +777,56 @@ class TestUpdateItemNewFields:
         assert fake.update_calls[0]["data"]["ISBN"] == "978-0-123456-78-9"
         assert "978-0-123456-78-9" in result
 
+    def test_update_access_date_on_webpage(self, monkeypatch):
+        """accessDate should be writable on webpage items (issue #240)."""
+        item = _make_webpage_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="WEBP1234",
+            access_date="2026-04-21",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["accessDate"] == "2026-04-21"
+        assert "2026-04-21" in result
+
+    def test_update_place_on_book(self, monkeypatch):
+        """place should be writable on book items (issue #238 round-trip)."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            place="Cambridge, MA",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["place"] == "Cambridge, MA"
+        assert "Cambridge, MA" in result
+
+    def test_access_date_skipped_on_book(self, monkeypatch):
+        """accessDate is not valid for books — should be in skip warning."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            access_date="2026-04-21",
+            ctx=DummyContext(),
+        )
+
+        # No update should happen (accessDate not in book schema)
+        assert len(fake.update_calls) == 0
+        assert "access_date" in result
+        assert "book" in result.lower()
+
     def test_update_book_title_on_book_section(self, monkeypatch):
         item = _make_book_section_item()
         fake = FakeZoteroForUpdate(items=[item])
@@ -972,3 +1049,132 @@ class TestUpdateItemSkippedFields:
 
         assert len(fake.update_calls) == 0
         assert "No changes" in result
+
+
+# ---------------------------------------------------------------------------
+# item_type migration (#234)
+# ---------------------------------------------------------------------------
+
+class TestUpdateItemType:
+    """Covers programmatic migration of records across Zotero item types.
+
+    The typical failure mode: the Zotero Connector or DOI resolution
+    misclassifies an item (e.g., a book landing page saved as journalArticle).
+    Without MCP-side repair the only recourse is manual desktop editing,
+    which defeats automated library management.
+    """
+
+    def test_migrate_journal_article_to_book(self, monkeypatch):
+        """Tillman case from issue #234: a book miscoded as journalArticle."""
+        item = _make_item(
+            title="Stripped and Script",
+            publication_title="Wrong Journal",  # stale type-specific field
+            volume="21",
+        )
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            item_type="book",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.update_calls) == 1
+        d = fake.update_calls[0]["data"]
+        # Type flipped
+        assert d["itemType"] == "book"
+        # Title preserved (overlapping field)
+        assert d["title"] == "Stripped and Script"
+        # journalArticle-only field dropped
+        assert "publicationTitle" not in d
+        # Book-specific fields present (from template) — empty strings ok
+        assert "publisher" in d
+        assert "ISBN" in d
+        # Creators, tags, collections preserved (internal bookkeeping)
+        assert len(d["creators"]) == 1
+        assert d["creators"][0]["lastName"] == "Doe"
+        # Diff mentions the type change
+        assert "item_type" in result
+        assert "book" in result
+
+    def test_migrate_preserves_tags_and_collections(self, monkeypatch):
+        item = _make_item(
+            tags=["keep-me", "also-me"],
+            collections=["COLL0001", "COLL0002"],
+        )
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(
+            item_key="ABCD1234",
+            item_type="book",
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        tag_values = {t["tag"] for t in d["tags"]}
+        assert tag_values == {"keep-me", "also-me"}
+        assert set(d["collections"]) == {"COLL0001", "COLL0002"}
+
+    def test_migrate_and_update_new_type_fields_together(self, monkeypatch):
+        """After migrating, fields specific to the NEW type should be settable."""
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            item_type="book",
+            isbn="978-0-8173-2044-5",
+            edition="1st",
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        assert d["itemType"] == "book"
+        assert d["ISBN"] == "978-0-8173-2044-5"
+        assert d["edition"] == "1st"
+        assert "Successfully" in result
+
+    def test_migrate_to_same_type_noop(self, monkeypatch):
+        """item_type equal to current type should not reshape."""
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            item_type="journalArticle",
+            ctx=DummyContext(),
+        )
+
+        # No change recorded for item_type
+        assert len(fake.update_calls) == 0
+        assert "No changes" in result
+
+    def test_invalid_item_type_rejected(self, monkeypatch):
+        """An invalid item_type should produce a clear error, not a silent drop."""
+        item = _make_item()
+
+        class ZoteroThatRejectsTemplate(FakeZoteroForUpdate):
+            def item_template(self, item_type_name):
+                raise Exception(f"unknown type: {item_type_name}")
+
+        fake = ZoteroThatRejectsTemplate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            item_type="notATypeAtAll",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.update_calls) == 0
+        assert "invalid" in result.lower() or "error" in result.lower()
+        assert "notATypeAtAll" in result
