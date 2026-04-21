@@ -31,7 +31,18 @@ def obfuscate_config_for_display(config):
         return config
 
     obfuscated = config.copy()
-    sensitive_keys = ["ZOTERO_API_KEY", "ZOTERO_LIBRARY_ID", "API_KEY", "LIBRARY_ID"]
+    sensitive_keys = [
+        "ZOTERO_API_KEY",
+        "ZOTERO_LIBRARY_ID",
+        "ZOTERO_WEBDAV_URL",
+        "ZOTERO_WEBDAV_USERNAME",
+        "ZOTERO_WEBDAV_PASSWORD",
+        "API_KEY",
+        "LIBRARY_ID",
+        "WEBDAV_URL",
+        "WEBDAV_USERNAME",
+        "WEBDAV_PASSWORD",
+    ]
 
     for key in sensitive_keys:
         if key in obfuscated:

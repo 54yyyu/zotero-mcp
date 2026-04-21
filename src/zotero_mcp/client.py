@@ -12,6 +12,10 @@ from markitdown import MarkItDown
 from pyzotero import zotero
 
 from zotero_mcp.utils import format_creators
+from zotero_mcp.webdav import (
+    WebDAVNotConfiguredError,
+    download_attachment_from_webdav,
+)
 
 # Load environment variables
 load_dotenv()
@@ -46,6 +50,15 @@ class AttachmentDetails:
     title: str
     filename: str
     content_type: str
+
+
+@dataclass
+class AttachmentDownloadResult:
+    """Result of downloading an attachment from one of the supported sources."""
+
+    path: Path | None
+    source: str | None
+    errors: list[str]
 
 
 def get_zotero_client() -> zotero.Zotero:
@@ -409,6 +422,83 @@ def get_attachment_details(
         pass
 
     return None
+
+
+def download_attachment_file(
+    attachment_key: str,
+    destination_dir: str | Path,
+    filename: str | None = None,
+    *,
+    local_client: zotero.Zotero | None = None,
+    web_client: zotero.Zotero | None = None,
+    enable_webdav: bool = True,
+) -> AttachmentDownloadResult:
+    """
+    Download an attachment using the best available source.
+
+    The fallback order is:
+    1. local Zotero API (works with local storage or desktop-managed WebDAV)
+    2. Direct WebDAV access via environment variables
+    3. Zotero Web API (works with Zotero cloud storage)
+    """
+    destination = Path(destination_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    target_name = Path(filename or f"{attachment_key}.bin").name
+    target_path = destination / target_name
+    errors: list[str] = []
+
+    def _cleanup_target() -> None:
+        if target_path.exists() and target_path.stat().st_size == 0:
+            target_path.unlink()
+
+    def _try_dump(label: str, zot_client: zotero.Zotero | None) -> AttachmentDownloadResult | None:
+        if zot_client is None:
+            return None
+
+        try:
+            zot_client.dump(attachment_key, filename=target_name, path=str(destination))
+            if target_path.exists() and target_path.stat().st_size > 0:
+                return AttachmentDownloadResult(
+                    path=target_path,
+                    source=label,
+                    errors=errors,
+                )
+            errors.append(f"{label}: file was not created")
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+        finally:
+            _cleanup_target()
+
+        return None
+
+    local_result = _try_dump("Local Zotero", local_client)
+    if local_result:
+        return local_result
+
+    if enable_webdav:
+        try:
+            webdav_path = download_attachment_from_webdav(
+                attachment_key,
+                destination,
+                expected_filename=target_name,
+            )
+            if webdav_path.exists() and webdav_path.stat().st_size > 0:
+                return AttachmentDownloadResult(
+                    path=webdav_path,
+                    source="WebDAV",
+                    errors=errors,
+                )
+            errors.append("WebDAV: downloaded file was empty")
+        except WebDAVNotConfiguredError:
+            pass
+        except Exception as exc:
+            errors.append(f"WebDAV: {exc}")
+
+    web_result = _try_dump("Web API", web_client)
+    if web_result:
+        return web_result
+
+    return AttachmentDownloadResult(path=None, source=None, errors=errors)
 
 
 def convert_to_markdown(file_path: str | Path) -> str:

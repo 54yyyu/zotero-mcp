@@ -281,6 +281,9 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_API_KEY`: Your Zotero API key (for web API)
 - `ZOTERO_LIBRARY_ID`: Your Zotero library ID (for web API)
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
+- `ZOTERO_WEBDAV_URL`: Optional WebDAV folder URL for direct attachment downloads in remote mode
+- `ZOTERO_WEBDAV_USERNAME`: Optional WebDAV username
+- `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
 
 **Semantic Search:**
 - `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
@@ -354,7 +357,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_search_by_tag`: Search your library using custom tag filters
 
 ### 📚 Content Tools
-- `zotero_get_item_metadata`: Get detailed metadata (supports BibTeX export via `format="bibtex"`)
+- `zotero_get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
 - `zotero_get_item_fulltext`: Get full text content
 - `zotero_get_item_children`: Get attachments and notes
 

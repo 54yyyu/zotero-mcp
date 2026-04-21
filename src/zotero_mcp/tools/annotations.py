@@ -20,6 +20,40 @@ _WEB_API_ENV_VARS = (
 )
 
 
+def _download_attachment_for_processing(
+    attachment_key: str,
+    filename: str,
+    tmpdir: str,
+    *,
+    local_client,
+    web_client,
+    ctx: Context,
+) -> tuple[str | None, str | None]:
+    """Download an attachment for PDF/EPUB processing and return (path, error)."""
+    download = _client.download_attachment_file(
+        attachment_key,
+        tmpdir,
+        filename,
+        local_client=local_client,
+        web_client=web_client,
+    )
+    if download.path and download.path.exists():
+        ctx.info(f"Attachment downloaded via {download.source}")
+        return str(download.path), None
+
+    error_details = "\n".join(f"  - {err}" for err in download.errors) or "  - No download source succeeded"
+    return (
+        None,
+        "Error: Could not download attachment.\n\n"
+        f"Attempted sources:\n{error_details}\n\n"
+        "Possible solutions:\n"
+        "- **Zotero Cloud Storage**: Ensure file syncing is enabled in Zotero preferences\n"
+        "- **WebDAV Storage**: Configure ZOTERO_WEBDAV_URL, ZOTERO_WEBDAV_USERNAME, and "
+        "ZOTERO_WEBDAV_PASSWORD in the MCP env file, or run local Zotero with remote access enabled\n"
+        "- **Linked files**: Linked attachments (not imported) cannot be accessed remotely"
+    )
+
+
 def _get_note_write_client(op_description: str):
     """Return (client, None) or (None, error_msg) for note-write operations.
 
@@ -1112,7 +1146,7 @@ def create_annotation(
 
     This tool handles multiple storage configurations:
     - Zotero Cloud Storage: Downloads file via Web API
-    - WebDAV Storage: Downloads file via local Zotero (requires Zotero desktop running)
+    - WebDAV Storage: Downloads file via local Zotero or direct WebDAV access
     - Annotations are always created via the Web API (required for write operations)
 
     Args:
@@ -1186,45 +1220,16 @@ def create_annotation(
         # Download the PDF to a temporary location
         # Strategy: Try multiple sources in order of likelihood to succeed
         with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = os.path.join(tmpdir, filename)
-            ctx.info(f"Downloading PDF to {file_path}")
-
-            download_errors = []
-            downloaded = False
-
-            # Source 1: Try local Zotero first (works for WebDAV and local storage)
-            if local_client and not downloaded:
-                try:
-                    ctx.info("Trying local Zotero (WebDAV/local storage)...")
-                    local_client.dump(attachment_key, filename=filename, path=tmpdir)
-                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                        downloaded = True
-                        ctx.info("PDF downloaded via local Zotero")
-                except Exception as e:
-                    download_errors.append(f"Local Zotero: {e}")
-
-            # Source 2: Try Web API (works for Zotero Cloud Storage)
-            if not downloaded:
-                try:
-                    ctx.info("Trying Zotero Web API (cloud storage)...")
-                    web_client.dump(attachment_key, filename=filename, path=tmpdir)
-                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                        downloaded = True
-                        ctx.info("PDF downloaded via Web API")
-                except Exception as e:
-                    download_errors.append(f"Web API: {e}")
-
-            if not downloaded:
-                error_details = "\n".join(f"  - {err}" for err in download_errors)
-                return (
-                    f"Error: Could not download PDF attachment.\n\n"
-                    f"Attempted sources:\n{error_details}\n\n"
-                    "Possible solutions:\n"
-                    "- **Zotero Cloud Storage**: Ensure file syncing is enabled in Zotero preferences\n"
-                    "- **WebDAV Storage**: Ensure Zotero desktop is running with "
-                    "'Allow other applications to communicate with Zotero' enabled\n"
-                    "- **Linked files**: Linked attachments (not imported) cannot be accessed remotely"
-                )
+            file_path, error_message = _download_attachment_for_processing(
+                attachment_key,
+                filename,
+                tmpdir,
+                local_client=local_client,
+                web_client=web_client,
+                ctx=ctx,
+            )
+            if error_message:
+                return error_message
 
             # Verify the file is valid
             if file_type == "pdf":
@@ -1478,43 +1483,16 @@ def create_area_annotation(
             return f"Error: No attachment found with key: {attachment_key} ({e})"
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = os.path.join(tmpdir, filename)
-            ctx.info(f"Downloading PDF to {file_path}")
-
-            download_errors = []
-            downloaded = False
-
-            if local_client and not downloaded:
-                try:
-                    ctx.info("Trying local Zotero (WebDAV/local storage)...")
-                    local_client.dump(attachment_key, filename=filename, path=tmpdir)
-                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                        downloaded = True
-                        ctx.info("PDF downloaded via local Zotero")
-                except Exception as e:
-                    download_errors.append(f"Local Zotero: {e}")
-
-            if not downloaded:
-                try:
-                    ctx.info("Trying Zotero Web API (cloud storage)...")
-                    web_client.dump(attachment_key, filename=filename, path=tmpdir)
-                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                        downloaded = True
-                        ctx.info("PDF downloaded via Web API")
-                except Exception as e:
-                    download_errors.append(f"Web API: {e}")
-
-            if not downloaded:
-                error_details = "\n".join(f"  - {err}" for err in download_errors)
-                return (
-                    f"Error: Could not download PDF attachment.\n\n"
-                    f"Attempted sources:\n{error_details}\n\n"
-                    "Possible solutions:\n"
-                    "- **Zotero Cloud Storage**: Ensure file syncing is enabled in Zotero preferences\n"
-                    "- **WebDAV Storage**: Ensure Zotero desktop is running with "
-                    "'Allow other applications to communicate with Zotero' enabled\n"
-                    "- **Linked files**: Linked attachments (not imported) cannot be accessed remotely"
-                )
+            file_path, error_message = _download_attachment_for_processing(
+                attachment_key,
+                filename,
+                tmpdir,
+                local_client=local_client,
+                web_client=web_client,
+                ctx=ctx,
+            )
+            if error_message:
+                return error_message
 
             if not verify_pdf_attachment(file_path):
                 return "Error: Downloaded file is not a valid PDF"

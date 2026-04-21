@@ -185,7 +185,7 @@ zotero-mcp serve --transport sse --host localhost --port 8000
 When connected to Claude Desktop or another MCP client, you'll have access to these tools:
 
 - **zotero_search_items**: Search your library by title, creator, or content
-- **zotero_get_item_metadata**: Get detailed information about a specific item
+- **zotero_get_item_metadata**: Get detailed information about a specific item, including complete raw metadata via `format="json"`
 - **zotero_get_item_fulltext**: Get the full text content of an item
 - **zotero_get_collections**: List all collections in your library
 - **zotero_get_collection_items**: Get all items in a specific collection
