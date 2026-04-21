@@ -15,6 +15,7 @@ from fastmcp import Context
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+from zotero_mcp import citation_import as _citation_import
 from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
@@ -1395,3 +1396,224 @@ def add_from_file(
     except Exception as e:
         ctx.error(f"Error adding from file: {e}")
         return f"Error adding from file: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Import-by-citation tools (BibTeX / CSL JSON)
+# ---------------------------------------------------------------------------
+
+def _apply_caller_tags_and_collections(
+    item_data: dict,
+    caller_tags: list[str] | str | None,
+    caller_collections: list[str] | str | None,
+) -> None:
+    """Merge caller tags with any source-tags already in ``item_data`` and set collections."""
+    extra_tags = _helpers._normalize_str_list_input(caller_tags, "tags")
+    source_tags = [t.get("tag", "") for t in item_data.get("tags", []) if t.get("tag")]
+    merged = _citation_import.merge_tags(source_tags, extra_tags)
+    if merged:
+        item_data["tags"] = [{"tag": t} for t in merged]
+
+    coll_keys = _helpers._normalize_str_list_input(caller_collections, "collections")
+    if coll_keys:
+        existing = list(item_data.get("collections") or [])
+        # Preserve order while deduplicating
+        seen = set(existing)
+        for k in coll_keys:
+            if k not in seen:
+                existing.append(k)
+                seen.add(k)
+        item_data["collections"] = existing
+
+
+def _create_and_attach(
+    write_zot,
+    item_data: dict,
+    attach_mode: str,
+    ctx: Context,
+) -> dict:
+    """Create one Zotero item and, if it has a DOI, try to attach an OA PDF.
+
+    Returns a dict ``{"ok": bool, "key": str|None, "doi": str|None,
+    "pdf_status": str|None, "error": str|None, "title": str}``.
+    """
+    title = item_data.get("title") or "(untitled)"
+    try:
+        result = write_zot.create_items([item_data])
+    except Exception as e:
+        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
+                "error": str(e), "title": title}
+
+    if not (isinstance(result, dict) and result.get("success")):
+        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
+                "error": f"create_items failed: {result}", "title": title}
+
+    item_key = next(iter(result["success"].values()))
+    doi_raw = item_data.get("DOI") or ""
+    doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
+
+    pdf_status = None
+    if doi:
+        try:
+            pdf_status = _helpers._try_attach_oa_pdf(
+                write_zot, item_key, doi, ctx, attach_mode=attach_mode
+            )
+        except Exception as e:
+            pdf_status = f"OA PDF attach failed: {e}"
+
+    return {"ok": True, "key": item_key, "doi": doi, "pdf_status": pdf_status,
+            "error": None, "title": title}
+
+
+def _format_batch_result(header: str, results: list[dict]) -> str:
+    """Render a per-entry markdown summary for add_by_bibtex / add_by_csl_json."""
+    ok_count = sum(1 for r in results if r["ok"])
+    lines = [header, ""]
+    if len(results) == 1:
+        r = results[0]
+        if r["ok"]:
+            lines.append(f"Successfully added: **{r['title']}**")
+            lines.append("")
+            lines.append(f"Item key: `{r['key']}`")
+            if r["doi"]:
+                lines.append(f"DOI: {r['doi']}")
+            if r["pdf_status"]:
+                lines.append(f"PDF: {r['pdf_status']}")
+        else:
+            lines.append(f"Failed to add **{r['title']}**: {r['error']}")
+    else:
+        lines.append(f"Added {ok_count}/{len(results)} items.")
+        lines.append("")
+        for i, r in enumerate(results, 1):
+            if r["ok"]:
+                line = f"{i}. `{r['key']}` — {r['title']}"
+                if r["doi"]:
+                    line += f" (DOI: {r['doi']})"
+                if r["pdf_status"]:
+                    line += f" [{r['pdf_status']}]"
+                lines.append(line)
+            else:
+                lines.append(f"{i}. ❌ {r['title']}: {r['error']}")
+    lines.append("")
+    lines.append(
+        "_Note: To include new items in semantic search, run "
+        "zotero_update_search_database._"
+    )
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="zotero_add_by_bibtex",
+    description=(
+        "Add one or more items to Zotero from a BibTeX string. "
+        "Supports multiple @entries in a single call. "
+        "The citation key from each entry is preserved in the Extra field. "
+        "If an entry has a DOI, an open-access PDF attachment is attempted."
+    )
+)
+def add_by_bibtex(
+    bibtex: str,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if not (bibtex or "").strip():
+            return "Error: No BibTeX provided."
+
+        try:
+            entries = _citation_import.parse_bibtex(bibtex)
+        except Exception as e:
+            return f"Error parsing BibTeX: {e}"
+
+        if not entries:
+            return "Error: No valid @entries found in the BibTeX input."
+
+        ctx.info(f"Parsed {len(entries)} BibTeX entries")
+
+        results = []
+        for entry in entries:
+            try:
+                item_data = _citation_import.bibtex_entry_to_zotero(
+                    entry, write_zot.item_template
+                )
+            except Exception as e:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"conversion failed: {e}",
+                    "title": entry.get("citekey") or "(unknown)",
+                })
+                continue
+
+            _apply_caller_tags_and_collections(item_data, tags, collections)
+            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+
+        return _format_batch_result("# zotero_add_by_bibtex", results)
+
+    except Exception as e:
+        ctx.error(f"Error adding by BibTeX: {e}")
+        return f"Error adding by BibTeX: {e}"
+
+
+@mcp.tool(
+    name="zotero_add_by_csl_json",
+    description=(
+        "Add one or more items to Zotero from CSL JSON input. "
+        "Accepts a JSON string, a single object, or an array of objects. "
+        "The `id` field is preserved in the Extra field as the Citation Key. "
+        "If an entry has a DOI, an open-access PDF attachment is attempted."
+    )
+)
+def add_by_csl_json(
+    csl_json: str | list | dict,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        try:
+            entries = _citation_import.coerce_csl_json_input(csl_json)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        if not entries:
+            return "Error: No valid CSL JSON objects provided."
+
+        ctx.info(f"Processing {len(entries)} CSL JSON entries")
+
+        results = []
+        for entry in entries:
+            try:
+                item_data = _citation_import.csl_json_to_zotero(
+                    entry, write_zot.item_template
+                )
+            except Exception as e:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"conversion failed: {e}",
+                    "title": str(entry.get("id") or entry.get("title") or "(unknown)"),
+                })
+                continue
+
+            _apply_caller_tags_and_collections(item_data, tags, collections)
+            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+
+        return _format_batch_result("# zotero_add_by_csl_json", results)
+
+    except Exception as e:
+        ctx.error(f"Error adding by CSL JSON: {e}")
+        return f"Error adding by CSL JSON: {e}"

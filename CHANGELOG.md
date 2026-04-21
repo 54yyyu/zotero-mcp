@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`zotero_add_by_bibtex`** — ingest one or more items from a BibTeX string; parses via `bibtexparser` (with LaTeX→unicode conversion), maps to Zotero item format, preserves the citation key in Extra, and attempts an open-access PDF attachment when a DOI is present (#241).
+- **`zotero_add_by_csl_json`** — same for CSL JSON input; accepts a JSON string, a single object, or an array. The CSL `id` is preserved in Extra as the citation key (#241).
+- New `citation_import` module — BibTeX parsing, CSL JSON coercion, and the shared field/type crosswalk (reference: <https://aurimasv.github.io/z2csl/typeMap.xml>).
+- New dependency: `bibtexparser>=1.4,<2`.
+
 ## [0.2.2] - 2026-03-26
 
 ### Added
