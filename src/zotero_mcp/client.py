@@ -191,9 +191,13 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
                 book_info += f", {place}"
             lines.append(book_info)
 
-    # DOI and URL
+    # Identifiers and URL
     if doi := data.get("DOI"):
         lines.append(f"**DOI:** {doi}")
+    if isbn := data.get("ISBN"):
+        lines.append(f"**ISBN:** {isbn}")
+    if issn := data.get("ISSN"):
+        lines.append(f"**ISSN:** {issn}")
     if url := data.get("url"):
         lines.append(f"**URL:** {url}")
 
