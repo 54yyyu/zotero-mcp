@@ -47,6 +47,33 @@ def _make_item(key="ABCD1234", version=10, title="Original Title",
     }
 
 
+def _make_webpage_item(key="WEBP1234", version=10, title="A Web Page",
+                      access_date="", url="https://example.com",
+                      tags=None, collections=None, extra=""):
+    """Build a realistic Zotero webpage item dict (supports accessDate)."""
+    return {
+        "key": key,
+        "version": version,
+        "data": {
+            "key": key,
+            "version": version,
+            "itemType": "webpage",
+            "title": title,
+            "creators": [],
+            "date": "",
+            "accessDate": access_date,
+            "abstractNote": "",
+            "url": url,
+            "language": "",
+            "shortTitle": "",
+            "tags": [{"tag": t} for t in (tags or [])],
+            "collections": list(collections or []),
+            "extra": extra,
+            "relations": {},
+        },
+    }
+
+
 def _make_book_item(key="BOOK1234", version=10, title="Original Book",
                     tags=None, collections=None, extra="",
                     publisher="", edition="", isbn="", volume="",
@@ -749,6 +776,56 @@ class TestUpdateItemNewFields:
 
         assert fake.update_calls[0]["data"]["ISBN"] == "978-0-123456-78-9"
         assert "978-0-123456-78-9" in result
+
+    def test_update_access_date_on_webpage(self, monkeypatch):
+        """accessDate should be writable on webpage items (issue #240)."""
+        item = _make_webpage_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="WEBP1234",
+            access_date="2026-04-21",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["accessDate"] == "2026-04-21"
+        assert "2026-04-21" in result
+
+    def test_update_place_on_book(self, monkeypatch):
+        """place should be writable on book items (issue #238 round-trip)."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            place="Cambridge, MA",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["place"] == "Cambridge, MA"
+        assert "Cambridge, MA" in result
+
+    def test_access_date_skipped_on_book(self, monkeypatch):
+        """accessDate is not valid for books — should be in skip warning."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            access_date="2026-04-21",
+            ctx=DummyContext(),
+        )
+
+        # No update should happen (accessDate not in book schema)
+        assert len(fake.update_calls) == 0
+        assert "access_date" in result
+        assert "book" in result.lower()
 
     def test_update_book_title_on_book_section(self, monkeypatch):
         item = _make_book_section_item()
