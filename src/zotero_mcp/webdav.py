@@ -87,7 +87,8 @@ def _extract_archive(
 
         extracted_paths: dict[str, Path] = {}
         for info in members:
-            relative = Path(PurePosixPath(info.filename))
+            normalized_name = info.filename.replace("\\", "/")
+            relative = Path(PurePosixPath(normalized_name))
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError(f"Unsafe path in WebDAV archive: {info.filename}")
 
@@ -115,7 +116,7 @@ def download_attachment_from_webdav(
         )
 
     base_url, username, password = config
-    url = f"{base_url}{quote(attachment_key)}.zip"
+    url = f"{base_url}{quote(attachment_key, safe='')}.zip"
 
     session = requests.Session()
     session.auth = (username, password)

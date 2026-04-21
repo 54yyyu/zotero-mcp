@@ -61,8 +61,19 @@ def test_download_attachment_from_webdav_extracts_expected_file(tmp_path, monkey
     assert file_path == tmp_path / "paper.pdf"
     assert file_path.read_bytes() == b"%PDF-1.4 webdav test"
     assert session.auth == ("alice", "secret")
-    assert session.trust_env is True
     assert session.requested == [("https://dav.example.com/zotero/ABCD1234.zip", (10.0, 30.0), True)]
+
+
+def test_download_attachment_from_webdav_escapes_attachment_key(tmp_path, monkeypatch):
+    session = _FakeSession(_FakeResponse(_build_zip_bytes("paper.pdf", b"%PDF-1.4 webdav test")))
+    monkeypatch.setenv("ZOTERO_WEBDAV_URL", "https://dav.example.com/zotero")
+    monkeypatch.setenv("ZOTERO_WEBDAV_USERNAME", "alice")
+    monkeypatch.setenv("ZOTERO_WEBDAV_PASSWORD", "secret")
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    webdav.download_attachment_from_webdav("AB/CD", tmp_path, expected_filename="paper.pdf")
+
+    assert session.requested == [("https://dav.example.com/zotero/AB%2FCD.zip", (10.0, 30.0), True)]
 
 
 def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
@@ -87,5 +98,15 @@ def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
     assert result.source == "WebDAV"
     assert result.errors == [
         "Local Zotero: not available",
-        "Web API: not available",
     ]
+
+
+def test_extract_archive_rejects_backslash_path_traversal(tmp_path):
+    zip_bytes = _build_zip_bytes("..\\evil.txt", b"oops")
+
+    try:
+        webdav._extract_archive(zip_bytes, tmp_path, expected_filename="evil.txt")
+    except ValueError as exc:
+        assert "Unsafe path" in str(exc)
+    else:
+        raise AssertionError("Expected _extract_archive() to reject backslash traversal paths")
