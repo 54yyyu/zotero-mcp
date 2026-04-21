@@ -79,7 +79,7 @@ def search_items(
     qmode: Literal["titleCreatorYear", "everything"] = "titleCreatorYear",
     item_type: str = "-attachment",  # Exclude attachments by default
     limit: int | str | None = 10,
-    tag: list[str] | None = None,
+    tag: list[str] | list[dict] | str | None = None,
     collection_key: str | None = None,
     *,
     ctx: Context
@@ -92,7 +92,11 @@ def search_items(
         qmode: Query mode (titleCreatorYear or everything)
         item_type: Type of items to search for. Use "-attachment" to exclude attachments.
         limit: Maximum number of results to return
-        tag: List of tags conditions to filter by
+        tag: Tag filter. Accepts ["tagA", "tagB"] (preferred), a bare string
+            "tagA", a JSON-string list '["tagA", "tagB"]', or the dict-shape
+            [{"tag": "tagA"}] sometimes emitted by clients that confuse the
+            filter form with Zotero's stored-tag form. All are normalized
+            internally to the list[str] form pyzotero expects.
         collection_key: Optional collection key to scope the search to a specific collection.
             When provided, bypasses the fallback cascade and searches the collection directly.
         ctx: MCP context
@@ -104,11 +108,12 @@ def search_items(
         if not query.strip():
             return "Error: Search query cannot be empty"
 
+        # Normalize tag across every wire shape clients produce (#237).
+        tag = _helpers._normalize_tag_filter(tag)
+
         tag_condition_str = ""
         if tag:
             tag_condition_str = f" with tags: '{', '.join(tag)}'"
-        else:
-            tag = []
 
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
         zot = _client.get_zotero_client()
@@ -277,7 +282,7 @@ def search_items(
     "Conditions are ANDed, each term supports disjunction (`OR`) and exclusion (`-`)."
 )
 def search_by_tag(
-    tag: list[str],
+    tag: list[str] | list[dict] | str,
     item_type: str = "-attachment",
     limit: int | str | None = 10,
     collection_key: str | None = None,
@@ -307,6 +312,8 @@ def search_by_tag(
         Markdown-formatted search results
     """
     try:
+        # Normalize tag across every wire shape clients produce (#237).
+        tag = _helpers._normalize_tag_filter(tag)
         if not tag:
             return "Error: Tag cannot be empty"
 
