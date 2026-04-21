@@ -18,12 +18,12 @@ from zotero_mcp.tools import _helpers
 
 @mcp.tool(
     name="zotero_get_item_metadata",
-    description="Get detailed metadata for a specific Zotero item by its key. If the metadata and abstract don't contain the specific information you need, use zotero_get_item_fulltext to read the full paper — but note that fulltext retrieval is resource-intensive and should not be used for searching; use zotero_search_items or zotero_semantic_search instead."
+    description="Get detailed metadata for a specific Zotero item by its key. Supports format='markdown' for a readable summary, format='json' for the complete raw Zotero item record, and format='bibtex' for citation export. If the metadata and abstract don't contain the specific information you need, use zotero_get_item_fulltext to read the full paper — but note that fulltext retrieval is resource-intensive and should not be used for searching; use zotero_search_items or zotero_semantic_search instead."
 )
 def get_item_metadata(
     item_key: str,
     include_abstract: bool = True,
-    format: Literal["markdown", "bibtex"] = "markdown",
+    format: Literal["markdown", "bibtex", "json"] = "markdown",
     *,
     ctx: Context
 ) -> str:
@@ -33,11 +33,12 @@ def get_item_metadata(
     Args:
         item_key: Zotero item key/ID
         include_abstract: Whether to include the abstract in the output (markdown format only)
-        format: Output format - 'markdown' for detailed metadata or 'bibtex' for BibTeX citation
+        format: Output format - 'markdown' for a readable summary, 'json' for
+            the complete raw Zotero item, or 'bibtex' for BibTeX citation
         ctx: MCP context
 
     Returns:
-        Formatted item metadata (markdown or BibTeX)
+        Formatted item metadata
     """
     _ret_logger = _logging.getLogger("zotero_mcp.retrieval")
     try:
@@ -50,10 +51,11 @@ def get_item_metadata(
         if not item:
             return f"No item found with key: {item_key}"
 
+        if format == "json":
+            return json.dumps(item, ensure_ascii=False, indent=2, sort_keys=True)
         if format == "bibtex":
             return _client.generate_bibtex(item)
-        else:
-            return _client.format_item_metadata(item, include_abstract)
+        return _client.format_item_metadata(item, include_abstract)
 
     except Exception as e:
         ctx.error(f"Error fetching item metadata: {str(e)}")
@@ -170,21 +172,30 @@ def get_item_fulltext(
         try:
             ctx.info(f"Attempting to download and convert attachment {attachment.key}")
 
-            # Download the file to a temporary location
-
             with tempfile.TemporaryDirectory() as tmpdir:
-                file_path = os.path.join(tmpdir, attachment.filename or f"{attachment.key}.pdf")
-                zot.dump(attachment.key, filename=os.path.basename(file_path), path=tmpdir)
+                download = _client.download_attachment_file(
+                    attachment.key,
+                    tmpdir,
+                    attachment.filename or f"{attachment.key}.pdf",
+                    local_client=_client.get_local_zotero_client(),
+                    web_client=None if _utils.is_local_mode() else zot,
+                )
 
-                if os.path.exists(file_path):
-                    ctx.info(f"Downloaded file to {file_path}, converting to markdown")
-                    converted_text = _client.convert_to_markdown(file_path)
+                if download.path and download.path.exists():
+                    ctx.info(f"Downloaded file via {download.source} to {download.path}, converting to markdown")
+                    converted_text = _client.convert_to_markdown(download.path)
                     return _helpers._prepend_size_warning(
                         f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}",
                         "Consider using zotero_semantic_search to find specific content instead of reading full papers."
                     )
-                else:
-                    return f"{metadata}\n\n---\n\nFile download failed."
+
+                error_details = "\n".join(f"  - {err}" for err in download.errors) or "  - No download source succeeded"
+                return (
+                    f"{metadata}\n\n---\n\nFile download failed.\n\n"
+                    f"Attempted sources:\n{error_details}\n\n"
+                    "For WebDAV-backed attachments, configure "
+                    "ZOTERO_WEBDAV_URL / ZOTERO_WEBDAV_USERNAME / ZOTERO_WEBDAV_PASSWORD."
+                )
         except Exception as download_error:
             ctx.error(f"Error downloading/converting file: {str(download_error)}")
             if local_extract_error_msg:
