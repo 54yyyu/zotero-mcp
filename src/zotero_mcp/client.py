@@ -184,14 +184,21 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
             if pages := data.get("pages"):
                 journal_info += f", Pages {pages}"
             lines.append(journal_info)
-    elif item_type == "book":
-        if publisher := data.get("publisher"):
-            book_info = f"**Publisher:** {publisher}"
-            if place := data.get("place"):
-                book_info += f", {place}"
-            lines.append(book_info)
+    elif item_type == "bookSection":
+        if book_title := data.get("bookTitle"):
+            lines.append(f"**Book:** {book_title}")
+        if pages := data.get("pages"):
+            lines.append(f"**Pages:** {pages}")
 
-    # DOI and URL
+    # Publisher and place — emitted as independent labeled lines for any
+    # item type that has them (book, bookSection, thesis, report, etc.).
+    # Round-trip parity: agents that read these need a stable, labeled form.
+    if publisher := data.get("publisher"):
+        lines.append(f"**Publisher:** {publisher}")
+    if place := data.get("place"):
+        lines.append(f"**Place:** {place}")
+
+    # Identifiers and URL
     if doi := data.get("DOI"):
         lines.append(f"**DOI:** {doi}")
     if url := data.get("url"):
@@ -299,10 +306,12 @@ def generate_bibtex(item: dict[str, Any]) -> str:
     field_mappings = [
         ("title", "title"),
         ("publicationTitle", "journal"),
+        ("bookTitle", "booktitle"),
         ("volume", "volume"),
         ("issue", "number"),
         ("pages", "pages"),
         ("publisher", "publisher"),
+        ("place", "address"),
         ("DOI", "doi"),
         ("url", "url"),
         ("abstractNote", "abstract")
