@@ -1402,6 +1402,43 @@ def add_from_file(
 # Import-by-citation tools (BibTeX / CSL JSON)
 # ---------------------------------------------------------------------------
 
+_CITATION_FILE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB — generous for citation files
+
+
+def _read_citation_file(file_path: str, allowed_exts: set[str]) -> str:
+    """Read a citation file as UTF-8 text with the same safety checks as add_from_file.
+
+    Raises ValueError on any check failure. Returns the file contents.
+    """
+    if os.path.islink(file_path):
+        raise ValueError("Symlinks are not allowed for security reasons.")
+    if not os.path.isabs(file_path):
+        raise ValueError("file_path must be an absolute path.")
+    resolved = os.path.realpath(file_path)
+    if not os.path.isfile(resolved):
+        raise ValueError(f"File not found: {file_path}")
+
+    ext = os.path.splitext(resolved)[1].lower()
+    if ext not in allowed_exts:
+        raise ValueError(
+            f"Unsupported file extension '{ext}'. "
+            f"Allowed: {', '.join(sorted(allowed_exts))}"
+        )
+
+    size = os.path.getsize(resolved)
+    if size > _CITATION_FILE_MAX_BYTES:
+        raise ValueError(
+            f"File is too large ({size} bytes). "
+            f"Maximum {_CITATION_FILE_MAX_BYTES} bytes."
+        )
+
+    try:
+        with open(resolved, encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        raise ValueError(f"File is not valid UTF-8: {e}") from e
+
+
 def _apply_caller_tags_and_collections(
     item_data: dict,
     caller_tags: list[str] | str | None,
@@ -1505,14 +1542,17 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
 @mcp.tool(
     name="zotero_add_by_bibtex",
     description=(
-        "Add one or more items to Zotero from a BibTeX string. "
-        "Supports multiple @entries in a single call. "
+        "Add one or more items to Zotero from BibTeX. "
+        "Provide EITHER `bibtex` (inline string) OR `file_path` "
+        "(absolute path to a .bib / .bibtex file) — not both. "
+        "Supports multiple @entries per call. "
         "The citation key from each entry is preserved in the Extra field. "
         "If an entry has a DOI, an open-access PDF attachment is attempted."
     )
 )
 def add_by_bibtex(
-    bibtex: str,
+    bibtex: str | None = None,
+    file_path: str | None = None,
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
@@ -1525,8 +1565,20 @@ def add_by_bibtex(
         return str(e)
 
     try:
-        if not (bibtex or "").strip():
-            return "Error: No BibTeX provided."
+        bibtex_provided = bool((bibtex or "").strip())
+        if bibtex_provided and file_path:
+            return "Error: Provide either `bibtex` or `file_path`, not both."
+        if not bibtex_provided and not file_path:
+            return "Error: Must provide `bibtex` (inline string) or `file_path`."
+
+        if file_path:
+            try:
+                bibtex = _read_citation_file(
+                    file_path, allowed_exts={".bib", ".bibtex"}
+                )
+            except ValueError as e:
+                return f"Error: {e}"
+            ctx.info(f"Loaded BibTeX from {file_path} ({len(bibtex)} bytes)")
 
         try:
             entries = _citation_import.parse_bibtex(bibtex)
@@ -1565,14 +1617,16 @@ def add_by_bibtex(
 @mcp.tool(
     name="zotero_add_by_csl_json",
     description=(
-        "Add one or more items to Zotero from CSL JSON input. "
-        "Accepts a JSON string, a single object, or an array of objects. "
+        "Add one or more items to Zotero from CSL JSON. "
+        "Provide EITHER `csl_json` (inline — a JSON string, object, or array) "
+        "OR `file_path` (absolute path to a .json / .csljson file) — not both. "
         "The `id` field is preserved in the Extra field as the Citation Key. "
         "If an entry has a DOI, an open-access PDF attachment is attempted."
     )
 )
 def add_by_csl_json(
-    csl_json: str | list | dict,
+    csl_json: str | list | dict | None = None,
+    file_path: str | None = None,
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
@@ -1585,6 +1639,21 @@ def add_by_csl_json(
         return str(e)
 
     try:
+        csl_provided = csl_json not in (None, "", [], {})
+        if csl_provided and file_path:
+            return "Error: Provide either `csl_json` or `file_path`, not both."
+        if not csl_provided and not file_path:
+            return "Error: Must provide `csl_json` (inline) or `file_path`."
+
+        if file_path:
+            try:
+                csl_json = _read_citation_file(
+                    file_path, allowed_exts={".json", ".csljson"}
+                )
+            except ValueError as e:
+                return f"Error: {e}"
+            ctx.info(f"Loaded CSL JSON from {file_path} ({len(csl_json)} bytes)")
+
         try:
             entries = _citation_import.coerce_csl_json_input(csl_json)
         except ValueError as e:

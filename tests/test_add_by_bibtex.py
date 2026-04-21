@@ -172,6 +172,69 @@ class TestOaPdfAttempt:
 
 
 # ---------------------------------------------------------------------------
+# file_path ingestion
+# ---------------------------------------------------------------------------
+
+class TestFilePath:
+    def test_reads_bib_file(self, monkeypatch, dummy_ctx, tmp_path):
+        fake = _patch_hybrid(monkeypatch)
+        _disable_oa_pdf(monkeypatch)
+
+        bib_file = tmp_path / "refs.bib"
+        bib_file.write_text(
+            "@article{a, title={T}, author={A, B}, year=2020, doi={10.1234/x}}",
+            encoding="utf-8",
+        )
+
+        result = server.add_by_bibtex(file_path=str(bib_file), ctx=dummy_ctx)
+
+        assert len(fake.created) == 1
+        assert fake.created[0]["title"] == "T"
+        assert "Successfully added" in result
+
+    def test_reads_bibtex_extension(self, monkeypatch, dummy_ctx, tmp_path):
+        fake = _patch_hybrid(monkeypatch)
+        _disable_oa_pdf(monkeypatch)
+
+        f = tmp_path / "refs.bibtex"
+        f.write_text("@book{b, title={B}, author={P, Q}, publisher={Pub}, year=2020}",
+                     encoding="utf-8")
+
+        server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
+        assert len(fake.created) == 1
+
+    def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):
+        _patch_hybrid(monkeypatch)
+        f = tmp_path / "refs.txt"
+        f.write_text("@article{a, title={T}, year=2020}", encoding="utf-8")
+
+        result = server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
+        assert "Unsupported file extension" in result
+
+    def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_bibtex(
+            file_path="/absolutely/no/such/file.bib", ctx=dummy_ctx,
+        )
+        assert "not found" in result.lower()
+
+    def test_rejects_relative_path(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_bibtex(file_path="refs.bib", ctx=dummy_ctx)
+        assert "absolute" in result.lower()
+
+    def test_rejects_symlink(self, monkeypatch, dummy_ctx, tmp_path):
+        _patch_hybrid(monkeypatch)
+        target = tmp_path / "real.bib"
+        target.write_text("@article{a, title={T}, year=2020}", encoding="utf-8")
+        link = tmp_path / "linked.bib"
+        link.symlink_to(target)
+
+        result = server.add_by_bibtex(file_path=str(link), ctx=dummy_ctx)
+        assert "symlink" in result.lower()
+
+
+# ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
 
@@ -179,7 +242,19 @@ class TestErrorPaths:
     def test_empty_bibtex(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_bibtex(bibtex="", ctx=dummy_ctx)
-        assert "No BibTeX" in result
+        assert "Must provide" in result
+
+    def test_neither_bibtex_nor_file_path(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_bibtex(ctx=dummy_ctx)
+        assert "Must provide" in result
+
+    def test_both_bibtex_and_file_path_rejected(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_bibtex(
+            bibtex="@a{x}", file_path="/tmp/x.bib", ctx=dummy_ctx,
+        )
+        assert "not both" in result
 
     def test_no_valid_entries(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)

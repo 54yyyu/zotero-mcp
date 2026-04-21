@@ -177,6 +177,65 @@ class TestOaPdfAttempt:
 
 
 # ---------------------------------------------------------------------------
+# file_path ingestion
+# ---------------------------------------------------------------------------
+
+class TestFilePath:
+    def test_reads_json_file(self, monkeypatch, dummy_ctx, tmp_path):
+        fake = _patch_hybrid(monkeypatch)
+        _disable_oa_pdf(monkeypatch)
+
+        f = tmp_path / "refs.json"
+        f.write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
+
+        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+
+        assert len(fake.created) == 1
+        assert fake.created[0]["title"] == "A Paper"
+        assert "Successfully added" in result
+
+    def test_reads_csljson_extension(self, monkeypatch, dummy_ctx, tmp_path):
+        fake = _patch_hybrid(monkeypatch)
+        _disable_oa_pdf(monkeypatch)
+
+        f = tmp_path / "refs.csljson"
+        f.write_text(json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]), encoding="utf-8")
+
+        server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        assert len(fake.created) == 2
+
+    def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):
+        _patch_hybrid(monkeypatch)
+        f = tmp_path / "refs.bib"
+        f.write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
+
+        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        assert "Unsupported file extension" in result
+
+    def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_csl_json(
+            file_path="/absolutely/no/such/file.json", ctx=dummy_ctx,
+        )
+        assert "not found" in result.lower()
+
+    def test_rejects_relative_path(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_csl_json(file_path="refs.json", ctx=dummy_ctx)
+        assert "absolute" in result.lower()
+
+    def test_rejects_symlink(self, monkeypatch, dummy_ctx, tmp_path):
+        _patch_hybrid(monkeypatch)
+        target = tmp_path / "real.json"
+        target.write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
+        link = tmp_path / "linked.json"
+        link.symlink_to(target)
+
+        result = server.add_by_csl_json(file_path=str(link), ctx=dummy_ctx)
+        assert "symlink" in result.lower()
+
+
+# ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
 
@@ -189,12 +248,24 @@ class TestErrorPaths:
     def test_empty_list(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_csl_json(csl_json=[], ctx=dummy_ctx)
-        assert "No valid CSL JSON" in result
+        assert "Must provide" in result
 
     def test_empty_string(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_csl_json(csl_json="", ctx=dummy_ctx)
-        assert "No valid CSL JSON" in result
+        assert "Must provide" in result
+
+    def test_neither_csl_nor_file_path(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_csl_json(ctx=dummy_ctx)
+        assert "Must provide" in result
+
+    def test_both_csl_and_file_path_rejected(self, monkeypatch, dummy_ctx):
+        _patch_hybrid(monkeypatch)
+        result = server.add_by_csl_json(
+            csl_json=SAMPLE_ARTICLE, file_path="/tmp/x.json", ctx=dummy_ctx,
+        )
+        assert "not both" in result
 
     def test_local_only_mode_rejected(self, monkeypatch, dummy_ctx):
         def raise_local(ctx):
