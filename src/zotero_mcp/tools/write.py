@@ -740,7 +740,10 @@ _UPDATE_ITEM_API_TO_PARAM = {
         "Update metadata for an existing item in your Zotero library. "
         "To add tags without removing existing ones, use add_tags (not tags). "
         "To remove specific tags, use remove_tags. "
-        "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes."
+        "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes. "
+        "To migrate an item across types (e.g., journalArticle → book), pass item_type "
+        "with a valid Zotero item-type vocabulary value; overlapping fields are preserved "
+        "and type-specific fields that do not map to the target type are dropped."
     )
 )
 def update_item(
@@ -770,6 +773,7 @@ def update_item(
     edition: str | None = None,
     isbn: str | None = None,
     book_title: str | None = None,
+    item_type: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -792,6 +796,35 @@ def update_item(
         item = write_zot.item(item_key)
         data = item.get("data", {})
         changes = []
+
+        # Handle item_type migration first so subsequent field updates are
+        # validated against the NEW type's schema. Reshape by merging old
+        # data into the new type's template: overlapping typed fields are
+        # preserved; type-specific fields not present in the new template
+        # are dropped; internal bookkeeping fields (key, version, tags,
+        # collections, relations, creators, dateAdded, dateModified) are
+        # always preserved regardless of type.
+        if item_type is not None:
+            old_item_type = data.get("itemType", "")
+            if old_item_type != item_type:
+                try:
+                    new_template = write_zot.item_template(item_type)
+                except Exception as e:
+                    return f"Error: invalid item_type '{item_type}': {e}"
+
+                preserved = {"key", "version", "tags", "collections",
+                             "relations", "creators", "dateAdded",
+                             "dateModified"}
+                reshaped = dict(new_template)
+                for k, v in data.items():
+                    if k in preserved or k in new_template:
+                        reshaped[k] = v
+                reshaped["itemType"] = item_type
+                data = reshaped
+                item["data"] = data
+                changes.append(
+                    f"- **item_type**: '{old_item_type}' -> '{item_type}'"
+                )
 
         # Apply field updates
         field_updates = {}
