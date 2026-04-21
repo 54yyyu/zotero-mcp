@@ -101,6 +101,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
     manage_collections,
     add_by_doi,
     add_by_url,
+    add_by_isbn,
     update_item,
     find_duplicates,
     merge_duplicates,
