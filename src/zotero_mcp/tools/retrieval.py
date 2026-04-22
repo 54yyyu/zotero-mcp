@@ -18,7 +18,26 @@ from zotero_mcp.tools import _helpers
 
 @mcp.tool(
     name="zotero_get_item_metadata",
-    description="Get detailed metadata for a specific Zotero item by its key. If the metadata and abstract don't contain the specific information you need, use zotero_get_item_fulltext to read the full paper — but note that fulltext retrieval is resource-intensive and should not be used for searching; use zotero_search_items or zotero_semantic_search instead."
+    description=(
+        "Fetch detailed metadata (title, creators, date, DOI, publisher, "
+        "tags, abstract, URL, etc.) for ONE Zotero item by key, as "
+        "markdown or BibTeX. "
+        "If the metadata and abstract don't contain what you need, call "
+        "zotero_get_item_fulltext to read the paper — but that is "
+        "resource-intensive (10K+ tokens) and should NEVER be used for "
+        "searching; use zotero_search_items or zotero_semantic_search "
+        "instead. "
+        "item_key: the 8-character Zotero item key (NOT a DOI or title). "
+        "include_abstract=True (default) includes the abstractNote in "
+        "markdown output; pass False to trim tokens when you don't need "
+        "it. (Ignored in bibtex format.) "
+        "format='markdown' (default) returns a human-readable block; "
+        "format='bibtex' returns a BibTeX citation string suitable for "
+        ".bib files. "
+        "Scope: active library only (switch with zotero_switch_library). "
+        "Example: zotero_get_item_metadata(item_key='RTKZQI8E', "
+        "format='bibtex')."
+    )
 )
 def get_item_metadata(
     item_key: str,
@@ -62,7 +81,26 @@ def get_item_metadata(
 
 @mcp.tool(
     name="zotero_get_item_fulltext",
-    description="Get the full text content of a Zotero item by its key. WARNING: Returns the entire paper text (often 10K+ tokens). Only use when you need to read the actual paper content, not just metadata. Do NOT use this for searching — use zotero_search_items or zotero_semantic_search instead. Avoid calling this on multiple papers in one conversation unless the user specifically asks to read them."
+    description=(
+        "Return the full extracted text of a Zotero item's primary "
+        "attachment (PDF or EPUB). "
+        "WARNING: returns the entire paper (often 10K+ tokens). Use ONLY "
+        "when the user explicitly wants to READ the paper — not for "
+        "searching or browsing. For topic search use "
+        "zotero_semantic_search; for metadata only use "
+        "zotero_get_item_metadata. "
+        "Avoid calling this on multiple papers in one conversation unless "
+        "the user specifically asked to read several. "
+        "item_key: 8-character Zotero item key (parent item, not the "
+        "attachment). The tool locates the attached PDF/EPUB itself. "
+        "Scope: active library only. "
+        "Extraction path (in order): local Zotero storage via SQLite when "
+        "running in local mode (fastest, respects pdf_max_pages config); "
+        "Zotero's server-side fulltext index; direct download + PyMuPDF "
+        "parsing as a last resort. Image-only scanned PDFs without OCR "
+        "may return little or no text. "
+        "Example: zotero_get_item_fulltext(item_key='RTKZQI8E')."
+    )
 )
 def get_item_fulltext(
     item_key: str,
@@ -434,7 +472,22 @@ def get_collection_items(
 
 @mcp.tool(
     name="zotero_get_item_children",
-    description="Get all child items (attachments, notes) for a specific Zotero item."
+    description=(
+        "List the child items (attachments, notes, and annotations that are "
+        "direct children of the attachment) of ONE parent Zotero item. "
+        "Use this to find an item's PDF/EPUB attachment key before calling "
+        "zotero_create_annotation, zotero_create_area_annotation, or "
+        "zotero_get_pdf_outline — all of which take an attachment key, NOT "
+        "the parent item key. "
+        "If you need children for several items at once, use "
+        "zotero_get_items_children (one batched API call instead of N). "
+        "item_key: the parent item's 8-character key. "
+        "Returns parent-child structure as markdown: each attachment with "
+        "its content type and filename, each note with its title. "
+        "Scope: active library only. "
+        "Example: zotero_get_item_children(item_key='RTKZQI8E') → its "
+        "PDF attachment key + any notes."
+    )
 )
 def get_item_children(
     item_key: str,
@@ -548,7 +601,22 @@ def get_item_children(
 
 @mcp.tool(
     name="zotero_get_items_children",
-    description="Get child items (attachments, notes) for MULTIPLE Zotero items in one call. Much more efficient than calling get_item_children repeatedly."
+    description=(
+        "Batch variant of zotero_get_item_children: fetch child items "
+        "(attachments, notes, annotations) for MULTIPLE parent items in a "
+        "single API round trip. "
+        "Much cheaper than calling zotero_get_item_children N times — use "
+        "this whenever you have 2+ item keys in hand. "
+        "item_keys: list of 8-character parent item keys (also accepts a "
+        "JSON-encoded list string). Pass as an ARRAY, not a single "
+        "concatenated string. "
+        "Returns a markdown section per parent with its children grouped "
+        "underneath. Missing keys are reported per-item rather than "
+        "aborting the whole call. "
+        "Scope: active library only. "
+        "Example: zotero_get_items_children("
+        "item_keys=['RTKZQI8E', '9UZR8GXT'])."
+    )
 )
 def get_items_children(
     item_keys: list[str] | str,
@@ -1033,7 +1101,22 @@ def get_feed_items(
 
 @mcp.tool(
     name="zotero_get_recent",
-    description="Get recently added items to your Zotero library, or to a specific collection."
+    description=(
+        "List the most recently ADDED items (by dateAdded) in the active "
+        "library, optionally scoped to a single collection. "
+        "Use this for 'what did I add recently?' questions — NOT for "
+        "general topic search (use zotero_semantic_search) or for a "
+        "collection's full contents (use zotero_get_collection_items). "
+        "limit: how many recent items to return (default 10). "
+        "collection_key: optional 8-character collection key to restrict "
+        "results to that collection; when omitted, returns the N most "
+        "recent items across the whole library. "
+        "Ordering is dateAdded DESC. Attachments are excluded — only "
+        "parent items appear. "
+        "Scope: active library only (switch with zotero_switch_library). "
+        "Example: zotero_get_recent(limit=20) or "
+        "zotero_get_recent(collection_key='MT53KB66', limit=5)."
+    )
 )
 def get_recent(
     limit: int | str = 10,
