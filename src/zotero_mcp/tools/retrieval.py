@@ -771,10 +771,10 @@ def get_tags(
     name="zotero_list_libraries",
     description=(
         "List every Zotero library this MCP can address: the user's "
-        "personal library, all group libraries the user is a member of, "
-        "and (in local mode) RSS feed libraries. Each entry shows the "
-        "library ID, type (user/group/feed), display name, and whether "
-        "it is currently active. "
+        "personal library (libraryID=1 conventionally), all group "
+        "libraries the user is a member of (with groupID), and (in "
+        "local mode) RSS feed libraries. Each entry shows the "
+        "library/group ID, display name, and item count. "
         "Use this to discover a library ID before calling "
         "zotero_switch_library — the two form a read-then-switch "
         "workflow. If the user only wants to see Zotero collections "
@@ -784,9 +784,11 @@ def get_tags(
         "In local mode: reads the local Zotero SQLite DB (fast, includes "
         "RSS feeds). In web mode: queries /groups via the Zotero web "
         "API (no feeds). "
-        "Read-only; no side effects. "
-        "Example: zotero_list_libraries() → active library marked with "
-        "(active)."
+        "Read-only; no side effects. The active library isn't flagged "
+        "in the output — track it yourself from the last successful "
+        "zotero_switch_library call (or the ZOTERO_LIBRARY_ID env var "
+        "if none). "
+        "Example: zotero_list_libraries()."
     ),
 )
 def list_libraries(*, ctx: Context) -> str:
@@ -1176,8 +1178,10 @@ def get_feed_items(
         "collection_key: optional 8-character collection key to restrict "
         "results to that collection; when omitted, returns the N most "
         "recent items across the whole library. "
-        "Ordering is dateAdded DESC. Attachments are excluded — only "
-        "parent items appear. "
+        "Ordering is dateAdded DESC. All item types are returned, "
+        "INCLUDING standalone notes and attachments — so results can mix "
+        "papers, notes, and loose PDFs. If you only want parent items, "
+        "filter client-side by itemType in the output. "
         "Scope: active library only (switch with zotero_switch_library). "
         "Example: zotero_get_recent(limit=20) or "
         "zotero_get_recent(collection_key='MT53KB66', limit=5)."
