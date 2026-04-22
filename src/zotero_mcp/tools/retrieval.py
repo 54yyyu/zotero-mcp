@@ -637,7 +637,21 @@ def get_items_children(
 
 @mcp.tool(
     name="zotero_get_tags",
-    description="Get all tags used in your Zotero library."
+    description=(
+        "List all tags used in the currently active Zotero library, as a "
+        "flat markdown list (one tag per line). "
+        "Use this for tag discovery before filtering with "
+        "zotero_search_by_tag or batch-editing with zotero_batch_update_tags. "
+        "Scope is the active library only — switch with "
+        "zotero_switch_library before listing. The list is flat: tags have "
+        "no parent/child structure in Zotero, only a colon convention "
+        "(\"area/subtag\") that this tool preserves verbatim. "
+        "limit: cap on tags returned; None (default) returns all. "
+        "Example output:\n"
+        "  - to-read\n"
+        "  - methods/qualitative\n"
+        "  - AI agents"
+    )
 )
 def get_tags(
     limit: int | str | None = None,
