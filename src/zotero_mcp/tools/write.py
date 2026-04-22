@@ -387,7 +387,31 @@ def manage_collections(
 
 @mcp.tool(
     name="zotero_add_by_doi",
-    description="Add a paper to your Zotero library by DOI. Fetches metadata from CrossRef."
+    description=(
+        "Add an item to the active Zotero library by DOI, resolving rich "
+        "metadata (title, creators, journal, year, abstract) from "
+        "CrossRef. "
+        "Use this as the FIRST choice when the user gives you a DOI — "
+        "cleaner metadata than zotero_add_by_url. For arXiv IDs or raw "
+        "URLs use zotero_add_by_url; for a local PDF use "
+        "zotero_add_from_file. "
+        "doi: the DOI string (with or without the '10.' prefix, with or "
+        "without a leading 'https://doi.org/'). "
+        "collections: optional list of 8-character collection keys (or "
+        "collection names — resolved automatically) to file the item "
+        "under. "
+        "tags: optional list of tag strings to attach. "
+        "attach_mode: 'auto' (default) downloads a PDF if CrossRef links "
+        "one and storage is available; 'none' skips PDF download; "
+        "'required' fails if no PDF can be attached. PDF uploads may fail "
+        "on the Zotero cloud free-tier 300MB quota — metadata still lands "
+        "even when the upload fails. "
+        "Requires a writable library (web API key or hybrid mode); fails "
+        "in local-only mode. Remember to run zotero_update_search_database "
+        "afterwards to make the new item searchable semantically. "
+        "Example: zotero_add_by_doi(doi='10.1145/3708319', "
+        "collections=['9SU943GB'], tags=['MCP'])."
+    )
 )
 def add_by_doi(
     doi: str,
@@ -539,7 +563,31 @@ def add_by_doi(
 
 @mcp.tool(
     name="zotero_add_by_url",
-    description="Add a paper by URL. Supports DOI URLs, arXiv URLs, and general web pages."
+    description=(
+        "Add an item to the active Zotero library from a URL. Routes by "
+        "URL shape: doi.org/... → CrossRef metadata (same path as "
+        "zotero_add_by_doi); arxiv.org/abs/... → arXiv metadata + PDF; "
+        "anything else → webpage item (title + URL, minimal metadata). "
+        "Prefer zotero_add_by_doi when you have a clean DOI — it skips "
+        "the routing and is more robust. For a local file use "
+        "zotero_add_from_file. "
+        "url: the URL to import. "
+        "collections: optional list of 8-character collection keys (or "
+        "names) to file the item under. "
+        "tags: optional list of tag strings to attach. "
+        "attach_mode: 'auto' (default) attaches a PDF if one is "
+        "available; 'none' skips; 'required' fails if no PDF can be "
+        "attached. PDF uploads may fail on the Zotero cloud free-tier "
+        "300MB quota — metadata still lands even when the upload fails. "
+        "WARNING: for bibliography use, a general web-page URL produces "
+        "a 'webpage' itemType that often isn't acceptable as a citation; "
+        "resolve to a DOI and use zotero_add_by_doi instead when "
+        "possible. "
+        "Requires a writable library (fails in local-only mode). Run "
+        "zotero_update_search_database afterwards for semantic search. "
+        "Example: zotero_add_by_url(url='https://arxiv.org/abs/2602.14878', "
+        "collections=['9SU943GB'])."
+    )
 )
 def add_by_url(
     url: str,
@@ -735,10 +783,25 @@ _UPDATE_ITEM_API_TO_PARAM = {
 @mcp.tool(
     name="zotero_update_item",
     description=(
-        "Update metadata for an existing item in your Zotero library. "
-        "To add tags without removing existing ones, use add_tags (not tags). "
-        "To remove specific tags, use remove_tags. "
-        "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes."
+        "Update metadata on an existing Zotero item by key. Only fields "
+        "you pass are modified; unspecified fields are left alone. "
+        "TAG SEMANTICS (easy to get wrong): `tags` REPLACES the entire "
+        "tag list. To add tags without touching existing ones, use "
+        "`add_tags`. To remove specific tags, use `remove_tags`. These "
+        "three are mutually exclusive — prefer `add_tags`/`remove_tags` "
+        "for incremental edits. "
+        "Similarly, collections/collection_names REPLACE the item's "
+        "collection memberships; for incremental moves use "
+        "zotero_manage_collections instead. "
+        "item_key: 8-character Zotero item key of the item to update. "
+        "Editable fields include: title, creators, date, publisher, "
+        "publication_title, volume, issue, pages, DOI, ISBN, ISSN, url, "
+        "language, abstract, short_title, edition, book_title, extra. "
+        "Requires a writable library (web API key or hybrid mode); fails "
+        "in local-only mode. To edit notes use zotero_update_note, not "
+        "this. "
+        "Example: zotero_update_item(item_key='RTKZQI8E', "
+        "add_tags=['reviewed'], doi='10.1145/3708319')."
     )
 )
 def update_item(
@@ -1220,7 +1283,23 @@ def merge_duplicates(
 
 @mcp.tool(
     name="zotero_get_pdf_outline",
-    description="Extract the table of contents / outline from a PDF attachment."
+    description=(
+        "Extract the table of contents (outline/bookmarks) from a PDF "
+        "attachment, returned as a hierarchical markdown list with each "
+        "entry's page number. "
+        "Use this to orient in a paper before calling "
+        "zotero_get_item_fulltext — the outline is typically < 200 "
+        "tokens versus 10K+ for the full text. If the PDF has no "
+        "embedded outline, returns a short 'no outline' message rather "
+        "than failing. "
+        "item_key: the PDF ATTACHMENT key OR the parent item key — both "
+        "are accepted; attachment-to-parent resolution is automatic. "
+        "Find the right key with zotero_get_item_children if unsure. "
+        "Scope: PDFs only (EPUBs have no outline extraction here). "
+        "Requires PyMuPDF (pip install zotero-mcp-server[pdf]). "
+        "Read-only; works in local or web mode. "
+        "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
+    )
 )
 def get_pdf_outline(
     item_key: str,
@@ -1278,9 +1357,26 @@ def get_pdf_outline(
 @mcp.tool(
     name="zotero_add_from_file",
     description=(
-        "Add an item to Zotero from a local PDF file. "
-        "Attempts DOI extraction for rich metadata. "
-        "File path must be absolute and point to a .pdf or .epub file."
+        "Add an item to the active Zotero library from a LOCAL .pdf or "
+        ".epub file. Attempts to extract the DOI from the file content; "
+        "if found, enriches metadata via CrossRef (title, creators, "
+        "journal, year, abstract). If no DOI is found, falls back to "
+        "best-effort title/author guesses from the filename or document "
+        "text. "
+        "Use this when the user has a file on disk but no DOI/URL handy. "
+        "If you have a DOI use zotero_add_by_doi; for an online URL use "
+        "zotero_add_by_url. "
+        "file_path: ABSOLUTE path to a .pdf or .epub file (relative "
+        "paths fail). Other extensions are rejected. "
+        "title: optional override if metadata extraction misses. "
+        "collections: optional list of 8-char keys/names to file under. "
+        "tags: optional list of tag strings. "
+        "Requires a writable library (fails in local-only mode). PDF "
+        "uploads may hit the 300MB Zotero cloud free-tier quota — "
+        "metadata still lands. Run zotero_update_search_database "
+        "afterwards for semantic search. "
+        "Example: zotero_add_from_file(file_path='/Users/me/paper.pdf', "
+        "collections=['9SU943GB'])."
     )
 )
 def add_from_file(
