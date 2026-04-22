@@ -97,6 +97,7 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
 from zotero_mcp.tools.write import (  # noqa: F401
     batch_update_tags,
     create_collection,
+    delete_collection,
     search_collections,
     manage_collections,
     add_by_doi,

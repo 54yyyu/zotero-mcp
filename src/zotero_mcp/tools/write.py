@@ -268,6 +268,48 @@ def create_collection(
 
 
 @mcp.tool(
+    name="zotero_delete_collection",
+    description=(
+        "Delete a collection (folder) from your Zotero library by its "
+        "8-character key. Items inside the collection are NOT deleted — they "
+        "remain in the library (and in any other collections they belong to). "
+        "Subcollections ARE deleted along with the parent. "
+        "This is a hard delete — Zotero's API does not trash collections, so "
+        "the operation cannot be undone via the API. Use "
+        "zotero_search_collections to find the key first. "
+        'Example: zotero_delete_collection(collection_key="KMMQDFQ4").'
+    )
+)
+def delete_collection(
+    collection_key: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        ctx.info(f"Deleting collection {collection_key}")
+
+        try:
+            coll = write_zot.collection(collection_key)
+        except Exception as e:
+            return f"Collection not found: `{collection_key}` ({e})"
+
+        name = coll.get("data", {}).get("name", collection_key)
+        resp = write_zot.delete_collection(coll)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Deleted collection \"{name}\" (`{collection_key}`)"
+        return f"Failed to delete collection `{collection_key}`: {resp}"
+
+    except Exception as e:
+        ctx.error(f"Error deleting collection: {e}")
+        return f"Error deleting collection: {e}"
+
+
+@mcp.tool(
     name="zotero_search_collections",
     description="Search for collections by name to find their keys."
 )

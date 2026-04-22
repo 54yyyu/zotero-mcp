@@ -28,6 +28,7 @@ class FakeZoteroCollections(FakeZotero):
         self.added_to_collections = []   # (collection_key, items)
         self.removed_from_collections = []  # (collection_key, item)
         self.created_collections = []
+        self.deleted_collections = []
 
     def create_collections(self, colls, **kwargs):
         self.created_collections.extend(colls)
@@ -42,6 +43,16 @@ class FakeZoteroCollections(FakeZotero):
 
     def deletefrom_collection(self, collection_key, item, **kwargs):
         self.removed_from_collections.append((collection_key, item))
+        return _FakeResponse(204)
+
+    def collection(self, key, **kwargs):
+        for c in self._collections:
+            if c.get("key") == key:
+                return c
+        raise Exception(f"Code: 404 — Not found: collection {key}")
+
+    def delete_collection(self, collection, **kwargs):
+        self.deleted_collections.append(collection)
         return _FakeResponse(204)
 
 
@@ -491,3 +502,40 @@ class TestManageCollections:
 
         # Both items should be added to the collection
         assert "success" in result.lower() or "added" in result.lower()
+
+
+# ===========================================================================
+# Feature 4: zotero_delete_collection
+# ===========================================================================
+
+
+class TestDeleteCollection:
+    """Tests for the delete_collection tool function."""
+
+    def test_deletes_existing_collection(self, monkeypatch, fake_zot, ctx):
+        _patch_web_only(monkeypatch, fake_zot)
+
+        result = server.delete_collection(collection_key="ABC00001", ctx=ctx)
+
+        assert len(fake_zot.deleted_collections) == 1
+        assert fake_zot.deleted_collections[0]["key"] == "ABC00001"
+        assert "Deleted" in result
+        assert "Machine Learning" in result
+        assert "ABC00001" in result
+
+    def test_unknown_key_returns_error(self, monkeypatch, fake_zot, ctx):
+        _patch_web_only(monkeypatch, fake_zot)
+
+        result = server.delete_collection(collection_key="NOPEKEY1", ctx=ctx)
+
+        assert fake_zot.deleted_collections == []
+        assert "not found" in result.lower()
+        assert "NOPEKEY1" in result
+
+    def test_local_only_mode_rejected(self, monkeypatch, fake_zot, ctx):
+        _patch_local_only(monkeypatch, fake_zot)
+
+        result = server.delete_collection(collection_key="ABC00001", ctx=ctx)
+
+        assert "local-only mode" in result
+        assert fake_zot.deleted_collections == []
