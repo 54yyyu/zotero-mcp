@@ -35,6 +35,13 @@ from zotero_mcp.tools import _helpers
         "format='bibtex' returns a BibTeX citation string suitable for "
         ".bib files. "
         "Scope: active library only (switch with zotero_switch_library). "
+        "Unlike list endpoints, this returns items EVEN IF THEY ARE IN "
+        "THE TRASH — a Status: In Trash line is surfaced when the item "
+        "is trashed (recoverable via the Zotero UI). Collection "
+        "membership is shown as keys rather than a bare count so the "
+        "caller can verify entries against zotero_search_collections "
+        "(the Zotero API does not cascade collection-delete to items, "
+        "so dangling references can linger). "
         "Example: zotero_get_item_metadata(item_key='RTKZQI8E', "
         "format='bibtex')."
     )
