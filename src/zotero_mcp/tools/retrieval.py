@@ -332,12 +332,20 @@ def get_collection_items(
         ctx.info(f"Fetching items for collection {collection_key}")
         zot = _client.get_zotero_client()
 
-        # First get the collection details
+        # First get the collection details. Fail fast on lookup error: the
+        # Zotero web API returns library-wide items for invalid or not-yet-
+        # propagated collection keys rather than 404ing, so we must not fall
+        # through to collection_items() when we can't confirm the collection
+        # exists.
         try:
             collection = zot.collection(collection_key)
             collection_name = collection["data"].get("name", "Unnamed Collection")
-        except Exception:
-            collection_name = f"Collection {collection_key}"
+        except Exception as e:
+            ctx.error(f"Collection lookup failed for {collection_key}: {e}")
+            return (
+                f"Collection not found or not yet accessible: `{collection_key}`. "
+                f"If you just created this collection, wait a moment and try again."
+            )
 
         limit = _helpers._normalize_limit(limit, default=50)
 
