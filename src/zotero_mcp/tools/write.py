@@ -968,7 +968,26 @@ def update_item(
 
 @mcp.tool(
     name="zotero_find_duplicates",
-    description="Find duplicate items in your library by title and/or DOI."
+    description=(
+        "Scan the active library (or a single collection) for duplicate "
+        "items and return candidate groups for review. This tool only "
+        "IDENTIFIES duplicates — it doesn't merge them. Call "
+        "zotero_merge_duplicates to actually merge a group. "
+        "method: 'both' (default) — match on title OR DOI; 'title' — "
+        "normalized-title match only (lowercase, punctuation-stripped); "
+        "'doi' — exact DOI match only (safest for automation). Prefer "
+        "'doi' when the user intends to run merge_duplicates "
+        "unattended. "
+        "collection_key: optional 8-character key to restrict scanning "
+        "to one collection; otherwise scans the whole active library. "
+        "limit: max groups to return (default 50). "
+        "Returns a markdown block per group with keys, titles, DOIs, "
+        "and dateAdded — use this to decide which item to KEEP before "
+        "calling zotero_merge_duplicates(keeper_key=..., "
+        "duplicate_keys=[...]). "
+        "Read-only; works in local or web mode. "
+        "Example: zotero_find_duplicates(method='doi', limit=20)."
+    )
 )
 def find_duplicates(
     method: Literal["title", "doi", "both"] = "both",
@@ -1076,11 +1095,27 @@ def find_duplicates(
 @mcp.tool(
     name="zotero_merge_duplicates",
     description=(
-        "Merge duplicate items. Consolidates tags, collections, notes, annotations, "
-        "and all child items into the keeper. Duplicates are moved to Trash (recoverable). "
-        "Dry-run by default — call with confirm=True to execute. "
-        "Parameters: keeper_key (the item key to KEEP), "
-        "duplicate_keys (ARRAY of item keys to merge into the keeper and then trash)."
+        "Merge one or more duplicate items INTO a keeper: consolidates "
+        "tags, collections, notes, annotations, and all child items onto "
+        "the keeper, then moves the duplicates to Trash (recoverable "
+        "from Zotero desktop's Trash view). "
+        "SAFETY: dry-run by DEFAULT — prints what would happen without "
+        "changing anything. Pass confirm=True to actually execute. Always "
+        "run dry-first at least once to verify the keeper choice. "
+        "Discover groups first with zotero_find_duplicates. "
+        "keeper_key: 8-character key of the item to KEEP. All metadata "
+        "gaps on the keeper are filled from duplicates where possible; "
+        "conflicting fields keep the keeper's value. "
+        "duplicate_keys: ARRAY of 8-character item keys to merge into "
+        "the keeper and trash (also accepts a JSON-encoded list "
+        "string) — pass as an array, not a single concatenated string. "
+        "The keeper itself must NOT appear in this list. "
+        "confirm: False (default) runs dry; True executes the merge. "
+        "Requires a writable library (web API key or hybrid mode); fails "
+        "in local-only mode. "
+        "Example dry-run: zotero_merge_duplicates("
+        "keeper_key='ABC12345', duplicate_keys=['XYZ98765']). "
+        "Example execute: same, plus confirm=True."
     )
 )
 def merge_duplicates(
