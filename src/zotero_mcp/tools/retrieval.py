@@ -201,7 +201,15 @@ def get_item_fulltext(
 
 @mcp.tool(
     name="zotero_get_collections",
-    description="List all collections in your Zotero library."
+    description=(
+        "List all collections in your Zotero library as a hierarchical tree "
+        "(parents and nested subcollections, each with its 8-character key). "
+        "Use this when the user wants to see the full library structure. "
+        "If you already know a name and just need the key, prefer "
+        "zotero_search_collections — it returns only matches. "
+        "Default limit is 100; pass limit up to 5000 for larger libraries. "
+        "Example: zotero_get_collections() → a markdown tree of all collections."
+    )
 )
 def get_collections(
     limit: int | str | None = None,
