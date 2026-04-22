@@ -83,6 +83,14 @@ def format_item_result(
         f"**Authors:** {format_creators(data.get('creators', []))}",
     ]
 
+    # Trash status. pyzotero's default list endpoints filter trashed items
+    # out, but not every call site does (e.g. includeTrashed=1, direct
+    # item() lookups routed through this formatter). Defense in depth —
+    # surface the flag whenever data.deleted is set so agents never silently
+    # reason about a trashed paper as if it were live.
+    if data.get("deleted"):
+        lines.append("**Status:** 🗑️ In Trash")
+
     if extra_fields:
         for label, value in extra_fields.items():
             lines.append(f"**{label}:** {value}")

@@ -165,6 +165,13 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         f"**Item Key:** {data.get('key')}",
     ]
 
+    # Trash status. The Zotero web API returns data.deleted=1 for items in
+    # the Trash; prior versions silently rendered trashed items as if live,
+    # so agents reasoning about "current" state could cite papers the user
+    # had explicitly removed. Surface it near the top where it's hard to miss.
+    if data.get("deleted"):
+        lines.append("**Status:** 🗑️ In Trash (recoverable from Zotero Trash view)")
+
     # Date
     if date := data.get("date"):
         lines.append(f"**Date:** {date}")
@@ -226,10 +233,13 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         related_keys = [uri.rstrip("/").split("/")[-1] for uri in dc_relations]
         lines.extend(["", "## Related Items", *[f"- {k}" for k in related_keys]])
 
-    # Collections
+    # Collections — list actual keys rather than a bare count. The Zotero
+    # web API does NOT cascade collection-delete to items, so the array
+    # can contain dangling references to collections that no longer exist.
+    # Showing the keys lets agents verify against zotero_search_collections
+    # instead of trusting a potentially stale count.
     if collections := data.get("collections", []):
-        if collections:
-            lines.append(f"**Collections:** {len(collections)} collections")
+        lines.append(f"**Collections:** {', '.join(collections)}")
 
     # Notes - this requires additional API calls, so we just indicate if there are notes
     if "meta" in item and item["meta"].get("numChildren", 0) > 0:
