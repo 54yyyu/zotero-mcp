@@ -269,7 +269,23 @@ def create_collection(
 
 @mcp.tool(
     name="zotero_search_collections",
-    description="Search for collections by name to find their keys."
+    description=(
+        "Search collections by name in the active library and return their "
+        "8-character keys. Matching is case-insensitive substring and applies "
+        "ONLY to the collection's own name — not to parent names, "
+        "descriptions, or items inside the collection. "
+        "Multi-word queries are ANDed across words (NOT OR-ed): query "
+        "'reading list' matches only collections whose name contains both "
+        "'reading' AND 'list'. To match either word, issue two separate "
+        "searches. Leading/trailing whitespace is ignored and empty words "
+        "are dropped. "
+        "Returns the collection's key plus its parent (if any). "
+        "Performance: scans all collections in the active library (O(n)); "
+        "for very large libraries expect a full-list pagination under the "
+        "hood. "
+        'Example: zotero_search_collections(query="orals") → keys for every '
+        'collection with "orals" in its name.'
+    )
 )
 def search_collections(
     query: str,
