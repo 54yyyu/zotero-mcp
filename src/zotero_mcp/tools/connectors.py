@@ -19,7 +19,26 @@ from zotero_mcp.tools.retrieval import get_item_fulltext
 
 @mcp.tool(
     name="search",
-    description="ChatGPT-compatible search wrapper. Performs semantic search and returns JSON results."
+    description=(
+        "ChatGPT custom connector SEARCH endpoint — name is REQUIRED by "
+        "the MCP-over-web spec (see platform.openai.com/docs/mcp); "
+        "do not rename. Not intended for general MCP clients — in Claude "
+        "or other regular MCP contexts use zotero_semantic_search or "
+        "zotero_search_items instead, which return richer markdown. "
+        "Performs semantic search over the active Zotero library and "
+        "returns a JSON string {\"results\":[{\"id\",\"title\",\"url\"}, "
+        "...]} matching the ChatGPT connector citation UI. URLs are "
+        "zotero://select/items/<key> deep-links. "
+        "query: topic string; natural language works (embedding match). "
+        "No limit parameter — fixed at 10 per the connector UI's "
+        "expected result-set size. "
+        "Requires the semantic search DB populated — run "
+        "zotero_update_search_database first if empty. "
+        "SILENT FALLBACK: any error returns {\"results\":[]} rather "
+        "than raising, to keep the ChatGPT connector stable. "
+        "Example (agent-invoked): search(query='mindfulness-based "
+        "therapy')."
+    )
 )
 def chatgpt_connector_search(
     query: str,
@@ -63,7 +82,29 @@ def chatgpt_connector_search(
 
 @mcp.tool(
     name="fetch",
-    description="ChatGPT-compatible fetch wrapper. Retrieves fulltext/metadata for a Zotero item by ID."
+    description=(
+        "ChatGPT custom connector FETCH endpoint — name is REQUIRED by "
+        "the MCP-over-web spec (see platform.openai.com/docs/mcp); "
+        "do not rename. Not intended for general MCP clients — in Claude "
+        "or other regular MCP contexts use zotero_get_item_fulltext and "
+        "zotero_get_item_metadata, which return richer markdown. "
+        "Retrieves a single Zotero item and returns a JSON envelope "
+        "{\"id\",\"title\",\"text\",\"url\",\"metadata\":{...}} matching "
+        "the ChatGPT connector citation viewer. "
+        "id: an 8-char Zotero item key — typically from a previous "
+        "`search` call. Blank/missing returns an empty envelope (no "
+        "error). "
+        "url field: Zotero web-library URL when ZOTERO_LIBRARY_ID is "
+        "set; otherwise a zotero://select/items/<key> deep-link. "
+        "text field: extracted fulltext via the same path as "
+        "zotero_get_item_fulltext; if none can be extracted, falls back "
+        "to title + authors + abstract so the connector isn't blank. "
+        "metadata field: itemType, date, DOI, authors, tags, both URLs. "
+        "SILENT FALLBACK: errors return an envelope with "
+        "{\"metadata\":{\"error\":…}} rather than raising, to keep the "
+        "ChatGPT connector stable. "
+        "Example (agent-invoked): fetch(id='RTKZQI8E')."
+    )
 )
 def connector_fetch(
     id: str,
