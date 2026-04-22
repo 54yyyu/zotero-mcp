@@ -23,7 +23,26 @@ CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
 
 @mcp.tool(
     name="zotero_batch_update_tags",
-    description="Batch update tags across multiple items matching a search query or tag filter."
+    description=(
+        "Add and/or remove tags across multiple items in one call, selecting "
+        "items by a text query, an existing tag, or both. "
+        "Must supply at least one selector (query or tag) AND at least one "
+        "action (add_tags or remove_tags) — otherwise returns an error. "
+        "query: free-text matched against item metadata (title, creators, "
+        "abstract, etc.) — same search as zotero_search_items. "
+        "tag: filter to items already bearing this tag. When both are "
+        "given, they are ANDed; pass tag as a list to OR multiple tags. "
+        "add_tags, remove_tags: list of tag strings (or a JSON-encoded list "
+        "string). Existing tags are preserved; this is not a replace-all. "
+        "limit: max items to process (default 50). Attachments are "
+        "auto-skipped. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. Use zotero_get_tags to discover existing tag "
+        "names first. "
+        "Example: zotero_batch_update_tags(tag='to-read', "
+        "add_tags=['reviewed'], remove_tags=['to-read'], limit=100) — "
+        "mark everything tagged 'to-read' as 'reviewed'."
+    )
 )
 def batch_update_tags(
     query: str = "",
