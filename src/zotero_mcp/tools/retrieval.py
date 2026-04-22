@@ -769,7 +769,25 @@ def get_tags(
 
 @mcp.tool(
     name="zotero_list_libraries",
-    description="List all accessible Zotero libraries (user library, group libraries, and RSS feeds). Use this to discover available libraries before switching with zotero_switch_library.",
+    description=(
+        "List every Zotero library this MCP can address: the user's "
+        "personal library, all group libraries the user is a member of, "
+        "and (in local mode) RSS feed libraries. Each entry shows the "
+        "library ID, type (user/group/feed), display name, and whether "
+        "it is currently active. "
+        "Use this to discover a library ID before calling "
+        "zotero_switch_library — the two form a read-then-switch "
+        "workflow. If the user only wants to see Zotero collections "
+        "inside the CURRENT library, use zotero_get_collections "
+        "instead. "
+        "No parameters. "
+        "In local mode: reads the local Zotero SQLite DB (fast, includes "
+        "RSS feeds). In web mode: queries /groups via the Zotero web "
+        "API (no feeds). "
+        "Read-only; no side effects. "
+        "Example: zotero_list_libraries() → active library marked with "
+        "(active)."
+    ),
 )
 def list_libraries(*, ctx: Context) -> str:
     """
@@ -877,7 +895,27 @@ def list_libraries(*, ctx: Context) -> str:
 
 @mcp.tool(
     name="zotero_switch_library",
-    description="Switch the active Zotero library context. All subsequent tool calls will operate on the selected library. Use zotero_list_libraries first to see available options. Pass library_type='default' to reset to the original environment variable configuration.",
+    description=(
+        "Switch the active library context. EVERY subsequent read/write "
+        "tool call (collections, items, annotations, search — all of "
+        "them) operates on the library set here. Changes persist for the "
+        "rest of the session or until the next switch. "
+        "Discover valid library IDs/types via zotero_list_libraries "
+        "first; don't guess. "
+        "library_id: library ID string as returned by "
+        "zotero_list_libraries (numeric for user/group, numeric for "
+        "feeds). "
+        "library_type: 'user' — the personal library; 'group' (default) "
+        "— a group library; 'feeds' — a local RSS feed library; "
+        "'default' — RESET to whatever the ZOTERO_LIBRARY_ID / "
+        "ZOTERO_LIBRARY_TYPE env vars configure (library_id is ignored "
+        "in this mode). "
+        "Fails fast if the library_id isn't accessible under the "
+        "current credentials. "
+        "Example: zotero_switch_library(library_id='5294983', "
+        "library_type='group') or zotero_switch_library("
+        "library_id='', library_type='default')."
+    ),
 )
 def switch_library(
     library_id: str,
@@ -980,7 +1018,20 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
 
 @mcp.tool(
     name="zotero_list_feeds",
-    description="List all RSS feed subscriptions in your local Zotero installation. Shows feed names, URLs, item counts, and last check times. Local mode only.",
+    description=(
+        "List all RSS feed subscriptions configured in the local Zotero "
+        "desktop install. Each entry includes the feed's library ID, "
+        "display name, source URL, item count, and last-checked "
+        "timestamp. "
+        "Use this to discover a feed's library_id before calling "
+        "zotero_get_feed_items; the two form a list-then-fetch workflow "
+        "analogous to list_libraries + switch_library. "
+        "No parameters. "
+        "LOCAL MODE ONLY — RSS feeds live in the local SQLite database "
+        "and are not exposed by the Zotero web API. Running this in web "
+        "mode returns a clear error. Read-only; no side effects. "
+        "Example: zotero_list_feeds() → all subscribed feeds."
+    ),
 )
 def list_feeds(*, ctx: Context) -> str:
     """
@@ -1028,7 +1079,21 @@ def list_feeds(*, ctx: Context) -> str:
 
 @mcp.tool(
     name="zotero_get_feed_items",
-    description="Get items from a specific RSS feed by its library ID. Use zotero_list_feeds first to find feed library IDs. Local mode only.",
+    description=(
+        "Fetch recent items from a SPECIFIC Zotero RSS feed by its local "
+        "library ID. Returns titles, authors, dates, and URLs as a "
+        "markdown list. "
+        "Find the right library_id first with zotero_list_feeds — "
+        "guessing feed IDs never works. "
+        "library_id: INTEGER library ID of the feed (as shown by "
+        "zotero_list_feeds, NOT the feed's name or URL). "
+        "limit: max feed items to return (default 20). "
+        "LOCAL MODE ONLY — feeds aren't exposed by the Zotero web API. "
+        "Calls in web mode return a clear error. Read-only; does not "
+        "trigger a new RSS fetch (Zotero desktop refreshes on its own "
+        "schedule). "
+        "Example: zotero_get_feed_items(library_id=12, limit=30)."
+    ),
 )
 def get_feed_items(
     library_id: int,
