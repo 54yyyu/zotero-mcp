@@ -318,6 +318,11 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
 
     config["update_config"] = update_config
     config["extraction"] = {"pdf_max_pages": pdf_max_pages}
+    # Web-API users: index fulltext from Zotero's server-side extraction by
+    # default. Users can set this to false to keep the old metadata-only
+    # behavior. The flag is ignored in local mode (ZOTERO_LOCAL=true uses
+    # local sqlite extraction).
+    config.setdefault("include_fulltext", True)
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
 

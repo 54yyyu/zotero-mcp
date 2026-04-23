@@ -628,6 +628,19 @@ class ChromaClient:
         except Exception:
             return set()
 
+    def get_all_ids(self) -> set[str]:
+        """Return every id currently stored in the collection.
+
+        Used by incremental sync to compute deletions: items in the local
+        collection but no longer present in the Zotero library.
+        """
+        try:
+            result = self.collection.get(include=[])
+            return set(result.get("ids", []))
+        except Exception as e:
+            logger.error(f"Error listing collection ids: {e}")
+            return set()
+
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     """

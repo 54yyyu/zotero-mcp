@@ -142,8 +142,46 @@ class ZoteroSemanticSearch:
 
         return config
 
-    def _save_update_config(self) -> None:
-        """Save update configuration to file."""
+    def _load_include_fulltext_setting(self) -> bool:
+        """Whether to fetch fulltext via the Zotero web API during indexing.
+
+        Defaults to True so existing users auto-upgrade to fulltext indexing on
+        their next sync. Users can opt out by setting
+        `semantic_search.include_fulltext: false` in the config file.
+        Local mode (`ZOTERO_LOCAL=true`) keeps using `extract_fulltext` via
+        the local sqlite DB; this setting only governs web-API ingestion.
+        """
+        if not self.config_path or not os.path.exists(self.config_path):
+            return True
+        try:
+            with open(self.config_path) as f:
+                file_config = json.load(f)
+                value = file_config.get("semantic_search", {}).get("include_fulltext", True)
+                return bool(value)
+        except Exception as e:
+            logger.warning(f"Error loading include_fulltext setting: {e}")
+            return True
+
+    def _load_last_sync_version(self) -> int:
+        """Last Zotero library version fully indexed into ChromaDB.
+
+        Zero means "no prior successful sync; bootstrap required". Used to
+        drive since-based incremental ingest via pyzotero's
+        `item_versions(since=V)` and `new_fulltext(since=V)`.
+        """
+        if not self.config_path or not os.path.exists(self.config_path):
+            return 0
+        try:
+            with open(self.config_path) as f:
+                file_config = json.load(f)
+                value = file_config.get("semantic_search", {}).get("last_sync_version", 0)
+                return int(value) if value is not None else 0
+        except Exception as e:
+            logger.warning(f"Error loading last_sync_version: {e}")
+            return 0
+
+    def _save_update_config(self, last_sync_version: int | None = None) -> None:
+        """Save update configuration and optionally update last_sync_version."""
         if not self.config_path:
             return
 
@@ -164,6 +202,8 @@ class ZoteroSemanticSearch:
             full_config["semantic_search"] = {}
 
         full_config["semantic_search"]["update_config"] = self.update_config
+        if last_sync_version is not None:
+            full_config["semantic_search"]["last_sync_version"] = int(last_sync_version)
 
         try:
             with open(self.config_path, 'w') as f:
@@ -298,19 +338,32 @@ class ZoteroSemanticSearch:
 
         return False
 
-    def _get_items_from_source(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: ChromaClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
+    def _get_items_from_source(self,
+                               limit: int | None = None,
+                               extract_fulltext: bool = False,
+                               chroma_client: ChromaClient | None = None,
+                               force_rebuild: bool = False,
+                               include_fulltext_via_api: bool = False,
+                               ) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
 
         When extract_fulltext=True, requires local mode (ZOTERO_LOCAL=true);
-        raises RuntimeError if local mode is not enabled.
-        Otherwise uses API (faster, metadata-only).
+        raises RuntimeError if local mode is not enabled. This path reads the
+        local Zotero sqlite database and extracts PDF text on-disk.
+
+        When include_fulltext_via_api=True (web-API mode), fetches the
+        server-side extracted fulltext that Zotero cloud has already built
+        for each PDF — no local files required.
+
+        Otherwise uses API metadata only (fastest, title/abstract/tags).
 
         Args:
             limit: Optional limit on number of items
-            extract_fulltext: Whether to extract fulltext content
+            extract_fulltext: Whether to extract fulltext from the local sqlite DB
             chroma_client: ChromaDB client to check for existing documents (None to skip checks)
             force_rebuild: Whether to force extraction even if item exists
+            include_fulltext_via_api: Fetch fulltext via the Zotero web API
 
         Returns:
             List of items in API-compatible format
@@ -328,7 +381,7 @@ class ZoteroSemanticSearch:
                 force_rebuild=force_rebuild
             )
         else:
-            return self._get_items_from_api(limit)
+            return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
 
     def _get_items_from_local_db(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: ChromaClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
         """
@@ -695,12 +748,119 @@ class ZoteroSemanticSearch:
 
         return creators
 
-    def _get_items_from_api(self, limit: int | None = None) -> list[dict[str, Any]]:
+    def _fetch_fulltext_via_web_api(self, item_key: str) -> tuple[str, str]:
+        """Fetch fulltext for a top-level item via the Zotero web API.
+
+        Zotero's cloud keeps a server-side extracted text for every PDF that
+        the desktop client has ever indexed. Web-API mode can retrieve that
+        text without needing the PDF file to be present locally.
+
+        The fulltext usually lives on the PDF attachment child, not the
+        parent. We first try the parent's own key (covers the case where the
+        parent is itself an attachment), then cascade through PDF attachment
+        children.
+
+        Returns:
+            (text, source) where source describes which endpoint supplied the
+            text (e.g. "web-api:parent", "web-api:attachment:<key>"). Empty
+            strings mean no fulltext is available for this item.
+        """
+        def _extract_content(resp: Any) -> str:
+            if isinstance(resp, dict):
+                return str(resp.get("content", "") or "")
+            if isinstance(resp, str):
+                return resp
+            return ""
+
+        # 1. Try the item itself (works when item_key IS the attachment key).
+        try:
+            resp = self.zotero_client.fulltext_item(item_key)
+            text = _extract_content(resp)
+            if text.strip():
+                return text, "web-api:parent"
+        except Exception as e:
+            logger.debug(f"fulltext_item({item_key}) failed: {e}")
+
+        # 2. Walk PDF attachment children and try each in order.
+        try:
+            children = self.zotero_client.children(item_key) or []
+        except Exception as e:
+            logger.debug(f"children({item_key}) failed: {e}")
+            children = []
+
+        for child in children:
+            data = child.get("data", {}) if isinstance(child, dict) else {}
+            if data.get("itemType") != "attachment":
+                continue
+            if data.get("contentType") != "application/pdf":
+                continue
+            child_key = child.get("key") or data.get("key")
+            if not child_key:
+                continue
+            try:
+                resp = self.zotero_client.fulltext_item(child_key)
+            except Exception as e:
+                logger.debug(f"fulltext_item({child_key}) failed: {e}")
+                continue
+            text = _extract_content(resp)
+            if text.strip():
+                return text, f"web-api:attachment:{child_key}"
+
+        return "", ""
+
+    def _attach_web_fulltext(self, items: list[dict[str, Any]]) -> None:
+        """Populate `data.fulltext` on each item in place using the web API."""
+        total = len(items)
+        if not total:
+            return
+        try:
+            sys.stderr.write(f"\nFetching fulltext for {total} items via web API...\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        fetched = 0
+        for idx, item in enumerate(items, 1):
+            key = item.get("key", "")
+            data = item.setdefault("data", {})
+            # Skip items that obviously can't have fulltext
+            if data.get("itemType") in {"note", "annotation"}:
+                data["fulltext_attempted"] = True
+                continue
+            if not key:
+                continue
+            text, source = self._fetch_fulltext_via_web_api(key)
+            if text:
+                data["fulltext"] = text
+                data["fulltextSource"] = source
+                fetched += 1
+            else:
+                data["fulltext_attempted"] = True
+            if idx % 25 == 0 or idx == total:
+                try:
+                    sys.stderr.write(
+                        f"\r  Fulltext: {idx}/{total} items checked, "
+                        f"{fetched} with text"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+        try:
+            sys.stderr.write("\n")
+        except Exception:
+            pass
+
+    def _get_items_from_api(self,
+                            limit: int | None = None,
+                            include_fulltext: bool = False) -> list[dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
 
         Args:
             limit: Optional limit on number of items
+            include_fulltext: If True, fetch server-side extracted PDF text
+                via pyzotero's fulltext_item endpoint for each returned
+                top-level item. Enables full-text semantic indexing without
+                requiring local Zotero mode.
 
         Returns:
             List of items from API
@@ -748,20 +908,83 @@ class ZoteroSemanticSearch:
         if limit:
             all_items = all_items[:limit]
 
+        if include_fulltext:
+            self._attach_web_fulltext(all_items)
+
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
+
+    def _get_changed_items_from_api(self,
+                                    since_version: int,
+                                    include_fulltext: bool = False
+                                    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """Fetch only items changed in the Zotero library since a given version.
+
+        Uses pyzotero's `item_versions(since=V)` to discover changed top-level
+        item keys, then fetches their full payloads one at a time. When
+        `include_fulltext` is True, also fetches server-side extracted text
+        for each changed item.
+
+        Returns:
+            (changed_items, all_current_top_level_keys). The second element
+            powers deletion detection: any id present in the ChromaDB
+            collection but absent from it has been removed from the library.
+        """
+        logger.info(f"Fetching changed items since library version {since_version}...")
+        try:
+            changed_versions = self.zotero_client.item_versions(since=since_version) or {}
+        except Exception as e:
+            raise Exception(f"Failed to fetch item_versions(since={since_version}): {e}") from e
+
+        try:
+            current_versions = self.zotero_client.item_versions() or {}
+        except Exception as e:
+            logger.warning(f"Failed to fetch current item_versions for deletion check: {e}")
+            current_versions = {}
+        current_keys = set(current_versions.keys())
+
+        if not changed_versions:
+            return [], current_keys
+
+        changed_items: list[dict[str, Any]] = []
+        for key in changed_versions.keys():
+            try:
+                item = self.zotero_client.item(key)
+            except Exception as e:
+                logger.debug(f"item({key}) failed during incremental fetch: {e}")
+                continue
+            if not item:
+                continue
+            item_type = item.get("data", {}).get("itemType")
+            # Don't index attachments/notes as standalone entries; only
+            # top-level research items participate in semantic search.
+            if item_type in {"attachment", "note", "annotation"}:
+                continue
+            changed_items.append(item)
+
+        if include_fulltext and changed_items:
+            self._attach_web_fulltext(changed_items)
+
+        return changed_items, current_keys
 
     def update_database(self,
                        force_full_rebuild: bool = False,
                        limit: int | None = None,
-                       extract_fulltext: bool = False) -> dict[str, Any]:
+                       extract_fulltext: bool = False,
+                       include_fulltext: bool | None = None) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
 
         Args:
             force_full_rebuild: Whether to rebuild the entire database
             limit: Limit number of items to process (for testing)
-            extract_fulltext: Whether to extract fulltext content from local database
+            extract_fulltext: Whether to extract fulltext content from the
+                local Zotero sqlite database (requires ZOTERO_LOCAL=true)
+            include_fulltext: Whether to fetch server-side extracted
+                fulltext via the Zotero web API. Defaults to the
+                `semantic_search.include_fulltext` config setting (True
+                unless explicitly disabled). Ignored in local mode since
+                `extract_fulltext` provides richer local extraction.
 
         Returns:
             Update statistics
@@ -776,24 +999,101 @@ class ZoteroSemanticSearch:
             "updated_items": 0,
             "recovered_items": 0,
             "skipped_items": 0,
+            "deleted_items": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
             "duration": None
         }
 
         try:
+            # Resolve include_fulltext default from config if not specified
+            if include_fulltext is None:
+                include_fulltext = self._load_include_fulltext_setting()
+
+            # Web-API fulltext only applies when not using the local sqlite
+            # extractor (extract_fulltext=True takes precedence in local mode)
+            include_fulltext_via_api = include_fulltext and not extract_fulltext
+
             # Reset collection if force rebuild
             if force_full_rebuild:
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
 
-            # Get all items from either local DB or API
-            all_items = self._get_items_from_source(
-                limit=limit,
-                extract_fulltext=extract_fulltext,
-                chroma_client=self.chroma_client if not force_full_rebuild else None,
-                force_rebuild=force_full_rebuild
+            # Decide whether to use since-based incremental ingest.
+            # Incremental requires: not a forced rebuild, not a local-extraction
+            # run (incremental path covers web-API metadata and optionally
+            # fulltext only), not a test limit, and a known prior sync version.
+            last_sync_version = self._load_last_sync_version() if not force_full_rebuild else 0
+            use_incremental = (
+                not force_full_rebuild
+                and not extract_fulltext
+                and limit is None
+                and last_sync_version > 0
             )
+
+            target_sync_version: int | None = None
+            all_items: list[dict[str, Any]] = []
+            if use_incremental:
+                try:
+                    target_sync_version = self.zotero_client.last_modified_version()
+                except Exception as e:
+                    logger.warning(f"last_modified_version() failed, falling back to full scan: {e}")
+                    use_incremental = False
+
+            if use_incremental and target_sync_version == last_sync_version:
+                # No changes since last sync; skip ingest but still touch last_update
+                try:
+                    sys.stderr.write(
+                        f"\nLibrary unchanged since last sync (version {last_sync_version}); "
+                        f"no items to reindex.\n"
+                    )
+                except Exception:
+                    pass
+                self.update_config["last_update"] = datetime.now().isoformat()
+                self._save_update_config(last_sync_version=target_sync_version)
+                end_time = datetime.now()
+                stats["duration"] = str(end_time - start_time)
+                stats["end_time"] = end_time.isoformat()
+                return stats
+
+            if use_incremental:
+                all_items, current_library_keys = self._get_changed_items_from_api(
+                    since_version=last_sync_version,
+                    include_fulltext=include_fulltext_via_api,
+                )
+                # Delete collection entries that are no longer present in the library
+                try:
+                    stored_ids = self.chroma_client.get_all_ids()
+                    to_delete = [k for k in (stored_ids - current_library_keys) if k]
+                    if to_delete:
+                        self.chroma_client.delete_documents(to_delete)
+                        stats["deleted_items"] = len(to_delete)
+                        try:
+                            sys.stderr.write(
+                                f"\nDeleted {len(to_delete)} items no longer present in Zotero.\n"
+                            )
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Deletion pass failed: {e}")
+            else:
+                # Full scan: bootstrap or forced rebuild.
+                if not force_full_rebuild:
+                    # Capture the library version BEFORE scanning so any
+                    # changes made during the scan will be picked up by the
+                    # next incremental run.
+                    try:
+                        target_sync_version = self.zotero_client.last_modified_version()
+                    except Exception as e:
+                        logger.warning(f"last_modified_version() failed: {e}")
+                        target_sync_version = None
+                all_items = self._get_items_from_source(
+                    limit=limit,
+                    extract_fulltext=extract_fulltext,
+                    chroma_client=self.chroma_client if not force_full_rebuild else None,
+                    force_rebuild=force_full_rebuild,
+                    include_fulltext_via_api=include_fulltext_via_api,
+                )
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
@@ -883,9 +1183,9 @@ class ZoteroSemanticSearch:
             except Exception:
                 pass
 
-            # Update last update time
+            # Update last update time, and promote last_sync_version on success
             self.update_config["last_update"] = datetime.now().isoformat()
-            self._save_update_config()
+            self._save_update_config(last_sync_version=target_sync_version)
 
             end_time = datetime.now()
             stats["duration"] = str(end_time - start_time)
