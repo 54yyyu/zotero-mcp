@@ -9,6 +9,8 @@ over research libraries.
 import json
 import os
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -98,6 +100,12 @@ class ZoteroSemanticSearch:
         self._reranker: CrossEncoderReranker | None = None
         self._reranker_config = self._load_reranker_config()
 
+        # Embedding-request throttle state (thread-safe: the indexing loop
+        # runs batches sequentially but the pre-search fire-and-forget sync
+        # in tools/search.py kicks off another indexer thread).
+        self._embed_throttle_lock = threading.Lock()
+        self._last_embed_ts: float = 0.0
+
     def _load_reranker_config(self) -> dict[str, Any]:
         """Load reranker configuration from file or use defaults."""
         config: dict[str, Any] = {
@@ -179,6 +187,116 @@ class ZoteroSemanticSearch:
         except Exception as e:
             logger.warning(f"Error loading last_sync_version: {e}")
             return 0
+
+    def _load_chunking_settings(self) -> dict[str, int]:
+        """Chunk window / overlap sizes in tiktoken cl100k_base tokens.
+
+        Default 1500-token window with 225-token (15%) overlap fits
+        comfortably inside OpenAI text-embedding-3-small (8192 ctx),
+        SiliconFlow bge-m3 (8192 ctx), and leaves headroom for prepended
+        structured metadata.
+        """
+        defaults = {"window": 1500, "overlap": 225}
+        if not self.config_path or not os.path.exists(self.config_path):
+            return defaults
+        try:
+            with open(self.config_path) as f:
+                file_config = json.load(f)
+                overrides = file_config.get("semantic_search", {}).get("chunking", {})
+                if isinstance(overrides, dict):
+                    defaults.update({k: int(v) for k, v in overrides.items()
+                                     if k in defaults})
+        except Exception as e:
+            logger.warning(f"Error loading chunking settings: {e}")
+        return defaults
+
+    def _load_embedding_rate_limit(self) -> float | None:
+        """Max embedding HTTP requests per second, or None for no throttle.
+
+        Useful when driving a rate-limited OpenAI-compatible endpoint such as
+        SiliconFlow or a free-tier OpenAI key. Default is None (no throttle).
+        """
+        if not self.config_path or not os.path.exists(self.config_path):
+            return None
+        try:
+            with open(self.config_path) as f:
+                file_config = json.load(f)
+                val = file_config.get("semantic_search", {}).get("embedding_rate_limit_rps")
+                if val is None:
+                    return None
+                rps = float(val)
+                return rps if rps > 0 else None
+        except Exception:
+            return None
+
+    def _throttle_embedding_request(self) -> None:
+        """Sleep as needed to respect `embedding_rate_limit_rps`.
+
+        Call this immediately before every ChromaDB upsert/add that will
+        trigger a remote embedding request. Each upsert batches many docs
+        into a single POST, so throttling at the upsert boundary matches
+        the per-request rate limit enforced by the provider.
+        """
+        rps = self._load_embedding_rate_limit()
+        if not rps:
+            return
+        with self._embed_throttle_lock:
+            now = time.monotonic()
+            min_interval = 1.0 / rps
+            wait = min_interval - (now - self._last_embed_ts)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_embed_ts = time.monotonic()
+
+    def _chunk_document(self, text: str,
+                        window: int = 1500,
+                        overlap: int = 225) -> list[str]:
+        """Split text into overlapping token windows.
+
+        Uses tiktoken (cl100k_base) for token counting so window sizes are
+        aligned with the tokenizer used by OpenAI and OpenAI-compatible
+        embedding providers (SiliconFlow, Mistral, etc.). Falls back to a
+        conservative 4-char-per-token approximation when tiktoken is
+        unavailable.
+
+        Short inputs (≤ window tokens) return a single-chunk list — callers
+        must still wrap in a list to keep the ingest loop uniform.
+        """
+        if not text or not text.strip():
+            return []
+        if window <= 0:
+            return [text.strip()]
+        # Clamp overlap to < window to prevent infinite loops on malformed config
+        overlap = max(0, min(overlap, window - 1))
+        step = max(1, window - overlap)
+
+        if _tokenizer is None:
+            char_window = window * 4
+            char_step = step * 4
+            chunks = []
+            for i in range(0, len(text), char_step):
+                piece = text[i:i + char_window].strip()
+                if piece:
+                    chunks.append(piece)
+                if i + char_window >= len(text):
+                    break
+            return chunks or [text.strip()]
+
+        tokens = _tokenizer.encode(text, disallowed_special=())
+        if len(tokens) <= window:
+            return [text.strip()]
+
+        chunks: list[str] = []
+        for i in range(0, len(tokens), step):
+            window_tokens = tokens[i:i + window]
+            if not window_tokens:
+                break
+            piece = _tokenizer.decode(window_tokens).strip()
+            if piece:
+                chunks.append(piece)
+            if i + window >= len(tokens):
+                break
+        return chunks
 
     def _save_update_config(self, last_sync_version: int | None = None) -> None:
         """Save update configuration and optionally update last_sync_version."""
@@ -1014,6 +1132,32 @@ class ZoteroSemanticSearch:
             # extractor (extract_fulltext=True takes precedence in local mode)
             include_fulltext_via_api = include_fulltext and not extract_fulltext
 
+            # Migrate from pre-chunking id format: PR1 stored one id per item
+            # (`<key>`); PR2 stores one per chunk (`<key>__<i>`). Mixing both
+            # pollutes dedup / rerank. Detect and upgrade to a fresh rebuild
+            # so the user never has to run --force-rebuild manually.
+            if not force_full_rebuild:
+                try:
+                    existing_ids = self.chroma_client.get_all_ids()
+                    if existing_ids:
+                        sample = list(existing_ids)[:20]
+                        if not any("__" in i for i in sample):
+                            logger.info(
+                                "Legacy pre-chunking id format detected; "
+                                "rebuilding collection."
+                            )
+                            try:
+                                sys.stderr.write(
+                                    "\nCollection was built by an older (pre-chunking) "
+                                    "version; rebuilding to enable paragraph-level "
+                                    "semantic search...\n"
+                                )
+                            except Exception:
+                                pass
+                            force_full_rebuild = True
+                except Exception as e:
+                    logger.debug(f"Legacy id-format check failed: {e}")
+
             # Reset collection if force rebuild
             if force_full_rebuild:
                 logger.info("Force rebuilding database...")
@@ -1061,16 +1205,25 @@ class ZoteroSemanticSearch:
                     since_version=last_sync_version,
                     include_fulltext=include_fulltext_via_api,
                 )
-                # Delete collection entries that are no longer present in the library
+                # Delete collection entries that are no longer present in the
+                # library. With chunking, stored ids are `<parent>__<i>` so we
+                # must group by parent before computing the diff.
                 try:
                     stored_ids = self.chroma_client.get_all_ids()
-                    to_delete = [k for k in (stored_ids - current_library_keys) if k]
-                    if to_delete:
-                        self.chroma_client.delete_documents(to_delete)
-                        stats["deleted_items"] = len(to_delete)
+                    stored_parents = {
+                        i.split("__", 1)[0] if "__" in i else i
+                        for i in stored_ids
+                    }
+                    deleted_parents = [k for k in (stored_parents - current_library_keys) if k]
+                    if deleted_parents:
+                        total_deleted_chunks = 0
+                        for pkey in deleted_parents:
+                            total_deleted_chunks += self.chroma_client.delete_documents_by_parent(pkey)
+                        stats["deleted_items"] = len(deleted_parents)
                         try:
                             sys.stderr.write(
-                                f"\nDeleted {len(to_delete)} items no longer present in Zotero.\n"
+                                f"\nDeleted {len(deleted_parents)} items "
+                                f"({total_deleted_chunks} chunks) no longer present in Zotero.\n"
                             )
                         except Exception:
                             pass
@@ -1210,19 +1363,29 @@ class ZoteroSemanticSearch:
         force_rebuild: bool = False,
         _failed_docs: list | None = None,
     ) -> dict[str, int]:
-        """Process a batch of items.
+        """Process a batch of items into chunked embeddings.
+
+        Each Zotero item is split into one-or-more overlapping token chunks
+        via `_chunk_document`. Chunk ids follow `<item_key>__<chunk_index>`
+        and each chunk's metadata carries `parent_item_key` so the search
+        handler can groupby back to one result per paper.
+
+        Before upserting fresh chunks for an item we delete any pre-existing
+        chunks for that parent so the chunk count can shrink between runs
+        (fulltext re-extraction sometimes yields less text).
 
         _failed_docs: optional list (passed by reference from update_database)
-        that collects (doc_text, metadata, doc_id) tuples for batches that fail
-        mid-run. Without this, the retry path at update_database:839-865 is
-        dead code — a NameError raised here would crash the whole reindex,
-        making every transient ChromaDB error fatal instead of recoverable.
+        that collects (doc_text, metadata, doc_id) tuples for batches that
+        fail mid-run. Without this, a transient ChromaDB error crashes the
+        whole reindex instead of surviving via the retry path.
         """
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
-        documents = []
-        metadatas = []
-        ids = []
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+        ids: list[str] = []
+        parents_touched: list[str] = []
+        chunk_settings = self._load_chunking_settings()
 
         for item in items:
             try:
@@ -1239,18 +1402,35 @@ class ZoteroSemanticSearch:
                     doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
                 else:
                     doc_text = structured_text
-                metadata = self._create_metadata(item)
+                base_metadata = self._create_metadata(item)
 
                 if not doc_text.strip():
                     stats["skipped"] += 1
                     continue
 
-                # Truncate to fit the configured embedding model's token limit
-                doc_text = self.chroma_client.truncate_text(doc_text)
+                # Split into token-bounded chunks. Unlike the old truncate-only
+                # path, chunking preserves the entire fulltext across multiple
+                # embeddings so paragraph-level semantic matches can land
+                # anywhere in the paper, not just the first 8k tokens.
+                chunks = self._chunk_document(
+                    doc_text,
+                    window=chunk_settings["window"],
+                    overlap=chunk_settings["overlap"],
+                )
+                if not chunks:
+                    stats["skipped"] += 1
+                    continue
 
-                documents.append(doc_text)
-                metadatas.append(metadata)
-                ids.append(item_key)
+                parents_touched.append(item_key)
+                total_chunks = len(chunks)
+                for idx, chunk_text in enumerate(chunks):
+                    chunk_meta = dict(base_metadata)
+                    chunk_meta["parent_item_key"] = item_key
+                    chunk_meta["chunk_index"] = idx
+                    chunk_meta["total_chunks"] = total_chunks
+                    documents.append(chunk_text)
+                    metadatas.append(chunk_meta)
+                    ids.append(f"{item_key}__{idx}")
 
                 stats["processed"] += 1
 
@@ -1258,34 +1438,50 @@ class ZoteroSemanticSearch:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
                 stats["errors"] += 1
 
-        # Add documents to ChromaDB if any
-        if documents:
-            existing_ids = set()
-            if not force_rebuild:
-                existing_ids = self.chroma_client.get_existing_ids(ids)
+        if not documents:
+            return stats
 
+        # For non-rebuild runs: clear any stale chunks for these parents so
+        # chunk count can shrink. On force_rebuild the collection was already
+        # reset upstream, so no pre-existing chunks exist.
+        if not force_rebuild:
+            for pkey in parents_touched:
+                try:
+                    self.chroma_client.delete_documents_by_parent(pkey)
+                except Exception as e:
+                    logger.debug(f"Pre-upsert cleanup for {pkey} failed: {e}")
+
+        # Track which parents were already in the collection, for added/updated stats
+        pre_existing_parents: set[str] = set()
+        if not force_rebuild:
+            # get_existing_ids expects chunk ids; sample the first chunk of
+            # each parent to decide "new" vs "update" without a separate
+            # collection scan. This is a statistics-only signal.
+            sample_ids = [f"{p}__0" for p in parents_touched]
             try:
-                self.chroma_client.upsert_documents(documents, metadatas, ids)
-                for doc_id in ids:
-                    if doc_id in existing_ids:
-                        stats["updated"] += 1
-                    else:
-                        stats["added"] += 1
-            except Exception as e:
-                # Batch failed — collect failures for end-of-run retry.
-                # ChromaDB's ONNX tokenizer can fail intermittently in bursts;
-                # retrying immediately usually fails too. Collecting failures
-                # and retrying after all batches are done is more effective.
-                logger.warning(f"Batch upsert failed ({e}), saving for retry")
-                if _failed_docs is not None:
-                    for j in range(len(documents)):
-                        _failed_docs.append((documents[j], metadatas[j], ids[j]))
-                    # Count them as errors so stats are accurate
-                    stats["errors"] += len(documents)
+                pre_existing_parents = {
+                    i.split("__", 1)[0]
+                    for i in self.chroma_client.get_existing_ids(sample_ids)
+                }
+            except Exception:
+                pre_existing_parents = set()
+
+        try:
+            self._throttle_embedding_request()
+            self.chroma_client.upsert_documents(documents, metadatas, ids)
+            for pkey in parents_touched:
+                if pkey in pre_existing_parents:
+                    stats["updated"] += 1
                 else:
-                    # No retry list — this is the legacy crash path; re-raise
-                    # so caller sees the real error instead of hiding it.
-                    raise
+                    stats["added"] += 1
+        except Exception as e:
+            logger.warning(f"Batch upsert failed ({e}), saving for retry")
+            if _failed_docs is not None:
+                for j in range(len(documents)):
+                    _failed_docs.append((documents[j], metadatas[j], ids[j]))
+                stats["errors"] += len(parents_touched)
+            else:
+                raise
 
         return stats
 
@@ -1296,38 +1492,53 @@ class ZoteroSemanticSearch:
         """
         Perform semantic search over the Zotero library.
 
+        Because items are stored as multiple chunks (one per ~1500 tokens),
+        a naive top-N query can return the same paper multiple times. We
+        oversample from ChromaDB, groupby `parent_item_key`, keep the best
+        chunk per parent, then truncate to the user's requested limit.
+
         Args:
             query: Search query text
-            limit: Maximum number of results to return
+            limit: Maximum number of results to return (counted in unique papers)
             filters: Optional metadata filters
 
         Returns:
             Search results with Zotero item details
         """
         try:
-            # Over-fetch candidates when re-ranking is enabled
             reranker = self._get_reranker()
-            fetch_limit = limit
-            if reranker:
-                multiplier = self._reranker_config.get("candidate_multiplier", 3)
-                fetch_limit = limit * multiplier
+            rerank_mult = self._reranker_config.get("candidate_multiplier", 3) if reranker else 1
+            target_candidates = max(limit, 1) * rerank_mult
+            # Oversample generously: same paper may contribute many chunks,
+            # so the first N hits can all come from 1-2 papers. A 5x
+            # oversample on top of rerank's multiplier balances recall vs.
+            # network cost.
+            chroma_limit = max(target_candidates * 5, 50)
 
-            # Perform semantic search
             results = self.chroma_client.search(
                 query_texts=[query],
-                n_results=fetch_limit,
+                n_results=chroma_limit,
                 where=filters
             )
 
-            # Re-rank results with cross-encoder if enabled
+            # Collapse by parent: one best chunk per paper
+            results = self._dedupe_by_parent(results, keep=target_candidates)
+
+            # Re-rank survives after dedup since it works on (query, doc)
+            # pairs which are independent of chunk identity.
             if reranker and results.get("documents") and results["documents"][0]:
                 documents = results["documents"][0]
                 ranked_indices = reranker.rerank(query, documents, top_k=limit)
                 for key in ["ids", "distances", "documents", "metadatas"]:
                     if results.get(key) and results[key][0]:
                         results[key][0] = [results[key][0][i] for i in ranked_indices]
+            else:
+                # Without a reranker, dedupe already sorted by distance; just
+                # clip to the user-visible limit.
+                for key in ["ids", "distances", "documents", "metadatas"]:
+                    if results.get(key) and results[key][0]:
+                        results[key][0] = results[key][0][:limit]
 
-            # Enrich results with full Zotero item data
             enriched_results = self._enrich_search_results(results, query)
 
             return {
@@ -1349,8 +1560,57 @@ class ZoteroSemanticSearch:
                 "error": str(e)
             }
 
+    def _dedupe_by_parent(self, chroma_results: dict[str, Any], keep: int) -> dict[str, Any]:
+        """Collapse chunk hits so each parent_item_key appears at most once.
+
+        Keeps the chunk with the smallest distance (highest similarity)
+        per parent. Sorts the survivors ascending by distance and truncates
+        to `keep`. Falls back to the id's pre-`__` prefix when a metadata
+        record lacks `parent_item_key` (e.g. entries indexed before the
+        chunking migration).
+        """
+        if not chroma_results.get("ids") or not chroma_results["ids"][0]:
+            return chroma_results
+
+        ids = chroma_results["ids"][0]
+        distances = chroma_results.get("distances", [[]])[0] or []
+        documents = chroma_results.get("documents", [[]])[0] or []
+        metadatas = chroma_results.get("metadatas", [[]])[0] or []
+
+        best_per_parent: dict[str, int] = {}  # parent -> original index
+        for i, doc_id in enumerate(ids):
+            meta = metadatas[i] if i < len(metadatas) else {}
+            pkey = (meta or {}).get("parent_item_key")
+            if not pkey:
+                pkey = doc_id.split("__", 1)[0] if "__" in doc_id else doc_id
+            dist = distances[i] if i < len(distances) else float("inf")
+            cur = best_per_parent.get(pkey)
+            if cur is None:
+                best_per_parent[pkey] = i
+                continue
+            cur_dist = distances[cur] if cur < len(distances) else float("inf")
+            if dist < cur_dist:
+                best_per_parent[pkey] = i
+
+        kept_indices = sorted(
+            best_per_parent.values(),
+            key=lambda i: distances[i] if i < len(distances) else float("inf"),
+        )[:keep]
+
+        return {
+            "ids": [[ids[i] for i in kept_indices]],
+            "distances": [[distances[i] for i in kept_indices]] if distances else [[]],
+            "documents": [[documents[i] for i in kept_indices]] if documents else [[]],
+            "metadatas": [[metadatas[i] for i in kept_indices]] if metadatas else [[]],
+        }
+
     def _enrich_search_results(self, chroma_results: dict[str, Any], query: str) -> list[dict[str, Any]]:
-        """Enrich ChromaDB results with full Zotero item data."""
+        """Enrich ChromaDB results with full Zotero item data.
+
+        `ids` in chroma_results are chunk-scoped (`<parent>__<index>`).
+        We resolve each to its parent Zotero item for the web-API lookup
+        and surface that parent key as the result's `item_key`.
+        """
         enriched = []
 
         if not chroma_results.get("ids") or not chroma_results["ids"][0]:
@@ -1361,16 +1621,22 @@ class ZoteroSemanticSearch:
         documents = chroma_results.get("documents", [[]])[0]
         metadatas = chroma_results.get("metadatas", [[]])[0]
 
-        for i, item_key in enumerate(ids):
+        for i, chunk_id in enumerate(ids):
+            meta = metadatas[i] if i < len(metadatas) else {}
+            parent_key = (meta or {}).get("parent_item_key")
+            if not parent_key:
+                parent_key = chunk_id.split("__", 1)[0] if "__" in chunk_id else chunk_id
             try:
                 # Get full item data from Zotero
-                zotero_item = self.zotero_client.item(item_key)
+                zotero_item = self.zotero_client.item(parent_key)
 
                 enriched_result = {
-                    "item_key": item_key,
+                    "item_key": parent_key,
+                    "chunk_id": chunk_id,
+                    "chunk_index": (meta or {}).get("chunk_index"),
                     "similarity_score": 1 - distances[i] if i < len(distances) else 0,
                     "matched_text": documents[i] if i < len(documents) else "",
-                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                    "metadata": meta,
                     "zotero_item": zotero_item,
                     "query": query
                 }
@@ -1378,13 +1644,15 @@ class ZoteroSemanticSearch:
                 enriched.append(enriched_result)
 
             except Exception as e:
-                logger.error(f"Error enriching result for item {item_key}: {e}")
+                logger.error(f"Error enriching result for item {parent_key}: {e}")
                 # Include basic result even if enrichment fails
                 enriched.append({
-                    "item_key": item_key,
+                    "item_key": parent_key,
+                    "chunk_id": chunk_id,
+                    "chunk_index": (meta or {}).get("chunk_index"),
                     "similarity_score": 1 - distances[i] if i < len(distances) else 0,
                     "matched_text": documents[i] if i < len(documents) else "",
-                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                    "metadata": meta,
                     "query": query,
                     "error": f"Could not fetch full item data: {e}"
                 })

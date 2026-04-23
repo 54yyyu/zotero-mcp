@@ -641,6 +641,47 @@ class ChromaClient:
             logger.error(f"Error listing collection ids: {e}")
             return set()
 
+    def delete_documents_by_parent(self, parent_item_key: str) -> int:
+        """Delete every chunk associated with a parent Zotero item.
+
+        Chunk ids follow the `<parent_item_key>__<chunk_index>` convention
+        and also carry `metadata.parent_item_key`. We prefer the metadata
+        filter because it is authoritative even for legacy ids written
+        before the chunking migration.
+
+        Returns the number of ids removed.
+        """
+        try:
+            result = self.collection.get(
+                where={"parent_item_key": parent_item_key},
+                include=[],
+            )
+            ids = list(result.get("ids", []))
+        except Exception as e:
+            logger.debug(
+                f"parent_item_key filter failed for {parent_item_key}: {e}; "
+                f"falling back to id-prefix match"
+            )
+            ids = []
+        # Fallback for legacy collections where parent_item_key wasn't stored
+        if not ids:
+            try:
+                all_ids = self.collection.get(include=[]).get("ids", [])
+                prefix = f"{parent_item_key}__"
+                ids = [i for i in all_ids
+                       if i == parent_item_key or i.startswith(prefix)]
+            except Exception as e:
+                logger.error(f"Could not enumerate collection to delete parent {parent_item_key}: {e}")
+                return 0
+        if not ids:
+            return 0
+        try:
+            self.collection.delete(ids=ids)
+            return len(ids)
+        except Exception as e:
+            logger.error(f"Failed to delete {len(ids)} chunks for parent {parent_item_key}: {e}")
+            return 0
+
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     """

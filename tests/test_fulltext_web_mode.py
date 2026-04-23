@@ -55,6 +55,13 @@ class FakeChromaClient:
         for i in ids:
             self._ids.discard(i)
 
+    def delete_documents_by_parent(self, parent_item_key):
+        prefix = f"{parent_item_key}__"
+        victims = [i for i in self._ids if i == parent_item_key or i.startswith(prefix)]
+        if victims:
+            self.delete_documents(victims)
+        return len(victims)
+
     def reset_collection(self):
         self.reset_calls += 1
         self._ids = set()
@@ -324,7 +331,8 @@ def test_update_database_incremental_only_fetches_changed(monkeypatch, tmp_path)
         library_version=8,
     )
     zot.versions_state = {"OLD": 3, "NEW": 8}
-    chroma = FakeChromaClient(preloaded_ids=["OLD"])  # OLD was already indexed
+    # Preload with new-format chunk ids so the legacy-format detector stays silent
+    chroma = FakeChromaClient(preloaded_ids=["OLD__0"])
     search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
 
     stats = search.update_database()
@@ -332,7 +340,8 @@ def test_update_database_incremental_only_fetches_changed(monkeypatch, tmp_path)
     # Only NEW should be processed, OLD untouched
     assert stats["processed_items"] == 1
     added_ids = [i for batch in chroma.added for i in batch[2]]
-    assert added_ids == ["NEW"]
+    # Each item now emits one-or-more chunk ids
+    assert all(i.startswith("NEW__") for i in added_ids)
     saved = json.loads(open(config_path).read())
     assert saved["semantic_search"]["last_sync_version"] == 8
 
@@ -344,13 +353,16 @@ def test_update_database_incremental_deletes_removed_items(monkeypatch, tmp_path
     # Only NEW is still in the library; DELETED_ME was removed
     zot.load_scenario([_paper("NEW")], fulltext={"NEW": {"content": "body"}}, library_version=9)
     zot.versions_state = {"NEW": 9}
-    chroma = FakeChromaClient(preloaded_ids=["NEW", "DELETED_ME"])
+    # Chunked-format preloads — NEW has 1 chunk, DELETED_ME had 2
+    chroma = FakeChromaClient(preloaded_ids=["NEW__0", "DELETED_ME__0", "DELETED_ME__1"])
     search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
 
     stats = search.update_database()
 
-    assert "DELETED_ME" in chroma.deleted
-    assert stats["deleted_items"] == 1
+    # The deletion pass collapses chunks back to parent keys before diffing
+    assert "DELETED_ME__0" in chroma.deleted
+    assert "DELETED_ME__1" in chroma.deleted
+    assert stats["deleted_items"] == 1  # one parent removed
 
 
 def test_update_database_incremental_noop_when_version_unchanged(monkeypatch, tmp_path):
@@ -359,7 +371,7 @@ def test_update_database_incremental_noop_when_version_unchanged(monkeypatch, tm
     zot = FakeZoteroClient()
     zot.load_scenario([_paper("X")], library_version=42)
     zot.versions_state = {"X": 42}
-    chroma = FakeChromaClient(preloaded_ids=["X"])
+    chroma = FakeChromaClient(preloaded_ids=["X__0"])
     search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
 
     stats = search.update_database()

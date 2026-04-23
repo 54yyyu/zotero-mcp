@@ -17,11 +17,18 @@ class FakeChromaClient:
         self.embedding_max_tokens = 8000
 
     def get_existing_ids(self, ids):
-        # Pretend item A already exists and item B is new.
-        return {"ITEMA001"} & set(ids)
+        # Chunked-era ids are `<parent>__<chunk_index>`. Pretend ITEMA001's
+        # first chunk already exists and ITEMB002 is new.
+        return {"ITEMA001__0"} & set(ids)
+
+    def get_all_ids(self):
+        return {"ITEMA001__0"}
 
     def upsert_documents(self, documents, metadatas, ids):
         self.upserted_ids.extend(ids)
+
+    def delete_documents_by_parent(self, parent_item_key):
+        return 0
 
     def truncate_text(self, text, max_tokens=None):
         return text
@@ -96,11 +103,13 @@ def test_process_item_batch_defers_failures_when_failed_docs_provided(monkeypatc
     failed_docs = []
     stats = search._process_item_batch(items, force_rebuild=False, _failed_docs=failed_docs)
 
-    # All 3 items prepared successfully (text built, truncated, queued)
+    # All 3 items prepared successfully (text built, chunked, queued)
     assert stats["processed"] == 3
-    # All 3 items deferred to the retry list when the upsert raised
+    # Short items produce one chunk each, so exactly 3 chunk ids were queued
     assert len(failed_docs) == 3
-    assert {doc_id for _, _, doc_id in failed_docs} == {"ITEM000", "ITEM001", "ITEM002"}
+    # Chunked ids preserve the parent key + suffix; strip to check parents
+    deferred_parents = {doc_id.split("__", 1)[0] for _, _, doc_id in failed_docs}
+    assert deferred_parents == {"ITEM000", "ITEM001", "ITEM002"}
     # Errors bumped by the deferred count so the totals stay accurate
     assert stats["errors"] == 3
     # No items classified as added/updated because the batch never reached

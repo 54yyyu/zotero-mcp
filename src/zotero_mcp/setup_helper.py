@@ -323,6 +323,13 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
     # behavior. The flag is ignored in local mode (ZOTERO_LOCAL=true uses
     # local sqlite extraction).
     config.setdefault("include_fulltext", True)
+    # Chunk every indexed document into overlapping token windows. 1500/225
+    # fits comfortably in OpenAI text-embedding-3-small, SiliconFlow bge-m3,
+    # and keeps paragraph-level localization intact.
+    config.setdefault("chunking", {"window": 1500, "overlap": 225})
+    # Set to a positive float (e.g. 2.0) when driving a rate-limited
+    # OpenAI-compatible endpoint such as SiliconFlow free tier.
+    config.setdefault("embedding_rate_limit_rps", None)
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
 
