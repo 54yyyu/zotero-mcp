@@ -1078,15 +1078,18 @@ class ZoteroSemanticSearch:
                     logger.warning(f"Deletion pass failed: {e}")
             else:
                 # Full scan: bootstrap or forced rebuild.
-                if not force_full_rebuild:
-                    # Capture the library version BEFORE scanning so any
-                    # changes made during the scan will be picked up by the
-                    # next incremental run.
-                    try:
-                        target_sync_version = self.zotero_client.last_modified_version()
-                    except Exception as e:
-                        logger.warning(f"last_modified_version() failed: {e}")
-                        target_sync_version = None
+                # Capture the library version BEFORE scanning so any changes
+                # made during the scan will be picked up by the next
+                # incremental run. Skipping this after a force_full_rebuild
+                # would leave last_sync_version stale and the next
+                # incremental run would miss items that haven't changed
+                # since the old watermark (because they were just deleted
+                # along with the collection).
+                try:
+                    target_sync_version = self.zotero_client.last_modified_version()
+                except Exception as e:
+                    logger.warning(f"last_modified_version() failed: {e}")
+                    target_sync_version = None
                 all_items = self._get_items_from_source(
                     limit=limit,
                     extract_fulltext=extract_fulltext,

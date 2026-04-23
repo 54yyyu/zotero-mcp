@@ -406,6 +406,24 @@ def test_update_database_force_rebuild_triggers_reset_and_full_scan(monkeypatch,
     assert not any(c[0] == "item_versions" and c[1] is not None for c in zot.calls)
 
 
+def test_update_database_force_rebuild_updates_last_sync_version(monkeypatch, tmp_path):
+    """After force_full_rebuild, last_sync_version must advance to the library's
+    current version. Otherwise the next incremental run would use a stale
+    watermark and permanently lose items not modified since that older version.
+    """
+    config_path = _write_config(tmp_path, extra={"last_sync_version": 50})
+    zot = FakeZoteroClient()
+    zot.load_scenario([_paper("A")], library_version=200)
+    zot.versions_state = {"A": 200}
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+
+    search.update_database(force_full_rebuild=True)
+
+    saved = json.loads(open(config_path).read())
+    assert saved["semantic_search"]["last_sync_version"] == 200
+
+
 # --------- Config loaders ----------
 
 def test_load_include_fulltext_defaults_true(monkeypatch, tmp_path):
