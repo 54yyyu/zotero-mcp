@@ -1085,6 +1085,49 @@ class ZoteroSemanticSearch:
 
         return changed_items, current_keys
 
+    def _fetch_items_by_keys(self, keys: list[str]) -> list[dict[str, Any]]:
+        """Bulk-fetch top-level items by itemKey, batched through the
+        Zotero web API's `itemKey=K1,K2,...` query parameter.
+
+        Zotero caps the itemKey response at 50 items per request, which is
+        still 50× faster than per-key fetches for large backfills. Falls
+        back to per-key fetch if a batched request raises so a single bad
+        key can't stall the whole backfill. Attachments / notes / inline
+        annotations are filtered out to match the rest of the ingest
+        pipeline's assumptions.
+        """
+        if not keys:
+            return []
+        BATCH = 50
+        results: list[dict[str, Any]] = []
+        for i in range(0, len(keys), BATCH):
+            batch = keys[i:i + BATCH]
+            try:
+                self.zotero_client.add_parameters(
+                    itemKey=",".join(batch),
+                    limit=len(batch),
+                )
+                items = self.zotero_client.items() or []
+            except Exception as e:
+                logger.debug(
+                    f"Batched itemKey fetch failed ({e}); falling back to "
+                    f"per-key for this batch of {len(batch)}"
+                )
+                items = []
+                for key in batch:
+                    try:
+                        one = self.zotero_client.item(key)
+                        if one:
+                            items.append(one)
+                    except Exception as e2:
+                        logger.debug(f"item({key}) failed in fallback: {e2}")
+            for it in items:
+                itype = it.get("data", {}).get("itemType")
+                if itype in {"attachment", "note", "annotation"}:
+                    continue
+                results.append(it)
+        return results
+
     def update_database(self,
                        force_full_rebuild: bool = False,
                        limit: int | None = None,
@@ -1118,6 +1161,7 @@ class ZoteroSemanticSearch:
             "recovered_items": 0,
             "skipped_items": 0,
             "deleted_items": 0,
+            "gap_filled_items": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
             "duration": None
@@ -1137,16 +1181,16 @@ class ZoteroSemanticSearch:
             # pollutes dedup / rerank. Detect and upgrade to a fresh rebuild
             # so the user never has to run --force-rebuild manually.
             #
-            # Also cover the related case where the collection was silently
-            # reset at ChromaClient init (embedding-model dim change) but
-            # config still carries a non-zero last_sync_version. Without this
-            # guard, the incremental fast-path would see library version
-            # unchanged and skip ingest, leaving the collection permanently
-            # empty until the user manually ran --force-rebuild.
+            # The "empty collection but cached_sync > 0" case (e.g. after an
+            # embedding-model dim change triggered a silent collection
+            # reset) doesn't need a force-rebuild here because the
+            # diff-driven incremental path's gap-fill naturally handles it:
+            # stored_parents is empty -> missing_keys = all library keys ->
+            # every item gets ingested, with no need to throw away
+            # progress.
             if not force_full_rebuild:
                 try:
                     existing_ids = self.chroma_client.get_all_ids()
-                    cached_sync = self._load_last_sync_version()
                     if existing_ids:
                         sample = list(existing_ids)[:20]
                         if not any("__" in i for i in sample):
@@ -1163,20 +1207,6 @@ class ZoteroSemanticSearch:
                             except Exception:
                                 pass
                             force_full_rebuild = True
-                    elif cached_sync > 0:
-                        logger.info(
-                            "Collection is empty but config claims prior sync "
-                            f"(version {cached_sync}); likely reset after an "
-                            "embedding-model change. Rebuilding from scratch."
-                        )
-                        try:
-                            sys.stderr.write(
-                                "\nCollection was reset (likely after an embedding-model "
-                                "change); rebuilding from scratch...\n"
-                            )
-                        except Exception:
-                            pass
-                        force_full_rebuild = True
                 except Exception as e:
                     logger.debug(f"Legacy id-format check failed: {e}")
 
@@ -1206,36 +1236,53 @@ class ZoteroSemanticSearch:
                     logger.warning(f"last_modified_version() failed, falling back to full scan: {e}")
                     use_incremental = False
 
-            if use_incremental and target_sync_version == last_sync_version:
-                # No changes since last sync; skip ingest but still touch last_update
-                try:
-                    sys.stderr.write(
-                        f"\nLibrary unchanged since last sync (version {last_sync_version}); "
-                        f"no items to reindex.\n"
-                    )
-                except Exception:
-                    pass
-                self.update_config["last_update"] = datetime.now().isoformat()
-                self._save_update_config(last_sync_version=target_sync_version)
-                end_time = datetime.now()
-                stats["duration"] = str(end_time - start_time)
-                stats["end_time"] = end_time.isoformat()
-                return stats
-
             if use_incremental:
-                all_items, current_library_keys = self._get_changed_items_from_api(
+                # Diff-driven incremental path:
+                #   changed = items whose version > last_sync_version
+                #   missing = items currently in the library but not in our
+                #             ChromaDB (resume case: killed mid-rebuild,
+                #             embedding-model change reset, etc.)
+                #   deleted = items present in ChromaDB but no longer in the
+                #             library
+                # The ingest set is `changed ∪ missing`; if both that and
+                # `deleted` are empty the run is a true noop.
+                changed_items, current_library_keys = self._get_changed_items_from_api(
                     since_version=last_sync_version,
                     include_fulltext=include_fulltext_via_api,
                 )
+
+                # Gap-fill: items in the library but missing from ChromaDB.
+                # This is what makes resume work — a killed rebuild leaves
+                # ChromaDB partially populated without advancing
+                # last_sync_version, and the next run needs to pick up the
+                # holes instead of declaring "library unchanged; noop".
+                stored_ids = self.chroma_client.get_all_ids()
+                stored_parents = {
+                    i.split("__", 1)[0] if "__" in i else i
+                    for i in stored_ids
+                }
+                already_queued = {it.get("key") for it in changed_items if it.get("key")}
+                missing_keys = current_library_keys - stored_parents - already_queued
+                gap_items: list[dict[str, Any]] = []
+                if missing_keys:
+                    try:
+                        sys.stderr.write(
+                            f"\nGap fill: {len(missing_keys)} items in library "
+                            f"missing from ChromaDB; fetching...\n"
+                        )
+                    except Exception:
+                        pass
+                    gap_items = self._fetch_items_by_keys(sorted(missing_keys))
+                    if include_fulltext_via_api and gap_items:
+                        self._attach_web_fulltext(gap_items)
+                stats["gap_filled_items"] = len(gap_items)
+
+                all_items = changed_items + gap_items
+
                 # Delete collection entries that are no longer present in the
                 # library. With chunking, stored ids are `<parent>__<i>` so we
                 # must group by parent before computing the diff.
                 try:
-                    stored_ids = self.chroma_client.get_all_ids()
-                    stored_parents = {
-                        i.split("__", 1)[0] if "__" in i else i
-                        for i in stored_ids
-                    }
                     deleted_parents = [k for k in (stored_parents - current_library_keys) if k]
                     if deleted_parents:
                         total_deleted_chunks = 0
@@ -1251,6 +1298,23 @@ class ZoteroSemanticSearch:
                             pass
                 except Exception as e:
                     logger.warning(f"Deletion pass failed: {e}")
+
+                # True noop: nothing to add, nothing to delete. Still advance
+                # the watermark so subsequent runs short-circuit immediately.
+                if not all_items and not stats["deleted_items"]:
+                    try:
+                        sys.stderr.write(
+                            f"\nLibrary fully synced (version {target_sync_version}); "
+                            f"nothing to reindex.\n"
+                        )
+                    except Exception:
+                        pass
+                    self.update_config["last_update"] = datetime.now().isoformat()
+                    self._save_update_config(last_sync_version=target_sync_version)
+                    end_time = datetime.now()
+                    stats["duration"] = str(end_time - start_time)
+                    stats["end_time"] = end_time.isoformat()
+                    return stats
             else:
                 # Full scan: bootstrap or forced rebuild.
                 # Capture the library version BEFORE scanning so any changes

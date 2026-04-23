@@ -402,6 +402,130 @@ def test_update_database_disables_fulltext_when_config_off(monkeypatch, tmp_path
     assert not any(c[0] == "fulltext_item" for c in zot.calls)
 
 
+def test_update_database_gap_fills_missing_items(monkeypatch, tmp_path):
+    """Resume case: ChromaDB is partially populated (e.g. killed mid-rebuild)
+    but last_sync_version equals library version. The old noop fast-path
+    would return "nothing to reindex"; the new diff-driven path detects
+    items in the library that are missing from ChromaDB and fetches them."""
+    config_path = _write_config(tmp_path, extra={"last_sync_version": 100})
+    zot = FakeZoteroClient()
+    # Three items in library, all unchanged since version 100
+    zot.load_scenario(
+        [_paper("A"), _paper("B"), _paper("C")],
+        fulltext={"A": {"content": "Abody"}, "B": {"content": "Bbody"}, "C": {"content": "Cbody"}},
+        library_version=100,
+    )
+    zot.versions_state = {"A": 100, "B": 100, "C": 100}
+    # Only A was indexed before the interruption
+    chroma = FakeChromaClient(preloaded_ids=["A__0", "A__1"])
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+
+    stats = search.update_database()
+
+    # B and C should have been gap-filled
+    assert stats["gap_filled_items"] == 2
+    # All gap items should be in ChromaDB now
+    added_ids = [i for batch in chroma.added for i in batch[2]]
+    added_parents = {i.split("__", 1)[0] for i in added_ids}
+    assert added_parents == {"B", "C"}
+    # A was left untouched
+    assert "A" not in added_parents
+    # Watermark advances to current library version
+    saved = json.loads(open(config_path).read())
+    assert saved["semantic_search"]["last_sync_version"] == 100
+
+
+def test_update_database_gap_fill_combined_with_since_changes(monkeypatch, tmp_path):
+    """Gap-fill + since-V changes should both land in the same run."""
+    config_path = _write_config(tmp_path, extra={"last_sync_version": 50})
+    zot = FakeZoteroClient()
+    zot.load_scenario(
+        [_paper("GAP"), _paper("CHANGED")],
+        fulltext={"GAP": {"content": "Gbody"}, "CHANGED": {"content": "Cbody"}},
+        library_version=80,
+    )
+    # CHANGED version 75 > 50, GAP version 40 < 50 but absent from ChromaDB
+    zot.versions_state = {"GAP": 40, "CHANGED": 75}
+    chroma = FakeChromaClient(preloaded_ids=[])  # completely empty
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+
+    stats = search.update_database()
+
+    added_parents = {i.split("__", 1)[0]
+                     for batch in chroma.added for i in batch[2]}
+    assert added_parents == {"GAP", "CHANGED"}
+    assert stats["gap_filled_items"] == 1
+
+
+def test_update_database_true_noop_when_fully_synced(monkeypatch, tmp_path):
+    """Library unchanged AND ChromaDB has every library item => truly nothing to do."""
+    config_path = _write_config(tmp_path, extra={"last_sync_version": 99})
+    zot = FakeZoteroClient()
+    zot.load_scenario([_paper("X")], library_version=99)
+    zot.versions_state = {"X": 99}
+    chroma = FakeChromaClient(preloaded_ids=["X__0", "X__1"])
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+
+    stats = search.update_database()
+
+    assert stats["processed_items"] == 0
+    assert stats["gap_filled_items"] == 0
+    assert stats["deleted_items"] == 0
+    # No items should have been re-upserted
+    assert chroma.added == []
+
+
+def test_fetch_items_by_keys_batches_requests(monkeypatch):
+    """Verifies itemKey= is used and the batch size of 50 is respected."""
+    zot = FakeZoteroClient()
+    # Preload 120 items
+    items = [_paper(f"K{i:03d}") for i in range(120)]
+    zot.load_scenario(items, library_version=1)
+
+    # Replace items() to record how itemKey param was passed
+    captured_keys: list[list[str]] = []
+    original_items = zot.items
+
+    def recording_items(start=0, limit=100, **kwargs):
+        # pyzotero's add_parameters stores url_params; fake it here
+        captured_keys.append([k for k in getattr(zot, "_fake_itemkey", "").split(",") if k])
+        return original_items(start=0, limit=len(captured_keys[-1]) or limit)
+
+    def fake_add_parameters(**params):
+        zot._fake_itemkey = params.get("itemKey", "")
+
+    zot.add_parameters = fake_add_parameters
+    zot.items = recording_items
+
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    keys_to_fetch = [f"K{i:03d}" for i in range(120)]
+    result = search._fetch_items_by_keys(keys_to_fetch)
+
+    # 120 keys -> 3 batches of 50 (50 + 50 + 20)
+    assert len(captured_keys) == 3
+    assert [len(b) for b in captured_keys] == [50, 50, 20]
+    assert len(result) > 0
+
+
+def test_fetch_items_by_keys_falls_back_to_per_key_on_batch_error(monkeypatch):
+    """If the batched itemKey request raises, each key is re-tried individually
+    so one malformed key can't stall the whole backfill."""
+    zot = FakeZoteroClient()
+    zot.load_scenario([_paper("X"), _paper("Y")], library_version=1)
+
+    def boom_items(**kwargs):
+        raise RuntimeError("simulated batch failure")
+
+    zot.items = boom_items
+    zot.add_parameters = lambda **kw: None
+
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    result = search._fetch_items_by_keys(["X", "Y"])
+    # Fallback uses zot.item(key) per key, which FakeZoteroClient supports
+    returned_keys = {it["key"] for it in result}
+    assert returned_keys == {"X", "Y"}
+
+
 def test_update_database_force_rebuild_triggers_reset_and_full_scan(monkeypatch, tmp_path):
     """force_full_rebuild should reset the collection and do a full scan."""
     config_path = _write_config(tmp_path, extra={"last_sync_version": 100})

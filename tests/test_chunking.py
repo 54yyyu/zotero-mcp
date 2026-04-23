@@ -380,10 +380,11 @@ def test_legacy_id_format_triggers_rebuild(monkeypatch, tmp_path):
     assert chroma.reset_calls >= 1
 
 
-def test_empty_collection_with_cached_sync_triggers_rebuild(monkeypatch, tmp_path):
+def test_empty_collection_with_cached_sync_is_gap_filled(monkeypatch, tmp_path):
     """If the collection was silently reset (e.g. embedding-model change)
-    but config still carries last_sync_version > 0, the incremental path
-    must NOT fast-path as noop — it must do a full rebuild."""
+    but config still carries last_sync_version > 0 and the library version
+    equals cached_sync, the diff-driven incremental path must still ingest
+    every library item via the gap-fill branch — NOT noop-return."""
     config_path = _write_config(tmp_path, extra={"last_sync_version": 7661})
 
     class StubZotero:
@@ -402,8 +403,11 @@ def test_empty_collection_with_cached_sync_triggers_rebuild(monkeypatch, tmp_pat
         def children(self, k):
             return []
 
+        def add_parameters(self, **_):
+            pass
+
         def last_modified_version(self, **_):
-            return 7661  # same as cached — noop trap
+            return 7661  # same as cached — noop trap for the old fast-path
 
         def item_versions(self, since=None, **_):
             if since is None:
@@ -415,10 +419,13 @@ def test_empty_collection_with_cached_sync_triggers_rebuild(monkeypatch, tmp_pat
     search = _build_search(monkeypatch, chroma=chroma, zotero_client=StubZotero(),
                            config_path=config_path)
 
-    search.update_database()
+    stats = search.update_database()
 
-    # Must have indexed the full library, not fast-pathed as noop
-    assert len(chroma.added) > 0, "Full rebuild did not ingest any items"
+    # Must have gap-filled the single library item
+    assert len(chroma.added) > 0, "Gap-fill did not ingest any items"
+    assert stats["gap_filled_items"] == 1
+    # Force-rebuild path should NOT have fired (no reset)
+    assert chroma.reset_calls == 0
 
 
 def test_new_id_format_does_not_trigger_rebuild(monkeypatch, tmp_path):
