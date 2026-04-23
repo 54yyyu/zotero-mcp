@@ -380,6 +380,47 @@ def test_legacy_id_format_triggers_rebuild(monkeypatch, tmp_path):
     assert chroma.reset_calls >= 1
 
 
+def test_empty_collection_with_cached_sync_triggers_rebuild(monkeypatch, tmp_path):
+    """If the collection was silently reset (e.g. embedding-model change)
+    but config still carries last_sync_version > 0, the incremental path
+    must NOT fast-path as noop — it must do a full rebuild."""
+    config_path = _write_config(tmp_path, extra={"last_sync_version": 7661})
+
+    class StubZotero:
+        def __init__(self):
+            self.items_data = [_item("ONLY_ONE")]
+
+        def items(self, start=0, limit=100, **_):
+            return self.items_data[start:start + limit]
+
+        def item(self, k):
+            return self.items_data[0]
+
+        def fulltext_item(self, k):
+            raise RuntimeError("no fulltext")
+
+        def children(self, k):
+            return []
+
+        def last_modified_version(self, **_):
+            return 7661  # same as cached — noop trap
+
+        def item_versions(self, since=None, **_):
+            if since is None:
+                return {"ONLY_ONE": 7661}
+            return {}
+
+    # Collection is empty (e.g. model-change reset)
+    chroma = FakeChromaClient(preloaded_ids=[])
+    search = _build_search(monkeypatch, chroma=chroma, zotero_client=StubZotero(),
+                           config_path=config_path)
+
+    search.update_database()
+
+    # Must have indexed the full library, not fast-pathed as noop
+    assert len(chroma.added) > 0, "Full rebuild did not ingest any items"
+
+
 def test_new_id_format_does_not_trigger_rebuild(monkeypatch, tmp_path):
     """A collection already in chunked format must not be rebuilt."""
     config_path = _write_config(tmp_path, extra={"last_sync_version": 99})

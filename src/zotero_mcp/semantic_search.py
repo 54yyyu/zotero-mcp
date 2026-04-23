@@ -1136,9 +1136,17 @@ class ZoteroSemanticSearch:
             # (`<key>`); PR2 stores one per chunk (`<key>__<i>`). Mixing both
             # pollutes dedup / rerank. Detect and upgrade to a fresh rebuild
             # so the user never has to run --force-rebuild manually.
+            #
+            # Also cover the related case where the collection was silently
+            # reset at ChromaClient init (embedding-model dim change) but
+            # config still carries a non-zero last_sync_version. Without this
+            # guard, the incremental fast-path would see library version
+            # unchanged and skip ingest, leaving the collection permanently
+            # empty until the user manually ran --force-rebuild.
             if not force_full_rebuild:
                 try:
                     existing_ids = self.chroma_client.get_all_ids()
+                    cached_sync = self._load_last_sync_version()
                     if existing_ids:
                         sample = list(existing_ids)[:20]
                         if not any("__" in i for i in sample):
@@ -1155,6 +1163,20 @@ class ZoteroSemanticSearch:
                             except Exception:
                                 pass
                             force_full_rebuild = True
+                    elif cached_sync > 0:
+                        logger.info(
+                            "Collection is empty but config claims prior sync "
+                            f"(version {cached_sync}); likely reset after an "
+                            "embedding-model change. Rebuilding from scratch."
+                        )
+                        try:
+                            sys.stderr.write(
+                                "\nCollection was reset (likely after an embedding-model "
+                                "change); rebuilding from scratch...\n"
+                            )
+                        except Exception:
+                            pass
+                        force_full_rebuild = True
                 except Exception as e:
                     logger.debug(f"Legacy id-format check failed: {e}")
 
