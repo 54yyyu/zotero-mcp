@@ -476,11 +476,15 @@ def test_openai_embedding_sub_batches_large_input():
     from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
     from unittest.mock import MagicMock
 
+    import threading as _t
     ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
     ef.model_name = "BAAI/bge-m3"
     ef.api_key = "test"
     ef.base_url = "https://api.siliconflow.cn/v1"
     ef.request_batch_size = 3
+    ef.rate_limit_rps = None
+    ef._rate_lock = _t.Lock()
+    ef._last_request_ts = 0.0
     ef.client = MagicMock()
 
     def fake_create(model, input):
@@ -504,11 +508,15 @@ def test_openai_embedding_single_request_when_under_batch_size():
     from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
     from unittest.mock import MagicMock
 
+    import threading as _t
     ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
     ef.model_name = "text-embedding-3-small"
     ef.api_key = "test"
     ef.base_url = None
     ef.request_batch_size = 64
+    ef.rate_limit_rps = None
+    ef._rate_lock = _t.Lock()
+    ef._last_request_ts = 0.0
     ef.client = MagicMock()
     resp = MagicMock()
     resp.data = [MagicMock(embedding=[0.1, 0.2]) for _ in range(5)]

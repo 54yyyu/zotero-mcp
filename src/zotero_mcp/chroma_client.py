@@ -42,11 +42,16 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
                  model_name: str = "text-embedding-3-small",
                  api_key: str | None = None,
                  base_url: str | None = None,
-                 request_batch_size: int | None = None):
+                 request_batch_size: int | None = None,
+                 rate_limit_rps: float | None = None):
+        import threading as _threading
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
+        self.rate_limit_rps: float | None = float(rate_limit_rps) if rate_limit_rps else None
+        self._rate_lock = _threading.Lock()
+        self._last_request_ts: float = 0.0
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
 
@@ -68,6 +73,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             "model_name": self.model_name,
             "base_url": self.base_url,
             "request_batch_size": self.request_batch_size,
+            "rate_limit_rps": self.rate_limit_rps,
         }
 
     @staticmethod
@@ -77,10 +83,32 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             api_key=config.get("api_key"),
             base_url=config.get("base_url"),
             request_batch_size=config.get("request_batch_size"),
+            rate_limit_rps=config.get("rate_limit_rps"),
         )
 
+    def _wait_for_rate_limit(self) -> None:
+        """Sleep as needed so successive HTTP requests stay under `rate_limit_rps`.
+
+        Applied at the individual HTTP request level (including each
+        sub-batch) so rate-limited providers see a steady request cadence
+        regardless of how many inputs the caller passed. The lock keeps
+        parallel threads (e.g. the pre-search fire-and-forget sync)
+        honest.
+        """
+        rps = self.rate_limit_rps
+        if not rps or rps <= 0:
+            return
+        import time as _t
+        with self._rate_lock:
+            now = _t.monotonic()
+            min_interval = 1.0 / rps
+            wait = min_interval - (now - self._last_request_ts)
+            if wait > 0:
+                _t.sleep(wait)
+            self._last_request_ts = _t.monotonic()
+
     def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings, sub-batching when needed.
+        """Generate embeddings, sub-batching + rate-limiting each request.
 
         Upstream callers (e.g. `_process_item_batch`) may pass more items
         than the provider accepts in a single POST. We split into
@@ -91,6 +119,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             return []
         batch_size = self.request_batch_size or self.DEFAULT_REQUEST_BATCH_SIZE
         if len(input) <= batch_size:
+            self._wait_for_rate_limit()
             response = self.client.embeddings.create(
                 model=self.model_name,
                 input=input,
@@ -99,6 +128,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         vecs: list = []
         for i in range(0, len(input), batch_size):
             sub = input[i:i + batch_size]
+            self._wait_for_rate_limit()
             response = self.client.embeddings.create(
                 model=self.model_name,
                 input=sub,
@@ -429,7 +459,22 @@ class ChromaClient:
             model_name = self.embedding_config.get("model_name", "text-embedding-3-small")
             api_key = self.embedding_config.get("api_key")
             base_url = self.embedding_config.get("base_url")
-            return OpenAIEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
+            request_batch_size = self.embedding_config.get("request_batch_size")
+            # Pull the rate limit from the outer semantic_search config if
+            # present (preferred), with a fallback to embedding_config for
+            # users who scope it per-provider.
+            rate_limit_rps = (
+                self.embedding_config.get("rate_limit_rps")
+                if self.embedding_config.get("rate_limit_rps") is not None
+                else self.embedding_config.get("_semantic_rate_limit_rps")
+            )
+            return OpenAIEmbeddingFunction(
+                model_name=model_name,
+                api_key=api_key,
+                base_url=base_url,
+                request_batch_size=request_batch_size,
+                rate_limit_rps=rate_limit_rps,
+            )
 
         elif self.embedding_model == "gemini":
             model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
@@ -788,6 +833,15 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
                 ec["base_url"] = env_base
         if ec.get("api_key"):
             config["embedding_config"] = ec
+
+    # Propagate the top-level semantic_search.embedding_rate_limit_rps down
+    # into the embedding_config so OpenAIEmbeddingFunction sees it at
+    # construction time. The explicit-inside-embedding_config value, if
+    # set, wins.
+    if "embedding_rate_limit_rps" in config and config["embedding_rate_limit_rps"] is not None:
+        ec = dict(config.get("embedding_config") or {})
+        ec.setdefault("rate_limit_rps", config["embedding_rate_limit_rps"])
+        config["embedding_config"] = ec
 
     return ChromaClient(
         collection_name=config["collection_name"],

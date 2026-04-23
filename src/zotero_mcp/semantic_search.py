@@ -1329,6 +1329,13 @@ class ZoteroSemanticSearch:
                 retry_ok = 0
                 retry_fail = 0
                 for doc, meta, doc_id in _failed_docs:
+                    # Retry must respect the same rate limit as the main
+                    # ingest path. Without this throttle, a large retry
+                    # burst can hammer SiliconFlow / other rate-limited
+                    # providers with N unthrottled HTTP requests and
+                    # re-trigger 429s — each of which the retry loop logs
+                    # as a permanent failure and moves on, leaving gaps.
+                    self._throttle_embedding_request()
                     try:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
                         retry_ok += 1
