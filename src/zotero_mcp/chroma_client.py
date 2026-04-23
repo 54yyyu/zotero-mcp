@@ -31,10 +31,22 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 
     max_input_tokens = 8000  # text-embedding-3-* limit is 8191
 
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None, base_url: str | None = None):
+    # Per-request input-list cap. OpenAI allows up to 2048 items but many
+    # OpenAI-compatible providers are stricter — SiliconFlow is 64 for
+    # `/v1/embeddings`, Mistral is 512, etc. Defaulting to 64 here keeps
+    # the code portable across providers; real OpenAI users can set
+    # `embedding_config.request_batch_size: 2048` to maximize throughput.
+    DEFAULT_REQUEST_BATCH_SIZE = 64
+
+    def __init__(self,
+                 model_name: str = "text-embedding-3-small",
+                 api_key: str | None = None,
+                 base_url: str | None = None,
+                 request_batch_size: int | None = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
 
@@ -52,7 +64,11 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         return "openai"
 
     def get_config(self) -> dict[str, Any]:
-        return {"model_name": self.model_name, "base_url": self.base_url}
+        return {
+            "model_name": self.model_name,
+            "base_url": self.base_url,
+            "request_batch_size": self.request_batch_size,
+        }
 
     @staticmethod
     def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
@@ -60,15 +76,35 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             model_name=config.get("model_name", "text-embedding-3-small"),
             api_key=config.get("api_key"),
             base_url=config.get("base_url"),
+            request_batch_size=config.get("request_batch_size"),
         )
 
     def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using OpenAI API."""
-        response = self.client.embeddings.create(
-            model=self.model_name,
-            input=input
-        )
-        return [data.embedding for data in response.data]
+        """Generate embeddings, sub-batching when needed.
+
+        Upstream callers (e.g. `_process_item_batch`) may pass more items
+        than the provider accepts in a single POST. We split into
+        `request_batch_size` slices and concatenate the resulting vectors.
+        Return order matches input order.
+        """
+        if not input:
+            return []
+        batch_size = self.request_batch_size or self.DEFAULT_REQUEST_BATCH_SIZE
+        if len(input) <= batch_size:
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=input,
+            )
+            return [data.embedding for data in response.data]
+        vecs: list = []
+        for i in range(0, len(input), batch_size):
+            sub = input[i:i + batch_size]
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=sub,
+            )
+            vecs.extend(data.embedding for data in response.data)
+        return vecs
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string. No special handling needed for OpenAI."""

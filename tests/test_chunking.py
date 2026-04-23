@@ -421,3 +421,58 @@ def test_load_chunking_settings_overrides(monkeypatch, tmp_path):
 def test_load_embedding_rate_limit_defaults_none(monkeypatch, tmp_path):
     search = _build_search(monkeypatch, config_path=str(tmp_path / "missing.json"))
     assert search._load_embedding_rate_limit() is None
+
+
+# --------- OpenAIEmbeddingFunction sub-batching ---------
+
+def test_openai_embedding_sub_batches_large_input():
+    """When input exceeds request_batch_size, __call__ splits the request.
+
+    SiliconFlow caps /v1/embeddings at 64 inputs per POST. Without
+    sub-batching, any item that chunks into >64 pieces would 413. This
+    test fakes the openai client and confirms request splitting.
+    """
+    from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+    from unittest.mock import MagicMock
+
+    ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+    ef.model_name = "BAAI/bge-m3"
+    ef.api_key = "test"
+    ef.base_url = "https://api.siliconflow.cn/v1"
+    ef.request_batch_size = 3
+    ef.client = MagicMock()
+
+    def fake_create(model, input):
+        resp = MagicMock()
+        resp.data = [MagicMock(embedding=[float(i)]) for i in range(len(input))]
+        return resp
+    ef.client.embeddings.create.side_effect = fake_create
+
+    # 7 inputs with batch_size=3 -> 3 requests: 3 + 3 + 1
+    result = ef(["a", "b", "c", "d", "e", "f", "g"])
+    assert len(result) == 7
+    assert ef.client.embeddings.create.call_count == 3
+    # Verify the split sizes
+    call_args = [c.kwargs.get("input", c.args[1] if len(c.args) > 1 else None)
+                 for c in ef.client.embeddings.create.call_args_list]
+    assert [len(ca) for ca in call_args] == [3, 3, 1]
+
+
+def test_openai_embedding_single_request_when_under_batch_size():
+    """Small inputs still hit the endpoint exactly once."""
+    from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+    from unittest.mock import MagicMock
+
+    ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+    ef.model_name = "text-embedding-3-small"
+    ef.api_key = "test"
+    ef.base_url = None
+    ef.request_batch_size = 64
+    ef.client = MagicMock()
+    resp = MagicMock()
+    resp.data = [MagicMock(embedding=[0.1, 0.2]) for _ in range(5)]
+    ef.client.embeddings.create.return_value = resp
+
+    result = ef(["a", "b", "c", "d", "e"])
+    assert len(result) == 5
+    assert ef.client.embeddings.create.call_count == 1
