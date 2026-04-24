@@ -283,6 +283,79 @@ def test_get_changed_items_filters_out_attachments_and_notes(monkeypatch):
     assert [c["key"] for c in changed] == ["P1"]
 
 
+def test_get_items_from_api_filters_out_annotations(monkeypatch):
+    """Regression guard: the bootstrap path used to exclude only
+    attachment+note, letting annotation items (PDF highlights / user
+    comments) sneak in as top-level chunks. Confirm they're gone."""
+    zot = FakeZoteroClient()
+    ann = _paper("A1", item_type="annotation")
+    attach = _paper("X1", item_type="attachment")
+    note = _paper("N1", item_type="note")
+    paper = _paper("P1", item_type="journalArticle")
+    zot.load_scenario([ann, attach, note, paper], library_version=3)
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    items = search._get_items_from_api(include_fulltext=False)
+    assert [it["key"] for it in items] == ["P1"]
+
+
+def test_fetch_items_by_keys_filters_out_annotations(monkeypatch):
+    """Gap-fill's batched fetch must also drop annotation items so
+    previous runs' filter bug can't replicate through the resume path."""
+    zot = FakeZoteroClient()
+    ann = _paper("A1", item_type="annotation")
+    paper = _paper("P1", item_type="journalArticle")
+    zot.load_scenario([ann, paper], library_version=5)
+    # Replace items() so it returns both when called (simulating batched
+    # itemKey fetch)
+    original_items = zot.items
+    zot.items = lambda **kw: [zot.items_by_key["A1"], zot.items_by_key["P1"]]
+    zot.add_parameters = lambda **kw: None
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    result = search._fetch_items_by_keys(["A1", "P1"])
+    assert [it["key"] for it in result] == ["P1"]
+
+
+def test_update_database_cleans_up_stale_annotation_chunks(monkeypatch, tmp_path):
+    """A user who ingested with the buggy filter ends up with orphan
+    annotation chunks in ChromaDB. update_database must purge them on
+    every run (it's idempotent / cheap) so the collection self-heals."""
+    config_path = _write_config(tmp_path, extra={"last_sync_version": 10})
+    zot = FakeZoteroClient()
+    zot.load_scenario([_paper("REAL", item_type="journalArticle")], library_version=10)
+    zot.versions_state = {"REAL": 10}
+
+    class CleanableChroma(FakeChromaClient):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            # Seed with a mix: 2 annotation chunks and 1 real paper chunk
+            self._chunks = {
+                "STALE_ANN_1__0": {"item_type": "annotation", "parent_item_key": "STALE_ANN_1"},
+                "STALE_ANN_2__0": {"item_type": "annotation", "parent_item_key": "STALE_ANN_2"},
+                "REAL__0": {"item_type": "journalArticle", "parent_item_key": "REAL"},
+            }
+            self._ids = set(self._chunks.keys())
+            self.deleted_by_type = []
+
+        def delete_documents_by_item_type(self, item_type):
+            victims = [i for i, m in self._chunks.items() if m.get("item_type") == item_type]
+            for v in victims:
+                self._ids.discard(v)
+                del self._chunks[v]
+            if victims:
+                self.deleted_by_type.append((item_type, len(victims)))
+            return len(victims)
+
+        def get_all_ids(self):
+            return set(self._ids)
+
+    chroma = CleanableChroma()
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+    stats = search.update_database()
+
+    assert ("annotation", 2) in chroma.deleted_by_type
+    assert stats["cleaned_annotation_chunks"] == 2
+
+
 # --------- Integration tests: update_database orchestration ----------
 
 def _write_config(tmp_path, extra: dict | None = None):

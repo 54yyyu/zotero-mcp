@@ -1011,10 +1011,15 @@ class ZoteroSemanticSearch:
             if not items:
                 break
 
-            # Filter out attachments and notes by default
+            # Filter out attachments, notes, and annotations. Annotations
+            # (PDF highlights / user comments) are top-level in the pyzotero
+            # /items listing but are semantically noise — they have no body
+            # text of their own and clog up semantic search results. The
+            # since-based fetch and itemKey batch-fetch already filter
+            # annotation too; keeping all three paths consistent.
             filtered_items = [
                 item for item in items
-                if item.get("data", {}).get("itemType") not in ["attachment", "note"]
+                if item.get("data", {}).get("itemType") not in ["attachment", "note", "annotation"]
             ]
 
             all_items.extend(filtered_items)
@@ -1162,6 +1167,7 @@ class ZoteroSemanticSearch:
             "skipped_items": 0,
             "deleted_items": 0,
             "gap_filled_items": 0,
+            "cleaned_annotation_chunks": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
             "duration": None
@@ -1214,6 +1220,25 @@ class ZoteroSemanticSearch:
             if force_full_rebuild:
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
+            else:
+                # Self-healing: purge annotation chunks. A past version of
+                # `_get_items_from_api` excluded only attachment+note and
+                # let the `annotation` itemType through, producing
+                # thousands of useless zero-text entries. Now that the
+                # filter is tightened, sweep any stragglers on every run.
+                try:
+                    cleaned = self.chroma_client.delete_documents_by_item_type("annotation")
+                    if cleaned:
+                        stats["cleaned_annotation_chunks"] = cleaned
+                        try:
+                            sys.stderr.write(
+                                f"\nCleaned up {cleaned} stale annotation chunks "
+                                f"(past ingest-filter bug).\n"
+                            )
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"Annotation cleanup failed: {e}")
 
             # Decide whether to use since-based incremental ingest.
             # Incremental requires: not a forced rebuild, not a local-extraction

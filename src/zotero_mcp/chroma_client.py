@@ -722,6 +722,32 @@ class ChromaClient:
             logger.error(f"Error listing collection ids: {e}")
             return set()
 
+    def delete_documents_by_item_type(self, item_type: str) -> int:
+        """Delete every chunk whose `metadata.item_type` equals the argument.
+
+        Used to purge stale data after tightening the ingest filter — e.g.
+        a past bug let `annotation` items through and they now sit in the
+        collection as noise. ChromaDB accepts a `where={}` filter on
+        `delete` but we first enumerate so we can return the count.
+        """
+        try:
+            result = self.collection.get(
+                where={"item_type": item_type},
+                include=[],
+            )
+            ids = list(result.get("ids", []))
+        except Exception as e:
+            logger.debug(f"item_type filter for {item_type} failed: {e}")
+            return 0
+        if not ids:
+            return 0
+        try:
+            self.collection.delete(ids=ids)
+            return len(ids)
+        except Exception as e:
+            logger.error(f"Failed to delete {len(ids)} chunks of type {item_type}: {e}")
+            return 0
+
     def delete_documents_by_parent(self, parent_item_key: str) -> int:
         """Delete every chunk associated with a parent Zotero item.
 
