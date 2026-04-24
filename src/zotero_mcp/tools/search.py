@@ -3,6 +3,7 @@
 import json
 import logging as _logging
 import re
+import threading as _threading
 import time as _time
 from pathlib import Path
 from typing import Literal
@@ -17,6 +18,40 @@ from zotero_mcp.tools import _helpers
 _search_logger = _logging.getLogger("zotero_mcp.search")
 
 CASCADE_TIMEOUT = 60  # seconds — total budget for the entire fallback cascade
+
+# Pre-search background sync debounce: at most one fire-and-forget sync per
+# this many seconds, shared across all semantic_search tool invocations.
+_PRESEARCH_SYNC_MIN_INTERVAL = 60.0
+_last_presearch_sync_ts: float = 0.0
+_presearch_sync_lock = _threading.Lock()
+
+
+def _maybe_fire_presearch_sync(search) -> None:
+    """Schedule a background semantic-search DB update if auto-update is due.
+
+    Runs in a daemon thread so the current tool call returns immediately.
+    Intentionally swallows exceptions — a failed background sync must never
+    surface as a search-tool error to the user.
+    """
+    global _last_presearch_sync_ts
+    try:
+        if not search.should_update_database():
+            return
+    except Exception:
+        return
+    now = _time.monotonic()
+    with _presearch_sync_lock:
+        if now - _last_presearch_sync_ts < _PRESEARCH_SYNC_MIN_INTERVAL:
+            return
+        _last_presearch_sync_ts = now
+
+    def _run():
+        try:
+            search.update_database(extract_fulltext=_utils.is_local_mode())
+        except Exception as e:
+            _search_logger.debug(f"Background pre-search sync failed: {e}")
+
+    _threading.Thread(target=_run, daemon=True, name="zmcp-presearch-sync").start()
 
 
 def _search_with_variants(zot, query: str, qmode: str, limit: int,
@@ -732,6 +767,10 @@ def semantic_search(
 
         # Create semantic search instance
         search = create_semantic_search(str(config_path))
+
+        # Fire-and-forget: if auto-update is due, kick off a background sync
+        # so subsequent searches see fresh library state. Never blocks here.
+        _maybe_fire_presearch_sync(search)
 
         # Perform search
         results = search.search(query=query, limit=limit, filters=filters)

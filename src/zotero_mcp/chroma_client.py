@@ -31,10 +31,27 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 
     max_input_tokens = 8000  # text-embedding-3-* limit is 8191
 
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None, base_url: str | None = None):
+    # Per-request input-list cap. OpenAI allows up to 2048 items but many
+    # OpenAI-compatible providers are stricter — SiliconFlow is 64 for
+    # `/v1/embeddings`, Mistral is 512, etc. Defaulting to 64 here keeps
+    # the code portable across providers; real OpenAI users can set
+    # `embedding_config.request_batch_size: 2048` to maximize throughput.
+    DEFAULT_REQUEST_BATCH_SIZE = 64
+
+    def __init__(self,
+                 model_name: str = "text-embedding-3-small",
+                 api_key: str | None = None,
+                 base_url: str | None = None,
+                 request_batch_size: int | None = None,
+                 rate_limit_rps: float | None = None):
+        import threading as _threading
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
+        self.rate_limit_rps: float | None = float(rate_limit_rps) if rate_limit_rps else None
+        self._rate_lock = _threading.Lock()
+        self._last_request_ts: float = 0.0
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
 
@@ -52,7 +69,12 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         return "openai"
 
     def get_config(self) -> dict[str, Any]:
-        return {"model_name": self.model_name, "base_url": self.base_url}
+        return {
+            "model_name": self.model_name,
+            "base_url": self.base_url,
+            "request_batch_size": self.request_batch_size,
+            "rate_limit_rps": self.rate_limit_rps,
+        }
 
     @staticmethod
     def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
@@ -60,15 +82,59 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             model_name=config.get("model_name", "text-embedding-3-small"),
             api_key=config.get("api_key"),
             base_url=config.get("base_url"),
+            request_batch_size=config.get("request_batch_size"),
+            rate_limit_rps=config.get("rate_limit_rps"),
         )
 
+    def _wait_for_rate_limit(self) -> None:
+        """Sleep as needed so successive HTTP requests stay under `rate_limit_rps`.
+
+        Applied at the individual HTTP request level (including each
+        sub-batch) so rate-limited providers see a steady request cadence
+        regardless of how many inputs the caller passed. The lock keeps
+        parallel threads (e.g. the pre-search fire-and-forget sync)
+        honest.
+        """
+        rps = self.rate_limit_rps
+        if not rps or rps <= 0:
+            return
+        import time as _t
+        with self._rate_lock:
+            now = _t.monotonic()
+            min_interval = 1.0 / rps
+            wait = min_interval - (now - self._last_request_ts)
+            if wait > 0:
+                _t.sleep(wait)
+            self._last_request_ts = _t.monotonic()
+
     def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using OpenAI API."""
-        response = self.client.embeddings.create(
-            model=self.model_name,
-            input=input
-        )
-        return [data.embedding for data in response.data]
+        """Generate embeddings, sub-batching + rate-limiting each request.
+
+        Upstream callers (e.g. `_process_item_batch`) may pass more items
+        than the provider accepts in a single POST. We split into
+        `request_batch_size` slices and concatenate the resulting vectors.
+        Return order matches input order.
+        """
+        if not input:
+            return []
+        batch_size = self.request_batch_size or self.DEFAULT_REQUEST_BATCH_SIZE
+        if len(input) <= batch_size:
+            self._wait_for_rate_limit()
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=input,
+            )
+            return [data.embedding for data in response.data]
+        vecs: list = []
+        for i in range(0, len(input), batch_size):
+            sub = input[i:i + batch_size]
+            self._wait_for_rate_limit()
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=sub,
+            )
+            vecs.extend(data.embedding for data in response.data)
+        return vecs
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string. No special handling needed for OpenAI."""
@@ -393,7 +459,22 @@ class ChromaClient:
             model_name = self.embedding_config.get("model_name", "text-embedding-3-small")
             api_key = self.embedding_config.get("api_key")
             base_url = self.embedding_config.get("base_url")
-            return OpenAIEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
+            request_batch_size = self.embedding_config.get("request_batch_size")
+            # Pull the rate limit from the outer semantic_search config if
+            # present (preferred), with a fallback to embedding_config for
+            # users who scope it per-provider.
+            rate_limit_rps = (
+                self.embedding_config.get("rate_limit_rps")
+                if self.embedding_config.get("rate_limit_rps") is not None
+                else self.embedding_config.get("_semantic_rate_limit_rps")
+            )
+            return OpenAIEmbeddingFunction(
+                model_name=model_name,
+                api_key=api_key,
+                base_url=base_url,
+                request_batch_size=request_batch_size,
+                rate_limit_rps=rate_limit_rps,
+            )
 
         elif self.embedding_model == "gemini":
             model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
@@ -628,6 +709,86 @@ class ChromaClient:
         except Exception:
             return set()
 
+    def get_all_ids(self) -> set[str]:
+        """Return every id currently stored in the collection.
+
+        Used by incremental sync to compute deletions: items in the local
+        collection but no longer present in the Zotero library.
+        """
+        try:
+            result = self.collection.get(include=[])
+            return set(result.get("ids", []))
+        except Exception as e:
+            logger.error(f"Error listing collection ids: {e}")
+            return set()
+
+    def delete_documents_by_item_type(self, item_type: str) -> int:
+        """Delete every chunk whose `metadata.item_type` equals the argument.
+
+        Used to purge stale data after tightening the ingest filter — e.g.
+        a past bug let `annotation` items through and they now sit in the
+        collection as noise. ChromaDB accepts a `where={}` filter on
+        `delete` but we first enumerate so we can return the count.
+        """
+        try:
+            result = self.collection.get(
+                where={"item_type": item_type},
+                include=[],
+            )
+            ids = list(result.get("ids", []))
+        except Exception as e:
+            logger.debug(f"item_type filter for {item_type} failed: {e}")
+            return 0
+        if not ids:
+            return 0
+        try:
+            self.collection.delete(ids=ids)
+            return len(ids)
+        except Exception as e:
+            logger.error(f"Failed to delete {len(ids)} chunks of type {item_type}: {e}")
+            return 0
+
+    def delete_documents_by_parent(self, parent_item_key: str) -> int:
+        """Delete every chunk associated with a parent Zotero item.
+
+        Chunk ids follow the `<parent_item_key>__<chunk_index>` convention
+        and also carry `metadata.parent_item_key`. We prefer the metadata
+        filter because it is authoritative even for legacy ids written
+        before the chunking migration.
+
+        Returns the number of ids removed.
+        """
+        try:
+            result = self.collection.get(
+                where={"parent_item_key": parent_item_key},
+                include=[],
+            )
+            ids = list(result.get("ids", []))
+        except Exception as e:
+            logger.debug(
+                f"parent_item_key filter failed for {parent_item_key}: {e}; "
+                f"falling back to id-prefix match"
+            )
+            ids = []
+        # Fallback for legacy collections where parent_item_key wasn't stored
+        if not ids:
+            try:
+                all_ids = self.collection.get(include=[]).get("ids", [])
+                prefix = f"{parent_item_key}__"
+                ids = [i for i in all_ids
+                       if i == parent_item_key or i.startswith(prefix)]
+            except Exception as e:
+                logger.error(f"Could not enumerate collection to delete parent {parent_item_key}: {e}")
+                return 0
+        if not ids:
+            return 0
+        try:
+            self.collection.delete(ids=ids)
+            return len(ids)
+        except Exception as e:
+            logger.error(f"Failed to delete {len(ids)} chunks for parent {parent_item_key}: {e}")
+            return 0
+
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     """
@@ -698,6 +859,15 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
                 ec["base_url"] = env_base
         if ec.get("api_key"):
             config["embedding_config"] = ec
+
+    # Propagate the top-level semantic_search.embedding_rate_limit_rps down
+    # into the embedding_config so OpenAIEmbeddingFunction sees it at
+    # construction time. The explicit-inside-embedding_config value, if
+    # set, wins.
+    if "embedding_rate_limit_rps" in config and config["embedding_rate_limit_rps"] is not None:
+        ec = dict(config.get("embedding_config") or {})
+        ec.setdefault("rate_limit_rps", config["embedding_rate_limit_rps"])
+        config["embedding_config"] = ec
 
     return ChromaClient(
         collection_name=config["collection_name"],

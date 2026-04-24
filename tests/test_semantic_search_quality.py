@@ -579,9 +579,13 @@ class TestReranking:
     def test_reranker_reorders_results(self):
         s = self._make_search_with_reranker(enabled=True)
 
-        # Mock reranker to reverse the order
+        # With chunking, search() inserts a dedupe-by-parent step between
+        # ChromaDB's raw result and the reranker. ChromaDB is already
+        # distance-sorted (0.1, 0.3, 0.2) so post-dedupe order becomes
+        # [Cats(0.1), Birds(0.2), Dogs(0.3)]. To reorder to Birds-first,
+        # the reranker must return [1, 0, 2].
         mock_reranker = MagicMock()
-        mock_reranker.rerank.return_value = [2, 0, 1]  # Birds, Cats, Dogs
+        mock_reranker.rerank.return_value = [1, 0, 2]
         s._reranker = mock_reranker
 
         # Mock the Zotero client to avoid API calls
@@ -592,7 +596,7 @@ class TestReranking:
 
         # Verify reranker was called
         mock_reranker.rerank.assert_called_once()
-        # First result should be "Birds" (index 2 in original)
+        # First result should be "Birds" after the reranker reorders
         assert result["results"][0]["metadata"]["title"] == "Birds"
 
     def test_search_overfetches_when_reranker_enabled(self):
@@ -605,8 +609,12 @@ class TestReranking:
 
         s.search("test", limit=2)
 
-        # candidate_multiplier=3, so n_results should be 2*3=6
-        assert s.chroma_client._last_query_kwargs["n_results"] == 6
+        # Chunking changes the oversample formula: the handler now fetches
+        # `max(limit * candidate_multiplier * 5, 50)` hits so enough distinct
+        # parents survive dedupe. For limit=2, cand_mult=3, that's
+        # max(30, 50) = 50.
+        assert s.chroma_client._last_query_kwargs["n_results"] >= 2 * 3
+        assert s.chroma_client._last_query_kwargs["n_results"] == 50
 
     def test_search_without_reranker_uses_original_limit(self):
         s = self._make_search_with_reranker(enabled=False)
@@ -616,4 +624,7 @@ class TestReranking:
 
         s.search("test", limit=5)
 
-        assert s.chroma_client._last_query_kwargs["n_results"] == 5
+        # Without a reranker, oversample is max(limit * 5, 50) = 50 for
+        # small limits. The final slice back to `limit` still happens
+        # inside search() before enrichment.
+        assert s.chroma_client._last_query_kwargs["n_results"] == 50
