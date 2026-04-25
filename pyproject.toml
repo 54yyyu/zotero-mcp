@@ -9,7 +9,7 @@ authors = [
   { name = "54yyyu", email = "54yyyu@github.com" },
 ]
 description = "A Model Context Protocol server for Zotero"
-keywords = ["zotero", "mcp", "model-context-protocol", "research", "citations", "bibliography"]
+keywords = ["zotero", "mcp", "model-context-protocol", "cli", "research", "citations", "bibliography"]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
@@ -60,7 +60,9 @@ dev = [
 "Changelog" = "https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
+zotero-cli = "zotero_mcp.cli_standalone:main"
 zotero-mcp = "zotero_mcp.cli:main"
+
 
 [tool.hatch.version]
 path = "src/zotero_mcp/_version.py"

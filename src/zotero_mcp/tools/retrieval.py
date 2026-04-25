@@ -8,8 +8,7 @@ import tempfile
 import time as _time
 from pathlib import Path
 
-from fastmcp import Context
-
+from zotero_mcp._context import Context
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils

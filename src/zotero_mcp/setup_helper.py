@@ -84,7 +84,7 @@ def find_executable():
     return None
 
 
-def find_claude_config():
+def find_claude_config(verbose: bool = False):
     """Find Claude Desktop config file path."""
     config_paths = []
 
@@ -110,7 +110,8 @@ def find_claude_config():
     # Check all possible locations
     for path in config_paths:
         if path.exists():
-            print(f"Found Claude Desktop config at: {path}")
+            if verbose:
+                print(f"Found Claude Desktop config at: {path}")
             return path
 
     # Return the default path for the platform if not found
@@ -124,7 +125,8 @@ def find_claude_config():
         config_home = os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')
         default_path = Path(config_home) / "Claude Desktop" / "claude_desktop_config.json"
 
-    print(f"Claude Desktop config not found. Using default path: {default_path}")
+    if verbose:
+        print(f"Claude Desktop config not found. Using default path: {default_path}")
     return default_path
 
 def setup_semantic_search(existing_semantic_config: dict | None = None, semantic_config_only_arg: bool = False) -> dict:
@@ -550,7 +552,7 @@ def main(cli_args=None):
     if not args.no_claude:
         config_path = args.config_path
         if not config_path:
-            config_path = find_claude_config()
+            config_path = find_claude_config(verbose=True)
         else:
             print(f"Using specified config path: {config_path}")
             config_path = Path(config_path)

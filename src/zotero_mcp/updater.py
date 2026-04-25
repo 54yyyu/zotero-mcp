@@ -249,7 +249,7 @@ def restore_configurations(backup_dir: Path) -> bool:
         from zotero_mcp.setup_helper import find_claude_config
 
         try:
-            current_config_path = find_claude_config()
+            current_config_path = find_claude_config(verbose=True)
             if current_config_path:
                 shutil.copy2(claude_backup, current_config_path)
                 print(f"Restored Claude Desktop config to: {current_config_path}")
