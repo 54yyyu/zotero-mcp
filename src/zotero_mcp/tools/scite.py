@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import logging
 
-from fastmcp import Context
-
+from zotero_mcp._context import Context
 from zotero_mcp import client as _client
 from zotero_mcp import scite_client as _scite
 from zotero_mcp import utils as _utils
