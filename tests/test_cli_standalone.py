@@ -51,11 +51,10 @@ class TestContextModule:
         assert Context is not None
 
     def test_context_has_required_methods(self):
-        ctx = Context()
-        # Stub or real — both must expose these methods without raising
-        ctx.info("x")
-        ctx.warning("x")
-        ctx.error("x")
+        # Check the class interface rather than instantiating: when fastmcp is
+        # installed the real Context requires constructor args we don't have.
+        for method in ("info", "warning", "error"):
+            assert callable(getattr(Context, method, None)), f"Context.{method} missing"
 
 
 # ---------------------------------------------------------------------------
