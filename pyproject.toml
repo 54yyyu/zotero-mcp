@@ -19,7 +19,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "pyzotero>=1.5.0",
+    "pyzotero>=1.6.0",
     "mcp>=1.2.0",
     "python-dotenv>=1.0.0",
     "markitdown[pdf]",
@@ -56,7 +56,7 @@ dev = [
 [project.urls]
 "Homepage" = "https://github.com/54yyyu/zotero-mcp"
 "Bug Tracker" = "https://github.com/54yyyu/zotero-mcp/issues"
-"Documentation" = "https://stevenyuyy.us/zotero-mcp/"
+"Documentation" = "https://stevenyuyy.com/zotero-mcp/"
 "Changelog" = "https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]

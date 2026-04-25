@@ -580,7 +580,7 @@ def get_items_children(
                     k = item.get("key", "")
                     parent_titles[k] = item.get("data", {}).get("title", "Untitled")
             except Exception as e:
-                ctx.warn(f"Batch parent lookup failed: {e}")
+                ctx.warning(f"Batch parent lookup failed: {e}")
                 for k in batch:
                     parent_titles.setdefault(k, f"(key: {k})")
 
@@ -1034,10 +1034,11 @@ def get_feed_items(
 
 @mcp.tool(
     name="zotero_get_recent",
-    description="Get recently added items to your Zotero library."
+    description="Get recently added items to your Zotero library, or to a specific collection."
 )
 def get_recent(
     limit: int | str = 10,
+    collection_key: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1046,6 +1047,7 @@ def get_recent(
 
     Args:
         limit: Number of items to return
+        collection_key: Optional collection key to scope results to a specific collection
         ctx: MCP context
 
     Returns:
@@ -1057,13 +1059,24 @@ def get_recent(
 
         limit = _helpers._normalize_limit(limit, default=10)
 
-        # Get recent items
-        items = zot.items(limit=limit, sort="dateAdded", direction="desc")
+        # Get recent items, optionally scoped to a collection
+        if collection_key:
+            try:
+                _col = zot.collection(collection_key)
+            except Exception:
+                _col = None
+            if not _col or _col.get("key") != collection_key:
+                return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
+            items = zot.collection_items(collection_key, sort="dateAdded", direction="desc", limit=limit)
+        else:
+            items = zot.items(limit=limit, sort="dateAdded", direction="desc")
+
         if not items:
-            return "No items found in your Zotero library."
+            return "No items found in your Zotero library." if not collection_key else f"No items found in collection: {collection_key}"
 
         # Format items as markdown
-        output = [f"# {limit} Most Recently Added Items", ""]
+        scope = f" in Collection {collection_key}" if collection_key else ""
+        output = [f"# {limit} Most Recently Added Items{scope}", ""]
 
         for i, item in enumerate(items, 1):
             added = item.get("data", {}).get("dateAdded", "Unknown")

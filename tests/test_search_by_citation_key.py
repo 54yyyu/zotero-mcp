@@ -12,6 +12,10 @@ from zotero_mcp.server import (
     search_by_citation_key,
 )
 
+# The module reference that search.py uses for client calls.
+# Patching this directly avoids module-resolution issues across Python versions.
+import zotero_mcp.tools.search as _search_mod
+
 
 # ---------------------------------------------------------------------------
 # _extra_has_citekey unit tests
@@ -79,14 +83,13 @@ class _CitekeyFakeZotero(FakeZotero):
 class TestSearchByCitationKeyWebMode:
     """Tests where BBT is not available (non-local mode)."""
 
-    @patch("zotero_mcp.utils.is_local_mode", return_value=False)
-    @patch("zotero_mcp.client.get_zotero_client")
-    def test_found_via_extra_field(self, mock_get_client, _mock_local):
+    def test_found_via_extra_field(self, monkeypatch):
         fake = _CitekeyFakeZotero()
         fake._items = [
             _make_item(key="ABC123", title="Deep Learning", citekey="Smith2024"),
         ]
-        mock_get_client.return_value = fake
+        monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
+        monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
         result = search_by_citation_key("Smith2024", ctx=DummyContext())
 
@@ -94,14 +97,13 @@ class TestSearchByCitationKeyWebMode:
         assert "Deep Learning" in result
         assert "ABC123" in result
 
-    @patch("zotero_mcp.utils.is_local_mode", return_value=False)
-    @patch("zotero_mcp.client.get_zotero_client")
-    def test_no_match(self, mock_get_client, _mock_local):
+    def test_no_match(self, monkeypatch):
         fake = _CitekeyFakeZotero()
         fake._items = [
             _make_item(key="XYZ999", title="Other Paper", citekey="Jones2023"),
         ]
-        mock_get_client.return_value = fake
+        monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
+        monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
         result = search_by_citation_key("Smith2024", ctx=DummyContext())
 
@@ -115,9 +117,7 @@ class TestSearchByCitationKeyWebMode:
 class TestSearchByCitationKeyLocalMode:
     """Tests where BBT is available (local mode)."""
 
-    @patch("zotero_mcp.utils.is_local_mode", return_value=True)
-    @patch("zotero_mcp.client.get_zotero_client")
-    def test_bbt_lookup_succeeds(self, mock_get_client, _mock_local):
+    def test_bbt_lookup_succeeds(self, monkeypatch):
         # BBT returns a matching result with itemKey
         bbt_instance = MagicMock()
         bbt_instance.is_zotero_running.return_value = True
@@ -129,7 +129,8 @@ class TestSearchByCitationKeyLocalMode:
         fake._items = [
             _make_item(key="ABC123", title="Deep Learning", citekey="Smith2024"),
         ]
-        mock_get_client.return_value = fake
+        monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: True)
+        monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
         # Patch the import inside search_by_citation_key
         with patch(
@@ -141,15 +142,14 @@ class TestSearchByCitationKeyLocalMode:
         assert "Citation Key: Smith2024" in result
         assert "Deep Learning" in result
 
-    @patch("zotero_mcp.utils.is_local_mode", return_value=True)
-    @patch("zotero_mcp.client.get_zotero_client")
-    def test_bbt_fails_falls_back_to_extra(self, mock_get_client, _mock_local):
+    def test_bbt_fails_falls_back_to_extra(self, monkeypatch):
         """When BBT raises an exception, Strategy B (Extra field) is used."""
         fake = _CitekeyFakeZotero()
         fake._items = [
             _make_item(key="DEF456", title="Fallback Paper", citekey="Smith2024"),
         ]
-        mock_get_client.return_value = fake
+        monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: True)
+        monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
         # Make the BBT import succeed but the instance raises
         with patch(
@@ -174,14 +174,13 @@ class TestSearchByCitationKeyEdgeCases:
         result = search_by_citation_key("  ", ctx=DummyContext())
         assert "Error: Citation key cannot be empty" in result
 
-    @patch("zotero_mcp.utils.is_local_mode", return_value=False)
-    @patch("zotero_mcp.client.get_zotero_client")
-    def test_whitespace_stripped(self, mock_get_client, _mock_local):
+    def test_whitespace_stripped(self, monkeypatch):
         fake = _CitekeyFakeZotero()
         fake._items = [
             _make_item(key="ABC123", title="Stripped Key", citekey="Smith2024"),
         ]
-        mock_get_client.return_value = fake
+        monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
+        monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
         result = search_by_citation_key("  Smith2024  ", ctx=DummyContext())
 
