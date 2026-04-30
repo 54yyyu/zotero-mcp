@@ -627,6 +627,28 @@ class LocalZoteroReader:
     def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         return self._extract_fulltext_for_item(item_id)
 
+    def get_attachment_paths(self, parent_key: str) -> list[dict]:
+        """Return resolved filesystem paths for a parent item's attachments.
+
+        Each entry has: ``key`` (attachment key), ``content_type``, ``zotero_path``
+        (the raw stored path like ``storage:foo.pdf``), ``resolved_path`` (a
+        ``Path`` or ``None`` if it could not be resolved), and ``exists`` (bool).
+        """
+        item = self.get_item_by_key(parent_key)
+        if not item:
+            return []
+        out: list[dict] = []
+        for att_key, zotero_path, ctype in self._iter_parent_attachments(item.item_id):
+            resolved = self._resolve_attachment_path(att_key, zotero_path or "")
+            out.append({
+                "key": att_key,
+                "content_type": ctype,
+                "zotero_path": zotero_path,
+                "resolved_path": resolved,
+                "exists": bool(resolved and resolved.exists()),
+            })
+        return out
+
     def get_item_by_key(self, key: str) -> ZoteroItem | None:
         """
         Get a specific item by its Zotero key.
