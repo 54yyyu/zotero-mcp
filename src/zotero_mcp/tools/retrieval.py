@@ -99,26 +99,13 @@ def get_item_fulltext(
             from zotero_mcp.local_db import LocalZoteroReader
 
             if _utils.is_local_mode():
-                config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-                zotero_db_path = None
-                pdf_max_pages = None
-                fulltext_display_max = None
-
-                if config_path.exists():
-                    try:
-                        with open(config_path, encoding="utf-8") as _f:
-                            _cfg = json.load(_f)
-                            semantic_cfg = _cfg.get("semantic_search", {})
-                            zotero_db_path = semantic_cfg.get("zotero_db_path")
-                            extraction_cfg = semantic_cfg.get("extraction", {})
-                            pdf_max_pages = extraction_cfg.get("pdf_max_pages")
-                            # Separate display limit for when Claude reads papers
-                            # (reduces token usage vs. indexing which can be higher)
-                            fulltext_display_max = extraction_cfg.get(
-                                "fulltext_display_max_pages"
-                            )
-                    except Exception:
-                        pass
+                semantic_cfg = _helpers._load_zotero_mcp_config().get("semantic_search", {})
+                zotero_db_path = semantic_cfg.get("zotero_db_path")
+                extraction_cfg = semantic_cfg.get("extraction", {})
+                pdf_max_pages = extraction_cfg.get("pdf_max_pages")
+                # Separate display limit for when Claude reads papers
+                # (reduces token usage vs. indexing which can be higher)
+                fulltext_display_max = extraction_cfg.get("fulltext_display_max_pages")
 
                 # Use display limit if configured, otherwise fall back to
                 # pdf_max_pages, with a default cap of 10 pages.
@@ -222,16 +209,11 @@ def get_attachment_path(
     try:
         from zotero_mcp.local_db import LocalZoteroReader
 
-        config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-        zotero_db_path = None
-        if config_path.exists():
-            try:
-                with open(config_path, encoding="utf-8") as f:
-                    zotero_db_path = json.load(f).get("semantic_search", {}).get(
-                        "zotero_db_path"
-                    )
-            except Exception:
-                pass
+        zotero_db_path = (
+            _helpers._load_zotero_mcp_config()
+            .get("semantic_search", {})
+            .get("zotero_db_path")
+        )
 
         with LocalZoteroReader(db_path=zotero_db_path) as reader:
             attachments = reader.get_attachment_paths(item_key)
