@@ -561,13 +561,13 @@ class TestArxivAttachMode:
     not see those files locally, even though the metadata existed.
     """
 
-    def test_linked_url_skips_binary_upload(self, dummy_ctx, patch_write_client):
-        """attach_mode='linked_url' should call _attach_pdf_linked_url, not upload binary."""
+    def test_linked_url_skips_binary_download_and_upload(self, dummy_ctx, patch_write_client):
+        """attach_mode='linked_url' should neither download nor upload the PDF binary."""
         fake_zot = patch_write_client
         fake_zot.attachment_both = MagicMock()
 
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
-        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp), \
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get, \
              patch(
                  "zotero_mcp.tools._helpers._attach_pdf_linked_url",
                  return_value=True,
@@ -583,6 +583,15 @@ class TestArxivAttachMode:
         # _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx)
         pdf_url_arg = mock_linked.call_args[0][1]
         assert "arxiv.org/pdf/2401.00001" in pdf_url_arg
+
+        # PDF must NOT be downloaded — only the arXiv metadata API may be hit
+        assert mock_get.call_count == 1
+        first_call_url = mock_get.call_args_list[0][0][0]
+        assert "export.arxiv.org" in first_call_url
+        for call in mock_get.call_args_list:
+            url_arg = call[0][0] if call[0] else call.kwargs.get("url", "")
+            assert "arxiv.org/pdf/" not in url_arg, \
+                f"PDF URL was fetched in linked_url mode: {url_arg}"
 
         # Binary upload path must NOT be invoked
         fake_zot.attachment_both.assert_not_called()
