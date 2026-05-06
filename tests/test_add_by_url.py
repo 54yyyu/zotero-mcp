@@ -545,3 +545,67 @@ class TestTagsAndCollections:
         item = fake_zot.created[0]
         tag_values = [t["tag"] for t in item.get("tags", [])]
         assert "reference" in tag_values
+
+
+# ---------------------------------------------------------------------------
+# arXiv attach_mode handling
+# ---------------------------------------------------------------------------
+
+
+class TestArxivAttachMode:
+    """The arXiv path should honor the attach_mode parameter.
+
+    Regression test for the case where ``_add_by_arxiv`` ignored ``attach_mode``
+    and unconditionally called ``write_zot.attachment_both``, which uploads PDF
+    binaries to Zotero's official cloud storage. WebDAV-syncing users could
+    not see those files locally, even though the metadata existed.
+    """
+
+    def test_linked_url_skips_binary_upload(self, dummy_ctx, patch_write_client):
+        """attach_mode='linked_url' should call _attach_pdf_linked_url, not upload binary."""
+        fake_zot = patch_write_client
+        fake_zot.attachment_both = MagicMock()
+
+        mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp), \
+             patch(
+                 "zotero_mcp.tools._helpers._attach_pdf_linked_url",
+                 return_value=True,
+             ) as mock_linked:
+            result = server.add_by_url(
+                url="https://arxiv.org/abs/2401.00001",
+                attach_mode="linked_url",
+                ctx=dummy_ctx,
+            )
+
+        # Linked URL helper should be invoked exactly once with the arXiv PDF URL
+        assert mock_linked.call_count == 1
+        # _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx)
+        pdf_url_arg = mock_linked.call_args[0][1]
+        assert "arxiv.org/pdf/2401.00001" in pdf_url_arg
+
+        # Binary upload path must NOT be invoked
+        fake_zot.attachment_both.assert_not_called()
+
+        # Result message reflects linked-URL mode
+        assert "PDF linked" in result
+
+    def test_default_mode_uploads_binary(self, dummy_ctx, patch_write_client):
+        """Default attach_mode='auto' should still call attachment_both (backward compat)."""
+        fake_zot = patch_write_client
+        fake_zot.attachment_both = MagicMock()
+
+        mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp), \
+             patch(
+                 "zotero_mcp.tools._helpers._attach_pdf_linked_url",
+             ) as mock_linked:
+            server.add_by_url(
+                url="https://arxiv.org/abs/2401.00001",
+                ctx=dummy_ctx,
+            )
+
+        # Linked-URL helper must NOT be invoked in default mode
+        mock_linked.assert_not_called()
+        # Binary upload path is invoked
+        assert fake_zot.attachment_both.call_count == 1
