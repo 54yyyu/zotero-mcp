@@ -23,9 +23,7 @@ Typical multi-host EZProxy scheme (HttpsHyphens):
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -463,8 +461,10 @@ def fetch_paper(
 
     Steps: resolve DOI → rewrite URL through proxy → fetch with auth session.
 
-    Returns a dict with: url, resolved_url, proxied_url, final_url,
-    status_code, content_type, content (bytes), and for HTML: html, title.
+    Returns a JSON-serialisable dict with:
+        url, resolved_url, proxied_url, final_url,
+        status_code, content_type, content_length,
+        title (HTML only), body (decoded text for HTML/plain, else None).
     """
     resolved = resolve_doi(url, timeout=timeout) if resolve_dois else url
     proxied = registry.proper_to_proxy(resolved)
@@ -475,81 +475,17 @@ def fetch_paper(
 
     content_type = resp.headers.get("content-type", "").lower()
     content = resp.content
-    result: dict = {
+
+    return {
         "url": url,
         "resolved_url": resolved,
         "proxied_url": proxied,
         "final_url": resp.url,
         "status_code": resp.status_code,
         "content_type": content_type,
-        "content": content,
         "content_length": len(content),
+        "body": content.decode("utf-8", errors="replace"),
     }
-
-    if "text/html" in content_type:
-        html = content.decode("utf-8", errors="replace")
-        result["html"] = html
-        m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
-        result["title"] = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
-
-    return result
-
-
-def fetch_paper_as_markdown(
-    url: str,
-    registry: ProxyRegistry,
-    *,
-    pdf_max_pages: Optional[int] = None,
-    timeout: int = 30,
-) -> str:
-    """Fetch a paper via EZProxy and convert it to Markdown."""
-    result = fetch_paper(url, registry, timeout=timeout)
-    ct = result.get("content_type", "")
-
-    if "application/pdf" in ct or result["final_url"].endswith(".pdf"):
-        return _pdf_bytes_to_markdown(result["content"], pdf_max_pages=pdf_max_pages)
-    if "text/html" in ct:
-        return _html_to_markdown(result.get("html", ""), result)
-
-    return (
-        f"# {result.get('title') or result['final_url']}\n\n"
-        f"Content-Type: {ct}\n"
-        f"Size: {result['content_length']} bytes\n\n"
-        "(Binary content — use fetch_paper() to access raw bytes)"
-    )
-
-
-def _pdf_bytes_to_markdown(data: bytes, *, pdf_max_pages: Optional[int] = None) -> str:
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        try:
-            from markitdown import MarkItDown  # type: ignore[import]
-
-            result = MarkItDown().convert(tmp_path)
-            text = result.text_content or ""
-            if pdf_max_pages:
-                pages = re.split(r"\f|(?:\n---+\n)", text)
-                text = "\n\n---\n\n".join(pages[:pdf_max_pages])
-            return text
-        finally:
-            os.unlink(tmp_path)
-    except ImportError:
-        return f"(markitdown not available — {len(data)} bytes of PDF)"
-    except Exception as exc:
-        return f"(PDF conversion failed: {exc})"
-
-
-def _html_to_markdown(html: str, result: dict) -> str:
-    title = result.get("title", "")
-    header = f"# {title}\n\n" if title else ""
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<(br|p|div|h[1-6]|li|tr)[^>]*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    return header + text.strip()
 
 
 # ---------------------------------------------------------------------------
