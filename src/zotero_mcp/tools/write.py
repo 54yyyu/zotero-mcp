@@ -723,6 +723,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "issue": "issue",
     "pages": "pages",
     "publisher": "publisher",
+    "place": "place",
     "ISSN": "issn",
     "language": "language",
     "shortTitle": "short_title",
@@ -760,6 +761,7 @@ def update_item(
     issue: str | None = None,
     pages: str | None = None,
     publisher: str | None = None,
+    place: str | None = None,
     issn: str | None = None,
     language: str | None = None,
     short_title: str | None = None,
@@ -813,6 +815,8 @@ def update_item(
             field_updates["pages"] = pages
         if publisher is not None:
             field_updates["publisher"] = publisher
+        if place is not None:
+            field_updates["place"] = place
         if issn is not None:
             field_updates["ISSN"] = issn
         if language is not None:
