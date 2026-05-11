@@ -1,6 +1,6 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
-from typing import Literal
+from typing import Annotated, Literal
 import json
 import os
 import re
@@ -11,6 +11,7 @@ import time as _time
 
 import requests
 from fastmcp import Context
+from pydantic import Field
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
@@ -737,6 +738,9 @@ _UPDATE_ITEM_API_TO_PARAM = {
     name="zotero_update_item",
     description=(
         "Update metadata for an existing item in your Zotero library. "
+        "Editable fields include title, creators, date, publisher, place, "
+        "publication_title, volume, issue, pages, DOI, ISBN, ISSN, url, "
+        "language, abstract, short_title, edition, book_title, and extra. "
         "To add tags without removing existing ones, use add_tags (not tags). "
         "To remove specific tags, use remove_tags. "
         "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes."
@@ -761,7 +765,10 @@ def update_item(
     issue: str | None = None,
     pages: str | None = None,
     publisher: str | None = None,
-    place: str | None = None,
+    place: Annotated[
+        str | None,
+        Field(description="Publication place (city), e.g., 'New York' or 'Cambridge, MA'."),
+    ] = None,
     issn: str | None = None,
     language: str | None = None,
     short_title: str | None = None,
@@ -771,6 +778,33 @@ def update_item(
     *,
     ctx: Context
 ) -> str:
+    """
+    Update metadata fields on an existing Zotero item.
+
+    Only fields you pass are modified; unspecified fields are left
+    untouched. Fields whose API key does not exist on the item's
+    itemType (e.g. ``place`` on a ``journalArticle``) are reported as
+    skipped rather than written.
+
+    Args:
+        item_key: 8-character Zotero item key of the item to update.
+        title, creators, date, publication_title, abstract, doi, url,
+        extra, volume, issue, pages, publisher, place, issn, language,
+        short_title, edition, isbn, book_title: per-field overrides;
+        ``place`` is the publication city (e.g. ``"New York"`` or
+        ``"Cambridge, MA"``) and is valid on book, bookSection, thesis,
+        manuscript, report, and conferencePaper item types.
+        tags / add_tags / remove_tags: mutually exclusive; ``tags``
+        REPLACES the full tag list, ``add_tags`` / ``remove_tags`` are
+        incremental. Prefer the incremental forms.
+        collections / collection_names: REPLACE collection memberships;
+        for incremental moves use zotero_manage_collections instead.
+        ctx: MCP context.
+
+    Returns:
+        A markdown-formatted summary of what changed (or a skip
+        warning for fields not valid on the item type).
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
