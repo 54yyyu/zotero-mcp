@@ -44,8 +44,11 @@ pdf = [
 scite = [
     "requests>=2.28.0",
 ]
+ezproxy = [
+    "browser-cookie3>=0.19.0",
+]
 all = [
-    "zotero-mcp-server[semantic,pdf,scite]",
+    "zotero-mcp-server[semantic,pdf,scite,ezproxy]",
 ]
 dev = [
     "zotero-mcp-server[all]",
