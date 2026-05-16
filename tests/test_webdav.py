@@ -1,6 +1,5 @@
 """Tests for direct WebDAV attachment access."""
 
-from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from zotero_mcp import client, webdav
