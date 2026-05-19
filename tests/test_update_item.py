@@ -762,6 +762,61 @@ class TestUpdateItemNewFields:
         assert fake.update_calls[0]["data"]["edition"] == "3rd"
         assert "3rd" in result
 
+    def test_update_place_on_book(self, monkeypatch):
+        # The book fixture pre-populates place="" so the update should
+        # land on the existing field rather than be skipped as
+        # "not valid for itemType".
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            place="New York",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["place"] == "New York"
+        assert "New York" in result
+
+    def test_update_place_on_book_section(self, monkeypatch):
+        # bookSection also carries place; ensure the field maps the same
+        # way across the parent item types that have it.
+        item = _make_book_section_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BSEC1234",
+            place="Cambridge, MA",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["place"] == "Cambridge, MA"
+        assert "Cambridge, MA" in result
+
+    def test_update_place_skipped_on_journal_article(self, monkeypatch):
+        # journalArticle has no place field, so passing place= should be
+        # reported as a skipped field rather than silently writing an
+        # invalid key, matching the existing skip-warning behaviour for
+        # issue= on a book.
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            place="New York",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.update_calls) == 0
+        assert "place" in result
+        assert "skip" in result.lower() or "not valid" in result.lower()
+
     def test_update_isbn_on_book(self, monkeypatch):
         item = _make_book_item()
         fake = FakeZoteroForUpdate(items=[item])
