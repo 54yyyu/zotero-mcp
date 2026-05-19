@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import shutil
@@ -100,6 +101,113 @@ def _extract_archive(
 
         selected = _select_primary_member(members, expected_filename)
         return extracted_paths[selected.filename]
+
+
+def _compute_file_md5(file_path: str | Path, chunk_size: int = 65536) -> str:
+    """Return hex md5 of a file's contents, streamed in chunks."""
+    digest = hashlib.md5()  # noqa: S324 — Zotero's WebDAV protocol mandates md5
+    with open(file_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _build_zotero_zip(file_path: str | Path) -> bytes:
+    """Return the bytes of a Zotero-formatted attachment zip.
+
+    Zotero's WebDAV layout stores the attachment file inside a zip named
+    <KEY>.zip, with a single member whose name is the original basename.
+    """
+    src = Path(file_path)
+    buf = io.BytesIO()
+    # ZIP_DEFLATED keeps the upload small for text-heavy PDFs; pyzotero
+    # uses the same compression on its own ingest path.
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(src, arcname=src.name)
+    return buf.getvalue()
+
+
+def _build_prop_xml(md5_hex: str, mtime_ms: int) -> bytes:
+    """Return the bytes of a Zotero-format <KEY>.prop sidecar file.
+
+    Zotero stores a tiny XML doc next to each <KEY>.zip with mtime and
+    md5 so other clients can detect changes without downloading the zip.
+    """
+    return (
+        '<properties version="1">'
+        f"<mtime>{int(mtime_ms)}</mtime>"
+        f"<hash>{md5_hex}</hash>"
+        "</properties>"
+    ).encode("utf-8")
+
+
+def upload_attachment_to_webdav(
+    attachment_key: str,
+    file_path: str | Path,
+    md5: str | None = None,
+    mtime_ms: int | None = None,
+    timeout: float = 60.0,
+) -> tuple[str, int]:
+    """Upload an attachment to WebDAV in Zotero's expected layout.
+
+    Writes two objects to the configured WebDAV server:
+      - <KEY>.zip  (containing the original file)
+      - <KEY>.prop (XML sidecar with mtime and md5)
+
+    Returns ``(md5_hex, mtime_ms)`` so the caller can write the same
+    values to the Zotero attachment item via the web API, keeping the
+    two sides of the sync consistent.
+
+    Raises ``WebDAVNotConfiguredError`` when the env vars are missing,
+    or ``requests.HTTPError`` on a non-2xx response from the PUTs.
+    """
+    config = get_webdav_config()
+    if not config:
+        raise WebDAVNotConfiguredError(
+            "Missing ZOTERO_WEBDAV_URL / ZOTERO_WEBDAV_USERNAME / ZOTERO_WEBDAV_PASSWORD"
+        )
+
+    base_url, username, password = config
+    src = Path(file_path)
+    if not src.is_file():
+        raise FileNotFoundError(f"Attachment source not found: {src}")
+
+    md5_hex = md5 if md5 else _compute_file_md5(src)
+    if mtime_ms is None:
+        mtime_ms = int(src.stat().st_mtime * 1000)
+
+    zip_bytes = _build_zotero_zip(src)
+    prop_bytes = _build_prop_xml(md5_hex, mtime_ms)
+
+    zip_url = f"{base_url}{quote(attachment_key, safe='')}.zip"
+    prop_url = f"{base_url}{quote(attachment_key, safe='')}.prop"
+
+    session = requests.Session()
+    session.auth = (username, password)
+    session.trust_env = True
+    try:
+        # Order matters: Zotero treats a fresh .prop with no matching .zip
+        # as evidence of corruption. PUT the zip first.
+        zip_resp = session.put(
+            zip_url,
+            data=zip_bytes,
+            headers={"Content-Type": "application/zip"},
+            timeout=(10.0, timeout),
+        )
+        zip_resp.raise_for_status()
+        prop_resp = session.put(
+            prop_url,
+            data=prop_bytes,
+            headers={"Content-Type": "text/xml; charset=utf-8"},
+            timeout=(10.0, timeout),
+        )
+        prop_resp.raise_for_status()
+    finally:
+        close = getattr(session, "close", None)
+        if callable(close):
+            close()
+
+    return md5_hex, mtime_ms
 
 
 def download_attachment_from_webdav(
