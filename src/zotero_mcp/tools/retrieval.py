@@ -99,26 +99,13 @@ def get_item_fulltext(
             from zotero_mcp.local_db import LocalZoteroReader
 
             if _utils.is_local_mode():
-                config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-                zotero_db_path = None
-                pdf_max_pages = None
-                fulltext_display_max = None
-
-                if config_path.exists():
-                    try:
-                        with open(config_path, encoding="utf-8") as _f:
-                            _cfg = json.load(_f)
-                            semantic_cfg = _cfg.get("semantic_search", {})
-                            zotero_db_path = semantic_cfg.get("zotero_db_path")
-                            extraction_cfg = semantic_cfg.get("extraction", {})
-                            pdf_max_pages = extraction_cfg.get("pdf_max_pages")
-                            # Separate display limit for when Claude reads papers
-                            # (reduces token usage vs. indexing which can be higher)
-                            fulltext_display_max = extraction_cfg.get(
-                                "fulltext_display_max_pages"
-                            )
-                    except Exception:
-                        pass
+                semantic_cfg = _helpers._load_zotero_mcp_config().get("semantic_search", {})
+                zotero_db_path = semantic_cfg.get("zotero_db_path")
+                extraction_cfg = semantic_cfg.get("extraction", {})
+                pdf_max_pages = extraction_cfg.get("pdf_max_pages")
+                # Separate display limit for when Claude reads papers
+                # (reduces token usage vs. indexing which can be higher)
+                fulltext_display_max = extraction_cfg.get("fulltext_display_max_pages")
 
                 # Use display limit if configured, otherwise fall back to
                 # pdf_max_pages, with a default cap of 10 pages.
@@ -197,6 +184,57 @@ def get_item_fulltext(
     except Exception as e:
         ctx.error(f"Error fetching item full text: {str(e)}")
         return f"Error fetching item full text: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_get_attachment_path",
+    description=(
+        "Return the local filesystem path(s) of a Zotero item's attachments. "
+        "Local mode only. Useful when you want to read a large PDF directly "
+        "(e.g., a book) instead of going through zotero_get_item_fulltext, "
+        "which is page-limited."
+    )
+)
+def get_attachment_path(
+    item_key: str,
+    *,
+    ctx: Context
+) -> str:
+    """List resolved local paths for an item's attachments."""
+    if not _utils.is_local_mode():
+        return (
+            "Error: zotero_get_attachment_path requires local mode "
+            "(set ZOTERO_LOCAL=true). Cloud-only attachments have no local path."
+        )
+    try:
+        from zotero_mcp.local_db import LocalZoteroReader
+
+        zotero_db_path = (
+            _helpers._load_zotero_mcp_config()
+            .get("semantic_search", {})
+            .get("zotero_db_path")
+        )
+
+        with LocalZoteroReader(db_path=zotero_db_path) as reader:
+            attachments = reader.get_attachment_paths(item_key)
+
+        if not attachments:
+            return f"No attachments found for item `{item_key}`."
+
+        lines = [f"# Attachments for `{item_key}`", ""]
+        for att in attachments:
+            lines.append(f"## `{att['key']}` ({att['content_type'] or 'unknown'})")
+            lines.append(f"- Zotero path: `{att['zotero_path']}`")
+            if att["resolved_path"] is not None:
+                marker = "" if att["exists"] else " (missing on disk)"
+                lines.append(f"- Local path: `{att['resolved_path']}`{marker}")
+            else:
+                lines.append("- Local path: *unresolved*")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+    except Exception as e:
+        ctx.error(f"Error resolving attachment path: {e}")
+        return f"Error resolving attachment path: {e}"
 
 
 @mcp.tool(
