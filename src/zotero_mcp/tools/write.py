@@ -409,10 +409,17 @@ def add_by_doi(
 
         ctx.info(f"Fetching metadata for DOI: {normalized}")
 
+        # CrossRef "polite pool": identifying via mailto gives higher rate limits
+        # and priority routing. See https://api.crossref.org/swagger-ui/index.html
+        crossref_url = f"https://api.crossref.org/works/{normalized}"
+        contact_email = os.environ.get("ZOTERO_MCP_CONTACT_EMAIL", "").strip()
+        if contact_email:
+            crossref_url += f"?mailto={contact_email}"
+
         resp = requests.get(
-            f"https://api.crossref.org/works/{normalized}",
+            crossref_url,
             headers={
-                "User-Agent": "zotero-mcp/1.0 (https://github.com/ehawkin/zotero-mcp)",
+                "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
                 "Accept": "application/json",
             },
             timeout=15,
