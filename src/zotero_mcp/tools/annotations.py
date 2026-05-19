@@ -10,6 +10,7 @@ from fastmcp import Context
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import _helpers
 
@@ -79,8 +80,23 @@ def _get_note_write_client(op_description: str):
 
 @mcp.tool(
     name="zotero_get_annotations",
-    description="Get all annotations for a specific item or across your entire Zotero library. When called without item_key, returns ALL annotations library-wide — this can be very large. Always pass item_key when you know which item you want."
+    description=(
+        "Get annotations (highlights and attached notes on PDF/EPUB "
+        "attachments) for a specific item or across the active Zotero "
+        "library. item_key: pass the parent item key OR an attachment key — "
+        "both work; attachment-to-parent resolution is automatic. ALWAYS "
+        "pass item_key when you know which item you want; calling without "
+        "it returns every annotation in the library (potentially thousands). "
+        "use_pdf_extraction=True falls back to direct PDF parsing when the "
+        "Zotero API has no stored annotation record — useful for "
+        "annotations made outside Zotero desktop. limit: cap on annotations "
+        "returned; None (default) returns all. Uses Better BibTeX when "
+        "Zotero desktop is running locally, otherwise the Zotero web API. "
+        "Example: zotero_get_annotations(item_key='ABC12345') → every "
+        "highlight/note on that paper."
+    )
 )
+@with_zotero_api_lock
 def get_annotations(
     item_key: str | None = None,
     use_pdf_extraction: bool = False,
@@ -459,8 +475,22 @@ _get_annotations = get_annotations
 
 @mcp.tool(
     name="zotero_get_notes",
-    description="Retrieve notes from your Zotero library, with options to filter by parent item. Set raw_html=True to return the note's original HTML (e.g., for round-tripping through zotero_update_note)."
+    description=(
+        "Retrieve standalone or child notes from the active Zotero library. "
+        "item_key: optional; when provided, returns only notes attached to "
+        "that parent item; when omitted, returns notes across the entire "
+        "library (capped by limit). If you want to search note content "
+        "instead, use zotero_search_notes. limit: max notes to return "
+        "(default 20). truncate=True (default) shortens long note bodies "
+        "for display — pass False for complete content. raw_html=True "
+        "returns the note's original HTML instead of stripped text; use "
+        "this when you intend to edit and round-trip via zotero_update_note "
+        "(preserves formatting). Example: zotero_get_notes("
+        "item_key='ABC12345', raw_html=True) → every note on that item in "
+        "round-trippable HTML."
+    )
 )
+@with_zotero_api_lock
 def get_notes(
     item_key: str | None = None,
     limit: int | str | None = 20,
@@ -559,6 +589,7 @@ def get_notes(
 # Helpers for search_notes
 # ---------------------------------------------------------------------------
 
+@with_zotero_api_lock
 def _batch_resolve_parent_titles(
     zot, parent_keys: set[str], ctx: Context
 ) -> dict[str, str]:
@@ -590,6 +621,7 @@ def _batch_resolve_parent_titles(
     return titles
 
 
+@with_zotero_api_lock
 def _batch_resolve_grandparent_titles(
     zot, parent_keys: set[str], ctx: Context
 ) -> dict[str, str]:
@@ -669,6 +701,7 @@ def _batch_resolve_grandparent_titles(
     return result
 
 
+@with_zotero_api_lock
 def _format_search_results(
     query: str,
     note_results: list[dict],
@@ -732,8 +765,21 @@ def _format_search_results(
 
 @mcp.tool(
     name="zotero_search_notes",
-    description="Search for notes and annotations across your Zotero library. Set raw_html=True to return note matches as raw HTML (useful for round-tripping through zotero_update_note)."
+    description=(
+        "Search note and annotation text across the active Zotero library. "
+        "query: matched against the stripped-text body of notes/annotations "
+        "(case-insensitive substring). Use this when you DON'T already know "
+        "the parent item; if you do, prefer zotero_get_notes(item_key=…) "
+        "which returns all notes for that item directly. limit: max results "
+        "(default 20). raw_html=True returns matched notes as raw HTML while "
+        "matching still runs on stripped text — use for round-tripping via "
+        "zotero_update_note. Scope: active library only (use "
+        "zotero_switch_library to change). Example: zotero_search_notes("
+        "query='mindfulness') → notes anywhere in the library whose text "
+        "contains that word."
+    )
 )
+@with_zotero_api_lock
 def search_notes(
     query: str,
     limit: int | str | None = 20,
@@ -865,11 +911,20 @@ def search_notes(
 @mcp.tool(
     name="zotero_create_note",
     description=(
-        "Create a new note attached to a Zotero item. "
-        "Parameters: item_key (the key of the parent item to attach the note to), "
-        "note_title (title string), note_text (body text, HTML formatting supported)."
+        "Create a new child note attached to a Zotero item. "
+        "item_key: parent item key (the note becomes a child of this item). "
+        "note_title: title displayed in Zotero's note pane. "
+        "note_text: note body; simple HTML is preserved (p, strong, em, "
+        "ul/ol/li, a, blockquote, code). "
+        "tags: optional list of tag strings to attach to the note. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. To edit an existing note instead, use "
+        "zotero_update_note. Example: zotero_create_note("
+        "item_key='ABC12345', note_title='Reading notes', "
+        "note_text='<p>Key claim: ...</p>', tags=['to-cite'])."
     )
 )
+@with_zotero_api_lock
 def create_note(
     item_key: str,
     note_title: str,
@@ -1011,7 +1066,21 @@ def create_note(
 
 @mcp.tool(
     name="zotero_update_note",
-    description="Update the HTML content of an existing Zotero note. Set append=True to concatenate to the existing note; otherwise the note is replaced."
+    description=(
+        "Update the HTML body of an existing Zotero note. "
+        "item_key: the NOTE's own key (NOT the parent item's key) — use "
+        "zotero_get_notes or zotero_search_notes to find it. "
+        "note_text: new HTML content. "
+        "append=False (default) REPLACES the entire note body; append=True "
+        "concatenates note_text after the existing body. "
+        "To preserve existing formatting when editing, first fetch the note "
+        "with zotero_get_notes(raw_html=True), modify the HTML, then pass "
+        "the full HTML back. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. "
+        "Example: zotero_update_note(item_key='NOTE1234', "
+        "note_text='<p>Revised summary</p>', append=False)."
+    )
 )
 def update_note(
     item_key: str,
@@ -1066,7 +1135,20 @@ def update_note(
 
 @mcp.tool(
     name="zotero_delete_note",
-    description="Move a Zotero note to the Trash. Trashed notes are recoverable from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."
+    description=(
+        "Move a Zotero note to the Trash. Non-destructive: trashed notes "
+        "remain recoverable from the Trash view in Zotero desktop. "
+        "item_key: the NOTE's own key — use zotero_get_notes or "
+        "zotero_search_notes to find it (passing a parent item's key will "
+        "fail or trash the wrong thing). "
+        "To permanently delete, the user must empty the Trash in the Zotero "
+        "UI — no API exists for that step. "
+        "Scope: notes only; this tool cannot trash items, collections, or "
+        "attachments. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. "
+        "Example: zotero_delete_note(item_key='NOTE1234')."
+    )
 )
 def delete_note(
     item_key: str,
@@ -1124,20 +1206,33 @@ def delete_note(
 @mcp.tool(
     name="zotero_create_annotation",
     description=(
-        "Create a highlight annotation on a PDF or EPUB attachment with optional comment. "
-        "Parameters: attachment_key (the key of the PDF/EPUB attachment, not the parent item), "
-        "page (integer, 1-indexed — page 1 is the first page), "
-        "text (exact text to highlight), color (hex, default yellow #ffd400), "
-        "comment (optional note on the highlight). "
-        "Requires PyMuPDF: pip install zotero-mcp-server[pdf]"
+        "Create a TEXT-HIGHLIGHT annotation on a PDF or EPUB attachment, "
+        "with optional comment and tags. For rectangular selections of figures or "
+        "non-text regions, use zotero_create_area_annotation instead. "
+        "attachment_key: the PDF/EPUB attachment key — NOT the parent item "
+        "key (use zotero_get_item_children to find attachments). "
+        "page: 1-indexed page number (page 1 is the first page). "
+        "text: exact text to highlight; the tool locates and rectangles it "
+        "on the page via the PDF/EPUB text layer — scanned/image-only PDFs "
+        "will not match. "
+        "color: hex color (default '#ffd400' yellow). "
+        "comment: optional note attached to the highlight. "
+        "tags: optional list of tag strings to apply to the annotation. "
+        "Requires PyMuPDF (pip install zotero-mcp-server[pdf]) and a "
+        "writable library (web API key or hybrid mode). "
+        "Example: zotero_create_annotation(attachment_key='NHZFE5A7', "
+        "page=4, text='mindfulness-based therapy', comment='definition to "
+        "cite')."
     )
 )
+@with_zotero_api_lock
 def create_annotation(
     attachment_key: str,
     page: int,
     text: str,
     comment: str | None = None,
     color: str = "#ffd400",
+    tags: list[str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1329,7 +1424,11 @@ def create_annotation(
                 char_position = position_data.get("char_position", chapter * 1000)
                 sort_index = f"{chapter:05d}|{char_position:08d}"
 
-            # Prepare the annotation data
+            tag_list = (
+                _helpers._normalize_str_list_input(tags, "tags")
+                if tags is not None else []
+            )
+
             annotation_data = {
                 "itemType": "annotation",
                 "parentItem": attachment_key,
@@ -1339,6 +1438,7 @@ def create_annotation(
                 "annotationColor": color,
                 "annotationSortIndex": sort_index,
                 "annotationPosition": annotation_position,
+                "tags": [{"tag": t} for t in tag_list],
             }
             # Only add pageLabel if not empty (EPUB should not have it)
             if page_label:
@@ -1387,7 +1487,27 @@ def create_annotation(
 
 @mcp.tool(
     name="zotero_create_area_annotation",
-    description="Create a PDF area/image annotation using normalized page coordinates."
+    description=(
+        "Create a PDF AREA/IMAGE annotation — a rectangle drawn on an "
+        "arbitrary page region (figures, diagrams, tables, non-text "
+        "content). For highlighting selectable text, use "
+        "zotero_create_annotation instead. "
+        "attachment_key: PDF attachment key — NOT the parent item key (use "
+        "zotero_get_item_children to find attachments). "
+        "page: 1-indexed page number (page 1 is the first page). "
+        "x, y: top-left corner in NORMALIZED page coordinates in [0, 1] — "
+        "(0, 0) is the page's top-left, (1, 1) is the bottom-right. "
+        "width, height: rectangle size, also normalized to [0, 1] and "
+        "relative to the page (not to x, y). "
+        "comment: optional note attached to the annotation. "
+        "color: hex color (default '#ffd400' yellow). "
+        "Scope: PDFs only — EPUB attachments are NOT supported. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. "
+        "Example: zotero_create_area_annotation("
+        "attachment_key='NHZFE5A7', page=7, x=0.15, y=0.22, width=0.6, "
+        "height=0.35, comment='Figure 3 — mean completion rates')."
+    )
 )
 def create_area_annotation(
     attachment_key: str,
@@ -1398,6 +1518,7 @@ def create_area_annotation(
     height: float,
     comment: str | None = None,
     color: str = "#ffd400",
+    tags: list[str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1507,6 +1628,11 @@ def create_area_annotation(
                 position_data["rects"],
             )
 
+            tag_list = (
+                _helpers._normalize_str_list_input(tags, "tags")
+                if tags is not None else []
+            )
+
             annotation_data = {
                 "itemType": "annotation",
                 "parentItem": attachment_key,
@@ -1516,6 +1642,7 @@ def create_area_annotation(
                 "annotationSortIndex": position_data["sort_index"],
                 "annotationPosition": annotation_position,
                 "annotationPageLabel": page_label,
+                "tags": [{"tag": t} for t in tag_list],
             }
 
             ctx.info("Creating area annotation via Web API...")
@@ -1544,3 +1671,152 @@ def create_area_annotation(
     except Exception as e:
         ctx.error(f"Error creating area annotation: {str(e)}")
         return f"Error creating area annotation: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_annotation",
+    description=(
+        "Update an existing Zotero annotation. Editable fields: text (highlight text), "
+        "comment, color (hex like '#ffd400'), and tags. "
+        "Tags can be replaced wholesale via `tags`, or edited incrementally via "
+        "`add_tags`/`remove_tags` (mutually exclusive with `tags`). "
+        "Position/page/sortIndex are anchored to the PDF/EPUB geometry and are not editable."
+    )
+)
+def update_annotation(
+    annotation_key: str,
+    text: str | None = None,
+    comment: str | None = None,
+    color: str | None = None,
+    tags: list[str] | str | None = None,
+    add_tags: list[str] | str | None = None,
+    remove_tags: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        if tags is not None and (add_tags is not None or remove_tags is not None):
+            return (
+                "Error: Cannot use 'tags' (replace all) together with "
+                "'add_tags'/'remove_tags' (incremental). Use one approach or the other."
+            )
+
+        ctx.info(f"Updating annotation {annotation_key}")
+
+        zot, err = _get_note_write_client("updating annotations")
+        if err:
+            return err
+
+        try:
+            item = zot.item(annotation_key)
+        except Exception:
+            return f"Error: No item found with key: {annotation_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "annotation":
+            return (
+                f"Error: Item {annotation_key} is not an annotation "
+                f"(itemType={data.get('itemType')})"
+            )
+
+        changes = []
+        if text is not None:
+            data["annotationText"] = text
+            changes.append("- **text**: updated")
+        if comment is not None:
+            data["annotationComment"] = comment
+            changes.append("- **comment**: updated")
+        if color is not None:
+            data["annotationColor"] = color
+            changes.append(f"- **color**: {color}")
+
+        if tags is not None:
+            tag_list = _helpers._normalize_str_list_input(tags, "tags")
+            data["tags"] = [{"tag": t} for t in tag_list]
+            changes.append(f"- **tags**: replaced with {tag_list}")
+        elif add_tags is not None or remove_tags is not None:
+            existing = {t["tag"] for t in data.get("tags", [])}
+            if add_tags is not None:
+                to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
+                existing.update(to_add)
+                changes.append(f"- **tags**: added {to_add}")
+            if remove_tags is not None:
+                to_remove = set(
+                    _helpers._normalize_str_list_input(remove_tags, "remove_tags")
+                )
+                existing -= to_remove
+                changes.append(f"- **tags**: removed {list(to_remove)}")
+            data["tags"] = [{"tag": t} for t in sorted(existing)]
+
+        if not changes:
+            return "No changes to apply."
+
+        resp = zot.update_item(item)
+        if _helpers._handle_write_response(resp, ctx):
+            return (
+                f"Successfully updated annotation `{annotation_key}`:\n\n"
+                + "\n".join(changes)
+            )
+        return f"Failed to update annotation {annotation_key}"
+
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error updating annotation: {e}")
+        return f"Error updating annotation: {e}"
+
+
+@mcp.tool(
+    name="zotero_delete_annotation",
+    description=(
+        "Move a Zotero annotation to the Trash. Trashed annotations are recoverable "
+        "from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."
+    )
+)
+def delete_annotation(
+    annotation_key: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        ctx.info(f"Trashing annotation {annotation_key}")
+
+        zot, err = _get_note_write_client("deleting annotations")
+        if err:
+            return err
+
+        try:
+            item = zot.item(annotation_key)
+        except Exception:
+            return f"Error: No item found with key: {annotation_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "annotation":
+            return (
+                f"Error: Item {annotation_key} is not an annotation "
+                f"(itemType={data.get('itemType')})"
+            )
+
+        from pyzotero.zotero import build_url
+        url = build_url(
+            zot.endpoint,
+            f"/{zot.library_type}/{zot.library_id}/items/{annotation_key}",
+        )
+        resp = zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return (
+                f"Successfully trashed annotation {annotation_key} "
+                "(recoverable from Zotero's Trash)"
+            )
+        return (
+            f"Failed to trash annotation {annotation_key} "
+            f"(HTTP {resp.status_code}): {resp.text[:200]}"
+        )
+
+    except Exception as e:
+        ctx.error(f"Error trashing annotation: {str(e)}")
+        return f"Error trashing annotation: {str(e)}"
