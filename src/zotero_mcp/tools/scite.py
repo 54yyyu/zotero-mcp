@@ -113,9 +113,28 @@ def enrich_items(items: list[dict]) -> dict[str, dict[str, str]]:
 @mcp.tool(
     name="scite_enrich_item",
     description=(
-        "Get a Scite citation report for a paper — supporting, contrasting, "
-        "and mentioning citation counts plus retraction/correction alerts. "
-        "Provide either a DOI or a Zotero item key. No Scite account needed."
+        "Fetch a Scite.ai citation report for ONE paper: supporting, "
+        "contrasting, and mentioning citation counts, the total citing-"
+        "publication count, and any editorial notices (retraction, "
+        "correction, expression of concern, erratum). Use this to vet a "
+        "paper's reception before citing it — richer than a bare citation "
+        "count. "
+        "Provide EITHER doi OR item_key (not both needed; doi wins if "
+        "both are passed). If you pass item_key, the tool pulls the DOI "
+        "from that Zotero item and fails clearly if none is recorded. "
+        "doi: the DOI string, with or without 'https://doi.org/' prefix "
+        "— leading prefixes/whitespace are normalized. "
+        "item_key: 8-character Zotero item key; must have a DOI in "
+        "metadata or the 'Extra' field to be resolvable. "
+        "No Scite account or API key required — uses the free public "
+        "endpoints, so calls can fail transiently: expect 'Could not "
+        "reach Scite API — try again later' when Scite is slow or "
+        "unreachable (not a permanent error). "
+        "For batch enrichment across many items, use scite_enrich_search "
+        "(search + enrich in one call); for a retraction scan across a "
+        "collection/tag, use scite_check_retractions. "
+        "Example: scite_enrich_item(doi='10.1162/tacl_a_00638') or "
+        "scite_enrich_item(item_key='RTKZQI8E')."
     ),
 )
 def enrich_item(
@@ -193,10 +212,26 @@ def enrich_item(
 @mcp.tool(
     name="scite_enrich_search",
     description=(
-        "Search your Zotero library and enrich results with Scite citation "
-        "data. Each result shows supporting/contrasting/mentioning tallies "
-        "and retraction alerts alongside standard Zotero metadata. "
-        "No Scite account needed."
+        "Search Zotero and enrich every result with a Scite citation tally "
+        "(supporting / contrasting / mentioning) plus any retraction or "
+        "correction notices. Returns the same markdown as "
+        "zotero_search_items with extra per-item Scite fields. "
+        "Use this INSTEAD of calling scite_enrich_item N times — it does "
+        "one batched Scite request, not N. For a plain search with no "
+        "Scite overhead use zotero_search_items; for a retraction-only "
+        "scan use scite_check_retractions. "
+        "query: title/author query — SAME substring semantics as "
+        "zotero_search_items, so 'Author Year' (e.g. 'Brewer 2011') "
+        "works best and extra words NARROW (not broaden) the match. "
+        "limit: max results to enrich (default 10). Items without a DOI "
+        "in metadata are returned without Scite fields (Scite needs DOIs "
+        "to resolve). "
+        "Scope: active Zotero library only (switch with "
+        "zotero_switch_library). "
+        "No Scite account or API key required — uses the free public "
+        "endpoints, so Scite-side enrichment can fail transiently "
+        "(Zotero results still return, just without Scite fields). "
+        "Example: scite_enrich_search(query='Cladder-Micus', limit=5)."
     ),
 )
 def enrich_search(
@@ -255,9 +290,28 @@ def enrich_search(
 @mcp.tool(
     name="scite_check_retractions",
     description=(
-        "Scan items in your Zotero library for retractions, corrections, "
-        "and other editorial notices using Scite data. Filter by collection, "
-        "tag, or check recent items. No Scite account needed."
+        "Scan Zotero items for editorial notices on Scite — retractions, "
+        "corrections, expressions of concern, erratum/corrigendum. Returns "
+        "ONLY items flagged with at least one notice; silent clean items "
+        "are omitted (count reported in the summary line). Use this to "
+        "vet a reading list before citing. "
+        "THREE scoping modes (mutually exclusive, first non-null wins): "
+        "(1) collection — scan all items in a specific Zotero collection; "
+        "(2) tag — scan items bearing a specific tag; (3) recent (no "
+        "args) — scan the most-recently-MODIFIED items up to limit. "
+        "collection: collection name OR 8-char key; names are resolved "
+        "via zotero_search_collections. "
+        "tag: existing tag name (exact, case-sensitive). "
+        "limit: items to check per call — default 50, max 500. Items "
+        "without a DOI are skipped silently (Scite needs DOIs). "
+        "Scope: active library only. No Scite account or API key needed; "
+        "the public endpoints can fail transiently — on network errors "
+        "the tool returns 'Could not reach Scite API — try again later' "
+        "rather than partial results. "
+        "For a single-paper check prefer scite_enrich_item (richer "
+        "output, also includes notices). "
+        "Example: scite_check_retractions(tag='to-cite', limit=100) or "
+        "scite_check_retractions(collection='Orals', limit=500)."
     ),
 )
 def check_retractions(

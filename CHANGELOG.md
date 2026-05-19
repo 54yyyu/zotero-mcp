@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`zotero_add_by_csl_json`** — same for CSL JSON input from an inline string/object/array OR a `.json`/`.csljson` file path. The CSL `id` is preserved in Extra as the citation key (#241).
 - New `citation_import` module — BibTeX parsing, CSL JSON coercion, and the shared field/type crosswalk (reference: <https://aurimasv.github.io/z2csl/typeMap.xml>).
 - New dependency: `bibtexparser>=1.4,<2`.
+- **`zotero_read_pdf_pages` tool** — read a specific page range from a PDF attachment after section identification via `zotero_get_pdf_outline`. Extracts text from the requested pages using PyMuPDF, avoiding the need to read the entire paper when only a few pages are relevant.
 
 ## [0.2.2] - 2026-03-26
 

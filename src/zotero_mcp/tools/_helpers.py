@@ -4,11 +4,34 @@ import json
 import os
 import re
 import tempfile
+from pathlib import Path
 
 import requests
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+
+
+# ---------------------------------------------------------------------------
+# Config file
+# ---------------------------------------------------------------------------
+
+ZOTERO_MCP_CONFIG_PATH = Path.home() / ".config" / "zotero-mcp" / "config.json"
+
+
+def _load_zotero_mcp_config() -> dict:
+    """Return the parsed ``~/.config/zotero-mcp/config.json``, or ``{}``.
+
+    Missing file or parse errors yield an empty dict so callers can use
+    ``.get(...)`` chains without guarding.
+    """
+    if not ZOTERO_MCP_CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(ZOTERO_MCP_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +168,55 @@ def _normalize_str_list_input(value, field_name="value"):
             return parts
         return [raw]
     raise ValueError(f"{field_name} must be a list of strings or a string")
+
+
+def _normalize_tag_filter(value):
+    """Normalize a tag-filter argument into a list[str] for pyzotero.
+
+    Accepts every shape we've seen clients produce:
+    - None / empty                 → []
+    - ["a", "b"]                   → ["a", "b"]   (canonical)
+    - [{"tag": "a"}, {"tag": "b"}] → ["a", "b"]   (common LLM mis-shape)
+    - "a"                          → ["a"]
+    - '["a", "b"]'                 → ["a", "b"]   (JSON list of strings)
+    - '[{"tag": "a"}]'             → ["a"]        (JSON list of dicts, #237)
+
+    MCP runtimes sometimes stringify array arguments before they reach the
+    pydantic validator, and agents sometimes pass the dict-shape that Zotero
+    uses INSIDE an item (``{"tag": "X"}``) rather than the bare-string form
+    pyzotero's ``tag=`` parameter expects. Either path ended up rejected
+    upstream of the search logic. This normalizer collapses them all.
+    """
+    def _extract(v):
+        if isinstance(v, dict):
+            for key in ("tag", "name", "value"):
+                if key in v and str(v[key]).strip():
+                    return str(v[key]).strip()
+            return ""
+        return str(v).strip()
+
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [s for s in (_extract(v) for v in value) if s]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return [raw]
+        if isinstance(parsed, list):
+            return [s for s in (_extract(v) for v in parsed) if s]
+        if isinstance(parsed, dict):
+            s = _extract(parsed)
+            return [s] if s else []
+        if isinstance(parsed, str):
+            s = parsed.strip()
+            return [s] if s else []
+        return []
+    return []
 
 
 def _resolve_collection_names(zot, names, ctx=None):

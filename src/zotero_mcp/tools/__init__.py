@@ -3,6 +3,7 @@
 from zotero_mcp.tools import (  # noqa: F401
     annotations,
     connectors,
+    read_pdf,
     retrieval,
     search,
     write,
