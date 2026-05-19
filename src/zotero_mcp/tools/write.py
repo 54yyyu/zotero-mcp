@@ -575,7 +575,8 @@ def add_by_url(
         # arXiv URL routing
         arxiv_id = _helpers._normalize_arxiv_id(url)
         if arxiv_id:
-            return _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx)
+            return _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx,
+                                 attach_mode=attach_mode)
 
         # Generic webpage
         ctx.info(f"Creating webpage item for: {url}")
@@ -606,7 +607,7 @@ def add_by_url(
         return f"Error adding by URL: {e}"
 
 
-def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
+def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto"):
     """Add an arXiv paper by ID. Internal helper for add_by_url."""
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
@@ -688,23 +689,35 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
         # arXiv always has a free PDF — try to attach it
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
         pdf_status = "no PDF attached"
-        try:
-            pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
-            pdf_resp.raise_for_status()
-            with tempfile.TemporaryDirectory() as tmpdir:
-                filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
-                filepath = os.path.join(tmpdir, filename)
-                with open(filepath, "wb") as f:
-                    for chunk in pdf_resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                write_zot.attachment_both(
-                    [(filename, filepath)],
-                    parentid=item_key,
-                )
-            pdf_status = "PDF attached"
-        except Exception as e:
-            ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
-            pdf_status = f"no PDF attached ({e})"
+        if attach_mode == "linked_url":
+            # Bookmark the PDF URL only — no binary upload. Useful for users who
+            # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
+            try:
+                if _helpers._attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                    pdf_status = "PDF linked (URL only, no upload)"
+                else:
+                    pdf_status = "linked URL attachment failed"
+            except Exception as e:
+                ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
+                pdf_status = f"no PDF attached ({e})"
+        else:
+            try:
+                pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+                pdf_resp.raise_for_status()
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
+                    filepath = os.path.join(tmpdir, filename)
+                    with open(filepath, "wb") as f:
+                        for chunk in pdf_resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    write_zot.attachment_both(
+                        [(filename, filepath)],
+                        parentid=item_key,
+                    )
+                pdf_status = "PDF attached"
+            except Exception as e:
+                ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
+                pdf_status = f"no PDF attached ({e})"
 
         return (
             f"Successfully added arXiv paper: **{title}**\n\n"
