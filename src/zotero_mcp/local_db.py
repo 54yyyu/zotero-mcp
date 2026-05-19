@@ -297,12 +297,27 @@ class LocalZoteroReader:
             "sys.stdout.write(extract_text(sys.argv[1], maxpages=int(sys.argv[2])) or '')"
         )
 
+        # Strip API keys from the child's environment: pdfminer does not need
+        # them, and leaking them via crash dumps or /proc/<pid>/environ is
+        # needless exposure. Keep the rest of the env so the interpreter still
+        # finds system libraries, temp dirs, locale, etc.
+        child_env = os.environ.copy()
+        for _k in (
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ZOTERO_API_KEY",
+        ):
+            child_env.pop(_k, None)
+
         try:
             result = subprocess.run(
                 [sys.executable, "-c", script, str(file_path), str(maxpages)],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=child_env,
             )
             if result.returncode == 0:
                 return result.stdout
