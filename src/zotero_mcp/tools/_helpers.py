@@ -4,11 +4,34 @@ import json
 import os
 import re
 import tempfile
+from pathlib import Path
 
 import requests
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+
+
+# ---------------------------------------------------------------------------
+# Config file
+# ---------------------------------------------------------------------------
+
+ZOTERO_MCP_CONFIG_PATH = Path.home() / ".config" / "zotero-mcp" / "config.json"
+
+
+def _load_zotero_mcp_config() -> dict:
+    """Return the parsed ``~/.config/zotero-mcp/config.json``, or ``{}``.
+
+    Missing file or parse errors yield an empty dict so callers can use
+    ``.get(...)`` chains without guarding.
+    """
+    if not ZOTERO_MCP_CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(ZOTERO_MCP_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +102,12 @@ def _get_write_client(ctx):
         override = _client.get_active_library()
         if override:
             web_zot.library_id = override.get("library_id", web_zot.library_id)
-            web_zot.library_type = override.get("library_type", web_zot.library_type)
+            # pyzotero stores library_type with trailing "s" (e.g. "users", "groups")
+            # but the override stores the raw value (e.g. "user", "group"),
+            # so we must append "s" to match pyzotero's internal convention.
+            raw_type = override.get("library_type")
+            if raw_type:
+                web_zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
         return read_zot, web_zot
     raise ValueError(
         "Cannot perform write operations in local-only mode. "
@@ -142,6 +170,55 @@ def _normalize_str_list_input(value, field_name="value"):
     raise ValueError(f"{field_name} must be a list of strings or a string")
 
 
+def _normalize_tag_filter(value):
+    """Normalize a tag-filter argument into a list[str] for pyzotero.
+
+    Accepts every shape we've seen clients produce:
+    - None / empty                 → []
+    - ["a", "b"]                   → ["a", "b"]   (canonical)
+    - [{"tag": "a"}, {"tag": "b"}] → ["a", "b"]   (common LLM mis-shape)
+    - "a"                          → ["a"]
+    - '["a", "b"]'                 → ["a", "b"]   (JSON list of strings)
+    - '[{"tag": "a"}]'             → ["a"]        (JSON list of dicts, #237)
+
+    MCP runtimes sometimes stringify array arguments before they reach the
+    pydantic validator, and agents sometimes pass the dict-shape that Zotero
+    uses INSIDE an item (``{"tag": "X"}``) rather than the bare-string form
+    pyzotero's ``tag=`` parameter expects. Either path ended up rejected
+    upstream of the search logic. This normalizer collapses them all.
+    """
+    def _extract(v):
+        if isinstance(v, dict):
+            for key in ("tag", "name", "value"):
+                if key in v and str(v[key]).strip():
+                    return str(v[key]).strip()
+            return ""
+        return str(v).strip()
+
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [s for s in (_extract(v) for v in value) if s]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return [raw]
+        if isinstance(parsed, list):
+            return [s for s in (_extract(v) for v in parsed) if s]
+        if isinstance(parsed, dict):
+            s = _extract(parsed)
+            return [s] if s else []
+        if isinstance(parsed, str):
+            s = parsed.strip()
+            return [s] if s else []
+        return []
+    return []
+
+
 def _resolve_collection_names(zot, names, ctx=None):
     """Resolve collection names to keys (case-insensitive)."""
     if not names:
@@ -157,7 +234,7 @@ def _resolve_collection_names(zot, names, ctx=None):
         if not matches:
             raise ValueError(f"No collection found matching name '{name}'")
         if len(matches) > 1 and ctx is not None:
-            ctx.warn(
+            ctx.warning(
                 f"Multiple collections match '{name}': {matches}. "
                 "Using all. Pass collection keys directly to disambiguate."
             )
@@ -181,6 +258,64 @@ def _normalize_doi(raw):
     if re.match(r"^10\.\d{4,9}/\S+$", s):
         return s
     return None
+
+
+def _normalize_isbn(raw):
+    """Normalize an ISBN string and validate the checksum.
+
+    Accepts ISBN-10, ISBN-13, and prefixed/URL forms (isbn:, https://isbndb.com/...).
+    Strips hyphens, spaces, and any prefix. Returns the canonical digits-only
+    form (13-digit preferred — ISBN-10 inputs are converted to ISBN-13).
+    Returns None on invalid input or failing checksum.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.lower().startswith("isbn:"):
+        s = s[5:].strip()
+    if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
+        s = s[5:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])",
+                      s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        s = m.group(1)
+    digits = re.sub(r"[\s\-]", "", s)
+    if re.match(r"^\d{9}[\dXx]$", digits):
+        if not _isbn10_checksum_valid(digits):
+            return None
+        return _isbn10_to_isbn13(digits)
+    if re.match(r"^97[89]\d{10}$", digits):
+        if not _isbn13_checksum_valid(digits):
+            return None
+        return digits
+    return None
+
+
+def _isbn10_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = 10 if ch in ("X", "x") else int(ch)
+        total += v * (10 - i)
+    return total % 11 == 0
+
+
+def _isbn13_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = int(ch)
+        total += v if i % 2 == 0 else v * 3
+    return total % 10 == 0
+
+
+def _isbn10_to_isbn13(isbn10):
+    core = "978" + isbn10[:9]
+    total = 0
+    for i, ch in enumerate(core):
+        total += int(ch) * (1 if i % 2 == 0 else 3)
+    check = (10 - total % 10) % 10
+    return core + str(check)
 
 
 def _normalize_arxiv_id(raw):

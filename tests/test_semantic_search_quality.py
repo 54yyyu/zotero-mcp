@@ -7,6 +7,7 @@ Covers:
 - Fix 5: Cross-encoder re-ranking
 """
 
+import importlib.util
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -172,6 +173,172 @@ class TestGeminiQueryEmbedding:
         )
 
 
+# ---------------------------------------------------------------------------
+# gemini-embedding-2-preview support
+# ---------------------------------------------------------------------------
+
+class TestGeminiV2Support:
+    """Coverage for the v2-model-specific code paths.
+
+    `gemini-embedding-2-preview` differs from `gemini-embedding-001` in three
+    ways the embedding function must handle:
+      - task_type config field is silently ignored, so the task instruction
+        must be embedded in the prompt text via V2_DOC_PREFIX/V2_QUERY_PREFIX
+      - max_input_tokens is 8192 (vs 2048 for v1), reduced to 7980 here to
+        reserve V2_PREFIX_TOKEN_BUDGET for the prepended prefix
+      - embed_content has a hard cap of 100 items per batch
+    """
+
+    def _v2_ef(self, mock_client, mock_types, model_name="models/gemini-embedding-2-preview"):
+        """Build a v2 GeminiEmbeddingFunction without invoking __init__.
+
+        Bypasses the genai client setup so tests stay hermetic. Replicates
+        the post-__init__ instance shape for v2 models.
+        """
+        from zotero_mcp.chroma_client import GeminiEmbeddingFunction
+        ef = GeminiEmbeddingFunction.__new__(GeminiEmbeddingFunction)
+        ef.model_name = model_name
+        ef.client = mock_client
+        ef.types = mock_types
+        ef.max_input_tokens = 8000 - GeminiEmbeddingFunction.V2_PREFIX_TOKEN_BUDGET
+        return ef
+
+    def test_v2_call_prepends_doc_prefix_no_config(self):
+        """v2 __call__ must prepend V2_DOC_PREFIX and pass no EmbedContentConfig."""
+        from zotero_mcp.chroma_client import GeminiEmbeddingFunction
+
+        mock_client = MagicMock()
+        mock_embedding = MagicMock()
+        mock_embedding.values = [0.1, 0.2, 0.3]
+        mock_response = MagicMock()
+        mock_response.embeddings = [mock_embedding]
+        mock_client.models.embed_content.return_value = mock_response
+
+        mock_types = MagicMock()
+        ef = self._v2_ef(mock_client, mock_types)
+
+        ef(["doc text"])
+
+        mock_client.models.embed_content.assert_called_once()
+        call_kwargs = mock_client.models.embed_content.call_args.kwargs
+        # v2 uses no EmbedContentConfig — task instruction goes in the prompt
+        assert "config" not in call_kwargs
+        assert call_kwargs["contents"] == [
+            f"{GeminiEmbeddingFunction.V2_DOC_PREFIX}doc text"
+        ]
+        mock_types.EmbedContentConfig.assert_not_called()
+
+    def test_v2_embed_query_prepends_query_prefix_no_config(self):
+        """v2 embed_query must prepend V2_QUERY_PREFIX and pass no EmbedContentConfig."""
+        from zotero_mcp.chroma_client import GeminiEmbeddingFunction
+
+        mock_client = MagicMock()
+        mock_embedding = MagicMock()
+        mock_embedding.values = [0.4, 0.5, 0.6]
+        mock_response = MagicMock()
+        mock_response.embeddings = [mock_embedding]
+        mock_client.models.embed_content.return_value = mock_response
+
+        mock_types = MagicMock()
+        ef = self._v2_ef(mock_client, mock_types)
+
+        result = ef.embed_query("query text")
+
+        mock_client.models.embed_content.assert_called_once()
+        call_kwargs = mock_client.models.embed_content.call_args.kwargs
+        assert "config" not in call_kwargs
+        assert call_kwargs["contents"] == [
+            f"{GeminiEmbeddingFunction.V2_QUERY_PREFIX}query text"
+        ]
+        mock_types.EmbedContentConfig.assert_not_called()
+        assert result == [0.4, 0.5, 0.6]
+
+    def test_v2_truncates_long_query_before_prefix(self):
+        """embed_query must truncate text before prepending the prefix.
+
+        Otherwise pathological queries crash the API and the
+        V2_PREFIX_TOKEN_BUDGET reservation in __init__ is meaningless.
+        """
+        from zotero_mcp.chroma_client import GeminiEmbeddingFunction
+
+        mock_client = MagicMock()
+        mock_embedding = MagicMock()
+        mock_embedding.values = [0.0]
+        mock_response = MagicMock()
+        mock_response.embeddings = [mock_embedding]
+        mock_client.models.embed_content.return_value = mock_response
+
+        mock_types = MagicMock()
+        ef = self._v2_ef(mock_client, mock_types)
+
+        # Build a query well past the 7980-token budget. truncate() uses
+        # 4 chars/token estimation, so 7980 tokens ≈ 31_920 chars.
+        long_query = "a" * 50_000
+        ef.embed_query(long_query)
+
+        sent = mock_client.models.embed_content.call_args.kwargs["contents"][0]
+        # Must start with the v2 query prefix
+        assert sent.startswith(GeminiEmbeddingFunction.V2_QUERY_PREFIX)
+        # Body after the prefix must be truncated (not the full 50_000 chars)
+        body = sent[len(GeminiEmbeddingFunction.V2_QUERY_PREFIX):]
+        assert len(body) == 7980 * 4  # truncate() uses 4 chars/token
+
+    def test_v2_batch_preserves_order_across_chunks(self):
+        """__call__ must chunk at GEMINI_MAX_BATCH and preserve input order."""
+        from zotero_mcp.chroma_client import GeminiEmbeddingFunction
+
+        mock_client = MagicMock()
+        mock_types = MagicMock()
+
+        # Stub embed_content so each call returns vectors that encode the
+        # first character of each input — lets us verify ordering end-to-end.
+        def fake_embed_content(model, contents, **kwargs):
+            response = MagicMock()
+            response.embeddings = [
+                MagicMock(values=[float(ord(c[len(GeminiEmbeddingFunction.V2_DOC_PREFIX)]))])
+                for c in contents
+            ]
+            return response
+
+        mock_client.models.embed_content.side_effect = fake_embed_content
+        ef = self._v2_ef(mock_client, mock_types)
+
+        # 250 inputs should chunk into 100 + 100 + 50
+        inputs = [f"{chr(33 + (i % 90))}{i}" for i in range(250)]
+        result = ef(inputs)
+
+        assert len(result) == 250
+        # 3 calls expected (100 + 100 + 50)
+        assert mock_client.models.embed_content.call_count == 3
+        # Verify order: each output vector encodes the first char of its input
+        for i, vec in enumerate(result):
+            assert vec[0] == float(ord(inputs[i][0]))
+
+    def test_v2_init_logic_max_input_tokens(self):
+        """v2 instances reserve V2_PREFIX_TOKEN_BUDGET from max_input_tokens.
+
+        Verifies the constants are wired correctly. Both name forms
+        ('gemini-embedding-2-preview' and 'models/gemini-embedding-2-preview')
+        must trigger the v2 detection in _is_v2().
+        """
+        from zotero_mcp.chroma_client import GeminiEmbeddingFunction
+
+        # Constants are load-bearing for the budget arithmetic
+        assert GeminiEmbeddingFunction.V2_PREFIX_TOKEN_BUDGET == 20
+        assert GeminiEmbeddingFunction.GEMINI_MAX_BATCH == 100
+
+        for v2_name in ("gemini-embedding-2-preview", "models/gemini-embedding-2-preview"):
+            ef = GeminiEmbeddingFunction.__new__(GeminiEmbeddingFunction)
+            ef.model_name = v2_name
+            assert ef._is_v2() is True
+
+        ef_v1 = GeminiEmbeddingFunction.__new__(GeminiEmbeddingFunction)
+        ef_v1.model_name = "gemini-embedding-001"
+        assert ef_v1._is_v2() is False
+        # Class-default max_input_tokens for v1 (no per-instance override)
+        assert ef_v1.max_input_tokens == 2000
+
+
 class TestSearchUsesEmbedQuery:
     def test_search_uses_query_embeddings_for_custom_ef(self):
         """ChromaClient.search should use query_embeddings for custom embedding functions."""
@@ -321,6 +488,71 @@ class TestModelAwareTokenizer:
 
         mock_ef.truncate.assert_called_once_with("long text", 500)
         assert result == "truncated"
+
+
+# ---------------------------------------------------------------------------
+# Regression: tiktoken special tokens in PDF text must not raise ValueError
+# Bug: tiktoken.encode() defaults to disallowed_special="all", which raises
+# ValueError when input contains strings like <|endoftext|> (common in ML papers).
+# Fix: all encode() call sites pass disallowed_special=().
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    not importlib.util.find_spec("tiktoken"),
+    reason="tiktoken not installed",
+)
+class TestTiktokenSpecialTokenHandling:
+    """Text containing tiktoken special tokens must not raise ValueError."""
+
+    SPECIAL_TOKEN_TEXT = (
+        "The model uses <|endoftext|> as a separator token. "
+        "Other tokens include <|fim_prefix|> and <|fim_suffix|>."
+    )
+
+    @staticmethod
+    def _expected_truncation(text, max_tokens):
+        """Compute expected tiktoken truncation for exact-output assertions."""
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        tokens = enc.encode(text, disallowed_special=())[:max_tokens]
+        return enc.decode(tokens)
+
+    def test_openai_truncate_with_special_tokens(self):
+        from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+
+        ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+        result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
+
+    def test_openai_truncate_preserves_special_token_text(self):
+        from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
+
+        ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+        result = ef.truncate(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
+        assert result == self.SPECIAL_TOKEN_TEXT
+
+    def test_chroma_truncate_text_fallback_with_special_tokens(self):
+        from zotero_mcp.chroma_client import ChromaClient
+
+        client = ChromaClient.__new__(ChromaClient)
+        # Use an embedding function without a truncate method to hit fallback
+        client.embedding_function = MagicMock(spec=[])
+        client.embedding_function.max_input_tokens = 5000
+
+        result = client.truncate_text(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
+
+    def test_truncate_to_tokens_with_special_tokens(self):
+        from zotero_mcp.semantic_search import _truncate_to_tokens
+
+        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
+        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
+
+    def test_truncate_to_tokens_preserves_special_token_text(self):
+        from zotero_mcp.semantic_search import _truncate_to_tokens
+
+        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
+        assert result == self.SPECIAL_TOKEN_TEXT
 
 
 # ---------------------------------------------------------------------------

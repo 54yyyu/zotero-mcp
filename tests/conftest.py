@@ -12,9 +12,6 @@ class DummyContext:
     def error(self, *_args, **_kwargs):
         return None
 
-    def warn(self, *_args, **_kwargs):
-        return None
-
     def warning(self, *_args, **_kwargs):
         return None
 
@@ -86,6 +83,9 @@ class FakeZotero:
                 "issue": "",
                 "pages": "",
                 "ISSN": "",
+                "publisher": "",
+                "language": "",
+                "shortTitle": "",
             })
         if item_type == "book":
             base.update({
@@ -93,6 +93,24 @@ class FakeZotero:
                 "place": "",
                 "ISBN": "",
                 "numPages": "",
+                "edition": "",
+                "volume": "",
+                "ISSN": "",
+                "language": "",
+                "shortTitle": "",
+            })
+        if item_type == "bookSection":
+            base.update({
+                "bookTitle": "",
+                "publisher": "",
+                "place": "",
+                "ISBN": "",
+                "pages": "",
+                "edition": "",
+                "volume": "",
+                "ISSN": "",
+                "language": "",
+                "shortTitle": "",
             })
         return base
 

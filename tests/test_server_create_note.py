@@ -8,7 +8,7 @@ class DummyContext:
     def error(self, *_args, **_kwargs):
         return None
 
-    def warn(self, *_args, **_kwargs):
+    def warning(self, *_args, **_kwargs):
         return None
 
 

@@ -229,7 +229,7 @@ class TestGetWriteClient:
         })
         _, write_zot = server._get_write_client(DummyContext())
         assert write_zot.library_id == "group123"
-        assert write_zot.library_type == "group"
+        assert write_zot.library_type == "groups"
 
     def test_cleared_override_no_change(self, monkeypatch):
         local = FakeZotero()

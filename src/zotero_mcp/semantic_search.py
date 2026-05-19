@@ -6,6 +6,7 @@ with the existing Zotero client to enable vector-based similarity search
 over research libraries.
 """
 
+import contextlib
 import json
 import os
 import sys
@@ -31,6 +32,39 @@ from .local_db import LocalZoteroReader, get_local_zotero_reader
 logger = logging.getLogger(__name__)
 
 
+@contextlib.contextmanager
+def _acquire_update_lock(lock_path: Path):
+    """Non-blocking exclusive flock over an update-database run.
+
+    Yields True if the lock was acquired (caller should proceed), False if
+    another process already holds it (caller should skip). This prevents the
+    MCP server's auto-update in ``server_lifespan`` from racing a manual
+    ``zotero-mcp update-db`` invocation on the same ChromaDB collection.
+
+    Windows lacks ``fcntl``; on that platform the function degrades to a
+    no-op and yields True so behaviour matches pre-lock releases.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        yield True
+        return
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    try:
+        fd = open(lock_path, "w")
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        if fd is not None:
+            fd.close()
+
+
 from zotero_mcp.utils import suppress_stdout
 
 
@@ -41,7 +75,7 @@ def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
     falls back to conservative character-based estimation.
     """
     if _tokenizer is not None:
-        tokens = _tokenizer.encode(text)
+        tokens = _tokenizer.encode(text, disallowed_special=())
         if len(tokens) > max_tokens:
             tokens = tokens[:max_tokens]
             text = _tokenizer.decode(tokens)
@@ -774,11 +808,30 @@ class ZoteroSemanticSearch:
             "processed_items": 0,
             "added_items": 0,
             "updated_items": 0,
+            "recovered_items": 0,
             "skipped_items": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
             "duration": None
         }
+
+        # Guard against concurrent rebuilds: the MCP server auto-launches
+        # update_database on startup while the user may also run
+        # `zotero-mcp update-db` manually. A cross-process flock avoids
+        # double work and potential ChromaDB corruption.
+        lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
+        lock_cm = _acquire_update_lock(lock_path)
+        acquired = lock_cm.__enter__()
+        if not acquired:
+            lock_cm.__exit__(None, None, None)
+            logger.warning(
+                "Another semantic-search update is already running "
+                "(lock held at %s); skipping this invocation.",
+                lock_path,
+            )
+            stats["duration"] = "0:00:00"
+            stats["skipped_reason"] = "another_update_in_progress"
+            return stats
 
         try:
             # Reset collection if force rebuild
@@ -826,7 +879,7 @@ class ZoteroSemanticSearch:
                     except Exception:
                         pass
 
-                batch_stats = self._process_item_batch(batch, force_full_rebuild)
+                batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
 
                 stats["processed_items"] += batch_stats["processed"]
                 stats["added_items"] += batch_stats["added"]
@@ -854,7 +907,11 @@ class ZoteroSemanticSearch:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
                         retry_ok += 1
                         stats["errors"] -= 1  # Remove from error count
-                        stats["added_items"] += 1
+                        # Don't classify as added vs updated — when the
+                        # original batch failed, the add/update lookup never
+                        # ran, so we don't know which category it belongs in.
+                        # Track recovered items in their own bucket.
+                        stats["recovered_items"] += 1
                     except Exception as e2:
                         retry_fail += 1
                         logger.error(f"Retry failed for {doc_id}: {e2}")
@@ -867,11 +924,14 @@ class ZoteroSemanticSearch:
             # Clear the progress line and show summary
             try:
                 sys.stderr.write(f"\r{' ' * 120}\r")  # Clear line
-                sys.stderr.write(
+                summary = (
                     f"  Done: {stats['processed_items']} indexed, "
                     f"{stats['skipped_items']} skipped, "
-                    f"{stats['errors']} errors\n"
+                    f"{stats['errors']} errors"
                 )
+                if stats["recovered_items"]:
+                    summary += f", {stats['recovered_items']} recovered"
+                sys.stderr.write(summary + "\n")
             except Exception:
                 pass
 
@@ -892,9 +952,27 @@ class ZoteroSemanticSearch:
             end_time = datetime.now()
             stats["duration"] = str(end_time - start_time)
             return stats
+        finally:
+            # Release the update flock on every exit path. Paired with the
+            # __enter__ call above; the "not acquired" branch releases
+            # separately before its early return, so this finally only runs
+            # for the path where we actually hold the lock.
+            lock_cm.__exit__(None, None, None)
 
-    def _process_item_batch(self, items: list[dict[str, Any]], force_rebuild: bool = False) -> dict[str, int]:
-        """Process a batch of items."""
+    def _process_item_batch(
+        self,
+        items: list[dict[str, Any]],
+        force_rebuild: bool = False,
+        _failed_docs: list | None = None,
+    ) -> dict[str, int]:
+        """Process a batch of items.
+
+        _failed_docs: optional list (passed by reference from update_database)
+        that collects (doc_text, metadata, doc_id) tuples for batches that fail
+        mid-run. Without this, the retry path at update_database:839-865 is
+        dead code — a NameError raised here would crash the whole reindex,
+        making every transient ChromaDB error fatal instead of recoverable.
+        """
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
         documents = []
@@ -954,8 +1032,15 @@ class ZoteroSemanticSearch:
                 # retrying immediately usually fails too. Collecting failures
                 # and retrying after all batches are done is more effective.
                 logger.warning(f"Batch upsert failed ({e}), saving for retry")
-                for j in range(len(documents)):
-                    _failed_docs.append((documents[j], metadatas[j], ids[j]))
+                if _failed_docs is not None:
+                    for j in range(len(documents)):
+                        _failed_docs.append((documents[j], metadatas[j], ids[j]))
+                    # Count them as errors so stats are accurate
+                    stats["errors"] += len(documents)
+                else:
+                    # No retry list — this is the legacy crash path; re-raise
+                    # so caller sees the real error instead of hiding it.
+                    raise
 
         return stats
 

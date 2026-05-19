@@ -445,3 +445,53 @@ class TestBuildAttachmentExtra:
         result2 = _build_attachment_extra({"has_pdf": False, "attachment_count": 2, "has_notes": False})
         assert "1 attachment" in result1["Attachments"]
         assert "2 attachments" in result2["Attachments"]
+
+
+# ---------------------------------------------------------------------------
+# Race condition: unknown / not-yet-propagated collection key
+# ---------------------------------------------------------------------------
+
+class RacyFakeZotero(FakeZotero):
+    """Simulates the Zotero web API's behavior for an unknown or
+    not-yet-propagated collection key: ``collection()`` 404s, but
+    ``collection_items()`` returns unrelated library-wide items instead
+    of erroring. This is the shape that produced the bug in production."""
+
+    def __init__(self, library_items):
+        super().__init__()
+        self._library_items = library_items
+
+    def collection(self, key, **kwargs):
+        raise Exception(f"Code: 404 — Not found: collection {key}")
+
+    def collection_items(self, key, *args, **kwargs):
+        return self._library_items
+
+
+class TestCollectionItemsRace:
+    def test_unknown_collection_returns_error_not_library_items(
+        self, monkeypatch, dummy_ctx
+    ):
+        """When ``zot.collection(key)`` fails, the tool must return a
+        clear error instead of falling through to ``collection_items()``,
+        which may return library-wide items for an unknown key."""
+        library = [
+            _make_parent("X1", "Unrelated Paper One", collections=["OTHER"]),
+            _make_parent("X2", "Unrelated Paper Two", collections=["OTHER"]),
+        ]
+        zot = RacyFakeZotero(library_items=library)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: zot
+        )
+        from zotero_mcp.tools.retrieval import get_collection_items
+
+        result = get_collection_items(
+            collection_key="FRESHKEY", detail="keys_only", ctx=dummy_ctx
+        )
+
+        assert "not found" in result.lower() or "not yet accessible" in result.lower()
+        assert "FRESHKEY" in result
+        assert "Unrelated Paper One" not in result
+        assert "Unrelated Paper Two" not in result
+        assert "X1" not in result
+        assert "X2" not in result
