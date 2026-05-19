@@ -286,6 +286,9 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_API_KEY`: Your Zotero API key (for web API)
 - `ZOTERO_LIBRARY_ID`: Your Zotero library ID (for web API)
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
+- `ZOTERO_WEBDAV_URL`: Optional WebDAV folder URL for direct attachment downloads in remote mode
+- `ZOTERO_WEBDAV_USERNAME`: Optional WebDAV username
+- `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
 
 **Semantic Search:**
 - `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
@@ -404,6 +407,38 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 
 The first time you use PDF annotation features, the necessary tools will be automatically downloaded.
 
+## 🔗 Managing Related Items
+
+Zotero MCP now supports managing relationships between items in your library. This is useful for linking related papers, tracking versions, or connecting preprints to their published versions.
+
+### View Related Items
+```
+zotero_get_item_related(item_key="ABCD1234")
+```
+
+### Add a Relation
+Create a bidirectional link between two items:
+```
+zotero_add_item_relation(
+    item_key="ABCD1234",
+    related_item_key="EFGH5678",
+    relation_type="dc:relation"  # Optional, defaults to "dc:relation"
+)
+```
+
+### Remove a Relation
+```
+zotero_remove_item_relation(
+    item_key="ABCD1234",
+    related_item_key="EFGH5678",
+    remove_bidirectional=True  # Also remove the reverse relation (default: true)
+)
+```
+
+**Relation Types:**
+- `dc:relation` — General related items (default)
+- `owl:sameAs` — Items that are the same work (e.g., preprint and published version)
+
 ## 📚 Available Tools
 
 ### 🧠 Semantic Search Tools
@@ -421,7 +456,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_search_by_tag`: Search your library using custom tag filters
 
 ### 📚 Content Tools
-- `zotero_get_item_metadata`: Get detailed metadata (supports BibTeX export via `format="bibtex"`)
+- `zotero_get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
 - `zotero_get_item_fulltext`: Get full text content
 - `zotero_get_item_children`: Get attachments and notes
 
@@ -448,6 +483,11 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items
 - `zotero_get_pdf_outline`: Extract the table of contents / outline from a PDF attachment
 - `zotero_search_by_citation_key`: Look up items by BetterBibTeX citation key (with Extra field fallback)
+
+### 🔗 Related Items Tools
+- `zotero_get_item_related`: Get all related items for a specific Zotero item
+- `zotero_add_item_relation`: Add a related item relationship (creates bidirectional link)
+- `zotero_remove_item_relation`: Remove a related item relationship
 
 ## 🧪 Testing
 

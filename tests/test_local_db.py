@@ -137,3 +137,47 @@ class TestResolveAttachmentPath:
         """Unknown path format returns None."""
         reader = self._make_reader(tmp_path)
         assert reader._resolve_attachment_path("X", "ftp://something") is None
+
+
+class TestGetAttachmentPaths:
+    """Tests for the public get_attachment_paths helper."""
+
+    def _make_reader(self, tmp_path, attachments, item_key="PARENT"):
+        reader = FakeLocalZoteroReader()
+        reader.db_path = str(tmp_path / "zotero.sqlite")
+        reader._resolve_attachment_path = LocalZoteroReader._resolve_attachment_path.__get__(reader)
+        reader._get_storage_dir = LocalZoteroReader._get_storage_dir.__get__(reader)
+        reader._get_base_attachment_path = LocalZoteroReader._get_base_attachment_path.__get__(reader)
+
+        reader._iter_parent_attachments = lambda parent_id: iter(attachments)
+        reader.get_item_by_key = lambda key: ZoteroItem(item_id=1, key=key, item_type_id=1) if key == item_key else None
+        return reader
+
+    def test_returns_resolved_paths(self, tmp_path):
+        (tmp_path / "storage" / "ABC123").mkdir(parents=True)
+        pdf = tmp_path / "storage" / "ABC123" / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        reader = self._make_reader(tmp_path, [("ABC123", "storage:paper.pdf", "application/pdf")])
+        result = reader.get_attachment_paths("PARENT")
+        assert len(result) == 1
+        assert result[0]["key"] == "ABC123"
+        assert result[0]["content_type"] == "application/pdf"
+        assert result[0]["resolved_path"] == pdf
+        assert result[0]["exists"] is True
+
+    def test_marks_missing_files(self, tmp_path):
+        reader = self._make_reader(tmp_path, [("X", "storage:gone.pdf", "application/pdf")])
+        result = reader.get_attachment_paths("PARENT")
+        assert result[0]["exists"] is False
+
+    def test_unknown_item_returns_empty(self, tmp_path):
+        reader = self._make_reader(tmp_path, [])
+        assert reader.get_attachment_paths("MISSING") == []
+
+    def test_multiple_attachments(self, tmp_path):
+        reader = self._make_reader(tmp_path, [
+            ("A", "storage:a.pdf", "application/pdf"),
+            ("B", "storage:b.html", "text/html"),
+        ])
+        result = reader.get_attachment_paths("PARENT")
+        assert [a["key"] for a in result] == ["A", "B"]

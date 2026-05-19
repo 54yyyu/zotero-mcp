@@ -80,6 +80,7 @@ from zotero_mcp.tools.retrieval import (  # noqa: F401
     list_feeds,
     get_feed_items,
     get_recent,
+    get_item_related,
 )
 from zotero_mcp.tools.annotations import (  # noqa: F401
     get_annotations,
@@ -93,19 +94,31 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     delete_note,
     create_annotation,
     create_area_annotation,
+    update_annotation,
+    delete_annotation,
 )
 from zotero_mcp.tools.write import (  # noqa: F401
     batch_update_tags,
     create_collection,
+    delete_collection,
     search_collections,
     manage_collections,
     add_by_doi,
     add_by_url,
+    add_by_isbn,
     update_item,
+    delete_item,
     find_duplicates,
     merge_duplicates,
     get_pdf_outline,
     add_from_file,
+    add_item_relation,
+    remove_item_relation,
+    add_by_bibtex,
+    add_by_csl_json,
+)
+from zotero_mcp.tools.read_pdf import (  # noqa: F401
+    read_pdf_pages,
 )
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,

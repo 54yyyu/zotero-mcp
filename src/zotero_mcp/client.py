@@ -2,7 +2,9 @@
 Zotero client wrapper for MCP server.
 """
 
+import functools
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,9 +14,30 @@ from markitdown import MarkItDown
 from pyzotero import zotero
 
 from zotero_mcp.utils import format_creators
+from zotero_mcp.webdav import (
+    WebDAVNotConfiguredError,
+    download_attachment_from_webdav,
+)
 
 # Load environment variables
 load_dotenv()
+
+# Serialize all Zotero API access. The local API (port 23119) is single-threaded;
+# concurrent requests from parallel MCP tool threads queue at the network layer and
+# risk hitting pyzotero's 30s timeout. A process-local semaphore ensures only one
+# request is in-flight at a time — the rest queue in-process (microseconds) instead
+# of at the API (seconds/timeout).
+_zotero_api_lock = threading.Semaphore(1)
+
+
+def with_zotero_api_lock(func):
+    """Serialize Zotero API access across concurrent MCP tool threads."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _zotero_api_lock:
+            return func(*args, **kwargs)
+    return wrapper
+
 
 # Runtime library override state — set by zotero_switch_library tool.
 # When non-empty, these values override the corresponding environment variables
@@ -46,6 +69,15 @@ class AttachmentDetails:
     title: str
     filename: str
     content_type: str
+
+
+@dataclass
+class AttachmentDownloadResult:
+    """Result of downloading an attachment from one of the supported sources."""
+
+    path: Path | None
+    source: str | None
+    errors: list[str]
 
 
 def get_zotero_client() -> zotero.Zotero:
@@ -165,6 +197,13 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         f"**Item Key:** {data.get('key')}",
     ]
 
+    # Trash status. The Zotero web API returns data.deleted=1 for items in
+    # the Trash; prior versions silently rendered trashed items as if live,
+    # so agents reasoning about "current" state could cite papers the user
+    # had explicitly removed. Surface it near the top where it's hard to miss.
+    if data.get("deleted"):
+        lines.append("**Status:** 🗑️ In Trash (recoverable from Zotero Trash view)")
+
     # Date
     if date := data.get("date"):
         lines.append(f"**Date:** {date}")
@@ -184,16 +223,27 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
             if pages := data.get("pages"):
                 journal_info += f", Pages {pages}"
             lines.append(journal_info)
-    elif item_type == "book":
-        if publisher := data.get("publisher"):
-            book_info = f"**Publisher:** {publisher}"
-            if place := data.get("place"):
-                book_info += f", {place}"
-            lines.append(book_info)
+    elif item_type == "bookSection":
+        if book_title := data.get("bookTitle"):
+            lines.append(f"**Book:** {book_title}")
+        if pages := data.get("pages"):
+            lines.append(f"**Pages:** {pages}")
 
-    # DOI and URL
+    # Publisher and place — emitted as independent labeled lines for any
+    # item type that has them (book, bookSection, thesis, report, etc.).
+    # Round-trip parity: agents that read these need a stable, labeled form.
+    if publisher := data.get("publisher"):
+        lines.append(f"**Publisher:** {publisher}")
+    if place := data.get("place"):
+        lines.append(f"**Place:** {place}")
+
+    # Identifiers and URL
     if doi := data.get("DOI"):
         lines.append(f"**DOI:** {doi}")
+    if isbn := data.get("ISBN"):
+        lines.append(f"**ISBN:** {isbn}")
+    if issn := data.get("ISSN"):
+        lines.append(f"**ISSN:** {issn}")
     if url := data.get("url"):
         lines.append(f"**URL:** {url}")
 
@@ -226,10 +276,13 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         related_keys = [uri.rstrip("/").split("/")[-1] for uri in dc_relations]
         lines.extend(["", "## Related Items", *[f"- {k}" for k in related_keys]])
 
-    # Collections
+    # Collections — list actual keys rather than a bare count. The Zotero
+    # web API does NOT cascade collection-delete to items, so the array
+    # can contain dangling references to collections that no longer exist.
+    # Showing the keys lets agents verify against zotero_search_collections
+    # instead of trusting a potentially stale count.
     if collections := data.get("collections", []):
-        if collections:
-            lines.append(f"**Collections:** {len(collections)} collections")
+        lines.append(f"**Collections:** {', '.join(collections)}")
 
     # Notes - this requires additional API calls, so we just indicate if there are notes
     if "meta" in item and item["meta"].get("numChildren", 0) > 0:
@@ -299,10 +352,12 @@ def generate_bibtex(item: dict[str, Any]) -> str:
     field_mappings = [
         ("title", "title"),
         ("publicationTitle", "journal"),
+        ("bookTitle", "booktitle"),
         ("volume", "volume"),
         ("issue", "number"),
         ("pages", "pages"),
         ("publisher", "publisher"),
+        ("place", "address"),
         ("DOI", "doi"),
         ("url", "url"),
         ("abstractNote", "abstract")
@@ -409,6 +464,83 @@ def get_attachment_details(
         pass
 
     return None
+
+
+def download_attachment_file(
+    attachment_key: str,
+    destination_dir: str | Path,
+    filename: str | None = None,
+    *,
+    local_client: zotero.Zotero | None = None,
+    web_client: zotero.Zotero | None = None,
+    enable_webdav: bool = True,
+) -> AttachmentDownloadResult:
+    """
+    Download an attachment using the best available source.
+
+    The fallback order is:
+    1. local Zotero API (works with local storage or desktop-managed WebDAV)
+    2. Direct WebDAV access via environment variables
+    3. Zotero Web API (works with Zotero cloud storage)
+    """
+    destination = Path(destination_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    target_name = Path(filename or f"{attachment_key}.bin").name
+    target_path = destination / target_name
+    errors: list[str] = []
+
+    def _cleanup_target() -> None:
+        if target_path.exists() and target_path.stat().st_size == 0:
+            target_path.unlink()
+
+    def _try_dump(label: str, zot_client: zotero.Zotero | None) -> AttachmentDownloadResult | None:
+        if zot_client is None:
+            return None
+
+        try:
+            zot_client.dump(attachment_key, filename=target_name, path=str(destination))
+            if target_path.exists() and target_path.stat().st_size > 0:
+                return AttachmentDownloadResult(
+                    path=target_path,
+                    source=label,
+                    errors=errors,
+                )
+            errors.append(f"{label}: file was not created")
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+        finally:
+            _cleanup_target()
+
+        return None
+
+    local_result = _try_dump("Local Zotero", local_client)
+    if local_result:
+        return local_result
+
+    if enable_webdav:
+        try:
+            webdav_path = download_attachment_from_webdav(
+                attachment_key,
+                destination,
+                expected_filename=target_name,
+            )
+            if webdav_path.exists() and webdav_path.stat().st_size > 0:
+                return AttachmentDownloadResult(
+                    path=webdav_path,
+                    source="WebDAV",
+                    errors=errors,
+                )
+            errors.append("WebDAV: downloaded file was empty")
+        except WebDAVNotConfiguredError:
+            pass
+        except Exception as exc:
+            errors.append(f"WebDAV: {exc}")
+
+    web_result = _try_dump("Web API", web_client)
+    if web_result:
+        return web_result
+
+    return AttachmentDownloadResult(path=None, source=None, errors=errors)
 
 
 def convert_to_markdown(file_path: str | Path) -> str:

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import sys
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -21,44 +21,51 @@ logging.basicConfig(
 )
 
 
+def _sync_semantic_update() -> None:
+    """Check for and run semantic search auto-update (called in a worker thread)."""
+    from zotero_mcp.semantic_search import create_semantic_search
+
+    config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
+    if not config_path.exists():
+        return
+
+    search = create_semantic_search(str(config_path))
+    if not search.should_update_database():
+        return
+
+    sys.stderr.write("Auto-updating semantic search database...\n")
+    stats = search.update_database(extract_fulltext=is_local_mode())
+    sys.stderr.write(
+        f"Database update completed: {stats.get('processed_items', 0)} items processed\n"
+    )
+
+
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
-    """Manage server startup and shutdown lifecycle."""
+    """Manage server startup and shutdown lifecycle.
+
+    Semantic search initialization (ChromaDB + embedding model) is
+    offloaded to a worker thread so it cannot block the event loop.
+    The previous synchronous call prevented FastMCP from responding
+    to the MCP ``initialize`` request within the 60-second client
+    timeout.
+
+    On shutdown the worker thread is left to finish on its own —
+    ``asyncio.to_thread`` threads cannot be interrupted, and
+    ChromaDB (SQLite WAL) is crash-safe, so an unfinished update
+    simply resumes on the next startup.
+    """
     sys.stderr.write("Starting Zotero MCP server...\n")
-    background_task: asyncio.Task | None = None
 
-    # Check for semantic search auto-update on startup
-    try:
-        from zotero_mcp.semantic_search import create_semantic_search
+    async def _background_update():
+        try:
+            await asyncio.to_thread(_sync_semantic_update)
+        except Exception as e:
+            sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
 
-        config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-
-        if config_path.exists():
-            search = create_semantic_search(str(config_path))
-
-            if search.should_update_database():
-                sys.stderr.write("Auto-updating semantic search database...\n")
-
-                async def background_update():
-                    try:
-                        stats = await asyncio.to_thread(
-                            search.update_database, extract_fulltext=is_local_mode()
-                        )
-                        sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
-                    except Exception as e:
-                        sys.stderr.write(f"Background database update failed: {e}\n")
-
-                background_task = asyncio.create_task(background_update())
-
-    except Exception as e:
-        sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
+    asyncio.create_task(_background_update())
 
     yield {}
-
-    if background_task and not background_task.done():
-        background_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await background_task
 
     sys.stderr.write("Shutting down Zotero MCP server...\n")
 
