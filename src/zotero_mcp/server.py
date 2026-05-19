@@ -110,6 +110,9 @@ from zotero_mcp.tools.write import (  # noqa: F401
     get_pdf_outline,
     add_from_file,
 )
+from zotero_mcp.tools.read_pdf import (  # noqa: F401
+    read_pdf_pages,
+)
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,
     connector_fetch,

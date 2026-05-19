@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`zotero_read_pdf_pages` tool** — read a specific page range from a PDF attachment after section identification via `zotero_get_pdf_outline`. Extracts text from the requested pages using PyMuPDF, avoiding the need to read the entire paper when only a few pages are relevant.
+
 ## [0.2.2] - 2026-03-26
 
 ### Added
