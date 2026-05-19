@@ -1,6 +1,6 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
-from typing import Literal
+from typing import Annotated, Literal
 import json
 import os
 import re
@@ -11,6 +11,7 @@ import time as _time
 
 import requests
 from fastmcp import Context
+from pydantic import Field
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
@@ -268,6 +269,48 @@ def create_collection(
 
 
 @mcp.tool(
+    name="zotero_delete_collection",
+    description=(
+        "Delete a collection (folder) from your Zotero library by its "
+        "8-character key. Items inside the collection are NOT deleted — they "
+        "remain in the library (and in any other collections they belong to). "
+        "Subcollections ARE deleted along with the parent. "
+        "This is a hard delete — Zotero's API does not trash collections, so "
+        "the operation cannot be undone via the API. Use "
+        "zotero_search_collections to find the key first. "
+        'Example: zotero_delete_collection(collection_key="KMMQDFQ4").'
+    )
+)
+def delete_collection(
+    collection_key: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        ctx.info(f"Deleting collection {collection_key}")
+
+        try:
+            coll = write_zot.collection(collection_key)
+        except Exception as e:
+            return f"Collection not found: `{collection_key}` ({e})"
+
+        name = coll.get("data", {}).get("name", collection_key)
+        resp = write_zot.delete_collection(coll)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Deleted collection \"{name}\" (`{collection_key}`)"
+        return f"Failed to delete collection `{collection_key}`: {resp}"
+
+    except Exception as e:
+        ctx.error(f"Error deleting collection: {e}")
+        return f"Error deleting collection: {e}"
+
+
+@mcp.tool(
     name="zotero_search_collections",
     description="Search for collections by name to find their keys."
 )
@@ -433,10 +476,17 @@ def add_by_doi(
 
         ctx.info(f"Fetching metadata for DOI: {normalized}")
 
+        # CrossRef "polite pool": identifying via mailto gives higher rate limits
+        # and priority routing. See https://api.crossref.org/swagger-ui/index.html
+        crossref_url = f"https://api.crossref.org/works/{normalized}"
+        contact_email = os.environ.get("ZOTERO_MCP_CONTACT_EMAIL", "").strip()
+        if contact_email:
+            crossref_url += f"?mailto={contact_email}"
+
         resp = requests.get(
-            f"https://api.crossref.org/works/{normalized}",
+            crossref_url,
             headers={
-                "User-Agent": "zotero-mcp/1.0 (https://github.com/ehawkin/zotero-mcp)",
+                "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
                 "Accept": "application/json",
             },
             timeout=15,
@@ -616,7 +666,8 @@ def add_by_url(
         # arXiv URL routing
         arxiv_id = _helpers._normalize_arxiv_id(url)
         if arxiv_id:
-            return _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx)
+            return _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx,
+                                 attach_mode=attach_mode)
 
         # Generic webpage
         ctx.info(f"Creating webpage item for: {url}")
@@ -647,7 +698,7 @@ def add_by_url(
         return f"Error adding by URL: {e}"
 
 
-def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
+def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto"):
     """Add an arXiv paper by ID. Internal helper for add_by_url."""
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
@@ -729,23 +780,35 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
         # arXiv always has a free PDF — try to attach it
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
         pdf_status = "no PDF attached"
-        try:
-            pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
-            pdf_resp.raise_for_status()
-            with tempfile.TemporaryDirectory() as tmpdir:
-                filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
-                filepath = os.path.join(tmpdir, filename)
-                with open(filepath, "wb") as f:
-                    for chunk in pdf_resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                write_zot.attachment_both(
-                    [(filename, filepath)],
-                    parentid=item_key,
-                )
-            pdf_status = "PDF attached"
-        except Exception as e:
-            ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
-            pdf_status = f"no PDF attached ({e})"
+        if attach_mode == "linked_url":
+            # Bookmark the PDF URL only — no binary upload. Useful for users who
+            # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
+            try:
+                if _helpers._attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                    pdf_status = "PDF linked (URL only, no upload)"
+                else:
+                    pdf_status = "linked URL attachment failed"
+            except Exception as e:
+                ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
+                pdf_status = f"no PDF attached ({e})"
+        else:
+            try:
+                pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+                pdf_resp.raise_for_status()
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
+                    filepath = os.path.join(tmpdir, filename)
+                    with open(filepath, "wb") as f:
+                        for chunk in pdf_resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    write_zot.attachment_both(
+                        [(filename, filepath)],
+                        parentid=item_key,
+                    )
+                pdf_status = "PDF attached"
+            except Exception as e:
+                ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
+                pdf_status = f"no PDF attached ({e})"
 
         return (
             f"Successfully added arXiv paper: **{title}**\n\n"
@@ -771,6 +834,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "issue": "issue",
     "pages": "pages",
     "publisher": "publisher",
+    "place": "place",
     "ISSN": "issn",
     "language": "language",
     "shortTitle": "short_title",
@@ -794,7 +858,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
         "collection memberships; for incremental moves use "
         "zotero_manage_collections instead. "
         "item_key: 8-character Zotero item key of the item to update. "
-        "Editable fields include: title, creators, date, publisher, "
+        "Editable fields include: title, creators, date, publisher, place, "
         "publication_title, volume, issue, pages, DOI, ISBN, ISSN, url, "
         "language, abstract, short_title, edition, book_title, extra. "
         "Requires a writable library (web API key or hybrid mode); fails "
@@ -823,6 +887,10 @@ def update_item(
     issue: str | None = None,
     pages: str | None = None,
     publisher: str | None = None,
+    place: Annotated[
+        str | None,
+        Field(description="Publication place (city), e.g., 'New York' or 'Cambridge, MA'."),
+    ] = None,
     issn: str | None = None,
     language: str | None = None,
     short_title: str | None = None,
@@ -832,6 +900,33 @@ def update_item(
     *,
     ctx: Context
 ) -> str:
+    """
+    Update metadata fields on an existing Zotero item.
+
+    Only fields you pass are modified; unspecified fields are left
+    untouched. Fields whose API key does not exist on the item's
+    itemType (e.g. ``place`` on a ``journalArticle``) are reported as
+    skipped rather than written.
+
+    Args:
+        item_key: 8-character Zotero item key of the item to update.
+        title, creators, date, publication_title, abstract, doi, url,
+        extra, volume, issue, pages, publisher, place, issn, language,
+        short_title, edition, isbn, book_title: per-field overrides;
+        ``place`` is the publication city (e.g. ``"New York"`` or
+        ``"Cambridge, MA"``) and is valid on book, bookSection, thesis,
+        manuscript, report, and conferencePaper item types.
+        tags / add_tags / remove_tags: mutually exclusive; ``tags``
+        REPLACES the full tag list, ``add_tags`` / ``remove_tags`` are
+        incremental. Prefer the incremental forms.
+        collections / collection_names: REPLACE collection memberships;
+        for incremental moves use zotero_manage_collections instead.
+        ctx: MCP context.
+
+    Returns:
+        A markdown-formatted summary of what changed (or a skip
+        warning for fields not valid on the item type).
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -876,6 +971,8 @@ def update_item(
             field_updates["pages"] = pages
         if publisher is not None:
             field_updates["publisher"] = publisher
+        if place is not None:
+            field_updates["place"] = place
         if issn is not None:
             field_updates["ISSN"] = issn
         if language is not None:
