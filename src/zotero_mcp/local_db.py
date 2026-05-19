@@ -297,12 +297,27 @@ class LocalZoteroReader:
             "sys.stdout.write(extract_text(sys.argv[1], maxpages=int(sys.argv[2])) or '')"
         )
 
+        # Strip API keys from the child's environment: pdfminer does not need
+        # them, and leaking them via crash dumps or /proc/<pid>/environ is
+        # needless exposure. Keep the rest of the env so the interpreter still
+        # finds system libraries, temp dirs, locale, etc.
+        child_env = os.environ.copy()
+        for _k in (
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ZOTERO_API_KEY",
+        ):
+            child_env.pop(_k, None)
+
         try:
             result = subprocess.run(
                 [sys.executable, "-c", script, str(file_path), str(maxpages)],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=child_env,
             )
             if result.returncode == 0:
                 return result.stdout
@@ -593,7 +608,8 @@ class LocalZoteroReader:
         """
 
         if limit:
-            query += f" LIMIT {limit}"
+            query += " LIMIT ?"
+            params.append(limit)
 
         cursor = conn.execute(query, params)
         items = []
@@ -626,6 +642,28 @@ class LocalZoteroReader:
     # Public helper to extract fulltext on demand for a specific item
     def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         return self._extract_fulltext_for_item(item_id)
+
+    def get_attachment_paths(self, parent_key: str) -> list[dict]:
+        """Return resolved filesystem paths for a parent item's attachments.
+
+        Each entry has: ``key`` (attachment key), ``content_type``, ``zotero_path``
+        (the raw stored path like ``storage:foo.pdf``), ``resolved_path`` (a
+        ``Path`` or ``None`` if it could not be resolved), and ``exists`` (bool).
+        """
+        item = self.get_item_by_key(parent_key)
+        if not item:
+            return []
+        out: list[dict] = []
+        for att_key, zotero_path, ctype in self._iter_parent_attachments(item.item_id):
+            resolved = self._resolve_attachment_path(att_key, zotero_path or "")
+            out.append({
+                "key": att_key,
+                "content_type": ctype,
+                "zotero_path": zotero_path,
+                "resolved_path": resolved,
+                "exists": bool(resolved and resolved.exists()),
+            })
+        return out
 
     def get_item_by_key(self, key: str) -> ZoteroItem | None:
         """

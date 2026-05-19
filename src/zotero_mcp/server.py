@@ -93,19 +93,26 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     delete_note,
     create_annotation,
     create_area_annotation,
+    update_annotation,
+    delete_annotation,
 )
 from zotero_mcp.tools.write import (  # noqa: F401
     batch_update_tags,
     create_collection,
+    delete_collection,
     search_collections,
     manage_collections,
     add_by_doi,
     add_by_url,
     update_item,
+    delete_item,
     find_duplicates,
     merge_duplicates,
     get_pdf_outline,
     add_from_file,
+)
+from zotero_mcp.tools.read_pdf import (  # noqa: F401
+    read_pdf_pages,
 )
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,

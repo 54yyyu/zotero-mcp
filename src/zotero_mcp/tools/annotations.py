@@ -1165,7 +1165,7 @@ def delete_note(
     name="zotero_create_annotation",
     description=(
         "Create a TEXT-HIGHLIGHT annotation on a PDF or EPUB attachment, "
-        "with optional comment. For rectangular selections of figures or "
+        "with optional comment and tags. For rectangular selections of figures or "
         "non-text regions, use zotero_create_area_annotation instead. "
         "attachment_key: the PDF/EPUB attachment key — NOT the parent item "
         "key (use zotero_get_item_children to find attachments). "
@@ -1175,6 +1175,7 @@ def delete_note(
         "will not match. "
         "color: hex color (default '#ffd400' yellow). "
         "comment: optional note attached to the highlight. "
+        "tags: optional list of tag strings to apply to the annotation. "
         "Requires PyMuPDF (pip install zotero-mcp-server[pdf]) and a "
         "writable library (web API key or hybrid mode). "
         "Example: zotero_create_annotation(attachment_key='NHZFE5A7', "
@@ -1188,6 +1189,7 @@ def create_annotation(
     text: str,
     comment: str | None = None,
     color: str = "#ffd400",
+    tags: list[str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1408,7 +1410,11 @@ def create_annotation(
                 char_position = position_data.get("char_position", chapter * 1000)
                 sort_index = f"{chapter:05d}|{char_position:08d}"
 
-            # Prepare the annotation data
+            tag_list = (
+                _helpers._normalize_str_list_input(tags, "tags")
+                if tags is not None else []
+            )
+
             annotation_data = {
                 "itemType": "annotation",
                 "parentItem": attachment_key,
@@ -1418,6 +1424,7 @@ def create_annotation(
                 "annotationColor": color,
                 "annotationSortIndex": sort_index,
                 "annotationPosition": annotation_position,
+                "tags": [{"tag": t} for t in tag_list],
             }
             # Only add pageLabel if not empty (EPUB should not have it)
             if page_label:
@@ -1497,6 +1504,7 @@ def create_area_annotation(
     height: float,
     comment: str | None = None,
     color: str = "#ffd400",
+    tags: list[str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1633,6 +1641,11 @@ def create_area_annotation(
                 position_data["rects"],
             )
 
+            tag_list = (
+                _helpers._normalize_str_list_input(tags, "tags")
+                if tags is not None else []
+            )
+
             annotation_data = {
                 "itemType": "annotation",
                 "parentItem": attachment_key,
@@ -1642,6 +1655,7 @@ def create_area_annotation(
                 "annotationSortIndex": position_data["sort_index"],
                 "annotationPosition": annotation_position,
                 "annotationPageLabel": page_label,
+                "tags": [{"tag": t} for t in tag_list],
             }
 
             ctx.info("Creating area annotation via Web API...")
@@ -1670,3 +1684,152 @@ def create_area_annotation(
     except Exception as e:
         ctx.error(f"Error creating area annotation: {str(e)}")
         return f"Error creating area annotation: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_update_annotation",
+    description=(
+        "Update an existing Zotero annotation. Editable fields: text (highlight text), "
+        "comment, color (hex like '#ffd400'), and tags. "
+        "Tags can be replaced wholesale via `tags`, or edited incrementally via "
+        "`add_tags`/`remove_tags` (mutually exclusive with `tags`). "
+        "Position/page/sortIndex are anchored to the PDF/EPUB geometry and are not editable."
+    )
+)
+def update_annotation(
+    annotation_key: str,
+    text: str | None = None,
+    comment: str | None = None,
+    color: str | None = None,
+    tags: list[str] | str | None = None,
+    add_tags: list[str] | str | None = None,
+    remove_tags: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        if tags is not None and (add_tags is not None or remove_tags is not None):
+            return (
+                "Error: Cannot use 'tags' (replace all) together with "
+                "'add_tags'/'remove_tags' (incremental). Use one approach or the other."
+            )
+
+        ctx.info(f"Updating annotation {annotation_key}")
+
+        zot, err = _get_note_write_client("updating annotations")
+        if err:
+            return err
+
+        try:
+            item = zot.item(annotation_key)
+        except Exception:
+            return f"Error: No item found with key: {annotation_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "annotation":
+            return (
+                f"Error: Item {annotation_key} is not an annotation "
+                f"(itemType={data.get('itemType')})"
+            )
+
+        changes = []
+        if text is not None:
+            data["annotationText"] = text
+            changes.append("- **text**: updated")
+        if comment is not None:
+            data["annotationComment"] = comment
+            changes.append("- **comment**: updated")
+        if color is not None:
+            data["annotationColor"] = color
+            changes.append(f"- **color**: {color}")
+
+        if tags is not None:
+            tag_list = _helpers._normalize_str_list_input(tags, "tags")
+            data["tags"] = [{"tag": t} for t in tag_list]
+            changes.append(f"- **tags**: replaced with {tag_list}")
+        elif add_tags is not None or remove_tags is not None:
+            existing = {t["tag"] for t in data.get("tags", [])}
+            if add_tags is not None:
+                to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
+                existing.update(to_add)
+                changes.append(f"- **tags**: added {to_add}")
+            if remove_tags is not None:
+                to_remove = set(
+                    _helpers._normalize_str_list_input(remove_tags, "remove_tags")
+                )
+                existing -= to_remove
+                changes.append(f"- **tags**: removed {list(to_remove)}")
+            data["tags"] = [{"tag": t} for t in sorted(existing)]
+
+        if not changes:
+            return "No changes to apply."
+
+        resp = zot.update_item(item)
+        if _helpers._handle_write_response(resp, ctx):
+            return (
+                f"Successfully updated annotation `{annotation_key}`:\n\n"
+                + "\n".join(changes)
+            )
+        return f"Failed to update annotation {annotation_key}"
+
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error updating annotation: {e}")
+        return f"Error updating annotation: {e}"
+
+
+@mcp.tool(
+    name="zotero_delete_annotation",
+    description=(
+        "Move a Zotero annotation to the Trash. Trashed annotations are recoverable "
+        "from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."
+    )
+)
+def delete_annotation(
+    annotation_key: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        ctx.info(f"Trashing annotation {annotation_key}")
+
+        zot, err = _get_note_write_client("deleting annotations")
+        if err:
+            return err
+
+        try:
+            item = zot.item(annotation_key)
+        except Exception:
+            return f"Error: No item found with key: {annotation_key}"
+
+        data = item.get("data", {})
+        if data.get("itemType") != "annotation":
+            return (
+                f"Error: Item {annotation_key} is not an annotation "
+                f"(itemType={data.get('itemType')})"
+            )
+
+        from pyzotero.zotero import build_url
+        url = build_url(
+            zot.endpoint,
+            f"/{zot.library_type}/{zot.library_id}/items/{annotation_key}",
+        )
+        resp = zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return (
+                f"Successfully trashed annotation {annotation_key} "
+                "(recoverable from Zotero's Trash)"
+            )
+        return (
+            f"Failed to trash annotation {annotation_key} "
+            f"(HTTP {resp.status_code}): {resp.text[:200]}"
+        )
+
+    except Exception as e:
+        ctx.error(f"Error trashing annotation: {str(e)}")
+        return f"Error trashing annotation: {str(e)}"

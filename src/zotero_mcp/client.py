@@ -165,6 +165,13 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         f"**Item Key:** {data.get('key')}",
     ]
 
+    # Trash status. The Zotero web API returns data.deleted=1 for items in
+    # the Trash; prior versions silently rendered trashed items as if live,
+    # so agents reasoning about "current" state could cite papers the user
+    # had explicitly removed. Surface it near the top where it's hard to miss.
+    if data.get("deleted"):
+        lines.append("**Status:** 🗑️ In Trash (recoverable from Zotero Trash view)")
+
     # Date
     if date := data.get("date"):
         lines.append(f"**Date:** {date}")
@@ -184,16 +191,27 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
             if pages := data.get("pages"):
                 journal_info += f", Pages {pages}"
             lines.append(journal_info)
-    elif item_type == "book":
-        if publisher := data.get("publisher"):
-            book_info = f"**Publisher:** {publisher}"
-            if place := data.get("place"):
-                book_info += f", {place}"
-            lines.append(book_info)
+    elif item_type == "bookSection":
+        if book_title := data.get("bookTitle"):
+            lines.append(f"**Book:** {book_title}")
+        if pages := data.get("pages"):
+            lines.append(f"**Pages:** {pages}")
 
-    # DOI and URL
+    # Publisher and place — emitted as independent labeled lines for any
+    # item type that has them (book, bookSection, thesis, report, etc.).
+    # Round-trip parity: agents that read these need a stable, labeled form.
+    if publisher := data.get("publisher"):
+        lines.append(f"**Publisher:** {publisher}")
+    if place := data.get("place"):
+        lines.append(f"**Place:** {place}")
+
+    # Identifiers and URL
     if doi := data.get("DOI"):
         lines.append(f"**DOI:** {doi}")
+    if isbn := data.get("ISBN"):
+        lines.append(f"**ISBN:** {isbn}")
+    if issn := data.get("ISSN"):
+        lines.append(f"**ISSN:** {issn}")
     if url := data.get("url"):
         lines.append(f"**URL:** {url}")
 
@@ -226,10 +244,13 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         related_keys = [uri.rstrip("/").split("/")[-1] for uri in dc_relations]
         lines.extend(["", "## Related Items", *[f"- {k}" for k in related_keys]])
 
-    # Collections
+    # Collections — list actual keys rather than a bare count. The Zotero
+    # web API does NOT cascade collection-delete to items, so the array
+    # can contain dangling references to collections that no longer exist.
+    # Showing the keys lets agents verify against zotero_search_collections
+    # instead of trusting a potentially stale count.
     if collections := data.get("collections", []):
-        if collections:
-            lines.append(f"**Collections:** {len(collections)} collections")
+        lines.append(f"**Collections:** {', '.join(collections)}")
 
     # Notes - this requires additional API calls, so we just indicate if there are notes
     if "meta" in item and item["meta"].get("numChildren", 0) > 0:
@@ -299,10 +320,12 @@ def generate_bibtex(item: dict[str, Any]) -> str:
     field_mappings = [
         ("title", "title"),
         ("publicationTitle", "journal"),
+        ("bookTitle", "booktitle"),
         ("volume", "volume"),
         ("issue", "number"),
         ("pages", "pages"),
         ("publisher", "publisher"),
+        ("place", "address"),
         ("DOI", "doi"),
         ("url", "url"),
         ("abstractNote", "abstract")
