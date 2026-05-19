@@ -1,6 +1,6 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
-from typing import Literal
+from typing import Annotated, Literal
 import json
 import os
 import re
@@ -11,10 +11,12 @@ import time as _time
 
 import requests
 from fastmcp import Context
+from pydantic import Field
 
 from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+from zotero_mcp import citation_import as _citation_import
 from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
@@ -23,7 +25,26 @@ CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
 
 @mcp.tool(
     name="zotero_batch_update_tags",
-    description="Batch update tags across multiple items matching a search query or tag filter."
+    description=(
+        "Add and/or remove tags across multiple items in one call, selecting "
+        "items by a text query, an existing tag, or both. "
+        "Must supply at least one selector (query or tag) AND at least one "
+        "action (add_tags or remove_tags) — otherwise returns an error. "
+        "query: free-text matched against item metadata (title, creators, "
+        "abstract, etc.) — same search as zotero_search_items. "
+        "tag: filter to items already bearing this tag. When both are "
+        "given, they are ANDed; pass tag as a list to OR multiple tags. "
+        "add_tags, remove_tags: list of tag strings (or a JSON-encoded list "
+        "string). Existing tags are preserved; this is not a replace-all. "
+        "limit: max items to process (default 50). Attachments are "
+        "auto-skipped. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. Use zotero_get_tags to discover existing tag "
+        "names first. "
+        "Example: zotero_batch_update_tags(tag='to-read', "
+        "add_tags=['reviewed'], remove_tags=['to-read'], limit=100) — "
+        "mark everything tagged 'to-read' as 'reviewed'."
+    )
 )
 def batch_update_tags(
     query: str = "",
@@ -268,8 +289,66 @@ def create_collection(
 
 
 @mcp.tool(
+    name="zotero_delete_collection",
+    description=(
+        "Delete a collection (folder) from your Zotero library by its "
+        "8-character key. Items inside the collection are NOT deleted — they "
+        "remain in the library (and in any other collections they belong to). "
+        "Subcollections ARE deleted along with the parent. "
+        "This is a hard delete — Zotero's API does not trash collections, so "
+        "the operation cannot be undone via the API. Use "
+        "zotero_search_collections to find the key first. "
+        'Example: zotero_delete_collection(collection_key="KMMQDFQ4").'
+    )
+)
+def delete_collection(
+    collection_key: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        ctx.info(f"Deleting collection {collection_key}")
+
+        try:
+            coll = write_zot.collection(collection_key)
+        except Exception as e:
+            return f"Collection not found: `{collection_key}` ({e})"
+
+        name = coll.get("data", {}).get("name", collection_key)
+        resp = write_zot.delete_collection(coll)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Deleted collection \"{name}\" (`{collection_key}`)"
+        return f"Failed to delete collection `{collection_key}`: {resp}"
+
+    except Exception as e:
+        ctx.error(f"Error deleting collection: {e}")
+        return f"Error deleting collection: {e}"
+
+
+@mcp.tool(
     name="zotero_search_collections",
-    description="Search for collections by name to find their keys."
+    description=(
+        "Search collections by name in the active library and return their "
+        "8-character keys. Matching is case-insensitive substring and applies "
+        "ONLY to the collection's own name — not to parent names, "
+        "descriptions, or items inside the collection. "
+        "Multi-word queries are ANDed across words (NOT OR-ed): query "
+        "'reading list' matches only collections whose name contains both "
+        "'reading' AND 'list'. To match either word, issue two separate "
+        "searches. Leading/trailing whitespace is ignored and empty words "
+        "are dropped. "
+        "Returns the collection's key plus its parent (if any). "
+        "Performance: scans all collections in the active library (O(n)); "
+        "for very large libraries expect a full-list pagination under the "
+        "hood. "
+        'Example: zotero_search_collections(query="orals") → keys for every '
+        'collection with "orals" in its name.'
+    )
 )
 def search_collections(
     query: str,
@@ -387,7 +466,31 @@ def manage_collections(
 
 @mcp.tool(
     name="zotero_add_by_doi",
-    description="Add a paper to your Zotero library by DOI. Fetches metadata from CrossRef."
+    description=(
+        "Add an item to the active Zotero library by DOI, resolving rich "
+        "metadata (title, creators, journal, year, abstract) from "
+        "CrossRef. "
+        "Use this as the FIRST choice when the user gives you a DOI — "
+        "cleaner metadata than zotero_add_by_url. For arXiv IDs or raw "
+        "URLs use zotero_add_by_url; for a local PDF use "
+        "zotero_add_from_file. "
+        "doi: the DOI string (with or without the '10.' prefix, with or "
+        "without a leading 'https://doi.org/'). "
+        "collections: optional list of 8-character collection keys (or "
+        "collection names — resolved automatically) to file the item "
+        "under. "
+        "tags: optional list of tag strings to attach. "
+        "attach_mode: 'auto' (default) downloads a PDF if CrossRef links "
+        "one and storage is available; 'none' skips PDF download; "
+        "'required' fails if no PDF can be attached. PDF uploads may fail "
+        "on the Zotero cloud free-tier 300MB quota — metadata still lands "
+        "even when the upload fails. "
+        "Requires a writable library (web API key or hybrid mode); fails "
+        "in local-only mode. Remember to run zotero_update_search_database "
+        "afterwards to make the new item searchable semantically. "
+        "Example: zotero_add_by_doi(doi='10.1145/3708319', "
+        "collections=['9SU943GB'], tags=['MCP'])."
+    )
 )
 def add_by_doi(
     doi: str,
@@ -409,10 +512,17 @@ def add_by_doi(
 
         ctx.info(f"Fetching metadata for DOI: {normalized}")
 
+        # CrossRef "polite pool": identifying via mailto gives higher rate limits
+        # and priority routing. See https://api.crossref.org/swagger-ui/index.html
+        crossref_url = f"https://api.crossref.org/works/{normalized}"
+        contact_email = os.environ.get("ZOTERO_MCP_CONTACT_EMAIL", "").strip()
+        if contact_email:
+            crossref_url += f"?mailto={contact_email}"
+
         resp = requests.get(
-            f"https://api.crossref.org/works/{normalized}",
+            crossref_url,
             headers={
-                "User-Agent": "zotero-mcp/1.0 (https://github.com/ehawkin/zotero-mcp)",
+                "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
                 "Accept": "application/json",
             },
             timeout=15,
@@ -539,7 +649,31 @@ def add_by_doi(
 
 @mcp.tool(
     name="zotero_add_by_url",
-    description="Add a paper by URL. Supports DOI URLs, arXiv URLs, and general web pages."
+    description=(
+        "Add an item to the active Zotero library from a URL. Routes by "
+        "URL shape: doi.org/... → CrossRef metadata (same path as "
+        "zotero_add_by_doi); arxiv.org/abs/... → arXiv metadata + PDF; "
+        "anything else → webpage item (title + URL, minimal metadata). "
+        "Prefer zotero_add_by_doi when you have a clean DOI — it skips "
+        "the routing and is more robust. For a local file use "
+        "zotero_add_from_file. "
+        "url: the URL to import. "
+        "collections: optional list of 8-character collection keys (or "
+        "names) to file the item under. "
+        "tags: optional list of tag strings to attach. "
+        "attach_mode: 'auto' (default) attaches a PDF if one is "
+        "available; 'none' skips; 'required' fails if no PDF can be "
+        "attached. PDF uploads may fail on the Zotero cloud free-tier "
+        "300MB quota — metadata still lands even when the upload fails. "
+        "WARNING: for bibliography use, a general web-page URL produces "
+        "a 'webpage' itemType that often isn't acceptable as a citation; "
+        "resolve to a DOI and use zotero_add_by_doi instead when "
+        "possible. "
+        "Requires a writable library (fails in local-only mode). Run "
+        "zotero_update_search_database afterwards for semantic search. "
+        "Example: zotero_add_by_url(url='https://arxiv.org/abs/2602.14878', "
+        "collections=['9SU943GB'])."
+    )
 )
 def add_by_url(
     url: str,
@@ -568,7 +702,8 @@ def add_by_url(
         # arXiv URL routing
         arxiv_id = _helpers._normalize_arxiv_id(url)
         if arxiv_id:
-            return _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx)
+            return _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx,
+                                 attach_mode=attach_mode)
 
         # Generic webpage
         ctx.info(f"Creating webpage item for: {url}")
@@ -599,7 +734,7 @@ def add_by_url(
         return f"Error adding by URL: {e}"
 
 
-def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
+def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto"):
     """Add an arXiv paper by ID. Internal helper for add_by_url."""
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
@@ -681,23 +816,35 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
         # arXiv always has a free PDF — try to attach it
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
         pdf_status = "no PDF attached"
-        try:
-            pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
-            pdf_resp.raise_for_status()
-            with tempfile.TemporaryDirectory() as tmpdir:
-                filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
-                filepath = os.path.join(tmpdir, filename)
-                with open(filepath, "wb") as f:
-                    for chunk in pdf_resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                write_zot.attachment_both(
-                    [(filename, filepath)],
-                    parentid=item_key,
-                )
-            pdf_status = "PDF attached"
-        except Exception as e:
-            ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
-            pdf_status = f"no PDF attached ({e})"
+        if attach_mode == "linked_url":
+            # Bookmark the PDF URL only — no binary upload. Useful for users who
+            # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
+            try:
+                if _helpers._attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                    pdf_status = "PDF linked (URL only, no upload)"
+                else:
+                    pdf_status = "linked URL attachment failed"
+            except Exception as e:
+                ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
+                pdf_status = f"no PDF attached ({e})"
+        else:
+            try:
+                pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+                pdf_resp.raise_for_status()
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
+                    filepath = os.path.join(tmpdir, filename)
+                    with open(filepath, "wb") as f:
+                        for chunk in pdf_resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    write_zot.attachment_both(
+                        [(filename, filepath)],
+                        parentid=item_key,
+                    )
+                pdf_status = "PDF attached"
+            except Exception as e:
+                ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
+                pdf_status = f"no PDF attached ({e})"
 
         return (
             f"Successfully added arXiv paper: **{title}**\n\n"
@@ -710,10 +857,227 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     return f"Failed to create arXiv item: {result}"
 
 
+# ---------------------------------------------------------------------------
+# ISBN lookup — Open Library (primary) + Google Books (fallback) (#226)
+# ---------------------------------------------------------------------------
+
+def _lookup_isbn_openlibrary(isbn, ctx):
+    """Look up book metadata by ISBN on Open Library. Returns a dict of
+    normalized fields, or None on miss / error. Network errors are logged
+    and surfaced as None so the caller can fall through to Google Books.
+    """
+    try:
+        url = (
+            f"https://openlibrary.org/api/books"
+            f"?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
+        )
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        payload = resp.json() or {}
+        record = payload.get(f"ISBN:{isbn}") or {}
+        if not record:
+            return None
+
+        title = record.get("title", "")
+        if record.get("subtitle"):
+            title = f"{title}: {record['subtitle']}"
+
+        creators = []
+        for author in record.get("authors", []) or []:
+            name = (author.get("name") or "").strip()
+            if not name:
+                continue
+            parts = name.rsplit(" ", 1)
+            if len(parts) == 2:
+                creators.append({
+                    "creatorType": "author",
+                    "firstName": parts[0],
+                    "lastName": parts[1],
+                })
+            else:
+                creators.append({"creatorType": "author", "name": name})
+
+        publisher = ""
+        publishers = record.get("publishers") or []
+        if publishers:
+            publisher = (publishers[0].get("name") or "").strip()
+
+        place = ""
+        places = record.get("publish_places") or []
+        if places:
+            place = (places[0].get("name") or "").strip()
+
+        return {
+            "source": "Open Library",
+            "title": title,
+            "creators": creators,
+            "date": (record.get("publish_date") or "").strip(),
+            "publisher": publisher,
+            "place": place,
+            "num_pages": str(record.get("number_of_pages", "") or "").strip(),
+            "url": (record.get("url") or "").strip(),
+        }
+    except requests.RequestException as e:
+        ctx.info(f"Open Library lookup failed (non-fatal): {e}")
+        return None
+    except Exception as e:
+        ctx.info(f"Open Library parse failed (non-fatal): {e}")
+        return None
+
+
+def _lookup_isbn_google_books(isbn, ctx):
+    """Look up book metadata by ISBN on Google Books. Returns a dict of
+    normalized fields, or None on miss / error."""
+    try:
+        url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        payload = resp.json() or {}
+        items = payload.get("items") or []
+        if not items:
+            return None
+        info = items[0].get("volumeInfo") or {}
+
+        title = info.get("title", "")
+        if info.get("subtitle"):
+            title = f"{title}: {info['subtitle']}"
+
+        creators = []
+        for name in info.get("authors", []) or []:
+            name = (name or "").strip()
+            if not name:
+                continue
+            parts = name.rsplit(" ", 1)
+            if len(parts) == 2:
+                creators.append({
+                    "creatorType": "author",
+                    "firstName": parts[0],
+                    "lastName": parts[1],
+                })
+            else:
+                creators.append({"creatorType": "author", "name": name})
+
+        return {
+            "source": "Google Books",
+            "title": title,
+            "creators": creators,
+            "date": (info.get("publishedDate") or "").strip(),
+            "publisher": (info.get("publisher") or "").strip(),
+            "place": "",  # Google Books doesn't expose publication place
+            "num_pages": str(info.get("pageCount", "") or "").strip(),
+            "url": (info.get("infoLink") or info.get("canonicalVolumeLink") or "").strip(),
+        }
+    except requests.RequestException as e:
+        ctx.info(f"Google Books lookup failed (non-fatal): {e}")
+        return None
+    except Exception as e:
+        ctx.info(f"Google Books parse failed (non-fatal): {e}")
+        return None
+
+
+@mcp.tool(
+    name="zotero_add_by_isbn",
+    description=(
+        "Add a book to your Zotero library by ISBN. Resolves metadata via "
+        "Open Library (primary) and Google Books (fallback). Accepts ISBN-10, "
+        "ISBN-13, with or without hyphens, or a URL/isbn: prefix. Response "
+        "includes the resolver source so you can audit metadata quality."
+    )
+)
+def add_by_isbn(
+    isbn: str,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        normalized = _helpers._normalize_isbn(isbn)
+        if not normalized:
+            return (
+                f"Error: '{isbn}' does not appear to be a valid ISBN "
+                "(checksum failed or wrong length)."
+            )
+
+        ctx.info(f"Resolving ISBN {normalized} via Open Library...")
+        meta = _lookup_isbn_openlibrary(normalized, ctx)
+        if not meta:
+            ctx.info("Open Library miss — falling back to Google Books...")
+            meta = _lookup_isbn_google_books(normalized, ctx)
+        if not meta:
+            return (
+                f"ISBN not found on Open Library or Google Books: {normalized}"
+            )
+
+        # Build Zotero book item
+        template = write_zot.item_template("book")
+        item_data = dict(template)
+        if meta.get("title"):
+            item_data["title"] = meta["title"]
+        if meta.get("creators"):
+            item_data["creators"] = meta["creators"]
+        if meta.get("date") and "date" in item_data:
+            item_data["date"] = meta["date"]
+        if meta.get("publisher") and "publisher" in item_data:
+            item_data["publisher"] = meta["publisher"]
+        if meta.get("place") and "place" in item_data:
+            item_data["place"] = meta["place"]
+        if meta.get("num_pages") and "numPages" in item_data:
+            item_data["numPages"] = meta["num_pages"]
+        if meta.get("url") and "url" in item_data:
+            item_data["url"] = meta["url"]
+        if "ISBN" in item_data:
+            item_data["ISBN"] = normalized
+
+        tag_list = _helpers._normalize_str_list_input(tags, "tags")
+        if tag_list:
+            item_data["tags"] = [{"tag": t} for t in tag_list]
+        coll_keys = _helpers._normalize_str_list_input(collections, "collections")
+        if coll_keys:
+            item_data["collections"] = coll_keys
+
+        result = write_zot.create_items([item_data])
+        if isinstance(result, dict) and result.get("success"):
+            item_key = next(iter(result["success"].values()))
+            return (
+                f"Successfully added: **{item_data.get('title', normalized)}**\n\n"
+                f"Item key: `{item_key}`\n"
+                f"Type: book\n"
+                f"ISBN: {normalized}\n"
+                f"Source: {meta['source']}\n\n"
+                "_Note: Open Library and Google Books metadata can be noisy "
+                "(publisher-as-author, concatenated places, off-by-one dates). "
+                "Verify via `zotero_get_item_metadata` after creation. "
+                "Run `zotero_update_search_database` to include this item "
+                "in semantic search._"
+            )
+        return f"Failed to create item: {result}"
+
+    except Exception as e:
+        ctx.error(f"Error adding by ISBN: {e}")
+        return f"Error adding by ISBN: {e}"
+
+
 # Maps Zotero API field names to tool parameter names for user-facing messages
 _UPDATE_ITEM_API_TO_PARAM = {
     "title": "title",
     "date": "date",
+    "accessDate": "access_date",
     "publicationTitle": "publication_title",
     "abstractNote": "abstract",
     "DOI": "doi",
@@ -723,6 +1087,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "issue": "issue",
     "pages": "pages",
     "publisher": "publisher",
+    "place": "place",
     "ISSN": "issn",
     "language": "language",
     "shortTitle": "short_title",
@@ -735,10 +1100,28 @@ _UPDATE_ITEM_API_TO_PARAM = {
 @mcp.tool(
     name="zotero_update_item",
     description=(
-        "Update metadata for an existing item in your Zotero library. "
-        "To add tags without removing existing ones, use add_tags (not tags). "
-        "To remove specific tags, use remove_tags. "
-        "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes."
+        "Update metadata on an existing Zotero item by key. Only fields "
+        "you pass are modified; unspecified fields are left alone. "
+        "TAG SEMANTICS (easy to get wrong): `tags` REPLACES the entire "
+        "tag list. To add tags without touching existing ones, use "
+        "`add_tags`. To remove specific tags, use `remove_tags`. These "
+        "three are mutually exclusive — prefer `add_tags`/`remove_tags` "
+        "for incremental edits. "
+        "Similarly, collections/collection_names REPLACE the item's "
+        "collection memberships; for incremental moves use "
+        "zotero_manage_collections instead. "
+        "item_key: 8-character Zotero item key of the item to update. "
+        "Editable fields include: title, creators, date, publisher, place, "
+        "publication_title, volume, issue, pages, DOI, ISBN, ISSN, url, "
+        "language, abstract, short_title, edition, book_title, extra, item_type. "
+        "To migrate an item across types (e.g., journalArticle → book), pass item_type "
+        "with a valid Zotero item-type vocabulary value; overlapping fields are preserved "
+        "and type-specific fields that do not map to the target type are dropped. "
+        "Requires a writable library (web API key or hybrid mode); fails "
+        "in local-only mode. To edit notes use zotero_update_note, not "
+        "this. "
+        "Example: zotero_update_item(item_key='RTKZQI8E', "
+        "add_tags=['reviewed'], doi='10.1145/3708319')."
     )
 )
 def update_item(
@@ -746,6 +1129,7 @@ def update_item(
     title: str | None = None,
     creators: list[dict] | str | None = None,
     date: str | None = None,
+    access_date: str | None = None,
     publication_title: str | None = None,
     abstract: str | None = None,
     tags: list[str] | str | None = None,
@@ -760,15 +1144,47 @@ def update_item(
     issue: str | None = None,
     pages: str | None = None,
     publisher: str | None = None,
+    place: Annotated[
+        str | None,
+        Field(description="Publication place (city), e.g., 'New York' or 'Cambridge, MA'."),
+    ] = None,
     issn: str | None = None,
     language: str | None = None,
     short_title: str | None = None,
     edition: str | None = None,
     isbn: str | None = None,
     book_title: str | None = None,
+    item_type: str | None = None,
     *,
     ctx: Context
 ) -> str:
+    """
+    Update metadata fields on an existing Zotero item.
+
+    Only fields you pass are modified; unspecified fields are left
+    untouched. Fields whose API key does not exist on the item's
+    itemType (e.g. ``place`` on a ``journalArticle``) are reported as
+    skipped rather than written.
+
+    Args:
+        item_key: 8-character Zotero item key of the item to update.
+        title, creators, date, publication_title, abstract, doi, url,
+        extra, volume, issue, pages, publisher, place, issn, language,
+        short_title, edition, isbn, book_title: per-field overrides;
+        ``place`` is the publication city (e.g. ``"New York"`` or
+        ``"Cambridge, MA"``) and is valid on book, bookSection, thesis,
+        manuscript, report, and conferencePaper item types.
+        tags / add_tags / remove_tags: mutually exclusive; ``tags``
+        REPLACES the full tag list, ``add_tags`` / ``remove_tags`` are
+        incremental. Prefer the incremental forms.
+        collections / collection_names: REPLACE collection memberships;
+        for incremental moves use zotero_manage_collections instead.
+        ctx: MCP context.
+
+    Returns:
+        A markdown-formatted summary of what changed (or a skip
+        warning for fields not valid on the item type).
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -789,12 +1205,43 @@ def update_item(
         data = item.get("data", {})
         changes = []
 
+        # Handle item_type migration first so subsequent field updates are
+        # validated against the NEW type's schema. Reshape by merging old
+        # data into the new type's template: overlapping typed fields are
+        # preserved; type-specific fields not present in the new template
+        # are dropped; internal bookkeeping fields (key, version, tags,
+        # collections, relations, creators, dateAdded, dateModified) are
+        # always preserved regardless of type.
+        if item_type is not None:
+            old_item_type = data.get("itemType", "")
+            if old_item_type != item_type:
+                try:
+                    new_template = write_zot.item_template(item_type)
+                except Exception as e:
+                    return f"Error: invalid item_type '{item_type}': {e}"
+
+                preserved = {"key", "version", "tags", "collections",
+                             "relations", "creators", "dateAdded",
+                             "dateModified"}
+                reshaped = dict(new_template)
+                for k, v in data.items():
+                    if k in preserved or k in new_template:
+                        reshaped[k] = v
+                reshaped["itemType"] = item_type
+                data = reshaped
+                item["data"] = data
+                changes.append(
+                    f"- **item_type**: '{old_item_type}' -> '{item_type}'"
+                )
+
         # Apply field updates
         field_updates = {}
         if title is not None:
             field_updates["title"] = title
         if date is not None:
             field_updates["date"] = date
+        if access_date is not None:
+            field_updates["accessDate"] = access_date
         if publication_title is not None:
             field_updates["publicationTitle"] = publication_title
         if abstract is not None:
@@ -813,6 +1260,8 @@ def update_item(
             field_updates["pages"] = pages
         if publisher is not None:
             field_updates["publisher"] = publisher
+        if place is not None:
+            field_updates["place"] = place
         if issn is not None:
             field_updates["ISSN"] = issn
         if language is not None:
@@ -904,8 +1353,110 @@ def update_item(
 
 
 @mcp.tool(
+    name="zotero_delete_item",
+    description=(
+        "Move a Zotero item to the Trash. Works for any item type (book, "
+        "journalArticle, webpage, attachment, etc.). For notes, use "
+        "zotero_delete_note — identical mechanism, constrained to notes "
+        "for safety. Trashed items are recoverable from Zotero's Trash — "
+        "empty the Trash in the Zotero UI for permanent deletion. "
+        "By default refuses to trash notes; set allow_note=True to override."
+    )
+)
+def delete_item(
+    item_key: str,
+    allow_note: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Move a Zotero item to the Trash.
+
+    Args:
+        item_key: Zotero item key/ID to trash
+        allow_note: If True, permits trashing note items. Default False
+            directs callers to zotero_delete_note for notes (which has the
+            same mechanism but is explicit about what it affects).
+        ctx: MCP context
+
+    Returns:
+        Confirmation message, or an error if the item cannot be trashed.
+    """
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        ctx.info(f"Trashing item {item_key}")
+
+        try:
+            item = write_zot.item(item_key)
+        except Exception:
+            return f"Error: No item found with key: {item_key}"
+
+        data = item.get("data", {})
+        item_type = data.get("itemType", "unknown")
+
+        if item_type == "note" and not allow_note:
+            return (
+                f"Error: Item {item_key} is a note. Use zotero_delete_note "
+                "for notes, or pass allow_note=True to override."
+            )
+
+        # pyzotero's delete_item() permanently destroys items, and update_item()
+        # strips the "deleted" field. Send a direct PATCH with {"deleted": 1}
+        # to move the item to Zotero's Trash (recoverable by the user).
+        from pyzotero.zotero import build_url
+        url = build_url(
+            write_zot.endpoint,
+            f"/{write_zot.library_type}/{write_zot.library_id}/items/{item_key}",
+        )
+        resp = write_zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return (
+                f"Successfully trashed item {item_key} "
+                f"(type={item_type}, recoverable from Zotero's Trash)"
+            )
+        return (
+            f"Failed to trash item {item_key} (HTTP {resp.status_code}): "
+            f"{resp.text[:200]}"
+        )
+
+    except Exception as e:
+        ctx.error(f"Error trashing item: {str(e)}")
+        return f"Error trashing item: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_find_duplicates",
-    description="Find duplicate items in your library by title and/or DOI."
+    description=(
+        "Scan the active library (or a single collection) for duplicate "
+        "items and return candidate groups for review. This tool only "
+        "IDENTIFIES duplicates — it doesn't merge them. Call "
+        "zotero_merge_duplicates to actually merge a group. "
+        "method: 'both' (default) — match on title OR DOI; 'title' — "
+        "normalized-title match only (lowercase, punctuation-stripped); "
+        "'doi' — exact DOI match only (safest for automation). Prefer "
+        "'doi' when the user intends to run merge_duplicates "
+        "unattended. "
+        "collection_key: optional 8-character key to restrict scanning "
+        "to one collection; otherwise scans the whole active library. "
+        "LIBRARY SIZE CAP: refuses to scan a library with > 5,000 items "
+        "(the whole-library scan is O(n²) on titles) — on larger "
+        "libraries you MUST pass collection_key to narrow the scope. "
+        "limit: max groups to return (default 50). "
+        "Returns a markdown block per group with keys, titles, DOIs, "
+        "and dateAdded — use this to decide which item to KEEP before "
+        "calling zotero_merge_duplicates(keeper_key=..., "
+        "duplicate_keys=[...]). "
+        "Read-only; works in local or web mode. "
+        "Example: zotero_find_duplicates(method='doi', limit=20)."
+    )
 )
 def find_duplicates(
     method: Literal["title", "doi", "both"] = "both",
@@ -1013,11 +1564,27 @@ def find_duplicates(
 @mcp.tool(
     name="zotero_merge_duplicates",
     description=(
-        "Merge duplicate items. Consolidates tags, collections, notes, annotations, "
-        "and all child items into the keeper. Duplicates are moved to Trash (recoverable). "
-        "Dry-run by default — call with confirm=True to execute. "
-        "Parameters: keeper_key (the item key to KEEP), "
-        "duplicate_keys (ARRAY of item keys to merge into the keeper and then trash)."
+        "Merge one or more duplicate items INTO a keeper: consolidates "
+        "tags, collections, notes, annotations, and all child items onto "
+        "the keeper, then moves the duplicates to Trash (recoverable "
+        "from Zotero desktop's Trash view). "
+        "SAFETY: dry-run by DEFAULT — prints what would happen without "
+        "changing anything. Pass confirm=True to actually execute. Always "
+        "run dry-first at least once to verify the keeper choice. "
+        "Discover groups first with zotero_find_duplicates. "
+        "keeper_key: 8-character key of the item to KEEP. All metadata "
+        "gaps on the keeper are filled from duplicates where possible; "
+        "conflicting fields keep the keeper's value. "
+        "duplicate_keys: ARRAY of 8-character item keys to merge into "
+        "the keeper and trash (also accepts a JSON-encoded list "
+        "string) — pass as an array, not a single concatenated string. "
+        "The keeper itself must NOT appear in this list. "
+        "confirm: False (default) runs dry; True executes the merge. "
+        "Requires a writable library (web API key or hybrid mode); fails "
+        "in local-only mode. "
+        "Example dry-run: zotero_merge_duplicates("
+        "keeper_key='ABC12345', duplicate_keys=['XYZ98765']). "
+        "Example execute: same, plus confirm=True."
     )
 )
 def merge_duplicates(
@@ -1220,7 +1787,23 @@ def merge_duplicates(
 
 @mcp.tool(
     name="zotero_get_pdf_outline",
-    description="Extract the table of contents / outline from a PDF attachment."
+    description=(
+        "Extract the table of contents (outline/bookmarks) from a PDF "
+        "attachment, returned as a hierarchical markdown list with each "
+        "entry's page number. "
+        "Use this to orient in a paper before calling "
+        "zotero_get_item_fulltext — the outline is typically < 200 "
+        "tokens versus 10K+ for the full text. If the PDF has no "
+        "embedded outline, returns a short 'no outline' message rather "
+        "than failing. "
+        "item_key: the PDF ATTACHMENT key OR the parent item key — both "
+        "are accepted; attachment-to-parent resolution is automatic. "
+        "Find the right key with zotero_get_item_children if unsure. "
+        "Scope: PDFs only (EPUBs have no outline extraction here). "
+        "Requires PyMuPDF (pip install zotero-mcp-server[pdf]). "
+        "Read-only; works in local or web mode. "
+        "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
+    )
 )
 def get_pdf_outline(
     item_key: str,
@@ -1278,9 +1861,26 @@ def get_pdf_outline(
 @mcp.tool(
     name="zotero_add_from_file",
     description=(
-        "Add an item to Zotero from a local PDF file. "
-        "Attempts DOI extraction for rich metadata. "
-        "File path must be absolute and point to a .pdf or .epub file."
+        "Add an item to the active Zotero library from a LOCAL .pdf or "
+        ".epub file. Attempts to extract the DOI from the file content; "
+        "if found, enriches metadata via CrossRef (title, creators, "
+        "journal, year, abstract). If no DOI is found, falls back to "
+        "best-effort title/author guesses from the filename or document "
+        "text. "
+        "Use this when the user has a file on disk but no DOI/URL handy. "
+        "If you have a DOI use zotero_add_by_doi; for an online URL use "
+        "zotero_add_by_url. "
+        "file_path: ABSOLUTE path to a .pdf or .epub file (relative "
+        "paths fail). Other extensions are rejected. "
+        "title: optional override if metadata extraction misses. "
+        "collections: optional list of 8-char keys/names to file under. "
+        "tags: optional list of tag strings. "
+        "Requires a writable library (fails in local-only mode). PDF "
+        "uploads may hit the 300MB Zotero cloud free-tier quota — "
+        "metadata still lands. Run zotero_update_search_database "
+        "afterwards for semantic search. "
+        "Example: zotero_add_from_file(file_path='/Users/me/paper.pdf', "
+        "collections=['9SU943GB'])."
     )
 )
 def add_from_file(
@@ -1656,3 +2256,293 @@ def remove_item_relation(
     except Exception as e:
         ctx.error(f"Error removing item relation: {e}")
         return f"Error removing item relation: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Import-by-citation tools (BibTeX / CSL JSON)
+# ---------------------------------------------------------------------------
+
+_CITATION_FILE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB — generous for citation files
+
+
+def _read_citation_file(file_path: str, allowed_exts: set[str]) -> str:
+    """Read a citation file as UTF-8 text with the same safety checks as add_from_file.
+
+    Raises ValueError on any check failure. Returns the file contents.
+    """
+    if os.path.islink(file_path):
+        raise ValueError("Symlinks are not allowed for security reasons.")
+    if not os.path.isabs(file_path):
+        raise ValueError("file_path must be an absolute path.")
+    resolved = os.path.realpath(file_path)
+    if not os.path.isfile(resolved):
+        raise ValueError(f"File not found: {file_path}")
+
+    ext = os.path.splitext(resolved)[1].lower()
+    if ext not in allowed_exts:
+        raise ValueError(
+            f"Unsupported file extension '{ext}'. "
+            f"Allowed: {', '.join(sorted(allowed_exts))}"
+        )
+
+    size = os.path.getsize(resolved)
+    if size > _CITATION_FILE_MAX_BYTES:
+        raise ValueError(
+            f"File is too large ({size} bytes). "
+            f"Maximum {_CITATION_FILE_MAX_BYTES} bytes."
+        )
+
+    try:
+        with open(resolved, encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        raise ValueError(f"File is not valid UTF-8: {e}") from e
+
+
+def _apply_caller_tags_and_collections(
+    item_data: dict,
+    caller_tags: list[str] | str | None,
+    caller_collections: list[str] | str | None,
+) -> None:
+    """Merge caller tags with any source-tags already in ``item_data`` and set collections."""
+    extra_tags = _helpers._normalize_str_list_input(caller_tags, "tags")
+    source_tags = [t.get("tag", "") for t in item_data.get("tags", []) if t.get("tag")]
+    merged = _citation_import.merge_tags(source_tags, extra_tags)
+    if merged:
+        item_data["tags"] = [{"tag": t} for t in merged]
+
+    coll_keys = _helpers._normalize_str_list_input(caller_collections, "collections")
+    if coll_keys:
+        existing = list(item_data.get("collections") or [])
+        # Preserve order while deduplicating
+        seen = set(existing)
+        for k in coll_keys:
+            if k not in seen:
+                existing.append(k)
+                seen.add(k)
+        item_data["collections"] = existing
+
+
+def _create_and_attach(
+    write_zot,
+    item_data: dict,
+    attach_mode: str,
+    ctx: Context,
+) -> dict:
+    """Create one Zotero item and, if it has a DOI, try to attach an OA PDF.
+
+    Returns a dict ``{"ok": bool, "key": str|None, "doi": str|None,
+    "pdf_status": str|None, "error": str|None, "title": str}``.
+    """
+    title = item_data.get("title") or "(untitled)"
+    try:
+        result = write_zot.create_items([item_data])
+    except Exception as e:
+        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
+                "error": str(e), "title": title}
+
+    if not (isinstance(result, dict) and result.get("success")):
+        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
+                "error": f"create_items failed: {result}", "title": title}
+
+    item_key = next(iter(result["success"].values()))
+    doi_raw = item_data.get("DOI") or ""
+    doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
+
+    pdf_status = None
+    if doi:
+        try:
+            pdf_status = _helpers._try_attach_oa_pdf(
+                write_zot, item_key, doi, ctx, attach_mode=attach_mode
+            )
+        except Exception as e:
+            pdf_status = f"OA PDF attach failed: {e}"
+
+    return {"ok": True, "key": item_key, "doi": doi, "pdf_status": pdf_status,
+            "error": None, "title": title}
+
+
+def _format_batch_result(header: str, results: list[dict]) -> str:
+    """Render a per-entry markdown summary for add_by_bibtex / add_by_csl_json."""
+    ok_count = sum(1 for r in results if r["ok"])
+    lines = [header, ""]
+    if len(results) == 1:
+        r = results[0]
+        if r["ok"]:
+            lines.append(f"Successfully added: **{r['title']}**")
+            lines.append("")
+            lines.append(f"Item key: `{r['key']}`")
+            if r["doi"]:
+                lines.append(f"DOI: {r['doi']}")
+            if r["pdf_status"]:
+                lines.append(f"PDF: {r['pdf_status']}")
+        else:
+            lines.append(f"Failed to add **{r['title']}**: {r['error']}")
+    else:
+        lines.append(f"Added {ok_count}/{len(results)} items.")
+        lines.append("")
+        for i, r in enumerate(results, 1):
+            if r["ok"]:
+                line = f"{i}. `{r['key']}` — {r['title']}"
+                if r["doi"]:
+                    line += f" (DOI: {r['doi']})"
+                if r["pdf_status"]:
+                    line += f" [{r['pdf_status']}]"
+                lines.append(line)
+            else:
+                lines.append(f"{i}. ❌ {r['title']}: {r['error']}")
+    lines.append("")
+    lines.append(
+        "_Note: To include new items in semantic search, run "
+        "zotero_update_search_database._"
+    )
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="zotero_add_by_bibtex",
+    description=(
+        "Add one or more items to Zotero from BibTeX. "
+        "Provide EITHER `bibtex` (inline string) OR `file_path` "
+        "(absolute path to a .bib / .bibtex file) — not both. "
+        "Supports multiple @entries per call. "
+        "The citation key from each entry is preserved in the Extra field. "
+        "If an entry has a DOI, an open-access PDF attachment is attempted."
+    )
+)
+def add_by_bibtex(
+    bibtex: str | None = None,
+    file_path: str | None = None,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        bibtex_provided = bool((bibtex or "").strip())
+        if bibtex_provided and file_path:
+            return "Error: Provide either `bibtex` or `file_path`, not both."
+        if not bibtex_provided and not file_path:
+            return "Error: Must provide `bibtex` (inline string) or `file_path`."
+
+        if file_path:
+            try:
+                bibtex = _read_citation_file(
+                    file_path, allowed_exts={".bib", ".bibtex"}
+                )
+            except ValueError as e:
+                return f"Error: {e}"
+            ctx.info(f"Loaded BibTeX from {file_path} ({len(bibtex)} bytes)")
+
+        try:
+            entries = _citation_import.parse_bibtex(bibtex)
+        except Exception as e:
+            return f"Error parsing BibTeX: {e}"
+
+        if not entries:
+            return "Error: No valid @entries found in the BibTeX input."
+
+        ctx.info(f"Parsed {len(entries)} BibTeX entries")
+
+        results = []
+        for entry in entries:
+            try:
+                item_data = _citation_import.bibtex_entry_to_zotero(
+                    entry, write_zot.item_template
+                )
+            except Exception as e:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"conversion failed: {e}",
+                    "title": entry.get("citekey") or "(unknown)",
+                })
+                continue
+
+            _apply_caller_tags_and_collections(item_data, tags, collections)
+            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+
+        return _format_batch_result("# zotero_add_by_bibtex", results)
+
+    except Exception as e:
+        ctx.error(f"Error adding by BibTeX: {e}")
+        return f"Error adding by BibTeX: {e}"
+
+
+@mcp.tool(
+    name="zotero_add_by_csl_json",
+    description=(
+        "Add one or more items to Zotero from CSL JSON. "
+        "Provide EITHER `csl_json` (inline — a JSON string, object, or array) "
+        "OR `file_path` (absolute path to a .json / .csljson file) — not both. "
+        "The `id` field is preserved in the Extra field as the Citation Key. "
+        "If an entry has a DOI, an open-access PDF attachment is attempted."
+    )
+)
+def add_by_csl_json(
+    csl_json: str | list | dict | None = None,
+    file_path: str | None = None,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        csl_provided = csl_json not in (None, "", [], {})
+        if csl_provided and file_path:
+            return "Error: Provide either `csl_json` or `file_path`, not both."
+        if not csl_provided and not file_path:
+            return "Error: Must provide `csl_json` (inline) or `file_path`."
+
+        if file_path:
+            try:
+                csl_json = _read_citation_file(
+                    file_path, allowed_exts={".json", ".csljson"}
+                )
+            except ValueError as e:
+                return f"Error: {e}"
+            ctx.info(f"Loaded CSL JSON from {file_path} ({len(csl_json)} bytes)")
+
+        try:
+            entries = _citation_import.coerce_csl_json_input(csl_json)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        if not entries:
+            return "Error: No valid CSL JSON objects provided."
+
+        ctx.info(f"Processing {len(entries)} CSL JSON entries")
+
+        results = []
+        for entry in entries:
+            try:
+                item_data = _citation_import.csl_json_to_zotero(
+                    entry, write_zot.item_template
+                )
+            except Exception as e:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"conversion failed: {e}",
+                    "title": str(entry.get("id") or entry.get("title") or "(unknown)"),
+                })
+                continue
+
+            _apply_caller_tags_and_collections(item_data, tags, collections)
+            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+
+        return _format_batch_result("# zotero_add_by_csl_json", results)
+
+    except Exception as e:
+        ctx.error(f"Error adding by CSL JSON: {e}")
+        return f"Error adding by CSL JSON: {e}"
