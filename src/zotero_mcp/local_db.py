@@ -362,6 +362,36 @@ class LocalZoteroReader:
         except Exception:
             return ""
 
+    # Extensions / MIME types we know we can read as plain text. Used by
+    # ``_is_extractable_attachment`` to gate non-PDF/HTML attachments into
+    # the fulltext extractor. Binary formats (.docx, .pptx, .epub, video,
+    # etc.) are intentionally excluded — ``read_text`` returns garbage for
+    # those and we don't want to pollute the semantic index with it.
+    _TEXTUAL_SUFFIXES = frozenset({
+        ".txt", ".vtt", ".srt", ".sbv", ".md", ".markdown", ".rst",
+        ".csv", ".tsv", ".json", ".xml", ".log", ".text",
+    })
+    _TEXTUAL_CONTENT_TYPES = frozenset({
+        "text/plain", "text/vtt", "text/markdown", "text/csv",
+        "text/tab-separated-values", "text/srt", "application/json",
+        "application/xml", "text/xml",
+    })
+
+    @classmethod
+    def _is_extractable_attachment(cls, file_path: Path, ctype: str | None) -> bool:
+        """Return True when ``_extract_text_from_file`` can return useful text.
+
+        PDF and HTML are handled by their dedicated extractors elsewhere. For
+        anything else, accept the attachment iff its MIME type or extension
+        is in the textual allowlist — never accept arbitrary binaries.
+        """
+        normalized_ctype = (ctype or "").lower()
+        if normalized_ctype.startswith("text/"):
+            return True
+        if normalized_ctype in cls._TEXTUAL_CONTENT_TYPES:
+            return True
+        return file_path.suffix.lower() in cls._TEXTUAL_SUFFIXES
+
     def _extract_text_from_file(self, file_path: Path) -> str:
         """Extract text content from a file based on extension, with fallbacks."""
         suffix = file_path.suffix.lower()
@@ -452,10 +482,11 @@ class LocalZoteroReader:
            filename drift, no subprocess needed) — source ``"zotero-cache"``.
         2. PDF extraction — source ``"pdf"``.
         3. HTML extraction — source ``"html"``.
+        4. Textual attachments (.txt, .vtt, .srt, etc.) — source ``"file"``.
 
         If the sqlite-recorded filename doesn't resolve on disk, scan the
         attachment's storage folder for a content-type-matching file before
-        giving up (#291).
+        giving up (#291, #265).
         """
         # 1. Zotero's own full-text cache — use it whenever present.
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
@@ -465,6 +496,7 @@ class LocalZoteroReader:
 
         best_pdf = None
         best_html = None
+        best_other = None
         for key, path, ctype in self._iter_parent_attachments(item_id):
             resolved = self._resolve_attachment_path(key, path or "")
             if not resolved or not resolved.exists():
@@ -476,8 +508,10 @@ class LocalZoteroReader:
                 best_pdf = resolved
             elif (ctype or "").startswith("text/html") and best_html is None:
                 best_html = resolved
-        # Prefer PDF, otherwise fall back to HTML
-        target = best_pdf or best_html
+            elif best_other is None and self._is_extractable_attachment(resolved, ctype):
+                best_other = resolved
+        # Prefer PDF, then HTML, then any extractable text file.
+        target = best_pdf or best_html or best_other
         if not target:
             return None
         text = self._extract_text_from_file(target)
