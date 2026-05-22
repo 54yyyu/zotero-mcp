@@ -5,16 +5,15 @@ Provides direct SQLite access to Zotero's local database for faster semantic sea
 when running in local mode.
 """
 
-import os
-import sqlite3
-import platform
 import logging
+import os
+import platform
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from dataclasses import dataclass
-from urllib.parse import urlparse, unquote
 
-from .utils import is_local_mode, _normalize_for_search
+from .utils import _normalize_for_search, is_local_mode
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +230,7 @@ class LocalZoteroReader:
 
         # Linked file as URL: 'file:///path/to/file.pdf'
         if zotero_path.startswith("file://"):
-            from urllib.parse import urlparse, unquote
+            from urllib.parse import unquote, urlparse
             parsed = urlparse(zotero_path)
             decoded_path = unquote(parsed.path or "")
             # file:///C:/... on Windows
@@ -353,6 +352,36 @@ class LocalZoteroReader:
         except Exception:
             return ""
 
+    # Extensions / MIME types we know we can read as plain text. Used by
+    # ``_is_extractable_attachment`` to gate non-PDF/HTML attachments into
+    # the fulltext extractor. Binary formats (.docx, .pptx, .epub, video,
+    # etc.) are intentionally excluded — ``read_text`` returns garbage for
+    # those and we don't want to pollute the semantic index with it.
+    _TEXTUAL_SUFFIXES = frozenset({
+        ".txt", ".vtt", ".srt", ".sbv", ".md", ".markdown", ".rst",
+        ".csv", ".tsv", ".json", ".xml", ".log", ".text",
+    })
+    _TEXTUAL_CONTENT_TYPES = frozenset({
+        "text/plain", "text/vtt", "text/markdown", "text/csv",
+        "text/tab-separated-values", "text/srt", "application/json",
+        "application/xml", "text/xml",
+    })
+
+    @classmethod
+    def _is_extractable_attachment(cls, file_path: Path, ctype: str | None) -> bool:
+        """Return True when ``_extract_text_from_file`` can return useful text.
+
+        PDF and HTML are handled by their dedicated extractors elsewhere. For
+        anything else, accept the attachment iff its MIME type or extension
+        is in the textual allowlist — never accept arbitrary binaries.
+        """
+        normalized_ctype = (ctype or "").lower()
+        if normalized_ctype.startswith("text/"):
+            return True
+        if normalized_ctype in cls._TEXTUAL_CONTENT_TYPES:
+            return True
+        return file_path.suffix.lower() in cls._TEXTUAL_SUFFIXES
+
     def _extract_text_from_file(self, file_path: Path) -> str:
         """Extract text content from a file based on extension, with fallbacks."""
         suffix = file_path.suffix.lower()
@@ -376,11 +405,18 @@ class LocalZoteroReader:
     def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
-        Preference: use PDF when available; fall back to HTML when no PDF exists.
-        Returns (text, source) where source is 'pdf' or 'html'.
+        Preference: PDF first, then HTML, then any textual attachment
+        (transcript .vtt, plain .txt, captions, etc. — see
+        ``_TEXTUAL_SUFFIXES``). Returns ``(text, source)`` where ``source``
+        is ``"pdf"``, ``"html"``, or ``"file"``.
+
+        Non-PDF/HTML attachments previously fell out of the candidate
+        collection entirely, so transcripts, plaintext notes, and similar
+        attachments were never indexed (#265).
         """
         best_pdf = None
         best_html = None
+        best_other = None
         for key, path, ctype in self._iter_parent_attachments(item_id):
             resolved = self._resolve_attachment_path(key, path or "")
             if not resolved or not resolved.exists():
@@ -389,8 +425,10 @@ class LocalZoteroReader:
                 best_pdf = resolved
             elif (ctype or "").startswith("text/html") and best_html is None:
                 best_html = resolved
-        # Prefer PDF, otherwise fall back to HTML
-        target = best_pdf or best_html
+            elif best_other is None and self._is_extractable_attachment(resolved, ctype):
+                best_other = resolved
+        # Prefer PDF, then HTML, then any extractable text file.
+        target = best_pdf or best_html or best_other
         if not target:
             return None
         text = self._extract_text_from_file(target)
