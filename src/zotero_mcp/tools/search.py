@@ -8,11 +8,11 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
-from zotero_mcp._context import Context
-from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
-from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import utils as _utils
+from zotero_mcp._app import mcp
+from zotero_mcp._context import Context
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
 _search_logger = _logging.getLogger("zotero_mcp.search")
@@ -470,30 +470,12 @@ def search_by_citation_key(
         citekey = citekey.strip()
         ctx.info(f"Looking up citation key: {citekey}")
 
-        # Strategy A: Try BetterBibTeX JSON-RPC API (local mode only)
-        if _utils.is_local_mode():
-            try:
-                from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
-                bibtex = ZoteroBetterBibTexAPI()
-                if bibtex.is_zotero_running():
-                    search_results = bibtex._make_request("item.search", [citekey])
-                    if search_results:
-                        matched = next(
-                            (item for item in search_results if item.get("citekey") == citekey),
-                            None,
-                        )
-                        if matched:
-                            item_key = matched.get("itemKey") or matched.get("key")
-                            if item_key:
-                                zot = _client.get_zotero_client()
-                                item = zot.item(item_key)
-                                if item:
-                                    return _helpers._format_citekey_result(item, citekey)
-                            return _helpers._format_bbt_result(matched, citekey)
-            except Exception as e:
-                ctx.warning(f"BetterBibTeX lookup failed, falling back to Extra field search: {e}")
-
-        # Strategy B: Search via pyzotero Extra field
+        # Strategy A: pyzotero search across all fields, then verify via Extra.
+        # Note: the previous BetterBibTeX ``item.search`` JSON-RPC call was
+        # removed in #293 — that BBT method does not exist in current versions
+        # (always returned -32601 Method not found) and the exception handler
+        # silently fell through to the same Extra-field search, so the BBT
+        # branch only added noise.
         zot = _client.get_zotero_client()
         zot.add_parameters(q=citekey, qmode="everything", itemType="-attachment", limit=25)
         results = zot.items()
