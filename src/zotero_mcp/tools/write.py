@@ -1,23 +1,22 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
-from typing import Annotated, Literal
 import json
 import os
 import re
 import tempfile
-import xml.etree.ElementTree as ET
-
 import time as _time
+import xml.etree.ElementTree as ET
+from typing import Annotated, Literal
 
 import requests
 from pydantic import Field
 
-from zotero_mcp._context import Context
-from zotero_mcp._app import mcp
-from zotero_mcp import client as _client
-from zotero_mcp.client import with_zotero_api_lock
-from zotero_mcp import utils as _utils
 from zotero_mcp import citation_import as _citation_import
+from zotero_mcp import client as _client
+from zotero_mcp import utils as _utils
+from zotero_mcp._app import mcp
+from zotero_mcp._context import Context
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
@@ -644,6 +643,22 @@ def add_by_doi(
             item_key = next(iter(result["success"].values()))
             title = item_data.get("title", normalized)
 
+            # Defensive: pyzotero's atomic ``item["collections"]`` filing is
+            # intermittent (#235) — reconcile membership before reporting success
+            # so the caller sees the real routing state.
+            missing = _helpers.ensure_collection_membership(
+                write_zot, item_key, coll_keys, ctx=ctx
+            )
+            if coll_keys and missing:
+                collections_status = (
+                    f"Filed in {sorted(set(coll_keys) - set(missing))}; "
+                    f"FAILED to file in {missing}"
+                )
+            elif coll_keys:
+                collections_status = f"Filed in {coll_keys}"
+            else:
+                collections_status = "My Library (no collection)"
+
             # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
             pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
                                             crossref_metadata=cr,
@@ -654,6 +669,7 @@ def add_by_doi(
                 f"Item key: `{item_key}`\n"
                 f"Type: {zot_type}\n"
                 f"DOI: {normalized}\n"
+                f"Collections: {collections_status}\n"
                 f"PDF: {pdf_status}\n\n"
                 "_Note: To include this item in semantic search, run "
                 "zotero_update_search_database._"
@@ -1368,7 +1384,7 @@ def update_item(
                 + "\n".join(changes)
             )
             return result + skip_warning
-        return f"Failed to update item: write operation returned failure"
+        return "Failed to update item: write operation returned failure"
 
     except ValueError as e:
         return f"Input error: {e}"
@@ -2124,13 +2140,13 @@ def add_item_relation(
         # Fetch the primary item
         try:
             item = write_zot.item(item_key)
-        except Exception as e:
+        except Exception:
             return f"Error: Item '{item_key}' not found."
 
         # Verify the related item exists
         try:
             related_item = write_zot.item(related_item_key)
-        except Exception as e:
+        except Exception:
             return f"Error: Related item '{related_item_key}' not found."
 
         data = item.get("data", {})
@@ -2239,7 +2255,7 @@ def remove_item_relation(
         # Fetch the primary item
         try:
             item = write_zot.item(item_key)
-        except Exception as e:
+        except Exception:
             return f"Error: Item '{item_key}' not found."
 
         data = item.get("data", {})

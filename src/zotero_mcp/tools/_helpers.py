@@ -11,7 +11,6 @@ import requests
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 
-
 # ---------------------------------------------------------------------------
 # Config file
 # ---------------------------------------------------------------------------
@@ -125,6 +124,38 @@ def _handle_write_response(response, ctx=None):
     if isinstance(response, dict):
         return bool(response.get("success"))
     return bool(response)
+
+
+def ensure_collection_membership(write_zot, item_key: str, coll_keys: list[str], ctx=None) -> list[str]:
+    """Force *item_key* into each collection in *coll_keys*; return keys we couldn't file.
+
+    Setting ``item["collections"]`` on ``create_items`` is supposed to atomically
+    file the new item, but reports show it intermittently no-ops — the item
+    lands in My Library root despite the request (#235). This is the
+    deterministic backstop: read the item back, diff against the requested
+    set, and ``addto_collection`` for any that didn't take.
+    """
+    if not coll_keys:
+        return []
+    try:
+        item = write_zot.item(item_key)
+    except Exception as e:
+        if ctx is not None:
+            ctx.warning(f"Could not re-fetch item {item_key} to verify collection membership: {e}")
+        return list(coll_keys)
+    actual = set(item.get("data", {}).get("collections") or [])
+    failed: list[str] = []
+    for coll_key in coll_keys:
+        if coll_key in actual:
+            continue
+        try:
+            write_zot.addto_collection(coll_key, item)
+            actual.add(coll_key)
+        except Exception as e:
+            failed.append(coll_key)
+            if ctx is not None:
+                ctx.warning(f"Could not file {item_key} in collection {coll_key}: {e}")
+    return failed
 
 
 # ---------------------------------------------------------------------------
