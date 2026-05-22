@@ -1132,7 +1132,8 @@ _UPDATE_ITEM_API_TO_PARAM = {
         "three are mutually exclusive — prefer `add_tags`/`remove_tags` "
         "for incremental edits. "
         "Similarly, collections/collection_names REPLACE the item's "
-        "collection memberships; for incremental moves use "
+        "collection memberships (pass collections=[] to clear all "
+        "memberships); for incremental moves use "
         "zotero_manage_collections instead. "
         "item_key: 8-character Zotero item key of the item to update. "
         "Editable fields include: title, creators, date, publisher, place, "
@@ -1335,20 +1336,35 @@ def update_item(
                 changes.append(f"- **tags**: removed {list(to_remove)}")
             data["tags"] = [{"tag": t} for t in sorted(existing)]
 
-        # Collections — both params ADD to existing collections (never replace)
-        if collections is not None:
-            coll_keys = _helpers._normalize_str_list_input(collections, "collections")
-            existing_colls = set(data.get("collections", []))
-            existing_colls.update(coll_keys)
-            data["collections"] = list(existing_colls)
-            changes.append(f"- **collections**: added {coll_keys}")
-        if collection_names is not None:
-            names = _helpers._normalize_str_list_input(collection_names, "collection_names")
-            resolved = _helpers._resolve_collection_names(read_zot, names, ctx=ctx)
-            existing_colls = set(data.get("collections", []))
-            existing_colls.update(resolved)
-            data["collections"] = list(existing_colls)
-            changes.append(f"- **collections**: added {resolved}")
+        # Collections — REPLACE membership (matches tags semantics and the
+        # docstring contract). For incremental moves use
+        # zotero_manage_collections. Passing collections=[] clears all
+        # memberships. ``collections`` and ``collection_names`` may both be
+        # supplied; the union of their resolved keys is the new membership.
+        if collections is not None or collection_names is not None:
+            new_collections: list[str] = []
+            if collections is not None:
+                new_collections.extend(
+                    _helpers._normalize_str_list_input(collections, "collections")
+                )
+            if collection_names is not None:
+                names = _helpers._normalize_str_list_input(
+                    collection_names, "collection_names"
+                )
+                new_collections.extend(
+                    _helpers._resolve_collection_names(read_zot, names, ctx=ctx)
+                )
+            # Preserve order while deduplicating.
+            seen: set[str] = set()
+            deduped = [
+                k for k in new_collections if not (k in seen or seen.add(k))
+            ]
+            old_collections = list(data.get("collections") or [])
+            if old_collections != deduped:
+                data["collections"] = deduped
+                changes.append(
+                    f"- **collections**: replaced {old_collections} -> {deduped}"
+                )
 
         skip_warning = ""
         if skipped:
