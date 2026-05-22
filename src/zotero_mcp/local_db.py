@@ -5,16 +5,15 @@ Provides direct SQLite access to Zotero's local database for faster semantic sea
 when running in local mode.
 """
 
-import os
-import sqlite3
-import platform
 import logging
+import os
+import platform
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from dataclasses import dataclass
-from urllib.parse import urlparse, unquote
 
-from .utils import is_local_mode, _normalize_for_search
+from .utils import _normalize_for_search, is_local_mode
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +230,7 @@ class LocalZoteroReader:
 
         # Linked file as URL: 'file:///path/to/file.pdf'
         if zotero_path.startswith("file://"):
-            from urllib.parse import urlparse, unquote
+            from urllib.parse import unquote, urlparse
             parsed = urlparse(zotero_path)
             decoded_path = unquote(parsed.path or "")
             # file:///C:/... on Windows
@@ -311,11 +310,21 @@ class LocalZoteroReader:
         ):
             child_env.pop(_k, None)
 
+        # Force UTF-8 on the child's stdio. Without this, Windows consoles
+        # default to GBK/cp1252 and pdfminer extracting any non-ASCII text
+        # raises UnicodeEncodeError when ``sys.stdout.write`` flushes —
+        # turning a perfectly readable PDF into a "failed" extraction that
+        # the indexer then refuses to retry until force-rebuild (#286).
+        child_env.setdefault("PYTHONIOENCODING", "utf-8")
+        child_env.setdefault("PYTHONUTF8", "1")
+
         try:
             result = subprocess.run(
                 [sys.executable, "-c", script, str(file_path), str(maxpages)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 env=child_env,
             )
