@@ -1,19 +1,18 @@
 """Retrieval tool functions — read-only access to Zotero items, collections, tags, libraries, and feeds."""
 
-from typing import Literal
 import json
 import logging as _logging
 import os
 import re
 import tempfile
 import time as _time
-from pathlib import Path
+from typing import Literal
 
-from zotero_mcp._context import Context
-from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
-from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import utils as _utils
+from zotero_mcp._app import mcp
+from zotero_mcp._context import Context
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
 
@@ -310,6 +309,9 @@ def get_attachment_path(
         "without truncation, so very deep trees can be long. "
         "limit: cap on collections returned; pass None (default) to use 100, "
         "or raise to 5000 for libraries with thousands of collections. "
+        "include_trashed: when True, also show collections in the Zotero "
+        "Trash (annotated as such). Default False, matching Zotero desktop's "
+        "default view. "
         "Example output:\n"
         "  - **Orals** (Key: MT53KB66)\n"
         "    - **Early America** (Key: 3249BZKE)\n"
@@ -319,6 +321,7 @@ def get_attachment_path(
 @with_zotero_api_lock
 def get_collections(
     limit: int | str | None = None,
+    include_trashed: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -327,6 +330,12 @@ def get_collections(
 
     Args:
         limit: Maximum number of collections to return
+        include_trashed: if True, merge collections currently in Zotero's
+            Trash into the listing, annotated with ``[trashed]``. Default
+            False matches the Zotero desktop default and the prior
+            behavior of this tool. Trashed collections are normally
+            invisible to automated clients (#233) — turn this on when you
+            need to know they exist.
         ctx: MCP context
 
     Returns:
@@ -339,6 +348,15 @@ def get_collections(
         limit = _helpers._normalize_limit(limit, default=100, max_val=5000)
 
         collections = _helpers._paginate(zot.collections, max_items=limit)
+        trashed_keys: set[str] = set()
+        if include_trashed:
+            trashed = _helpers.fetch_trashed_collections(zot)
+            existing_keys = {c.get("key") for c in collections}
+            for coll in trashed:
+                key = coll.get("key")
+                if key and key not in existing_keys:
+                    trashed_keys.add(key)
+                    collections.append(coll)
 
         # Always return the header, even if empty
         output = ["# Zotero Collections", ""]
@@ -370,10 +388,11 @@ def get_collections(
 
             coll = collection_map[key]
             name = coll["data"].get("name", "Unnamed Collection")
+            trash_marker = " *[trashed]*" if key in trashed_keys else ""
 
             # Create indentation for hierarchy
             indent = "  " * level
-            lines = [f"{indent}- **{name}** (Key: {key})"]
+            lines = [f"{indent}- **{name}** (Key: {key}){trash_marker}"]
 
             # Add children if they exist
             child_keys = hierarchy.get(key, [])
@@ -391,7 +410,8 @@ def get_collections(
             for coll in sorted(collections, key=lambda x: x["data"].get("name", "")):
                 name = coll["data"].get("name", "Unnamed Collection")
                 key = coll["key"]
-                output.append(f"- **{name}** (Key: {key})")
+                trash_marker = " *[trashed]*" if key in trashed_keys else ""
+                output.append(f"- **{name}** (Key: {key}){trash_marker}")
         else:
             # Display hierarchical structure
             for key in sorted(top_level_keys):
@@ -1378,7 +1398,7 @@ def get_item_related(
         # Fetch the item
         try:
             item = zot.item(item_key)
-        except Exception as e:
+        except Exception:
             return f"Error: Item '{item_key}' not found."
 
         data = item.get("data", {})

@@ -11,7 +11,6 @@ import requests
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 
-
 # ---------------------------------------------------------------------------
 # Config file
 # ---------------------------------------------------------------------------
@@ -113,6 +112,42 @@ def _get_write_client(ctx):
         "Cannot perform write operations in local-only mode. "
         "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
     )
+
+
+def fetch_trashed_collections(zot) -> list[dict]:
+    """Return collections in the active library's trash, or [] on failure.
+
+    Zotero's REST API exposes trashed collections at
+    ``/{users|groups}/{id}/collections/trash``. pyzotero doesn't have a
+    dedicated method for it (only ``trash()``, which returns items), so
+    fall back to ``_retrieve_data``. Non-fatal — callers should treat
+    failures as "no trash data available" rather than raising.
+    """
+    try:
+        resp = zot._retrieve_data(
+            f"/{zot.library_type}/{zot.library_id}/collections/trash"
+        )
+    except Exception:
+        return []
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def is_collection_trashed(zot, collection_key: str) -> bool | None:
+    """Return True if a collection is in the trash, False if live, None on error.
+
+    Reads a single collection by key and inspects ``data.deleted``. Used to
+    pre-validate ``zotero_manage_collections`` calls so the tool returns a
+    clear error instead of silently filing items into trashed parents.
+    """
+    try:
+        coll = zot.collection(collection_key)
+    except Exception:
+        return None
+    return bool(coll.get("data", {}).get("deleted"))
 
 
 def _handle_write_response(response, ctx=None):
