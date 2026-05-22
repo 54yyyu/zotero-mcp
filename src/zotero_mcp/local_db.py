@@ -5,16 +5,15 @@ Provides direct SQLite access to Zotero's local database for faster semantic sea
 when running in local mode.
 """
 
-import os
-import sqlite3
-import platform
 import logging
+import os
+import platform
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from dataclasses import dataclass
-from urllib.parse import urlparse, unquote
 
-from .utils import is_local_mode, _normalize_for_search
+from .utils import _normalize_for_search, is_local_mode
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +230,7 @@ class LocalZoteroReader:
 
         # Linked file as URL: 'file:///path/to/file.pdf'
         if zotero_path.startswith("file://"):
-            from urllib.parse import urlparse, unquote
+            from urllib.parse import unquote, urlparse
             parsed = urlparse(zotero_path)
             decoded_path = unquote(parsed.path or "")
             # file:///C:/... on Windows
@@ -373,18 +372,96 @@ class LocalZoteroReader:
 
         return meta
 
+    def _read_zotero_ft_cache(self, attachment_key: str) -> str | None:
+        """Return the text in Zotero's ``.zotero-ft-cache`` for an attachment.
+
+        Zotero writes a plain-text full-text cache next to each indexed PDF /
+        EPUB at ``storage/<attachment_key>/.zotero-ft-cache``. Using it has
+        two upsides:
+        - it's already-extracted text (no pdfminer subprocess needed);
+        - it doesn't depend on filename matching, so it survives Zotero
+          file-naming drift / non-ASCII filename rewrites (#291).
+
+        Returns ``None`` if the cache file is absent, empty, or unreadable.
+        """
+        try:
+            cache_path = self._get_storage_dir() / attachment_key / ".zotero-ft-cache"
+        except Exception:
+            return None
+        if not cache_path.exists():
+            return None
+        try:
+            text = cache_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        return text or None
+
+    def _scan_storage_for_attachment(
+        self, attachment_key: str, ctype: str | None
+    ) -> Path | None:
+        """Fallback path resolver: find a likely attachment file on disk.
+
+        ``itemAttachments.path`` in the Zotero sqlite is the filename Zotero
+        recorded at import time, but the on-disk filename can drift (renames,
+        non-ASCII normalization, external sync tools). When the recorded
+        path no longer resolves, scan the attachment's own storage folder
+        and pick the largest file whose extension is consistent with the
+        recorded content type (#291).
+        """
+        try:
+            attachment_dir = self._get_storage_dir() / attachment_key
+        except Exception:
+            return None
+        if not attachment_dir.is_dir():
+            return None
+
+        if ctype == "application/pdf":
+            wanted_suffixes = {".pdf"}
+        elif (ctype or "").startswith("text/html"):
+            wanted_suffixes = {".html", ".htm"}
+        elif (ctype or "").startswith("application/epub"):
+            wanted_suffixes = {".epub"}
+        else:
+            return None
+
+        candidates: list[Path] = [
+            child for child in attachment_dir.iterdir()
+            if child.is_file() and child.suffix.lower() in wanted_suffixes
+        ]
+        if not candidates:
+            return None
+        # Largest file wins — for PDFs this is almost always the body content
+        # rather than a stub or thumbnail.
+        return max(candidates, key=lambda p: p.stat().st_size)
+
     def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
-        Preference: use PDF when available; fall back to HTML when no PDF exists.
-        Returns (text, source) where source is 'pdf' or 'html'.
+        Preference order:
+        1. ``.zotero-ft-cache`` (Zotero's own already-indexed text — survives
+           filename drift, no subprocess needed) — source ``"zotero-cache"``.
+        2. PDF extraction — source ``"pdf"``.
+        3. HTML extraction — source ``"html"``.
+
+        If the sqlite-recorded filename doesn't resolve on disk, scan the
+        attachment's storage folder for a content-type-matching file before
+        giving up (#291).
         """
+        # 1. Zotero's own full-text cache — use it whenever present.
+        for key, _path, _ctype in self._iter_parent_attachments(item_id):
+            cached = self._read_zotero_ft_cache(key)
+            if cached:
+                return (cached, "zotero-cache")
+
         best_pdf = None
         best_html = None
         for key, path, ctype in self._iter_parent_attachments(item_id):
             resolved = self._resolve_attachment_path(key, path or "")
             if not resolved or not resolved.exists():
-                continue
+                # Filename drift fallback: scan the storage folder.
+                resolved = self._scan_storage_for_attachment(key, ctype)
+                if not resolved or not resolved.exists():
+                    continue
             if ctype == "application/pdf" and best_pdf is None:
                 best_pdf = resolved
             elif (ctype or "").startswith("text/html") and best_html is None:
