@@ -8,12 +8,12 @@ over research libraries.
 
 import contextlib
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-import logging
 
 try:
     import tiktoken
@@ -22,12 +22,11 @@ except Exception:
     tiktoken = None
     _tokenizer = None
 
-from pyzotero import zotero
 
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
+from .local_db import LocalZoteroReader
 from .utils import format_creators, is_local_mode
-from .local_db import LocalZoteroReader, get_local_zotero_reader
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +255,17 @@ class ZoteroSemanticSearch:
             Combined text for embedding
         """
         data = item.get("data", {})
+        item_type = data.get("itemType", "")
+
+        # Annotations have no title / creators / abstract — they have
+        # ``annotationText`` (the highlighted passage) and an optional
+        # ``annotationComment``. The previous "title + creators + abstract"
+        # template fell back to ``format_creators([])`` → "No authors
+        # listed", which then embedded identically for every annotation in
+        # the library, collapsing them all to a single vector and
+        # dominating every semantic-search result (#287).
+        if item_type == "annotation":
+            return self._create_annotation_document_text(data)
 
         # Extract key fields for semantic search
         title = data.get("title", "")
@@ -287,6 +297,25 @@ class ZoteroSemanticSearch:
         # Combine all text fields
         text_parts = [title, creators_text, abstract] + extra_fields
         return " ".join(filter(None, text_parts))
+
+    def _create_annotation_document_text(self, data: dict[str, Any]) -> str:
+        """Build the embedding text for an annotation item.
+
+        Combines ``annotationText`` (highlighted passage) and
+        ``annotationComment`` (user's commentary), plus any tags. Returns
+        the empty string when nothing meaningful is present so the caller
+        can decide to skip the item rather than embedding noise.
+        """
+        parts: list[str] = []
+        if highlighted := (data.get("annotationText") or "").strip():
+            parts.append(highlighted)
+        if comment := (data.get("annotationComment") or "").strip():
+            parts.append(comment)
+        if tags := data.get("tags"):
+            tag_text = " ".join(t.get("tag", "") for t in tags if t.get("tag"))
+            if tag_text:
+                parts.append(tag_text)
+        return " ".join(parts)
 
     def _create_metadata(self, item: dict[str, Any]) -> dict[str, Any]:
         """
@@ -698,7 +727,7 @@ class ZoteroSemanticSearch:
                                 sys.stderr.write(f"    - {name}\n")
                             if len(_skipped_failed) > 5:
                                 sys.stderr.write(f"    ... and {len(_skipped_failed) - 5} more\n")
-                            sys.stderr.write(f"  (To retry these, run with --force-rebuild)\n")
+                            sys.stderr.write("  (To retry these, run with --force-rebuild)\n")
                     except Exception:
                         pass
 
