@@ -4,10 +4,33 @@ Provides direct access to Zotero's annotations without requiring PDF extraction.
 """
 
 import json
-import requests
 import os
-import sys
+import re
 from typing import Any
+
+import requests
+
+# Matches the opening ``@type{`` line of a BibTeX entry where the citekey is
+# either absent or followed immediately by the comma + newline that a
+# missing-citekey entry produces. Used to inject the citekey when BBT's
+# ``item.export`` strips it from the output (#293).
+_EMPTY_CITEKEY_LINE = re.compile(r"(@[A-Za-z]+\s*\{)(\s*,?\s*\n)")
+
+
+def _inject_citekey(bibtex_str: str, citation_key: str) -> str:
+    """Insert *citation_key* on the @-line of the first BibTeX entry if missing.
+
+    Only touches entries whose @-line is empty (``@article{``) or has a bare
+    leading comma (``@article{,``); an entry that already carries a key is
+    left alone. Safe to call repeatedly.
+    """
+    if not citation_key or not bibtex_str:
+        return bibtex_str
+
+    def _replace(match: re.Match) -> str:
+        return f"{match.group(1)}{citation_key},\n"
+
+    return _EMPTY_CITEKEY_LINE.sub(_replace, bibtex_str, count=1)
 
 class ZoteroBetterBibTexAPI:
     """Class to interact with Zotero's local Better BibTeX JSON-RPC API"""
@@ -32,13 +55,16 @@ class ZoteroBetterBibTexAPI:
             'Connection': 'keep-alive',
         }
 
-    def _make_request(self, method: str, params: list[Any]) -> dict[str, Any]:
+    def _make_request(self, method: str, params: list[Any] | dict[str, Any]) -> dict[str, Any]:
         """
-        Make a JSON-RPC request to the Zotero API.
+        Make a JSON-RPC request to the Better BibTeX API.
 
         Args:
-            method: The JSON-RPC method to call
-            params: The parameters for the method
+            method: The JSON-RPC method to call (e.g. ``item.citationkey``).
+            params: Either a positional list or a named-parameter dict. BBT's
+                JSON-RPC handler expects *named* params for most methods —
+                e.g. ``{"item_keys": [...]}`` rather than ``[[...]]``. See
+                https://retorque.re/zotero-better-bibtex/exporting/json-rpc/.
 
         Returns:
             The response data
@@ -86,58 +112,55 @@ class ZoteroBetterBibTexAPI:
 
     def get_item_by_citekey(self, citekey: str) -> dict[str, Any]:
         """
-        Get item data by citation key.
+        Export the CSL-JSON item data for a citation key.
+
+        Uses ``item.export`` directly with the CSL-JSON translator. The
+        previous implementation called ``item.search`` to discover the
+        item key first, but that BBT JSON-RPC method does not exist in
+        current versions and always returned -32601 Method not found.
+        Going straight to ``item.export`` skips the broken probe.
 
         Args:
             citekey: The citation key of the item
 
         Returns:
-            The item data
+            The item data (CSL-JSON dict)
         """
-        # First, search for the item to get its ID and library ID
-        search_results = self._make_request("item.search", [citekey])
-
-        if not search_results:
-            raise Exception(f"No items found with citekey: {citekey}")
-
-        item = next((item for item in search_results if item.get('citekey') == citekey), None)
-
-        if not item:
-            raise Exception(f"No exact match found for citekey: {citekey}")
-
-        library_id = item.get('libraryID')
-
-        # Now export the full item data
+        csl_json_translator = "36a3b0b5-bad0-4a04-b79b-441c7cef77db"
         try:
             export_result = self._make_request(
-                "item.export",
-                [[citekey], "36a3b0b5-bad0-4a04-b79b-441c7cef77db", library_id]
+                "item.export", [[citekey], csl_json_translator]
             )
-
-            if not export_result:
-                raise Exception(f"Failed to export item data for citekey: {citekey}")
-
-            # The result might be an array or a string depending on the Better BibTeX version
-            if isinstance(export_result, list):
-                if len(export_result) > 2 and export_result[2]:
-                    try:
-                        return json.loads(export_result[2]).get('items', [])[0]
-                    except (json.JSONDecodeError, IndexError, KeyError):
-                        # Try to use the first element if it's a string
-                        if isinstance(export_result[0], str):
-                            return json.loads(export_result[0]).get('items', [])[0]
-            elif isinstance(export_result, str):
-                return json.loads(export_result).get('items', [])[0]
-            elif isinstance(export_result, dict) and 'items' in export_result:
-                return export_result.get('items', [])[0]
-
-            # Fall back to using the search result
-            return item
-
         except Exception as e:
-            print(f"Warning: Could not export full item data: {e}")
-            # Return basic item data from search
-            return item
+            raise Exception(f"Could not export item for citekey {citekey}: {e}")
+
+        if not export_result:
+            raise Exception(f"Failed to export item data for citekey: {citekey}")
+
+        # The result shape varies across Better BibTeX versions.
+        payload: str | None = None
+        if isinstance(export_result, list):
+            if len(export_result) > 2 and isinstance(export_result[2], str):
+                payload = export_result[2]
+            elif export_result and isinstance(export_result[0], str):
+                payload = export_result[0]
+        elif isinstance(export_result, str):
+            payload = export_result
+        elif isinstance(export_result, dict) and "items" in export_result:
+            items = export_result.get("items") or []
+            if items:
+                return items[0]
+
+        if payload is None:
+            raise Exception(f"Unexpected item.export response shape: {type(export_result).__name__}")
+
+        try:
+            items = json.loads(payload).get("items", [])
+        except (json.JSONDecodeError, AttributeError) as e:
+            raise Exception(f"Could not parse item.export payload for {citekey}: {e}")
+        if not items:
+            raise Exception(f"No items returned for citekey: {citekey}")
+        return items[0]
 
     def get_attachments(self, citekey: str, library_id: int) -> list[dict[str, Any]]:
         """
@@ -225,21 +248,22 @@ class ZoteroBetterBibTexAPI:
             # Better BibTeX translator ID for BibTeX export
             translator_id = "ca65189f-8815-4afe-8c8b-8c7c15f0edca"  # Better BibTeX
 
-            # Step 1: Get citation key from item key
-            item_keys = [f"{library_id}:{item_key}"]
-            citation_mapping = self._make_request("item.citationkey", [item_keys])
+            # Step 1: Get citation key from item key. BBT's JSON-RPC expects
+            # named params (``{"item_keys": [...]}``) and bare item keys —
+            # not the ``library_id:item_key`` form — see #293.
+            citation_mapping = self._make_request(
+                "item.citationkey", {"item_keys": [item_key]}
+            )
 
             if not citation_mapping:
                 raise Exception(f"No citation key found for item: {item_key}")
 
-            # Step 2: Extract citation key from mapping
-            full_item_key = f"{library_id}:{item_key}"
-            citation_key = citation_mapping.get(full_item_key)
+            citation_key = citation_mapping.get(item_key)
 
             if not citation_key:
                 raise Exception(f"Citation key not found for item: {item_key}")
 
-            # Step 3: Export BibTeX using citation key
+            # Step 2: Export BibTeX using the citation key.
             export_result = self._make_request(
                 "item.export",
                 [[citation_key], translator_id]
@@ -247,14 +271,23 @@ class ZoteroBetterBibTexAPI:
 
             # Handle different response formats
             if isinstance(export_result, str):
-                return export_result
+                bibtex_str = export_result
             elif isinstance(export_result, list) and len(export_result) > 0:
                 # Sometimes the result is wrapped in an array
-                return export_result[0] if isinstance(export_result[0], str) else str(export_result[0])
+                bibtex_str = (
+                    export_result[0]
+                    if isinstance(export_result[0], str)
+                    else str(export_result[0])
+                )
             elif isinstance(export_result, dict) and 'bibtex' in export_result:
-                return export_result['bibtex']
+                bibtex_str = export_result['bibtex']
             else:
-                return str(export_result)
+                bibtex_str = str(export_result)
+
+            # BBT's ``item.export`` omits the citekey from the @-line in some
+            # versions (#293 Bug 2) — entries come back as ``@article{`` with
+            # an empty key. Inject the citekey we already resolved above.
+            return _inject_citekey(bibtex_str, citation_key)
 
         except Exception as e:
             print(f"Error exporting BibTeX: {e}")
