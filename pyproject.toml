@@ -52,6 +52,7 @@ dev = [
     "zotero-mcp-server[all]",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21",
+    "pytest-timeout>=2.0.0",
     "ruff>=0.9.0",
 ]
 
@@ -79,3 +80,11 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP"]
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+timeout = 30
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
