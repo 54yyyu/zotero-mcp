@@ -28,9 +28,7 @@ jobs:
           python -m pip install pytest pytest-timeout fastmcp pyzotero python-dotenv markitdown[pdf] chromadb unidecode bibtexparser tiktoken
           python -m pip install -e . --no-deps
       - name: Run tests
-        run: |
-          mkdir -p /tmp/pytest_tmp
-          pytest --basetemp=/tmp/pytest_tmp --ignore=tests/test_lifespan.py
+        run: pytest --ignore=tests/test_lifespan.py
 
   build:
     needs: test
