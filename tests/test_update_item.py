@@ -321,8 +321,13 @@ class TestUpdateItemTags:
 
 class TestUpdateItemCollections:
 
-    def test_collection_names_resolved(self, monkeypatch):
-        """collection_names should resolve names to keys and add them."""
+    def test_collection_names_resolved_replaces_membership(self, monkeypatch):
+        """collection_names should resolve to keys and REPLACE membership (#231).
+
+        Previously this parameter was additive; that contradicted both the
+        docstring ("REPLACE collection memberships") and the tags semantics
+        on the same tool. Use zotero_manage_collections for incremental moves.
+        """
         item = _make_item(collections=["EXISTCOL"])
         fake = FakeZoteroForUpdate(
             items=[item],
@@ -341,9 +346,61 @@ class TestUpdateItemCollections:
         )
 
         updated_colls = fake.update_calls[0]["data"]["collections"]
-        # Should contain BOTH the existing collection and the resolved one
-        assert "EXISTCOL" in updated_colls
-        assert "COL001" in updated_colls
+        # Replaces the prior ["EXISTCOL"] with the resolved single-element set.
+        assert updated_colls == ["COL001"]
+
+    def test_collections_replace_clears_with_empty_list(self, monkeypatch):
+        """collections=[] should clear membership (#231 repro)."""
+        item = _make_item(collections=["EXISTCOL"])
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            collections=[],
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["collections"] == []
+        assert "replaced ['EXISTCOL'] -> []" in result
+
+    def test_collections_keys_replace_membership(self, monkeypatch):
+        """collections=[KEY] should drop any prior memberships, not merge."""
+        item = _make_item(collections=["OLDCOLL1", "OLDCOLL2"])
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(
+            item_key="ABCD1234",
+            collections=["NEWCOLL1"],
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["collections"] == ["NEWCOLL1"]
+
+    def test_collections_and_collection_names_union(self, monkeypatch):
+        """When both are passed, the new membership is the union of resolved keys."""
+        item = _make_item(collections=["OLD"])
+        fake = FakeZoteroForUpdate(
+            items=[item],
+            collections=[{"key": "COL001", "data": {"name": "My Papers"}}],
+        )
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(
+            item_key="ABCD1234",
+            collections=["KEY12345"],
+            collection_names=["My Papers"],
+            ctx=DummyContext(),
+        )
+
+        updated = fake.update_calls[0]["data"]["collections"]
+        assert set(updated) == {"KEY12345", "COL001"}
+        # OLD is gone — replace, not additive.
+        assert "OLD" not in updated
 
     def test_collection_names_unknown_raises_error(self, monkeypatch):
         """Unknown collection name should produce an error."""
@@ -616,8 +673,12 @@ class TestUpdateItemFieldVariants:
 
         assert fake.update_calls[0]["data"]["creators"] == new_creators
 
-    def test_collections_additive(self, monkeypatch):
-        """collections= adds to existing collections (does not replace)."""
+    def test_collections_replaces_membership(self, monkeypatch):
+        """collections= REPLACES the existing membership (#231).
+
+        For incremental moves the caller should use
+        zotero_manage_collections instead.
+        """
         item = _make_item(collections=["OLD_COL"])
         fake = FakeZoteroForUpdate(items=[item])
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
@@ -630,9 +691,8 @@ class TestUpdateItemFieldVariants:
         )
 
         updated_colls = fake.update_calls[0]["data"]["collections"]
-        assert "OLD_COL" in updated_colls  # existing collection preserved
-        assert "NEW_COL1" in updated_colls
-        assert "NEW_COL2" in updated_colls
+        assert updated_colls == ["NEW_COL1", "NEW_COL2"]
+        assert "OLD_COL" not in updated_colls
 
 
 # ---------------------------------------------------------------------------
