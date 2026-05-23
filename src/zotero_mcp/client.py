@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 from dotenv import load_dotenv
 from markitdown import MarkItDown
 from pyzotero import zotero
@@ -59,6 +60,21 @@ def clear_active_library() -> None:
 def get_active_library() -> dict[str, str]:
     """Return the current active library override (empty dict if using defaults)."""
     return dict(_active_library_override)
+
+
+def _make_local_http_client() -> httpx.Client:
+    """Return an httpx.Client pinned to HTTP/1.1 for the local Zotero server.
+
+    Zotero 8's local server (port 23119) only speaks HTTP/1.0. httpx defaults
+    to attempting HTTP/2 negotiation, which the local server rejects with 502
+    Bad Gateway — every tool call fails even though the MCP starts cleanly
+    (#160). Forcing http1=True / http2=False on the transport keeps requests
+    on HTTP/1.1 and the local API answers normally.
+    """
+    return httpx.Client(
+        transport=httpx.HTTPTransport(http1=True, http2=False),
+        follow_redirects=True,
+    )
 
 
 @dataclass
@@ -116,6 +132,7 @@ def get_zotero_client() -> zotero.Zotero:
         library_type=library_type,
         api_key=api_key,
         local=local,
+        client=_make_local_http_client() if local else None,
     )
 
 
@@ -131,12 +148,15 @@ def get_local_zotero_client() -> zotero.Zotero | None:
         A local Zotero client instance, or None if local Zotero is not available.
     """
     try:
-        # Create a local client - library_id 0 is the default for local
+        # Create a local client - library_id 0 is the default for local.
+        # HTTP/1.1-only transport for compatibility with Zotero 8's local
+        # server (#160) — httpx default HTTP/2 negotiation returns 502.
         client = zotero.Zotero(
             library_id="0",
             library_type="user",
             api_key=None,
             local=True,
+            client=_make_local_http_client(),
         )
         # Test connection by making a simple request
         client.items(limit=1)
