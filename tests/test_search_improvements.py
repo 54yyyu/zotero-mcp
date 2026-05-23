@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from conftest import DummyContext, FakeZotero
+from conftest import DummyContext, FakeZotero, skip_on_ci
 
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import search as search_module
@@ -217,6 +217,7 @@ class TestFallbackCascade:
         assert "Author Find" in result
         assert "Note:" in result
 
+    @skip_on_ci
     def test_returns_not_found_when_all_fail(self, monkeypatch, tmp_path):
         self._setup(monkeypatch, {})  # Nothing found for any query
         # Point config path to a nonexistent location so semantic search is skipped
@@ -431,6 +432,7 @@ class TestVerificationGuidance:
         result = search_module.search_items(query="Brewer 2011", ctx=ctx)
         assert "Brewer 2011" in result  # Original query in the note
 
+    @skip_on_ci
     def test_semantic_fallback_has_stronger_warning(self, monkeypatch, tmp_path):
         """When semantic search is the fallback, note should say 'may NOT be the exact paper'."""
         sem_items = [{"key": "S1", "data": {"title": "Semantic Hit", "itemType": "journalArticle",

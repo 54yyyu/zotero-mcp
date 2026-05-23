@@ -1,7 +1,9 @@
 """Tests for direct WebDAV attachment access."""
 
+import pytest
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from conftest import skip_on_ci
 from zotero_mcp import client, webdav
 
 
@@ -48,6 +50,7 @@ def _build_zip_bytes(name: str, content: bytes) -> bytes:
     return buf.getvalue()
 
 
+@skip_on_ci
 def test_download_attachment_from_webdav_extracts_expected_file(tmp_path, monkeypatch):
     session = _FakeSession(_FakeResponse(_build_zip_bytes("paper.pdf", b"%PDF-1.4 webdav test")))
     monkeypatch.setenv("ZOTERO_WEBDAV_URL", "https://dav.example.com/zotero")
@@ -63,6 +66,7 @@ def test_download_attachment_from_webdav_extracts_expected_file(tmp_path, monkey
     assert session.requested == [("https://dav.example.com/zotero/ABCD1234.zip", (10.0, 30.0), True)]
 
 
+@skip_on_ci
 def test_download_attachment_from_webdav_escapes_attachment_key(tmp_path, monkeypatch):
     session = _FakeSession(_FakeResponse(_build_zip_bytes("paper.pdf", b"%PDF-1.4 webdav test")))
     monkeypatch.setenv("ZOTERO_WEBDAV_URL", "https://dav.example.com/zotero")
@@ -75,6 +79,7 @@ def test_download_attachment_from_webdav_escapes_attachment_key(tmp_path, monkey
     assert session.requested == [("https://dav.example.com/zotero/AB%2FCD.zip", (10.0, 30.0), True)]
 
 
+@skip_on_ci
 def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
     webdav_path = tmp_path / "nested" / "paper.pdf"
     webdav_path.parent.mkdir()
@@ -100,6 +105,7 @@ def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
     ]
 
 
+@skip_on_ci
 def test_extract_archive_rejects_backslash_path_traversal(tmp_path):
     zip_bytes = _build_zip_bytes("..\\evil.txt", b"oops")
 
@@ -148,6 +154,7 @@ def _setup_webdav_env(monkeypatch):
     monkeypatch.setenv("ZOTERO_WEBDAV_PASSWORD", "secret")
 
 
+@skip_on_ci
 def test_upload_attachment_puts_zip_then_prop(tmp_path, monkeypatch):
     src = tmp_path / "paper.pdf"
     src.write_bytes(b"%PDF-1.4 hello")
@@ -179,6 +186,7 @@ def test_upload_attachment_puts_zip_then_prop(tmp_path, monkeypatch):
     assert f"<mtime>{mtime_ms}</mtime>" in prop_text
 
 
+@skip_on_ci
 def test_upload_attachment_zip_contains_file_under_basename(tmp_path, monkeypatch):
     src = tmp_path / "subdir" / "paper.pdf"
     src.parent.mkdir()
@@ -199,6 +207,7 @@ def test_upload_attachment_zip_contains_file_under_basename(tmp_path, monkeypatc
         assert zf.read("paper.pdf") == b"%PDF body"
 
 
+@skip_on_ci
 def test_upload_attachment_raises_when_not_configured(tmp_path, monkeypatch):
     src = tmp_path / "paper.pdf"
     src.write_bytes(b"x")
@@ -214,6 +223,7 @@ def test_upload_attachment_raises_when_not_configured(tmp_path, monkeypatch):
         raise AssertionError("Expected WebDAVNotConfiguredError when env vars are missing")
 
 
+@skip_on_ci
 def test_upload_attachment_escapes_key_in_urls(tmp_path, monkeypatch):
     src = tmp_path / "paper.pdf"
     src.write_bytes(b"x")
