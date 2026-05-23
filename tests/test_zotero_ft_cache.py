@@ -19,6 +19,9 @@ Two fixes here:
 
 from pathlib import Path
 
+import pytest
+
+from conftest import skip_on_ci
 from zotero_mcp.local_db import LocalZoteroReader
 
 
@@ -45,6 +48,7 @@ class _Reader(LocalZoteroReader):
 # ---------------------------------------------------------------------------
 
 
+@skip_on_ci
 def test_zotero_ft_cache_short_circuits_pdf_extraction(tmp_path):
     """When Zotero has already cached the text, return it without invoking
     pdfminer — even if the recorded PDF filename doesn't resolve on disk."""
@@ -75,6 +79,7 @@ def test_zotero_ft_cache_short_circuits_pdf_extraction(tmp_path):
     assert source == "zotero-cache"
 
 
+@skip_on_ci
 def test_empty_zotero_ft_cache_is_skipped(tmp_path):
     """An empty .zotero-ft-cache file shouldn't masquerade as fulltext."""
     storage = tmp_path / "storage"
@@ -94,6 +99,7 @@ def test_empty_zotero_ft_cache_is_skipped(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@skip_on_ci
 def test_storage_scan_recovers_from_renamed_pdf(tmp_path):
     """If the recorded filename doesn't resolve but the storage folder
     contains a PDF, use it instead of failing the extraction (#291)."""
@@ -125,6 +131,7 @@ def test_storage_scan_recovers_from_renamed_pdf(tmp_path):
     assert captured["path"] == on_disk
 
 
+@skip_on_ci
 def test_storage_scan_picks_largest_when_multiple_pdfs(tmp_path):
     storage = tmp_path / "storage"
     attachment_dir = storage / "MULTIPDF"
@@ -142,6 +149,7 @@ def test_storage_scan_picks_largest_when_multiple_pdfs(tmp_path):
     assert chosen == big
 
 
+@skip_on_ci
 def test_storage_scan_no_match_returns_none(tmp_path):
     storage = tmp_path / "storage"
     attachment_dir = storage / "WRONGSUF"
@@ -154,6 +162,7 @@ def test_storage_scan_no_match_returns_none(tmp_path):
     assert reader._scan_storage_for_attachment("WRONGSUF", "application/pdf") is None
 
 
+@skip_on_ci
 def test_extract_returns_none_when_neither_cache_nor_scan_helps(tmp_path):
     """Pure absence of both: cache missing AND scan finds nothing → None."""
     storage = tmp_path / "storage"

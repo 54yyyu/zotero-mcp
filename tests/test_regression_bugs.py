@@ -26,6 +26,9 @@ class TestManageCollectionsPayloadShape:
             def item(self, key):
                 return {"key": key, "version": 1, "data": {"collections": []}}
 
+            def collection(self, key):
+                return {"key": key, "data": {"name": "Test Collection", "deleted": False}}
+
             def addto_collection(self, coll_key, payload, **kw):
                 received.append(payload)
                 return _FakeResponse(204)
