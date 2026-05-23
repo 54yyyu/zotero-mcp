@@ -681,6 +681,22 @@ def add_by_doi(
             item_key = next(iter(result["success"].values()))
             title = item_data.get("title", normalized)
 
+            # Defensive: pyzotero's atomic ``item["collections"]`` filing is
+            # intermittent (#235) — reconcile membership before reporting success
+            # so the caller sees the real routing state.
+            missing = _helpers.ensure_collection_membership(
+                write_zot, item_key, coll_keys, ctx=ctx
+            )
+            if coll_keys and missing:
+                collections_status = (
+                    f"Filed in {sorted(set(coll_keys) - set(missing))}; "
+                    f"FAILED to file in {missing}"
+                )
+            elif coll_keys:
+                collections_status = f"Filed in {coll_keys}"
+            else:
+                collections_status = "My Library (no collection)"
+
             # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
             pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
                                             crossref_metadata=cr,
@@ -691,6 +707,7 @@ def add_by_doi(
                 f"Item key: `{item_key}`\n"
                 f"Type: {zot_type}\n"
                 f"DOI: {normalized}\n"
+                f"Collections: {collections_status}\n"
                 f"PDF: {pdf_status}\n\n"
                 "_Note: To include this item in semantic search, run "
                 "zotero_update_search_database._"
