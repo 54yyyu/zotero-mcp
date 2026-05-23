@@ -1,23 +1,22 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
-from typing import Annotated, Literal
 import json
 import os
 import re
 import tempfile
-import xml.etree.ElementTree as ET
-
 import time as _time
+import xml.etree.ElementTree as ET
+from typing import Annotated, Literal
 
 import requests
 from pydantic import Field
 
-from zotero_mcp._context import Context
-from zotero_mcp._app import mcp
-from zotero_mcp import client as _client
-from zotero_mcp.client import with_zotero_api_lock
-from zotero_mcp import utils as _utils
 from zotero_mcp import citation_import as _citation_import
+from zotero_mcp import client as _client
+from zotero_mcp import utils as _utils
+from zotero_mcp._app import mcp
+from zotero_mcp._context import Context
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
@@ -362,6 +361,9 @@ def delete_collection(
         "searches. Leading/trailing whitespace is ignored and empty words "
         "are dropped. "
         "Returns the collection's key plus its parent (if any). "
+        "include_trashed: when True, also match collections currently in "
+        "the Zotero Trash (results annotated as such). Default False — "
+        "trashed collections are otherwise invisible to automated clients. "
         "Performance: scans all collections in the active library (O(n)); "
         "for very large libraries expect a full-list pagination under the "
         "hood. "
@@ -372,6 +374,7 @@ def delete_collection(
 @with_zotero_api_lock
 def search_collections(
     query: str,
+    include_trashed: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -380,6 +383,15 @@ def search_collections(
         ctx.info(f"Searching collections for '{query}'")
 
         collections = _helpers._paginate(zot.collections)
+        trashed_keys: set[str] = set()
+        if include_trashed:
+            trashed = _helpers.fetch_trashed_collections(zot)
+            existing_keys = {c.get("key") for c in collections}
+            for coll in trashed:
+                key = coll.get("key")
+                if key and key not in existing_keys:
+                    trashed_keys.add(key)
+                    collections.append(coll)
         if not collections:
             return "No collections found in your Zotero library."
 
@@ -397,7 +409,8 @@ def search_collections(
             name = coll["data"].get("name", "Unnamed")
             key = coll["key"]
             parent_key = coll["data"].get("parentCollection")
-            lines.append(f"## {i}. {name}")
+            trash_marker = " *[trashed]*" if key in trashed_keys else ""
+            lines.append(f"## {i}. {name}{trash_marker}")
             lines.append(f"**Key:** `{key}`")
             if parent_key:
                 try:
@@ -445,6 +458,30 @@ def manage_collections(
             return "Error: No item keys provided."
         if not add_colls and not remove_colls:
             return "Error: Must specify add_to and/or remove_from."
+
+        # Validate collection keys before doing any work — Zotero will happily
+        # accept add/remove against a trashed collection, leaving items
+        # parented under an invisible bucket so the caller sees "success" but
+        # nothing renders in the desktop client (#233).
+        validation_errors: list[str] = []
+        for coll_key in list(add_colls) + list(remove_colls):
+            trashed = _helpers.is_collection_trashed(write_zot, coll_key)
+            if trashed is None:
+                validation_errors.append(
+                    f"Collection '{coll_key}' was not found in the active "
+                    f"library. Use zotero_search_collections (with "
+                    f"include_trashed=True if needed) to find a valid key."
+                )
+            elif trashed:
+                validation_errors.append(
+                    f"Collection '{coll_key}' is in the Trash. Restore it "
+                    f"in Zotero (or create a new collection) before adding "
+                    f"or removing items — the underlying API will accept "
+                    f"the call but the change won't be visible in the "
+                    f"normal collection tree."
+                )
+        if validation_errors:
+            return "Error:\n" + "\n".join(validation_errors)
 
         results = []
 
@@ -1368,7 +1405,7 @@ def update_item(
                 + "\n".join(changes)
             )
             return result + skip_warning
-        return f"Failed to update item: write operation returned failure"
+        return "Failed to update item: write operation returned failure"
 
     except ValueError as e:
         return f"Input error: {e}"
@@ -2124,13 +2161,13 @@ def add_item_relation(
         # Fetch the primary item
         try:
             item = write_zot.item(item_key)
-        except Exception as e:
+        except Exception:
             return f"Error: Item '{item_key}' not found."
 
         # Verify the related item exists
         try:
             related_item = write_zot.item(related_item_key)
-        except Exception as e:
+        except Exception:
             return f"Error: Related item '{related_item_key}' not found."
 
         data = item.get("data", {})
@@ -2239,7 +2276,7 @@ def remove_item_relation(
         # Fetch the primary item
         try:
             item = write_zot.item(item_key)
-        except Exception as e:
+        except Exception:
             return f"Error: Item '{item_key}' not found."
 
         data = item.get("data", {})

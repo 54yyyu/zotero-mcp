@@ -9,12 +9,10 @@ the tool functions (create_collection, search_collections, manage_collections)
 are added to server.py.
 """
 
-import json
 import pytest
-
 from conftest import DummyContext, FakeZotero
-from zotero_mcp import server
 
+from zotero_mcp import server
 
 # ---------------------------------------------------------------------------
 # Extended FakeZotero for collection tests
@@ -432,6 +430,7 @@ class TestManageCollections:
             {"key": "COL001", "data": {"name": "Test", "parentCollection": False}},
         ]
         write_zot = FakeZoteroCollections()
+        write_zot._collections = list(read_zot._collections)  # both endpoints see the same collections
         write_zot._items = [
             {
                 "key": "ITEM0001",
