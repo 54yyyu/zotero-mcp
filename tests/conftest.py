@@ -4,15 +4,35 @@ import os
 import pytest
 
 
-@pytest.fixture(scope="session", autouse=True)
-def ensure_tmp_path_factory_basetemp(tmp_path_factory):
-    """Ensure pytest's basetemp directory exists before any test runs.
+def pytest_configure(config):
+    """Ensure pytest's basetemp parent directory exists before collection.
 
-    Works around a race condition on some CI runners where the basetemp
-    parent directory doesn't exist when pytest tries to enumerate it.
+    Works around an issue on GitHub Actions where the basetemp directory
+    can disappear mid-session, causing tmp_path fixture to fail.
     """
-    basetemp = tmp_path_factory.getbasetemp()
-    basetemp.mkdir(parents=True, exist_ok=True)
+    import getpass
+    import tempfile
+    from pathlib import Path
+
+    user = getpass.getuser()
+    basetemp_parent = Path(tempfile.gettempdir()) / f"pytest-of-{user}"
+    basetemp_parent.mkdir(parents=True, exist_ok=True)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """Re-ensure basetemp exists before each test that uses tmp_path."""
+    if "tmp_path" in item.fixturenames:
+        import getpass
+        import tempfile
+        from pathlib import Path
+
+        user = getpass.getuser()
+        basetemp_parent = Path(tempfile.gettempdir()) / f"pytest-of-{user}"
+        basetemp_parent.mkdir(parents=True, exist_ok=True)
+        # Also try to create pytest-0 if it doesn't exist
+        basetemp = basetemp_parent / "pytest-0"
+        basetemp.mkdir(parents=True, exist_ok=True)
 
 
 class DummyContext:
