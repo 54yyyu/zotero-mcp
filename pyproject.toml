@@ -82,7 +82,6 @@ select = ["E", "F", "W", "I", "UP"]
 ignore = ["E501"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "strict"
 timeout = 30
 testpaths = ["tests"]
 filterwarnings = [
