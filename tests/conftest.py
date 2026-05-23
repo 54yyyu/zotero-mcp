@@ -1,6 +1,18 @@
 """Shared test fixtures for Zotero MCP tests."""
 
+import os
 import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_tmp_path_factory_basetemp(tmp_path_factory):
+    """Ensure pytest's basetemp directory exists before any test runs.
+
+    Works around a race condition on some CI runners where the basetemp
+    parent directory doesn't exist when pytest tries to enumerate it.
+    """
+    basetemp = tmp_path_factory.getbasetemp()
+    basetemp.mkdir(parents=True, exist_ok=True)
 
 
 class DummyContext:
