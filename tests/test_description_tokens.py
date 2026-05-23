@@ -71,7 +71,7 @@ def _collect_tool_descriptions():
     root = Path(__file__).resolve().parents[1] / "src" / "zotero_mcp" / "tools"
     files = sorted(root.glob("*.py"))
 
-    block_re = re.compile(r"@mcp\.tool\(\s*(.*?)\n\)\s*\n(?:async\s+)?def ", re.DOTALL)
+    block_re = re.compile(r"@mcp\.tool\(\s*(.*?)\n\s*\)(?:\s*\n@[\w.]+(?:\([^)]*\))?)*\s*\n(?:async\s+)?def ", re.DOTALL)
     name_re = re.compile(r'name="([^"]+)"')
 
     descriptions: dict[str, str] = {}

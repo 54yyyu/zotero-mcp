@@ -24,10 +24,10 @@ load_dotenv()
 
 # Serialize all Zotero API access. The local API (port 23119) is single-threaded;
 # concurrent requests from parallel MCP tool threads queue at the network layer and
-# risk hitting pyzotero's 30s timeout. A process-local semaphore ensures only one
+# risk hitting pyzotero's 30s timeout. A process-local lock ensures only one
 # request is in-flight at a time — the rest queue in-process (microseconds) instead
-# of at the API (seconds/timeout).
-_zotero_api_lock = threading.Semaphore(1)
+# of at the API (seconds/timeout). RLock allows nested calls from the same thread.
+_zotero_api_lock = threading.RLock()
 
 
 def with_zotero_api_lock(func):
