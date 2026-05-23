@@ -86,6 +86,23 @@ CROSSREF_TYPE_MAP = {
 # Write-operation helpers
 # ---------------------------------------------------------------------------
 
+def apply_library_override(zot, override: dict | None) -> None:
+    """Apply an active-library override to *zot* in place.
+
+    pyzotero uses ``library_type`` as a URL path segment and expects the
+    plural form (``users`` / ``groups``), but the runtime override stores
+    the singular form (``user`` / ``group``) as used by Zotero's switch-
+    library tool. Without the normalization below, writes against a group
+    library hit ``/group/{id}/items`` and 404.
+    """
+    if not override:
+        return
+    zot.library_id = override.get("library_id", zot.library_id)
+    raw_type = override.get("library_type")
+    if raw_type:
+        zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
+
+
 def _get_write_client(ctx):
     """Return (read_client, write_client) for hybrid-mode operations.
 
@@ -98,15 +115,7 @@ def _get_write_client(ctx):
         return read_zot, read_zot
     web_zot = _client.get_web_zotero_client()
     if web_zot is not None:
-        override = _client.get_active_library()
-        if override:
-            web_zot.library_id = override.get("library_id", web_zot.library_id)
-            # pyzotero stores library_type with trailing "s" (e.g. "users", "groups")
-            # but the override stores the raw value (e.g. "user", "group"),
-            # so we must append "s" to match pyzotero's internal convention.
-            raw_type = override.get("library_type")
-            if raw_type:
-                web_zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
+        apply_library_override(web_zot, _client.get_active_library())
         return read_zot, web_zot
     raise ValueError(
         "Cannot perform write operations in local-only mode. "

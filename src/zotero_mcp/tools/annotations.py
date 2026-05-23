@@ -69,10 +69,7 @@ def _get_note_write_client(op_description: str):
                 "Please configure the following environment variables:\n"
                 + _WEB_API_ENV_VARS
             )
-        override = _client.get_active_library()
-        if override:
-            zot.library_id = override.get("library_id", zot.library_id)
-            zot.library_type = override.get("library_type", zot.library_type)
+        _helpers.apply_library_override(zot, _client.get_active_library())
     else:
         zot = _client.get_zotero_client()
     return zot, None
@@ -999,10 +996,7 @@ def create_note(
             web_zot = _client.get_web_zotero_client()
             if web_zot is not None:
                 # Propagate library override if user switched libraries
-                override = _client.get_active_library()
-                if override:
-                    web_zot.library_id = override.get("library_id", web_zot.library_id)
-                    web_zot.library_type = override.get("library_type", web_zot.library_type)
+                _helpers.apply_library_override(web_zot, _client.get_active_library())
                 result = web_zot.create_items([note_data])
                 if "success" in result and result["success"]:
                     successful = result["success"]
@@ -1272,10 +1266,7 @@ def create_annotation(
 
         # Propagate library override if user switched libraries
         if web_client:
-            override = _client.get_active_library()
-            if override:
-                web_client.library_id = override.get("library_id", web_client.library_id)
-                web_client.library_type = override.get("library_type", web_client.library_type)
+            _helpers.apply_library_override(web_client, _client.get_active_library())
 
         # REQUIREMENT: Web API is required for creating annotations
         # Zotero's local API (port 23119) is read-only
@@ -1573,10 +1564,7 @@ def create_area_annotation(
         web_client = _client.get_web_zotero_client()
 
         if web_client:
-            override = _client.get_active_library()
-            if override:
-                web_client.library_id = override.get("library_id", web_client.library_id)
-                web_client.library_type = override.get("library_type", web_client.library_type)
+            _helpers.apply_library_override(web_client, _client.get_active_library())
 
         if not web_client:
             return (
