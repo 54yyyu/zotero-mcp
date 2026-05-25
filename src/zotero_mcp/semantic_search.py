@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -173,6 +174,25 @@ class ZoteroSemanticSearch:
             except Exception as e:
                 logger.warning(f"Error loading update config: {e}")
 
+        return config
+
+    def _load_throttle_config(self) -> dict[str, Any]:
+        """Load embedding throttle config (burst_items, pause_seconds).
+
+        Reads `semantic_search.throttle` from the config file. Both fields
+        default to None, which disables throttling. Explicit CLI args
+        override these values upstream.
+        """
+        config: dict[str, Any] = {"burst_items": None, "pause_seconds": None}
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f)
+                    config.update(
+                        file_config.get("semantic_search", {}).get("throttle", {})
+                    )
+            except Exception as e:
+                logger.warning(f"Error loading throttle config: {e}")
         return config
 
     def _load_include_fulltext_setting(self) -> bool:
@@ -1034,7 +1054,9 @@ class ZoteroSemanticSearch:
                        force_full_rebuild: bool = False,
                        limit: int | None = None,
                        extract_fulltext: bool = False,
-                       include_fulltext: bool | None = None) -> dict[str, Any]:
+                       include_fulltext: bool | None = None,
+                       burst_items: int | None = None,
+                       pause_seconds: float | None = None) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
 
@@ -1048,6 +1070,14 @@ class ZoteroSemanticSearch:
                 `semantic_search.include_fulltext` config setting (True
                 unless explicitly disabled). Ignored in local mode since
                 `extract_fulltext` provides richer local extraction.
+            burst_items: Pause after embedding this many items to stay
+                within API rate limits. None falls back to the
+                `semantic_search.throttle.burst_items` config value;
+                if both are unset, no pacing is applied.
+            pause_seconds: Seconds to sleep between bursts. None falls
+                back to `semantic_search.throttle.pause_seconds`. Both
+                burst_items AND pause_seconds must resolve to truthy
+                values to engage throttling.
 
         Returns:
             Update statistics
@@ -1195,6 +1225,26 @@ class ZoteroSemanticSearch:
             batch_size = 25
             seen_items = 0
             _failed_docs = []  # Collect failures for end-of-run retry
+
+            # Resolve effective throttle settings: explicit args > config.
+            throttle_cfg = self._load_throttle_config()
+            effective_burst = burst_items if burst_items is not None else throttle_cfg.get("burst_items")
+            effective_pause = pause_seconds if pause_seconds is not None else throttle_cfg.get("pause_seconds")
+            throttle_on = bool(effective_burst) and effective_pause is not None and effective_pause > 0
+            if throttle_on:
+                try:
+                    sys.stderr.write(
+                        f"  Throttle: burst {int(effective_burst)} items, then pause {float(effective_pause):g}s\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+            elif (burst_items is not None) ^ (pause_seconds is not None):
+                logger.warning(
+                    "Throttle requires BOTH --burst and --pause; only one was set, running without pacing."
+                )
+            items_since_pause = 0
+
             for i in range(0, len(all_items), batch_size):
                 batch = all_items[i:i + batch_size]
 
@@ -1220,6 +1270,22 @@ class ZoteroSemanticSearch:
                 stats["errors"] += batch_stats["errors"]
 
                 logger.info(f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})")
+
+                # Throttle: pause between bursts to stay under API rate limits.
+                # Skip the pause when no items remain (final iteration).
+                if throttle_on:
+                    items_since_pause += len(batch)
+                    more_items_left = (i + batch_size) < len(all_items)
+                    if items_since_pause >= int(effective_burst) and more_items_left:
+                        try:
+                            sys.stderr.write(
+                                f"\n  Throttle: pausing {float(effective_pause):g}s after {items_since_pause} items...\n"
+                            )
+                            sys.stderr.flush()
+                        except Exception:
+                            pass
+                        time.sleep(float(effective_pause))
+                        items_since_pause = 0
 
             # Retry any documents that failed during the main run
             if _failed_docs:

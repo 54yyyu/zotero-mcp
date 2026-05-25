@@ -221,6 +221,13 @@ def main():
                                  help="Path to semantic search configuration file")
     update_db_parser.add_argument("--db-path",
                                  help="Path to Zotero database file (zotero.sqlite), overrides config")
+    update_db_parser.add_argument("--burst", type=int, default=None,
+                                 help="Embedding rate-limit pacing: pause after this many items per burst. "
+                                      "Falls back to semantic_search.throttle.burst_items in config. "
+                                      "Both --burst and --pause must be set to engage throttling.")
+    update_db_parser.add_argument("--pause", type=float, default=None,
+                                 help="Embedding rate-limit pacing: seconds to sleep between bursts. "
+                                      "Falls back to semantic_search.throttle.pause_seconds in config.")
 
     # Database status command
     db_status_parser = subparsers.add_parser("db-status", help="Show semantic search database status")
@@ -416,7 +423,9 @@ def main():
             stats = search.update_database(
                 force_full_rebuild=args.force_rebuild,
                 limit=args.limit,
-                extract_fulltext=args.fulltext
+                extract_fulltext=args.fulltext,
+                burst_items=args.burst,
+                pause_seconds=args.pause,
             )
 
             print(f"\nDatabase update completed:")

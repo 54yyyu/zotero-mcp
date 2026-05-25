@@ -6,10 +6,12 @@ for semantic search over Zotero libraries.
 """
 
 import json
+import logging
 import os
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-import logging
 
 try:
     import chromadb
@@ -24,6 +26,53 @@ except ImportError as e:
 from zotero_mcp.utils import suppress_stdout
 
 logger = logging.getLogger(__name__)
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Detect a rate-limit / quota error across OpenAI and Gemini SDK shapes.
+
+    Checks (in order): structured attributes (.code / .status_code == 429),
+    canonical substrings in str(exc) ("RESOURCE_EXHAUSTED" or "429"), and
+    openai.RateLimitError if the openai SDK is importable. The substring
+    checks are intentionally narrow to avoid false positives from arbitrary
+    user-facing messages that mention "rate limit".
+    """
+    if getattr(exc, "code", None) == 429:
+        return True
+    if getattr(exc, "status_code", None) == 429:
+        return True
+    msg = str(exc)
+    if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+        return True
+    try:
+        import openai
+        if isinstance(exc, openai.RateLimitError):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _with_retry(call: Callable, *, max_attempts: int = 3, base_sleep: float = 30.0):
+    """Retry `call` with exponential backoff on rate-limit errors.
+
+    Default schedule: 30s → 60s → 120s. The first wait is 30s (not 1s)
+    because Gemini's TPM/RPM windows are 60s — anything shorter is wasted.
+    Non rate-limit errors propagate immediately. The final attempt re-raises
+    so the caller sees the underlying exception.
+    """
+    for attempt in range(max_attempts):
+        try:
+            return call()
+        except Exception as exc:
+            if not _is_rate_limit_error(exc) or attempt == max_attempts - 1:
+                raise
+            sleep_s = base_sleep * (2 ** attempt)
+            logger.warning(
+                "Embedding rate-limited (%s); sleeping %.0fs before retry %d/%d",
+                type(exc).__name__, sleep_s, attempt + 2, max_attempts,
+            )
+            time.sleep(sleep_s)
 
 
 class OpenAIEmbeddingFunction(EmbeddingFunction):
@@ -64,10 +113,10 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, input: Documents) -> Embeddings:
         """Generate embeddings using OpenAI API."""
-        response = self.client.embeddings.create(
+        response = _with_retry(lambda: self.client.embeddings.create(
             model=self.model_name,
             input=input
-        )
+        ))
         return [data.embedding for data in response.data]
 
     def embed_query(self, text: str) -> list[float]:
@@ -191,19 +240,19 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         for start in range(0, len(prepared), self.GEMINI_MAX_BATCH):
             batch = prepared[start:start + self.GEMINI_MAX_BATCH]
             if is_v2:
-                response = self.client.models.embed_content(
+                response = _with_retry(lambda b=batch: self.client.models.embed_content(
                     model=self.model_name,
-                    contents=batch,
-                )
+                    contents=b,
+                ))
             else:
-                response = self.client.models.embed_content(
+                response = _with_retry(lambda b=batch: self.client.models.embed_content(
                     model=self.model_name,
-                    contents=batch,
+                    contents=b,
                     config=self.types.EmbedContentConfig(
                         task_type="retrieval_document",
                         title="Zotero library document",
                     ),
-                )
+                ))
             embeddings.extend(e.values for e in response.embeddings)
         return embeddings
 
@@ -218,18 +267,18 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         text = self.truncate(text, self.max_input_tokens)
         if self._is_v2():
             prompt_text = f"{self.V2_QUERY_PREFIX}{text}"
-            response = self.client.models.embed_content(
+            response = _with_retry(lambda: self.client.models.embed_content(
                 model=self.model_name,
                 contents=[prompt_text],
-            )
+            ))
         else:
-            response = self.client.models.embed_content(
+            response = _with_retry(lambda: self.client.models.embed_content(
                 model=self.model_name,
                 contents=[text],
                 config=self.types.EmbedContentConfig(
                     task_type="retrieval_query",
                 ),
-            )
+            ))
         return response.embeddings[0].values
 
     def truncate(self, text: str, max_tokens: int) -> str:
