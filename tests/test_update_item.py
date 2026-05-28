@@ -972,3 +972,144 @@ class TestUpdateItemSkippedFields:
 
         assert len(fake.update_calls) == 0
         assert "No changes" in result
+
+
+# ---------------------------------------------------------------------------
+# Item-type change (e.g. webpage -> conferencePaper) + field application
+# ---------------------------------------------------------------------------
+
+def _make_webpage_item(key="IQ7MARZI", version=7, title="AFT 2025 Paper",
+                       url="https://drops.dagstuhl.de/aft2025/29", date="2025"):
+    """Build a webpage item — the wrong type that needs repairing."""
+    return {
+        "key": key,
+        "version": version,
+        "data": {
+            "key": key,
+            "version": version,
+            "itemType": "webpage",
+            "title": title,
+            "creators": [{"creatorType": "author",
+                          "firstName": "Ada", "lastName": "Lovelace"}],
+            "date": date,
+            "abstractNote": "",
+            "url": url,
+            "accessDate": "2025-01-01",
+            "websiteTitle": "Dagstuhl",
+            "tags": [{"tag": "defi"}],
+            "collections": ["COL1"],
+            "DOI": "",
+            "extra": "",
+            "relations": {},
+        },
+    }
+
+
+class TestUpdateItemTypeChange:
+
+    def test_webpage_to_conference_paper_applies_fields(self, monkeypatch):
+        """item_type change applies book_title/volume/pages that would
+        otherwise be silently skipped on a webpage item."""
+        item = _make_webpage_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="IQ7MARZI",
+            item_type="conferencePaper",
+            book_title="7th Conference on Advances in Financial Technologies (AFT 2025)",
+            volume="354",
+            pages="29:1--29:22",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.update_calls) == 1
+        d = fake.update_calls[0]["data"]
+        assert d["itemType"] == "conferencePaper"
+        # book_title lands in the conferencePaper venue field, NOT skipped
+        assert d["proceedingsTitle"] == \
+            "7th Conference on Advances in Financial Technologies (AFT 2025)"
+        assert d["volume"] == "354"
+        assert d["pages"] == "29:1--29:22"
+        assert "Successfully" in result
+        assert "Skipped" not in result
+
+    def test_type_change_carries_over_compatible_fields(self, monkeypatch):
+        """Compatible fields + creators/tags/collections survive the type
+        change; fields invalid for the new type are dropped."""
+        item = _make_webpage_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(
+            item_key="IQ7MARZI",
+            item_type="conferencePaper",
+            volume="354",
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        assert d["title"] == "AFT 2025 Paper"
+        assert d["url"].startswith("https://")
+        assert d["date"] == "2025"
+        assert d["creators"][0]["lastName"] == "Lovelace"
+        assert [t["tag"] for t in d["tags"]] == ["defi"]
+        assert d["collections"] == ["COL1"]
+        # webpage-only field dropped (not valid for conferencePaper)
+        assert "websiteTitle" not in d
+
+    def test_type_change_preserves_version(self, monkeypatch):
+        """The item version must survive a type change for optimistic locking."""
+        item = _make_webpage_item(version=42)
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(
+            item_key="IQ7MARZI",
+            item_type="conferencePaper",
+            volume="354",
+            ctx=DummyContext(),
+        )
+
+        sent = fake.update_calls[0]
+        assert sent["version"] == 42
+        assert sent["data"]["version"] == 42
+
+    def test_type_change_reported_in_diff(self, monkeypatch):
+        item = _make_webpage_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="IQ7MARZI",
+            item_type="conferencePaper",
+            volume="354",
+            ctx=DummyContext(),
+        )
+
+        assert "itemType" in result
+        assert "webpage" in result
+        assert "conferencePaper" in result
+
+    def test_same_type_no_rebuild(self, monkeypatch):
+        """Passing item_type equal to the current type behaves like a normal
+        update with no spurious type-change entry."""
+        item = _make_item(title="Old")  # journalArticle
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            item_type="journalArticle",
+            title="New",
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        assert d["title"] == "New"
+        assert "itemType" not in result

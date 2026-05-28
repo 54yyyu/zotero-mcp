@@ -729,13 +729,36 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "edition": "edition",
     "ISBN": "isbn",
     "bookTitle": "book_title",
+    "proceedingsTitle": "book_title",
+    "conferenceName": "conference_name",
+    "place": "place",
+    "series": "series",
 }
+
+
+# The Zotero field that holds the container / venue title depends on the item
+# type: bookSection uses "bookTitle" while conferencePaper uses
+# "proceedingsTitle". The generic `book_title` parameter is remapped to the
+# correct field so values land instead of being rejected as invalid for the type.
+_CONTAINER_TITLE_FIELD = {
+    "bookSection": "bookTitle",
+    "conferencePaper": "proceedingsTitle",
+}
+
+
+def _container_title_field(item_type: str | None) -> str:
+    """Return the Zotero field name that stores the container/venue title."""
+    return _CONTAINER_TITLE_FIELD.get(item_type or "", "bookTitle")
 
 
 @mcp.tool(
     name="zotero_update_item",
     description=(
         "Update metadata for an existing item in your Zotero library. "
+        "Pass item_type to convert the item to a different type (e.g. webpage -> "
+        "conferencePaper); fields valid for the new type (book_title, volume, pages, "
+        "etc.) are then applied instead of being skipped. For conferencePaper and "
+        "bookSection, book_title sets the venue/container title. "
         "To add tags without removing existing ones, use add_tags (not tags). "
         "To remove specific tags, use remove_tags. "
         "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes."
@@ -743,6 +766,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
 )
 def update_item(
     item_key: str,
+    item_type: str | None = None,
     title: str | None = None,
     creators: list[dict] | str | None = None,
     date: str | None = None,
@@ -789,6 +813,27 @@ def update_item(
         data = item.get("data", {})
         changes = []
 
+        # Optional item-type change: rebuild the data payload from the new
+        # type's template so only fields valid for that type are sent (Zotero
+        # rejects fields invalid for an item type), carrying over compatible
+        # existing values + creators/tags/collections/extra.
+        current_type = data.get("itemType")
+        if item_type is not None and item_type != current_type:
+            template = write_zot.item_template(item_type)
+            new_data = dict(template)
+            for field in list(new_data.keys()):
+                if field != "itemType" and field in data:
+                    new_data[field] = data[field]
+            for meta in ("key", "version"):
+                if meta in data:
+                    new_data[meta] = data[meta]
+            new_data["itemType"] = item_type
+            item["data"] = new_data
+            data = new_data
+            changes.append(f"- **itemType**: '{current_type}' -> '{item_type}'")
+
+        effective_type = data.get("itemType")
+
         # Apply field updates
         field_updates = {}
         if title is not None:
@@ -824,7 +869,7 @@ def update_item(
         if isbn is not None:
             field_updates["ISBN"] = isbn
         if book_title is not None:
-            field_updates["bookTitle"] = book_title
+            field_updates[_container_title_field(effective_type)] = book_title
 
         skipped = []
         for field, value in field_updates.items():
@@ -901,6 +946,163 @@ def update_item(
     except Exception as e:
         ctx.error(f"Error updating item: {e}")
         return f"Error updating item: {e}"
+
+
+@mcp.tool(
+    name="zotero_create_item",
+    description=(
+        "Create a new, properly-typed item from scratch (no DOI/arXiv/file needed). "
+        "Use this for any Zotero item type — conferencePaper, journalArticle, book, "
+        "report, thesis, etc. — including papers whose DOI is not on CrossRef "
+        "(e.g. DataCite DOIs like 10.4230/LIPIcs.*). "
+        "item_type and title are required. For conferencePaper and bookSection, "
+        "book_title sets the venue/container title; for journalArticle use "
+        "publication_title."
+    )
+)
+def create_item(
+    item_type: str,
+    title: str,
+    creators: list[dict] | str | None = None,
+    date: str | None = None,
+    doi: str | None = None,
+    url: str | None = None,
+    abstract: str | None = None,
+    extra: str | None = None,
+    publication_title: str | None = None,
+    book_title: str | None = None,
+    conference_name: str | None = None,
+    place: str | None = None,
+    series: str | None = None,
+    volume: str | None = None,
+    issue: str | None = None,
+    pages: str | None = None,
+    publisher: str | None = None,
+    issn: str | None = None,
+    isbn: str | None = None,
+    language: str | None = None,
+    short_title: str | None = None,
+    edition: str | None = None,
+    tags: list[str] | str | None = None,
+    collections: list[str] | str | None = None,
+    collection_names: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if not (title and title.strip()):
+            return "Error: 'title' is required to create an item."
+
+        ctx.info(f"Creating {item_type} item: {title}")
+
+        try:
+            template = write_zot.item_template(item_type)
+        except Exception as e:
+            return f"Error: could not load template for item type '{item_type}': {e}"
+        item_data = dict(template)
+        item_data["itemType"] = item_type
+
+        # Build field updates, remapping book_title to the container field for
+        # the target type (proceedingsTitle for conferencePaper, etc.).
+        field_updates = {"title": title}
+        if date is not None:
+            field_updates["date"] = date
+        if doi is not None:
+            field_updates["DOI"] = doi
+        if url is not None:
+            field_updates["url"] = url
+        if abstract is not None:
+            field_updates["abstractNote"] = abstract
+        if extra is not None:
+            field_updates["extra"] = extra
+        if publication_title is not None:
+            field_updates["publicationTitle"] = publication_title
+        if book_title is not None:
+            field_updates[_container_title_field(item_type)] = book_title
+        if conference_name is not None:
+            field_updates["conferenceName"] = conference_name
+        if place is not None:
+            field_updates["place"] = place
+        if series is not None:
+            field_updates["series"] = series
+        if volume is not None:
+            field_updates["volume"] = volume
+        if issue is not None:
+            field_updates["issue"] = issue
+        if pages is not None:
+            field_updates["pages"] = pages
+        if publisher is not None:
+            field_updates["publisher"] = publisher
+        if issn is not None:
+            field_updates["ISSN"] = issn
+        if isbn is not None:
+            field_updates["ISBN"] = isbn
+        if language is not None:
+            field_updates["language"] = language
+        if short_title is not None:
+            field_updates["shortTitle"] = short_title
+        if edition is not None:
+            field_updates["edition"] = edition
+
+        applied = []
+        skipped = []
+        for field, value in field_updates.items():
+            param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
+            if field in item_data:
+                item_data[field] = value
+                applied.append(param_name)
+            else:
+                skipped.append(param_name)
+
+        # Creators
+        if creators is not None:
+            if isinstance(creators, str):
+                creators = json.loads(creators)
+            item_data["creators"] = creators
+
+        # Tags
+        tag_list = _helpers._normalize_str_list_input(tags, "tags")
+        if tag_list:
+            item_data["tags"] = [{"tag": t} for t in tag_list]
+
+        # Collections (keys + resolved names)
+        coll_keys = set(_helpers._normalize_str_list_input(collections, "collections"))
+        if collection_names is not None:
+            names = _helpers._normalize_str_list_input(collection_names, "collection_names")
+            coll_keys.update(_helpers._resolve_collection_names(read_zot, names, ctx=ctx))
+        if coll_keys:
+            item_data["collections"] = list(coll_keys)
+
+        result = write_zot.create_items([item_data])
+        if isinstance(result, dict) and result.get("success"):
+            item_key = next(iter(result["success"].values()))
+            skip_warning = ""
+            if skipped:
+                skip_warning = (
+                    f"\n\nSkipped (not valid for item type "
+                    f"'{item_type}'): {', '.join(skipped)}"
+                )
+            return (
+                f"Successfully created **{title}**\n\n"
+                f"Item key: `{item_key}`\n"
+                f"Type: {item_type}\n"
+                f"Fields set: {', '.join(applied)}"
+                + skip_warning
+                + "\n\n_Note: To include this item in semantic search, run "
+                "zotero_update_search_database._"
+            )
+        return f"Failed to create item: {result}"
+
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error creating item: {e}")
+        return f"Error creating item: {e}"
 
 
 @mcp.tool(

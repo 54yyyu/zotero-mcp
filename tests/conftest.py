@@ -112,6 +112,19 @@ class FakeZotero:
                 "language": "",
                 "shortTitle": "",
             })
+        if item_type == "conferencePaper":
+            base.update({
+                "proceedingsTitle": "",
+                "conferenceName": "",
+                "place": "",
+                "publisher": "",
+                "volume": "",
+                "pages": "",
+                "series": "",
+                "ISBN": "",
+                "language": "",
+                "shortTitle": "",
+            })
         return base
 
     def addto_collection(self, collection_key, items, **kwargs):
