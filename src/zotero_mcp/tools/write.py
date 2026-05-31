@@ -813,28 +813,84 @@ def add_by_url(
 
 @with_zotero_api_lock
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto"):
-    """Add an arXiv paper by ID. Internal helper for add_by_url."""
+    """Add an arXiv paper by ID. Internal helper for add_by_url.
+
+    arXiv (export.arxiv.org) periodically sheds load — rate-limiting (429),
+    returning 5xx, or timing out outright. This helper degrades gracefully:
+    it retries transient failures with backoff, and if arXiv stays
+    unreachable it falls back to CrossRef via the arXiv DOI
+    (10.48550/arXiv.{id}), which serves the same metadata from independent
+    infrastructure. The fallback is best-effort — CrossRef may also lack a
+    very recent preprint — so a clear, actionable message is returned when
+    both routes fail, never a bare timeout.
+    """
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
     resp = None
+    last_error = None
     for attempt in range(3):
-        resp = requests.get(
-            f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
-            timeout=30,
-        )
-        if resp.status_code == 429:
-            wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
-            ctx.info(f"arXiv API rate limit hit — waiting {wait}s before retry {attempt + 1}/3...")
-            _time.sleep(wait)
+        try:
+            resp = requests.get(
+                f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
+                timeout=20,
+            )
+        except requests.RequestException as e:
+            # Timeout / connection error — the classic "arXiv is overloaded"
+            # symptom. Retry with backoff rather than failing on the first miss.
+            last_error = e
+            resp = None
+            if attempt < 2:
+                wait = 3 * (2 ** attempt)  # 3s, 6s
+                ctx.info(
+                    f"arXiv API unreachable ({e}); retrying in {wait}s "
+                    f"({attempt + 1}/3)..."
+                )
+                _time.sleep(wait)
+            continue
+        # Retry rate-limits and server-side errors; 4xx (except 429) won't heal.
+        if resp.status_code == 429 or resp.status_code >= 500:
+            last_error = f"HTTP {resp.status_code}"
+            if attempt < 2:
+                wait = 5 * (2 ** attempt)  # 5s, 10s
+                ctx.info(
+                    f"arXiv API returned {resp.status_code}; retrying in {wait}s "
+                    f"({attempt + 1}/3)..."
+                )
+                _time.sleep(wait)
             continue
         break
 
-    if resp is None or resp.status_code == 429:
+    # arXiv exhausted its retries — fall back to CrossRef (independent infra).
+    if resp is None or resp.status_code == 429 or resp.status_code >= 500:
+        ctx.info(
+            f"arXiv unreachable after retries ({last_error}); "
+            f"falling back to CrossRef via the arXiv DOI."
+        )
+        arxiv_doi = f"10.48550/arXiv.{arxiv_id}"
+        try:
+            result = add_by_doi(
+                doi=arxiv_doi,
+                collections=collections,
+                tags=tags,
+                attach_mode=attach_mode,
+                ctx=ctx,
+            )
+        except Exception as e:  # noqa: BLE001 — fallback must not raise
+            result = None
+            ctx.info(f"CrossRef fallback errored: {e}")
+        # add_by_doi returns a human string; treat "not found"/"Error" as a miss.
+        if result and not result.startswith(("DOI not found", "Error")):
+            return result
         return (
-            f"arXiv API is rate-limiting requests. Please wait a moment and try again. "
+            f"arXiv is currently unreachable (last error: {last_error}) and the "
+            f"CrossRef fallback (DOI {arxiv_doi}) did not resolve it — this is "
+            f"often a transient arXiv overload. Please retry shortly. "
             f"(arXiv ID: {arxiv_id})"
         )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        return f"arXiv API error for {arxiv_id}: {e}"
 
     root = ET.fromstring(resp.text)
     ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
