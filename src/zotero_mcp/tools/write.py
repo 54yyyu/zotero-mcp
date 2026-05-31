@@ -894,7 +894,15 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
         # arXiv always has a free PDF — try to attach it
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
         pdf_status = "no PDF attached"
-        if attach_mode == "linked_url":
+        if attach_mode == "none":
+            # Honour the caller's explicit opt-out: skip the PDF download/upload
+            # entirely. Without this, the arXiv path always fetched + uploaded
+            # the PDF regardless of attach_mode (only "linked_url" was special-
+            # cased), so attach_mode="none" did far more network/cloud work than
+            # asked — a slow upload here is a prime candidate for wedging the
+            # process under the global API lock.
+            pdf_status = "skipped (attach_mode=none)"
+        elif attach_mode == "linked_url":
             # Bookmark the PDF URL only — no binary upload. Useful for users who
             # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
             try:
