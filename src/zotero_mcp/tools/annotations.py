@@ -1661,6 +1661,172 @@ def create_area_annotation(
         return f"Error creating area annotation: {str(e)}"
 
 
+def _format_page_layout(
+    layout: dict,
+    attachment_key: str,
+    page: int,
+    filename: str,
+) -> str:
+    """Render detect_page_regions output as markdown for the LLM."""
+    regions = layout["regions"]
+    warnings = layout.get("warnings", [])
+    page_label = layout.get("pageLabel", str(page))
+
+    lines = [
+        f"# Page layout: {filename}, page {page} (label: {page_label})",
+        "",
+    ]
+
+    for warning in warnings:
+        lines.append(f"**Warning:** {warning}")
+    if warnings:
+        lines.append("")
+
+    if not regions:
+        lines.append(
+            f"No figure/table regions detected on page {page}. "
+            "The page may be text-only or a scanned image. "
+            "You can still create an area annotation by passing explicit coordinates."
+        )
+        return "\n".join(lines)
+
+    plural = "s" if len(regions) != 1 else ""
+    lines.extend([
+        f"**{len(regions)} region{plural} detected.**",
+        "",
+        "| # | source | x | y | width | height | caption | confidence |",
+        "|---|--------|---|---|-------|--------|---------|------------|",
+    ])
+
+    for region in regions:
+        x, y, width, height = region["bbox"]
+        caption = region.get("caption_text") or "(none)"
+        if len(caption) > 80:
+            caption = caption[:77] + "..."
+        caption = caption.replace("|", "\\|").replace("\n", " ")
+        lines.append(
+            f"| {region['region_id']} | {region['source']} | {x:.4f} | {y:.4f} "
+            f"| {width:.4f} | {height:.4f} | {caption} | {region['confidence']} |"
+        )
+
+    first_x, first_y, first_w, first_h = regions[0]["bbox"]
+    lines.extend([
+        "",
+        "To annotate a region, pass its coordinates to "
+        "zotero_create_area_annotation — e.g. for region 1:",
+        "```",
+        f"zotero_create_area_annotation(attachment_key='{attachment_key}', "
+        f"page={page}, x={first_x:.4f}, y={first_y:.4f}, "
+        f"width={first_w:.4f}, height={first_h:.4f}, comment='...')",
+        "```",
+    ])
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="zotero_get_page_layout",
+    description=(
+        "Detect candidate figure/table regions on a PDF page and return "
+        "their normalized bounding boxes, so area annotations can be placed "
+        "on detected content instead of guessed positions. ALWAYS call this "
+        "before zotero_create_area_annotation unless exact coordinates are "
+        "already known. Returns each region's bounding box (x, y, width, "
+        "height in [0, 1]), source (image/drawing/table/merged), associated "
+        "caption (e.g. 'Figure 3: ...'), confidence level, and a "
+        "ready-to-paste zotero_create_area_annotation call. "
+        "Note: detection is geometric — boxes cover the graphical core of a "
+        "figure/table; text labels inside figures or unruled table headers "
+        "may fall outside the box. Confidence reflects caption matching, "
+        "not box completeness. "
+        "attachment_key: PDF attachment key — NOT the parent item key (use "
+        "zotero_get_item_children to find attachments). "
+        "page: 1-indexed page number (page 1 is the first page). "
+        "Scope: PDFs only — EPUB attachments are NOT supported. Read-only: "
+        "works in both local and web API modes. "
+        "Example: zotero_get_page_layout(attachment_key='NHZFE5A7', page=7)."
+    )
+)
+def get_page_layout(
+    attachment_key: str,
+    page: int,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Detect figure/table regions on a PDF page for area annotation grounding.
+
+    Args:
+        attachment_key: PDF attachment key (e.g., "NHZFE5A7")
+        page: 1-indexed PDF page number
+        ctx: MCP context
+
+    Returns:
+        Markdown table of detected regions with normalized bounding boxes
+    """
+    from zotero_mcp import pdf_layout
+
+    try:
+        ctx.info(f"Detecting page layout on attachment {attachment_key}, page {page}")
+
+        if not isinstance(page, int) or page < 1:
+            return "Error: page must be a positive 1-indexed page number"
+
+        local_client = _client.get_local_zotero_client()
+        web_client = _client.get_web_zotero_client()
+
+        if web_client:
+            _helpers.apply_library_override(web_client, _client.get_active_library())
+
+        meta_client = web_client or local_client
+        if meta_client is None:
+            return (
+                "Error: No Zotero client configured.\n\n"
+                "Configure either local Zotero (with 'Allow other applications "
+                "on this computer to communicate with Zotero' enabled) or Web "
+                "API credentials:\n" + _WEB_API_ENV_VARS
+            )
+
+        try:
+            attachment = meta_client.item(attachment_key)
+            attachment_data = attachment.get("data", {})
+
+            if attachment_data.get("itemType") != "attachment":
+                return f"Error: Item {attachment_key} is not an attachment"
+
+            content_type = attachment_data.get("contentType", "")
+            if content_type != "application/pdf":
+                return f"Error: Attachment {attachment_key} is not a PDF attachment (type: {content_type})"
+
+            filename = attachment_data.get("filename", f"{attachment_key}.pdf")
+        except Exception as e:
+            return f"Error: No attachment found with key: {attachment_key} ({e})"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path, error_message = _download_attachment_for_processing(
+                attachment_key,
+                filename,
+                tmpdir,
+                local_client=local_client,
+                web_client=web_client,
+                ctx=ctx,
+            )
+            if error_message:
+                return error_message
+
+            ctx.info(f"Detecting regions on page {page}...")
+            layout = pdf_layout.detect_page_regions(file_path, page)
+
+        if "error" in layout:
+            return f"Error: {layout['error']}"
+
+        return _format_page_layout(layout, attachment_key, page, filename)
+
+    except Exception as e:
+        ctx.error(f"Error detecting page layout: {str(e)}")
+        return f"Error detecting page layout: {str(e)}"
+
+
 @mcp.tool(
     name="zotero_update_annotation",
     description=(
