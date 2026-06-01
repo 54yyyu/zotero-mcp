@@ -303,6 +303,17 @@ class TestAssociateCaptionsWithRegions:
 # ---------------------------------------------------------------------------
 
 class TestDetectPageRegions:
+    """Integration tests that build synthetic PDFs with real PyMuPDF.
+
+    Skipped when PyMuPDF is not installed (e.g. CI installs the base
+    package without the `pdf` extra). The pure-logic and MCP-tool tests
+    above/below do not need PyMuPDF and always run.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_fitz(self):
+        pytest.importorskip("fitz")
+
     def test_detects_raster_image_with_caption(self):
         import fitz
 
