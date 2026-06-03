@@ -421,7 +421,13 @@ def _normalize_arxiv_id(raw):
 # ---------------------------------------------------------------------------
 
 def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
-    """Download a PDF from a URL and attach it to a Zotero item."""
+    """Download a PDF from a URL and attach it to a Zotero item.
+
+    Returns the WebDAV-status suffix string on success (``""`` when WebDAV
+    is not configured, otherwise something like ``" (uploaded to WebDAV
+    as <key>.zip)"`` or a warning if the PUT failed). Returns ``None``
+    on failure so callers can branch with ``if suffix is not None``.
+    """
     try:
         pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
         pdf_resp.raise_for_status()
@@ -429,7 +435,7 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
         content_type = pdf_resp.headers.get("Content-Type", "")
         if "pdf" not in content_type and "octet-stream" not in content_type:
             ctx.info(f"URL did not return a PDF (Content-Type: {content_type})")
-            return False
+            return None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = f"{doi.replace('/', '_')}.pdf"
@@ -440,16 +446,66 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
 
             if os.path.getsize(filepath) < 1000:
                 ctx.info("Downloaded file too small, likely not a real PDF")
-                return False
+                return None
 
-            write_zot.attachment_both(
+            attach_result = write_zot.attachment_both(
                 [(filename, filepath)],
                 parentid=item_key,
             )
-        return True
+            # Must run inside the with-block — temp file disappears on exit.
+            return _maybe_upload_to_webdav(attach_result, filepath, ctx)
     except Exception as e:
         ctx.info(f"PDF download/attach failed: {e}")
-        return False
+        return None
+
+
+def _maybe_upload_to_webdav(attach_result, file_path, ctx):
+    """Suffix to append to a user-facing 'file attached' message.
+
+    PR #279 added WebDAV-aware upload to ``zotero_add_from_file``. The same
+    treatment is needed everywhere else ``attachment_both`` is called: the
+    Web API's file upload lands bytes in Zotero Storage, which a desktop
+    client with File Syncing set to WebDAV never consults.
+
+    Returns ``""`` when WebDAV is not configured, when the attachment key
+    cannot be extracted, or after a successful PUT with logging via ``ctx``
+    (callers that don't surface the suffix can ignore the return value).
+    On a successful PUT returns ``" (uploaded to WebDAV as <key>.zip)"``;
+    on PUT failure returns ``" (WARNING: WebDAV upload failed — <err>; ...)"``
+    so callers can keep the user-visible signal without re-implementing the
+    branch.
+    """
+    from zotero_mcp import webdav as _webdav
+
+    if not _webdav.is_webdav_configured():
+        return ""
+
+    attachment_key = None
+    if isinstance(attach_result, dict):
+        for status in ("success", "unchanged"):
+            for entry in attach_result.get(status, []) or []:
+                if isinstance(entry, dict) and entry.get("key"):
+                    attachment_key = entry["key"]
+                    break
+            if attachment_key:
+                break
+
+    if not attachment_key:
+        return ""
+
+    try:
+        _webdav.upload_attachment_to_webdav(
+            attachment_key=attachment_key,
+            file_path=file_path,
+        )
+        ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
+        return f" (uploaded to WebDAV as {attachment_key}.zip)"
+    except Exception as e:
+        ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
+        return (
+            f" (WARNING: WebDAV upload failed — {e}; "
+            f"attachment {attachment_key} exists but has no file bytes on WebDAV)"
+        )
 
 
 def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):
@@ -619,8 +675,11 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                     if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
                         return f"PDF linked (source: {source_name})"
                 else:  # "auto" or "import_file" — try download only
-                    if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
-                        return f"PDF attached (source: {source_name})"
+                    webdav_suffix = _download_and_attach_pdf(
+                        write_zot, item_key, pdf_url, doi, ctx
+                    )
+                    if webdav_suffix is not None:
+                        return f"PDF attached (source: {source_name}){webdav_suffix}"
 
                 ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next source")
         except Exception as e:
