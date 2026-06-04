@@ -1,6 +1,7 @@
 """FastMCP application instance and server lifecycle."""
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -28,6 +29,18 @@ def _sync_semantic_update() -> None:
     config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
     if not config_path.exists():
         return
+
+    # Avoid initializing ChromaDB on every server startup when semantic
+    # auto-update is disabled. This also avoids racing a foreground
+    # zotero_semantic_search call for the same persisted ChromaDB directory.
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+        update_cfg = cfg.get("semantic_search", {}).get("update_config", {})
+        if not update_cfg.get("auto_update", False):
+            return
+    except Exception:
+        pass
 
     search = create_semantic_search(str(config_path))
     if not search.should_update_database():
