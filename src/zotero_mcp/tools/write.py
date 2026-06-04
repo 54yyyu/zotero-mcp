@@ -1281,14 +1281,8 @@ def update_item(
         ctx.info(f"Updating item {item_key}")
 
         # Fetch current item from write client for correct version
-        item = write_zot.item(item_key)
+        item = _helpers._strip_unwritable_fields(write_zot.item(item_key))
         data = item.get("data", {})
-        # `lastRead` is set by Zotero's PDF reader (timestamp of last open) and
-        # is not in the writable schema; pyzotero's check_items() then bounces
-        # the PATCH with "Invalid keys present in item 1: lastRead", so any
-        # attempt to update an attachment that was ever opened in the reader
-        # fails. Strip it before re-submitting.
-        data.pop("lastRead", None)
         changes = []
 
         # Handle item_type migration first so subsequent field updates are
@@ -1794,6 +1788,7 @@ def merge_duplicates(
             keeper_data = keeper.get("data", {})
             existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
             keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | all_tags)]
+            _helpers._strip_unwritable_fields(keeper)
             resp = write_zot.update_item(keeper)
             if not _helpers._handle_write_response(resp, ctx):
                 return "Error: Failed to merge tags into keeper."
@@ -1828,6 +1823,7 @@ def merge_duplicates(
                             skipped_dupes.append(child_key)
                             continue  # Skip — keeper already has this attachment
                     fresh_child.get("data", {})["parentItem"] = keeper_key
+                    _helpers._strip_unwritable_fields(fresh_child)
                     resp = write_zot.update_item(fresh_child)
                     if _helpers._handle_write_response(resp, ctx):
                         moved.append(child_key)
@@ -2236,6 +2232,7 @@ def add_item_relation(
         data["relations"] = relations
 
         # Update the primary item
+        _helpers._strip_unwritable_fields(item)
         resp = write_zot.update_item(item)
         if not _helpers._handle_write_response(resp, ctx):
             return f"Failed to add relation to item '{item_key}'."
@@ -2260,6 +2257,7 @@ def add_item_relation(
             if not _relation_exists(reverse_relations[relation_type], library_id, item_key):
                 reverse_relations[relation_type].append(item_uri)
                 related_data["relations"] = reverse_relations
+                _helpers._strip_unwritable_fields(related_item)
                 write_zot.update_item(related_item)
         except Exception as e:
             ctx.warn(f"Could not add reverse relation: {e}")
@@ -2349,6 +2347,7 @@ def remove_item_relation(
         data["relations"] = relations
 
         # Update the item
+        _helpers._strip_unwritable_fields(item)
         resp = write_zot.update_item(item)
         if not _helpers._handle_write_response(resp, ctx):
             return f"Failed to remove relation from item '{item_key}'."
@@ -2373,6 +2372,7 @@ def remove_item_relation(
                         else:
                             reverse_relations[relation_type] = reverse_list
                         related_data["relations"] = reverse_relations
+                        _helpers._strip_unwritable_fields(related_item)
                         write_zot.update_item(related_item)
             except Exception as e:
                 ctx.warn(f"Could not remove reverse relation: {e}")

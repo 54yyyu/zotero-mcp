@@ -159,6 +159,28 @@ def is_collection_trashed(zot, collection_key: str) -> bool | None:
     return bool(coll.get("data", {}).get("deleted"))
 
 
+# Fields the Zotero reader/server sets on items but pyzotero's check_items()
+# whitelist (pyzotero/_client.py: check_items) does not include. Any fetched
+# item that carries one of these will be rejected client-side with
+# "Invalid keys present in item N: <field>" when passed back to update_item().
+# The canonical fetch→mutate→update flow then breaks on attachments that have
+# been opened in the Zotero PDF reader (which writes lastRead).
+_UNWRITABLE_ITEM_FIELDS = frozenset({"lastRead"})
+
+
+def _strip_unwritable_fields(item: dict) -> dict:
+    """Remove fields that pyzotero's check_items() rejects from a fetched item.
+
+    Mutates ``item["data"]`` in place and returns the same dict so the caller
+    can chain. Safe to call on any item type — fields not present are ignored.
+    """
+    data = item.get("data")
+    if isinstance(data, dict):
+        for field in _UNWRITABLE_ITEM_FIELDS:
+            data.pop(field, None)
+    return item
+
+
 def _handle_write_response(response, ctx=None):
     """Check if a pyzotero write operation succeeded."""
     if hasattr(response, "status_code"):
