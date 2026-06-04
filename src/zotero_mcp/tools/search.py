@@ -481,8 +481,9 @@ def search_by_citation_key(
         results = zot.items()
 
         for item in results:
-            extra = item.get("data", {}).get("extra", "")
-            if _helpers._extra_has_citekey(extra, citekey):
+            data = item.get("data", {})
+            extra = data.get("extra", "")
+            if data.get("citationKey") == citekey or _helpers._extra_has_citekey(extra, citekey):
                 return _helpers._format_citekey_result(item, citekey)
 
         return f"No item found with citation key: '{citekey}'"
