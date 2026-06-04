@@ -1279,6 +1279,8 @@ def get_feed_items(
                     output.append(f"- **URL:** {item['url']}")
                 if item.get("date"):
                     output.append(f"- **Date:** {item['date']}")
+                if item.get("DOI"):
+                    output.append(f"- **DOI:** {item['DOI']}")
                 output.append(f"- **Added:** {item.get('dateAdded', 'unknown')}")
                 if item.get("abstract"):
                     abstract = _utils.clean_html(item["abstract"])

@@ -23,6 +23,7 @@ class FakeFeedReader:
             "creators": "Lovelace, Ada",
             "url": "https://example.test/item",
             "date": "2024-05-15",
+            "DOI": "10.1234/example.doi",
             "dateAdded": "2026-06-01 10:00:00",
             "abstract": None,
         }]
@@ -41,4 +42,5 @@ def test_get_feed_items_output_includes_publication_date(monkeypatch):
     result = retrieval.get_feed_items(library_id=10, limit=20, ctx=DummyContext())
 
     assert "- **Date:** 2024-05-15" in result
+    assert "- **DOI:** 10.1234/example.doi" in result
     assert "- **Added:** 2026-06-01 10:00:00" in result

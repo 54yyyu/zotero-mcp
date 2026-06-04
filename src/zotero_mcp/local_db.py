@@ -602,6 +602,7 @@ class LocalZoteroReader:
                    title_val.value as title,
                    abstract_val.value as abstract,
                    date_val.value as date,
+                   doi_val.value as DOI,
                    url_val.value as url,
                    GROUP_CONCAT(
                        CASE
@@ -621,6 +622,9 @@ class LocalZoteroReader:
             LEFT JOIN fields date_f ON date_f.fieldName = 'date'
             LEFT JOIN itemData date_data ON i.itemID = date_data.itemID AND date_data.fieldID = date_f.fieldID
             LEFT JOIN itemDataValues date_val ON date_data.valueID = date_val.valueID
+            LEFT JOIN fields doi_f ON doi_f.fieldName = 'DOI'
+            LEFT JOIN itemData doi_data ON i.itemID = doi_data.itemID AND doi_data.fieldID = doi_f.fieldID
+            LEFT JOIN itemDataValues doi_val ON doi_data.valueID = doi_val.valueID
             LEFT JOIN fields url_f ON url_f.fieldName = 'url'
             LEFT JOIN itemData url_data ON i.itemID = url_data.itemID AND url_data.fieldID = url_f.fieldID
             LEFT JOIN itemDataValues url_val ON url_data.valueID = url_val.valueID

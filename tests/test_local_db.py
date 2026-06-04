@@ -243,6 +243,7 @@ def _create_feed_db(db_path: Path) -> None:
             (2, "abstractNote"),
             (13, "date"),
             (15, "url"),
+            (26, "DOI"),
         ],
     )
     conn.execute(
@@ -269,6 +270,7 @@ def _create_feed_db(db_path: Path) -> None:
             (1002, "Feed item abstract"),
             (1003, "2024-05-15"),
             (1004, "https://example.test/item"),
+            (1005, "10.1234/example.doi"),
         ],
     )
     conn.executemany(
@@ -278,6 +280,7 @@ def _create_feed_db(db_path: Path) -> None:
             (2, 1002),
             (13, 1003),
             (15, 1004),
+            (26, 1005),
         ],
     )
     conn.execute(
@@ -299,3 +302,16 @@ def test_get_feed_items_includes_publication_date(tmp_path):
         reader.close()
 
     assert items[0]["date"] == "2024-05-15"
+
+
+def test_get_feed_items_includes_doi(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_feed_db(db_path)
+
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        items = reader.get_feed_items(10, limit=20)
+    finally:
+        reader.close()
+
+    assert items[0]["DOI"] == "10.1234/example.doi"
