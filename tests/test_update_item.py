@@ -605,6 +605,44 @@ class TestUpdateItemErrors:
 
         assert "fail" in result.lower() or "error" in result.lower()
 
+    def test_attachment_lastread_field_stripped(self, monkeypatch):
+        """Attachment items carry a `lastRead` field that pyzotero's
+        check_items() rejects ("Invalid keys present in item 1: lastRead").
+        update_item must strip it before re-submitting."""
+        attachment = {
+            "key": "ATTACH12",
+            "version": 7,
+            "data": {
+                "key": "ATTACH12",
+                "version": 7,
+                "itemType": "attachment",
+                "linkMode": "imported_file",
+                "title": "Old PDF Title",
+                "filename": "paper.pdf",
+                "contentType": "application/pdf",
+                "lastRead": 1780565972,
+                "md5": "abc123",
+                "mtime": 1780565511000,
+                "tags": [],
+                "relations": {},
+            },
+        }
+        fake = FakeZoteroForUpdate(items=[attachment])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ATTACH12",
+            title="New PDF Title",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.update_calls) == 1
+        submitted = fake.update_calls[0]["data"]
+        assert "lastRead" not in submitted
+        assert submitted["title"] == "New PDF Title"
+        assert "New PDF Title" in result
+
 
 # ---------------------------------------------------------------------------
 # Additional field updates

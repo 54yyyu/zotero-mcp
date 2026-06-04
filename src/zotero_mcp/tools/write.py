@@ -1283,6 +1283,12 @@ def update_item(
         # Fetch current item from write client for correct version
         item = write_zot.item(item_key)
         data = item.get("data", {})
+        # `lastRead` is set by Zotero's PDF reader (timestamp of last open) and
+        # is not in the writable schema; pyzotero's check_items() then bounces
+        # the PATCH with "Invalid keys present in item 1: lastRead", so any
+        # attempt to update an attachment that was ever opened in the reader
+        # fails. Strip it before re-submitting.
+        data.pop("lastRead", None)
         changes = []
 
         # Handle item_type migration first so subsequent field updates are
