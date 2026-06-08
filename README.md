@@ -473,6 +473,7 @@ zotero_remove_item_relation(
 - `zotero_get_notes`: Retrieve notes from your Zotero library
 - `zotero_search_notes`: Search in notes and annotations (including PDF-extracted)
 - `zotero_create_note`: Create a new note for an item (beta feature)
+- `zotero_get_page_layout`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement
 
 ### 📊 Scite Citation Intelligence Tools
 - `scite_enrich_item`: Get Scite citation tallies and retraction alerts for a paper
