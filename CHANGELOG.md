@@ -7,12 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-08
+
 ### Added
+- **`zotero_get_page_layout` tool** — detect figure/table regions on a PDF page with bounding boxes and caption association, for coordinate-grounded reading (#312).
 - **`zotero_add_by_bibtex`** — ingest one or more items from a BibTeX string OR a `.bib`/`.bibtex` file path; parses via `bibtexparser` (with LaTeX→unicode conversion), maps to Zotero item format, preserves the citation key in Extra, and attempts an open-access PDF attachment when a DOI is present (#241).
 - **`zotero_add_by_csl_json`** — same for CSL JSON input from an inline string/object/array OR a `.json`/`.csljson` file path. The CSL `id` is preserved in Extra as the citation key (#241).
 - New `citation_import` module — BibTeX parsing, CSL JSON coercion, and the shared field/type crosswalk (reference: <https://aurimasv.github.io/z2csl/typeMap.xml>).
-- New dependency: `bibtexparser>=1.4,<2`.
 - **`zotero_read_pdf_pages` tool** — read a specific page range from a PDF attachment after section identification via `zotero_get_pdf_outline`. Extracts text from the requested pages using PyMuPDF, avoiding the need to read the entire paper when only a few pages are relevant.
+- RSS feed items now surface their publication date (and DOI) (#316).
+
+### Changed
+- Bumped the `pyzotero` floor to `>=1.8.0` — the first release accepting the custom HTTP/1.1 `client=` used by the local-API fix; older `1.6.x`/`1.7.x` crashed every tool call with `TypeError: unexpected keyword argument 'client'` (#322).
+- Bumped the `[semantic]` extra's `chromadb` floor to `>=1.0.0` for `register_embedding_function`, introduced in chromadb 1.0.0 (#324).
+- New base dependency: `bibtexparser>=1.4,<2`.
+
+### Fixed
+- `zotero_search_by_citation_key` now matches the native `citationKey` field, not just the `Extra` fallback (#319).
+- Custom OpenAI/Gemini/HuggingFace embedding functions are registered with ChromaDB's registry so a persisted database reloads correctly (#315).
+- Bounded the global Zotero API lock so a stuck operation can't wedge every tool with opaque `-32001` timeouts (#311).
+- `zotero_add_by_url` arXiv path is resilient to arXiv outages via a CrossRef fallback (#310).
+- `zotero_add_by_doi` and arXiv PDF uploads now honor `ZOTERO_WEBDAV_*` instead of always going to Zotero cloud storage (#314, #313).
+- Strip the pyzotero-rejected `lastRead` field on attachment updates, fixing `zotero_update_item` failures on attachments opened in Zotero's PDF reader (#318, #317).
+
+### Security
+- **SSRF guard on the open-access PDF download path** — the OA-PDF URL comes from third-party metadata APIs (Unpaywall / Semantic Scholar) and was previously fetched with no scheme/host validation and default redirect-following. It is now validated against a public-host allowlist (rejecting loopback / link-local / RFC1918 / cloud-metadata) with per-redirect-hop re-checking (#327, #326).
+- **Credential-hygiene + DoS hardening**: mask `ZOTERO_API_KEY` in `setup --no-claude` output by default (`--show-secrets` to opt in); write credential config files with `0o600`; prefer the env var / `getpass` over the `--api-key` flag; add a subprocess timeout to `pdfannots2json`; run the Docker image as a non-root user (#328, #326).
 
 ## [0.2.2] - 2026-03-26
 
