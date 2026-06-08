@@ -232,7 +232,7 @@ class TestDownloadAndAttachPdf:
         monkeypatch.setattr(requests, "get", fake_get)
         result = _download_and_attach_pdf(zot, "ITEM1", "https://x.com/f.pdf",
                                           "10.1234/test", dummy_ctx)
-        assert result is False
+        assert result is None
         assert len(zot.attachments) == 0
 
     def test_download_too_small(self, monkeypatch, dummy_ctx):
@@ -249,7 +249,7 @@ class TestDownloadAndAttachPdf:
         monkeypatch.setattr(requests, "get", fake_get)
         result = _download_and_attach_pdf(zot, "ITEM1", "https://x.com/f.pdf",
                                           "10.1234/test", dummy_ctx)
-        assert result is False
+        assert result is None
         assert len(zot.attachments) == 0
 
 
