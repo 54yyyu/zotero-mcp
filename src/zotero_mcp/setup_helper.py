@@ -25,6 +25,20 @@ def _obfuscate_sensitive(value: str | None, keep_chars: int = 4) -> str:
     return value[:keep_chars] + "*" * (len(value) - keep_chars)
 
 
+def _restrict_file_permissions(path) -> None:
+    """Best-effort ``chmod 600`` on a config file that may hold credentials.
+
+    Config files written here can contain ZOTERO_API_KEY and OpenAI/Gemini
+    keys; default umask often leaves them world-readable, which matters on
+    shared hosts / synced ~/.config. No-op on platforms without POSIX
+    permissions (Windows).
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def find_executable():
     """Find the full path to the zotero-mcp executable."""
     # Try to find the executable in the PATH
@@ -353,6 +367,7 @@ def save_semantic_search_config(config: dict, semantic_config_path: Path) -> boo
         # Write config
         with open(semantic_config_path, 'w') as f:
             json.dump(full_semantic_config, f, indent=2)
+        _restrict_file_permissions(semantic_config_path)
 
         print(f"Semantic search configuration saved to: {semantic_config_path}")
         return True
@@ -446,6 +461,7 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
     try:
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
+        _restrict_file_permissions(config_path)
         print(f"\nSuccessfully wrote config to: {config_path}")
     except Exception as e:
         print(f"Error writing config file: {str(e)}")
@@ -492,6 +508,7 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
 
     with open(cfg_path, 'w') as f:
         json.dump(full, f, indent=2)
+    _restrict_file_permissions(cfg_path)
 
     return cfg_path
 
@@ -501,7 +518,10 @@ def main(cli_args=None):
     parser = argparse.ArgumentParser(description="Configure zotero-mcp for Claude Desktop")
     parser.add_argument("--no-local", action="store_true", help="Configure for Zotero Web API instead of local API")
     parser.add_argument("--no-claude", action="store_true", help="Don't setup Claude Desktop config: instead store settings in config file.")
-    parser.add_argument("--api-key", help="Zotero API key (only needed with --no-local)")
+    parser.add_argument("--api-key",
+                        help="Zotero API key (only needed with --no-local). Insecure on "
+                             "multi-user systems — leaks via 'ps'/shell history; omit to be "
+                             "prompted securely or set the ZOTERO_API_KEY env var.")
     parser.add_argument("--library-id", help="Zotero library ID (only needed with --no-local)")
     parser.add_argument("--library-type", choices=["user", "group"], default="user",
                         help="Zotero library type (only needed with --no-local)")
@@ -510,6 +530,9 @@ def main(cli_args=None):
                         help="Skip semantic search configuration")
     parser.add_argument("--semantic-config-only", action="store_true",
                         help="Only configure semantic search, skip Zotero setup")
+    parser.add_argument("--show-secrets", action="store_true",
+                        help="Print secrets (e.g. the Zotero API key) in plaintext in the "
+                             "setup summary. Off by default; values are masked.")
 
     # If this is being called from CLI with existing args
     if cli_args is not None and hasattr(cli_args, 'no_local'):
@@ -571,6 +594,18 @@ def main(cli_args=None):
     library_id = args.library_id
     library_type = args.library_type
 
+    # Web mode needs an API key. Prefer the env var, then prompt securely —
+    # avoid forcing it onto the command line (where it leaks via ps/history).
+    if not use_local and not api_key:
+        api_key = os.environ.get("ZOTERO_API_KEY")
+        if not api_key:
+            try:
+                api_key = getpass.getpass(
+                    "Enter your Zotero API key (hidden, input not echoed): "
+                ).strip()
+            except (EOFError, KeyboardInterrupt):
+                api_key = None
+
     # Configure semantic search if not skipped
     if not args.skip_semantic_search:
         # if there is already a semantic search configuration in the config file:
@@ -611,13 +646,26 @@ def main(cli_args=None):
             )
             print("\nSetup complete (standalone/web mode)!")
             print(f"Config saved to: {cfg_path}")
-            # Emit one-line client_env for easy copy/paste
+            # Emit one-line client_env for easy copy/paste. Mask the API key
+            # by default — single-line JSON is exactly what gets pasted into
+            # bug reports / shared terminals; only print it in full on request.
             try:
                 with open(cfg_path) as f:
                     full = json.load(f)
-                env_line = json.dumps(full.get("client_env", {}), separators=(',', ':'))
+                client_env = full.get("client_env", {})
+                show_secrets = getattr(args, "show_secrets", False)
+                if show_secrets:
+                    display_env = client_env
+                else:
+                    display_env = dict(client_env)
+                    if display_env.get("ZOTERO_API_KEY"):
+                        display_env["ZOTERO_API_KEY"] = _obfuscate_sensitive(
+                            display_env["ZOTERO_API_KEY"]
+                        )
                 print("Client environment (single-line JSON):")
-                print(env_line)
+                print(json.dumps(display_env, separators=(',', ':')))
+                if not show_secrets and client_env.get("ZOTERO_API_KEY"):
+                    print("  (API key masked — re-run with --show-secrets to print it in full)")
             except Exception:
                 pass
             if semantic_config_changed:

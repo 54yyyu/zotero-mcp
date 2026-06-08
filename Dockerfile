@@ -11,5 +11,10 @@ COPY . /app
 RUN pip install --no-cache-dir build hatchling \
     && pip install --no-cache-dir .
 
+# Run as a non-root user (defense-in-depth for multi-tenant hosts)
+RUN useradd --create-home --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+USER app
+
 # Start the MCP server
 ENTRYPOINT ["zotero-mcp", "serve", "--transport", "stdio"]

@@ -107,11 +107,15 @@ def extract_annotations_from_pdf(
     ]
 
     try:
-        # Run the command and capture JSON output
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        # Run the command and capture JSON output. Bound the runtime so a
+        # hostile/oversized PDF can't wedge the worker indefinitely.
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
         annotations = json.loads(result.stdout)
         print(f"Extracted {len(annotations)} annotations from PDF")
         return annotations
+    except subprocess.TimeoutExpired:
+        print("Error: pdfannots2json timed out (PDF too large or unresponsive)")
+        return []
     except subprocess.CalledProcessError as e:
         print(f"Error extracting annotations: {e}")
         print(f"stderr: {e.stderr}")

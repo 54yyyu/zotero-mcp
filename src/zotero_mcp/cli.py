@@ -132,6 +132,12 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
         # Write back to file
         with open(config_path, 'w') as f:
             json.dump(full_config, f, indent=2)
+        # The config can hold credentials (API/embedding keys) — keep it
+        # owner-only. Best-effort; no-op on platforms without POSIX perms.
+        try:
+            os.chmod(config_path, 0o600)
+        except OSError:
+            pass
 
         print(f"Saved Zotero database path to config: {config_path}")
 
