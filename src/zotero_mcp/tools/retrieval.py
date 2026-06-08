@@ -948,7 +948,7 @@ def list_libraries(*, ctx: Context) -> str:
                 libraries = reader.get_libraries()
 
                 # User library
-                user_libs = [l for l in libraries if l["type"] == "user"]
+                user_libs = [library for library in libraries if library["type"] == "user"]
                 if user_libs:
                     output.append("## User Library")
                     for lib in user_libs:
@@ -959,7 +959,7 @@ def list_libraries(*, ctx: Context) -> str:
                     output.append("")
 
                 # Group libraries
-                group_libs = [l for l in libraries if l["type"] == "group"]
+                group_libs = [library for library in libraries if library["type"] == "group"]
                 if group_libs:
                     output.append("## Group Libraries")
                     for lib in group_libs:
@@ -971,7 +971,7 @@ def list_libraries(*, ctx: Context) -> str:
                     output.append("")
 
                 # Feeds
-                feed_libs = [l for l in libraries if l["type"] == "feed"]
+                feed_libs = [library for library in libraries if library["type"] == "feed"]
                 if feed_libs:
                     output.append("## RSS Feeds")
                     for lib in feed_libs:
@@ -1123,14 +1123,14 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
             try:
                 libraries = reader.get_libraries()
                 if library_type == "group":
-                    valid_ids = {str(l["groupID"]) for l in libraries if l["type"] == "group"}
+                    valid_ids = {str(library["groupID"]) for library in libraries if library["type"] == "group"}
                     if library_id not in valid_ids:
                         return (
                             f"Group '{library_id}' not found. "
                             f"Available groups: {', '.join(sorted(valid_ids))}"
                         )
                 elif library_type == "feed":
-                    valid_ids = {str(l["libraryID"]) for l in libraries if l["type"] == "feed"}
+                    valid_ids = {str(library["libraryID"]) for library in libraries if library["type"] == "feed"}
                     if library_id not in valid_ids:
                         return (
                             f"Feed with libraryID '{library_id}' not found. "
@@ -1277,6 +1277,10 @@ def get_feed_items(
                     output.append(f"- **Authors:** {item['creators']}")
                 if item.get("url"):
                     output.append(f"- **URL:** {item['url']}")
+                if item.get("date"):
+                    output.append(f"- **Date:** {item['date']}")
+                if item.get("DOI"):
+                    output.append(f"- **DOI:** {item['DOI']}")
                 output.append(f"- **Added:** {item.get('dateAdded', 'unknown')}")
                 if item.get("abstract"):
                     abstract = _utils.clean_html(item["abstract"])
