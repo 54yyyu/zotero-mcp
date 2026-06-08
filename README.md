@@ -72,6 +72,10 @@
 - Ideal for scripting, automation, and quick lookups
 - Short aliases (`s`, `g`, `ann`, `coll`) for interactive use
 
+### 🖼️ Terminal UI (`zotero-tui`)
+- Interactive full-screen TUI over the same tools — collections tree, search, item detail, and write actions
+- Browse, read full text, and manage your library without an AI assistant or the web app
+
 ## 🚀 Quick Install
 
 > **New to the command line?** Try the community-built [Zotero MCP Setup](https://github.com/ehawkin/zotero-mcp-setup) — includes a macOS GUI installer (DMG), one-click install scripts for Mac/Windows, and a step-by-step guide. No Terminal experience needed.
@@ -407,6 +411,44 @@ Add `-v` anywhere to see progress messages (e.g., which API calls are made):
 ```bash
 zotero-cli -v search "CRISPR"
 ```
+
+## 🖼️ Terminal UI (`zotero-tui`)
+
+`zotero-tui` is an interactive, full-screen terminal interface over the same
+tools as `zotero-cli` — browse, search, read, and edit your library without
+leaving the terminal and without an AI assistant.
+
+```bash
+zotero-tui            # launch the TUI
+zotero-tui -v         # verbose tool logging to the status bar
+python -m zotero_mcp.tui   # equivalent
+```
+
+Layout:
+
+- **Collections tree** (left) — your collection hierarchy, plus *Recent* and
+  *All Items*. Select a node to load its items.
+- **Search bar** (top) — toggle between **Keyword**, **Tag**, and **Semantic**
+  modes; results populate the items table. Press `/` to focus it.
+- **Items table** (center) — type, year, authors, title; move the cursor to
+  load an item's detail.
+- **Detail tabs** (bottom) — Metadata, Full Text, Annotations, Notes, Children,
+  and BibTeX, loaded on demand.
+
+Key bindings (also shown in the footer):
+
+| Key | Action | Key | Action |
+| --- | --- | --- | --- |
+| `/` | Focus search | `c` | Collections (create/search/manage) |
+| `a` | Add (DOI / URL / file) | `d` | Find / merge duplicates |
+| `e` | Edit item metadata | `b` | Semantic DB (status/update/rebuild) |
+| `n` | New note | `L` | Library (list/switch/reset) |
+| `t` | Add / remove tags | `y` | Copy item key |
+| `Ctrl+R` | Refresh | `q` | Quit |
+
+The TUI requires the local Zotero API (Zotero desktop running, *Settings →
+Advanced → Allow other applications…*) or a configured web API key — the same
+connection used by `zotero-mcp` and `zotero-cli`.
 
 ## 📑 PDF Annotation Extraction
 

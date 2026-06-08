@@ -1,0 +1,117 @@
+/* Zotero TUI styling */
+
+Screen {
+    layers: base overlay;
+}
+
+#body {
+    height: 1fr;
+}
+
+#sidebar {
+    width: 28;
+    min-width: 18;
+    border-right: solid $panel-lighten-2;
+}
+
+#sidebar-title {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#collections {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#main {
+    width: 1fr;
+}
+
+#searchbar {
+    height: 3;
+    padding: 0 1;
+}
+
+#search-mode {
+    width: 18;
+}
+
+#query {
+    width: 1fr;
+}
+
+#results {
+    height: 1fr;
+    min-height: 6;
+}
+
+#detail {
+    height: 50%;
+    min-height: 8;
+    border-top: solid $panel-lighten-2;
+}
+
+#status {
+    height: 1;
+    dock: bottom;
+    background: $panel;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+.detail-md {
+    padding: 0 1;
+}
+
+/* Modal forms */
+ActionModal {
+    align: center middle;
+}
+
+#modal-box {
+    width: 70;
+    max-width: 90%;
+    height: auto;
+    max-height: 80%;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#modal-title {
+    text-style: bold;
+    color: $primary;
+    height: 1;
+    margin-bottom: 1;
+}
+
+#modal-box Input, #modal-box Select {
+    margin-bottom: 1;
+}
+
+.modal-label {
+    color: $text-muted;
+    height: 1;
+}
+
+#modal-buttons {
+    height: auto;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+#modal-buttons Button {
+    margin-left: 2;
+}
+
+ResultModal #modal-box {
+    width: 90;
+    height: 80%;
+}
+
+ResultModal #result-body {
+    height: 1fr;
+}

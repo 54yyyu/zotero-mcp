@@ -28,6 +28,7 @@ dependencies = [
     "fastmcp>=2.14.0",
     "unidecode>=1.3.0",
     "bibtexparser>=1.4,<2",
+    "textual>=0.60",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +69,7 @@ dev = [
 [project.scripts]
 zotero-cli = "zotero_mcp.cli_standalone:main"
 zotero-mcp = "zotero_mcp.cli:main"
+zotero-tui = "zotero_mcp.tui:main"
 
 
 [tool.hatch.version]
