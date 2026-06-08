@@ -200,7 +200,17 @@ Full documentation is available at [Zotero MCP docs](https://stevenyuyy.com/zote
 
 **For ChatGPT setup: see the [Getting Started guide](./docs/getting-started.md).**
 
-### For Claude Desktop (example MCP client)
+### Configure Zotero
+
+The Zotero local API must be enabled for the MCP server to work.
+
+In Zotero 9, the local API toggle is under Settings → Advanced → 'Allow other applications on this computer to communicate with Zotero'.
+
+Here is a screenshot:
+
+![Zotero local API](./docs/zotero-local-api.png)
+
+### For Claude Desktop / Claude Code (MCP client)
 
 #### Configuration
 After installation, either:
@@ -211,7 +221,8 @@ After installation, either:
    ```
 
 2. **Manual configuration**:
-   Add to your `claude_desktop_config.json`:
+   For Claude Desktop, add this to `claude_desktop_config.json`.
+   For Claude Code, add this to `~/.claude.json`:
    ```json
    {
      "mcpServers": {
@@ -227,24 +238,27 @@ After installation, either:
    }
    ```
 
-   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the
-   `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely. Add them only to enable
-   **write mode**: the local API is fast but read-only, so the server uses the Zotero
-   web API for write operations.
+   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely.
 
-   - Generate an API key from <https://www.zotero.org/settings/security#applications>.
-   - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a
-     group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
+   The local API is fast but read-only, so the MCP server uses the Zotero web API for write operations.
+   
+   To enable **write mode**:
+   - Set `ZOTERO_LOCAL: "false"`
+   - Click [here](https://www.zotero.org/settings/security#applications) to generate a Zotero API key and replace `YOUR_API_KEY` with it
+   - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
 
-   > **Tip:** if Claude Desktop reports it can't find the `zotero-mcp` command, use the
+   > **Important Note**: Environmental variables set in the shell you run `claude` in will override these values.
+
+   > **Tip:** If Claude Desktop reports it can't find the `zotero-mcp` command, use the
    > absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) —
    > GUI apps don't always inherit your shell `PATH`.
 
 #### Usage
 
 1. Start Zotero desktop (make sure local API is enabled in preferences)
-2. Launch Claude Desktop
-3. Access the Zotero-MCP tool through Claude Desktop's tools interface
+2. Launch Claude Desktop / Claude Code
+3. For Claude Desktop, access the Zotero-MCP tool through Claude Desktop's tools interface.
+For Claude Code, run the `/mcp` command, and make sure the Zotero MCP server is connected.
 
 Example prompts:
 - "Search my library for papers on machine learning"
