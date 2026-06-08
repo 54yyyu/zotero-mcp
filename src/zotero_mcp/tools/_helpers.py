@@ -3,8 +3,11 @@
 import json
 import os
 import re
+import socket
 import tempfile
+from ipaddress import ip_address
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -442,8 +445,83 @@ def _normalize_arxiv_id(raw):
 # PDF / open-access helpers
 # ---------------------------------------------------------------------------
 
+_MAX_PDF_REDIRECTS = 5
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+def _url_resolves_to_public_host(url: str) -> bool:
+    """Return ``True`` only if ``url`` is http(s) and its host resolves
+    entirely to globally-routable IP addresses.
+
+    SSRF guard for the open-access PDF download path: the candidate URL comes
+    from third-party metadata APIs (Unpaywall / Semantic Scholar) and is
+    therefore attacker-influenceable (a hostile paper record, or prompt
+    injection steering ``zotero_add_by_doi``). We reject non-http(s) schemes
+    and any host that resolves to a private, loopback, link-local, reserved,
+    or otherwise non-global address — including the 169.254.169.254
+    cloud-metadata endpoint, which matters for HTTP/SSE-transport deployments.
+
+    Note: a determined DNS-rebinding attacker could still flip the record
+    between this check and the socket connect. Re-validating every redirect
+    hop (see ``_guarded_pdf_get``) and rejecting on the first non-global
+    result narrows that window to a non-practical vector for this tool's
+    threat model; full pinning would require a custom connection adapter.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or None)
+    except (socket.gaierror, UnicodeError, ValueError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            ip = ip_address(sockaddr[0])
+        except ValueError:
+            return False
+        if not ip.is_global or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+def _guarded_pdf_get(pdf_url, ctx):
+    """GET ``pdf_url`` with SSRF protection.
+
+    Validates that the host resolves to public IPs, follows redirects
+    manually (re-validating each hop), and returns the final ``requests``
+    response, or ``None`` if any URL in the chain is rejected or there are
+    too many redirects.
+    """
+    current = pdf_url
+    for _ in range(_MAX_PDF_REDIRECTS + 1):
+        if not _url_resolves_to_public_host(current):
+            ctx.info(f"PDF URL rejected by SSRF guard: {current}")
+            return None
+        resp = requests.get(current, timeout=30, stream=True, allow_redirects=False)
+        if resp.status_code in _REDIRECT_STATUSES:
+            location = resp.headers.get("Location")
+            try:
+                resp.close()
+            except Exception:
+                pass
+            if not location:
+                return None
+            current = urljoin(current, location)
+            continue
+        return resp
+    ctx.info("Too many redirects while fetching PDF")
+    return None
+
+
 def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
     """Download a PDF from a URL and attach it to a Zotero item.
+
+    The URL is fetched through ``_guarded_pdf_get`` (SSRF guard + manual
+    redirect re-validation), since it originates from third-party metadata
+    APIs rather than the user.
 
     Returns the WebDAV-status suffix string on success (``""`` when WebDAV
     is not configured, otherwise something like ``" (uploaded to WebDAV
@@ -451,7 +529,9 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
     on failure so callers can branch with ``if suffix is not None``.
     """
     try:
-        pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+        pdf_resp = _guarded_pdf_get(pdf_url, ctx)
+        if pdf_resp is None:
+            return None
         pdf_resp.raise_for_status()
 
         content_type = pdf_resp.headers.get("Content-Type", "")

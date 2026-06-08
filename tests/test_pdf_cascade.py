@@ -53,6 +53,13 @@ class _AttachZotero(FakeZotero):
         self.attachments.append({"files": files, "parentid": parentid})
 
 
+def _allow_ssrf_guard(monkeypatch):
+    """Bypass the SSRF host check so a test can exercise download logic
+    (content-type / size) without depending on real DNS resolution."""
+    from zotero_mcp.tools import _helpers
+    monkeypatch.setattr(_helpers, "_url_resolves_to_public_host", lambda url: True)
+
+
 # ---------------------------------------------------------------------------
 # _try_unpaywall
 # ---------------------------------------------------------------------------
@@ -222,6 +229,7 @@ class TestDownloadAndAttachPdf:
     def test_download_content_type_check(self, monkeypatch, dummy_ctx):
         """Response with text/html content-type -> file NOT attached."""
         zot = _AttachZotero()
+        _allow_ssrf_guard(monkeypatch)
 
         def fake_get(url, **kwargs):
             return _FakeHTTPResponse(
@@ -238,6 +246,7 @@ class TestDownloadAndAttachPdf:
     def test_download_too_small(self, monkeypatch, dummy_ctx):
         """Response < 1000 bytes -> file NOT attached."""
         zot = _AttachZotero()
+        _allow_ssrf_guard(monkeypatch)
         tiny_content = b"%PDF-1.4 tiny"  # well under 1000 bytes
 
         def fake_get(url, **kwargs):
@@ -249,6 +258,69 @@ class TestDownloadAndAttachPdf:
         monkeypatch.setattr(requests, "get", fake_get)
         result = _download_and_attach_pdf(zot, "ITEM1", "https://x.com/f.pdf",
                                           "10.1234/test", dummy_ctx)
+        assert result is None
+        assert len(zot.attachments) == 0
+
+    # -- SSRF guard ---------------------------------------------------------
+
+    def test_download_rejects_loopback(self, monkeypatch, dummy_ctx):
+        """A URL resolving to loopback is rejected before any HTTP request."""
+        zot = _AttachZotero()
+        called = []
+        monkeypatch.setattr(requests, "get",
+                            lambda *a, **k: called.append(1))
+        result = _download_and_attach_pdf(
+            zot, "ITEM1", "http://127.0.0.1:23119/api/users/0", "10.1/x", dummy_ctx)
+        assert result is None
+        assert called == []          # guard short-circuits before requests.get
+        assert len(zot.attachments) == 0
+
+    def test_download_rejects_cloud_metadata(self, monkeypatch, dummy_ctx):
+        """The 169.254.169.254 cloud-metadata endpoint is rejected."""
+        zot = _AttachZotero()
+        called = []
+        monkeypatch.setattr(requests, "get", lambda *a, **k: called.append(1))
+        result = _download_and_attach_pdf(
+            zot, "ITEM1", "http://169.254.169.254/latest/meta-data/", "10.1/x", dummy_ctx)
+        assert result is None
+        assert called == []
+
+    def test_download_rejects_private_range(self, monkeypatch, dummy_ctx):
+        """An RFC1918 host is rejected."""
+        zot = _AttachZotero()
+        called = []
+        monkeypatch.setattr(requests, "get", lambda *a, **k: called.append(1))
+        result = _download_and_attach_pdf(
+            zot, "ITEM1", "http://10.0.0.5/secret.pdf", "10.1/x", dummy_ctx)
+        assert result is None
+        assert called == []
+
+    def test_download_rejects_non_http_scheme(self, monkeypatch, dummy_ctx):
+        """Non-http(s) schemes (file://, gopher://) are rejected."""
+        zot = _AttachZotero()
+        called = []
+        monkeypatch.setattr(requests, "get", lambda *a, **k: called.append(1))
+        for url in ("file:///etc/passwd", "gopher://127.0.0.1/x"):
+            assert _download_and_attach_pdf(zot, "ITEM1", url, "10.1/x", dummy_ctx) is None
+        assert called == []
+
+    def test_download_rejects_redirect_to_private(self, monkeypatch, dummy_ctx):
+        """A public URL that 302-redirects to a private host is rejected."""
+        from zotero_mcp.tools import _helpers
+
+        # First hop (public) passes the resolver; the redirect target is a
+        # literal loopback IP, which the guard rejects on re-validation.
+        monkeypatch.setattr(_helpers, "_url_resolves_to_public_host",
+                            lambda url: "evil.example" in url)
+
+        def fake_get(url, **kwargs):
+            return _FakeHTTPResponse(
+                302, headers={"Location": "http://127.0.0.1:23119/api"})
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = _download_and_attach_pdf(
+            zot := _AttachZotero(), "ITEM1", "https://evil.example/p.pdf",
+            "10.1/x", dummy_ctx)
         assert result is None
         assert len(zot.attachments) == 0
 
