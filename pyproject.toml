@@ -32,7 +32,9 @@ dependencies = [
 
 [project.optional-dependencies]
 semantic = [
-    "chromadb>=0.4.0",
+    # >=1.0.0 for chromadb.utils.embedding_functions.register_embedding_function,
+    # used to register the custom OpenAI/Gemini/HF embedding functions (#315).
+    "chromadb>=1.0.0",
     "sentence-transformers>=2.2.0",
     "openai>=1.0.0",
     "google-genai>=0.7.0",
