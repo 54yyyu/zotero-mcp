@@ -213,25 +213,32 @@ After installation, either:
 2. **Manual configuration**:
    Add to your `claude_desktop_config.json`:
    ```json
-  {
-      "mcpServers": {
-          "zotero": {
-              "command": "zotero-mcp",
-              "env": {
-                  "ZOTERO_LOCAL": "true",
-                  "ZOTERO_API_KEY": "YOUR_API_KEY",
-                  "ZOTERO_LIBRARY_ID": "YOUR_LIBRARY_ID"
-              }
-          }
-      }
-  }
+   {
+     "mcpServers": {
+       "zotero": {
+         "command": "zotero-mcp",
+         "env": {
+           "ZOTERO_LOCAL": "true",
+           "ZOTERO_API_KEY": "YOUR_API_KEY",
+           "ZOTERO_LIBRARY_ID": "YOUR_LIBRARY_ID"
+         }
+       }
+     }
+   }
    ```
 
-The API key and the library ID are only needed if you want to use the MCP server in write mode (the local API, while fast, is read-only. The MCP server uses the web API for write operations).
+   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the
+   `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely. Add them only to enable
+   **write mode**: the local API is fast but read-only, so the server uses the Zotero
+   web API for write operations.
 
-Generate API keys [from here](https://www.zotero.org/settings/security#applications).
+   - Generate an API key from <https://www.zotero.org/settings/security#applications>.
+   - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a
+     group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
 
-The library ID is the "User ID" listed on the above screen.
+   > **Tip:** if Claude Desktop reports it can't find the `zotero-mcp` command, use the
+   > absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) —
+   > GUI apps don't always inherit your shell `PATH`.
 
 #### Usage
 
