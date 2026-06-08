@@ -92,6 +92,24 @@ class TestSearchByCitationKeyWebMode:
         assert "Deep Learning" in result
         assert "ABC123" in result
 
+    def test_found_via_native_citation_key_field(self, monkeypatch):
+        fake = _CitekeyFakeZotero()
+        fake._items = [
+            _make_item(
+                key="ABC123",
+                title="Deep Learning",
+                citationKey="Smith2024",
+            ),
+        ]
+        monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
+        monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
+
+        result = search_by_citation_key("Smith2024", ctx=DummyContext())
+
+        assert "Citation Key: Smith2024" in result
+        assert "Deep Learning" in result
+        assert "ABC123" in result
+
     def test_no_match(self, monkeypatch):
         fake = _CitekeyFakeZotero()
         fake._items = [
