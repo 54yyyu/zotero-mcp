@@ -213,17 +213,25 @@ After installation, either:
 2. **Manual configuration**:
    Add to your `claude_desktop_config.json`:
    ```json
-   {
-     "mcpServers": {
-       "zotero": {
-         "command": "zotero-mcp",
-         "env": {
-           "ZOTERO_LOCAL": "true"
-         }
-       }
-     }
-   }
+  {
+      "mcpServers": {
+          "zotero": {
+              "command": "zotero-mcp",
+              "env": {
+                  "ZOTERO_LOCAL": "true",
+                  "ZOTERO_API_KEY": "YOUR_API_KEY",
+                  "ZOTERO_LIBRARY_ID": "YOUR_LIBRARY_ID"
+              }
+          }
+      }
+  }
    ```
+
+The API key and the library ID are only needed if you want to use the MCP server in write mode (the local API, while fast, is read-only. The MCP server uses the web API for write operations).
+
+Generate API keys [from here](https://www.zotero.org/settings/security#applications).
+
+The library ID is the "User ID" listed on the above screen.
 
 #### Usage
 
