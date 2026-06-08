@@ -15,6 +15,7 @@ def _make_item(key="ABCD1234", version=10, title="Original Title",
                date="2024-01-01", doi="", url="",
                volume="", issue="", pages="", publisher="",
                issn="", language="", short_title="",
+               citation_key="doeOriginalArticle2024",
                publication_title="Test Journal"):
     """Build a realistic Zotero item dict for stubbing."""
     return {
@@ -37,6 +38,7 @@ def _make_item(key="ABCD1234", version=10, title="Original Title",
             "ISSN": issn,
             "language": language,
             "shortTitle": short_title,
+            "citationKey": citation_key,
             "tags": [{"tag": t} for t in (tags or [])],
             "collections": list(collections or []),
             "DOI": doi,
@@ -923,6 +925,27 @@ class TestUpdateItemNewFields:
 
         assert fake.update_calls[0]["data"]["place"] == "Cambridge, MA"
         assert "Cambridge, MA" in result
+
+    def test_update_citation_key(self, monkeypatch):
+        """citation_key writes data.citationKey — the only programmatic
+        remediation path for malformed BBT-auto-pinned keys, since BBT 9.x
+        exposes no refresh mechanism via JSON-RPC. See
+        https://github.com/retorquere/zotero-better-bibtex/issues/3522
+        for the upstream context this works around."""
+        item = _make_item(citation_key="doeOldPaperdraftpdf2024")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            citation_key="doeCorrectArticle2024",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["citationKey"] == \
+            "doeCorrectArticle2024"
+        assert "doeCorrectArticle2024" in result
 
     def test_access_date_skipped_on_book(self, monkeypatch):
         """accessDate is not valid for books — should be in skip warning."""
