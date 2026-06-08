@@ -23,22 +23,6 @@ from zotero_mcp.tools import _helpers
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
 
 
-def _extract_attachment_key(attach_result) -> str | None:
-    """Pull the new attachment item's 8-char key out of pyzotero's response.
-
-    ``Zupload.upload`` returns ``{"success": [...], "failure": [...], "unchanged": [...]}``
-    where each list element is the original payload dict with a ``key``
-    field populated on the items that landed.
-    """
-    if not isinstance(attach_result, dict):
-        return None
-    for status in ("success", "unchanged"):
-        for item in attach_result.get(status, []) or []:
-            if isinstance(item, dict) and item.get("key"):
-                return item["key"]
-    return None
-
-
 @mcp.tool(
     name="zotero_batch_update_tags",
     description=(
@@ -915,11 +899,15 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                     with open(filepath, "wb") as f:
                         for chunk in pdf_resp.iter_content(chunk_size=8192):
                             f.write(chunk)
-                    write_zot.attachment_both(
+                    attach_result = write_zot.attachment_both(
                         [(filename, filepath)],
                         parentid=item_key,
                     )
-                pdf_status = "PDF attached"
+                    # Must run inside the with-block — temp file disappears on exit.
+                    webdav_suffix = _helpers._maybe_upload_to_webdav(
+                        attach_result, filepath, ctx
+                    )
+                pdf_status = "PDF attached" + webdav_suffix
             except Exception as e:
                 ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
                 pdf_status = f"no PDF attached ({e})"
@@ -2081,33 +2069,10 @@ def add_from_file(
                 [(display_name, file_path)],
                 parentid=parent_key,
             )
-            attach_info = f"File attached: {display_name}"
-
-            # For WebDAV-storage users, pyzotero's web-API upload path is a
-            # no-op (Zotero's /file endpoint targets Zotero Storage / S3).
-            # If WebDAV creds are configured, push the bytes directly via
-            # WebDAV PUT so the attachment is actually retrievable.
-            from zotero_mcp import webdav as _webdav
-
-            if _webdav.is_webdav_configured():
-                attachment_key = _extract_attachment_key(attach_result)
-                if attachment_key:
-                    try:
-                        _webdav.upload_attachment_to_webdav(
-                            attachment_key=attachment_key,
-                            file_path=file_path,
-                        )
-                        attach_info = (
-                            f"File attached: {display_name} "
-                            f"(uploaded to WebDAV as {attachment_key}.zip)"
-                        )
-                    except Exception as webdav_err:
-                        attach_info = (
-                            f"File attached: {display_name} "
-                            f"(WARNING: WebDAV upload failed — {webdav_err}; "
-                            f"attachment {attachment_key} exists but has no file bytes "
-                            f"on WebDAV)"
-                        )
+            attach_info = (
+                f"File attached: {display_name}"
+                + _helpers._maybe_upload_to_webdav(attach_result, file_path, ctx)
+            )
         except Exception as e:
             attach_info = f"Item created but file attachment failed: {e}"
 
