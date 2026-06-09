@@ -1376,6 +1376,12 @@ def update_item(
                 if old != value:
                     changes.append(f"- **{param_name}**: '{old}' -> '{value}'")
                 data[field] = value
+            elif field == "citationKey":
+                # citationKey is universally valid; absence on the fetched
+                # item just means BBT has not yet auto-pinned a key, so we
+                # add rather than skip-as-invalid-for-item-type.
+                changes.append(f"- **{param_name}**: (none) -> '{value}'")
+                data[field] = value
             else:
                 skipped.append(param_name)
 
