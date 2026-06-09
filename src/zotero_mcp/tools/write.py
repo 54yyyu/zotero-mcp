@@ -1224,6 +1224,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "edition": "edition",
     "ISBN": "isbn",
     "bookTitle": "book_title",
+    "citationKey": "citation_key",
 }
 
 
@@ -1244,7 +1245,8 @@ _UPDATE_ITEM_API_TO_PARAM = {
         "item_key: 8-character Zotero item key of the item to update. "
         "Editable fields include: title, creators, date, publisher, place, "
         "publication_title, volume, issue, pages, DOI, ISBN, ISSN, url, "
-        "language, abstract, short_title, edition, book_title, extra, item_type. "
+        "language, abstract, short_title, edition, book_title, extra, "
+        "citation_key, item_type. "
         "To migrate an item across types (e.g., journalArticle → book), pass item_type "
         "with a valid Zotero item-type vocabulary value; overlapping fields are preserved "
         "and type-specific fields that do not map to the target type are dropped. "
@@ -1286,6 +1288,10 @@ def update_item(
     edition: str | None = None,
     isbn: str | None = None,
     book_title: str | None = None,
+    citation_key: Annotated[
+        str | None,
+        Field(description="BetterBibTeX / Zotero native citation key. Writes to data.citationKey. Useful when BBT auto-pinned the key from incomplete metadata and the programmatic refresh path is blocked (see https://github.com/retorquere/zotero-better-bibtex/issues/3522)."),
+    ] = None,
     item_type: str | None = None,
     *,
     ctx: Context
@@ -1302,10 +1308,15 @@ def update_item(
         item_key: 8-character Zotero item key of the item to update.
         title, creators, date, publication_title, abstract, doi, url,
         extra, volume, issue, pages, publisher, place, issn, language,
-        short_title, edition, isbn, book_title: per-field overrides;
-        ``place`` is the publication city (e.g. ``"New York"`` or
-        ``"Cambridge, MA"``) and is valid on book, bookSection, thesis,
-        manuscript, report, and conferencePaper item types.
+        short_title, edition, isbn, book_title, citation_key: per-field
+        overrides; ``place`` is the publication city (e.g. ``"New York"``
+        or ``"Cambridge, MA"``) and is valid on book, bookSection,
+        thesis, manuscript, report, and conferencePaper item types.
+        ``citation_key`` writes Zotero's native ``data.citationKey``
+        (the BetterBibTeX citation key); BBT auto-pins from metadata on
+        creation and provides no programmatic refresh path in 9.x, so
+        direct write here is the only programmatic remediation for
+        malformed pinned keys.
         tags / add_tags / remove_tags: mutually exclusive; ``tags``
         REPLACES the full tag list, ``add_tags`` / ``remove_tags`` are
         incremental. Prefer the incremental forms.
@@ -1406,6 +1417,8 @@ def update_item(
             field_updates["ISBN"] = isbn
         if book_title is not None:
             field_updates["bookTitle"] = book_title
+        if citation_key is not None:
+            field_updates["citationKey"] = citation_key
 
         skipped = []
         for field, value in field_updates.items():
@@ -1414,6 +1427,12 @@ def update_item(
                 old = data[field]
                 if old != value:
                     changes.append(f"- **{param_name}**: '{old}' -> '{value}'")
+                data[field] = value
+            elif field == "citationKey":
+                # citationKey is universally valid; absence on the fetched
+                # item just means BBT has not yet auto-pinned a key, so we
+                # add rather than skip-as-invalid-for-item-type.
+                changes.append(f"- **{param_name}**: (none) -> '{value}'")
                 data[field] = value
             else:
                 skipped.append(param_name)
