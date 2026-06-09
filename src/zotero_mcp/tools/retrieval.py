@@ -425,6 +425,31 @@ def get_collections(
         return f"# Zotero Collections\n\n{error_msg}"
 
 
+# Item types that are normally children of a parent metadata item.
+_CHILD_ITEM_TYPES = {"attachment", "note", "annotation"}
+
+
+def _is_standalone_attachment(data: dict) -> bool:
+    """True for a file dragged into Zotero with no parent metadata item.
+
+    Such an attachment is itself a top-level item, not a child (#224).
+    """
+    return data.get("itemType") == "attachment" and not data.get("parentItem")
+
+
+def _is_top_level_item(item: dict) -> bool:
+    """Whether an item should be listed as a top-level entry in a collection.
+
+    Keeps real parent items and standalone attachments; excludes children
+    that hang off a parent. Standalone notes are excluded too — they carry
+    no useful title and are out of scope for the collection listing.
+    """
+    data = item.get("data", {})
+    if data.get("itemType", "") not in _CHILD_ITEM_TYPES:
+        return True
+    return _is_standalone_attachment(data)
+
+
 @with_zotero_api_lock
 def _build_attachment_extra(info):
     """Build extra_fields dict from attachment_info for format_item_result."""
@@ -509,12 +534,10 @@ def get_collection_items(
             elif item_type == "note":
                 attachment_info[parent_key]["has_notes"] = True
 
-        # Filter to parent items only (exclude attachments, notes, annotations)
-        child_types = {"attachment", "note", "annotation"}
-        parent_items = [
-            item for item in all_items
-            if item.get("data", {}).get("itemType", "") not in child_types
-        ]
+        # Keep top-level items only. Previously this dropped every attachment,
+        # which made standalone PDFs (no parent metadata item) vanish from the
+        # collection entirely (#224); _is_top_level_item now keeps those.
+        parent_items = [item for item in all_items if _is_top_level_item(item)]
 
         if not parent_items:
             return f"No items found in collection: {collection_name} (Key: {collection_key})"
@@ -532,11 +555,19 @@ def get_collection_items(
 
         for i, item in enumerate(display_items, 1):
             key = item.get("key", "")
+            data = item.get("data", {})
             info = attachment_info.get(key, {})
+            # A standalone attachment is its own PDF — surface the PDF indicator
+            # across all detail levels, just like a parent item's child PDF.
+            if (
+                _is_standalone_attachment(data)
+                and data.get("contentType") == "application/pdf"
+            ):
+                info = {**info, "has_pdf": True}
 
             if detail == "keys_only":
-                data = item.get("data", {})
-                title = data.get("title", "Untitled")
+                # Standalone attachments have no title — fall back to filename.
+                title = data.get("title") or data.get("filename") or "Untitled"
                 date = data.get("date", "")
                 flags = []
                 if info.get("has_pdf"):

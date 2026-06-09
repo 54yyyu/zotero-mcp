@@ -73,7 +73,8 @@ def format_item_result(
         List of markdown lines (caller joins with ``"\\n"``).
     """
     data = item.get("data", {})
-    title = data.get("title", "Untitled")
+    # Standalone attachments carry no title — fall back to their filename.
+    title = data.get("title") or data.get("filename") or "Untitled"
     heading = f"## {index}. {title}" if index is not None else f"## {title}"
     lines: list[str] = [
         heading,
