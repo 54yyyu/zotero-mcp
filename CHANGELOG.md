@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `scite_check_retractions` and Scite enrichment now reach the `/papers` endpoint correctly. `get_papers_batch` POSTed a `{"dois": [...]}` object, but the endpoint requires a bare JSON array and returns HTTP 400 ("Input should be a valid list") for the object form — which broke retraction checks entirely and silently dropped editorial notices from `scite_enrich_search`.
+- Scite lookups are now case-insensitive. Scite lowercases DOI keys in its `/papers` and `/tallies` responses, so retractions and tallies on DOIs containing uppercase characters (e.g. `10.1016/S0140-6736(97)11096-0`) were missed, producing a false "all clear".
+
 ## [0.5.0] - 2026-06-08
 
 ### Added
