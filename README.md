@@ -385,6 +385,12 @@ zotero-cli add doi 10.1038/s41586-021-03819-2
 zotero-cli add url https://arxiv.org/abs/2301.00001
 zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
 
+# --collections accepts keys, names, or parent/child paths — resolved and
+# validated before the item is created (a typo fails the add, with suggestions,
+# instead of leaving an unfiled item)
+zotero-cli add doi 10.1038/s41586-021-03819-2 --collections "Reading List"
+zotero-cli collections manage --item-keys ABC123 --add-to "_project/topic"
+
 # Collections and tags
 zotero-cli coll list                          # list collections (short alias)
 zotero-cli coll search "PhD Research"
@@ -491,9 +497,11 @@ zotero_remove_item_relation(
 - `zotero_add_by_doi`: Add a paper by DOI with automatic metadata and open-access PDF attachment
 - `zotero_add_by_url`: Add a paper by URL (arXiv, DOI URLs, and general webpages)
 - `zotero_add_from_file`: Import a local PDF or EPUB file with automatic DOI extraction
+
+All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item.
 - `zotero_create_collection`: Create a new collection (folder/project) in your library
 - `zotero_search_collections`: Search for collections by name to find their keys
-- `zotero_manage_collections`: Add or remove items from collections
+- `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
 - `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
 - `zotero_find_duplicates`: Find duplicate items by title and/or DOI
 - `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items
