@@ -34,6 +34,47 @@ The container entrypoint supports both MCP server and CLI usage.
   - Runs `zotero-cli` with provided arguments
   - Defaults to `zotero-cli --help` if no args are passed
 
+## Environment variables for containers
+
+Container-specific runtime variables:
+
+- `ZOTERO_APP`: `server` (default) or `cli`
+- `ZOTERO_TRANSPORT`: MCP transport used when `ZOTERO_APP=server` and no explicit args are passed (`stdio` default)
+
+Common Zotero MCP variables (same as non-container installs):
+
+- `ZOTERO_LOCAL=true`: use local Zotero API mode
+- `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`: web/hybrid access
+- `ZOTERO_WEBDAV_URL`, `ZOTERO_WEBDAV_USERNAME`, `ZOTERO_WEBDAV_PASSWORD`: remote attachment download support
+- `ZOTERO_EMBEDDING_MODEL`: `default`, `openai`, `gemini`, or supported HF model
+- `OPENAI_API_KEY`, `OPENAI_EMBEDDING_MODEL`, `OPENAI_BASE_URL`
+- `GEMINI_API_KEY`, `GEMINI_EMBEDDING_MODEL`, `GEMINI_BASE_URL`
+- `ZOTERO_DB_PATH`: override path to `zotero.sqlite`
+
+Recommended pattern:
+
+```bash
+docker run --rm --env-file .env ghcr.io/<owner>/zotero-mcp:latest
+```
+
+## Persistence (config + ChromaDB)
+
+By default, the container stores config and semantic index under:
+
+- `/home/app/.config/zotero-mcp/config.json`
+- `/home/app/.config/zotero-mcp/chroma_db/`
+
+To persist configuration and ChromaDB across container restarts, mount that directory:
+
+```bash
+docker run --rm \
+  -v zotero-mcp-data:/home/app/.config/zotero-mcp \
+  --env-file .env \
+  ghcr.io/<owner>/zotero-mcp:latest
+```
+
+If you run semantic indexing (`zotero-mcp update-db` or `zotero-cli db update`) without this mount, ChromaDB is ephemeral and will be rebuilt in a new container.
+
 ## Local build examples
 
 ```bash
@@ -48,4 +89,7 @@ docker run --rm zotero-mcp:all
 
 # Run CLI mode
 docker run --rm -e ZOTERO_APP=cli zotero-mcp:all search "transformer models"
+
+# Run with persistent config + ChromaDB
+docker run --rm -v zotero-mcp-data:/home/app/.config/zotero-mcp zotero-mcp:all
 ```

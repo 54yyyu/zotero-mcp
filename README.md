@@ -369,6 +369,13 @@ The image supports both MCP server and standalone CLI modes.
 - **Server mode (default)**: runs `zotero-mcp serve --transport stdio`
 - **CLI mode**: set `ZOTERO_APP=cli` and pass normal `zotero-cli` arguments
 
+### Docker env vars and persistence
+
+- Container runtime vars: `ZOTERO_APP` (`server` or `cli`) and `ZOTERO_TRANSPORT` (default: `stdio`)
+- All standard Zotero MCP vars are supported in containers (`ZOTERO_LOCAL`, `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, embedding provider keys, etc.)
+- ChromaDB persistence path in the container is `/home/app/.config/zotero-mcp/chroma_db/`
+- Persist config + ChromaDB by mounting `/home/app/.config/zotero-mcp`
+
 Examples:
 
 ```bash
@@ -380,6 +387,9 @@ docker run --rm ghcr.io/<owner>/zotero-mcp:latest serve --transport streamable-h
 
 # Standalone CLI mode
 docker run --rm -e ZOTERO_APP=cli ghcr.io/<owner>/zotero-mcp:latest search "machine learning"
+
+# Persist config + ChromaDB across runs
+docker run --rm -v zotero-mcp-data:/home/app/.config/zotero-mcp --env-file .env ghcr.io/<owner>/zotero-mcp:latest
 ```
 
 ## ⌨️ CLI Mode (`zotero-cli`)
