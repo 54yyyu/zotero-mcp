@@ -187,6 +187,31 @@ class TestParser:
             assert args.collection == ["X"]
             assert args.if_exists == "skip"
 
+    def test_add_isbn_subcommand(self):
+        args = self.parser.parse_args(
+            ["add", "isbn", "9780262046305", "-c", "Books"]
+        )
+        assert args.subcommand == "isbn"
+        assert args.isbn == "9780262046305"
+        assert args.collection == ["Books"]
+        assert args.if_exists == "file"
+
+    def test_add_bibtex_subcommand(self):
+        args = self.parser.parse_args(
+            ["add", "bibtex", "--file", "/tmp/refs.bib", "-c", "Topic"]
+        )
+        assert args.subcommand == "bibtex"
+        assert args.file == "/tmp/refs.bib"
+        assert args.bibtex is None
+
+    def test_add_csl_json_subcommand(self):
+        args = self.parser.parse_args(
+            ["add", "csl-json", "--json", "-", "--if-exists", "duplicate"]
+        )
+        assert args.subcommand == "csl-json"
+        assert args.json == "-"
+        assert args.if_exists == "duplicate"
+
 
 # ---------------------------------------------------------------------------
 # main() dispatch
@@ -423,7 +448,8 @@ class TestCmdAdd:
 
     def _run(self, args):
         mock_write = MagicMock()
-        for fn in ("add_by_doi", "add_by_url", "add_from_file"):
+        for fn in ("add_by_doi", "add_by_url", "add_from_file",
+                   "add_by_isbn", "add_by_bibtex", "add_by_csl_json"):
             setattr(mock_write, fn,
                     create_autospec(getattr(write_tools, fn), return_value="ok"))
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
@@ -509,3 +535,45 @@ class TestCmdAdd:
         assert mock_write.add_by_doi.call_args.kwargs["collections"] == [
             "KEY00001", "Reading List", "_project/a, b topic", "Other",
         ]
+
+    def test_add_isbn_matches_real_signature(self):
+        args = self._args(subcommand="isbn", isbn="9780262046305",
+                          collections="Books")
+        mock_write = self._run(args)
+
+        mock_write.add_by_isbn.assert_called_once()
+        call_kwargs = mock_write.add_by_isbn.call_args.kwargs
+        assert call_kwargs["isbn"] == "9780262046305"
+        assert call_kwargs["collections"] == ["Books"]
+        assert call_kwargs["if_exists"] == "file"
+
+    def test_add_bibtex_inline_matches_real_signature(self):
+        args = self._args(subcommand="bibtex", bibtex="@article{x, title={T}}",
+                          file=None, attach_mode="auto")
+        mock_write = self._run(args)
+
+        mock_write.add_by_bibtex.assert_called_once()
+        call_kwargs = mock_write.add_by_bibtex.call_args.kwargs
+        assert call_kwargs["bibtex"] == "@article{x, title={T}}"
+        assert call_kwargs["file_path"] is None
+
+    def test_add_bibtex_reads_stdin_when_dash(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin",
+                            MagicMock(read=lambda: "@book{y, title={Y}}"))
+        args = self._args(subcommand="bibtex", bibtex="-", file=None,
+                          attach_mode="auto")
+        mock_write = self._run(args)
+
+        assert mock_write.add_by_bibtex.call_args.kwargs["bibtex"] == (
+            "@book{y, title={Y}}"
+        )
+
+    def test_add_csl_json_file_matches_real_signature(self):
+        args = self._args(subcommand="csl-json", json=None,
+                          file="/tmp/refs.json", attach_mode="auto")
+        mock_write = self._run(args)
+
+        mock_write.add_by_csl_json.assert_called_once()
+        call_kwargs = mock_write.add_by_csl_json.call_args.kwargs
+        assert call_kwargs["file_path"] == "/tmp/refs.json"
+        assert call_kwargs["csl_json"] is None

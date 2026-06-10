@@ -384,6 +384,10 @@ zotero-cli ann search "highlight text"
 zotero-cli add doi 10.1038/s41586-021-03819-2
 zotero-cli add url https://arxiv.org/abs/2301.00001
 zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
+zotero-cli add isbn 9780262046305
+zotero-cli add bibtex --file refs.bib                # or --bibtex '@article{...}'
+zotero-cli add bibtex --bibtex - < refs.bib          # stdin via -
+zotero-cli add csl-json --file refs.json             # or --json '...' / --json -
 
 # --collections accepts keys, names, or parent/child paths — resolved and
 # validated before the item is created (a typo fails the add, with suggestions,
@@ -506,6 +510,9 @@ zotero_remove_item_relation(
 ### 📦 Item & Collection Management Tools
 - `zotero_add_by_doi`: Add a paper by DOI with automatic metadata and open-access PDF attachment
 - `zotero_add_by_url`: Add a paper by URL (arXiv, DOI URLs, and general webpages)
+- `zotero_add_by_isbn`: Add a book by ISBN (Open Library + Google Books cascade)
+- `zotero_add_by_bibtex`: Add one or more items from BibTeX (inline or .bib file)
+- `zotero_add_by_csl_json`: Add one or more items from CSL JSON (inline or file)
 - `zotero_add_from_file`: Import a local PDF or EPUB file with automatic DOI extraction
 
 All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item. They also take `if_exists` (`"duplicate"` — default — always creates; `"file"` reuses an existing item matching the DOI/arXiv ID/ISBN/URL, filing it into missing collections and adding missing tags; `"skip"` leaves a match untouched) and `create_missing_collections` (create unknown collection specs, including path chains, instead of failing). The `zotero-cli add` commands default to `--if-exists file`.

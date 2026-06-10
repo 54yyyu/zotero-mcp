@@ -5,8 +5,11 @@ Usage:
     zotero-cli search "Einstein 1905"
     zotero-cli get metadata ITEM_KEY
     zotero-cli get collections
-    zotero-cli add doi 10.1234/example
+    zotero-cli add doi 10.1234/example -c "Reading List"
     zotero-cli add url https://arxiv.org/abs/2301.00001
+    zotero-cli add isbn 9780262046305 -c "_project/books"
+    zotero-cli add bibtex --file refs.bib -c topic
+    zotero-cli add csl-json --json - -c topic   # reads stdin
     zotero-cli edit ITEM_KEY --title "New Title"
     zotero-cli notes list
     zotero-cli annotations list --item-key ITEM_KEY
@@ -258,6 +261,28 @@ def cmd_add(args):
             file_path=args.filepath, title=getattr(args, "title", None),
             item_type=getattr(args, "item_type", "document"),
             collections=collections, tags=tags, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
+        ))
+    elif args.subcommand == "isbn":
+        print(write_mod.add_by_isbn(
+            isbn=args.isbn, collections=collections, tags=tags,
+            if_exists=if_exists, create_missing_collections=create_missing,
+            ctx=ctx,
+        ))
+    elif args.subcommand == "bibtex":
+        bibtex = sys.stdin.read() if args.bibtex == "-" else args.bibtex
+        print(write_mod.add_by_bibtex(
+            bibtex=bibtex, file_path=getattr(args, "file", None),
+            collections=collections, tags=tags,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
+        ))
+    elif args.subcommand == "csl-json":
+        csl_json = sys.stdin.read() if args.json == "-" else args.json
+        print(write_mod.add_by_csl_json(
+            csl_json=csl_json, file_path=getattr(args, "file", None),
+            collections=collections, tags=tags,
+            attach_mode=args.attach_mode, if_exists=if_exists,
             create_missing_collections=create_missing, ctx=ctx,
         ))
     else:
@@ -671,6 +696,23 @@ def build_parser() -> argparse.ArgumentParser:
     afil.add_argument("--item-type", default="document",
                       help="Zotero item type for the new item (default: document)")
     _add_common_flags(afil)
+    aisbn = add_sub.add_parser("isbn", help="Add book by ISBN")
+    aisbn.add_argument("isbn")
+    _add_common_flags(aisbn)
+    abib = add_sub.add_parser("bibtex", help="Add items from BibTeX")
+    abib.add_argument("--bibtex",
+                      help="Inline BibTeX (use - to read from stdin)")
+    abib.add_argument("--file", help="Path to a .bib/.bibtex file")
+    _add_common_flags(abib)
+    abib.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
+                      default="auto")
+    acsl = add_sub.add_parser("csl-json", help="Add items from CSL JSON")
+    acsl.add_argument("--json", dest="json",
+                      help="Inline CSL JSON (use - to read from stdin)")
+    acsl.add_argument("--file", help="Path to a .json/.csljson file")
+    _add_common_flags(acsl)
+    acsl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
+                      default="auto")
 
     # collections
     col_p = sub.add_parser("collections", help="Manage collections", aliases=["coll"])
