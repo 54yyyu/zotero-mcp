@@ -123,6 +123,9 @@ class ZoteroSemanticSearch:
         self.zotero_client = get_zotero_client()
         self.config_path = config_path
         self.db_path = db_path  # CLI override for Zotero database path
+        # Item keys seen by the most recent local sqlite scan (set by
+        # _get_items_from_local_db); used to verify watermark promotion.
+        self._last_scan_snapshot_keys: set[str] | None = None
 
         # Load update configuration
         self.update_config = self._load_update_config()
@@ -482,6 +485,12 @@ class ZoteroSemanticSearch:
                 pass
 
             with suppress_stdout(), LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, pdf_timeout=pdf_timeout) as reader:
+                # Capture the snapshot's full key set on the SAME connection
+                # this scan uses. The staleness check after the (potentially
+                # long) extraction must compare against what this scan could
+                # actually see — a fresh read taken later could already
+                # include rows from a WAL checkpoint that landed mid-scan.
+                self._last_scan_snapshot_keys = reader.get_all_item_keys()
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
@@ -1049,17 +1058,22 @@ class ZoteroSemanticSearch:
         try:
             api_keys = set((self.zotero_client.item_versions() or {}).keys())
 
-            zotero_db_path = self.db_path  # CLI override takes precedence
-            if not zotero_db_path and self.config_path and os.path.exists(self.config_path):
-                try:
-                    with open(self.config_path) as f:
-                        zotero_db_path = (
-                            json.load(f).get("semantic_search", {}).get("zotero_db_path")
-                        )
-                except Exception:
-                    pass
-            with LocalZoteroReader(db_path=zotero_db_path) as reader:
-                snapshot_keys = reader.get_all_item_keys()
+            # Prefer the key set captured by the scan's own connection: a
+            # fresh read here could already see rows from a WAL checkpoint
+            # that landed mid-scan, masking the very staleness we check for.
+            snapshot_keys = getattr(self, "_last_scan_snapshot_keys", None)
+            if snapshot_keys is None:
+                zotero_db_path = self.db_path  # CLI override takes precedence
+                if not zotero_db_path and self.config_path and os.path.exists(self.config_path):
+                    try:
+                        with open(self.config_path) as f:
+                            zotero_db_path = (
+                                json.load(f).get("semantic_search", {}).get("zotero_db_path")
+                            )
+                    except Exception:
+                        pass
+                with LocalZoteroReader(db_path=zotero_db_path) as reader:
+                    snapshot_keys = reader.get_all_item_keys()
         except Exception as e:
             logger.warning(
                 f"Could not verify local snapshot completeness ({e}); "

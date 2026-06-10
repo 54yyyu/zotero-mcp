@@ -35,6 +35,25 @@ def make_zotero_db(path, keys):
             "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, ?, 1, 0)",
             (i, key),
         )
+    # Empty side tables referenced by get_items_with_text / get_item_count
+    conn.execute("CREATE TABLE deletedItems (itemID INTEGER PRIMARY KEY)")
+    conn.execute(
+        "CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT)"
+    )
+    conn.execute(
+        "CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)"
+    )
+    conn.execute("CREATE TABLE itemCreators (itemID INT, creatorID INT)")
+    conn.execute(
+        "CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, "
+        "firstName TEXT, lastName TEXT)"
+    )
     conn.commit()
     conn.close()
 
@@ -109,6 +128,32 @@ def test_watermark_held_back_on_api_error(tmp_path):
         db, FakeVersionsZotero({}, error=RuntimeError("api down"))
     )
     assert s._verify_local_snapshot_version(42) is None
+
+
+def test_watermark_uses_scan_time_snapshot_keys(tmp_path):
+    """A checkpoint can land *during* the (minutes-long) extraction scan,
+    making a fresh sqlite read look complete even though the scan itself
+    missed the item. Verification must compare against the keys captured
+    at scan time, not a fresh snapshot."""
+    db = tmp_path / "zotero.sqlite"
+    # Disk state AFTER the mid-scan checkpoint: WALHIDDEN1 is now visible
+    make_zotero_db(db, ["AAAA1111", "WALHIDDEN1"])
+    s = make_search(
+        db, FakeVersionsZotero({"AAAA1111": 5, "WALHIDDEN1": 12})
+    )
+    # ...but the scan only ever saw AAAA1111
+    s._last_scan_snapshot_keys = {"AAAA1111"}
+    assert s._verify_local_snapshot_version(42) is None
+
+
+def test_get_items_from_local_db_captures_snapshot_keys(tmp_path):
+    """The metadata scan must record the key set its own connection saw,
+    so verification later compares against the same snapshot."""
+    db = tmp_path / "zotero.sqlite"
+    make_zotero_db(db, ["AAAA1111", "BBBB2222"])
+    s = make_search(db, FakeVersionsZotero({}))
+    s._get_items_from_local_db(extract_fulltext=False)
+    assert s._last_scan_snapshot_keys == {"AAAA1111", "BBBB2222"}
 
 
 def _write_config(path, last_sync_version):
