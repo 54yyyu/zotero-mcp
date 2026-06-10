@@ -217,28 +217,48 @@ def cmd_notes(args):
         sys.exit(1)
 
 
+def _collect_collection_specs(args) -> list | None:
+    """Merge --collections (comma-split) with repeatable -c/--collection.
+
+    Each -c value is ONE spec, never comma-split — so names containing
+    commas work. Returns None when neither flag was given.
+    """
+    specs = []
+    if getattr(args, "collections", None):
+        specs.extend(s.strip() for s in args.collections.split(",") if s.strip())
+    for spec in getattr(args, "collection", None) or []:
+        if spec.strip():
+            specs.append(spec.strip())
+    return specs or None
+
+
 def cmd_add(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
     tags = args.tags.split(",") if args.tags else None
-    collections = args.collections.split(",") if args.collections else None
+    collections = _collect_collection_specs(args)
+    if_exists = getattr(args, "if_exists", "file")
+    create_missing = getattr(args, "create_collections", False)
 
     if args.subcommand == "doi":
         print(write_mod.add_by_doi(
             doi=args.doi, collections=collections, tags=tags,
-            attach_mode=args.attach_mode, ctx=ctx,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
         ))
     elif args.subcommand == "url":
         print(write_mod.add_by_url(
             url=args.url, collections=collections, tags=tags,
-            attach_mode=args.attach_mode, ctx=ctx,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
         ))
     elif args.subcommand == "file":
         print(write_mod.add_from_file(
             file_path=args.filepath, title=getattr(args, "title", None),
             item_type=getattr(args, "item_type", "document"),
-            collections=collections, tags=tags, ctx=ctx,
+            collections=collections, tags=tags, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
         ))
     else:
         print(f"Unknown 'add' subcommand: {args.subcommand}", file=sys.stderr)
@@ -616,23 +636,41 @@ def build_parser() -> argparse.ArgumentParser:
     # add
     add_p = sub.add_parser("add", help="Add items to your library")
     add_sub = add_p.add_subparsers(dest="subcommand")
+
+    def _add_common_flags(p):
+        """Collection/idempotency flags shared by every `add` subcommand."""
+        p.add_argument("--collections",
+                       help="Comma-separated collection keys, names, or paths")
+        p.add_argument("-c", "--collection", action="append", metavar="SPEC",
+                       help="Collection key, name, or parent/child path "
+                            "(repeatable; not comma-split, so names with "
+                            "commas work)")
+        p.add_argument("--tags", help="Comma-separated tags")
+        p.add_argument("--if-exists", dest="if_exists",
+                       choices=["file", "skip", "duplicate"], default="file",
+                       help="When the item already exists: 'file' (default) "
+                            "reuses it and adds missing collections/tags; "
+                            "'skip' leaves it untouched; 'duplicate' creates "
+                            "a new item anyway")
+        p.add_argument("--create-collections", dest="create_collections",
+                       action="store_true",
+                       help="Create collections that don't exist yet "
+                            "(including parent/child paths)")
+
     adoi = add_sub.add_parser("doi", help="Add item by DOI")
     adoi.add_argument("doi")
-    adoi.add_argument("--collections")
-    adoi.add_argument("--tags")
+    _add_common_flags(adoi)
     adoi.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
     aurl = add_sub.add_parser("url", help="Add item by URL")
     aurl.add_argument("url")
-    aurl.add_argument("--collections")
-    aurl.add_argument("--tags")
+    _add_common_flags(aurl)
     aurl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
     afil = add_sub.add_parser("file", help="Add item from local file (.pdf/.epub)")
     afil.add_argument("--filepath", required=True)
     afil.add_argument("--title", help="Override title if metadata extraction misses")
     afil.add_argument("--item-type", default="document",
                       help="Zotero item type for the new item (default: document)")
-    afil.add_argument("--collections")
-    afil.add_argument("--tags")
+    _add_common_flags(afil)
 
     # collections
     col_p = sub.add_parser("collections", help="Manage collections", aliases=["coll"])

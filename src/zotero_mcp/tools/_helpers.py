@@ -500,6 +500,69 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
+def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
+                        ctx=None) -> list[dict]:
+    """Find non-attachment items already in the library by a normalized id.
+
+    Exactly one of doi / arxiv_id / isbn / url should be given (already
+    normalized via the corresponding ``_normalize_*`` helper, except url).
+    A server-side quick search (``q=<id>, qmode='everything',
+    itemType='-attachment'``) narrows candidates cheaply; a client-side
+    normalized comparison confirms real matches. Searching with the BARE
+    identifier means the substring quick-search also catches values stored
+    with prefixes ('https://doi.org/10...', 'arXiv:...'). The items endpoint
+    excludes the Trash, so a trashed copy never blocks a re-add.
+
+    Returns full item dicts (with ``key``/``version``/``data``) so callers
+    can update them without re-fetching. Returns [] on search failure —
+    callers treat that as "nothing found" and proceed to create.
+    """
+    if doi:
+        query = doi
+        def _matches(data):
+            return _normalize_doi(data.get("DOI") or "") == doi
+    elif arxiv_id:
+        query = arxiv_id
+        def _matches(data):
+            if _normalize_arxiv_id(data.get("url") or "") == arxiv_id:
+                return True
+            return f"arxiv:{arxiv_id}".lower() in (data.get("extra") or "").lower()
+    elif isbn:
+        query = isbn
+        def _matches(data):
+            # Zotero's ISBN field may hold several space-separated values,
+            # in 10- or 13-digit form; compare each normalized to ISBN-13.
+            raw = data.get("ISBN") or ""
+            for token in re.split(r"[,;\s]+", raw):
+                if token and _normalize_isbn(token) == isbn:
+                    return True
+            return False
+    elif url:
+        query = url
+        def _matches(data):
+            return (data.get("url") or "").rstrip("/") == url.rstrip("/")
+    else:
+        return []
+
+    try:
+        candidates = zot.items(
+            q=query, qmode="everything", itemType="-attachment", limit=50
+        )
+    except Exception as e:
+        if ctx is not None:
+            ctx.warning(f"Existing-item search failed (treating as no match): {e}")
+        return []
+
+    matches = []
+    for item in candidates or []:
+        data = item.get("data", {})
+        if data.get("itemType") in ("attachment", "note", "annotation"):
+            continue
+        if _matches(data):
+            matches.append(item)
+    return matches
+
+
 def _collection_not_found_message(zot, spec, paths) -> str:
     """Build the error message for an unresolvable collection spec."""
     if _COLLECTION_KEY_RE.match(spec):

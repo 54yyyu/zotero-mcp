@@ -153,6 +153,40 @@ class TestParser:
                 "add", "file", "--filepath", "/tmp/x.pdf", "--parent-key", "ABC12345",
             ])
 
+    def test_add_doi_if_exists_defaults_to_file(self):
+        args = self.parser.parse_args(["add", "doi", "10.1234/x"])
+        assert args.if_exists == "file"
+        assert args.create_collections is False
+        assert args.collection is None
+
+    def test_add_doi_if_exists_choices(self):
+        args = self.parser.parse_args(
+            ["add", "doi", "10.1234/x", "--if-exists", "duplicate"]
+        )
+        assert args.if_exists == "duplicate"
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["add", "doi", "10.1234/x", "--if-exists", "bogus"])
+
+    def test_add_doi_repeatable_collection_flag(self):
+        args = self.parser.parse_args([
+            "add", "doi", "10.1234/x",
+            "-c", "Reading List", "-c", "_project/topic",
+            "--collections", "KEY00001",
+            "--create-collections",
+        ])
+        assert args.collection == ["Reading List", "_project/topic"]
+        assert args.collections == "KEY00001"
+        assert args.create_collections is True
+
+    def test_add_url_and_file_share_common_flags(self):
+        for argv in (
+            ["add", "url", "https://example.com", "-c", "X", "--if-exists", "skip"],
+            ["add", "file", "--filepath", "/tmp/x.pdf", "-c", "X", "--if-exists", "skip"],
+        ):
+            args = self.parser.parse_args(argv)
+            assert args.collection == ["X"]
+            assert args.if_exists == "skip"
+
 
 # ---------------------------------------------------------------------------
 # main() dispatch
@@ -379,6 +413,14 @@ class TestCmdAdd:
     every invocation. Autospec the real functions so signature drift fails here.
     """
 
+    def _args(self, **kwargs):
+        defaults = dict(
+            verbose=False, collections=None, collection=None, tags=None,
+            if_exists="file", create_collections=False,
+        )
+        defaults.update(kwargs)
+        return MagicMock(**defaults)
+
     def _run(self, args):
         mock_write = MagicMock()
         for fn in ("add_by_doi", "add_by_url", "add_from_file"):
@@ -393,9 +435,8 @@ class TestCmdAdd:
 
     def test_add_file_matches_real_signature(self, capsys):
         # Regression: would raise TypeError while parent_key= was passed.
-        args = MagicMock(subcommand="file", filepath="/tmp/paper.pdf",
-                         title=None, item_type="document",
-                         collections=None, tags=None, verbose=False)
+        args = self._args(subcommand="file", filepath="/tmp/paper.pdf",
+                          title=None, item_type="document")
         mock_write = self._run(args)
 
         mock_write.add_from_file.assert_called_once()
@@ -406,10 +447,9 @@ class TestCmdAdd:
         assert "ok" in capsys.readouterr().out
 
     def test_add_file_forwards_title_and_item_type(self):
-        args = MagicMock(subcommand="file", filepath="/tmp/book.epub",
-                         title="My Book", item_type="book",
-                         collections="ABCD1234,EFGH5678", tags="a,b",
-                         verbose=False)
+        args = self._args(subcommand="file", filepath="/tmp/book.epub",
+                          title="My Book", item_type="book",
+                          collections="ABCD1234,EFGH5678", tags="a,b")
         mock_write = self._run(args)
 
         call_kwargs = mock_write.add_from_file.call_args.kwargs
@@ -419,9 +459,8 @@ class TestCmdAdd:
         assert call_kwargs["tags"] == ["a", "b"]
 
     def test_add_doi_matches_real_signature(self):
-        args = MagicMock(subcommand="doi", doi="10.1234/test",
-                         attach_mode="auto", collections="ABCD1234",
-                         tags=None, verbose=False)
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto", collections="ABCD1234")
         mock_write = self._run(args)
 
         mock_write.add_by_doi.assert_called_once()
@@ -430,12 +469,43 @@ class TestCmdAdd:
         assert call_kwargs["collections"] == ["ABCD1234"]
 
     def test_add_url_matches_real_signature(self):
-        args = MagicMock(subcommand="url", url="https://arxiv.org/abs/2301.00001",
-                         attach_mode="auto", collections=None, tags=None,
-                         verbose=False)
+        args = self._args(subcommand="url",
+                          url="https://arxiv.org/abs/2301.00001",
+                          attach_mode="auto")
         mock_write = self._run(args)
 
         mock_write.add_by_url.assert_called_once()
         assert mock_write.add_by_url.call_args.kwargs["url"] == (
             "https://arxiv.org/abs/2301.00001"
         )
+
+    def test_add_doi_forwards_if_exists_and_create_flags(self):
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto", if_exists="skip",
+                          create_collections=True)
+        mock_write = self._run(args)
+
+        call_kwargs = mock_write.add_by_doi.call_args.kwargs
+        assert call_kwargs["if_exists"] == "skip"
+        assert call_kwargs["create_missing_collections"] is True
+
+    def test_add_doi_default_if_exists_is_file(self):
+        """The CLI defaults to convergent behavior; MCP keeps 'duplicate'."""
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto")
+        mock_write = self._run(args)
+
+        assert mock_write.add_by_doi.call_args.kwargs["if_exists"] == "file"
+
+    def test_repeatable_collection_flag_merges_without_splitting(self):
+        # -c values are single specs (never comma-split — names may contain
+        # commas); --collections is comma-split; both merge in order.
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto",
+                          collections="KEY00001,Reading List",
+                          collection=["_project/a, b topic", "Other"])
+        mock_write = self._run(args)
+
+        assert mock_write.add_by_doi.call_args.kwargs["collections"] == [
+            "KEY00001", "Reading List", "_project/a, b topic", "Other",
+        ]
