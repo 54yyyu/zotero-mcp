@@ -99,6 +99,7 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     delete_annotation,
 )
 from zotero_mcp.tools.write import (  # noqa: F401
+    batch_update_extra,
     batch_update_tags,
     create_collection,
     delete_collection,
