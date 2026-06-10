@@ -346,6 +346,42 @@ zotero-mcp db-status                       # Show database status and info
 zotero-mcp version                         # Show current version
 ```
 
+## 🐳 Docker Images (GHCR)
+
+This repository publishes multi-arch container images to GitHub Container Registry:
+
+- `ghcr.io/<owner>/zotero-mcp:<tag>-core` - lightweight install (no optional extras)
+- `ghcr.io/<owner>/zotero-mcp:<tag>-all` - full install with `[semantic,pdf,scite]`
+- Unsuffixed tags (for example `:latest`, `:vX.Y.Z`) point to the `all` flavor
+
+Detailed publishing and runtime notes are in `docs/docker-images.md`.
+
+Tag strategy:
+
+- Release tags: `vX.Y.Z`, `vX.Y`, `vX` (plus `-core` and `-all` variants)
+- Main branch: `latest` (plus `latest-core` and `latest-all`)
+- Immutable SHA tags: `sha-<shortsha>-core`, `sha-<shortsha>-all` (and unsuffixed SHA for `all`)
+
+### Runtime modes in the container
+
+The image supports both MCP server and standalone CLI modes.
+
+- **Server mode (default)**: runs `zotero-mcp serve --transport stdio`
+- **CLI mode**: set `ZOTERO_APP=cli` and pass normal `zotero-cli` arguments
+
+Examples:
+
+```bash
+# Default MCP server mode (stdio)
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest
+
+# MCP server mode with explicit transport
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest serve --transport streamable-http --host 0.0.0.0 --port 8000
+
+# Standalone CLI mode
+docker run --rm -e ZOTERO_APP=cli ghcr.io/<owner>/zotero-mcp:latest search "machine learning"
+```
+
 ## ⌨️ CLI Mode (`zotero-cli`)
 
 `zotero-cli` is a standalone terminal interface to your Zotero library. It uses the same tools as the MCP server but without needing an AI assistant — useful for quick lookups, shell scripts, and automation.
