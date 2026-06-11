@@ -14,3 +14,9 @@ try:
     from zotero_mcp.tools import scite as scite  # noqa: F401
 except ImportError:
     pass
+
+# Optional: Proxy paper fetching (requires ``pip install zotero-mcp-server[proxy]``)
+try:
+    from zotero_mcp.tools import proxy as proxy  # noqa: F401
+except ImportError:
+    pass
