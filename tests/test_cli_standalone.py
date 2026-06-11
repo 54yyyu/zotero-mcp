@@ -1,13 +1,15 @@
 """Tests for the standalone CLI module (zotero-cli entry point)."""
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
+import zotero_mcp.tools.write as write_tools
 from zotero_mcp.cli_standalone import (
     CLIContext,
     build_parser,
+    cmd_add,
     cmd_edit,
     cmd_notes,
     cmd_search,
@@ -127,6 +129,29 @@ class TestParser:
         args = self.parser.parse_args(["coll", "search", "my collection"])
         assert args.command in ("collections", "coll")
         assert args.subcommand == "search"
+
+    def test_add_file_flags(self):
+        args = self.parser.parse_args([
+            "add", "file", "--filepath", "/tmp/x.pdf",
+            "--title", "Override", "--item-type", "book",
+        ])
+        assert args.subcommand == "file"
+        assert args.filepath == "/tmp/x.pdf"
+        assert args.title == "Override"
+        assert args.item_type == "book"
+
+    def test_add_file_defaults(self):
+        args = self.parser.parse_args(["add", "file", "--filepath", "/tmp/x.pdf"])
+        assert args.title is None
+        assert args.item_type == "document"
+
+    def test_add_file_parent_key_removed(self):
+        # --parent-key never mapped to a real add_from_file parameter and made
+        # every `add file` invocation raise TypeError; it must stay removed.
+        with pytest.raises(SystemExit):
+            self.parser.parse_args([
+                "add", "file", "--filepath", "/tmp/x.pdf", "--parent-key", "ABC12345",
+            ])
 
 
 # ---------------------------------------------------------------------------
@@ -340,3 +365,77 @@ class TestCmdEdit:
 
         call_kwargs = mock_write.update_item.call_args.kwargs
         assert call_kwargs["add_tags"] == ["tag1", "tag2", "tag3"]
+
+
+# ---------------------------------------------------------------------------
+# cmd_add
+# ---------------------------------------------------------------------------
+
+class TestCmdAdd:
+    """cmd_add must call the write tools with kwargs their real signatures accept.
+
+    Plain MagicMocks hide kwarg mismatches (they accept anything), which is how
+    `add file` shipped passing a nonexistent parent_key= and raised TypeError on
+    every invocation. Autospec the real functions so signature drift fails here.
+    """
+
+    def _run(self, args):
+        mock_write = MagicMock()
+        for fn in ("add_by_doi", "add_by_url", "add_from_file"):
+            setattr(mock_write, fn,
+                    create_autospec(getattr(write_tools, fn), return_value="ok"))
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            with patch("zotero_mcp.cli_standalone._import_tools",
+                       return_value=(MagicMock(), MagicMock(), MagicMock(),
+                                     mock_write, MagicMock())):
+                cmd_add(args)
+        return mock_write
+
+    def test_add_file_matches_real_signature(self, capsys):
+        # Regression: would raise TypeError while parent_key= was passed.
+        args = MagicMock(subcommand="file", filepath="/tmp/paper.pdf",
+                         title=None, item_type="document",
+                         collections=None, tags=None, verbose=False)
+        mock_write = self._run(args)
+
+        mock_write.add_from_file.assert_called_once()
+        call_kwargs = mock_write.add_from_file.call_args.kwargs
+        assert call_kwargs["file_path"] == "/tmp/paper.pdf"
+        assert call_kwargs["title"] is None
+        assert call_kwargs["item_type"] == "document"
+        assert "ok" in capsys.readouterr().out
+
+    def test_add_file_forwards_title_and_item_type(self):
+        args = MagicMock(subcommand="file", filepath="/tmp/book.epub",
+                         title="My Book", item_type="book",
+                         collections="ABCD1234,EFGH5678", tags="a,b",
+                         verbose=False)
+        mock_write = self._run(args)
+
+        call_kwargs = mock_write.add_from_file.call_args.kwargs
+        assert call_kwargs["title"] == "My Book"
+        assert call_kwargs["item_type"] == "book"
+        assert call_kwargs["collections"] == ["ABCD1234", "EFGH5678"]
+        assert call_kwargs["tags"] == ["a", "b"]
+
+    def test_add_doi_matches_real_signature(self):
+        args = MagicMock(subcommand="doi", doi="10.1234/test",
+                         attach_mode="auto", collections="ABCD1234",
+                         tags=None, verbose=False)
+        mock_write = self._run(args)
+
+        mock_write.add_by_doi.assert_called_once()
+        call_kwargs = mock_write.add_by_doi.call_args.kwargs
+        assert call_kwargs["doi"] == "10.1234/test"
+        assert call_kwargs["collections"] == ["ABCD1234"]
+
+    def test_add_url_matches_real_signature(self):
+        args = MagicMock(subcommand="url", url="https://arxiv.org/abs/2301.00001",
+                         attach_mode="auto", collections=None, tags=None,
+                         verbose=False)
+        mock_write = self._run(args)
+
+        mock_write.add_by_url.assert_called_once()
+        assert mock_write.add_by_url.call_args.kwargs["url"] == (
+            "https://arxiv.org/abs/2301.00001"
+        )

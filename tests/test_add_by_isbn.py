@@ -281,6 +281,9 @@ class TestAddByIsbnEndToEnd:
 
     def test_tags_and_collections_applied(self, monkeypatch):
         fake = FakeZotero()
+        fake._collections = [
+            {"key": "COLL0001", "data": {"name": "Books", "parentCollection": False}},
+        ]
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client",
             lambda ctx: (fake, fake),
