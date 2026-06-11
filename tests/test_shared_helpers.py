@@ -303,3 +303,44 @@ class TestCrossrefTypeMap:
 
     def test_unknown_type_fallback(self):
         assert server.CROSSREF_TYPE_MAP.get("unknown-type", "document") == "document"
+
+
+# ---------------------------------------------------------------------------
+# _strip_unwritable_fields — pyzotero check_items whitelist omission workaround
+# ---------------------------------------------------------------------------
+
+class TestStripUnwritableFields:
+    """pyzotero's check_items() rejects keys outside a hardcoded whitelist that
+    omits `lastRead` (set by Zotero's PDF reader). Without stripping, any
+    fetch→mutate→update on an opened attachment raises
+    InvalidItemFieldsError before the request leaves the client."""
+
+    def test_strips_last_read_from_attachment(self):
+        from zotero_mcp.tools import _helpers
+        item = {
+            "key": "ATT1",
+            "version": 3,
+            "data": {
+                "key": "ATT1",
+                "itemType": "attachment",
+                "linkMode": "imported_file",
+                "filename": "paper.pdf",
+                "lastRead": 1780565972,
+                "tags": [],
+            },
+        }
+        returned = _helpers._strip_unwritable_fields(item)
+        assert returned is item
+        assert "lastRead" not in item["data"]
+        assert item["data"]["filename"] == "paper.pdf"
+
+    def test_noop_when_field_absent(self):
+        from zotero_mcp.tools import _helpers
+        item = {"data": {"itemType": "journalArticle", "title": "x"}}
+        _helpers._strip_unwritable_fields(item)
+        assert item["data"] == {"itemType": "journalArticle", "title": "x"}
+
+    def test_safe_when_data_missing(self):
+        from zotero_mcp.tools import _helpers
+        # Should not raise on a malformed item with no data dict.
+        _helpers._strip_unwritable_fields({"key": "ABC"})

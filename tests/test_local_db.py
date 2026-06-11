@@ -1,8 +1,6 @@
 from pathlib import Path
 
-import pytest
-
-from zotero_mcp.local_db import ZoteroItem, LocalZoteroReader
+from zotero_mcp.local_db import LocalZoteroReader, ZoteroItem
 
 
 class FakeLocalZoteroReader(LocalZoteroReader):
@@ -137,3 +135,183 @@ class TestResolveAttachmentPath:
         """Unknown path format returns None."""
         reader = self._make_reader(tmp_path)
         assert reader._resolve_attachment_path("X", "ftp://something") is None
+
+
+class TestGetAttachmentPaths:
+    """Tests for the public get_attachment_paths helper."""
+
+    def _make_reader(self, tmp_path, attachments, item_key="PARENT"):
+        reader = FakeLocalZoteroReader()
+        reader.db_path = str(tmp_path / "zotero.sqlite")
+        reader._resolve_attachment_path = LocalZoteroReader._resolve_attachment_path.__get__(reader)
+        reader._get_storage_dir = LocalZoteroReader._get_storage_dir.__get__(reader)
+        reader._get_base_attachment_path = LocalZoteroReader._get_base_attachment_path.__get__(reader)
+
+        reader._iter_parent_attachments = lambda parent_id: iter(attachments)
+        reader.get_item_by_key = lambda key: ZoteroItem(item_id=1, key=key, item_type_id=1) if key == item_key else None
+        return reader
+
+    def test_returns_resolved_paths(self, tmp_path):
+        (tmp_path / "storage" / "ABC123").mkdir(parents=True)
+        pdf = tmp_path / "storage" / "ABC123" / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        reader = self._make_reader(tmp_path, [("ABC123", "storage:paper.pdf", "application/pdf")])
+        result = reader.get_attachment_paths("PARENT")
+        assert len(result) == 1
+        assert result[0]["key"] == "ABC123"
+        assert result[0]["content_type"] == "application/pdf"
+        assert result[0]["resolved_path"] == pdf
+        assert result[0]["exists"] is True
+
+    def test_marks_missing_files(self, tmp_path):
+        reader = self._make_reader(tmp_path, [("X", "storage:gone.pdf", "application/pdf")])
+        result = reader.get_attachment_paths("PARENT")
+        assert result[0]["exists"] is False
+
+    def test_unknown_item_returns_empty(self, tmp_path):
+        reader = self._make_reader(tmp_path, [])
+        assert reader.get_attachment_paths("MISSING") == []
+
+    def test_multiple_attachments(self, tmp_path):
+        reader = self._make_reader(tmp_path, [
+            ("A", "storage:a.pdf", "application/pdf"),
+            ("B", "storage:b.html", "text/html"),
+        ])
+        result = reader.get_attachment_paths("PARENT")
+        assert [a["key"] for a in result] == ["A", "B"]
+
+
+def _create_feed_db(db_path: Path) -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE feeds (
+            libraryID INTEGER PRIMARY KEY,
+            name TEXT,
+            url TEXT,
+            lastCheck TEXT,
+            lastUpdate TEXT,
+            lastCheckError TEXT,
+            refreshInterval INTEGER
+        );
+        CREATE TABLE feedItems (
+            itemID INTEGER PRIMARY KEY,
+            readTime TEXT,
+            translatedTime TEXT
+        );
+        CREATE TABLE items (
+            itemID INTEGER PRIMARY KEY,
+            key TEXT,
+            itemTypeID INTEGER,
+            libraryID INTEGER,
+            dateAdded TEXT
+        );
+        CREATE TABLE itemTypes (
+            itemTypeID INTEGER PRIMARY KEY,
+            typeName TEXT
+        );
+        CREATE TABLE fields (
+            fieldID INTEGER PRIMARY KEY,
+            fieldName TEXT
+        );
+        CREATE TABLE itemData (
+            itemID INTEGER,
+            fieldID INTEGER,
+            valueID INTEGER
+        );
+        CREATE TABLE itemDataValues (
+            valueID INTEGER PRIMARY KEY,
+            value TEXT
+        );
+        CREATE TABLE itemCreators (
+            itemID INTEGER,
+            creatorID INTEGER
+        );
+        CREATE TABLE creators (
+            creatorID INTEGER PRIMARY KEY,
+            firstName TEXT,
+            lastName TEXT
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO fields (fieldID, fieldName) VALUES (?, ?)",
+        [
+            (1, "title"),
+            (2, "abstractNote"),
+            (13, "date"),
+            (15, "url"),
+            (26, "DOI"),
+        ],
+    )
+    conn.execute(
+        """
+        INSERT INTO feeds (
+            libraryID, name, url, lastCheck, lastUpdate, lastCheckError, refreshInterval
+        ) VALUES (10, 'Example Feed', 'https://example.test/feed.xml', NULL, NULL, NULL, 60)
+        """
+    )
+    conn.execute("INSERT INTO itemTypes (itemTypeID, typeName) VALUES (7, 'journalArticle')")
+    conn.execute(
+        """
+        INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded)
+        VALUES (100, 'FEEDKEY1', 7, 10, '2026-06-01 10:00:00')
+        """
+    )
+    conn.execute(
+        "INSERT INTO feedItems (itemID, readTime, translatedTime) VALUES (100, NULL, NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO itemDataValues (valueID, value) VALUES (?, ?)",
+        [
+            (1001, "Feed Item Title"),
+            (1002, "Feed item abstract"),
+            (1003, "2024-05-15"),
+            (1004, "https://example.test/item"),
+            (1005, "10.1234/example.doi"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO itemData (itemID, fieldID, valueID) VALUES (100, ?, ?)",
+        [
+            (1, 1001),
+            (2, 1002),
+            (13, 1003),
+            (15, 1004),
+            (26, 1005),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO creators (creatorID, firstName, lastName) VALUES (1, 'Ada', 'Lovelace')"
+    )
+    conn.execute("INSERT INTO itemCreators (itemID, creatorID) VALUES (100, 1)")
+    conn.commit()
+    conn.close()
+
+
+def test_get_feed_items_includes_publication_date(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_feed_db(db_path)
+
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        items = reader.get_feed_items(10, limit=20)
+    finally:
+        reader.close()
+
+    assert items[0]["date"] == "2024-05-15"
+
+
+def test_get_feed_items_includes_doi(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_feed_db(db_path)
+
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        items = reader.get_feed_items(10, limit=20)
+    finally:
+        reader.close()
+
+    assert items[0]["DOI"] == "10.1234/example.doi"

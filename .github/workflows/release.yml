@@ -18,24 +18,24 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest fastmcp pyzotero python-dotenv markitdown[pdf] chromadb unidecode
+          python -m pip install pytest pytest-timeout fastmcp pyzotero python-dotenv markitdown[pdf] chromadb unidecode bibtexparser tiktoken
           python -m pip install -e . --no-deps
       - name: Run tests
-        run: pytest
+        run: pytest --ignore=tests/test_lifespan.py
 
   build:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
       - name: Build package

@@ -3,22 +3,58 @@
 import json
 import logging as _logging
 import re
+import threading as _threading
 import time as _time
 from pathlib import Path
 from typing import Literal
 
-from fastmcp import Context
-
-from zotero_mcp._app import mcp
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+from zotero_mcp._app import mcp
+from zotero_mcp._context import Context
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
 _search_logger = _logging.getLogger("zotero_mcp.search")
 
 CASCADE_TIMEOUT = 60  # seconds — total budget for the entire fallback cascade
 
+# Pre-search background sync debounce: at most one fire-and-forget sync per
+# this many seconds, shared across all semantic_search tool invocations.
+_PRESEARCH_SYNC_MIN_INTERVAL = 60.0
+_last_presearch_sync_ts: float = 0.0
+_presearch_sync_lock = _threading.Lock()
 
+
+def _maybe_fire_presearch_sync(search) -> None:
+    """Schedule a background semantic-search DB update if auto-update is due.
+
+    Runs in a daemon thread so the current tool call returns immediately.
+    Intentionally swallows exceptions — a failed background sync must never
+    surface as a search-tool error to the user.
+    """
+    global _last_presearch_sync_ts
+    try:
+        if not search.should_update_database():
+            return
+    except Exception:
+        return
+    now = _time.monotonic()
+    with _presearch_sync_lock:
+        if now - _last_presearch_sync_ts < _PRESEARCH_SYNC_MIN_INTERVAL:
+            return
+        _last_presearch_sync_ts = now
+
+    def _run():
+        try:
+            search.update_database(extract_fulltext=_utils.is_local_mode())
+        except Exception as e:
+            _search_logger.debug(f"Background pre-search sync failed: {e}")
+
+    _threading.Thread(target=_run, daemon=True, name="zmcp-presearch-sync").start()
+
+
+@with_zotero_api_lock
 def _search_with_variants(zot, query: str, qmode: str, limit: int,
                           item_type: str = "-attachment",
                           tag: list[str] | None = None,
@@ -72,14 +108,36 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
 
 @mcp.tool(
     name="zotero_search_items",
-    description="Search for items in your Zotero library, given a query string. Returns metadata and abstracts. IMPORTANT: Use short, simple queries — 'Author Year' (e.g., 'Brewer 2011') or just the author name (e.g., 'Cladder-Micus'). Do NOT add extra keywords like topic words — this is substring matching, not web search. More words make the search STRICTER, not broader. If no results are found, the tool will automatically retry with simplified queries and semantic search. Optionally scope to a specific collection with collection_key."
+    description=(
+        "Search Zotero items by substring match against metadata (title, "
+        "creators, year, and — in 'everything' mode — abstract). Returns "
+        "metadata + abstracts as markdown. "
+        "IMPORTANT: keep queries SHORT and SIMPLE — 'Author Year' "
+        "(e.g. 'Brewer 2011') or just an author name ('Cladder-Micus'). "
+        "This is substring matching, not web search: each extra word "
+        "NARROWS the match, so adding topic words usually returns fewer "
+        "results, not more. For topic discovery, use zotero_semantic_search "
+        "instead; for tag filtering use zotero_search_by_tag. "
+        "If a query finds nothing, this tool automatically falls back to "
+        "simplified queries and then semantic search. "
+        "query: required substring. qmode: 'titleCreatorYear' (default) "
+        "matches only title/authors/year; 'everything' also searches "
+        "abstract. item_type: '-attachment' (default) excludes attachments; "
+        "pass 'journalArticle', 'book', etc. to filter. tag: optional list "
+        "of tag conditions (ANDed). limit: max results (default 10). "
+        "collection_key: 8-char key to restrict to a collection (bypasses "
+        "the fallback cascade). "
+        "Example: zotero_search_items(query='Cladder-Micus') or "
+        "zotero_search_items(query='Brewer 2011', limit=5)."
+    )
 )
+@with_zotero_api_lock
 def search_items(
     query: str,
     qmode: Literal["titleCreatorYear", "everything"] = "titleCreatorYear",
     item_type: str = "-attachment",  # Exclude attachments by default
     limit: int | str | None = 10,
-    tag: list[str] | None = None,
+    tag: list[str] | list[dict] | str | None = None,
     collection_key: str | None = None,
     *,
     ctx: Context
@@ -92,7 +150,11 @@ def search_items(
         qmode: Query mode (titleCreatorYear or everything)
         item_type: Type of items to search for. Use "-attachment" to exclude attachments.
         limit: Maximum number of results to return
-        tag: List of tags conditions to filter by
+        tag: Tag filter. Accepts ["tagA", "tagB"] (preferred), a bare string
+            "tagA", a JSON-string list '["tagA", "tagB"]', or the dict-shape
+            [{"tag": "tagA"}] sometimes emitted by clients that confuse the
+            filter form with Zotero's stored-tag form. All are normalized
+            internally to the list[str] form pyzotero expects.
         collection_key: Optional collection key to scope the search to a specific collection.
             When provided, bypasses the fallback cascade and searches the collection directly.
         ctx: MCP context
@@ -104,11 +166,12 @@ def search_items(
         if not query.strip():
             return "Error: Search query cannot be empty"
 
+        # Normalize tag across every wire shape clients produce (#237).
+        tag = _helpers._normalize_tag_filter(tag)
+
         tag_condition_str = ""
         if tag:
             tag_condition_str = f" with tags: '{', '.join(tag)}'"
-        else:
-            tag = []
 
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
         zot = _client.get_zotero_client()
@@ -273,11 +336,26 @@ def search_items(
 
 @mcp.tool(
     name="zotero_search_by_tag",
-    description="Search for items in your Zotero library by tag, optionally scoped to a collection. "
-    "Conditions are ANDed, each term supports disjunction (`OR`) and exclusion (`-`)."
+    description=(
+        "Find items carrying one or more tags, with boolean syntax "
+        "support. tag: list of tag strings; each entry is a condition ANDed "
+        "with the others, and within an entry you can use ' OR ' for "
+        "disjunction and a leading '-' for exclusion. "
+        "Example: tag=['methods OR methodology', '-draft'] matches items "
+        "tagged 'methods' OR 'methodology' AND NOT tagged 'draft'. "
+        "item_type: '-attachment' (default) excludes attachments; pass "
+        "'journalArticle', 'book', etc. to filter. "
+        "limit: max results (default 10). "
+        "collection_key: optional 8-char key to scope to a collection. "
+        "Use zotero_get_tags to discover available tag names first. For "
+        "free-text content search, use zotero_search_items or "
+        "zotero_semantic_search instead. "
+        "Example: zotero_search_by_tag(tag=['to-read'], limit=20)."
+    )
 )
+@with_zotero_api_lock
 def search_by_tag(
-    tag: list[str],
+    tag: list[str] | list[dict] | str,
     item_type: str = "-attachment",
     limit: int | str | None = 10,
     collection_key: str | None = None,
@@ -307,6 +385,8 @@ def search_by_tag(
         Markdown-formatted search results
     """
     try:
+        # Normalize tag across every wire shape clients produce (#237).
+        tag = _helpers._normalize_tag_filter(tag)
         if not tag:
             return "Error: Tag cannot be empty"
 
@@ -350,9 +430,24 @@ def search_by_tag(
 
 @mcp.tool(
     name="zotero_search_by_citation_key",
-    description="Look up a Zotero item by its BetterBibTeX citation key (e.g., 'Smith2024'). "
-    "Works in local mode via the BetterBibTeX API, or in web mode by searching the Extra field."
+    description=(
+        "Look up a single Zotero item by its BetterBibTeX citation key "
+        "(e.g. 'Smith2024' or 'cladderMicus2018'). Returns that one item's "
+        "metadata, or a not-found message if no item has that key. "
+        "citekey: the citation key exactly as assigned by BetterBibTeX "
+        "(case-sensitive). "
+        "In local mode: queries the running Better BibTeX plugin via its "
+        "HTTP API (Zotero desktop must be running and have BBT installed). "
+        "In web mode: scans the 'Extra' field of items for 'Citation Key:' "
+        "lines — slower, and may miss items whose keys aren't persisted to "
+        "Extra. "
+        "Requires the Better BibTeX plugin in the user's Zotero install. "
+        "For partial-key or free-text lookup, use zotero_search_items. "
+        "Example: zotero_search_by_citation_key(citekey='hasan2026mcp') → "
+        "metadata for that single item."
+    )
 )
+@with_zotero_api_lock
 def search_by_citation_key(
     citekey: str,
     *,
@@ -375,37 +470,20 @@ def search_by_citation_key(
         citekey = citekey.strip()
         ctx.info(f"Looking up citation key: {citekey}")
 
-        # Strategy A: Try BetterBibTeX JSON-RPC API (local mode only)
-        if _utils.is_local_mode():
-            try:
-                from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
-                bibtex = ZoteroBetterBibTexAPI()
-                if bibtex.is_zotero_running():
-                    search_results = bibtex._make_request("item.search", [citekey])
-                    if search_results:
-                        matched = next(
-                            (item for item in search_results if item.get("citekey") == citekey),
-                            None,
-                        )
-                        if matched:
-                            item_key = matched.get("itemKey") or matched.get("key")
-                            if item_key:
-                                zot = _client.get_zotero_client()
-                                item = zot.item(item_key)
-                                if item:
-                                    return _helpers._format_citekey_result(item, citekey)
-                            return _helpers._format_bbt_result(matched, citekey)
-            except Exception as e:
-                ctx.warning(f"BetterBibTeX lookup failed, falling back to Extra field search: {e}")
-
-        # Strategy B: Search via pyzotero Extra field
+        # Strategy A: pyzotero search across all fields, then verify via Extra.
+        # Note: the previous BetterBibTeX ``item.search`` JSON-RPC call was
+        # removed in #293 — that BBT method does not exist in current versions
+        # (always returned -32601 Method not found) and the exception handler
+        # silently fell through to the same Extra-field search, so the BBT
+        # branch only added noise.
         zot = _client.get_zotero_client()
         zot.add_parameters(q=citekey, qmode="everything", itemType="-attachment", limit=25)
         results = zot.items()
 
         for item in results:
-            extra = item.get("data", {}).get("extra", "")
-            if _helpers._extra_has_citekey(extra, citekey):
+            data = item.get("data", {})
+            extra = data.get("extra", "")
+            if data.get("citationKey") == citekey or _helpers._extra_has_citekey(extra, citekey):
                 return _helpers._format_citekey_result(item, citekey)
 
         return f"No item found with citation key: '{citekey}'"
@@ -417,8 +495,34 @@ def search_by_citation_key(
 
 @mcp.tool(
     name="zotero_advanced_search",
-    description="Perform an advanced search with multiple criteria."
+    description=(
+        "Advanced item search with multiple structured-field conditions "
+        "joined by AND or OR. Use this when you need to filter by fields "
+        "that zotero_search_items and zotero_search_by_tag can't express "
+        "(date ranges, specific itemTypes, etc.). "
+        "For plain text use zotero_search_items; for tags use "
+        "zotero_search_by_tag; for topic discovery use "
+        "zotero_semantic_search. "
+        "conditions: list of {field, operation, value} dicts (also accepts "
+        "a JSON string). "
+        "  Common fields: title, creator, date, dateAdded, dateModified, "
+        "tag, itemType, publicationTitle, abstractNote, collection. "
+        "  Supported operations (exhaustive): is, isNot, contains, "
+        "doesNotContain, beginsWith, endsWith, isGreaterThan, isLessThan, "
+        "isBefore, isAfter. "
+        "For 'added in the last N days', use field='dateAdded' with "
+        "operation='isAfter' and an ISO date value (e.g. '2026-03-22'). "
+        "join_mode: 'all' (AND, default) or 'any' (OR). "
+        "sort_by: dateAdded, dateModified, title, creator, etc. "
+        "sort_direction: 'asc' (default) or 'desc'. "
+        "limit: max results (default 50, max 500). "
+        "Example: zotero_advanced_search(conditions=[{'field': 'itemType', "
+        "'operation': 'is', 'value': 'preprint'}, {'field': 'dateAdded', "
+        "'operation': 'isAfter', 'value': '2026-03-22'}], "
+        "join_mode='all')."
+    )
 )
+@with_zotero_api_lock
 def advanced_search(
     conditions: list[dict[str, str]],
     join_mode: Literal["all", "any"] = "all",
@@ -667,8 +771,28 @@ def advanced_search(
 
 @mcp.tool(
     name="zotero_semantic_search",
-    description="Prioritized search tool. Perform semantic search over your Zotero library using AI-powered embeddings. BEST TOOL for finding papers on a specific topic — much more efficient than scanning collection items or reading abstracts. Works across your entire library."
+    description=(
+        "Prioritized topic-search tool. Find papers by semantic similarity "
+        "to a query using AI embeddings — the BEST tool for finding papers "
+        "on a topic (e.g. 'papers about mindfulness-based therapy'), far "
+        "more efficient than scanning collection items or reading "
+        "abstracts. Works across the entire active library. "
+        "query: the topic or concept; natural-language phrases work well. "
+        "limit: max results (default 10). "
+        "filters: optional metadata filters as a dict (e.g. "
+        "{'itemType': 'journalArticle', 'year': '2023'}); also accepts a "
+        "JSON string. "
+        "Requires the semantic search database to be POPULATED — run "
+        "zotero_update_search_database first if you just installed the "
+        "server or added new items; check readiness with "
+        "zotero_get_search_database_status. "
+        "Available only when the [semantic] optional dependency is "
+        "installed (pip install zotero-mcp-server[semantic]). "
+        "Example: zotero_semantic_search(query='mindfulness-based "
+        "cognitive therapy for depression', limit=5)."
+    )
 )
+@with_zotero_api_lock
 def semantic_search(
     query: str,
     limit: int = 10,
@@ -733,6 +857,10 @@ def semantic_search(
         # Create semantic search instance
         search = create_semantic_search(str(config_path))
 
+        # Fire-and-forget: if auto-update is due, kick off a background sync
+        # so subsequent searches see fresh library state. Never blocks here.
+        _maybe_fire_presearch_sync(search)
+
         # Perform search
         results = search.search(query=query, limit=limit, filters=filters)
 
@@ -780,12 +908,26 @@ def semantic_search(
 @mcp.tool(
     name="zotero_update_search_database",
     description=(
-        "Update the semantic search database with latest Zotero items. "
-        "Run this after adding items (via add_by_doi, add_by_url, or add_from_file) "
-        "to make them immediately available for semantic search. Also useful if the "
-        "user has added items directly in Zotero since the last update."
+        "Build or refresh the semantic search embedding database from "
+        "Zotero items. Run this: (a) after first install, (b) after adding "
+        "items via zotero_add_by_doi / add_by_url / add_from_file, or "
+        "(c) when the user has added items directly in Zotero desktop "
+        "since the last update. "
+        "By default the update is INCREMENTAL — only new or changed items "
+        "are re-embedded, so repeated calls are cheap. "
+        "force_rebuild=True re-embeds ALL items from scratch (slow; use "
+        "when changing the embedding model or recovering from corruption). "
+        "limit: optional cap on items processed (useful for smoke-testing). "
+        "Progress is reported via the MCP context; on large libraries an "
+        "incremental update is seconds, a full rebuild can take minutes. "
+        "Requires the [semantic] optional dependency and a configured "
+        "embedding provider (see config.json). Check status with "
+        "zotero_get_search_database_status. "
+        "Example: zotero_update_search_database() after adding a batch of "
+        "papers."
     )
 )
+@with_zotero_api_lock
 def update_search_database(
     force_rebuild: bool = False,
     limit: int | None = None,
@@ -857,8 +999,21 @@ def update_search_database(
 
 @mcp.tool(
     name="zotero_get_search_database_status",
-    description="Get status information about the semantic search database."
+    description=(
+        "Report the semantic search database's readiness and stats: item "
+        "count, last update time, embedding provider / model, and whether "
+        "the [semantic] optional dependency is installed. "
+        "Use this to decide whether zotero_semantic_search will return "
+        "useful results, or whether the user should run "
+        "zotero_update_search_database first. "
+        "Takes no parameters; no side effects. "
+        "Returns a human-readable status block. If the [semantic] extras "
+        "are not installed, returns an install hint instead of stats. "
+        "Example: zotero_get_search_database_status() → count, last sync, "
+        "provider summary."
+    )
 )
+@with_zotero_api_lock
 def get_search_database_status(*, ctx: Context) -> str:
     """
     Get semantic search database status.

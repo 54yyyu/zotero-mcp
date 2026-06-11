@@ -67,6 +67,11 @@
 - Web API for cloud library access
 - Hybrid mode: read from local Zotero, write via web API
 
+### ⌨️ Standalone CLI (`zotero-cli`)
+- Search, browse, and edit your library directly from the terminal — no AI assistant required
+- Ideal for scripting, automation, and quick lookups
+- Short aliases (`s`, `g`, `ann`, `coll`) for interactive use
+
 ## 🚀 Quick Install
 
 > **New to the command line?** Try the community-built [Zotero MCP Setup](https://github.com/ehawkin/zotero-mcp-setup) — includes a macOS GUI installer (DMG), one-click install scripts for Mac/Windows, and a step-by-step guide. No Terminal experience needed.
@@ -213,12 +218,27 @@ After installation, either:
        "zotero": {
          "command": "zotero-mcp",
          "env": {
-           "ZOTERO_LOCAL": "true"
+           "ZOTERO_LOCAL": "true",
+           "ZOTERO_API_KEY": "YOUR_API_KEY",
+           "ZOTERO_LIBRARY_ID": "YOUR_LIBRARY_ID"
          }
        }
      }
    }
    ```
+
+   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the
+   `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely. Add them only to enable
+   **write mode**: the local API is fast but read-only, so the server uses the Zotero
+   web API for write operations.
+
+   - Generate an API key from <https://www.zotero.org/settings/security#applications>.
+   - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a
+     group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
+
+   > **Tip:** if Claude Desktop reports it can't find the `zotero-mcp` command, use the
+   > absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) —
+   > GUI apps don't always inherit your shell `PATH`.
 
 #### Usage
 
@@ -281,6 +301,9 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_API_KEY`: Your Zotero API key (for web API)
 - `ZOTERO_LIBRARY_ID`: Your Zotero library ID (for web API)
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
+- `ZOTERO_WEBDAV_URL`: Optional WebDAV folder URL for direct attachment downloads in remote mode
+- `ZOTERO_WEBDAV_USERNAME`: Optional WebDAV username
+- `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
 
 **Semantic Search:**
 - `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
@@ -323,6 +346,68 @@ zotero-mcp db-status                       # Show database status and info
 zotero-mcp version                         # Show current version
 ```
 
+## ⌨️ CLI Mode (`zotero-cli`)
+
+`zotero-cli` is a standalone terminal interface to your Zotero library. It uses the same tools as the MCP server but without needing an AI assistant — useful for quick lookups, shell scripts, and automation.
+
+Use `zotero-mcp` when your AI client supports MCP (Claude Desktop, ChatGPT). Use `zotero-cli` for shell scripts, cron jobs, or agentic pipelines with shell access (e.g. Claude Code) — CLI commands cost far fewer tokens than MCP tool schemas and compose naturally with Unix pipes.
+
+Both share the same configuration set up by `zotero-mcp setup`.
+
+### Quick reference
+
+```bash
+# Search
+zotero-cli search "machine learning"           # keyword search
+zotero-cli s "neural networks" --limit 5       # short alias, limit results
+zotero-cli search --mode semantic "attention mechanisms"
+zotero-cli search --mode tag "important,reviewed"
+
+# Get item details
+zotero-cli get metadata ABC123                 # markdown metadata
+zotero-cli g metadata ABC123 --format bibtex  # BibTeX export
+zotero-cli get fulltext ABC123                 # full text
+zotero-cli get children ABC123                 # attachments and notes
+
+# Edit item metadata
+zotero-cli edit ABC123 --title "New Title"
+zotero-cli edit ABC123 --add-tags "reviewed,important" --date "2024"
+
+# Notes and annotations
+zotero-cli notes list ABC123
+zotero-cli notes create --item-key ABC123 --text "My note" --tags "idea"
+zotero-cli notes create --item-key ABC123 --text -   # read from stdin
+zotero-cli ann list ABC123                    # annotations (short alias)
+zotero-cli ann search "highlight text"
+
+# Add items
+zotero-cli add doi 10.1038/s41586-021-03819-2
+zotero-cli add url https://arxiv.org/abs/2301.00001
+zotero-cli add file /path/to/paper.pdf
+
+# Collections and tags
+zotero-cli coll list                          # list collections (short alias)
+zotero-cli coll search "PhD Research"
+zotero-cli tags list
+
+# Semantic search database
+zotero-cli db update
+zotero-cli db update --fulltext --force-rebuild
+zotero-cli db status
+
+# Library and duplicates
+zotero-cli library info
+zotero-cli duplicates find
+```
+
+### Verbose mode
+
+Add `-v` anywhere to see progress messages (e.g., which API calls are made):
+
+```bash
+zotero-cli -v search "CRISPR"
+```
+
 ## 📑 PDF Annotation Extraction
 
 Zotero MCP includes advanced PDF annotation extraction capabilities:
@@ -336,6 +421,38 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 
 
 The first time you use PDF annotation features, the necessary tools will be automatically downloaded.
+
+## 🔗 Managing Related Items
+
+Zotero MCP now supports managing relationships between items in your library. This is useful for linking related papers, tracking versions, or connecting preprints to their published versions.
+
+### View Related Items
+```
+zotero_get_item_related(item_key="ABCD1234")
+```
+
+### Add a Relation
+Create a bidirectional link between two items:
+```
+zotero_add_item_relation(
+    item_key="ABCD1234",
+    related_item_key="EFGH5678",
+    relation_type="dc:relation"  # Optional, defaults to "dc:relation"
+)
+```
+
+### Remove a Relation
+```
+zotero_remove_item_relation(
+    item_key="ABCD1234",
+    related_item_key="EFGH5678",
+    remove_bidirectional=True  # Also remove the reverse relation (default: true)
+)
+```
+
+**Relation Types:**
+- `dc:relation` — General related items (default)
+- `owl:sameAs` — Items that are the same work (e.g., preprint and published version)
 
 ## 📚 Available Tools
 
@@ -354,7 +471,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_search_by_tag`: Search your library using custom tag filters
 
 ### 📚 Content Tools
-- `zotero_get_item_metadata`: Get detailed metadata (supports BibTeX export via `format="bibtex"`)
+- `zotero_get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
 - `zotero_get_item_fulltext`: Get full text content
 - `zotero_get_item_children`: Get attachments and notes
 
@@ -363,6 +480,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_get_notes`: Retrieve notes from your Zotero library
 - `zotero_search_notes`: Search in notes and annotations (including PDF-extracted)
 - `zotero_create_note`: Create a new note for an item (beta feature)
+- `zotero_get_page_layout`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement
 
 ### 📊 Scite Citation Intelligence Tools
 - `scite_enrich_item`: Get Scite citation tallies and retraction alerts for a paper
@@ -381,6 +499,11 @@ The first time you use PDF annotation features, the necessary tools will be auto
 - `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items
 - `zotero_get_pdf_outline`: Extract the table of contents / outline from a PDF attachment
 - `zotero_search_by_citation_key`: Look up items by BetterBibTeX citation key (with Extra field fallback)
+
+### 🔗 Related Items Tools
+- `zotero_get_item_related`: Get all related items for a specific Zotero item
+- `zotero_add_item_relation`: Add a related item relationship (creates bidirectional link)
+- `zotero_remove_item_relation`: Remove a related item relationship
 
 ## 🧪 Testing
 

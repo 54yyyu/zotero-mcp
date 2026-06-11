@@ -15,6 +15,7 @@ try:
     import chromadb
     from chromadb import Documents, EmbeddingFunction, Embeddings
     from chromadb.config import Settings
+    from chromadb.utils.embedding_functions import register_embedding_function
 except ImportError as e:
     raise ImportError(
         "chromadb is required for semantic search. "
@@ -26,8 +27,17 @@ from zotero_mcp.utils import suppress_stdout
 logger = logging.getLogger(__name__)
 
 
+@register_embedding_function
 class OpenAIEmbeddingFunction(EmbeddingFunction):
-    """Custom OpenAI embedding function for ChromaDB."""
+    """Custom OpenAI embedding function for ChromaDB.
+
+    Registered under the name "openai" so ChromaDB rebuilds it (rather than its
+    own incompatible built-in of the same name) when reloading a persisted
+    collection's config. ChromaDB >=1.x reconstructs the embedding function by
+    name from the stored config during upsert; without registration the name
+    collides with the built-in, whose build_from_config rejects our
+    {model_name, base_url} config.
+    """
 
     max_input_tokens = 8000  # text-embedding-3-* limit is 8191
 
@@ -91,8 +101,13 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         return text
 
 
+@register_embedding_function
 class GeminiEmbeddingFunction(EmbeddingFunction):
-    """Custom Gemini embedding function for ChromaDB using google-genai."""
+    """Custom Gemini embedding function for ChromaDB using google-genai.
+
+    Registered under the name "gemini" so ChromaDB can rebuild it from a
+    persisted collection's config (see OpenAIEmbeddingFunction for details).
+    """
 
     # gemini-embedding-2-* models ignore the task_type config field (the API
     # silently drops it). Google's recommended alternative is to embed the
@@ -240,8 +255,14 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         return text
 
 
+@register_embedding_function
 class HuggingFaceEmbeddingFunction(EmbeddingFunction):
-    """Custom HuggingFace embedding function for ChromaDB using sentence-transformers."""
+    """Custom HuggingFace embedding function for ChromaDB using sentence-transformers.
+
+    Registered under the name "huggingface" so ChromaDB rebuilds it (rather than
+    its own incompatible built-in of the same name) when reloading a persisted
+    collection's config (see OpenAIEmbeddingFunction for details).
+    """
 
     def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B"):
         self.model_name = model_name
@@ -626,6 +647,19 @@ class ChromaClient:
             result = self.collection.get(ids=ids, include=[])
             return set(result.get("ids", []))
         except Exception:
+            return set()
+
+    def get_all_ids(self) -> set[str]:
+        """Return every id currently stored in the collection.
+
+        Used by incremental sync to compute deletions: items in the local
+        collection but no longer present in the Zotero library.
+        """
+        try:
+            result = self.collection.get(include=[])
+            return set(result.get("ids", []))
+        except Exception as e:
+            logger.error(f"Error listing collection ids: {e}")
             return set()
 
 

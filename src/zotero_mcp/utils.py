@@ -73,7 +73,8 @@ def format_item_result(
         List of markdown lines (caller joins with ``"\\n"``).
     """
     data = item.get("data", {})
-    title = data.get("title", "Untitled")
+    # Standalone attachments carry no title — fall back to their filename.
+    title = data.get("title") or data.get("filename") or "Untitled"
     heading = f"## {index}. {title}" if index is not None else f"## {title}"
     lines: list[str] = [
         heading,
@@ -82,6 +83,14 @@ def format_item_result(
         f"**Date:** {data.get('date', 'No date')}",
         f"**Authors:** {format_creators(data.get('creators', []))}",
     ]
+
+    # Trash status. pyzotero's default list endpoints filter trashed items
+    # out, but not every call site does (e.g. includeTrashed=1, direct
+    # item() lookups routed through this formatter). Defense in depth —
+    # surface the flag whenever data.deleted is set so agents never silently
+    # reason about a trashed paper as if it were live.
+    if data.get("deleted"):
+        lines.append("**Status:** 🗑️ In Trash")
 
     if extra_fields:
         for label, value in extra_fields.items():

@@ -3,12 +3,37 @@
 import json
 import os
 import re
+import socket
 import tempfile
+from ipaddress import ip_address
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import requests
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+
+# ---------------------------------------------------------------------------
+# Config file
+# ---------------------------------------------------------------------------
+
+ZOTERO_MCP_CONFIG_PATH = Path.home() / ".config" / "zotero-mcp" / "config.json"
+
+
+def _load_zotero_mcp_config() -> dict:
+    """Return the parsed ``~/.config/zotero-mcp/config.json``, or ``{}``.
+
+    Missing file or parse errors yield an empty dict so callers can use
+    ``.get(...)`` chains without guarding.
+    """
+    if not ZOTERO_MCP_CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(ZOTERO_MCP_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +89,23 @@ CROSSREF_TYPE_MAP = {
 # Write-operation helpers
 # ---------------------------------------------------------------------------
 
+def apply_library_override(zot, override: dict | None) -> None:
+    """Apply an active-library override to *zot* in place.
+
+    pyzotero uses ``library_type`` as a URL path segment and expects the
+    plural form (``users`` / ``groups``), but the runtime override stores
+    the singular form (``user`` / ``group``) as used by Zotero's switch-
+    library tool. Without the normalization below, writes against a group
+    library hit ``/group/{id}/items`` and 404.
+    """
+    if not override:
+        return
+    zot.library_id = override.get("library_id", zot.library_id)
+    raw_type = override.get("library_type")
+    if raw_type:
+        zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
+
+
 def _get_write_client(ctx):
     """Return (read_client, write_client) for hybrid-mode operations.
 
@@ -76,20 +118,70 @@ def _get_write_client(ctx):
         return read_zot, read_zot
     web_zot = _client.get_web_zotero_client()
     if web_zot is not None:
-        override = _client.get_active_library()
-        if override:
-            web_zot.library_id = override.get("library_id", web_zot.library_id)
-            # pyzotero stores library_type with trailing "s" (e.g. "users", "groups")
-            # but the override stores the raw value (e.g. "user", "group"),
-            # so we must append "s" to match pyzotero's internal convention.
-            raw_type = override.get("library_type")
-            if raw_type:
-                web_zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
+        apply_library_override(web_zot, _client.get_active_library())
         return read_zot, web_zot
     raise ValueError(
         "Cannot perform write operations in local-only mode. "
         "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
     )
+
+
+def fetch_trashed_collections(zot) -> list[dict]:
+    """Return collections in the active library's trash, or [] on failure.
+
+    Zotero's REST API exposes trashed collections at
+    ``/{users|groups}/{id}/collections/trash``. pyzotero doesn't have a
+    dedicated method for it (only ``trash()``, which returns items), so
+    fall back to ``_retrieve_data``. Non-fatal — callers should treat
+    failures as "no trash data available" rather than raising.
+    """
+    try:
+        resp = zot._retrieve_data(
+            f"/{zot.library_type}/{zot.library_id}/collections/trash"
+        )
+    except Exception:
+        return []
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def is_collection_trashed(zot, collection_key: str) -> bool | None:
+    """Return True if a collection is in the trash, False if live, None on error.
+
+    Reads a single collection by key and inspects ``data.deleted``. Used to
+    pre-validate ``zotero_manage_collections`` calls so the tool returns a
+    clear error instead of silently filing items into trashed parents.
+    """
+    try:
+        coll = zot.collection(collection_key)
+    except Exception:
+        return None
+    return bool(coll.get("data", {}).get("deleted"))
+
+
+# Fields the Zotero reader/server sets on items but pyzotero's check_items()
+# whitelist (pyzotero/_client.py: check_items) does not include. Any fetched
+# item that carries one of these will be rejected client-side with
+# "Invalid keys present in item N: <field>" when passed back to update_item().
+# The canonical fetch→mutate→update flow then breaks on attachments that have
+# been opened in the Zotero PDF reader (which writes lastRead).
+_UNWRITABLE_ITEM_FIELDS = frozenset({"lastRead"})
+
+
+def _strip_unwritable_fields(item: dict) -> dict:
+    """Remove fields that pyzotero's check_items() rejects from a fetched item.
+
+    Mutates ``item["data"]`` in place and returns the same dict so the caller
+    can chain. Safe to call on any item type — fields not present are ignored.
+    """
+    data = item.get("data")
+    if isinstance(data, dict):
+        for field in _UNWRITABLE_ITEM_FIELDS:
+            data.pop(field, None)
+    return item
 
 
 def _handle_write_response(response, ctx=None):
@@ -102,6 +194,38 @@ def _handle_write_response(response, ctx=None):
     if isinstance(response, dict):
         return bool(response.get("success"))
     return bool(response)
+
+
+def ensure_collection_membership(write_zot, item_key: str, coll_keys: list[str], ctx=None) -> list[str]:
+    """Force *item_key* into each collection in *coll_keys*; return keys we couldn't file.
+
+    Setting ``item["collections"]`` on ``create_items`` is supposed to atomically
+    file the new item, but reports show it intermittently no-ops — the item
+    lands in My Library root despite the request (#235). This is the
+    deterministic backstop: read the item back, diff against the requested
+    set, and ``addto_collection`` for any that didn't take.
+    """
+    if not coll_keys:
+        return []
+    try:
+        item = write_zot.item(item_key)
+    except Exception as e:
+        if ctx is not None:
+            ctx.warning(f"Could not re-fetch item {item_key} to verify collection membership: {e}")
+        return list(coll_keys)
+    actual = set(item.get("data", {}).get("collections") or [])
+    failed: list[str] = []
+    for coll_key in coll_keys:
+        if coll_key in actual:
+            continue
+        try:
+            write_zot.addto_collection(coll_key, item)
+            actual.add(coll_key)
+        except Exception as e:
+            failed.append(coll_key)
+            if ctx is not None:
+                ctx.warning(f"Could not file {item_key} in collection {coll_key}: {e}")
+    return failed
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +271,55 @@ def _normalize_str_list_input(value, field_name="value"):
     raise ValueError(f"{field_name} must be a list of strings or a string")
 
 
+def _normalize_tag_filter(value):
+    """Normalize a tag-filter argument into a list[str] for pyzotero.
+
+    Accepts every shape we've seen clients produce:
+    - None / empty                 → []
+    - ["a", "b"]                   → ["a", "b"]   (canonical)
+    - [{"tag": "a"}, {"tag": "b"}] → ["a", "b"]   (common LLM mis-shape)
+    - "a"                          → ["a"]
+    - '["a", "b"]'                 → ["a", "b"]   (JSON list of strings)
+    - '[{"tag": "a"}]'             → ["a"]        (JSON list of dicts, #237)
+
+    MCP runtimes sometimes stringify array arguments before they reach the
+    pydantic validator, and agents sometimes pass the dict-shape that Zotero
+    uses INSIDE an item (``{"tag": "X"}``) rather than the bare-string form
+    pyzotero's ``tag=`` parameter expects. Either path ended up rejected
+    upstream of the search logic. This normalizer collapses them all.
+    """
+    def _extract(v):
+        if isinstance(v, dict):
+            for key in ("tag", "name", "value"):
+                if key in v and str(v[key]).strip():
+                    return str(v[key]).strip()
+            return ""
+        return str(v).strip()
+
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [s for s in (_extract(v) for v in value) if s]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return [raw]
+        if isinstance(parsed, list):
+            return [s for s in (_extract(v) for v in parsed) if s]
+        if isinstance(parsed, dict):
+            s = _extract(parsed)
+            return [s] if s else []
+        if isinstance(parsed, str):
+            s = parsed.strip()
+            return [s] if s else []
+        return []
+    return []
+
+
 def _resolve_collection_names(zot, names, ctx=None):
     """Resolve collection names to keys (case-insensitive)."""
     if not names:
@@ -188,6 +361,64 @@ def _normalize_doi(raw):
     return None
 
 
+def _normalize_isbn(raw):
+    """Normalize an ISBN string and validate the checksum.
+
+    Accepts ISBN-10, ISBN-13, and prefixed/URL forms (isbn:, https://isbndb.com/...).
+    Strips hyphens, spaces, and any prefix. Returns the canonical digits-only
+    form (13-digit preferred — ISBN-10 inputs are converted to ISBN-13).
+    Returns None on invalid input or failing checksum.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.lower().startswith("isbn:"):
+        s = s[5:].strip()
+    if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
+        s = s[5:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])",
+                      s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        s = m.group(1)
+    digits = re.sub(r"[\s\-]", "", s)
+    if re.match(r"^\d{9}[\dXx]$", digits):
+        if not _isbn10_checksum_valid(digits):
+            return None
+        return _isbn10_to_isbn13(digits)
+    if re.match(r"^97[89]\d{10}$", digits):
+        if not _isbn13_checksum_valid(digits):
+            return None
+        return digits
+    return None
+
+
+def _isbn10_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = 10 if ch in ("X", "x") else int(ch)
+        total += v * (10 - i)
+    return total % 11 == 0
+
+
+def _isbn13_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = int(ch)
+        total += v if i % 2 == 0 else v * 3
+    return total % 10 == 0
+
+
+def _isbn10_to_isbn13(isbn10):
+    core = "978" + isbn10[:9]
+    total = 0
+    for i, ch in enumerate(core):
+        total += int(ch) * (1 if i % 2 == 0 else 3)
+    check = (10 - total % 10) % 10
+    return core + str(check)
+
+
 def _normalize_arxiv_id(raw):
     """Normalize an arXiv ID from various input formats."""
     if not raw:
@@ -214,16 +445,99 @@ def _normalize_arxiv_id(raw):
 # PDF / open-access helpers
 # ---------------------------------------------------------------------------
 
-def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
-    """Download a PDF from a URL and attach it to a Zotero item."""
+_MAX_PDF_REDIRECTS = 5
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+def _url_resolves_to_public_host(url: str) -> bool:
+    """Return ``True`` only if ``url`` is http(s) and its host resolves
+    entirely to globally-routable IP addresses.
+
+    SSRF guard for the open-access PDF download path: the candidate URL comes
+    from third-party metadata APIs (Unpaywall / Semantic Scholar) and is
+    therefore attacker-influenceable (a hostile paper record, or prompt
+    injection steering ``zotero_add_by_doi``). We reject non-http(s) schemes
+    and any host that resolves to a private, loopback, link-local, reserved,
+    or otherwise non-global address — including the 169.254.169.254
+    cloud-metadata endpoint, which matters for HTTP/SSE-transport deployments.
+
+    Note: a determined DNS-rebinding attacker could still flip the record
+    between this check and the socket connect. Re-validating every redirect
+    hop (see ``_guarded_pdf_get``) and rejecting on the first non-global
+    result narrows that window to a non-practical vector for this tool's
+    threat model; full pinning would require a custom connection adapter.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
     try:
-        pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or None)
+    except (socket.gaierror, UnicodeError, ValueError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            ip = ip_address(sockaddr[0])
+        except ValueError:
+            return False
+        if not ip.is_global or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+def _guarded_pdf_get(pdf_url, ctx):
+    """GET ``pdf_url`` with SSRF protection.
+
+    Validates that the host resolves to public IPs, follows redirects
+    manually (re-validating each hop), and returns the final ``requests``
+    response, or ``None`` if any URL in the chain is rejected or there are
+    too many redirects.
+    """
+    current = pdf_url
+    for _ in range(_MAX_PDF_REDIRECTS + 1):
+        if not _url_resolves_to_public_host(current):
+            ctx.info(f"PDF URL rejected by SSRF guard: {current}")
+            return None
+        resp = requests.get(current, timeout=30, stream=True, allow_redirects=False)
+        if resp.status_code in _REDIRECT_STATUSES:
+            location = resp.headers.get("Location")
+            try:
+                resp.close()
+            except Exception:
+                pass
+            if not location:
+                return None
+            current = urljoin(current, location)
+            continue
+        return resp
+    ctx.info("Too many redirects while fetching PDF")
+    return None
+
+
+def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+    """Download a PDF from a URL and attach it to a Zotero item.
+
+    The URL is fetched through ``_guarded_pdf_get`` (SSRF guard + manual
+    redirect re-validation), since it originates from third-party metadata
+    APIs rather than the user.
+
+    Returns the WebDAV-status suffix string on success (``""`` when WebDAV
+    is not configured, otherwise something like ``" (uploaded to WebDAV
+    as <key>.zip)"`` or a warning if the PUT failed). Returns ``None``
+    on failure so callers can branch with ``if suffix is not None``.
+    """
+    try:
+        pdf_resp = _guarded_pdf_get(pdf_url, ctx)
+        if pdf_resp is None:
+            return None
         pdf_resp.raise_for_status()
 
         content_type = pdf_resp.headers.get("Content-Type", "")
         if "pdf" not in content_type and "octet-stream" not in content_type:
             ctx.info(f"URL did not return a PDF (Content-Type: {content_type})")
-            return False
+            return None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = f"{doi.replace('/', '_')}.pdf"
@@ -234,16 +548,66 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
 
             if os.path.getsize(filepath) < 1000:
                 ctx.info("Downloaded file too small, likely not a real PDF")
-                return False
+                return None
 
-            write_zot.attachment_both(
+            attach_result = write_zot.attachment_both(
                 [(filename, filepath)],
                 parentid=item_key,
             )
-        return True
+            # Must run inside the with-block — temp file disappears on exit.
+            return _maybe_upload_to_webdav(attach_result, filepath, ctx)
     except Exception as e:
         ctx.info(f"PDF download/attach failed: {e}")
-        return False
+        return None
+
+
+def _maybe_upload_to_webdav(attach_result, file_path, ctx):
+    """Suffix to append to a user-facing 'file attached' message.
+
+    PR #279 added WebDAV-aware upload to ``zotero_add_from_file``. The same
+    treatment is needed everywhere else ``attachment_both`` is called: the
+    Web API's file upload lands bytes in Zotero Storage, which a desktop
+    client with File Syncing set to WebDAV never consults.
+
+    Returns ``""`` when WebDAV is not configured, when the attachment key
+    cannot be extracted, or after a successful PUT with logging via ``ctx``
+    (callers that don't surface the suffix can ignore the return value).
+    On a successful PUT returns ``" (uploaded to WebDAV as <key>.zip)"``;
+    on PUT failure returns ``" (WARNING: WebDAV upload failed — <err>; ...)"``
+    so callers can keep the user-visible signal without re-implementing the
+    branch.
+    """
+    from zotero_mcp import webdav as _webdav
+
+    if not _webdav.is_webdav_configured():
+        return ""
+
+    attachment_key = None
+    if isinstance(attach_result, dict):
+        for status in ("success", "unchanged"):
+            for entry in attach_result.get(status, []) or []:
+                if isinstance(entry, dict) and entry.get("key"):
+                    attachment_key = entry["key"]
+                    break
+            if attachment_key:
+                break
+
+    if not attachment_key:
+        return ""
+
+    try:
+        _webdav.upload_attachment_to_webdav(
+            attachment_key=attachment_key,
+            file_path=file_path,
+        )
+        ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
+        return f" (uploaded to WebDAV as {attachment_key}.zip)"
+    except Exception as e:
+        ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
+        return (
+            f" (WARNING: WebDAV upload failed — {e}; "
+            f"attachment {attachment_key} exists but has no file bytes on WebDAV)"
+        )
 
 
 def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):
@@ -413,8 +777,11 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                     if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
                         return f"PDF linked (source: {source_name})"
                 else:  # "auto" or "import_file" — try download only
-                    if _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
-                        return f"PDF attached (source: {source_name})"
+                    webdav_suffix = _download_and_attach_pdf(
+                        write_zot, item_key, pdf_url, doi, ctx
+                    )
+                    if webdav_suffix is not None:
+                        return f"PDF attached (source: {source_name}){webdav_suffix}"
 
                 ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next source")
         except Exception as e:

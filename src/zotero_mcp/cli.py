@@ -31,7 +31,18 @@ def obfuscate_config_for_display(config):
         return config
 
     obfuscated = config.copy()
-    sensitive_keys = ["ZOTERO_API_KEY", "ZOTERO_LIBRARY_ID", "API_KEY", "LIBRARY_ID"]
+    sensitive_keys = [
+        "ZOTERO_API_KEY",
+        "ZOTERO_LIBRARY_ID",
+        "ZOTERO_WEBDAV_URL",
+        "ZOTERO_WEBDAV_USERNAME",
+        "ZOTERO_WEBDAV_PASSWORD",
+        "API_KEY",
+        "LIBRARY_ID",
+        "WEBDAV_URL",
+        "WEBDAV_USERNAME",
+        "WEBDAV_PASSWORD",
+    ]
 
     for key in sensitive_keys:
         if key in obfuscated:
@@ -121,6 +132,12 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
         # Write back to file
         with open(config_path, 'w') as f:
             json.dump(full_config, f, indent=2)
+        # The config can hold credentials (API/embedding keys) — keep it
+        # owner-only. Best-effort; no-op on platforms without POSIX perms.
+        try:
+            os.chmod(config_path, 0o600)
+        except OSError:
+            pass
 
         print(f"Saved Zotero database path to config: {config_path}")
 
