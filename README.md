@@ -383,7 +383,23 @@ zotero-cli ann search "highlight text"
 # Add items
 zotero-cli add doi 10.1038/s41586-021-03819-2
 zotero-cli add url https://arxiv.org/abs/2301.00001
-zotero-cli add file /path/to/paper.pdf
+zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
+
+# --collections accepts keys, names, or parent/child paths — resolved and
+# validated before the item is created (a typo fails the add, with suggestions,
+# instead of leaving an unfiled item)
+zotero-cli add doi 10.1038/s41586-021-03819-2 --collections "Reading List"
+zotero-cli collections manage --item-keys ABC123 --add-to "_project/topic"
+
+# Adds are idempotent by default (--if-exists file): if the item is already in
+# the library it is reused — filed into any missing collections, given any
+# missing tags — instead of duplicated. Re-running the same command is a no-op.
+zotero-cli add doi 10.1038/s41586-021-03819-2 -c "Reading List"   # run it twice: converges
+zotero-cli add doi 10.1038/s41586-021-03819-2 --if-exists skip       # never touch existing
+zotero-cli add doi 10.1038/s41586-021-03819-2 --if-exists duplicate  # old behavior
+zotero-cli add doi 10.1038/s41586-021-03819-2 -c "New Topic" --create-collections
+# -c/--collection is repeatable and never comma-split (names with commas work);
+# --collections remains the comma-separated form
 
 # Collections and tags
 zotero-cli coll list                          # list collections (short alias)
@@ -491,9 +507,11 @@ zotero_remove_item_relation(
 - `zotero_add_by_doi`: Add a paper by DOI with automatic metadata and open-access PDF attachment
 - `zotero_add_by_url`: Add a paper by URL (arXiv, DOI URLs, and general webpages)
 - `zotero_add_from_file`: Import a local PDF or EPUB file with automatic DOI extraction
+
+All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item. They also take `if_exists` (`"duplicate"` — default — always creates; `"file"` reuses an existing item matching the DOI/arXiv ID/ISBN/URL, filing it into missing collections and adding missing tags; `"skip"` leaves a match untouched) and `create_missing_collections` (create unknown collection specs, including path chains, instead of failing). The `zotero-cli add` commands default to `--if-exists file`.
 - `zotero_create_collection`: Create a new collection (folder/project) in your library
 - `zotero_search_collections`: Search for collections by name to find their keys
-- `zotero_manage_collections`: Add or remove items from collections
+- `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
 - `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
 - `zotero_find_duplicates`: Find duplicate items by title and/or DOI
 - `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items

@@ -344,6 +344,10 @@ class TestArxivCrossrefFallback:
         """arXiv timeout → delegate to add_by_doi with the arXiv DOI; surface its result."""
         import requests as req_lib
 
+        fake_zot = patch_write_client
+        fake_zot._collections = [
+            {"key": "ABC12345", "data": {"name": "Preprints", "parentCollection": False}},
+        ]
         with patch("zotero_mcp.tools.write._time.sleep"), patch(
             "zotero_mcp.tools.write.requests.get",
             side_effect=req_lib.exceptions.Timeout("timed out"),
@@ -358,7 +362,8 @@ class TestArxivCrossrefFallback:
                 ctx=dummy_ctx,
             )
 
-        # Fallback fired with the arXiv DOI and forwarded collections/tags.
+        # Fallback fired with the arXiv DOI and forwarded the resolved
+        # collection keys and tags.
         mock_doi.assert_called_once()
         kwargs = mock_doi.call_args.kwargs
         assert kwargs.get("doi") == "10.48550/arXiv.2401.00001"
@@ -584,6 +589,9 @@ class TestTagsAndCollections:
     def test_collections_applied(self, dummy_ctx, patch_write_client):
         """Collections parameter should set the item's collections field."""
         fake_zot = patch_write_client
+        fake_zot._collections = [
+            {"key": "ABC12345", "data": {"name": "Preprints", "parentCollection": False}},
+        ]
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
         with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
@@ -597,9 +605,9 @@ class TestTagsAndCollections:
         assert "ABC12345" in item.get("collections", [])
 
     def test_collection_names_resolved(self, dummy_ctx, patch_write_client):
-        """Collection names passed as collections are used as-is (keys or names).
-        The arXiv flow passes them through _normalize_str_list_input, not
-        _resolve_collection_names, so names appear directly in collections."""
+        """Collection NAMES resolve to keys before the item is created —
+        the arXiv flow goes through resolve_collection_specs like every
+        other add path."""
         fake_zot = patch_write_client
         fake_zot._collections = [
             {"key": "COLL0001", "data": {"name": "My Papers"}},
@@ -615,8 +623,7 @@ class TestTagsAndCollections:
             )
 
         item = fake_zot.created[0]
-        # The name is passed through _normalize_str_list_input (not resolved to key)
-        assert "My Papers" in item.get("collections", [])
+        assert item.get("collections") == ["COLL0001"]
 
     def test_no_tags_or_collections(self, dummy_ctx, patch_write_client):
         """Omitting tags and collections should still create the item."""

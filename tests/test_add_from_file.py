@@ -177,7 +177,11 @@ class TestDoiFromMetadata:
     def test_doi_in_subject_field(self, monkeypatch, dummy_ctx):
         fake_zot = FakeZoteroForFile()
         _patch_path_valid(monkeypatch)
-        _patch_hybrid_mode(monkeypatch, fake_zot)
+        read_zot = _patch_hybrid_mode(monkeypatch, fake_zot)
+        # Collection specs resolve against the READ client.
+        read_zot._collections = [
+            {"key": "COL00001", "data": {"name": "One", "parentCollection": False}},
+        ]
 
         fake_doc = FakeFitzDocument(
             metadata={"subject": "doi: 10.1234/test.2024.001", "keywords": ""},
@@ -188,7 +192,7 @@ class TestDoiFromMetadata:
         # Mock the add_by_doi function to verify delegation
         doi_called_with = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
             doi_called_with["doi"] = doi
             doi_called_with["collections"] = collections
             doi_called_with["tags"] = tags
@@ -200,13 +204,14 @@ class TestDoiFromMetadata:
             file_path="/Users/test/Documents/paper.pdf",
             title=None,
             item_type="document",
-            collections=["COL001"],
+            collections=["COL00001"],
             tags=["tag1"],
             ctx=dummy_ctx,
         )
 
         assert doi_called_with["doi"] == "10.1234/test.2024.001"
-        assert doi_called_with["collections"] == ["COL001"]
+        # add_from_file resolves specs itself and delegates resolved KEYS.
+        assert doi_called_with["collections"] == ["COL00001"]
         assert doi_called_with["tags"] == ["tag1"]
 
     def test_doi_in_keywords_field(self, monkeypatch, dummy_ctx):
@@ -224,7 +229,7 @@ class TestDoiFromMetadata:
 
         doi_captured = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
             doi_captured["doi"] = doi
             return "Added by DOI: Item key: `KEY0001`"
 
@@ -265,7 +270,7 @@ class TestDoiFromFirstPageText:
 
         doi_captured = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
             doi_captured["doi"] = doi
             return "Added by DOI"
 
@@ -297,7 +302,7 @@ class TestDoiFromFirstPageText:
         # add_by_doi should NOT be called
         add_by_doi_called = False
 
-        def mock_add_by_doi(doi, collections=None, tags=None, *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
             nonlocal add_by_doi_called
             add_by_doi_called = True
             return "should not happen"
@@ -599,7 +604,11 @@ class TestTagsAndCollections:
     def test_collections_applied_to_created_item(self, monkeypatch, dummy_ctx):
         fake_zot = FakeZoteroForFile()
         _patch_path_valid(monkeypatch)
-        _patch_hybrid_mode(monkeypatch, fake_zot)
+        read_zot = _patch_hybrid_mode(monkeypatch, fake_zot)
+        read_zot._collections = [
+            {"key": "COLKEY01", "data": {"name": "One", "parentCollection": False}},
+            {"key": "COLKEY02", "data": {"name": "Two", "parentCollection": False}},
+        ]
 
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI here.")
         _patch_fitz(monkeypatch, fake_doc)
@@ -621,7 +630,10 @@ class TestTagsAndCollections:
     def test_tags_and_collections_together(self, monkeypatch, dummy_ctx):
         fake_zot = FakeZoteroForFile()
         _patch_path_valid(monkeypatch)
-        _patch_hybrid_mode(monkeypatch, fake_zot)
+        read_zot = _patch_hybrid_mode(monkeypatch, fake_zot)
+        read_zot._collections = [
+            {"key": "COL00001", "data": {"name": "One", "parentCollection": False}},
+        ]
 
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
@@ -630,13 +642,13 @@ class TestTagsAndCollections:
             file_path="/Users/test/Documents/paper.pdf",
             title="Both",
             item_type="document",
-            collections=["COL001"],
+            collections=["COL00001"],
             tags=["tag1"],
             ctx=dummy_ctx,
         )
 
         created_item = fake_zot.created[0]
-        assert "COL001" in created_item.get("collections", [])
+        assert "COL00001" in created_item.get("collections", [])
         assert {"tag": "tag1"} in created_item.get("tags", [])
 
     def test_tags_passed_as_comma_string(self, monkeypatch, dummy_ctx):

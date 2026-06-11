@@ -343,6 +343,261 @@ def _resolve_collection_names(zot, names, ctx=None):
     return results
 
 
+_COLLECTION_KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
+
+
+def build_collection_paths(collections) -> dict[str, list[str]]:
+    """Map collection key → full path segments ``[root, ..., name]``.
+
+    Built from ``data.parentCollection`` links. A parent that isn't in the
+    fetched set (e.g. trashed) or a parent cycle degrades to a shorter path
+    rather than failing.
+    """
+    by_key = {c["key"]: c for c in collections if c.get("key")}
+    paths: dict[str, list[str]] = {}
+
+    def _segments(key: str, seen: set[str]) -> list[str]:
+        if key in paths:
+            return paths[key]
+        coll = by_key[key]
+        name = coll.get("data", {}).get("name") or key
+        parent = coll.get("data", {}).get("parentCollection")
+        if parent in by_key and parent not in seen:
+            seen.add(key)
+            segs = _segments(parent, seen) + [name]
+        else:
+            segs = [name]
+        paths[key] = segs
+        return segs
+
+    for key in by_key:
+        _segments(key, {key})
+    return paths
+
+
+def resolve_collection_specs(
+    zot,
+    specs,
+    *,
+    create_missing: bool = False,
+    write_zot=None,
+    ctx=None,
+) -> list[str]:
+    """Resolve collection *specs* — keys, names, or '/'-paths — to live keys.
+
+    Resolution order per spec:
+
+    1. **Key**: 8-char uppercase-alphanumeric AND currently a live collection
+       key → used as-is. Existence is checked, not just shape, so trashed or
+       bogus keys fail loudly here instead of producing an invisibly-filed or
+       unfiled item after creation (#233/#235).
+    2. **Name/path**: the spec is split on '/' and matched case-insensitively
+       against the *trailing* path segments of every collection, so a bare
+       name matches anywhere in the tree and 'parent/name' disambiguates
+       same-named leaves.
+
+    An ambiguous spec raises ValueError listing every candidate. An unknown
+    spec raises ValueError with near-miss suggestions — unless
+    ``create_missing`` is True, in which case the collection (including any
+    missing intermediate path segments) is created via ``write_zot``.
+
+    Returns resolved keys in input order, deduplicated.
+    """
+    cleaned = [str(s).strip() for s in (specs or []) if str(s).strip()]
+    if not cleaned:
+        return []
+
+    paths = build_collection_paths(_paginate(zot.collections))
+
+    resolved: list[str] = []
+    for spec in cleaned:
+        if _COLLECTION_KEY_RE.match(spec) and spec in paths:
+            resolved.append(spec)
+            continue
+
+        wanted = [seg.strip().lower() for seg in spec.split("/") if seg.strip()]
+        if not wanted:
+            raise ValueError(f"Collection spec '{spec}' is empty.")
+
+        matches = [
+            key for key, segs in paths.items()
+            if len(segs) >= len(wanted)
+            and [s.lower() for s in segs[-len(wanted):]] == wanted
+        ]
+
+        if len(matches) > 1:
+            candidates = "; ".join(
+                f"'{'/'.join(paths[k])}' ({k})"
+                for k in sorted(matches, key=lambda k: paths[k])
+            )
+            raise ValueError(
+                f"Collection spec '{spec}' is ambiguous — it matches: "
+                f"{candidates}. Disambiguate with a longer path or the "
+                "8-character collection key."
+            )
+        if matches:
+            resolved.append(matches[0])
+            continue
+
+        if create_missing:
+            if write_zot is None:
+                raise ValueError(
+                    f"Collection '{spec}' not found and no writable client "
+                    "is available to create it."
+                )
+            resolved.append(
+                _create_collection_path(write_zot, paths, spec, ctx=ctx)
+            )
+            continue
+
+        raise ValueError(_collection_not_found_message(zot, spec, paths))
+
+    seen: set[str] = set()
+    return [k for k in resolved if not (k in seen or seen.add(k))]
+
+
+def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
+    """Create the collections needed to satisfy *spec*; return the leaf key.
+
+    The longest prefix of the path that already resolves (unique trailing-
+    segment match) anchors the chain; remaining segments are created beneath
+    it, or at the library root when nothing resolves. Mutates *paths* with
+    the created entries so later specs in the same call see them.
+    """
+    names = [seg.strip() for seg in spec.split("/") if seg.strip()]
+
+    parent_key = None
+    start = 0
+    for i in range(len(names) - 1, 0, -1):
+        prefix = [s.lower() for s in names[:i]]
+        matches = [
+            key for key, segs in paths.items()
+            if len(segs) >= len(prefix)
+            and [s.lower() for s in segs[-len(prefix):]] == prefix
+        ]
+        if len(matches) > 1:
+            candidates = "; ".join(f"'{'/'.join(paths[k])}' ({k})" for k in matches)
+            raise ValueError(
+                f"Cannot create '{spec}': parent path "
+                f"'{'/'.join(names[:i])}' is ambiguous — it matches: "
+                f"{candidates}."
+            )
+        if matches:
+            parent_key = matches[0]
+            start = i
+            break
+
+    for name in names[start:]:
+        payload = {"name": name, "parentCollection": parent_key or False}
+        result = write_zot.create_collections([payload])
+        if not (isinstance(result, dict) and result.get("success")):
+            raise ValueError(f"Failed to create collection '{name}': {result}")
+        new_key = next(iter(result["success"].values()))
+        paths[new_key] = (paths[parent_key] if parent_key else []) + [name]
+        if ctx is not None:
+            ctx.info(f"Created collection '{'/'.join(paths[new_key])}' ({new_key})")
+        parent_key = new_key
+    return parent_key
+
+
+def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
+                        ctx=None) -> list[dict]:
+    """Find non-attachment items already in the library by a normalized id.
+
+    Exactly one of doi / arxiv_id / isbn / url should be given (already
+    normalized via the corresponding ``_normalize_*`` helper, except url).
+    A server-side quick search (``q=<id>, qmode='everything',
+    itemType='-attachment'``) narrows candidates cheaply; a client-side
+    normalized comparison confirms real matches. Searching with the BARE
+    identifier means the substring quick-search also catches values stored
+    with prefixes ('https://doi.org/10...', 'arXiv:...'). The items endpoint
+    excludes the Trash, so a trashed copy never blocks a re-add.
+
+    Returns full item dicts (with ``key``/``version``/``data``) so callers
+    can update them without re-fetching. Returns [] on search failure —
+    callers treat that as "nothing found" and proceed to create.
+    """
+    if doi:
+        query = doi
+        def _matches(data):
+            return _normalize_doi(data.get("DOI") or "") == doi
+    elif arxiv_id:
+        query = arxiv_id
+        def _matches(data):
+            if _normalize_arxiv_id(data.get("url") or "") == arxiv_id:
+                return True
+            return f"arxiv:{arxiv_id}".lower() in (data.get("extra") or "").lower()
+    elif isbn:
+        query = isbn
+        def _matches(data):
+            # Zotero's ISBN field may hold several space-separated values,
+            # in 10- or 13-digit form; compare each normalized to ISBN-13.
+            raw = data.get("ISBN") or ""
+            for token in re.split(r"[,;\s]+", raw):
+                if token and _normalize_isbn(token) == isbn:
+                    return True
+            return False
+    elif url:
+        query = url
+        def _matches(data):
+            return (data.get("url") or "").rstrip("/") == url.rstrip("/")
+    else:
+        return []
+
+    try:
+        candidates = zot.items(
+            q=query, qmode="everything", itemType="-attachment", limit=50
+        )
+    except Exception as e:
+        if ctx is not None:
+            ctx.warning(f"Existing-item search failed (treating as no match): {e}")
+        return []
+
+    matches = []
+    for item in candidates or []:
+        data = item.get("data", {})
+        if data.get("itemType") in ("attachment", "note", "annotation"):
+            continue
+        if _matches(data):
+            matches.append(item)
+    return matches
+
+
+def _collection_not_found_message(zot, spec, paths) -> str:
+    """Build the error message for an unresolvable collection spec."""
+    if _COLLECTION_KEY_RE.match(spec):
+        try:
+            trashed = {c.get("key") for c in fetch_trashed_collections(zot)}
+        except Exception:
+            trashed = set()
+        if spec in trashed:
+            return (
+                f"Collection '{spec}' is in the Zotero Trash. Restore it in "
+                "Zotero (or use another collection) before filing items into it."
+            )
+    msg = (
+        f"Collection '{spec}' not found in the active library "
+        "(tried key, name, and path matching)."
+    )
+    words = [w for w in spec.lower().replace("/", " ").split() if w]
+    suggestions = [
+        key for key, segs in paths.items()
+        if all(w in "/".join(segs).lower() for w in words)
+    ]
+    if suggestions:
+        shown = ", ".join(
+            f"'{'/'.join(paths[k])}' ({k})"
+            for k in sorted(suggestions, key=lambda k: paths[k])[:5]
+        )
+        msg += f" Close matches: {shown}."
+    else:
+        msg += (
+            " Use zotero_search_collections (or `zotero-cli collections "
+            "search`) to list available collections."
+        )
+    return msg
+
+
 def _normalize_doi(raw):
     """Normalize a DOI string from various input formats."""
     if not raw:

@@ -136,6 +136,9 @@ def test_add_by_doi_string_collection_routes_correctly(monkeypatch):
     """The bare-string ``collections="KEY"`` form must produce the same routing
     as the array form (#235)."""
     z = _RecordingZotero(atomic_filing_works=True)
+    z._collections = [
+        {"key": "A75DWWBH", "data": {"name": "Target", "parentCollection": False}},
+    ]
     _patch_write_client(monkeypatch, z)
 
     result = server.add_by_doi(
@@ -151,6 +154,9 @@ def test_add_by_doi_string_collection_with_atomic_failure_backstops(monkeypatch)
     """If pyzotero's atomic filing on ``create_items`` no-ops, the backstop
     must explicitly ``addto_collection`` so the item still lands correctly."""
     z = _RecordingZotero(atomic_filing_works=False)
+    z._collections = [
+        {"key": "A75DWWBH", "data": {"name": "Target", "parentCollection": False}},
+    ]
     _patch_write_client(monkeypatch, z)
 
     result = server.add_by_doi(
