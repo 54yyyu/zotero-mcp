@@ -236,7 +236,8 @@ def cmd_add(args):
         ))
     elif args.subcommand == "file":
         print(write_mod.add_from_file(
-            file_path=args.filepath, parent_key=getattr(args, "parent_key", None),
+            file_path=args.filepath, title=getattr(args, "title", None),
+            item_type=getattr(args, "item_type", "document"),
             collections=collections, tags=tags, ctx=ctx,
         ))
     else:
@@ -625,9 +626,11 @@ def build_parser() -> argparse.ArgumentParser:
     aurl.add_argument("--collections")
     aurl.add_argument("--tags")
     aurl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
-    afil = add_sub.add_parser("file", help="Add item from local file")
+    afil = add_sub.add_parser("file", help="Add item from local file (.pdf/.epub)")
     afil.add_argument("--filepath", required=True)
-    afil.add_argument("--parent-key")
+    afil.add_argument("--title", help="Override title if metadata extraction misses")
+    afil.add_argument("--item-type", default="document",
+                      help="Zotero item type for the new item (default: document)")
     afil.add_argument("--collections")
     afil.add_argument("--tags")
 
