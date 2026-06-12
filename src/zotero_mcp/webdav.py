@@ -146,7 +146,7 @@ def upload_attachment_to_webdav(
     file_path: str | Path,
     md5: str | None = None,
     mtime_ms: int | None = None,
-    timeout: float = 60.0,
+    timeout: float | None = None,
 ) -> tuple[str, int]:
     """Upload an attachment to WebDAV in Zotero's expected layout.
 
@@ -158,9 +158,18 @@ def upload_attachment_to_webdav(
     values to the Zotero attachment item via the web API, keeping the
     two sides of the sync consistent.
 
+    ``timeout`` is the read-side timeout passed to ``requests``. When
+    ``None`` (the default), the value is read from the
+    ``ZOTERO_WEBDAV_TIMEOUT`` environment variable; if that is unset,
+    falls back to ``60.0``. An explicit float bypasses the env lookup.
+
     Raises ``WebDAVNotConfiguredError`` when the env vars are missing,
     or ``requests.HTTPError`` on a non-2xx response from the PUTs.
     """
+    if timeout is None:
+        env_timeout = _get_env_value("ZOTERO_WEBDAV_TIMEOUT")
+        timeout = float(env_timeout) if env_timeout is not None else 60.0
+
     config = get_webdav_config()
     if not config:
         raise WebDAVNotConfiguredError(
