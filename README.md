@@ -153,6 +153,10 @@ zotero-mcp setup --semantic-config-only
 - **OpenAI**: Better quality, requires API key (`text-embedding-3-small` or `text-embedding-3-large`)
 - **Gemini**: Better quality, requires API key (`gemini-embedding-001`)
 
+When you choose OpenAI, setup also asks whether database updates should use
+OpenAI Batch API. Batch updates are cheaper for large libraries, but they are
+asynchronous: submit the batch, wait for completion, then import the embeddings.
+
 **Update Frequency Options:**
 - **Manual**: Update only when you run `zotero-mcp update-db`
 - **Auto on startup**: Update database every time the server starts
@@ -166,6 +170,16 @@ After setup, initialize your search database:
 ```bash
 # Build the semantic search database (fast, metadata-only)
 zotero-mcp update-db
+
+# Submit OpenAI embeddings through Batch API for this update
+zotero-mcp update-db --openai-batch
+
+# Check and import completed OpenAI Batch API embeddings
+zotero-mcp openai-batch-status
+zotero-mcp openai-batch-import
+
+# Force realtime OpenAI embeddings even if Batch API is enabled in config
+zotero-mcp update-db --no-openai-batch
 
 # Build with full-text extraction (slower, more comprehensive)
 zotero-mcp update-db --fulltext
@@ -310,6 +324,8 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model name (text-embedding-3-small, text-embedding-3-large)
 - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
+- OpenAI Batch API indexing is configured by `zotero-mcp setup` and can be overridden with
+  `zotero-mcp update-db --openai-batch` or `--no-openai-batch`
 - `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
@@ -336,6 +352,10 @@ zotero-mcp update --force                  # Force update even if up to date
 
 # Semantic search database management
 zotero-mcp update-db                       # Update semantic search database (fast, metadata-only)
+zotero-mcp update-db --openai-batch        # Submit OpenAI embeddings through Batch API
+zotero-mcp update-db --no-openai-batch     # Force realtime OpenAI embeddings for this run
+zotero-mcp openai-batch-status             # Check latest OpenAI embedding batch status
+zotero-mcp openai-batch-import             # Import completed OpenAI batch embeddings
 zotero-mcp update-db --fulltext             # Update with full-text extraction (comprehensive but slower)
 zotero-mcp update-db --force-rebuild       # Force complete database rebuild
 zotero-mcp update-db --fulltext --force-rebuild  # Rebuild with full-text extraction
