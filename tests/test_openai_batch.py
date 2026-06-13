@@ -305,3 +305,76 @@ def test_chroma_client_upsert_embeddings_passes_precomputed_vectors():
         "ids": ["ID1"],
         "embeddings": [[0.1, 0.2]],
     }
+
+
+def test_import_openai_batch_reports_records_missing_from_output(tmp_path, monkeypatch):
+    class ImportChromaClient(FakeChromaClient):
+        def __init__(self):
+            super().__init__()
+            self.upserted = None
+
+        def upsert_embeddings(self, documents, metadatas, ids, embeddings):
+            self.upserted = {
+                "documents": list(documents),
+                "metadatas": list(metadatas),
+                "ids": list(ids),
+                "embeddings": list(embeddings),
+            }
+
+    records_path = tmp_path / "batch-001-records.jsonl"
+    openai_batch.write_jsonl(
+        records_path,
+        [
+            {"id": "A", "document": "doc A", "metadata": {"title": "A"}},
+            {"id": "B", "document": "doc B", "metadata": {"title": "B"}},
+        ],
+    )
+    output_path = tmp_path / "batch-001-records-output.jsonl"
+    output_path.write_text(
+        json.dumps({
+            "custom_id": "A",
+            "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2]}]}},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "run_id": "run-1",
+        "manifest_path": str(tmp_path / "manifest.json"),
+        "force_full_rebuild": False,
+        "batches": [
+            {
+                "batch_id": "batch-1",
+                "status": "completed",
+                "output_file_id": "file-1",
+                "records_path": str(records_path),
+                "imported_at": None,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    monkeypatch.setattr(semantic_search.openai_batch, "find_manifest", lambda **kwargs: manifest)
+    monkeypatch.setattr(
+        semantic_search.openai_batch,
+        "refresh_manifest_status",
+        lambda manifest, **kwargs: manifest,
+    )
+    monkeypatch.setattr(semantic_search.openai_batch, "create_openai_client", lambda config: object())
+
+    chroma_client = ImportChromaClient()
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=chroma_client)
+
+    stats = search.import_openai_batch()
+
+    assert chroma_client.upserted == {
+        "documents": ["doc A"],
+        "metadatas": [{"title": "A"}],
+        "ids": ["A"],
+        "embeddings": [[0.1, 0.2]],
+    }
+    assert stats["imported_items"] == 1
+    assert stats["missing_items"] == 1
+    assert {
+        "custom_id": "B",
+        "error": "No embedding or error row returned for batch record",
+    } in stats["errors"]

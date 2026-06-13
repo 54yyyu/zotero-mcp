@@ -1599,10 +1599,28 @@ class ZoteroSemanticSearch:
 
                 records = {record["id"]: record for record in openai_batch.read_jsonl(Path(batch["records_path"]))}
                 ids = [doc_id for doc_id in embeddings_by_id if doc_id in records]
-                missing_ids = [doc_id for doc_id in embeddings_by_id if doc_id not in records]
-                stats["missing_items"] += len(missing_ids)
+                unexpected_output_ids = [doc_id for doc_id in embeddings_by_id if doc_id not in records]
+                failure_ids = {
+                    failure.get("custom_id")
+                    for failure in row_failures
+                    if failure.get("custom_id")
+                }
+                missing_result_ids = [
+                    doc_id
+                    for doc_id in records
+                    if doc_id not in embeddings_by_id and doc_id not in failure_ids
+                ]
+                missing_errors = [
+                    {"custom_id": doc_id, "error": "Batch output returned an embedding for an unknown record"}
+                    for doc_id in unexpected_output_ids
+                ] + [
+                    {"custom_id": doc_id, "error": "No embedding or error row returned for batch record"}
+                    for doc_id in missing_result_ids
+                ]
+                stats["missing_items"] += len(unexpected_output_ids) + len(missing_result_ids)
                 stats["failed_items"] += len(row_failures)
                 stats["errors"].extend(row_failures)
+                stats["errors"].extend(missing_errors)
 
                 if ids:
                     existing_ids = self.chroma_client.get_existing_ids(ids)
