@@ -211,6 +211,76 @@ def test_failed_batch_submit_does_not_report_added_or_updated(monkeypatch):
     assert "estimated_updated_items" not in stats
 
 
+def test_batch_and_realtime_indexing_share_prepared_payload(monkeypatch):
+    class RecordingChromaClient(FakeChromaClient):
+        def __init__(self):
+            super().__init__()
+            self.upserts = []
+
+        def upsert_documents(self, documents, metadatas, ids):
+            self.upserts.append({
+                "documents": list(documents),
+                "metadatas": list(metadatas),
+                "ids": list(ids),
+            })
+
+    item = {
+        "key": "ITEM1",
+        "data": {
+            "itemType": "journalArticle",
+            "title": "Semantic Batch Paper",
+            "abstractNote": "An abstract that should be embedded.",
+            "publicationTitle": "Journal of Tests",
+            "creators": [{"firstName": "Ada", "lastName": "Lovelace", "creatorType": "author"}],
+            "tags": [{"tag": "embeddings"}, {"tag": "batch"}],
+            "fulltext": "Full text must be included in both indexing paths.",
+            "fulltextSource": "zotero_web_api",
+            "date": "2026",
+            "DOI": "10.1234/example",
+        },
+    }
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+
+    realtime_client = RecordingChromaClient()
+    realtime_search = semantic_search.ZoteroSemanticSearch(chroma_client=realtime_client)
+    realtime_search._process_item_batch([item])
+    assert realtime_client.upserts
+
+    captured = {}
+
+    def capture_batch_submit(**kwargs):
+        captured.update(kwargs)
+        return {
+            "run_id": "run-1",
+            "manifest_path": "/tmp/manifest.json",
+            "batches": [{"batch_id": "batch-1"}],
+        }
+
+    monkeypatch.setattr(semantic_search.openai_batch, "submit_embedding_batches", capture_batch_submit)
+    batch_client = RecordingChromaClient()
+    batch_search = semantic_search.ZoteroSemanticSearch(chroma_client=batch_client)
+    batch_search._submit_openai_batch_index(
+        [item],
+        force_full_rebuild=False,
+        target_sync_version=123,
+        stats={
+            "processed_items": 0,
+            "skipped_items": 0,
+            "errors": 0,
+        },
+    )
+
+    realtime_payload = realtime_client.upserts[0]
+    assert captured["records"] == [{
+        "id": realtime_payload["ids"][0],
+        "document": realtime_payload["documents"][0],
+        "metadata": realtime_payload["metadatas"][0],
+    }]
+    assert "Full text must be included" in captured["records"][0]["document"]
+    assert captured["records"][0]["metadata"]["has_fulltext"] is True
+
+
 def test_chroma_client_upsert_embeddings_passes_precomputed_vectors():
     class FakeCollection:
         def __init__(self):
