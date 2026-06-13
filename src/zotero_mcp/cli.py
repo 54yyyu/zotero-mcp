@@ -234,10 +234,27 @@ def setup_zotero_environment():
         apply_environment_variables(fallback_env_vars)
 
 
+def _normalize_help_args(argv: list[str]) -> list[str]:
+    """Support `zotero-mcp help [command]` in addition to argparse's `--help`."""
+    if not argv or argv[0] != "help":
+        return argv
+    if len(argv) == 1:
+        return ["--help"]
+    return [*argv[1:], "--help"]
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
-        description="Zotero Model Context Protocol server"
+        description="Zotero Model Context Protocol server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "OpenAI Batch API indexing:\n"
+            "  zotero-mcp update-db --openai-batch     Submit embeddings asynchronously\n"
+            "  zotero-mcp openai-batch-status          Check submitted batch status\n"
+            "  zotero-mcp openai-batch-import          Import completed embeddings\n"
+            "  zotero-mcp help update-db               Show update-db options\n"
+        ),
     )
 
     # Create subparsers for different commands
@@ -339,7 +356,7 @@ def main():
     # Setup info command
     subparsers.add_parser("setup-info", help="Show installation path and configuration info for MCP clients")
 
-    args = parser.parse_args()
+    args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
 
     # If no command is provided, default to 'serve'
     if not args.command:
