@@ -1097,16 +1097,13 @@ class ZoteroSemanticSearch:
         stats["skipped_items"] += prepare_stats["skipped"]
         stats["errors"] += prepare_stats["errors"]
 
-        ids = [record["id"] for record in records]
-        existing_ids = self.chroma_client.get_existing_ids(ids) if ids and not force_full_rebuild else set()
-        stats["updated_items"] += len(existing_ids)
-        stats["added_items"] += len(ids) - len(existing_ids)
-
         if not records:
             stats["batch_submitted"] = False
             stats["batch_error"] = "No documents were prepared for OpenAI Batch API submission"
             return stats
 
+        ids = [record["id"] for record in records]
+        existing_ids = self.chroma_client.get_existing_ids(ids) if ids and not force_full_rebuild else set()
         model_name = self.chroma_client.embedding_config.get("model_name", "text-embedding-3-small")
         manifest = openai_batch.submit_embedding_batches(
             records=records,
@@ -1121,6 +1118,8 @@ class ZoteroSemanticSearch:
         stats["batch_manifest"] = manifest["manifest_path"]
         stats["batch_ids"] = [batch["batch_id"] for batch in manifest.get("batches", [])]
         stats["submitted_items"] = len(records)
+        stats["estimated_updated_items"] = len(existing_ids)
+        stats["estimated_added_items"] = len(ids) - len(existing_ids)
         return stats
 
     def update_database(self,
@@ -1281,6 +1280,7 @@ class ZoteroSemanticSearch:
             logger.info(f"Found {stats['total_items']} items to process")
 
             if use_openai_batch:
+                stats["batch_mode"] = True
                 try:
                     sys.stderr.write(f"\nSubmitting {len(all_items)} items to OpenAI Batch API...\n")
                     sys.stderr.flush()

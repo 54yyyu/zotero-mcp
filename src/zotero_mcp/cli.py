@@ -150,12 +150,19 @@ def _semantic_config_path(path_arg: str | None) -> Path:
 
 
 def _print_update_stats(stats: dict) -> None:
-    label = "OpenAI batch submission" if stats.get("batch_submitted") else "Database update"
-    print(f"\n{label} completed:")
+    is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
+    label = "OpenAI batch submission" if is_batch else "Database update"
+    outcome = "failed" if stats.get("error") else "completed"
+    print(f"\n{label} {outcome}:")
     print(f"- Total items: {stats.get('total_items', 0)}")
     print(f"- Processed: {stats.get('processed_items', 0)}")
-    print(f"- Added: {stats.get('added_items', 0)}")
-    print(f"- Updated: {stats.get('updated_items', 0)}")
+    if stats.get("batch_submitted"):
+        print(f"- Submitted: {stats.get('submitted_items', 0)}")
+        print(f"- Estimated new items: {stats.get('estimated_added_items', 0)}")
+        print(f"- Estimated existing items: {stats.get('estimated_updated_items', 0)}")
+    else:
+        print(f"- Added: {stats.get('added_items', 0)}")
+        print(f"- Updated: {stats.get('updated_items', 0)}")
     print(f"- Skipped: {stats.get('skipped_items', 0)}")
     print(f"- Errors: {stats.get('errors', 0)}")
     print(f"- Duration: {stats.get('duration', 'Unknown')}")

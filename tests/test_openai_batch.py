@@ -138,6 +138,13 @@ class FakeChromaClient:
     def __init__(self, embedding_model="openai"):
         self.embedding_model = embedding_model
         self.embedding_config = {"model_name": "text-embedding-3-small", "api_key": "test"}
+        self.embedding_max_tokens = 8000
+
+    def truncate_text(self, text, max_tokens=None):
+        return text
+
+    def get_existing_ids(self, ids):
+        return {"EXISTING"} & set(ids)
 
 
 def test_update_db_batch_flag_resolution_reads_config(tmp_path, monkeypatch):
@@ -161,6 +168,47 @@ def test_update_db_batch_flag_resolution_reads_config(tmp_path, monkeypatch):
         config_path=str(config_path),
     )
     assert non_openai._resolve_openai_batch_enabled(True) is False
+
+
+def test_failed_batch_submit_does_not_report_added_or_updated(monkeypatch):
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
+
+    def fail_submit(**kwargs):
+        raise RuntimeError("missing files.write")
+
+    monkeypatch.setattr(semantic_search.openai_batch, "submit_embedding_batches", fail_submit)
+    stats = {
+        "processed_items": 0,
+        "added_items": 0,
+        "updated_items": 0,
+        "skipped_items": 0,
+        "errors": 0,
+    }
+
+    with pytest.raises(RuntimeError, match="missing files.write"):
+        search._submit_openai_batch_index(
+            [
+                {
+                    "key": "EXISTING",
+                    "data": {
+                        "title": "Existing item",
+                        "itemType": "journalArticle",
+                        "abstractNote": "A",
+                        "creators": [],
+                    },
+                }
+            ],
+            force_full_rebuild=False,
+            target_sync_version=1,
+            stats=stats,
+        )
+
+    assert stats["processed_items"] == 1
+    assert stats["added_items"] == 0
+    assert stats["updated_items"] == 0
+    assert "estimated_added_items" not in stats
+    assert "estimated_updated_items" not in stats
 
 
 def test_chroma_client_upsert_embeddings_passes_precomputed_vectors():
