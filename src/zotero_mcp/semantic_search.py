@@ -23,10 +23,11 @@ except Exception:
     _tokenizer = None
 
 
+from . import openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .local_db import LocalZoteroReader
-from .utils import format_creators, is_local_mode
+from .utils import format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,6 @@ def _acquire_update_lock(lock_path: Path):
     finally:
         if fd is not None:
             fd.close()
-
-
-from zotero_mcp.utils import suppress_stdout
-
 
 def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
     """Truncate text to fit within embedding model token limit.
@@ -194,6 +191,29 @@ class ZoteroSemanticSearch:
         except Exception as e:
             logger.warning(f"Error loading include_fulltext setting: {e}")
             return True
+
+    def _load_openai_batch_enabled(self) -> bool:
+        """Whether OpenAI Batch API indexing is enabled by semantic config."""
+        if not self.config_path or not os.path.exists(self.config_path):
+            return False
+        try:
+            with open(self.config_path) as f:
+                file_config = json.load(f)
+                value = (
+                    file_config
+                    .get("semantic_search", {})
+                    .get("openai_batch", {})
+                    .get("enabled", False)
+                )
+                return bool(value)
+        except Exception as e:
+            logger.warning(f"Error loading OpenAI batch setting: {e}")
+            return False
+
+    def _resolve_openai_batch_enabled(self, use_openai_batch: bool | None) -> bool:
+        """Resolve CLI override + config default for OpenAI batch indexing."""
+        requested = self._load_openai_batch_enabled() if use_openai_batch is None else use_openai_batch
+        return bool(requested and self.chroma_client.embedding_model == "openai")
 
     def _load_last_sync_version(self) -> int:
         """Last Zotero library version fully indexed into ChromaDB.
@@ -1030,11 +1050,85 @@ class ZoteroSemanticSearch:
 
         return changed_items, current_keys
 
+    def _prepare_index_records(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """Prepare ChromaDB records without embedding or writing them."""
+        stats = {"processed": 0, "skipped": 0, "errors": 0}
+        records: list[dict[str, Any]] = []
+
+        for item in items:
+            try:
+                item_key = item.get("key", "")
+                if not item_key:
+                    stats["skipped"] += 1
+                    continue
+
+                fulltext = item.get("data", {}).get("fulltext", "")
+                structured_text = self._create_document_text(item)
+                if fulltext.strip():
+                    doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
+                else:
+                    doc_text = structured_text
+                metadata = self._create_metadata(item)
+
+                if not doc_text.strip():
+                    stats["skipped"] += 1
+                    continue
+
+                doc_text = self.chroma_client.truncate_text(doc_text)
+                records.append({"id": item_key, "document": doc_text, "metadata": metadata})
+                stats["processed"] += 1
+
+            except Exception as e:
+                logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
+                stats["errors"] += 1
+
+        return records, stats
+
+    def _submit_openai_batch_index(
+        self,
+        items: list[dict[str, Any]],
+        force_full_rebuild: bool,
+        target_sync_version: int | None,
+        stats: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Prepare records and submit asynchronous OpenAI embedding batches."""
+        records, prepare_stats = self._prepare_index_records(items)
+        stats["processed_items"] += prepare_stats["processed"]
+        stats["skipped_items"] += prepare_stats["skipped"]
+        stats["errors"] += prepare_stats["errors"]
+
+        ids = [record["id"] for record in records]
+        existing_ids = self.chroma_client.get_existing_ids(ids) if ids and not force_full_rebuild else set()
+        stats["updated_items"] += len(existing_ids)
+        stats["added_items"] += len(ids) - len(existing_ids)
+
+        if not records:
+            stats["batch_submitted"] = False
+            stats["batch_error"] = "No documents were prepared for OpenAI Batch API submission"
+            return stats
+
+        model_name = self.chroma_client.embedding_config.get("model_name", "text-embedding-3-small")
+        manifest = openai_batch.submit_embedding_batches(
+            records=records,
+            model_name=model_name,
+            embedding_config=self.chroma_client.embedding_config,
+            config_path=self.config_path,
+            force_full_rebuild=force_full_rebuild,
+            target_sync_version=target_sync_version,
+        )
+        stats["batch_submitted"] = True
+        stats["batch_run_id"] = manifest["run_id"]
+        stats["batch_manifest"] = manifest["manifest_path"]
+        stats["batch_ids"] = [batch["batch_id"] for batch in manifest.get("batches", [])]
+        stats["submitted_items"] = len(records)
+        return stats
+
     def update_database(self,
                        force_full_rebuild: bool = False,
                        limit: int | None = None,
                        extract_fulltext: bool = False,
-                       include_fulltext: bool | None = None) -> dict[str, Any]:
+                       include_fulltext: bool | None = None,
+                       use_openai_batch: bool | None = None) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
 
@@ -1048,6 +1142,8 @@ class ZoteroSemanticSearch:
                 `semantic_search.include_fulltext` config setting (True
                 unless explicitly disabled). Ignored in local mode since
                 `extract_fulltext` provides richer local extraction.
+            use_openai_batch: Override for OpenAI Batch API indexing. None
+                uses `semantic_search.openai_batch.enabled`.
 
         Returns:
             Update statistics
@@ -1094,9 +1190,11 @@ class ZoteroSemanticSearch:
             # Web-API fulltext only applies when not using the local sqlite
             # extractor (extract_fulltext=True takes precedence in local mode)
             include_fulltext_via_api = include_fulltext and not extract_fulltext
+            use_openai_batch = self._resolve_openai_batch_enabled(use_openai_batch)
 
-            # Reset collection if force rebuild
-            if force_full_rebuild:
+            # In batch mode, defer destructive rebuilds until import so the
+            # existing search index remains usable while the batch runs.
+            if force_full_rebuild and not use_openai_batch:
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
 
@@ -1181,6 +1279,34 @@ class ZoteroSemanticSearch:
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
+
+            if use_openai_batch:
+                try:
+                    sys.stderr.write(f"\nSubmitting {len(all_items)} items to OpenAI Batch API...\n")
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                stats = self._submit_openai_batch_index(
+                    all_items,
+                    force_full_rebuild=force_full_rebuild,
+                    target_sync_version=target_sync_version,
+                    stats=stats,
+                )
+                try:
+                    batch_ids = ", ".join(stats.get("batch_ids", []))
+                    sys.stderr.write(
+                        "  Submitted OpenAI embedding batch"
+                        f"{'es' if len(stats.get('batch_ids', [])) != 1 else ''}: {batch_ids}\n"
+                    )
+                    sys.stderr.write("  Run 'zotero-mcp openai-batch-status' to check progress.\n")
+                    sys.stderr.write("  Run 'zotero-mcp openai-batch-import' after the batch completes.\n")
+                except Exception:
+                    pass
+                end_time = datetime.now()
+                stats["duration"] = str(end_time - start_time)
+                stats["end_time"] = end_time.isoformat()
+                return stats
+
             # User-friendly progress reporting
             total = stats['total_items'] = len(all_items)
             try:
@@ -1307,43 +1433,14 @@ class ZoteroSemanticSearch:
         """
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
-        documents = []
-        metadatas = []
-        ids = []
+        records, prepare_stats = self._prepare_index_records(items)
+        stats["processed"] += prepare_stats["processed"]
+        stats["skipped"] += prepare_stats["skipped"]
+        stats["errors"] += prepare_stats["errors"]
 
-        for item in items:
-            try:
-                item_key = item.get("key", "")
-                if not item_key:
-                    stats["skipped"] += 1
-                    continue
-
-                # Create document text and metadata
-                # Always include structured fields; append fulltext when available
-                fulltext = item.get("data", {}).get("fulltext", "")
-                structured_text = self._create_document_text(item)
-                if fulltext.strip():
-                    doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
-                else:
-                    doc_text = structured_text
-                metadata = self._create_metadata(item)
-
-                if not doc_text.strip():
-                    stats["skipped"] += 1
-                    continue
-
-                # Truncate to fit the configured embedding model's token limit
-                doc_text = self.chroma_client.truncate_text(doc_text)
-
-                documents.append(doc_text)
-                metadatas.append(metadata)
-                ids.append(item_key)
-
-                stats["processed"] += 1
-
-            except Exception as e:
-                logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
-                stats["errors"] += 1
+        documents = [record["document"] for record in records]
+        metadatas = [record["metadata"] for record in records]
+        ids = [record["id"] for record in records]
 
         # Add documents to ChromaDB if any
         if documents:
@@ -1375,6 +1472,161 @@ class ZoteroSemanticSearch:
                     raise
 
         return stats
+
+    def get_openai_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Refresh and return OpenAI Batch API status for the latest run or selected batches."""
+        selected_ids = set(batch_ids or [])
+        manifest = openai_batch.find_manifest(
+            config_path=self.config_path,
+            batch_id=next(iter(selected_ids), None),
+        )
+        manifest = openai_batch.refresh_manifest_status(
+            manifest,
+            embedding_config=self.chroma_client.embedding_config,
+            batch_ids=selected_ids or None,
+        )
+        batches = [
+            batch for batch in manifest.get("batches", [])
+            if not selected_ids or batch.get("batch_id") in selected_ids
+        ]
+        missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
+        if missing_ids:
+            raise FileNotFoundError(f"No OpenAI batch manifest entries found for: {', '.join(sorted(missing_ids))}")
+        return {
+            "run_id": manifest.get("run_id"),
+            "manifest_path": manifest.get("manifest_path"),
+            "model": manifest.get("model"),
+            "force_full_rebuild": manifest.get("force_full_rebuild", False),
+            "batches": batches,
+        }
+
+    def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Import completed OpenAI Batch API embeddings into ChromaDB."""
+        selected_ids = set(batch_ids or [])
+        manifest = openai_batch.find_manifest(
+            config_path=self.config_path,
+            batch_id=next(iter(selected_ids), None),
+        )
+        manifest = openai_batch.refresh_manifest_status(
+            manifest,
+            embedding_config=self.chroma_client.embedding_config,
+            batch_ids=selected_ids or None,
+        )
+
+        all_batches = manifest.get("batches", [])
+        batches = [
+            batch for batch in all_batches
+            if not selected_ids or batch.get("batch_id") in selected_ids
+        ]
+        missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
+        if missing_ids:
+            raise FileNotFoundError(f"No OpenAI batch manifest entries found for: {', '.join(sorted(missing_ids))}")
+        if not batches:
+            raise ValueError("No matching OpenAI batches found in the local manifest")
+        if manifest.get("force_full_rebuild") and selected_ids and len(batches) != len(all_batches):
+            raise RuntimeError("Force-rebuild OpenAI batch runs must be imported as a complete run")
+        if manifest.get("force_full_rebuild"):
+            incomplete = [
+                batch.get("batch_id")
+                for batch in all_batches
+                if not batch.get("imported_at") and batch.get("status") != "completed"
+            ]
+            if incomplete:
+                raise RuntimeError(
+                    "Force-rebuild OpenAI batch runs can only be imported after all batches complete: "
+                    + ", ".join(incomplete)
+                )
+
+        stats = {
+            "run_id": manifest.get("run_id"),
+            "manifest_path": manifest.get("manifest_path"),
+            "batches_seen": len(batches),
+            "batches_imported": 0,
+            "batches_skipped": 0,
+            "imported_items": 0,
+            "added_items": 0,
+            "updated_items": 0,
+            "failed_items": 0,
+            "missing_items": 0,
+            "errors": [],
+        }
+
+        lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
+        lock_cm = _acquire_update_lock(lock_path)
+        acquired = lock_cm.__enter__()
+        if not acquired:
+            lock_cm.__exit__(None, None, None)
+            raise RuntimeError(f"Another semantic-search update is already running (lock held at {lock_path})")
+
+        try:
+            already_imported = any(batch.get("imported_at") for batch in all_batches)
+            if (
+                manifest.get("force_full_rebuild")
+                and not already_imported
+                and any(not batch.get("imported_at") for batch in batches)
+            ):
+                self.chroma_client.reset_collection()
+
+            client = openai_batch.create_openai_client(self.chroma_client.embedding_config)
+            for batch in batches:
+                if batch.get("imported_at"):
+                    stats["batches_skipped"] += 1
+                    continue
+                if batch.get("status") != "completed":
+                    stats["batches_skipped"] += 1
+                    stats["errors"].append({
+                        "batch_id": batch.get("batch_id"),
+                        "error": f"Batch status is {batch.get('status')}, not completed",
+                    })
+                    continue
+                output_file_id = batch.get("output_file_id")
+                if not output_file_id:
+                    stats["batches_skipped"] += 1
+                    stats["errors"].append({"batch_id": batch.get("batch_id"), "error": "Missing output_file_id"})
+                    continue
+
+                output_path = Path(batch["records_path"]).with_name(Path(batch["records_path"]).stem + "-output.jsonl")
+                if output_path.exists():
+                    output_text = output_path.read_text(encoding="utf-8")
+                else:
+                    output_text = openai_batch.download_file_text(client, output_file_id, output_path)
+                embeddings_by_id, row_failures = openai_batch.parse_embedding_output(output_text)
+
+                if batch.get("error_file_id"):
+                    error_path = Path(batch["records_path"]).with_name(Path(batch["records_path"]).stem + "-errors.jsonl")
+                    error_text = openai_batch.download_file_text(client, batch["error_file_id"], error_path)
+                    row_failures.extend(openai_batch.parse_error_output(error_text))
+
+                records = {record["id"]: record for record in openai_batch.read_jsonl(Path(batch["records_path"]))}
+                ids = [doc_id for doc_id in embeddings_by_id if doc_id in records]
+                missing_ids = [doc_id for doc_id in embeddings_by_id if doc_id not in records]
+                stats["missing_items"] += len(missing_ids)
+                stats["failed_items"] += len(row_failures)
+                stats["errors"].extend(row_failures)
+
+                if ids:
+                    existing_ids = self.chroma_client.get_existing_ids(ids)
+                    self.chroma_client.upsert_embeddings(
+                        documents=[records[doc_id]["document"] for doc_id in ids],
+                        metadatas=[records[doc_id]["metadata"] for doc_id in ids],
+                        ids=ids,
+                        embeddings=[embeddings_by_id[doc_id] for doc_id in ids],
+                    )
+                    stats["imported_items"] += len(ids)
+                    stats["updated_items"] += len(existing_ids)
+                    stats["added_items"] += len(ids) - len(existing_ids)
+
+                batch["imported_at"] = datetime.now().isoformat()
+                batch["imported_count"] = len(ids)
+                stats["batches_imported"] += 1
+
+            openai_batch.save_manifest(manifest)
+            if all(batch.get("imported_at") for batch in all_batches):
+                self.update_config["last_update"] = datetime.now().isoformat()
+                self._save_update_config(last_sync_version=manifest.get("target_sync_version"))
+            return stats
+        finally:
+            lock_cm.__exit__(None, None, None)
 
     def search(self,
                query: str,
@@ -1485,6 +1737,10 @@ class ZoteroSemanticSearch:
         return {
             "collection_info": collection_info,
             "update_config": self.update_config,
+            "openai_batch": {
+                "enabled": self._load_openai_batch_enabled(),
+                "active": self._resolve_openai_batch_enabled(None),
+            },
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
         }
