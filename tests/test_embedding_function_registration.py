@@ -40,6 +40,7 @@ from zotero_mcp import chroma_client  # noqa: E402
         ("openai", "OpenAIEmbeddingFunction"),
         ("gemini", "GeminiEmbeddingFunction"),
         ("huggingface", "HuggingFaceEmbeddingFunction"),
+        ("ollama", "OllamaEmbeddingFunction"),
     ],
 )
 def test_custom_embedding_functions_are_registered(name, cls_attr):
