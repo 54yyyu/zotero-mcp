@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 
 try:
     import tiktoken
+
     _tokenizer = tiktoken.get_encoding("cl100k_base")
 except Exception:
     tiktoken = None
@@ -26,9 +28,43 @@ except Exception:
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .local_db import LocalZoteroReader
-from .utils import format_creators, is_local_mode
+from .utils import format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort liveness check for a process id (POSIX ``kill(pid, 0)``)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    except Exception:
+        return False
+    return True
+
+
+def read_lock_holder(lock_path: Path) -> tuple[int | None, bool]:
+    """Return ``(holder_pid, alive)`` for the update lock, for diagnostics.
+
+    ``holder_pid`` is None when the file is missing/unparseable. ``alive`` says
+    whether that pid still exists — a held lock whose holder is dead would be a
+    genuinely stale lock (flock releases those automatically on POSIX, so this
+    is purely to make the user-facing "skipped" message precise).
+    """
+    try:
+        raw = lock_path.read_text().strip()
+        pid = int(raw)
+    except Exception:
+        return None, False
+    return pid, _pid_is_alive(pid)
+
+
+def _force_update_requested() -> bool:
+    """Whether the user asked to bypass the cross-process update lock."""
+    return os.getenv("ZOTERO_MCP_FORCE_UPDATE", "").strip().lower() in {"1", "true", "yes"}
 
 
 @contextlib.contextmanager
@@ -40,9 +76,18 @@ def _acquire_update_lock(lock_path: Path):
     MCP server's auto-update in ``server_lifespan`` from racing a manual
     ``zotero-mcp update-db`` invocation on the same ChromaDB collection.
 
+    Setting ``ZOTERO_MCP_FORCE_UPDATE=1`` bypasses the lock entirely — an
+    escape hatch for the rare case where a lock appears stuck (e.g. a crashed
+    holder on a filesystem with quirky flock semantics) and the user knowingly
+    accepts the small double-work risk.
+
     Windows lacks ``fcntl``; on that platform the function degrades to a
     no-op and yields True so behaviour matches pre-lock releases.
     """
+    if _force_update_requested():
+        yield True
+        return
+
     try:
         import fcntl
     except ImportError:
@@ -58,13 +103,18 @@ def _acquire_update_lock(lock_path: Path):
         except BlockingIOError:
             yield False
             return
+        # Record our pid so a concurrent invocation can report the holder.
+        try:
+            fd.seek(0)
+            fd.truncate()
+            fd.write(str(os.getpid()))
+            fd.flush()
+        except Exception:
+            pass
         yield True
     finally:
         if fd is not None:
             fd.close()
-
-
-from zotero_mcp.utils import suppress_stdout
 
 
 def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
@@ -146,11 +196,115 @@ def should_update(update_config: dict[str, Any]) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Passage-level chunking (Tier-1 grounded retrieval)
+# ---------------------------------------------------------------------------
+
+# Sentinel separating PDF pages in extracted fulltext, when present. Page-aware
+# extractors may insert a form-feed between pages; the chunker uses it to map a
+# character offset back to a 1-indexed page. Absent it, only char offsets are
+# reported and ``page`` is omitted from passage metadata.
+_PAGE_SEPARATOR = "\f"
+
+
+def split_into_passages(
+    text: str,
+    chunk_size: int = 1500,
+    overlap: int = 200,
+    max_chunks: int = 20,
+) -> list[tuple[str, int, int]]:
+    """Split *text* into overlapping passages on natural boundaries.
+
+    Pure function (no I/O, no model load) so it is unit-testable in isolation.
+    Returns a list of ``(passage_text, char_start, char_end)`` tuples with
+    character offsets into the original string. Each window targets
+    ``chunk_size`` characters but is snapped back to the nearest paragraph or
+    sentence boundary in its second half so passages read as coherent quotes.
+    Consecutive windows overlap by ``overlap`` characters so a relevant span
+    straddling a boundary is still captured whole in one of them. At most
+    ``max_chunks`` passages are produced (a guard against pathologically long
+    documents inflating the index).
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if overlap >= chunk_size:
+        overlap = chunk_size // 4
+
+    passages: list[tuple[str, int, int]] = []
+    start = 0
+    n = len(text)
+    while start < n and len(passages) < max_chunks:
+        end = min(n, start + chunk_size)
+        if end < n:
+            window = text[start:end]
+            for sep in ("\n\n", ". ", ".\n", "\n", " "):
+                idx = window.rfind(sep)
+                if idx != -1 and idx >= int(chunk_size * 0.5):
+                    end = start + idx + len(sep)
+                    break
+        chunk = text[start:end].strip()
+        if chunk:
+            passages.append((chunk, start, min(end, n)))
+        if end >= n:
+            break
+        new_start = end - overlap
+        # Guarantee forward progress even when overlap is large.
+        start = new_start if new_start > start else end
+    return passages
+
+
+def _page_for_offset(text: str, offset: int) -> int | None:
+    """Return the 1-indexed page containing *offset*, or None if unknowable.
+
+    Only meaningful when *text* carries ``_PAGE_SEPARATOR`` form-feed page
+    breaks (page-aware extraction). Returns None otherwise so callers can omit
+    a page field rather than report a misleading one.
+    """
+    if _PAGE_SEPARATOR not in text:
+        return None
+    return text.count(_PAGE_SEPARATOR, 0, max(0, offset)) + 1
+
+
+def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
+    """Return the ``width``-char window of *text* richest in query terms.
+
+    Used to surface a *grounded* quote — the part of a matched document that
+    actually overlaps the query — instead of a blind head-truncation. Returns
+    ``(snippet, char_start)``. Falls back to the head of the text when no query
+    term appears. Pure and dependency-free (lexical overlap only).
+    """
+    text = text or ""
+    if not text.strip():
+        return "", 0
+    if len(text) <= width:
+        return text.strip(), 0
+    terms = [t for t in re.findall(r"\w+", (query or "").lower()) if len(t) > 2]
+    if not terms:
+        return text[:width].strip(), 0
+    lowered = text.lower()
+    # Score each candidate window anchored at a query-term hit; keep the best.
+    best_start = 0
+    best_score = -1
+    for m in re.finditer(r"\w+", lowered):
+        if m.group(0) not in terms:
+            continue
+        start = max(0, m.start() - width // 3)
+        window = lowered[start : start + width]
+        score = sum(window.count(t) for t in terms)
+        if score > best_score:
+            best_score = score
+            best_start = start
+    snippet = text[best_start : best_start + width].strip()
+    return snippet, best_start
+
+
 class CrossEncoderReranker:
     """Optional cross-encoder re-ranker for semantic search results."""
 
     def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
         from sentence_transformers import CrossEncoder
+
         self.model = CrossEncoder(model_name)
 
     def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
@@ -158,19 +312,27 @@ class CrossEncoderReranker:
 
         Returns indices of top_k documents in descending relevance order.
         """
+        return [idx for idx, _ in self.rerank_with_scores(query, documents, top_k)]
+
+    def rerank_with_scores(self, query: str, documents: list[str], top_k: int) -> list[tuple[int, float]]:
+        """Re-rank documents, returning ``(index, score)`` pairs.
+
+        Scores are the raw cross-encoder relevance logits, surfaced so search
+        results can report *why* an item ranked where it did, not just an
+        opaque order.
+        """
         pairs = [[query, doc] for doc in documents]
         scores = self.model.predict(pairs)
-        ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        return ranked_indices[:top_k]
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        return [(i, float(scores[i])) for i in ranked[:top_k]]
 
 
 class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
-    def __init__(self,
-                 chroma_client: ChromaClient | None = None,
-                 config_path: str | None = None,
-                 db_path: str | None = None):
+    def __init__(
+        self, chroma_client: ChromaClient | None = None, config_path: str | None = None, db_path: str | None = None
+    ):
         """
         Initialize semantic search.
 
@@ -190,6 +352,37 @@ class ZoteroSemanticSearch:
         # Reranker (lazy-initialized on first search)
         self._reranker: CrossEncoderReranker | None = None
         self._reranker_config = self._load_reranker_config()
+
+        # Passage-level chunking (opt-in; default off preserves item-level
+        # indexing and existing collections byte-for-byte).
+        self._chunking_config = self._load_chunking_config()
+
+    def _load_chunking_config(self) -> dict[str, Any]:
+        """Load passage-chunking configuration from file or use defaults.
+
+        When ``enabled`` is true, each item is indexed as several overlapping
+        passages (id ``<item_key>#<n>``) instead of one item-level vector, so
+        semantic search returns grounded passage quotes and long PDFs are
+        searchable past the single-vector truncation limit. Off by default.
+        """
+        config: dict[str, Any] = {
+            "enabled": False,
+            "chunk_size": 1500,
+            "overlap": 200,
+            "max_chunks_per_item": 20,
+        }
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f)
+                    config.update(file_config.get("semantic_search", {}).get("chunking", {}))
+            except Exception as e:
+                logger.warning(f"Error loading chunking config: {e}")
+        return config
+
+    @property
+    def _chunking_enabled(self) -> bool:
+        return bool(self._chunking_config.get("enabled", False))
 
     def _load_reranker_config(self) -> dict[str, Any]:
         """Load reranker configuration from file or use defaults."""
@@ -284,7 +477,7 @@ class ZoteroSemanticSearch:
             full_config["semantic_search"]["last_sync_version"] = int(last_sync_version)
 
         try:
-            with open(self.config_path, 'w') as f:
+            with open(self.config_path, "w") as f:
                 json.dump(full_config, f, indent=2)
         except Exception as e:
             logger.error(f"Error saving update config: {e}")
@@ -336,7 +529,8 @@ class ZoteroSemanticSearch:
         if note := data.get("note"):
             # Clean HTML from notes
             import re
-            note_text = re.sub(r'<[^>]+>', '', note)
+
+            note_text = re.sub(r"<[^>]+>", "", note)
             extra_fields.append(note_text)
 
         # Combine all text fields
@@ -418,13 +612,14 @@ class ZoteroSemanticSearch:
         """Check if the database should be updated based on configuration."""
         return should_update(self.update_config)
 
-    def _get_items_from_source(self,
-                               limit: int | None = None,
-                               extract_fulltext: bool = False,
-                               chroma_client: ChromaClient | None = None,
-                               force_rebuild: bool = False,
-                               include_fulltext_via_api: bool = False,
-                               ) -> list[dict[str, Any]]:
+    def _get_items_from_source(
+        self,
+        limit: int | None = None,
+        extract_fulltext: bool = False,
+        chroma_client: ChromaClient | None = None,
+        force_rebuild: bool = False,
+        include_fulltext_via_api: bool = False,
+    ) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
 
@@ -455,15 +650,18 @@ class ZoteroSemanticSearch:
                     "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode."
                 )
             return self._get_items_from_local_db(
-                limit,
-                extract_fulltext=extract_fulltext,
-                chroma_client=chroma_client,
-                force_rebuild=force_rebuild
+                limit, extract_fulltext=extract_fulltext, chroma_client=chroma_client, force_rebuild=force_rebuild
             )
         else:
             return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
 
-    def _get_items_from_local_db(self, limit: int | None = None, extract_fulltext: bool = False, chroma_client: ChromaClient | None = None, force_rebuild: bool = False) -> list[dict[str, Any]]:
+    def _get_items_from_local_db(
+        self,
+        limit: int | None = None,
+        extract_fulltext: bool = False,
+        chroma_client: ChromaClient | None = None,
+        force_rebuild: bool = False,
+    ) -> list[dict[str, Any]]:
         """
         Get items from local Zotero database.
 
@@ -488,17 +686,22 @@ class ZoteroSemanticSearch:
                 if self.config_path and os.path.exists(self.config_path):
                     with open(self.config_path) as _f:
                         _cfg = json.load(_f)
-                        semantic_cfg = _cfg.get('semantic_search', {})
-                        extraction_cfg = semantic_cfg.get('extraction', {})
-                        pdf_max_pages = extraction_cfg.get('pdf_max_pages')
-                        pdf_timeout = extraction_cfg.get('pdf_timeout', 30)
+                        semantic_cfg = _cfg.get("semantic_search", {})
+                        extraction_cfg = semantic_cfg.get("extraction", {})
+                        pdf_max_pages = extraction_cfg.get("pdf_max_pages")
+                        pdf_timeout = extraction_cfg.get("pdf_timeout", 30)
                         # Use config db_path only if no CLI override
                         if not zotero_db_path:
-                            zotero_db_path = semantic_cfg.get('zotero_db_path')
+                            zotero_db_path = semantic_cfg.get("zotero_db_path")
             except Exception:
                 pass
 
-            with suppress_stdout(), LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, pdf_timeout=pdf_timeout) as reader:
+            with (
+                suppress_stdout(),
+                LocalZoteroReader(
+                    db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, pdf_timeout=pdf_timeout
+                ) as reader,
+            ):
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
@@ -546,7 +749,11 @@ class ZoteroSemanticSearch:
                             if not k:
                                 continue
                             best = key_to_best.get(k)
-                            if best is not None and best is not it and getattr(best, "item_type", None) == "journalArticle":
+                            if (
+                                best is not None
+                                and best is not it
+                                and getattr(best, "item_type", None) == "journalArticle"
+                            ):
                                 drop = True
                                 break
                         if drop:
@@ -557,7 +764,9 @@ class ZoteroSemanticSearch:
                 total_to_extract = len(local_items)
                 if total_to_extract != candidate_count:
                     try:
-                        sys.stderr.write(f"After filtering/dedup: {total_to_extract} items to process. Extracting content...\n")
+                        sys.stderr.write(
+                            f"After filtering/dedup: {total_to_extract} items to process. Extracting content...\n"
+                        )
                     except Exception:
                         pass
                 else:
@@ -739,7 +948,9 @@ class ZoteroSemanticSearch:
                             for name in _skipped_pdfs:
                                 sys.stderr.write(f"    - {name}\n")
                         if _skipped_failed:
-                            sys.stderr.write(f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n")
+                            sys.stderr.write(
+                                f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n"
+                            )
                             for name in _skipped_failed[:5]:  # Show first 5
                                 sys.stderr.write(f"    - {name}\n")
                             if len(_skipped_failed) > 5:
@@ -765,19 +976,19 @@ class ZoteroSemanticSearch:
                         "version": 0,  # Local items don't have versions
                         "data": {
                             "key": item.key,
-                            "itemType": getattr(item, 'item_type', None) or "journalArticle",
+                            "itemType": getattr(item, "item_type", None) or "journalArticle",
                             "title": item.title or "",
                             "abstractNote": item.abstract or "",
                             "extra": item.extra or "",
                             # Include fulltext only when extracted
-                            "fulltext": getattr(item, 'fulltext', None) or "" if extract_fulltext else "",
-                            "fulltextSource": getattr(item, 'fulltext_source', None) or "" if extract_fulltext else "",
+                            "fulltext": getattr(item, "fulltext", None) or "" if extract_fulltext else "",
+                            "fulltextSource": getattr(item, "fulltext_source", None) or "" if extract_fulltext else "",
                             # Flag if extraction was attempted but failed (timeout, empty)
-                            "fulltext_attempted": getattr(item, '_fulltext_attempted', False),
+                            "fulltext_attempted": getattr(item, "_fulltext_attempted", False),
                             "dateAdded": item.date_added,
                             "dateModified": item.date_modified,
-                            "creators": self._parse_creators_string(item.creators) if item.creators else []
-                        }
+                            "creators": self._parse_creators_string(item.creators) if item.creators else [],
+                        },
                     }
 
                     # Add notes if available
@@ -808,23 +1019,16 @@ class ZoteroSemanticSearch:
             return []
 
         creators = []
-        for creator in creators_str.split(';'):
+        for creator in creators_str.split(";"):
             creator = creator.strip()
             if not creator:
                 continue
 
-            if ',' in creator:
-                last, first = creator.split(',', 1)
-                creators.append({
-                    "creatorType": "author",
-                    "firstName": first.strip(),
-                    "lastName": last.strip()
-                })
+            if "," in creator:
+                last, first = creator.split(",", 1)
+                creators.append({"creatorType": "author", "firstName": first.strip(), "lastName": last.strip()})
             else:
-                creators.append({
-                    "creatorType": "author",
-                    "name": creator
-                })
+                creators.append({"creatorType": "author", "name": creator})
 
         return creators
 
@@ -845,6 +1049,7 @@ class ZoteroSemanticSearch:
             text (e.g. "web-api:parent", "web-api:attachment:<key>"). Empty
             strings mean no fulltext is available for this item.
         """
+
         def _extract_content(resp: Any) -> str:
             if isinstance(resp, dict):
                 return str(resp.get("content", "") or "")
@@ -917,10 +1122,7 @@ class ZoteroSemanticSearch:
                 data["fulltext_attempted"] = True
             if idx % 25 == 0 or idx == total:
                 try:
-                    sys.stderr.write(
-                        f"\r  Fulltext: {idx}/{total} items checked, "
-                        f"{fetched} with text"
-                    )
+                    sys.stderr.write(f"\r  Fulltext: {idx}/{total} items checked, {fetched} with text")
                     sys.stderr.flush()
                 except Exception:
                     pass
@@ -929,9 +1131,7 @@ class ZoteroSemanticSearch:
         except Exception:
             pass
 
-    def _get_items_from_api(self,
-                            limit: int | None = None,
-                            include_fulltext: bool = False) -> list[dict[str, Any]]:
+    def _get_items_from_api(self, limit: int | None = None, include_fulltext: bool = False) -> list[dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
 
@@ -975,8 +1175,7 @@ class ZoteroSemanticSearch:
 
             # Filter out attachments and notes by default
             filtered_items = [
-                item for item in items
-                if item.get("data", {}).get("itemType") not in ["attachment", "note"]
+                item for item in items if item.get("data", {}).get("itemType") not in ["attachment", "note"]
             ]
 
             all_items.extend(filtered_items)
@@ -994,10 +1193,9 @@ class ZoteroSemanticSearch:
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
 
-    def _get_changed_items_from_api(self,
-                                    since_version: int,
-                                    include_fulltext: bool = False
-                                    ) -> tuple[list[dict[str, Any]], set[str]]:
+    def _get_changed_items_from_api(
+        self, since_version: int, include_fulltext: bool = False
+    ) -> tuple[list[dict[str, Any]], set[str]]:
         """Fetch only items changed in the Zotero library since a given version.
 
         Uses pyzotero's `item_versions(since=V)` to discover changed top-level
@@ -1047,11 +1245,13 @@ class ZoteroSemanticSearch:
 
         return changed_items, current_keys
 
-    def update_database(self,
-                       force_full_rebuild: bool = False,
-                       limit: int | None = None,
-                       extract_fulltext: bool = False,
-                       include_fulltext: bool | None = None) -> dict[str, Any]:
+    def update_database(
+        self,
+        force_full_rebuild: bool = False,
+        limit: int | None = None,
+        extract_fulltext: bool = False,
+        include_fulltext: bool | None = None,
+    ) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
 
@@ -1082,7 +1282,7 @@ class ZoteroSemanticSearch:
             "deleted_items": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
-            "duration": None
+            "duration": None,
         }
 
         # Guard against concurrent rebuilds: the MCP server auto-launches
@@ -1094,11 +1294,24 @@ class ZoteroSemanticSearch:
         acquired = lock_cm.__enter__()
         if not acquired:
             lock_cm.__exit__(None, None, None)
-            logger.warning(
-                "Another semantic-search update is already running "
-                "(lock held at %s); skipping this invocation.",
-                lock_path,
-            )
+            holder_pid, holder_alive = read_lock_holder(lock_path)
+            if holder_pid and not holder_alive:
+                logger.warning(
+                    "Update lock at %s is held by dead pid %s (stale). "
+                    "flock should have released it; set ZOTERO_MCP_FORCE_UPDATE=1 "
+                    "to bypass if this persists.",
+                    lock_path,
+                    holder_pid,
+                )
+            else:
+                logger.warning(
+                    "Another semantic-search update is already running "
+                    "(lock held at %s by pid %s); skipping this invocation. "
+                    "This is expected when the MCP server's background sync is "
+                    "active. Set ZOTERO_MCP_FORCE_UPDATE=1 to override.",
+                    lock_path,
+                    holder_pid if holder_pid else "unknown",
+                )
             stats["duration"] = "0:00:00"
             stats["skipped_reason"] = "another_update_in_progress"
             return stats
@@ -1123,10 +1336,7 @@ class ZoteroSemanticSearch:
             # fulltext only), not a test limit, and a known prior sync version.
             last_sync_version = self._load_last_sync_version() if not force_full_rebuild else 0
             use_incremental = (
-                not force_full_rebuild
-                and not extract_fulltext
-                and limit is None
-                and last_sync_version > 0
+                not force_full_rebuild and not extract_fulltext and limit is None and last_sync_version > 0
             )
 
             target_sync_version: int | None = None
@@ -1142,8 +1352,7 @@ class ZoteroSemanticSearch:
                 # No changes since last sync; skip ingest but still touch last_update
                 try:
                     sys.stderr.write(
-                        f"\nLibrary unchanged since last sync (version {last_sync_version}); "
-                        f"no items to reindex.\n"
+                        f"\nLibrary unchanged since last sync (version {last_sync_version}); no items to reindex.\n"
                     )
                 except Exception:
                     pass
@@ -1159,17 +1368,22 @@ class ZoteroSemanticSearch:
                     since_version=last_sync_version,
                     include_fulltext=include_fulltext_via_api,
                 )
-                # Delete collection entries that are no longer present in the library
+                # Delete collection entries that are no longer present in the
+                # library. Map any chunk ids (``<key>#<n>``) back to item keys
+                # so deletion works identically whether or not chunking is on.
                 try:
                     stored_ids = self.chroma_client.get_all_ids()
-                    to_delete = [k for k in (stored_ids - current_library_keys) if k]
-                    if to_delete:
-                        self.chroma_client.delete_documents(to_delete)
-                        stats["deleted_items"] = len(to_delete)
+                    stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
+                    to_delete_keys = [k for k in (stored_item_keys - current_library_keys) if k]
+                    if to_delete_keys:
+                        if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
+                            for k in to_delete_keys:
+                                self.chroma_client.delete_item_chunks(k)
+                        else:
+                            self.chroma_client.delete_documents(to_delete_keys)
+                        stats["deleted_items"] = len(to_delete_keys)
                         try:
-                            sys.stderr.write(
-                                f"\nDeleted {len(to_delete)} items no longer present in Zotero.\n"
-                            )
+                            sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
                         except Exception:
                             pass
                 except Exception as e:
@@ -1199,7 +1413,7 @@ class ZoteroSemanticSearch:
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
             # User-friendly progress reporting
-            total = stats['total_items'] = len(all_items)
+            total = stats["total_items"] = len(all_items)
             try:
                 sys.stderr.write(f"\nIndexing {total} items...\n\n")
                 sys.stderr.flush()
@@ -1213,7 +1427,7 @@ class ZoteroSemanticSearch:
             seen_items = 0
             _failed_docs = []  # Collect failures for end-of-run retry
             for i in range(0, len(all_items), batch_size):
-                batch = all_items[i:i + batch_size]
+                batch = all_items[i : i + batch_size]
 
                 # Show per-item progress within this batch
                 for item in batch:
@@ -1236,7 +1450,9 @@ class ZoteroSemanticSearch:
                 stats["skipped_items"] += batch_stats["skipped"]
                 stats["errors"] += batch_stats["errors"]
 
-                logger.info(f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})")
+                logger.info(
+                    f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
+                )
 
             # Retry any documents that failed during the main run
             if _failed_docs:
@@ -1247,6 +1463,7 @@ class ZoteroSemanticSearch:
                     pass
 
                 import time as _retry_time
+
                 _retry_time.sleep(1)  # Brief pause before retry
 
                 retry_ok = 0
@@ -1324,9 +1541,17 @@ class ZoteroSemanticSearch:
         """
         stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
 
-        documents = []
-        metadatas = []
-        ids = []
+        chunking = self._chunking_enabled
+        chunk_size = int(self._chunking_config.get("chunk_size", 1500))
+        overlap = int(self._chunking_config.get("overlap", 200))
+        max_chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
+
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+        ids: list[str] = []
+        # One entry per *item* successfully prepared (not per chunk) so add/
+        # update accounting stays item-granular regardless of chunking.
+        item_keys_order: list[str] = []
 
         for item in items:
             try:
@@ -1349,13 +1574,35 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
-                # Truncate to fit the configured embedding model's token limit
-                doc_text = self.chroma_client.truncate_text(doc_text)
+                if chunking:
+                    # Index one vector per overlapping passage so search can
+                    # return a grounded quote and long PDFs stay searchable
+                    # past the single-vector truncation limit.
+                    passages = split_into_passages(doc_text, chunk_size, overlap, max_chunks)
+                    if not passages:
+                        stats["skipped"] += 1
+                        continue
+                    n_chunks = len(passages)
+                    for ci, (chunk_text, c0, c1) in enumerate(passages):
+                        cmeta = dict(metadata)
+                        cmeta["parent_item_key"] = item_key
+                        cmeta["chunk_index"] = ci
+                        cmeta["n_chunks"] = n_chunks
+                        cmeta["char_start"] = c0
+                        cmeta["char_end"] = c1
+                        page = _page_for_offset(doc_text, c0)
+                        if page is not None:
+                            cmeta["page"] = page
+                        documents.append(self.chroma_client.truncate_text(chunk_text))
+                        metadatas.append(cmeta)
+                        ids.append(f"{item_key}#{ci}")
+                else:
+                    # Truncate to fit the configured embedding model's token limit
+                    documents.append(self.chroma_client.truncate_text(doc_text))
+                    metadatas.append(metadata)
+                    ids.append(item_key)
 
-                documents.append(doc_text)
-                metadatas.append(metadata)
-                ids.append(item_key)
-
+                item_keys_order.append(item_key)
                 stats["processed"] += 1
 
             except Exception as e:
@@ -1364,14 +1611,28 @@ class ZoteroSemanticSearch:
 
         # Add documents to ChromaDB if any
         if documents:
-            existing_ids = set()
+            # Which items already existed (drives added-vs-updated). When
+            # chunking, also clear an item's stale passages before re-adding so
+            # a shrinking document never leaves orphaned chunks behind.
+            existing_item_keys: set[str] = set()
             if not force_rebuild:
-                existing_ids = self.chroma_client.get_existing_ids(ids)
+                if chunking:
+                    probe_ids = [f"{k}#0" for k in item_keys_order]
+                    existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
+                    existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
+                    if hasattr(self.chroma_client, "delete_item_chunks"):
+                        for k in dict.fromkeys(item_keys_order):
+                            try:
+                                self.chroma_client.delete_item_chunks(k)
+                            except Exception as e:
+                                logger.debug(f"delete_item_chunks({k}) failed: {e}")
+                else:
+                    existing_item_keys = self.chroma_client.get_existing_ids(ids)
 
             try:
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
-                for doc_id in ids:
-                    if doc_id in existing_ids:
+                for k in item_keys_order:
+                    if k in existing_item_keys:
                         stats["updated"] += 1
                     else:
                         stats["added"] += 1
@@ -1393,10 +1654,7 @@ class ZoteroSemanticSearch:
 
         return stats
 
-    def search(self,
-               query: str,
-               limit: int = 10,
-               filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    def search(self, query: str, limit: int = 10, filters: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -1409,37 +1667,42 @@ class ZoteroSemanticSearch:
             Search results with Zotero item details
         """
         try:
-            # Over-fetch candidates when re-ranking is enabled
+            # Over-fetch candidates when re-ranking and/or chunking are on.
             reranker = self._get_reranker()
             fetch_limit = limit
+            if self._chunking_enabled:
+                # Passages are grouped back to items downstream, so fetch
+                # several chunks per desired item to still surface ~limit
+                # distinct papers.
+                fetch_limit = max(fetch_limit, limit * 4)
             if reranker:
                 multiplier = self._reranker_config.get("candidate_multiplier", 3)
-                fetch_limit = limit * multiplier
+                fetch_limit = max(fetch_limit, limit * multiplier)
 
             # Perform semantic search
-            results = self.chroma_client.search(
-                query_texts=[query],
-                n_results=fetch_limit,
-                where=filters
-            )
+            results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=filters)
 
-            # Re-rank results with cross-encoder if enabled
+            # Re-rank results with cross-encoder if enabled. With chunking we
+            # rerank ALL candidates (grouping to `limit` items happens in
+            # enrichment); without chunking we keep the historical top-k=limit.
             if reranker and results.get("documents") and results["documents"][0]:
                 documents = results["documents"][0]
-                ranked_indices = reranker.rerank(query, documents, top_k=limit)
+                top_k = len(documents) if self._chunking_enabled else limit
+                ranked_indices = reranker.rerank(query, documents, top_k=top_k)
                 for key in ["ids", "distances", "documents", "metadatas"]:
                     if results.get(key) and results[key][0]:
                         results[key][0] = [results[key][0][i] for i in ranked_indices]
 
-            # Enrich results with full Zotero item data
-            enriched_results = self._enrich_search_results(results, query)
+            # Enrich results with full Zotero item data, grouping passages back
+            # to their parent items and capping at `limit` distinct papers.
+            enriched_results = self._enrich_search_results(results, query, limit)
 
             return {
                 "query": query,
                 "limit": limit,
                 "filters": filters,
                 "results": enriched_results,
-                "total_found": len(enriched_results)
+                "total_found": len(enriched_results),
             }
 
         except Exception as e:
@@ -1450,12 +1713,23 @@ class ZoteroSemanticSearch:
                 "filters": filters,
                 "results": [],
                 "total_found": 0,
-                "error": str(e)
+                "error": str(e),
             }
 
-    def _enrich_search_results(self, chroma_results: dict[str, Any], query: str) -> list[dict[str, Any]]:
-        """Enrich ChromaDB results with full Zotero item data."""
-        enriched = []
+    def _enrich_search_results(
+        self, chroma_results: dict[str, Any], query: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Enrich ChromaDB results with full Zotero item data.
+
+        Chunk-aware: when the collection is indexed as passages, ids look like
+        ``<item_key>#<n>``. Results are grouped back to their parent item — the
+        first (best-ranked) passage per item wins — and capped at ``limit``
+        distinct items. For every hit a grounded ``matched_passage`` quote and,
+        when available, the passage's character offset and page are attached so
+        callers can cite precisely. Item-level collections (ids without ``#``)
+        flow through unchanged.
+        """
+        enriched: list[dict[str, Any]] = []
 
         if not chroma_results.get("ids") or not chroma_results["ids"][0]:
             return enriched
@@ -1465,33 +1739,44 @@ class ZoteroSemanticSearch:
         documents = chroma_results.get("documents", [[]])[0]
         metadatas = chroma_results.get("metadatas", [[]])[0]
 
-        for i, item_key in enumerate(ids):
+        seen_items: set[str] = set()
+        for i, raw_id in enumerate(ids):
+            item_key = raw_id.split("#", 1)[0]
+            if item_key in seen_items:
+                continue
+            seen_items.add(item_key)
+
+            distance = distances[i] if i < len(distances) else None
+            document = documents[i] if i < len(documents) else ""
+            meta = metadatas[i] if i < len(metadatas) else {}
+
+            passage, passage_offset = best_snippet(query, document)
+
+            enriched_result: dict[str, Any] = {
+                "item_key": item_key,
+                "similarity_score": (1 - distance) if distance is not None else 0,
+                "matched_text": document,
+                "matched_passage": passage,
+                "metadata": meta if isinstance(meta, dict) else {},
+                "query": query,
+            }
+            # Passage provenance — present only on a chunk-indexed collection.
+            if isinstance(meta, dict):
+                for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page"):
+                    if mk in meta:
+                        enriched_result[mk] = meta[mk]
+            if "char_start" not in enriched_result and passage_offset:
+                enriched_result["passage_offset"] = passage_offset
+
             try:
-                # Get full item data from Zotero
-                zotero_item = self.zotero_client.item(item_key)
-
-                enriched_result = {
-                    "item_key": item_key,
-                    "similarity_score": 1 - distances[i] if i < len(distances) else 0,
-                    "matched_text": documents[i] if i < len(documents) else "",
-                    "metadata": metadatas[i] if i < len(metadatas) else {},
-                    "zotero_item": zotero_item,
-                    "query": query
-                }
-
-                enriched.append(enriched_result)
-
+                enriched_result["zotero_item"] = self.zotero_client.item(item_key)
             except Exception as e:
                 logger.error(f"Error enriching result for item {item_key}: {e}")
-                # Include basic result even if enrichment fails
-                enriched.append({
-                    "item_key": item_key,
-                    "similarity_score": 1 - distances[i] if i < len(distances) else 0,
-                    "matched_text": documents[i] if i < len(documents) else "",
-                    "metadata": metadatas[i] if i < len(metadatas) else {},
-                    "query": query,
-                    "error": f"Could not fetch full item data: {e}"
-                })
+                enriched_result["error"] = f"Could not fetch full item data: {e}"
+
+            enriched.append(enriched_result)
+            if limit and len(enriched) >= limit:
+                break
 
         return enriched
 

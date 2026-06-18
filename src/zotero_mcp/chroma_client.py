@@ -6,10 +6,10 @@ for semantic search over Zotero libraries.
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
-import logging
 
 try:
     import chromadb
@@ -588,6 +588,20 @@ class ChromaClient:
         except Exception as e:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
             raise
+
+    def delete_item_chunks(self, item_key: str) -> None:
+        """Delete all passage chunks belonging to one item (chunked collections).
+
+        Passage chunks carry ``parent_item_key`` in their metadata; deleting by
+        that key clears every ``<item_key>#<n>`` entry for the item before its
+        chunks are re-upserted, so a document that shrank to fewer passages
+        never leaves orphaned chunks behind. No-op-safe on item-level
+        collections (nothing matches the filter).
+        """
+        try:
+            self.collection.delete(where={"parent_item_key": item_key})
+        except Exception as e:
+            logger.debug(f"delete_item_chunks({item_key}) failed: {e}")
 
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
