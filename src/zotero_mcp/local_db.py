@@ -658,6 +658,18 @@ class LocalZoteroReader:
         )
         return cursor.fetchone()[0]
 
+    def get_all_item_keys(self) -> set[str]:
+        """
+        Get the keys of every item in the database, regardless of type.
+
+        Used to verify that the sqlite snapshot is not lagging behind the
+        Zotero API (an `immutable=1` read cannot see rows that are still
+        in an un-checkpointed WAL file).
+        """
+        conn = self._get_connection()
+        rows = conn.execute("SELECT key FROM items").fetchall()
+        return {row[0] for row in rows}
+
     def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
