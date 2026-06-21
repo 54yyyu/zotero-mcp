@@ -383,7 +383,7 @@ zotero-cli ann search "highlight text"
 # Add items
 zotero-cli add doi 10.1038/s41586-021-03819-2
 zotero-cli add url https://arxiv.org/abs/2301.00001
-zotero-cli add file /path/to/paper.pdf
+zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
 
 # Collections and tags
 zotero-cli coll list                          # list collections (short alias)
