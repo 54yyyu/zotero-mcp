@@ -7,9 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-22
+
+### Added
+- **Passage-level chunking for semantic search** (opt-in via `semantic_search.chunking`) — each item is indexed as overlapping passages with char/page provenance, so search returns a grounded snippet and long PDFs stay searchable past the single-vector truncation limit. Off by default; enabling it needs a one-time `update-db --force-rebuild` (#350).
+- **Agentic research tools** (#350):
+  - `zotero_find_related_papers` — walks the OpenAlex citation graph (references + citing works) and flags each result as already-in-library or a gap.
+  - `zotero_library_coverage` — audits which items lack a PDF, with DOIs ready for the OA download cascade.
+  - `zotero_synthesize_annotations` — per-paper digest of highlights and notes.
+  - `zotero_export_bibliography` — CSL-rendered bibliography / citations / BibTeX via Zotero's own engine.
+- **MCP prompts and resources** — `literature_review`, `synthesize_my_notes`, `find_contradicting_evidence`, `expand_from_paper`; resources `zotero://collections`, `zotero://items/{key}`, `zotero://collections/{key}/items` (#350).
+- **`zotero_batch_update_extra`** — batch upsert/remove of `Key: value` lines in the Extra field across many items (#232, #334).
+- **Collection resolution in all add paths** — collection specs (key, name, or parent/child path) are resolved and validated across every add path and `manage_collections`; an unknown or ambiguous spec fails the add early with suggestions instead of leaving an unfiled item (#336, #340).
+- **Idempotent adds** — `if_exists=duplicate|file|skip`: re-adding converges (files into missing collections, adds missing tags) instead of duplicating. MCP default stays `duplicate`; the CLI defaults to `file` (#337, #341).
+- **`zotero-cli add isbn|bibtex|csl-json` subcommands**, with stdin via `-` (#338, #342).
+- **Ollama embedding backend** for semantic search (`nomic-embed-text`, `bge-m3`) (#349).
+- **OpenAI Batch API embedding indexing** — submit / status / import async embedding jobs for cheaper large-library indexing (#346).
+- **OpenAI embedding sub-batching and rate limiting** — `embedding_config.request_batch_size` (default 64, for stricter OpenAI-compatible providers) and an optional `embedding_config.rate_limit_rps` per-request throttle for 429 safety (#261, #307, #356).
+- **`citation_key` on `zotero_update_item`** — writes the native `citationKey` field (#320, #321).
+- **`ZOTERO_WEBDAV_TIMEOUT`** env var to tune the WebDAV upload read timeout (#344, #345).
+- Standalone PDF attachments now surface in `zotero_get_collection_items` (#224).
+
 ### Fixed
-- `scite_check_retractions` and Scite enrichment now reach the `/papers` endpoint correctly. `get_papers_batch` POSTed a `{"dois": [...]}` object, but the endpoint requires a bare JSON array and returns HTTP 400 ("Input should be a valid list") for the object form — which broke retraction checks entirely and silently dropped editorial notices from `scite_enrich_search`.
-- Scite lookups are now case-insensitive. Scite lowercases DOI keys in its `/papers` and `/tallies` responses, so retractions and tallies on DOIs containing uppercase characters (e.g. `10.1016/S0140-6736(97)11096-0`) were missed, producing a false "all clear".
+- Incremental semantic sync no longer advances the watermark when the immutable sqlite snapshot lags the live API (un-checkpointed WAL), which previously made newly-added items be skipped permanently (#292, #333).
+- `update-db --fulltext` no longer caps each item at a single truncated vector; passage chunking indexes full text past the embedding limit (#290).
+- `zotero-cli add file` no longer raises `TypeError` from a phantom `parent_key`; exposes `--title` / `--item-type` (#335, #339).
+- `zotero_read_pdf_pages` routes through the shared multi-source download (local → WebDAV → cloud), so WebDAV-backed PDFs work (#351).
+- Scite reaches the `/papers` endpoint correctly — it now sends a bare JSON array instead of a `{"dois": [...]}` object (which returned HTTP 400 and broke retraction checks), and matches Scite's lowercased DOI keys so uppercase DOIs (e.g. `10.1016/S0140-6736(97)11096-0`) aren't missed (#331).
+- Semantic search reliability: deterministic embeddings via explicit `encoding_format="float"` (fixes intermittent OpenRouter/Gemini "No embedding data received"); `db-status` no longer loads an embedding model or holds the global API lock (#348).
 
 ## [0.5.0] - 2026-06-08
 
