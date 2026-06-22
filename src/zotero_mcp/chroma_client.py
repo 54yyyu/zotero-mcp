@@ -638,6 +638,29 @@ class ChromaClient:
             logger.error(f"Error upserting documents to ChromaDB: {e}")
             raise
 
+    def upsert_embeddings(self,
+                         documents: list[str],
+                         metadatas: list[dict[str, Any]],
+                         ids: list[str],
+                         embeddings: list[list[float]]) -> None:
+        """
+        Upsert documents with precomputed embeddings.
+
+        Used by OpenAI Batch API imports so ChromaDB stores the vectors
+        returned asynchronously without calling the realtime embeddings API.
+        """
+        try:
+            self.collection.upsert(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids,
+                embeddings=embeddings,
+            )
+            logger.info(f"Upserted {len(documents)} precomputed embeddings to ChromaDB collection")
+        except Exception as e:
+            logger.error(f"Error upserting precomputed embeddings to ChromaDB: {e}")
+            raise
+
     def search(self,
                query_texts: list[str],
                n_results: int = 10,
