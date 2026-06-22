@@ -153,9 +153,12 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
         db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
+        openai_batch = existing_semantic_config.get("openai_batch", {}).get("enabled", False)
         print("Found existing semantic search configuration:")
         print(f"  - Embedding model: {model}")
         print(f"  - Embedding model name: {name}")
+        if model == "openai":
+            print(f"  - OpenAI Batch API updates: {'enabled' if openai_batch else 'disabled'}")
         print(f"  - Update frequency: {update_freq}")
         print(f"  - Zotero database path: {db_path}")
         print("You can keep it or change it.")
@@ -218,6 +221,26 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
             print(f"Using custom OpenAI base URL: {base_url}")
         else:
             print("Using default OpenAI base URL")
+
+        existing_openai_batch = existing_semantic_config.get("openai_batch", {}) if existing_semantic_config else {}
+        if existing_semantic_config and existing_semantic_config.get("embedding_model") == "openai":
+            default_batch_enabled = bool(existing_openai_batch.get("enabled", False))
+        else:
+            default_batch_enabled = True
+        default_hint = "Y/n" if default_batch_enabled else "y/N"
+        print("\nOpenAI indexing mode:")
+        print("Batch API lowers costs for database updates, but results are imported later after the batch completes.")
+        print("Realtime API indexes immediately, but uses standard synchronous embedding pricing.")
+        raw = input(f"Use OpenAI Batch API for database updates? [{default_hint}]: ").strip().lower()
+        if raw == "":
+            batch_enabled = default_batch_enabled
+        else:
+            batch_enabled = raw in ["y", "yes"]
+        config["openai_batch"] = {"enabled": batch_enabled}
+        if batch_enabled:
+            print("OpenAI Batch API will be used by default for update-db.")
+        else:
+            print("Realtime OpenAI embeddings will be used by default for update-db.")
 
     elif choice == "3":
         config["embedding_model"] = "gemini"

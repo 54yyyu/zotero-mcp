@@ -22,6 +22,9 @@ import sys
 
 # Reuse environment setup from the original CLI module
 from zotero_mcp.cli import (
+    _print_batch_import,
+    _print_batch_status,
+    _print_update_stats,
     obfuscate_config_for_display,
     setup_zotero_environment,
 )
@@ -409,6 +412,9 @@ def cmd_db(args):
         if db_path:
             _save_zotero_db_path_to_config(config_path, db_path)
         search = create_semantic_search(str(config_path), db_path=db_path)
+        if getattr(args, "openai_batch", None) is True and search.chroma_client.embedding_model != "openai":
+            print("Error: --openai-batch requires ZOTERO_EMBEDDING_MODEL=openai", file=sys.stderr)
+            sys.exit(1)
         fulltext = getattr(args, "fulltext", False)
         if fulltext:
             from zotero_mcp.utils import is_local_mode
@@ -419,24 +425,29 @@ def cmd_db(args):
             force_full_rebuild=args.force_rebuild,
             limit=args.limit,
             extract_fulltext=fulltext,
+            use_openai_batch=getattr(args, "openai_batch", None),
         )
-        print("Database update completed:")
-        print(f"- Total items: {stats.get('total_items', 0)}")
-        print(f"- Processed: {stats.get('processed_items', 0)}")
-        print(f"- Added: {stats.get('added_items', 0)}")
-        print(f"- Updated: {stats.get('updated_items', 0)}")
-        print(f"- Skipped: {stats.get('skipped_items', 0)}")
-        print(f"- Errors: {stats.get('errors', 0)}")
-        print(f"- Duration: {stats.get('duration', 'Unknown')}")
+        _print_update_stats(stats)
         if stats.get("error"):
             print(f"Error: {stats['error']}", file=sys.stderr)
             sys.exit(1)
+
+    elif args.subcommand == "batch-status":
+        search = create_semantic_search(str(config_path))
+        status = search.get_openai_batch_status(batch_ids=getattr(args, "batch_id", None))
+        _print_batch_status(status)
+
+    elif args.subcommand == "batch-import":
+        search = create_semantic_search(str(config_path))
+        stats = search.import_openai_batch(batch_ids=getattr(args, "batch_id", None))
+        _print_batch_import(stats)
 
     elif args.subcommand == "status":
         search = create_semantic_search(str(config_path))
         status = search.get_database_status()
         ci = status.get("collection_info", {})
         uc = status.get("update_config", {})
+        bc = status.get("openai_batch", {})
         print("=== Semantic Search Database Status ===")
         print(f"Collection: {ci.get('name', 'Unknown')}")
         print(f"Document count: {ci.get('count', 0)}")
@@ -447,6 +458,7 @@ def cmd_db(args):
         print(f"- Frequency: {uc.get('update_frequency', 'manual')}")
         print(f"- Last update: {uc.get('last_update', 'Never')}")
         print(f"- Should update: {status.get('should_update', False)}")
+        print(f"- OpenAI Batch API: {'active' if bc.get('active') else 'inactive'}")
         if ci.get("error"):
             print(f"\nError: {ci['error']}")
 
@@ -783,6 +795,16 @@ def build_parser() -> argparse.ArgumentParser:
     dbu.add_argument("--fulltext", action="store_true")
     dbu.add_argument("--config-path")
     dbu.add_argument("--db-path")
+    dbu_batch = dbu.add_mutually_exclusive_group()
+    dbu_batch.add_argument("--openai-batch", dest="openai_batch", action="store_true")
+    dbu_batch.add_argument("--no-openai-batch", dest="openai_batch", action="store_false")
+    dbu.set_defaults(openai_batch=None)
+    dbbs = db_sub.add_parser("batch-status")
+    dbbs.add_argument("--batch-id", action="append")
+    dbbs.add_argument("--config-path")
+    dbbi = db_sub.add_parser("batch-import")
+    dbbi.add_argument("--batch-id", action="append")
+    dbbi.add_argument("--config-path")
     dbs = db_sub.add_parser("status")
     dbs.add_argument("--config-path")
     dbi = db_sub.add_parser("inspect")
