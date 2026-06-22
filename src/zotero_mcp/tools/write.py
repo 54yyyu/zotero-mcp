@@ -375,6 +375,216 @@ def batch_update_tags(
         return f"Error in batch tag update: {str(e)}"
 
 
+def _apply_extra_edits(
+    extra: str,
+    set_keys: dict[str, str],
+    remove_keys: list[str],
+    replace: bool,
+) -> tuple[str, bool]:
+    """Apply `Key: value` line edits to an Extra field value.
+
+    Extra is treated as newline-separated lines; lines of the form
+    "Key: value" are matched by the text before the first colon,
+    case-insensitively. Free-form lines (no colon) are never touched.
+
+    Returns:
+        (new_extra, changed)
+    """
+    def line_key(line: str) -> str | None:
+        head, sep, _ = line.partition(":")
+        return head.strip().lower() if sep else None
+
+    original = extra or ""
+
+    if replace:
+        new_extra = "\n".join(f"{k}: {v}" for k, v in set_keys.items())
+        return new_extra, new_extra != original
+
+    lines = original.splitlines()
+
+    if remove_keys:
+        remove = {k.strip().lower() for k in remove_keys if k.strip()}
+        lines = [ln for ln in lines if line_key(ln) not in remove]
+
+    for key, value in (set_keys or {}).items():
+        target = key.strip().lower()
+        new_line = f"{key}: {value}"
+        out = []
+        replaced = False
+        for ln in lines:
+            if line_key(ln) == target:
+                # Replace the first matching line in place; drop duplicates.
+                if not replaced:
+                    out.append(new_line)
+                    replaced = True
+            else:
+                out.append(ln)
+        if not replaced:
+            out.append(new_line)
+        lines = out
+
+    new_extra = "\n".join(lines)
+    return new_extra, new_extra != original
+
+
+@mcp.tool(
+    name="zotero_batch_update_extra",
+    description=(
+        "Upsert and/or remove `Key: value` lines in the Extra field across "
+        "multiple items in one call — the batch counterpart of "
+        "zotero_update_item for Extra-field metadata (Better BibTeX "
+        "citation keys, tex.* fields, CSL variables). "
+        "item_keys: list of item keys to edit (or a JSON-encoded list "
+        "string). set_keys: mapping of key→value lines to upsert (or a "
+        "JSON object string); an existing line with the same key is "
+        "replaced in place, otherwise the line is appended. "
+        "remove_keys: list of key names whose lines are deleted. "
+        "replace: when true, rebuild Extra from set_keys only, dropping "
+        "every other line (incompatible with remove_keys). "
+        "Keys are matched by their `key:` prefix, case-insensitively; "
+        "free-form lines without a colon are preserved. Items needing no "
+        "change, attachments/notes/annotations, and unknown keys are "
+        "skipped (counted in the summary). "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. "
+        "Example: zotero_batch_update_extra(item_keys=['ABCD1234', "
+        "'EFGH5678'], set_keys={'tex.otscore': '2'}, "
+        "remove_keys=['tex.draft'])."
+    )
+)
+@with_zotero_api_lock
+def batch_update_extra(
+    item_keys: list[str] | str | None = None,
+    set_keys: dict[str, str] | str | None = None,
+    remove_keys: list[str] | str | None = None,
+    replace: bool | str = False,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Batch update Extra-field key lines across multiple items.
+
+    Args:
+        item_keys: Item keys to edit (list or JSON-encoded list string)
+        set_keys: Mapping of key→value lines to upsert (dict or JSON object string)
+        remove_keys: Key names whose lines are deleted (list or JSON string)
+        replace: When true, rebuild Extra from set_keys only
+        ctx: MCP context
+
+    Returns:
+        Summary of the batch update
+    """
+    try:
+        try:
+            item_keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+            remove_keys = _helpers._normalize_str_list_input(remove_keys, "remove_keys")
+        except ValueError as validation_error:
+            return f"Error: {validation_error}"
+
+        if not item_keys:
+            return "Error: Must provide item_keys to update"
+
+        if isinstance(set_keys, str):
+            try:
+                set_keys = json.loads(set_keys)
+            except json.JSONDecodeError:
+                return "Error: set_keys must be a mapping of key→value strings"
+        if set_keys is None:
+            set_keys = {}
+        if not isinstance(set_keys, dict):
+            return "Error: set_keys must be a mapping of key→value strings"
+        set_keys = {
+            str(k).strip(): str(v).strip()
+            for k, v in set_keys.items()
+            if str(k).strip()
+        }
+
+        if isinstance(replace, str):
+            replace = replace.strip().lower() in ("true", "1", "yes")
+        replace = bool(replace)
+
+        if not set_keys and not remove_keys and not replace:
+            return "Error: Must specify set_keys, remove_keys, or replace"
+        if replace and remove_keys:
+            return "Error: replace=True is incompatible with remove_keys"
+
+        ctx.info(f"Batch updating Extra field for {len(item_keys)} item(s)")
+        zot = _client.get_zotero_client()
+
+        try:
+            _, write_zot = _helpers._get_write_client(ctx)
+        except ValueError as e:
+            return str(e)
+
+        updated_count = 0
+        skipped_count = 0
+
+        for item_key in item_keys:
+            try:
+                item = zot.item(item_key)
+            except Exception as e:
+                ctx.error(f"Failed to fetch item {item_key}: {str(e)}")
+                skipped_count += 1
+                continue
+            if not item:
+                skipped_count += 1
+                continue
+
+            if item["data"].get("itemType") in ("attachment", "note", "annotation"):
+                skipped_count += 1
+                continue
+
+            extra = item["data"].get("extra", "") or ""
+            new_extra, changed = _apply_extra_edits(
+                extra, set_keys, remove_keys, replace
+            )
+            if not changed:
+                skipped_count += 1
+                continue
+
+            try:
+                # If writing via web API, re-fetch the item from web to get
+                # the correct version number for the update
+                if write_zot is not zot:
+                    web_item = write_zot.item(item_key)
+                    web_item["data"]["extra"] = new_extra
+                    result = write_zot.update_item(web_item)
+                else:
+                    item["data"]["extra"] = new_extra
+                    result = write_zot.update_item(item)
+
+                if _helpers._handle_write_response(result, ctx):
+                    updated_count += 1
+                else:
+                    ctx.error(f"Update may have failed for item {item_key}: {result}")
+                    skipped_count += 1
+            except Exception as e:
+                ctx.error(f"Failed to update item {item_key}: {str(e)}")
+                skipped_count += 1
+
+        response = ["# Batch Extra Update Results", ""]
+        response.append(f"Items processed: {len(item_keys)}")
+        response.append(f"Items updated: {updated_count}")
+        response.append(f"Items skipped: {skipped_count}")
+
+        if set_keys:
+            response.append("\n## Keys Set")
+            for key, value in set_keys.items():
+                response.append(f"- `{key}: {value}`")
+        if remove_keys:
+            response.append("\n## Keys Removed")
+            for key in remove_keys:
+                response.append(f"- `{key}`")
+        if replace:
+            response.append("\nExtra field fully replaced from set_keys.")
+
+        return "\n".join(response)
+
+    except Exception as e:
+        ctx.error(f"Error in batch extra update: {str(e)}")
+        return f"Error in batch extra update: {str(e)}"
+
+
 @mcp.tool(
     name="zotero_create_collection",
     description=(
