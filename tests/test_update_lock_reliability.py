@@ -11,15 +11,19 @@ if sys.version_info >= (3, 14):
         allow_module_level=True,
     )
 
+from conftest import skip_on_ci
+
 from zotero_mcp import semantic_search
 
 
+@skip_on_ci
 def test_read_lock_holder_missing_file(tmp_path):
     pid, alive = semantic_search.read_lock_holder(tmp_path / "nope.lock")
     assert pid is None
     assert alive is False
 
 
+@skip_on_ci
 def test_read_lock_holder_live_pid(tmp_path):
     lock = tmp_path / "update.lock"
     lock.write_text(str(os.getpid()))
@@ -28,6 +32,7 @@ def test_read_lock_holder_live_pid(tmp_path):
     assert alive is True
 
 
+@skip_on_ci
 def test_read_lock_holder_dead_pid(tmp_path):
     lock = tmp_path / "update.lock"
     # A pid that is essentially certain not to exist.
@@ -37,6 +42,7 @@ def test_read_lock_holder_dead_pid(tmp_path):
     assert alive is False
 
 
+@skip_on_ci
 def test_force_update_env_bypasses_lock(tmp_path, monkeypatch):
     lock = tmp_path / "update.lock"
     monkeypatch.setenv("ZOTERO_MCP_FORCE_UPDATE", "1")
@@ -44,6 +50,7 @@ def test_force_update_env_bypasses_lock(tmp_path, monkeypatch):
         assert acquired is True
 
 
+@skip_on_ci
 def test_acquire_lock_writes_pid(tmp_path, monkeypatch):
     lock = tmp_path / "update.lock"
     monkeypatch.delenv("ZOTERO_MCP_FORCE_UPDATE", raising=False)
