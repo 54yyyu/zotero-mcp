@@ -339,6 +339,30 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
     # behavior. The flag is ignored in local mode (ZOTERO_LOCAL=true uses
     # local sqlite extraction).
     config.setdefault("include_fulltext", True)
+    # Discoverable defaults for the two retrieval-quality knobs (both off so
+    # the base experience is unchanged). Preserve any existing user values.
+    #   reranker: local cross-encoder re-rank of candidates for higher
+    #             precision (needs sentence-transformers; adds a model load).
+    #   chunking: index each item as overlapping passages so search returns
+    #             grounded quotes and long PDFs stay searchable. Enabling it
+    #             requires a one-time `update-db --force-rebuild`.
+    if existing_semantic_config and existing_semantic_config.get("reranker"):
+        config["reranker"] = existing_semantic_config["reranker"]
+    else:
+        config.setdefault("reranker", {
+            "enabled": False,
+            "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "candidate_multiplier": 3,
+        })
+    if existing_semantic_config and existing_semantic_config.get("chunking"):
+        config["chunking"] = existing_semantic_config["chunking"]
+    else:
+        config.setdefault("chunking", {
+            "enabled": False,
+            "chunk_size": 1500,
+            "overlap": 200,
+            "max_chunks_per_item": 20,
+        })
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
 

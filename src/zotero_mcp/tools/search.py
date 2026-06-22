@@ -881,19 +881,39 @@ def semantic_search(
             similarity_score = result.get("similarity_score", 0)
             zotero_item = result.get("zotero_item", {})
 
+            # Prefer the grounded passage — the window of the document that
+            # actually overlaps the query — over a blind head-truncation, so
+            # the agent gets a citable quote rather than the abstract's opening.
+            passage = result.get("matched_passage") or result.get("matched_text", "")
+            snippet = passage[:400] + "..." if len(passage) > 400 else passage
+
+            # Provenance for citing: page (when the index carries page breaks),
+            # else which passage of how many, else an approximate char offset.
+            loc_bits = []
+            if (page := result.get("page")) is not None:
+                loc_bits.append(f"p. {page}")
+            if (ci := result.get("chunk_index")) is not None and (nc := result.get("n_chunks")):
+                loc_bits.append(f"passage {ci + 1}/{nc}")
+            elif off := result.get("char_start", result.get("passage_offset")):
+                loc_bits.append(f"char ~{off}")
+
             if zotero_item:
-                extra = {"Similarity Score": f"{similarity_score:.3f}"}
-                matched_text = result.get("matched_text", "")
-                if matched_text:
-                    snippet = matched_text[:300] + "..." if len(matched_text) > 300 else matched_text
-                    extra["Matched Content"] = snippet
+                extra = {"Relevance": f"{similarity_score:.3f}"}
+                if loc_bits:
+                    extra["Location"] = ", ".join(loc_bits)
+                if snippet:
+                    extra["Matched Passage"] = snippet
                 # Override key from result since it may differ from item["key"]
                 zotero_item.setdefault("key", result.get("item_key", ""))
                 output.extend(_utils.format_item_result(zotero_item, index=i, extra_fields=extra))
             else:
                 # Fallback if full Zotero item not available
                 output.append(f"## {i}. Item {result.get('item_key', 'Unknown')}")
-                output.append(f"**Similarity Score:** {similarity_score:.3f}")
+                output.append(f"**Relevance:** {similarity_score:.3f}")
+                if loc_bits:
+                    output.append(f"**Location:** {', '.join(loc_bits)}")
+                if snippet:
+                    output.append(f"**Matched Passage:** {snippet}")
                 if error := result.get("error"):
                     output.append(f"**Error:** {error}")
                 output.append("")
