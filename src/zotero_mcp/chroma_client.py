@@ -41,10 +41,23 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 
     max_input_tokens = 8000  # text-embedding-3-* limit is 8191
 
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None, base_url: str | None = None):
+    # Per-request input-list cap. OpenAI allows up to 2048 items but many
+    # OpenAI-compatible providers are stricter (SiliconFlow is 64 for
+    # /v1/embeddings, Mistral is 512, etc.). Defaulting to 64 keeps the code
+    # portable; real OpenAI users can raise embedding_config.request_batch_size.
+    DEFAULT_REQUEST_BATCH_SIZE = 64
+
+    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
+                 base_url: str | None = None, request_batch_size: int | None = None,
+                 rate_limit_rps: float | None = None):
+        import threading
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
+        self.rate_limit_rps: float | None = float(rate_limit_rps) if rate_limit_rps else None
+        self._rate_lock = threading.Lock()
+        self._last_request_ts: float = 0.0
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
 
@@ -62,7 +75,12 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         return "openai"
 
     def get_config(self) -> dict[str, Any]:
-        return {"model_name": self.model_name, "base_url": self.base_url}
+        return {
+            "model_name": self.model_name,
+            "base_url": self.base_url,
+            "request_batch_size": self.request_batch_size,
+            "rate_limit_rps": self.rate_limit_rps,
+        }
 
     @staticmethod
     def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
@@ -70,7 +88,26 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             model_name=config.get("model_name", "text-embedding-3-small"),
             api_key=config.get("api_key"),
             base_url=config.get("base_url"),
+            request_batch_size=config.get("request_batch_size"),
+            rate_limit_rps=config.get("rate_limit_rps"),
         )
+
+    def _wait_for_rate_limit(self) -> None:
+        """Sleep as needed so successive embedding requests stay under
+        ``rate_limit_rps``. Applied per HTTP request (including each sub-batch)
+        so rate-limited providers see a steady cadence regardless of how many
+        inputs the caller passed. The lock keeps parallel threads honest.
+        """
+        rps = self.rate_limit_rps
+        if not rps or rps <= 0:
+            return
+        import time
+        with self._rate_lock:
+            min_interval = 1.0 / rps
+            wait = min_interval - (time.monotonic() - self._last_request_ts)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_request_ts = time.monotonic()
 
     def __call__(self, input: Documents) -> Embeddings:
         """Generate embeddings using the OpenAI-compatible API.
@@ -82,12 +119,18 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         float makes every OpenAI-compatible backend, native OpenAI included,
         respond deterministically.
         """
-        response = self.client.embeddings.create(
-            model=self.model_name,
-            input=input,
-            encoding_format="float",
-        )
-        return [data.embedding for data in response.data]
+        batch_size = self.request_batch_size or self.DEFAULT_REQUEST_BATCH_SIZE
+        vecs: Embeddings = []
+        for i in range(0, len(input), batch_size):
+            sub = input[i:i + batch_size]
+            self._wait_for_rate_limit()
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=sub,
+                encoding_format="float",
+            )
+            vecs.extend(data.embedding for data in response.data)
+        return vecs
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a query string. No special handling needed for OpenAI."""
@@ -423,7 +466,11 @@ class ChromaClient:
             model_name = self.embedding_config.get("model_name", "text-embedding-3-small")
             api_key = self.embedding_config.get("api_key")
             base_url = self.embedding_config.get("base_url")
-            return OpenAIEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
+            return OpenAIEmbeddingFunction(
+                model_name=model_name, api_key=api_key, base_url=base_url,
+                request_batch_size=self.embedding_config.get("request_batch_size"),
+                rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
+            )
 
         elif self.embedding_model == "gemini":
             model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
