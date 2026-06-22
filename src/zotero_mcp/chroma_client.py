@@ -73,10 +73,19 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         )
 
     def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using OpenAI API."""
+        """Generate embeddings using the OpenAI-compatible API.
+
+        ``encoding_format="float"`` is set explicitly. The OpenAI SDK otherwise
+        negotiates base64 by default, which OpenRouter's Gemini embedding
+        providers (e.g. ``google/gemini-embedding-001``) do not return reliably —
+        the SDK then raises "No embedding data received" intermittently. Forcing
+        float makes every OpenAI-compatible backend, native OpenAI included,
+        respond deterministically.
+        """
         response = self.client.embeddings.create(
             model=self.model_name,
-            input=input
+            input=input,
+            encoding_format="float",
         )
         return [data.embedding for data in response.data]
 
@@ -689,9 +698,20 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
         except Exception as e:
             logger.warning(f"Error loading config from {config_path}: {e}")
 
-    # Load configuration from environment variables
+    # Pick the embedding model. config.json is the richer, authoritative source
+    # (it also carries the matching api_key / base_url / model_name), so it wins
+    # over the ZOTERO_EMBEDDING_MODEL env var whenever it names a concrete model.
+    # The env var only fills the gap when config.json is absent or left at the
+    # "default" placeholder — which is the normal Claude Desktop case.
+    #
+    # This deliberately guards against a stale env value silently downgrading an
+    # explicitly configured provider: Claude Desktop passes its server `env`
+    # block on every launch and can rewrite that file on its own, so a leftover
+    # ZOTERO_EMBEDDING_MODEL=default there would otherwise override a Gemini/
+    # OpenAI config.json and break search with an opaque embedding-dimension
+    # mismatch against the persisted collection.
     env_embedding_model = os.getenv("ZOTERO_EMBEDDING_MODEL")
-    if env_embedding_model:
+    if env_embedding_model and config.get("embedding_model", "default") in (None, "default"):
         config["embedding_model"] = env_embedding_model
 
     # Merge embedding config from environment (config.json wins, env fills gaps).
@@ -738,3 +758,74 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
         embedding_model=config["embedding_model"],
         embedding_config=config["embedding_config"]
     )
+
+
+class _NoEmbeddingFunction(EmbeddingFunction):
+    """Placeholder embedding function used for read-only status reads.
+
+    Passing an explicit embedding function to ``get_collection`` stops ChromaDB
+    from reconstructing the collection's persisted embedding function — which,
+    for the default backend, eagerly downloads the ~80MB ONNX MiniLM model.
+    Counting rows never embeds anything, so this is never actually called; it
+    raises if it ever is, to make misuse loud rather than silently wrong.
+    """
+
+    def __call__(self, input: Documents) -> Embeddings:  # pragma: no cover - never invoked
+        raise RuntimeError("embedding is unavailable in status-only mode")
+
+
+def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
+    """Read ChromaDB collection stats WITHOUT loading an embedding model.
+
+    The full :class:`ChromaClient` constructor builds the embedding function,
+    which for the default backend downloads the ONNX MiniLM model on first use —
+    turning a read-only status check into a multi-minute (or network-blocked,
+    indefinite) hang. Reporting readiness only needs the row count and the
+    configured model name, neither of which requires the model itself. This
+    opens the persisted database directly and reads the count, mirroring the
+    shape returned by :meth:`ChromaClient.get_collection_info`.
+    """
+    collection_name = "zotero_library"
+    embedding_model = "default"
+
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                semantic_cfg = json.load(f).get("semantic_search", {})
+            collection_name = semantic_cfg.get("collection_name", collection_name)
+            embedding_model = semantic_cfg.get("embedding_model", embedding_model)
+        except Exception as e:
+            logger.warning(f"Error loading config from {config_path}: {e}")
+
+    # Mirror create_chroma_client's precedence: config.json wins; the env var
+    # only fills in when the file left the model at the "default" placeholder.
+    env_model = os.getenv("ZOTERO_EMBEDDING_MODEL")
+    if env_model and embedding_model in (None, "default"):
+        embedding_model = env_model
+
+    persist_directory = str(Path.home() / ".config" / "zotero-mcp" / "chroma_db")
+    base = {
+        "name": collection_name,
+        "embedding_model": embedding_model,
+        "persist_directory": persist_directory,
+    }
+
+    try:
+        with suppress_stdout():
+            client = chromadb.PersistentClient(
+                path=persist_directory,
+                settings=Settings(anonymized_telemetry=False, allow_reset=True),
+            )
+            try:
+                collection = client.get_collection(
+                    name=collection_name,
+                    embedding_function=_NoEmbeddingFunction(),
+                )
+            except Exception:
+                # Collection does not exist yet — database not initialized.
+                return {**base, "count": 0, "initialized": False}
+            count = collection.count()
+        return {**base, "count": count, "initialized": True}
+    except Exception as e:
+        logger.error(f"Error reading collection status: {e}")
+        return {**base, "count": 0, "error": str(e)}

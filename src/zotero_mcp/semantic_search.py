@@ -86,6 +86,66 @@ def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
     return text
 
 
+_DEFAULT_UPDATE_CONFIG = {
+    "auto_update": False,
+    "update_frequency": "manual",
+    "last_update": None,
+    "update_days": 7,
+}
+
+
+def load_update_config(config_path: str | None) -> dict[str, Any]:
+    """Read the semantic-search ``update_config`` block from disk.
+
+    Pure file read with no ChromaDB or embedding-model side effects, so it is
+    safe on the read-only status path. Returns defaults when the file is
+    missing or unreadable.
+    """
+    config = dict(_DEFAULT_UPDATE_CONFIG)
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                file_config = json.load(f)
+            config.update(file_config.get("semantic_search", {}).get("update_config", {}))
+        except Exception as e:
+            logger.warning(f"Error loading update config: {e}")
+    return config
+
+
+def should_update(update_config: dict[str, Any]) -> bool:
+    """Decide whether an auto-update is due from ``update_config`` alone.
+
+    Pure function of the config dict (and the wall clock) — no I/O, no model
+    load — so both :class:`ZoteroSemanticSearch` and the status tool can share
+    one source of truth.
+    """
+    if not update_config.get("auto_update", False):
+        return False
+
+    frequency = update_config.get("update_frequency", "manual")
+
+    if frequency == "manual":
+        return False
+    elif frequency == "startup":
+        return True
+    elif frequency == "daily":
+        last_update = update_config.get("last_update")
+        if not last_update:
+            return True
+        return datetime.now() - datetime.fromisoformat(last_update) >= timedelta(days=1)
+    elif frequency.startswith("every_"):
+        try:
+            days = int(frequency.split("_")[1])
+            last_update = update_config.get("last_update")
+            if not last_update:
+                return True
+            return datetime.now() - datetime.fromisoformat(last_update) >= timedelta(days=days)
+        except (ValueError, IndexError):
+            return False
+
+    return False
+
+
 class CrossEncoderReranker:
     """Optional cross-encoder re-ranker for semantic search results."""
 
@@ -161,22 +221,7 @@ class ZoteroSemanticSearch:
 
     def _load_update_config(self) -> dict[str, Any]:
         """Load update configuration from file or use defaults."""
-        config = {
-            "auto_update": False,
-            "update_frequency": "manual",
-            "last_update": None,
-            "update_days": 7
-        }
-
-        if self.config_path and os.path.exists(self.config_path):
-            try:
-                with open(self.config_path) as f:
-                    file_config = json.load(f)
-                    config.update(file_config.get("semantic_search", {}).get("update_config", {}))
-            except Exception as e:
-                logger.warning(f"Error loading update config: {e}")
-
-        return config
+        return load_update_config(self.config_path)
 
     def _load_include_fulltext_setting(self) -> bool:
         """Whether to fetch fulltext via the Zotero web API during indexing.
@@ -374,35 +419,7 @@ class ZoteroSemanticSearch:
 
     def should_update_database(self) -> bool:
         """Check if the database should be updated based on configuration."""
-        if not self.update_config.get("auto_update", False):
-            return False
-
-        frequency = self.update_config.get("update_frequency", "manual")
-
-        if frequency == "manual":
-            return False
-        elif frequency == "startup":
-            return True
-        elif frequency == "daily":
-            last_update = self.update_config.get("last_update")
-            if not last_update:
-                return True
-
-            last_update_date = datetime.fromisoformat(last_update)
-            return datetime.now() - last_update_date >= timedelta(days=1)
-        elif frequency.startswith("every_"):
-            try:
-                days = int(frequency.split("_")[1])
-                last_update = self.update_config.get("last_update")
-                if not last_update:
-                    return True
-
-                last_update_date = datetime.fromisoformat(last_update)
-                return datetime.now() - last_update_date >= timedelta(days=days)
-            except (ValueError, IndexError):
-                return False
-
-        return False
+        return should_update(self.update_config)
 
     def _get_items_from_source(self,
                                limit: int | None = None,
