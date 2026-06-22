@@ -346,6 +346,52 @@ zotero-mcp db-status                       # Show database status and info
 zotero-mcp version                         # Show current version
 ```
 
+## 🐳 Docker Images (GHCR)
+
+This repository publishes multi-arch container images to GitHub Container Registry:
+
+- `ghcr.io/<owner>/zotero-mcp:<tag>-core` - lightweight install (no optional extras)
+- `ghcr.io/<owner>/zotero-mcp:<tag>-all` - full install with `[semantic,pdf,scite]`
+- Unsuffixed tags (for example `:latest`, `:vX.Y.Z`) point to the `all` flavor
+
+Detailed publishing and runtime notes are in `docs/docker-images.md`.
+
+Tag strategy:
+
+- Release tags: `vX.Y.Z`, `vX.Y`, `vX` (plus `-core` and `-all` variants)
+- Main branch: `latest` (plus `latest-core` and `latest-all`)
+- Immutable SHA tags: `sha-<shortsha>-core`, `sha-<shortsha>-all` (and unsuffixed SHA for `all`)
+
+### Runtime modes in the container
+
+The image supports both MCP server and standalone CLI modes.
+
+- **Server mode (default)**: runs `zotero-mcp serve --transport stdio`
+- **CLI mode**: set `ZOTERO_APP=cli` and pass normal `zotero-cli` arguments
+
+### Docker env vars and persistence
+
+- Container runtime vars: `ZOTERO_APP` (`server` or `cli`) and `ZOTERO_TRANSPORT` (default: `stdio`)
+- All standard Zotero MCP vars are supported in containers (`ZOTERO_LOCAL`, `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, embedding provider keys, etc.)
+- ChromaDB persistence path in the container is `/home/app/.config/zotero-mcp/chroma_db/`
+- Persist config + ChromaDB by mounting `/home/app/.config/zotero-mcp`
+
+Examples:
+
+```bash
+# Default MCP server mode (stdio)
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest
+
+# MCP server mode with explicit transport
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest serve --transport streamable-http --host 0.0.0.0 --port 8000
+
+# Standalone CLI mode
+docker run --rm -e ZOTERO_APP=cli ghcr.io/<owner>/zotero-mcp:latest search "machine learning"
+
+# Persist config + ChromaDB across runs
+docker run --rm -v zotero-mcp-data:/home/app/.config/zotero-mcp --env-file .env ghcr.io/<owner>/zotero-mcp:latest
+```
+
 ## ⌨️ CLI Mode (`zotero-cli`)
 
 `zotero-cli` is a standalone terminal interface to your Zotero library. It uses the same tools as the MCP server but without needing an AI assistant — useful for quick lookups, shell scripts, and automation.
