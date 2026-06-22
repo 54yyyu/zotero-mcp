@@ -117,16 +117,37 @@ class TestTagsAndCollections:
 
     def test_collections_applied(self, monkeypatch, dummy_ctx):
         fake = _patch_hybrid(monkeypatch)
+        fake._collections = [
+            {"key": "COL00001", "data": {"name": "One", "parentCollection": False}},
+            {"key": "COL00002", "data": {"name": "Two", "parentCollection": False}},
+        ]
         _disable_oa_pdf(monkeypatch)
 
         bib = "@article{x, title={T}, author={A, B}, year={2020}}"
         server.add_by_bibtex(
             bibtex=bib,
-            collections=["COL001", "COL002"],
+            collections=["COL00001", "COL00002"],
             ctx=dummy_ctx,
         )
 
-        assert fake.created[0]["collections"] == ["COL001", "COL002"]
+        assert fake.created[0]["collections"] == ["COL00001", "COL00002"]
+
+    def test_collection_names_resolved(self, monkeypatch, dummy_ctx):
+        """Collection names resolve to keys once, before the entry loop."""
+        fake = _patch_hybrid(monkeypatch)
+        fake._collections = [
+            {"key": "COL00001", "data": {"name": "Reading List", "parentCollection": False}},
+        ]
+        _disable_oa_pdf(monkeypatch)
+
+        bib = "@article{x, title={T}, author={A, B}, year={2020}}"
+        server.add_by_bibtex(
+            bibtex=bib,
+            collections=["reading list"],
+            ctx=dummy_ctx,
+        )
+
+        assert fake.created[0]["collections"] == ["COL00001"]
 
 
 # ---------------------------------------------------------------------------
