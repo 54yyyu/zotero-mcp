@@ -125,15 +125,18 @@ class TestTagsAndCollections:
 
     def test_collections_applied(self, monkeypatch, dummy_ctx):
         fake = _patch_hybrid(monkeypatch)
+        fake._collections = [
+            {"key": "COL00001", "data": {"name": "One", "parentCollection": False}},
+        ]
         _disable_oa_pdf(monkeypatch)
 
         server.add_by_csl_json(
             csl_json=SAMPLE_ARTICLE,
-            collections=["COL001"],
+            collections=["COL00001"],
             ctx=dummy_ctx,
         )
 
-        assert fake.created[0]["collections"] == ["COL001"]
+        assert fake.created[0]["collections"] == ["COL00001"]
 
 
 # ---------------------------------------------------------------------------

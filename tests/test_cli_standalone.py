@@ -153,6 +153,65 @@ class TestParser:
                 "add", "file", "--filepath", "/tmp/x.pdf", "--parent-key", "ABC12345",
             ])
 
+    def test_add_doi_if_exists_defaults_to_file(self):
+        args = self.parser.parse_args(["add", "doi", "10.1234/x"])
+        assert args.if_exists == "file"
+        assert args.create_collections is False
+        assert args.collection is None
+
+    def test_add_doi_if_exists_choices(self):
+        args = self.parser.parse_args(
+            ["add", "doi", "10.1234/x", "--if-exists", "duplicate"]
+        )
+        assert args.if_exists == "duplicate"
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["add", "doi", "10.1234/x", "--if-exists", "bogus"])
+
+    def test_add_doi_repeatable_collection_flag(self):
+        args = self.parser.parse_args([
+            "add", "doi", "10.1234/x",
+            "-c", "Reading List", "-c", "_project/topic",
+            "--collections", "KEY00001",
+            "--create-collections",
+        ])
+        assert args.collection == ["Reading List", "_project/topic"]
+        assert args.collections == "KEY00001"
+        assert args.create_collections is True
+
+    def test_add_url_and_file_share_common_flags(self):
+        for argv in (
+            ["add", "url", "https://example.com", "-c", "X", "--if-exists", "skip"],
+            ["add", "file", "--filepath", "/tmp/x.pdf", "-c", "X", "--if-exists", "skip"],
+        ):
+            args = self.parser.parse_args(argv)
+            assert args.collection == ["X"]
+            assert args.if_exists == "skip"
+
+    def test_add_isbn_subcommand(self):
+        args = self.parser.parse_args(
+            ["add", "isbn", "9780262046305", "-c", "Books"]
+        )
+        assert args.subcommand == "isbn"
+        assert args.isbn == "9780262046305"
+        assert args.collection == ["Books"]
+        assert args.if_exists == "file"
+
+    def test_add_bibtex_subcommand(self):
+        args = self.parser.parse_args(
+            ["add", "bibtex", "--file", "/tmp/refs.bib", "-c", "Topic"]
+        )
+        assert args.subcommand == "bibtex"
+        assert args.file == "/tmp/refs.bib"
+        assert args.bibtex is None
+
+    def test_add_csl_json_subcommand(self):
+        args = self.parser.parse_args(
+            ["add", "csl-json", "--json", "-", "--if-exists", "duplicate"]
+        )
+        assert args.subcommand == "csl-json"
+        assert args.json == "-"
+        assert args.if_exists == "duplicate"
+
 
 # ---------------------------------------------------------------------------
 # main() dispatch
@@ -379,9 +438,18 @@ class TestCmdAdd:
     every invocation. Autospec the real functions so signature drift fails here.
     """
 
+    def _args(self, **kwargs):
+        defaults = dict(
+            verbose=False, collections=None, collection=None, tags=None,
+            if_exists="file", create_collections=False,
+        )
+        defaults.update(kwargs)
+        return MagicMock(**defaults)
+
     def _run(self, args):
         mock_write = MagicMock()
-        for fn in ("add_by_doi", "add_by_url", "add_from_file"):
+        for fn in ("add_by_doi", "add_by_url", "add_from_file",
+                   "add_by_isbn", "add_by_bibtex", "add_by_csl_json"):
             setattr(mock_write, fn,
                     create_autospec(getattr(write_tools, fn), return_value="ok"))
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
@@ -393,9 +461,8 @@ class TestCmdAdd:
 
     def test_add_file_matches_real_signature(self, capsys):
         # Regression: would raise TypeError while parent_key= was passed.
-        args = MagicMock(subcommand="file", filepath="/tmp/paper.pdf",
-                         title=None, item_type="document",
-                         collections=None, tags=None, verbose=False)
+        args = self._args(subcommand="file", filepath="/tmp/paper.pdf",
+                          title=None, item_type="document")
         mock_write = self._run(args)
 
         mock_write.add_from_file.assert_called_once()
@@ -406,10 +473,9 @@ class TestCmdAdd:
         assert "ok" in capsys.readouterr().out
 
     def test_add_file_forwards_title_and_item_type(self):
-        args = MagicMock(subcommand="file", filepath="/tmp/book.epub",
-                         title="My Book", item_type="book",
-                         collections="ABCD1234,EFGH5678", tags="a,b",
-                         verbose=False)
+        args = self._args(subcommand="file", filepath="/tmp/book.epub",
+                          title="My Book", item_type="book",
+                          collections="ABCD1234,EFGH5678", tags="a,b")
         mock_write = self._run(args)
 
         call_kwargs = mock_write.add_from_file.call_args.kwargs
@@ -419,9 +485,8 @@ class TestCmdAdd:
         assert call_kwargs["tags"] == ["a", "b"]
 
     def test_add_doi_matches_real_signature(self):
-        args = MagicMock(subcommand="doi", doi="10.1234/test",
-                         attach_mode="auto", collections="ABCD1234",
-                         tags=None, verbose=False)
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto", collections="ABCD1234")
         mock_write = self._run(args)
 
         mock_write.add_by_doi.assert_called_once()
@@ -430,12 +495,85 @@ class TestCmdAdd:
         assert call_kwargs["collections"] == ["ABCD1234"]
 
     def test_add_url_matches_real_signature(self):
-        args = MagicMock(subcommand="url", url="https://arxiv.org/abs/2301.00001",
-                         attach_mode="auto", collections=None, tags=None,
-                         verbose=False)
+        args = self._args(subcommand="url",
+                          url="https://arxiv.org/abs/2301.00001",
+                          attach_mode="auto")
         mock_write = self._run(args)
 
         mock_write.add_by_url.assert_called_once()
         assert mock_write.add_by_url.call_args.kwargs["url"] == (
             "https://arxiv.org/abs/2301.00001"
         )
+
+    def test_add_doi_forwards_if_exists_and_create_flags(self):
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto", if_exists="skip",
+                          create_collections=True)
+        mock_write = self._run(args)
+
+        call_kwargs = mock_write.add_by_doi.call_args.kwargs
+        assert call_kwargs["if_exists"] == "skip"
+        assert call_kwargs["create_missing_collections"] is True
+
+    def test_add_doi_default_if_exists_is_file(self):
+        """The CLI defaults to convergent behavior; MCP keeps 'duplicate'."""
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto")
+        mock_write = self._run(args)
+
+        assert mock_write.add_by_doi.call_args.kwargs["if_exists"] == "file"
+
+    def test_repeatable_collection_flag_merges_without_splitting(self):
+        # -c values are single specs (never comma-split — names may contain
+        # commas); --collections is comma-split; both merge in order.
+        args = self._args(subcommand="doi", doi="10.1234/test",
+                          attach_mode="auto",
+                          collections="KEY00001,Reading List",
+                          collection=["_project/a, b topic", "Other"])
+        mock_write = self._run(args)
+
+        assert mock_write.add_by_doi.call_args.kwargs["collections"] == [
+            "KEY00001", "Reading List", "_project/a, b topic", "Other",
+        ]
+
+    def test_add_isbn_matches_real_signature(self):
+        args = self._args(subcommand="isbn", isbn="9780262046305",
+                          collections="Books")
+        mock_write = self._run(args)
+
+        mock_write.add_by_isbn.assert_called_once()
+        call_kwargs = mock_write.add_by_isbn.call_args.kwargs
+        assert call_kwargs["isbn"] == "9780262046305"
+        assert call_kwargs["collections"] == ["Books"]
+        assert call_kwargs["if_exists"] == "file"
+
+    def test_add_bibtex_inline_matches_real_signature(self):
+        args = self._args(subcommand="bibtex", bibtex="@article{x, title={T}}",
+                          file=None, attach_mode="auto")
+        mock_write = self._run(args)
+
+        mock_write.add_by_bibtex.assert_called_once()
+        call_kwargs = mock_write.add_by_bibtex.call_args.kwargs
+        assert call_kwargs["bibtex"] == "@article{x, title={T}}"
+        assert call_kwargs["file_path"] is None
+
+    def test_add_bibtex_reads_stdin_when_dash(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin",
+                            MagicMock(read=lambda: "@book{y, title={Y}}"))
+        args = self._args(subcommand="bibtex", bibtex="-", file=None,
+                          attach_mode="auto")
+        mock_write = self._run(args)
+
+        assert mock_write.add_by_bibtex.call_args.kwargs["bibtex"] == (
+            "@book{y, title={Y}}"
+        )
+
+    def test_add_csl_json_file_matches_real_signature(self):
+        args = self._args(subcommand="csl-json", json=None,
+                          file="/tmp/refs.json", attach_mode="auto")
+        mock_write = self._run(args)
+
+        mock_write.add_by_csl_json.assert_called_once()
+        call_kwargs = mock_write.add_by_csl_json.call_args.kwargs
+        assert call_kwargs["file_path"] == "/tmp/refs.json"
+        assert call_kwargs["csl_json"] is None
