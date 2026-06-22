@@ -366,6 +366,68 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
         return text
 
 
+@register_embedding_function
+class OllamaEmbeddingFunction(EmbeddingFunction):
+    """Custom Ollama embedding function for ChromaDB.
+
+    Uses Ollama's local HTTP API. Registered under the name ``ollama`` so
+    ChromaDB can rebuild persisted collections that were created with this
+    embedding function.
+    """
+
+    # Ollama models vary; use a conservative, char-based fallback budget.
+    max_input_tokens = 8000
+
+    def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None):
+        self.model_name = model_name
+        self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+
+    @staticmethod
+    def name() -> str:
+        return "ollama"
+
+    def get_config(self) -> dict[str, Any]:
+        return {"model_name": self.model_name, "base_url": self.base_url}
+
+    @staticmethod
+    def build_from_config(config: dict[str, Any]) -> "OllamaEmbeddingFunction":
+        return OllamaEmbeddingFunction(
+            model_name=config.get("model_name", "qwen3-embedding"),
+            base_url=config.get("base_url"),
+        )
+
+    def __call__(self, input: Documents) -> Embeddings:
+        """Generate embeddings using Ollama's local embeddings endpoint."""
+        try:
+            import requests
+        except ImportError:
+            raise ImportError("requests package is required for Ollama embeddings")
+
+        embeddings = []
+        endpoint = f"{self.base_url}/api/embeddings"
+        for text in input:
+            response = requests.post(
+                endpoint,
+                json={"model": self.model_name, "prompt": text},
+                timeout=120,
+            )
+            response.raise_for_status()
+            data = response.json()
+            embeddings.append(data["embedding"])
+        return embeddings
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a query string. No special handling needed for Ollama."""
+        return self.__call__([text])[0]
+
+    def truncate(self, text: str, max_tokens: int) -> str:
+        """Truncate using character-based estimation for local Ollama models."""
+        max_chars = max_tokens * 4
+        if len(text) > max_chars:
+            text = text[:max_chars]
+        return text
+
+
 class ChromaClient:
     """ChromaDB client for Zotero semantic search."""
 
@@ -380,7 +442,7 @@ class ChromaClient:
         Args:
             collection_name: Name of the ChromaDB collection
             persist_directory: Directory to persist the database
-            embedding_model: Model to use for embeddings ('default', 'openai', 'gemini', 'qwen', 'embeddinggemma', or HuggingFace model name)
+            embedding_model: Model to use for embeddings ('default', 'openai', 'gemini', 'ollama', 'qwen', 'embeddinggemma', or HuggingFace model name)
             embedding_config: Configuration for the embedding model
         """
         self.collection_name = collection_name
@@ -478,6 +540,11 @@ class ChromaClient:
             base_url = self.embedding_config.get("base_url")
             return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
 
+        elif self.embedding_model == "ollama":
+            model_name = self.embedding_config.get("model_name", "qwen3-embedding")
+            base_url = self.embedding_config.get("base_url")
+            return OllamaEmbeddingFunction(model_name=model_name, base_url=base_url)
+
         elif self.embedding_model == "qwen":
             model_name = self.embedding_config.get("model_name", "Qwen/Qwen3-Embedding-0.6B")
             return HuggingFaceEmbeddingFunction(model_name=model_name)
@@ -486,7 +553,7 @@ class ChromaClient:
             model_name = self.embedding_config.get("model_name", "google/embeddinggemma-300m")
             return HuggingFaceEmbeddingFunction(model_name=model_name)
 
-        elif self.embedding_model not in ["default", "openai", "gemini"]:
+        elif self.embedding_model not in ["default", "openai", "gemini", "ollama"]:
             # Treat any other value as a HuggingFace model name
             return HuggingFaceEmbeddingFunction(model_name=self.embedding_model)
 
@@ -601,7 +668,7 @@ class ChromaClient:
             # its embed_query returns chunked results, not a single vector.
             _is_custom_ef = isinstance(
                 self.embedding_function,
-                (OpenAIEmbeddingFunction, GeminiEmbeddingFunction, HuggingFaceEmbeddingFunction),
+                (OpenAIEmbeddingFunction, GeminiEmbeddingFunction, HuggingFaceEmbeddingFunction, OllamaEmbeddingFunction),
             )
             if _is_custom_ef and hasattr(self.embedding_function, 'embed_query') and query_texts:
                 query_embeddings = []
@@ -813,6 +880,16 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
                 ec["base_url"] = env_base
         if ec.get("api_key"):
             config["embedding_config"] = ec
+
+    elif config["embedding_model"] == "ollama":
+        ec = dict(config.get("embedding_config") or {})
+        if not ec.get("model_name"):
+            ec["model_name"] = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding")
+        if not ec.get("base_url"):
+            env_base = os.getenv("OLLAMA_BASE_URL")
+            if env_base:
+                ec["base_url"] = env_base
+        config["embedding_config"] = ec
 
     return ChromaClient(
         collection_name=config["collection_name"],

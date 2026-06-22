@@ -29,7 +29,7 @@
 
 ### 🧠 AI-Powered Semantic Search
 - **Vector-based similarity search** over your entire research library (requires `[semantic]` extra)
-- **Multiple embedding models**: Default (free, local), OpenAI, and Gemini
+- **Multiple embedding models**: Default (free, local), OpenAI, Gemini, and Ollama
 - **Intelligent results** with similarity scores and contextual matching
 - **Auto-updating database** with configurable sync schedules
 
@@ -152,6 +152,27 @@ zotero-mcp setup --semantic-config-only
 - **Default (all-MiniLM-L6-v2)**: Free, runs locally, good for most use cases
 - **OpenAI**: Better quality, requires API key (`text-embedding-3-small` or `text-embedding-3-large`)
 - **Gemini**: Better quality, requires API key (`gemini-embedding-001`)
+- **Ollama**: Runs locally via Ollama API (requires model name, e.g., 'qwen3-embedding')
+
+**Using Ollama embeddings:**
+
+Install and start Ollama, then pull an embedding model before running `zotero-mcp update-db`:
+
+```bash
+ollama serve
+
+# Small model: fast and lightweight
+ollama pull nomic-embed-text
+
+# Medium model: better multilingual retrieval quality
+ollama pull bge-m3
+```
+
+When prompted by `zotero-mcp setup --semantic-config-only`, choose **Ollama** and use either `nomic-embed-text` or `bge-m3` as the model name. If you change embedding models later, rebuild the index:
+
+```bash
+zotero-mcp update-db --force-rebuild
+```
 
 **Update Frequency Options:**
 - **Manual**: Update only when you run `zotero-mcp update-db`
@@ -306,13 +327,15 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
 
 **Semantic Search:**
-- `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
+- `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini, ollama)
 - `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model name (text-embedding-3-small, text-embedding-3-large)
 - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
 - `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
+- `OLLAMA_EMBEDDING_MODEL`: Ollama embedding model name (qwen3-embedding by default)
+- `OLLAMA_BASE_URL`: Ollama server URL (default: http://localhost:11434)
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
 
 ### Command-Line Options
