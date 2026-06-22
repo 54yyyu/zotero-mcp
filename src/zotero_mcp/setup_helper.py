@@ -171,12 +171,13 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
     print("1. Default (all-MiniLM-L6-v2) - Free, runs locally")
     print("2. OpenAI - Better quality, requires API key")
     print("3. Gemini - Better quality, requires API key")
+    print("4. Ollama - Local embeddings via Ollama API")
 
     while True:
-        choice = input("\nChoose embedding model (1-3): ").strip()
-        if choice in ["1", "2", "3"]:
+        choice = input("\nChoose embedding model (1-4): ").strip()
+        if choice in ["1", "2", "3", "4"]:
             break
-        print("Please enter 1, 2, or 3")
+        print("Please enter 1, 2, 3, or 4")
 
     config = {}
 
@@ -237,6 +238,18 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
             print(f"Using custom Gemini base URL: {base_url}")
         else:
             print("Using default Gemini base URL")
+
+    elif choice == "4":
+        config["embedding_model"] = "ollama"
+        model_name = input("Enter Ollama embedding model name (default: qwen3-embedding): ").strip()
+        config["embedding_config"] = {"model_name": model_name or "qwen3-embedding"}
+
+        base_url = input("Enter Ollama base URL (leave blank for http://localhost:11434): ").strip()
+        if base_url:
+            config["embedding_config"]["base_url"] = base_url
+            print(f"Using custom Ollama base URL: {base_url}")
+        else:
+            print("Using default Ollama base URL: http://localhost:11434")
 
     # Configure update frequency
     print("\n=== Database Update Configuration ===")
@@ -474,6 +487,12 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
                 env_settings["GEMINI_EMBEDDING_MODEL"] = model
             if base_url := embedding_config.get("base_url"):
                 env_settings["GEMINI_BASE_URL"] = base_url
+
+        elif semantic_config.get("embedding_model") == "ollama":
+            if model := embedding_config.get("model_name"):
+                env_settings["OLLAMA_EMBEDDING_MODEL"] = model
+            if base_url := embedding_config.get("base_url"):
+                env_settings["OLLAMA_BASE_URL"] = base_url
 
     # Add or update zotero config
     config["mcpServers"]["zotero"] = {
