@@ -130,9 +130,11 @@ class _RecordingPutSession:
         self.auth = None
         self.trust_env = True
         self.calls = []  # list of (url, data, headers)
+        self.timeouts = []  # parallel list of the timeout passed to each PUT
 
     def put(self, url, data=None, headers=None, timeout=None):
         self.calls.append((url, data, dict(headers or {})))
+        self.timeouts.append(timeout)
 
         class _Resp:
             def __init__(self_inner, sc):
@@ -235,3 +237,47 @@ def test_upload_attachment_escapes_key_in_urls(tmp_path, monkeypatch):
 
     assert session.calls[0][0] == "https://dav.example.com/zotero/AB%2FCD.zip"
     assert session.calls[1][0] == "https://dav.example.com/zotero/AB%2FCD.prop"
+
+
+@skip_on_ci
+def test_upload_default_timeout_is_60s(tmp_path, monkeypatch):
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    session = _RecordingPutSession()
+    _setup_webdav_env(monkeypatch)
+    monkeypatch.delenv("ZOTERO_WEBDAV_TIMEOUT", raising=False)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    webdav.upload_attachment_to_webdav("ABCD1234", src)
+
+    # Both PUTs use the historic default — (10s connect, 60s read).
+    assert session.timeouts == [(10.0, 60.0), (10.0, 60.0)]
+
+
+@skip_on_ci
+def test_upload_env_override_respected(tmp_path, monkeypatch):
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    session = _RecordingPutSession()
+    _setup_webdav_env(monkeypatch)
+    monkeypatch.setenv("ZOTERO_WEBDAV_TIMEOUT", "300")
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    webdav.upload_attachment_to_webdav("ABCD1234", src)
+
+    assert session.timeouts == [(10.0, 300.0), (10.0, 300.0)]
+
+
+@skip_on_ci
+def test_upload_explicit_timeout_wins_over_env(tmp_path, monkeypatch):
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    session = _RecordingPutSession()
+    _setup_webdav_env(monkeypatch)
+    monkeypatch.setenv("ZOTERO_WEBDAV_TIMEOUT", "300")
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    webdav.upload_attachment_to_webdav("ABCD1234", src, timeout=45.0)
+
+    # Explicit caller arg takes precedence over the env var.
+    assert session.timeouts == [(10.0, 45.0), (10.0, 45.0)]
