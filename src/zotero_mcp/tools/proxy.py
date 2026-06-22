@@ -22,9 +22,9 @@ def _load_proxy_config() -> dict | None:
 @mcp.tool(
     name="zotero_fetch_paper_from_url",
     description=(
-        "Fetch a paper from a URL or DOI via your institution's proxy. "
+        "Fetch a paper from a full http(s) URL via your institution's proxy. "
         "Requires proxy to be configured in ~/.config/zotero-mcp/config.json. "
-        "Resolves DOIs automatically. Returns JSON with status, url, and content."
+        "Returns JSON with status, url, and content."
     ),
 )
 def fetch_paper_from_url(
@@ -41,7 +41,7 @@ def fetch_paper_from_url(
                 {
                     "error": (
                         "Proxy is not configured. Add a 'proxy' entry to "
-                        "~/.config/zotero-mcp/config.json with 'domain' and 'browser' keys."
+                        "~/.config/zotero-mcp/config.json with required 'domain' and optional 'browser' keys."
                     )
                 }
             )
@@ -53,7 +53,7 @@ def fetch_paper_from_url(
         browser = cfg.get("browser", "firefox")
 
         ctx.info(f"Fetching paper via proxy ({domain}): {url}")
-        result = fetch_via_proxy(url, browser=browser, proxy_domain=domain)
+        result = fetch_via_proxy(url, proxy_domain=domain, browser=browser)
         ctx.info(f"Fetched {url} → {result['url']} (status {result['status']})")
         return json.dumps(result)
 

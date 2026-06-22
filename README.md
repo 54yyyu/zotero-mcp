@@ -110,6 +110,7 @@ Heavy ML/PDF dependencies are separated into optional extras so the base install
 | `semantic` | Semantic search via ChromaDB, sentence-transformers, OpenAI/Gemini embeddings | `pip install "zotero-mcp-server[semantic]"` |
 | `pdf` | PDF outline extraction (PyMuPDF) and EPUB annotation support | `pip install "zotero-mcp-server[pdf]"` |
 | `scite` | [Scite](https://scite.ai) citation intelligence — tallies and retraction alerts (no account needed) | `pip install "zotero-mcp-server[scite]"` |
+| `proxy` | Fetch paywalled papers through your institution's proxy using your browser's session cookies (⚠️ opt-in; reads & forwards browser cookies) | `pip install "zotero-mcp-server[proxy]"` |
 | `all` | Everything above | `pip install "zotero-mcp-server[all]"` |
 
 For example, with uv:

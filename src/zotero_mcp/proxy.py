@@ -1,5 +1,5 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 from urllib.parse import urlparse
 
 import browser_cookie3
@@ -46,7 +46,7 @@ class Proxy:
         cookies = self._bk()(domain_name=self.domain)
         session = requests.Session()
         session.cookies.update(cookies)
-        resp = session.get(url)
+        resp = session.get(url, timeout=30)
         resp.raise_for_status()
         return {
             "status": resp.status_code,
@@ -57,8 +57,8 @@ class Proxy:
 
 def fetch_via_proxy(
     url: str,
+    proxy_domain: str,
     browser: str = "firefox",
-    proxy_domain: str = "insb.bib.cnrs.fr",
 ) -> dict:
     """Fetch a paper URL through your institution's proxy using browser cookies."""
     return Proxy(domain=proxy_domain, browser=browser).fetch(url)
