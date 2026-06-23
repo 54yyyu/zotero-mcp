@@ -805,11 +805,13 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
                 ctx.info("Downloaded file too small, likely not a real PDF")
                 return None
 
+            suffix = _webdav_first_attach(write_zot, filename, filepath, item_key, ctx)
+            if suffix is not None:
+                return suffix
             attach_result = write_zot.attachment_both(
                 [(filename, filepath)],
                 parentid=item_key,
             )
-            # Must run inside the with-block — temp file disappears on exit.
             return _maybe_upload_to_webdav(attach_result, filepath, ctx)
     except Exception as e:
         ctx.info(f"PDF download/attach failed: {e}")
@@ -854,6 +856,39 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx):
         _webdav.upload_attachment_to_webdav(
             attachment_key=attachment_key,
             file_path=file_path,
+        )
+        ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
+        return f" (uploaded to WebDAV as {attachment_key}.zip)"
+    except Exception as e:
+        ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
+        return (
+            f" (WARNING: WebDAV upload failed — {e}; "
+            f"attachment {attachment_key} exists but has no file bytes on WebDAV)"
+        )
+
+
+def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx):
+    """Create attachment shell + WebDAV upload when WebDAV is configured; else return None.
+
+    Returns a user-facing suffix or None (caller falls back to attachment_both).
+    """
+    from zotero_mcp import webdav as _webdav
+
+    if not _webdav.is_webdav_configured():
+        return None
+
+    template = write_zot.item_template("attachment", linkmode="imported_file")
+    template["title"] = filename
+    template["filename"] = filename
+    template["parentItem"] = parent_key
+    result = write_zot.create_items([template])
+    if not (isinstance(result, dict) and result.get("success")):
+        return " (WARNING: could not create attachment shell)"
+    attachment_key = next(iter(result["success"].values()))
+
+    try:
+        _webdav.upload_attachment_to_webdav(
+            attachment_key=attachment_key, file_path=file_path
         )
         ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
         return f" (uploaded to WebDAV as {attachment_key}.zip)"
