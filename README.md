@@ -235,6 +235,16 @@ Full documentation is available at [Zotero MCP docs](https://stevenyuyy.com/zote
 
 **For ChatGPT setup: see the [Getting Started guide](./docs/getting-started.md).**
 
+### Configure Zotero
+
+The Zotero local API must be enabled for the MCP server to work.
+
+In Zotero 9, the local API toggle is under Settings → Advanced → 'Allow other applications on this computer to communicate with Zotero'.
+
+Here is a screenshot:
+
+<img alt="Image" width="795" height="628" src="https://private-user-images.githubusercontent.com/144167388/598422742-efb38b4f-ca09-4455-8b86-fe53ed8a2578.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODA5Mjk3NzMsIm5iZiI6MTc4MDkyOTQ3MywicGF0aCI6Ii8xNDQxNjczODgvNTk4NDIyNzQyLWVmYjM4YjRmLWNhMDktNDQ1NS04Yjg2LWZlNTNlZDhhMjU3OC5wbmc_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwNjA4JTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDYwOFQxNDM3NTNaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT03NzY0ZTgxOWQyOTY5MDY5MzcyMjAwZDM5YjdlYWY1NzFmZWQ2ZGM1YTZkY2Q4NDY5NzdjOTM2MzNhY2VkNjQ4JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZyZXNwb25zZS1jb250ZW50LXR5cGU9aW1hZ2UlMkZwbmcifQ.g2inqE9jrSqa3CKv8qPfuoS78GHY9Ej2ZYeI8CtmbBo">
+
 ### For Claude Desktop (example MCP client)
 
 #### Configuration
@@ -253,23 +263,27 @@ After installation, either:
        "zotero": {
          "command": "zotero-mcp",
          "env": {
-           "ZOTERO_LOCAL": "true",
+           "ZOTERO_LOCAL": false,
            "ZOTERO_API_KEY": "YOUR_API_KEY",
-           "ZOTERO_LIBRARY_ID": "YOUR_LIBRARY_ID"
+           "ZOTERO_LIBRARY_ID": YOUR_LIBRARY_ID
          }
        }
      }
    }
    ```
 
-   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the
-   `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely. Add them only to enable
-   **write mode**: the local API is fast but read-only, so the server uses the Zotero
-   web API for write operations.
+   For **local read-only use**, `ZOTERO_LOCAL: true` is all you need — drop the `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely.
 
-   - Generate an API key from <https://www.zotero.org/settings/security#applications>.
-   - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a
-     group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
+   The local API is fast but read-only, so the MCP server uses the Zotero web API for write operations.
+   
+   To enable **write mode**:
+   - Set `ZOTERO_LOCAL: true`
+   - Generate an API key from <https://www.zotero.org/settings/security#applications> and set it to `ZOTERO_API_KEY`
+   - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
+  
+   _Important Note_: The values of `ZOTERO_LOCAL` and `ZOTERO_LIBRARY_ID` must __not__ be surrounded by double quotes (e.g. `ZOTERO_LOCAL: false` and not `ZOTERO_LOCAL: "false"`, `ZOTERO_LIBRARY_ID: 1234` and not `ZOTERO_LIBRARY_ID: "1234"`), while the `ZOTERO_API_KEY` is surrounded by double quotes (e.g. `ZOTERO_API_KEY: "abc1234"`).
+
+   _Important Note_: Environmental variables set in the shell you run `claude` in will override these values.
 
    > **Tip:** if Claude Desktop reports it can't find the `zotero-mcp` command, use the
    > absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) —
