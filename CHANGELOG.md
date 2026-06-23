@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Ollama embeddings now use the current `/api/embed` endpoint** instead of the deprecated `/api/embeddings` route. The whole batch is sent in a single request (`input`) rather than one request per document, and the response's `embeddings` list is parsed accordingly (#349, #360).
+
 ## [0.6.0] - 2026-06-22
 
 ### Added
