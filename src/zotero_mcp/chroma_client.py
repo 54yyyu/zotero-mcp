@@ -397,23 +397,35 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         )
 
     def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using Ollama's local embeddings endpoint."""
+        """Generate embeddings using Ollama's /api/embed endpoint.
+
+        Unlike the deprecated /api/embeddings route (single ``prompt`` -> single
+        ``embedding``), /api/embed accepts a batch via ``input`` and returns a
+        list under ``embeddings``, so the whole batch is sent in one request
+        instead of one request per document.
+        """
         try:
             import requests
         except ImportError:
             raise ImportError("requests package is required for Ollama embeddings")
 
-        embeddings = []
-        endpoint = f"{self.base_url}/api/embeddings"
-        for text in input:
-            response = requests.post(
-                endpoint,
-                json={"model": self.model_name, "prompt": text},
-                timeout=120,
+        texts = list(input)
+        if not texts:
+            return []
+
+        endpoint = f"{self.base_url}/api/embed"
+        response = requests.post(
+            endpoint,
+            json={"model": self.model_name, "input": texts},
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+        embeddings = data.get("embeddings")
+        if embeddings is None:
+            raise ValueError(
+                f"Ollama /api/embed returned no 'embeddings' field: {data}"
             )
-            response.raise_for_status()
-            data = response.json()
-            embeddings.append(data["embedding"])
         return embeddings
 
     def embed_query(self, text: str) -> list[float]:
