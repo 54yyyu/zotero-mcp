@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -161,6 +162,50 @@ def load_update_config(config_path: str | None) -> dict[str, Any]:
         except Exception as e:
             logger.warning(f"Error loading update config: {e}")
     return config
+
+
+_DEFAULT_RERANKER_CONFIG: dict[str, Any] = {
+    "enabled": False,
+    "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "candidate_multiplier": 3,
+}
+
+
+def load_reranker_config(config_path: str | None) -> dict[str, Any]:
+    """Read the semantic-search ``reranker`` block from disk.
+
+    Pure file read with no model load, so the server can consult it (e.g. to
+    decide whether to warm up) without paying the cross-encoder cost.
+    """
+    config = dict(_DEFAULT_RERANKER_CONFIG)
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                file_config = json.load(f)
+            config.update(file_config.get("semantic_search", {}).get("reranker", {}))
+        except Exception as e:
+            logger.warning(f"Error loading reranker config: {e}")
+    return config
+
+
+def warmup_reranker(config_path: str | None = None) -> bool:
+    """Preload the configured reranker into the process-wide cache.
+
+    Lets the server pay the cross-encoder load cost once at startup (off the
+    request path) so the first real ``zotero_semantic_search`` is fast too
+    (issue #283). Returns ``True`` if a model was warmed, ``False`` if the
+    reranker is disabled. Never raises — a failed warmup must not crash startup.
+    """
+    cfg = load_reranker_config(config_path)
+    if not cfg.get("enabled", False):
+        return False
+    model = cfg.get("model", _DEFAULT_RERANKER_CONFIG["model"])
+    try:
+        get_cached_reranker(model)
+        return True
+    except Exception as e:
+        logger.warning(f"Reranker warmup failed for '{model}': {e}")
+        return False
 
 
 def should_update(update_config: dict[str, Any]) -> bool:
@@ -328,6 +373,33 @@ class CrossEncoderReranker:
         return [(i, float(scores[i])) for i in ranked[:top_k]]
 
 
+# Process-wide reranker cache (issue #283).
+#
+# The MCP search path builds a fresh ``ZoteroSemanticSearch`` per request, so a
+# reranker held on the instance (``self._reranker``) was reloaded from disk on
+# *every* call — the cross-encoder load dominates at ~tens of seconds and blew
+# past client timeouts. The weights are immutable for a given ``model_name``, so
+# caching the loaded reranker at module scope keeps it warm across requests and
+# instances. The lock prevents two concurrent first-calls from double-loading.
+_RERANKER_CACHE: dict[str, CrossEncoderReranker] = {}
+_RERANKER_CACHE_LOCK = threading.Lock()
+
+
+def get_cached_reranker(model_name: str) -> CrossEncoderReranker:
+    """Return a process-wide cached reranker, loading it once per ``model_name``."""
+    cached = _RERANKER_CACHE.get(model_name)
+    if cached is not None:
+        return cached
+    with _RERANKER_CACHE_LOCK:
+        # Re-check under the lock: another thread may have loaded it while we
+        # waited, and the model load is far too expensive to repeat.
+        cached = _RERANKER_CACHE.get(model_name)
+        if cached is None:
+            cached = CrossEncoderReranker(model_name=model_name)
+            _RERANKER_CACHE[model_name] = cached
+        return cached
+
+
 class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
@@ -390,27 +462,20 @@ class ZoteroSemanticSearch:
 
     def _load_reranker_config(self) -> dict[str, Any]:
         """Load reranker configuration from file or use defaults."""
-        config: dict[str, Any] = {
-            "enabled": False,
-            "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-            "candidate_multiplier": 3,
-        }
-        if self.config_path and os.path.exists(self.config_path):
-            try:
-                with open(self.config_path) as f:
-                    file_config = json.load(f)
-                    config.update(file_config.get("semantic_search", {}).get("reranker", {}))
-            except Exception as e:
-                logger.warning(f"Error loading reranker config: {e}")
-        return config
+        return load_reranker_config(self.config_path)
 
     def _get_reranker(self) -> CrossEncoderReranker | None:
-        """Get the reranker instance, lazily initializing if enabled."""
+        """Get the reranker, reusing the process-wide cache if enabled.
+
+        Each MCP request builds a new ``ZoteroSemanticSearch``, so the model is
+        fetched from :func:`get_cached_reranker` (loaded once per process) rather
+        than reloaded per instance (issue #283).
+        """
         if not self._reranker_config.get("enabled", False):
             return None
         if self._reranker is None:
-            model = self._reranker_config.get("model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-            self._reranker = CrossEncoderReranker(model_name=model)
+            model = self._reranker_config.get("model", _DEFAULT_RERANKER_CONFIG["model"])
+            self._reranker = get_cached_reranker(model)
         return self._reranker
 
     def _load_update_config(self) -> dict[str, Any]:
