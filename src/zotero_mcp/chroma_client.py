@@ -952,7 +952,11 @@ class _NoEmbeddingFunction(EmbeddingFunction):
         return "default"
 
 
-def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
+def read_collection_status(
+    config_path: str | None = None,
+    *,
+    persist_directory: str | None = None,
+) -> dict[str, Any]:
     """Read ChromaDB collection stats WITHOUT loading an embedding model.
 
     The full :class:`ChromaClient` constructor builds the embedding function,
@@ -962,6 +966,9 @@ def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
     configured model name, neither of which requires the model itself. This
     opens the persisted database directly and reads the count, mirroring the
     shape returned by :meth:`ChromaClient.get_collection_info`.
+
+    ``persist_directory`` defaults to ``ChromaClient``'s location
+    (``~/.config/zotero-mcp/chroma_db``); it is parameterised for testing.
     """
     collection_name = "zotero_library"
     embedding_model = "default"
@@ -981,7 +988,8 @@ def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
     if env_model and embedding_model in (None, "default"):
         embedding_model = env_model
 
-    persist_directory = str(Path.home() / ".config" / "zotero-mcp" / "chroma_db")
+    if persist_directory is None:
+        persist_directory = str(Path.home() / ".config" / "zotero-mcp" / "chroma_db")
     base = {
         "name": collection_name,
         "embedding_model": embedding_model,

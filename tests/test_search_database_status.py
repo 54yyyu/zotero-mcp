@@ -31,6 +31,9 @@ conflict check for *any* persisted backend. The no-op function is still never
 invoked, because ``count()`` does not embed.
 """
 
+import shutil
+import tempfile
+
 import pytest
 
 # chromadb is an optional extra (``[semantic]``); skip where it isn't installed.
@@ -93,16 +96,19 @@ def test_no_embedding_function_name_is_default():
     assert chroma_client._NoEmbeddingFunction.name() == "default"
 
 
-def test_read_collection_status_reports_populated_count(tmp_path, monkeypatch):
-    # ``read_collection_status`` derives persist_directory from ``Path.home()``.
-    monkeypatch.setattr(chroma_client.Path, "home", lambda: tmp_path)
+def test_read_collection_status_reports_populated_count():
+    # tempfile (not pytest's tmp_path, which is flagged unreliable on CI in
+    # this repo's conftest); persist_directory is passed explicitly.
+    persist_dir = tempfile.mkdtemp(prefix="zotero_mcp_status_362_")
+    try:
+        n = _populate(persist_dir, "zotero_library", n=5)
 
-    persist_dir = tmp_path / ".config" / "zotero-mcp" / "chroma_db"
-    persist_dir.mkdir(parents=True)
-    n = _populate(persist_dir, "zotero_library", n=5)
+        status = chroma_client.read_collection_status(
+            config_path=None, persist_directory=persist_dir
+        )
 
-    status = chroma_client.read_collection_status(config_path=None)
-
-    assert status.get("error") is None, status
-    assert status["initialized"] is True
-    assert status["count"] == n
+        assert status.get("error") is None, status
+        assert status["initialized"] is True
+        assert status["count"] == n
+    finally:
+        shutil.rmtree(persist_dir, ignore_errors=True)
