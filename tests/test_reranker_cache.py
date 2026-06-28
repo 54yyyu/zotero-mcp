@@ -80,7 +80,7 @@ def test_get_reranker_returns_none_when_disabled():
     assert _FakeReranker.load_count == 0  # disabled never loads
 
 
-def test_warmup_reranker_populates_cache(tmp_path, monkeypatch):
+def test_warmup_reranker_populates_cache(monkeypatch):
     monkeypatch.setattr(semantic_search.os.path, "exists", lambda p: False)
     # Disabled config -> no warmup, no load.
     assert semantic_search.warmup_reranker(config_path=None) is False
