@@ -149,6 +149,30 @@ def _semantic_config_path(path_arg: str | None) -> Path:
     return Path(path_arg) if path_arg else Path.home() / ".config" / "zotero-mcp" / "config.json"
 
 
+def _warmup_reranker_in_background() -> None:
+    """Preload the reranker (if enabled) off the request path — see issue #283.
+
+    Runs in a daemon thread so server startup is never delayed and a failed or
+    slow model load can never crash the server. No-op when the optional
+    ``[semantic]`` extra isn't installed or the reranker is disabled.
+    """
+    import threading
+
+    def _run() -> None:
+        try:
+            from zotero_mcp.semantic_search import warmup_reranker
+        except Exception:
+            return  # semantic extra not installed
+        try:
+            config_path = str(_semantic_config_path(None))
+            if warmup_reranker(config_path):
+                print("Reranker warmed up.", file=sys.stderr)
+        except Exception:
+            pass  # best-effort: never let warmup break serving
+
+    threading.Thread(target=_run, daemon=True, name="zmcp-reranker-warmup").start()
+
+
 def _print_update_stats(stats: dict) -> None:
     is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
     label = "OpenAI batch submission" if is_batch else "Database update"
@@ -773,6 +797,11 @@ def main():
         transport = getattr(args, "transport", "stdio")
         # Ensure environment is initialized (Claude config or standalone config)
         setup_zotero_environment()
+        # If the reranker is enabled, warm it up in the background so the first
+        # semantic search doesn't pay the ~tens-of-seconds model load inside the
+        # request path and time out (issue #283). Daemon thread: never blocks
+        # startup, never crashes the server if loading fails.
+        _warmup_reranker_in_background()
         if transport == "stdio":
             mcp.run(transport="stdio")
         elif transport == "streamable-http":
