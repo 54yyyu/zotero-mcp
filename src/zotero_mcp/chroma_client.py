@@ -929,10 +929,27 @@ class _NoEmbeddingFunction(EmbeddingFunction):
     for the default backend, eagerly downloads the ~80MB ONNX MiniLM model.
     Counting rows never embeds anything, so this is never actually called; it
     raises if it ever is, to make misuse loud rather than silently wrong.
+
+    ``name()`` MUST return ``"default"``. ChromaDB >=1.x validates the supplied
+    embedding function against the collection's persisted config in
+    ``validate_embedding_function_conflict_on_get`` and raises a ``ValueError``
+    whenever the supplied ``name()`` differs from the persisted one — *unless*
+    the supplied name is ``"default"``, which short-circuits the check. Without
+    this, opening a collection that was built with any real backend (default,
+    openai, gemini, ...) raises a conflict; ``read_collection_status`` then
+    swallowed that error and reported "0 documents / not initialized" against a
+    fully populated database (issue #362).
     """
+
+    def __init__(self):
+        pass
 
     def __call__(self, input: Documents) -> Embeddings:  # pragma: no cover - never invoked
         raise RuntimeError("embedding is unavailable in status-only mode")
+
+    @staticmethod
+    def name() -> str:
+        return "default"
 
 
 def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
