@@ -459,6 +459,9 @@ class TestTagsAndCollections:
     def test_collections_applied(
         self, monkeypatch, fake_zot, dummy_ctx
     ):
+        fake_zot._collections = [
+            {"key": "ABCD1234", "data": {"name": "Climate", "parentCollection": False}},
+        ]
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
@@ -474,6 +477,49 @@ class TestTagsAndCollections:
         item = fake_zot.created[0]
 
         assert "ABCD1234" in item["collections"]
+
+    def test_collection_name_resolved_to_key(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """A collection NAME resolves to its key before the item is created."""
+        fake_zot._collections = [
+            {"key": "ABCD1234", "data": {"name": "Climate", "parentCollection": False}},
+        ]
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response()
+        )
+
+        server.add_by_doi(
+            doi="10.1234/test.2024.001",
+            collections=["climate"],
+            ctx=dummy_ctx,
+        )
+        item = fake_zot.created[0]
+
+        assert item["collections"] == ["ABCD1234"]
+
+    def test_unknown_collection_fails_before_create(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """A bad collection spec must fail the add BEFORE any item is created."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response()
+        )
+
+        result = server.add_by_doi(
+            doi="10.1234/test.2024.001",
+            collections=["no-such-collection"],
+            ctx=dummy_ctx,
+        )
+
+        assert "not found" in result
+        assert fake_zot.created == []
 
     def test_no_tags_or_collections(
         self, monkeypatch, fake_zot, dummy_ctx

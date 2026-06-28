@@ -5,8 +5,11 @@ Usage:
     zotero-cli search "Einstein 1905"
     zotero-cli get metadata ITEM_KEY
     zotero-cli get collections
-    zotero-cli add doi 10.1234/example
+    zotero-cli add doi 10.1234/example -c "Reading List"
     zotero-cli add url https://arxiv.org/abs/2301.00001
+    zotero-cli add isbn 9780262046305 -c "_project/books"
+    zotero-cli add bibtex --file refs.bib -c topic
+    zotero-cli add csl-json --json - -c topic   # reads stdin
     zotero-cli edit ITEM_KEY --title "New Title"
     zotero-cli notes list
     zotero-cli annotations list --item-key ITEM_KEY
@@ -19,6 +22,9 @@ import sys
 
 # Reuse environment setup from the original CLI module
 from zotero_mcp.cli import (
+    _print_batch_import,
+    _print_batch_status,
+    _print_update_stats,
     obfuscate_config_for_display,
     setup_zotero_environment,
 )
@@ -217,27 +223,70 @@ def cmd_notes(args):
         sys.exit(1)
 
 
+def _collect_collection_specs(args) -> list | None:
+    """Merge --collections (comma-split) with repeatable -c/--collection.
+
+    Each -c value is ONE spec, never comma-split — so names containing
+    commas work. Returns None when neither flag was given.
+    """
+    specs = []
+    if getattr(args, "collections", None):
+        specs.extend(s.strip() for s in args.collections.split(",") if s.strip())
+    for spec in getattr(args, "collection", None) or []:
+        if spec.strip():
+            specs.append(spec.strip())
+    return specs or None
+
+
 def cmd_add(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
     tags = args.tags.split(",") if args.tags else None
-    collections = args.collections.split(",") if args.collections else None
+    collections = _collect_collection_specs(args)
+    if_exists = getattr(args, "if_exists", "file")
+    create_missing = getattr(args, "create_collections", False)
 
     if args.subcommand == "doi":
         print(write_mod.add_by_doi(
             doi=args.doi, collections=collections, tags=tags,
-            attach_mode=args.attach_mode, ctx=ctx,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
         ))
     elif args.subcommand == "url":
         print(write_mod.add_by_url(
             url=args.url, collections=collections, tags=tags,
-            attach_mode=args.attach_mode, ctx=ctx,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
         ))
     elif args.subcommand == "file":
         print(write_mod.add_from_file(
-            file_path=args.filepath, parent_key=getattr(args, "parent_key", None),
-            collections=collections, tags=tags, ctx=ctx,
+            file_path=args.filepath, title=getattr(args, "title", None),
+            item_type=getattr(args, "item_type", "document"),
+            collections=collections, tags=tags, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
+        ))
+    elif args.subcommand == "isbn":
+        print(write_mod.add_by_isbn(
+            isbn=args.isbn, collections=collections, tags=tags,
+            if_exists=if_exists, create_missing_collections=create_missing,
+            ctx=ctx,
+        ))
+    elif args.subcommand == "bibtex":
+        bibtex = sys.stdin.read() if args.bibtex == "-" else args.bibtex
+        print(write_mod.add_by_bibtex(
+            bibtex=bibtex, file_path=getattr(args, "file", None),
+            collections=collections, tags=tags,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
+        ))
+    elif args.subcommand == "csl-json":
+        csl_json = sys.stdin.read() if args.json == "-" else args.json
+        print(write_mod.add_by_csl_json(
+            csl_json=csl_json, file_path=getattr(args, "file", None),
+            collections=collections, tags=tags,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
         ))
     else:
         print(f"Unknown 'add' subcommand: {args.subcommand}", file=sys.stderr)
@@ -363,6 +412,9 @@ def cmd_db(args):
         if db_path:
             _save_zotero_db_path_to_config(config_path, db_path)
         search = create_semantic_search(str(config_path), db_path=db_path)
+        if getattr(args, "openai_batch", None) is True and search.chroma_client.embedding_model != "openai":
+            print("Error: --openai-batch requires ZOTERO_EMBEDDING_MODEL=openai", file=sys.stderr)
+            sys.exit(1)
         fulltext = getattr(args, "fulltext", False)
         if fulltext:
             from zotero_mcp.utils import is_local_mode
@@ -373,24 +425,29 @@ def cmd_db(args):
             force_full_rebuild=args.force_rebuild,
             limit=args.limit,
             extract_fulltext=fulltext,
+            use_openai_batch=getattr(args, "openai_batch", None),
         )
-        print("Database update completed:")
-        print(f"- Total items: {stats.get('total_items', 0)}")
-        print(f"- Processed: {stats.get('processed_items', 0)}")
-        print(f"- Added: {stats.get('added_items', 0)}")
-        print(f"- Updated: {stats.get('updated_items', 0)}")
-        print(f"- Skipped: {stats.get('skipped_items', 0)}")
-        print(f"- Errors: {stats.get('errors', 0)}")
-        print(f"- Duration: {stats.get('duration', 'Unknown')}")
+        _print_update_stats(stats)
         if stats.get("error"):
             print(f"Error: {stats['error']}", file=sys.stderr)
             sys.exit(1)
+
+    elif args.subcommand == "batch-status":
+        search = create_semantic_search(str(config_path))
+        status = search.get_openai_batch_status(batch_ids=getattr(args, "batch_id", None))
+        _print_batch_status(status)
+
+    elif args.subcommand == "batch-import":
+        search = create_semantic_search(str(config_path))
+        stats = search.import_openai_batch(batch_ids=getattr(args, "batch_id", None))
+        _print_batch_import(stats)
 
     elif args.subcommand == "status":
         search = create_semantic_search(str(config_path))
         status = search.get_database_status()
         ci = status.get("collection_info", {})
         uc = status.get("update_config", {})
+        bc = status.get("openai_batch", {})
         print("=== Semantic Search Database Status ===")
         print(f"Collection: {ci.get('name', 'Unknown')}")
         print(f"Document count: {ci.get('count', 0)}")
@@ -401,6 +458,7 @@ def cmd_db(args):
         print(f"- Frequency: {uc.get('update_frequency', 'manual')}")
         print(f"- Last update: {uc.get('last_update', 'Never')}")
         print(f"- Should update: {status.get('should_update', False)}")
+        print(f"- OpenAI Batch API: {'active' if bc.get('active') else 'inactive'}")
         if ci.get("error"):
             print(f"\nError: {ci['error']}")
 
@@ -615,21 +673,58 @@ def build_parser() -> argparse.ArgumentParser:
     # add
     add_p = sub.add_parser("add", help="Add items to your library")
     add_sub = add_p.add_subparsers(dest="subcommand")
+
+    def _add_common_flags(p):
+        """Collection/idempotency flags shared by every `add` subcommand."""
+        p.add_argument("--collections",
+                       help="Comma-separated collection keys, names, or paths")
+        p.add_argument("-c", "--collection", action="append", metavar="SPEC",
+                       help="Collection key, name, or parent/child path "
+                            "(repeatable; not comma-split, so names with "
+                            "commas work)")
+        p.add_argument("--tags", help="Comma-separated tags")
+        p.add_argument("--if-exists", dest="if_exists",
+                       choices=["file", "skip", "duplicate"], default="file",
+                       help="When the item already exists: 'file' (default) "
+                            "reuses it and adds missing collections/tags; "
+                            "'skip' leaves it untouched; 'duplicate' creates "
+                            "a new item anyway")
+        p.add_argument("--create-collections", dest="create_collections",
+                       action="store_true",
+                       help="Create collections that don't exist yet "
+                            "(including parent/child paths)")
+
     adoi = add_sub.add_parser("doi", help="Add item by DOI")
     adoi.add_argument("doi")
-    adoi.add_argument("--collections")
-    adoi.add_argument("--tags")
+    _add_common_flags(adoi)
     adoi.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
     aurl = add_sub.add_parser("url", help="Add item by URL")
     aurl.add_argument("url")
-    aurl.add_argument("--collections")
-    aurl.add_argument("--tags")
+    _add_common_flags(aurl)
     aurl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
-    afil = add_sub.add_parser("file", help="Add item from local file")
+    afil = add_sub.add_parser("file", help="Add item from local file (.pdf/.epub)")
     afil.add_argument("--filepath", required=True)
-    afil.add_argument("--parent-key")
-    afil.add_argument("--collections")
-    afil.add_argument("--tags")
+    afil.add_argument("--title", help="Override title if metadata extraction misses")
+    afil.add_argument("--item-type", default="document",
+                      help="Zotero item type for the new item (default: document)")
+    _add_common_flags(afil)
+    aisbn = add_sub.add_parser("isbn", help="Add book by ISBN")
+    aisbn.add_argument("isbn")
+    _add_common_flags(aisbn)
+    abib = add_sub.add_parser("bibtex", help="Add items from BibTeX")
+    abib.add_argument("--bibtex",
+                      help="Inline BibTeX (use - to read from stdin)")
+    abib.add_argument("--file", help="Path to a .bib/.bibtex file")
+    _add_common_flags(abib)
+    abib.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
+                      default="auto")
+    acsl = add_sub.add_parser("csl-json", help="Add items from CSL JSON")
+    acsl.add_argument("--json", dest="json",
+                      help="Inline CSL JSON (use - to read from stdin)")
+    acsl.add_argument("--file", help="Path to a .json/.csljson file")
+    _add_common_flags(acsl)
+    acsl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
+                      default="auto")
 
     # collections
     col_p = sub.add_parser("collections", help="Manage collections", aliases=["coll"])
@@ -700,6 +795,16 @@ def build_parser() -> argparse.ArgumentParser:
     dbu.add_argument("--fulltext", action="store_true")
     dbu.add_argument("--config-path")
     dbu.add_argument("--db-path")
+    dbu_batch = dbu.add_mutually_exclusive_group()
+    dbu_batch.add_argument("--openai-batch", dest="openai_batch", action="store_true")
+    dbu_batch.add_argument("--no-openai-batch", dest="openai_batch", action="store_false")
+    dbu.set_defaults(openai_batch=None)
+    dbbs = db_sub.add_parser("batch-status")
+    dbbs.add_argument("--batch-id", action="append")
+    dbbs.add_argument("--config-path")
+    dbbi = db_sub.add_parser("batch-import")
+    dbbi.add_argument("--batch-id", action="append")
+    dbbi.add_argument("--config-path")
     dbs = db_sub.add_parser("status")
     dbs.add_argument("--config-path")
     dbi = db_sub.add_parser("inspect")

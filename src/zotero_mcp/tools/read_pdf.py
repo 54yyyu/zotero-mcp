@@ -60,7 +60,8 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
     except Exception:
         pass
 
-    # Fallback: download via API to a named temp file
+    # Fallback: resolve via the multi-source downloader (local -> WebDAV ->
+    # Zotero cloud) so WebDAV-backed attachments work, not just cloud storage.
     attachment = _client.get_attachment_details(zot, item)
     if not attachment:
         return None
@@ -73,16 +74,23 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
             return None
 
     tmpdir = tempfile.mkdtemp(prefix="zotero_pdf_")
-    file_path = os.path.join(tmpdir, filename)
+    probe = os.path.join(tmpdir, os.path.basename(filename))
     try:
-        zot.dump(attachment.key, filename=os.path.basename(file_path), path=tmpdir)
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            return file_path, attachment.title
+        download = _client.download_attachment_file(
+            attachment.key,
+            tmpdir,
+            os.path.basename(filename),
+            local_client=_client.get_local_zotero_client(),
+            web_client=None if _utils.is_local_mode() else zot,
+        )
     except Exception:
-        _cleanup_path(file_path)
+        _cleanup_path(probe)
         raise
 
-    _cleanup_path(file_path)
+    if download.path and download.path.exists() and download.path.stat().st_size > 0:
+        return str(download.path), attachment.title
+
+    _cleanup_path(probe)
     return None
 
 

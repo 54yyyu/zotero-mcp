@@ -36,7 +36,7 @@ semantic = [
     # used to register the custom OpenAI/Gemini/HF embedding functions (#315).
     "chromadb>=1.0.0",
     "sentence-transformers>=2.2.0",
-    "openai>=1.0.0",
+    "openai>=1.30.0",
     "google-genai>=0.7.0",
     "tiktoken>=0.7.0",
 ]

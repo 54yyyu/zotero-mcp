@@ -15,35 +15,44 @@ def _make_item(key="ABCD1234", version=10, title="Original Title",
                date="2024-01-01", doi="", url="",
                volume="", issue="", pages="", publisher="",
                issn="", language="", short_title="",
+               citation_key=None,
                publication_title="Test Journal"):
-    """Build a realistic Zotero item dict for stubbing."""
+    """Build a realistic Zotero item dict for stubbing.
+
+    citation_key defaults to None — the field is omitted from the data dict
+    entirely so add-when-absent paths are exercised by the default fixture.
+    Pass an explicit value to seed a pre-existing citationKey.
+    """
+    data = {
+        "key": key,
+        "version": version,
+        "itemType": "journalArticle",
+        "title": title,
+        "creators": [{"creatorType": "author",
+                      "firstName": "Jane", "lastName": "Doe"}],
+        "date": date,
+        "abstractNote": abstract,
+        "publicationTitle": publication_title,
+        "volume": volume,
+        "issue": issue,
+        "pages": pages,
+        "publisher": publisher,
+        "ISSN": issn,
+        "language": language,
+        "shortTitle": short_title,
+        "tags": [{"tag": t} for t in (tags or [])],
+        "collections": list(collections or []),
+        "DOI": doi,
+        "url": url,
+        "extra": extra,
+        "relations": {},
+    }
+    if citation_key is not None:
+        data["citationKey"] = citation_key
     return {
         "key": key,
         "version": version,
-        "data": {
-            "key": key,
-            "version": version,
-            "itemType": "journalArticle",
-            "title": title,
-            "creators": [{"creatorType": "author",
-                          "firstName": "Jane", "lastName": "Doe"}],
-            "date": date,
-            "abstractNote": abstract,
-            "publicationTitle": publication_title,
-            "volume": volume,
-            "issue": issue,
-            "pages": pages,
-            "publisher": publisher,
-            "ISSN": issn,
-            "language": language,
-            "shortTitle": short_title,
-            "tags": [{"tag": t} for t in (tags or [])],
-            "collections": list(collections or []),
-            "DOI": doi,
-            "url": url,
-            "extra": extra,
-            "relations": {},
-        },
+        "data": data,
     }
 
 
@@ -961,6 +970,55 @@ class TestUpdateItemNewFields:
 
         assert fake.update_calls[0]["data"]["place"] == "Cambridge, MA"
         assert "Cambridge, MA" in result
+
+    def test_add_citation_key_when_absent(self, monkeypatch):
+        """citation_key adds data.citationKey when the fetched item has none.
+
+        This is the #320 scenario: BBT has not yet auto-pinned a key (or the
+        item predates BBT), so data['citationKey'] is absent. The generic
+        field-write loop's ``if field in data`` check would silently skip
+        this case and emit a misleading 'not valid for item type' warning;
+        the special case in write.py routes the add through.
+        """
+        item = _make_item()  # citation_key=None -> field omitted from data
+        assert "citationKey" not in item["data"]
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            citation_key="doeCorrectArticle2024",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["citationKey"] == \
+            "doeCorrectArticle2024"
+        assert "doeCorrectArticle2024" in result
+        assert "not valid for item type" not in result
+
+    def test_update_citation_key_when_present(self, monkeypatch):
+        """citation_key overwrites an existing data.citationKey.
+
+        Covers the remediation path for malformed BBT-auto-pinned keys —
+        BBT 9.x exposes no JSON-RPC refresh mechanism, so direct write is
+        the only programmatic route. See
+        https://github.com/retorquere/zotero-better-bibtex/issues/3522.
+        """
+        item = _make_item(citation_key="doeOldPaperdraftpdf2024")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            citation_key="doeCorrectArticle2024",
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["citationKey"] == \
+            "doeCorrectArticle2024"
+        assert "doeCorrectArticle2024" in result
 
     def test_access_date_skipped_on_book(self, monkeypatch):
         """accessDate is not valid for books — should be in skip warning."""

@@ -153,9 +153,12 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
         db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
+        openai_batch = existing_semantic_config.get("openai_batch", {}).get("enabled", False)
         print("Found existing semantic search configuration:")
         print(f"  - Embedding model: {model}")
         print(f"  - Embedding model name: {name}")
+        if model == "openai":
+            print(f"  - OpenAI Batch API updates: {'enabled' if openai_batch else 'disabled'}")
         print(f"  - Update frequency: {update_freq}")
         print(f"  - Zotero database path: {db_path}")
         print("You can keep it or change it.")
@@ -171,12 +174,13 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
     print("1. Default (all-MiniLM-L6-v2) - Free, runs locally")
     print("2. OpenAI - Better quality, requires API key")
     print("3. Gemini - Better quality, requires API key")
+    print("4. Ollama - Local embeddings via Ollama API")
 
     while True:
-        choice = input("\nChoose embedding model (1-3): ").strip()
-        if choice in ["1", "2", "3"]:
+        choice = input("\nChoose embedding model (1-4): ").strip()
+        if choice in ["1", "2", "3", "4"]:
             break
-        print("Please enter 1, 2, or 3")
+        print("Please enter 1, 2, 3, or 4")
 
     config = {}
 
@@ -218,6 +222,26 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         else:
             print("Using default OpenAI base URL")
 
+        existing_openai_batch = existing_semantic_config.get("openai_batch", {}) if existing_semantic_config else {}
+        if existing_semantic_config and existing_semantic_config.get("embedding_model") == "openai":
+            default_batch_enabled = bool(existing_openai_batch.get("enabled", False))
+        else:
+            default_batch_enabled = True
+        default_hint = "Y/n" if default_batch_enabled else "y/N"
+        print("\nOpenAI indexing mode:")
+        print("Batch API lowers costs for database updates, but results are imported later after the batch completes.")
+        print("Realtime API indexes immediately, but uses standard synchronous embedding pricing.")
+        raw = input(f"Use OpenAI Batch API for database updates? [{default_hint}]: ").strip().lower()
+        if raw == "":
+            batch_enabled = default_batch_enabled
+        else:
+            batch_enabled = raw in ["y", "yes"]
+        config["openai_batch"] = {"enabled": batch_enabled}
+        if batch_enabled:
+            print("OpenAI Batch API will be used by default for update-db.")
+        else:
+            print("Realtime OpenAI embeddings will be used by default for update-db.")
+
     elif choice == "3":
         config["embedding_model"] = "gemini"
 
@@ -237,6 +261,18 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
             print(f"Using custom Gemini base URL: {base_url}")
         else:
             print("Using default Gemini base URL")
+
+    elif choice == "4":
+        config["embedding_model"] = "ollama"
+        model_name = input("Enter Ollama embedding model name (default: qwen3-embedding): ").strip()
+        config["embedding_config"] = {"model_name": model_name or "qwen3-embedding"}
+
+        base_url = input("Enter Ollama base URL (leave blank for http://localhost:11434): ").strip()
+        if base_url:
+            config["embedding_config"]["base_url"] = base_url
+            print(f"Using custom Ollama base URL: {base_url}")
+        else:
+            print("Using default Ollama base URL: http://localhost:11434")
 
     # Configure update frequency
     print("\n=== Database Update Configuration ===")
@@ -339,6 +375,30 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
     # behavior. The flag is ignored in local mode (ZOTERO_LOCAL=true uses
     # local sqlite extraction).
     config.setdefault("include_fulltext", True)
+    # Discoverable defaults for the two retrieval-quality knobs (both off so
+    # the base experience is unchanged). Preserve any existing user values.
+    #   reranker: local cross-encoder re-rank of candidates for higher
+    #             precision (needs sentence-transformers; adds a model load).
+    #   chunking: index each item as overlapping passages so search returns
+    #             grounded quotes and long PDFs stay searchable. Enabling it
+    #             requires a one-time `update-db --force-rebuild`.
+    if existing_semantic_config and existing_semantic_config.get("reranker"):
+        config["reranker"] = existing_semantic_config["reranker"]
+    else:
+        config.setdefault("reranker", {
+            "enabled": False,
+            "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "candidate_multiplier": 3,
+        })
+    if existing_semantic_config and existing_semantic_config.get("chunking"):
+        config["chunking"] = existing_semantic_config["chunking"]
+    else:
+        config.setdefault("chunking", {
+            "enabled": False,
+            "chunk_size": 1500,
+            "overlap": 200,
+            "max_chunks_per_item": 20,
+        })
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
 
@@ -450,6 +510,12 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
                 env_settings["GEMINI_EMBEDDING_MODEL"] = model
             if base_url := embedding_config.get("base_url"):
                 env_settings["GEMINI_BASE_URL"] = base_url
+
+        elif semantic_config.get("embedding_model") == "ollama":
+            if model := embedding_config.get("model_name"):
+                env_settings["OLLAMA_EMBEDDING_MODEL"] = model
+            if base_url := embedding_config.get("base_url"):
+                env_settings["OLLAMA_BASE_URL"] = base_url
 
     # Add or update zotero config
     config["mcpServers"]["zotero"] = {

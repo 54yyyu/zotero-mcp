@@ -86,17 +86,19 @@ def enrich_items(items: list[dict]) -> dict[str, dict[str, str]]:
         return {}
 
     dois = list(doi_map.keys())
-    tallies = _scite.get_tallies_batch(dois)
-    papers = _scite.get_papers_batch(dois)
+    # Scite lowercases DOI keys in its responses; index by lowercase so
+    # original-case DOIs (DOIs are case-insensitive) still match.
+    tallies = {k.lower(): v for k, v in _scite.get_tallies_batch(dois).items()}
+    papers = {k.lower(): v for k, v in _scite.get_papers_batch(dois).items()}
 
     result: dict[str, dict[str, str]] = {}
     for doi in dois:
         fields: dict[str, str] = {}
-        tally = tallies.get(doi)
+        tally = tallies.get(doi.lower())
         if tally:
             fields["Scite"] = _format_tally_line(tally)
 
-        paper = papers.get(doi)
+        paper = papers.get(doi.lower())
         if paper:
             notices = paper.get("editorialNotices", [])
             if notices:
@@ -374,10 +376,14 @@ def check_retractions(
         if not papers:
             return "Could not reach Scite API — try again later."
 
+        # Scite lowercases DOI keys in its responses; index by lowercase so
+        # original-case DOIs (DOIs are case-insensitive) still match.
+        papers = {k.lower(): v for k, v in papers.items()}
+
         # Find items with notices
         flagged: list[tuple[dict, list[dict]]] = []
         for doi, item in doi_items.items():
-            paper = papers.get(doi, {})
+            paper = papers.get(doi.lower(), {})
             notices = paper.get("editorialNotices", [])
             if notices:
                 flagged.append((item, notices))

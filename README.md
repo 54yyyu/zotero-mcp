@@ -29,7 +29,7 @@
 
 ### 🧠 AI-Powered Semantic Search
 - **Vector-based similarity search** over your entire research library (requires `[semantic]` extra)
-- **Multiple embedding models**: Default (free, local), OpenAI, and Gemini
+- **Multiple embedding models**: Default (free, local), OpenAI, Gemini, and Ollama
 - **Intelligent results** with similarity scores and contextual matching
 - **Auto-updating database** with configurable sync schedules
 
@@ -153,6 +153,31 @@ zotero-mcp setup --semantic-config-only
 - **Default (all-MiniLM-L6-v2)**: Free, runs locally, good for most use cases
 - **OpenAI**: Better quality, requires API key (`text-embedding-3-small` or `text-embedding-3-large`)
 - **Gemini**: Better quality, requires API key (`gemini-embedding-001`)
+- **Ollama**: Runs locally via Ollama API (requires model name, e.g., 'qwen3-embedding')
+
+**Using Ollama embeddings:**
+
+Install and start Ollama, then pull an embedding model before running `zotero-mcp update-db`:
+
+```bash
+ollama serve
+
+# Small model: fast and lightweight
+ollama pull nomic-embed-text
+
+# Medium model: better multilingual retrieval quality
+ollama pull bge-m3
+```
+
+When prompted by `zotero-mcp setup --semantic-config-only`, choose **Ollama** and use either `nomic-embed-text` or `bge-m3` as the model name. If you change embedding models later, rebuild the index:
+
+```bash
+zotero-mcp update-db --force-rebuild
+```
+
+When you choose OpenAI, setup also asks whether database updates should use
+OpenAI Batch API. Batch updates are cheaper for large libraries, but they are
+asynchronous: submit the batch, wait for completion, then import the embeddings.
 
 **Update Frequency Options:**
 - **Manual**: Update only when you run `zotero-mcp update-db`
@@ -167,6 +192,16 @@ After setup, initialize your search database:
 ```bash
 # Build the semantic search database (fast, metadata-only)
 zotero-mcp update-db
+
+# Submit OpenAI embeddings through Batch API for this update
+zotero-mcp update-db --openai-batch
+
+# Check and import completed OpenAI Batch API embeddings
+zotero-mcp openai-batch-status
+zotero-mcp openai-batch-import
+
+# Force realtime OpenAI embeddings even if Batch API is enabled in config
+zotero-mcp update-db --no-openai-batch
 
 # Build with full-text extraction (slower, more comprehensive)
 zotero-mcp update-db --fulltext
@@ -307,13 +342,17 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
 
 **Semantic Search:**
-- `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini)
+- `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini, ollama)
 - `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model name (text-embedding-3-small, text-embedding-3-large)
 - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
+- OpenAI Batch API indexing is configured by `zotero-mcp setup` and can be overridden with
+  `zotero-mcp update-db --openai-batch` or `--no-openai-batch`
 - `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
+- `OLLAMA_EMBEDDING_MODEL`: Ollama embedding model name (qwen3-embedding by default)
+- `OLLAMA_BASE_URL`: Ollama server URL (default: http://localhost:11434)
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
 
 ### Command-Line Options
@@ -337,6 +376,10 @@ zotero-mcp update --force                  # Force update even if up to date
 
 # Semantic search database management
 zotero-mcp update-db                       # Update semantic search database (fast, metadata-only)
+zotero-mcp update-db --openai-batch        # Submit OpenAI embeddings through Batch API
+zotero-mcp update-db --no-openai-batch     # Force realtime OpenAI embeddings for this run
+zotero-mcp openai-batch-status             # Check latest OpenAI embedding batch status
+zotero-mcp openai-batch-import             # Import completed OpenAI batch embeddings
 zotero-mcp update-db --fulltext             # Update with full-text extraction (comprehensive but slower)
 zotero-mcp update-db --force-rebuild       # Force complete database rebuild
 zotero-mcp update-db --fulltext --force-rebuild  # Rebuild with full-text extraction
@@ -384,7 +427,27 @@ zotero-cli ann search "highlight text"
 # Add items
 zotero-cli add doi 10.1038/s41586-021-03819-2
 zotero-cli add url https://arxiv.org/abs/2301.00001
-zotero-cli add file /path/to/paper.pdf
+zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
+zotero-cli add isbn 9780262046305
+zotero-cli add bibtex --file refs.bib                # or --bibtex '@article{...}'
+zotero-cli add bibtex --bibtex - < refs.bib          # stdin via -
+zotero-cli add csl-json --file refs.json             # or --json '...' / --json -
+
+# --collections accepts keys, names, or parent/child paths — resolved and
+# validated before the item is created (a typo fails the add, with suggestions,
+# instead of leaving an unfiled item)
+zotero-cli add doi 10.1038/s41586-021-03819-2 --collections "Reading List"
+zotero-cli collections manage --item-keys ABC123 --add-to "_project/topic"
+
+# Adds are idempotent by default (--if-exists file): if the item is already in
+# the library it is reused — filed into any missing collections, given any
+# missing tags — instead of duplicated. Re-running the same command is a no-op.
+zotero-cli add doi 10.1038/s41586-021-03819-2 -c "Reading List"   # run it twice: converges
+zotero-cli add doi 10.1038/s41586-021-03819-2 --if-exists skip       # never touch existing
+zotero-cli add doi 10.1038/s41586-021-03819-2 --if-exists duplicate  # old behavior
+zotero-cli add doi 10.1038/s41586-021-03819-2 -c "New Topic" --create-collections
+# -c/--collection is repeatable and never comma-split (names with commas work);
+# --collections remains the comma-separated form
 
 # Collections and tags
 zotero-cli coll list                          # list collections (short alias)
@@ -491,10 +554,15 @@ zotero_remove_item_relation(
 ### 📦 Item & Collection Management Tools
 - `zotero_add_by_doi`: Add a paper by DOI with automatic metadata and open-access PDF attachment
 - `zotero_add_by_url`: Add a paper by URL (arXiv, DOI URLs, and general webpages)
+- `zotero_add_by_isbn`: Add a book by ISBN (Open Library + Google Books cascade)
+- `zotero_add_by_bibtex`: Add one or more items from BibTeX (inline or .bib file)
+- `zotero_add_by_csl_json`: Add one or more items from CSL JSON (inline or file)
 - `zotero_add_from_file`: Import a local PDF or EPUB file with automatic DOI extraction
+
+All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item. They also take `if_exists` (`"duplicate"` — default — always creates; `"file"` reuses an existing item matching the DOI/arXiv ID/ISBN/URL, filing it into missing collections and adding missing tags; `"skip"` leaves a match untouched) and `create_missing_collections` (create unknown collection specs, including path chains, instead of failing). The `zotero-cli add` commands default to `--if-exists file`.
 - `zotero_create_collection`: Create a new collection (folder/project) in your library
 - `zotero_search_collections`: Search for collections by name to find their keys
-- `zotero_manage_collections`: Add or remove items from collections
+- `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
 - `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
 - `zotero_find_duplicates`: Find duplicate items by title and/or DOI
 - `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items

@@ -40,6 +40,7 @@ from zotero_mcp import chroma_client  # noqa: E402
         ("openai", "OpenAIEmbeddingFunction"),
         ("gemini", "GeminiEmbeddingFunction"),
         ("huggingface", "HuggingFaceEmbeddingFunction"),
+        ("ollama", "OllamaEmbeddingFunction"),
     ],
 )
 def test_custom_embedding_functions_are_registered(name, cls_attr):
@@ -70,4 +71,10 @@ def test_openai_build_from_config_handles_persisted_config(monkeypatch):
     ef = known_embedding_functions["openai"].build_from_config(persisted)
 
     assert isinstance(ef, chroma_client.OpenAIEmbeddingFunction)
-    assert ef.get_config() == persisted
+    # Configs persisted before request_batch_size/rate_limit_rps existed must
+    # still rebuild, falling back to defaults for the new fields.
+    cfg = ef.get_config()
+    assert cfg["model_name"] == "text-embedding-3-small"
+    assert cfg["base_url"] is None
+    assert cfg["request_batch_size"] == chroma_client.OpenAIEmbeddingFunction.DEFAULT_REQUEST_BATCH_SIZE
+    assert cfg["rate_limit_rps"] is None

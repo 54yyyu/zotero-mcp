@@ -881,19 +881,39 @@ def semantic_search(
             similarity_score = result.get("similarity_score", 0)
             zotero_item = result.get("zotero_item", {})
 
+            # Prefer the grounded passage — the window of the document that
+            # actually overlaps the query — over a blind head-truncation, so
+            # the agent gets a citable quote rather than the abstract's opening.
+            passage = result.get("matched_passage") or result.get("matched_text", "")
+            snippet = passage[:400] + "..." if len(passage) > 400 else passage
+
+            # Provenance for citing: page (when the index carries page breaks),
+            # else which passage of how many, else an approximate char offset.
+            loc_bits = []
+            if (page := result.get("page")) is not None:
+                loc_bits.append(f"p. {page}")
+            if (ci := result.get("chunk_index")) is not None and (nc := result.get("n_chunks")):
+                loc_bits.append(f"passage {ci + 1}/{nc}")
+            elif off := result.get("char_start", result.get("passage_offset")):
+                loc_bits.append(f"char ~{off}")
+
             if zotero_item:
-                extra = {"Similarity Score": f"{similarity_score:.3f}"}
-                matched_text = result.get("matched_text", "")
-                if matched_text:
-                    snippet = matched_text[:300] + "..." if len(matched_text) > 300 else matched_text
-                    extra["Matched Content"] = snippet
+                extra = {"Relevance": f"{similarity_score:.3f}"}
+                if loc_bits:
+                    extra["Location"] = ", ".join(loc_bits)
+                if snippet:
+                    extra["Matched Passage"] = snippet
                 # Override key from result since it may differ from item["key"]
                 zotero_item.setdefault("key", result.get("item_key", ""))
                 output.extend(_utils.format_item_result(zotero_item, index=i, extra_fields=extra))
             else:
                 # Fallback if full Zotero item not available
                 output.append(f"## {i}. Item {result.get('item_key', 'Unknown')}")
-                output.append(f"**Similarity Score:** {similarity_score:.3f}")
+                output.append(f"**Relevance:** {similarity_score:.3f}")
+                if loc_bits:
+                    output.append(f"**Location:** {', '.join(loc_bits)}")
+                if snippet:
+                    output.append(f"**Matched Passage:** {snippet}")
                 if error := result.get("error"):
                     output.append(f"**Error:** {error}")
                 output.append("")
@@ -1013,10 +1033,16 @@ def update_search_database(
         "provider summary."
     )
 )
-@with_zotero_api_lock
 def get_search_database_status(*, ctx: Context) -> str:
     """
     Get semantic search database status.
+
+    Deliberately NOT wrapped in ``@with_zotero_api_lock``: this is a read-only
+    ChromaDB query that never touches the Zotero API, and holding the shared
+    lock here would make a slow status read block every other tool. The read
+    path below also avoids constructing the embedding function, which for the
+    default backend downloads an ONNX model on first use and could otherwise
+    hang this call for minutes.
 
     Args:
         ctx: MCP context
@@ -1027,9 +1053,12 @@ def get_search_database_status(*, ctx: Context) -> str:
     try:
         ctx.info("Getting semantic search database status...")
 
-        # Import semantic search module
+        # Import the lightweight, model-free status readers. These live in the
+        # semantic-search modules so they share the [semantic] extra's import
+        # guard, but neither loads an embedding model or a Zotero client.
         try:
-            from zotero_mcp.semantic_search import create_semantic_search
+            from zotero_mcp.chroma_client import read_collection_status
+            from zotero_mcp.semantic_search import load_update_config, should_update
         except ImportError:
             return (
                 "Semantic search is not available. Install the required packages with:\n"
@@ -1040,33 +1069,31 @@ def get_search_database_status(*, ctx: Context) -> str:
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
 
-        # Create semantic search instance
-        search = create_semantic_search(str(config_path))
-
-        # Get status
-        status = search.get_database_status()
+        # Read status without loading any embedding model (fast, no network).
+        collection_info = read_collection_status(str(config_path))
+        update_config = load_update_config(str(config_path))
 
         # Format results
         output = ["# Semantic Search Database Status", ""]
 
-        collection_info = status.get("collection_info", {})
         output.append("## Collection Information")
         output.append(f"**Name:** {collection_info.get('name', 'Unknown')}")
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
         output.append(f"**Embedding Model:** {collection_info.get('embedding_model', 'Unknown')}")
         output.append(f"**Database Path:** {collection_info.get('persist_directory', 'Unknown')}")
 
+        if collection_info.get("initialized") is False and not collection_info.get("error"):
+            output.append("**Status:** Not initialized — run zotero_update_search_database first.")
         if collection_info.get('error'):
             output.append(f"**Error:** {collection_info['error']}")
 
         output.append("")
 
-        update_config = status.get("update_config", {})
         output.append("## Update Configuration")
         output.append(f"**Auto Update:** {update_config.get('auto_update', False)}")
         output.append(f"**Frequency:** {update_config.get('update_frequency', 'manual')}")
         output.append(f"**Last Update:** {update_config.get('last_update', 'Never')}")
-        output.append(f"**Should Update Now:** {status.get('should_update', False)}")
+        output.append(f"**Should Update Now:** {should_update(update_config)}")
 
         frequency = update_config.get('update_frequency', 'manual')
         if frequency.startswith('every_') and update_config.get('update_days'):
