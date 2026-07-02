@@ -865,6 +865,19 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx):
         )
 
 
+def _attachment_filename_exists(write_zot, parent_key, filename):
+    """True if ``parent_key`` already has a child attachment stored as ``filename``.
+
+    Non-fatal: errors while listing children count as "not present", so
+    attach flows degrade to re-uploading rather than failing outright.
+    """
+    try:
+        kids = write_zot.children(parent_key)
+    except Exception:
+        return False
+    return any((k.get("data", {}) or {}).get("filename") == filename for k in kids)
+
+
 def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):
     """Create a linked-URL attachment (bookmarks the PDF URL without downloading)."""
     try:

@@ -2632,13 +2632,8 @@ def add_from_file(
         try:
             display_name = os.path.basename(file_path)
             if item_reused:
-                try:
-                    kids = write_zot.children(parent_key)
-                except Exception:
-                    kids = []
-                if any(
-                    (k.get("data", {}) or {}).get("filename") == display_name
-                    for k in kids
+                if _helpers._attachment_filename_exists(
+                    write_zot, parent_key, display_name
                 ):
                     return (
                         f"{result_msg}\n"
