@@ -1386,7 +1386,12 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                         for chunk in pdf_resp.iter_content(chunk_size=8192):
                             f.write(chunk)
                     webdav_suffix = _helpers._webdav_first_attach(
-                        write_zot, filename, filepath, item_key, ctx
+                        write_zot,
+                        filename,
+                        filepath,
+                        item_key,
+                        ctx,
+                        content_type="application/pdf",
                     )
                     if webdav_suffix is None:
                         attach_result = write_zot.attachment_both(
@@ -2651,7 +2656,12 @@ def add_from_file(
                     )
 
             webdav_suffix = _helpers._webdav_first_attach(
-                write_zot, display_name, file_path, parent_key, ctx
+                write_zot,
+                display_name,
+                file_path,
+                parent_key,
+                ctx,
+                content_type=_helpers._guess_content_type(display_name),
             )
             if webdav_suffix is None:
                 attach_result = write_zot.attachment_both(
