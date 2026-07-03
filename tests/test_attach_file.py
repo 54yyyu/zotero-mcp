@@ -3,6 +3,7 @@
 import pytest
 from conftest import DummyContext, FakeZotero
 
+from zotero_mcp import server
 from zotero_mcp.tools import _helpers
 
 
@@ -46,9 +47,6 @@ class TestAttachmentFilenameExists:
         assert not _helpers._attachment_filename_exists(zot, "ITEM1", "paper.pdf")
 
 
-from zotero_mcp import server
-
-
 class FakeZoteroForAttach(FakeZotero):
     """FakeZotero extended with attachment_both recording."""
 
@@ -73,6 +71,11 @@ def _patch_path_valid(monkeypatch):
     monkeypatch.setattr("os.path.isfile", lambda p: True)
     monkeypatch.setattr("os.path.islink", lambda p: False)
     monkeypatch.setattr("os.path.isabs", lambda p: p.startswith("/"))
+    # The filename-override branch stages the file via shutil.copy2 into a
+    # real TemporaryDirectory; the fake source paths above don't exist on
+    # disk, so make the copy a no-op here. Target the patch at the module
+    # attribute since write.py calls it as `shutil.copy2`.
+    monkeypatch.setattr("shutil.copy2", lambda src, dst: None)
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +188,34 @@ class TestAttachFileLocal:
             ctx=dummy_ctx,
         )
         assert fake.attachments[0]["files"][0][0] == "smith-2020.pdf"
+
+    def test_filename_override_controls_stored_path(self, monkeypatch, dummy_ctx):
+        """pyzotero's attachment_both() stores the file under the real file's
+        basename, ignoring the title tuple element — so a filename override
+        must stage the file under the override name, not just relabel it."""
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        copy_calls = []
+        monkeypatch.setattr(
+            "shutil.copy2",
+            lambda src, dst: copy_calls.append((src, dst)),
+        )
+
+        server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/dl (3).pdf",
+            filename="smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake.attachments) == 1
+        stored_path = fake.attachments[0]["files"][0][1]
+        assert stored_path.endswith("smith-2020.pdf")
+        assert len(copy_calls) == 1
+        assert copy_calls[0][0] == "/Users/test/dl (3).pdf"
+        assert copy_calls[0][1].endswith("smith-2020.pdf")
 
     def test_skips_when_same_filename_present(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()

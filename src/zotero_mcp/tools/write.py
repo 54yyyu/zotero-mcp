@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 import time as _time
 import xml.etree.ElementTree as ET
@@ -2743,8 +2744,8 @@ def attach_file(
         # Validate the parent item before touching any file.
         try:
             item = write_zot.item(item_key)
-        except Exception:
-            return f"Error: Item '{item_key}' not found."
+        except Exception as e:
+            return f"Error: Item '{item_key}' not found ({e})."
         item_data = item.get("data", {}) or {}
         item_type = item_data.get("itemType")
         if item_type in ("attachment", "note", "annotation"):
@@ -2776,6 +2777,20 @@ def attach_file(
                 )
             display_name = filename or os.path.basename(file_path)
             ctx.info(f"Attaching local file to {item_key}: {display_name}")
+            if filename and filename != os.path.basename(file_path):
+                # pyzotero's attachment_both() derives the *stored* filename
+                # from the real file's basename, not the title tuple element
+                # — stage the file under the override name in a scratch dir
+                # so the override actually controls what gets stored (and so
+                # the dedupe check in _upload_attachment, which compares
+                # against stored filenames, converges on re-run).
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    staged_path = os.path.join(tmpdir, filename)
+                    shutil.copy2(file_path, staged_path)
+                    # Must run inside the with-block — temp file disappears on exit.
+                    return _upload_attachment(
+                        write_zot, item_key, display_name, staged_path, ctx
+                    )
             return _upload_attachment(write_zot, item_key, display_name, file_path, ctx)
 
         return _attach_from_url(write_zot, item_key, url, filename, ctx)
