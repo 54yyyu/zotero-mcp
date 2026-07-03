@@ -2786,8 +2786,53 @@ def attach_file(
 
 
 def _attach_from_url(write_zot, item_key, url, filename, ctx):
-    """Download ``url`` (PDF-only) and attach it to ``item_key``."""
-    return "Error: URL attachment not implemented yet."
+    """Download ``url`` (PDF-only) and attach it to ``item_key``.
+
+    The URL is user/LLM-supplied, so it goes through ``_guarded_pdf_get``
+    (SSRF guard + per-hop redirect re-validation) like the third-party
+    OA-PDF URLs elsewhere in the codebase.
+    """
+    if not url.lower().startswith(("http://", "https://")):
+        return "Error: url must be an http(s) URL."
+
+    ctx.info(f"Downloading PDF for {item_key}: {url}")
+    resp = _helpers._guarded_pdf_get(url, ctx)
+    if resp is None:
+        return (
+            "Error: URL rejected (unreachable, resolves to a private "
+            "network, or too many redirects)."
+        )
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        return f"Error: Download failed: {e}"
+
+    content_type = resp.headers.get("Content-Type", "")
+    if "pdf" not in content_type and "octet-stream" not in content_type:
+        return (
+            f"Error: URL did not return a PDF (Content-Type: "
+            f"{content_type}). For non-PDF formats, download the file "
+            "locally and use file_path."
+        )
+
+    if not filename:
+        seg = os.path.basename(unquote(urlparse(url).path))
+        filename = seg if seg.lower().endswith(".pdf") else f"{item_key}.pdf"
+    elif not filename.lower().endswith(".pdf"):
+        filename += ".pdf"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = os.path.join(tmpdir, filename)
+        with open(filepath, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        if os.path.getsize(filepath) < 1000:
+            return (
+                "Error: Downloaded file is under 1 KB — likely an error "
+                "page, not a real PDF."
+            )
+        # Must run inside the with-block — temp file disappears on exit.
+        return _upload_attachment(write_zot, item_key, filename, filepath, ctx)
 
 
 def _build_relation_uri(library_type: str, library_id: str, item_key: str) -> str:

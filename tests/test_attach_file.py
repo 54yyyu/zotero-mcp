@@ -274,3 +274,149 @@ class TestAttachFileLocal:
         )
         assert result.startswith("Error")
         assert "quota exceeded" in result
+
+
+# ---------------------------------------------------------------------------
+# attach_file: URL branch
+# ---------------------------------------------------------------------------
+
+
+class FakeResponse:
+    def __init__(
+        self,
+        content=b"%PDF-1.4 " + b"x" * 2000,
+        content_type="application/pdf",
+        status=200,
+    ):
+        self._content = content
+        self.headers = {"Content-Type": content_type}
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_content(self, chunk_size=8192):
+        for i in range(0, len(self._content), chunk_size):
+            yield self._content[i : i + chunk_size]
+
+
+def _patch_guarded_get(monkeypatch, response):
+    monkeypatch.setattr(
+        "zotero_mcp.tools._helpers._guarded_pdf_get",
+        lambda pdf_url, ctx: response,
+    )
+
+
+class TestAttachFileUrl:
+    def test_happy_path_downloads_and_attaches(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse())
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            url="https://example.org/papers/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake.attachments) == 1
+        att = fake.attachments[0]
+        assert att["parentid"] == "ITEM1"
+        assert att["files"][0][0] == "smith-2020.pdf"
+        assert "File attached" in result
+
+    def test_filename_from_url_falls_back_to_item_key(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse())
+
+        server.attach_file(
+            item_key="ITEM1",
+            url="https://example.org/download?id=42",
+            ctx=dummy_ctx,
+        )
+        assert fake.attachments[0]["files"][0][0] == "ITEM1.pdf"
+
+    def test_filename_override_gets_pdf_extension(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse())
+
+        server.attach_file(
+            item_key="ITEM1",
+            url="https://example.org/download?id=42",
+            filename="smith-2020",
+            ctx=dummy_ctx,
+        )
+        assert fake.attachments[0]["files"][0][0] == "smith-2020.pdf"
+
+    def test_rejects_non_http_url(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+
+        result = server.attach_file(
+            item_key="ITEM1", url="file:///etc/passwd", ctx=dummy_ctx
+        )
+        assert "http(s)" in result
+        assert len(fake.attachments) == 0
+
+    def test_ssrf_rejection_surfaces_error(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, None)
+
+        result = server.attach_file(
+            item_key="ITEM1", url="https://internal.local/a.pdf", ctx=dummy_ctx
+        )
+        assert result.startswith("Error")
+        assert len(fake.attachments) == 0
+
+    def test_non_pdf_content_type_rejected(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse(content_type="text/html"))
+
+        result = server.attach_file(
+            item_key="ITEM1", url="https://example.org/a.pdf", ctx=dummy_ctx
+        )
+        assert "did not return a PDF" in result
+        assert len(fake.attachments) == 0
+
+    def test_tiny_download_rejected(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse(content=b"tiny"))
+
+        result = server.attach_file(
+            item_key="ITEM1", url="https://example.org/a.pdf", ctx=dummy_ctx
+        )
+        assert "1 KB" in result or "too small" in result
+        assert len(fake.attachments) == 0
+
+    def test_http_error_surfaced(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse(status=403))
+
+        result = server.attach_file(
+            item_key="ITEM1", url="https://example.org/a.pdf", ctx=dummy_ctx
+        )
+        assert result.startswith("Error")
+        assert len(fake.attachments) == 0
+
+    def test_dedupe_applies_to_url_branch(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {"data": {"itemType": "attachment", "filename": "smith-2020.pdf"}}
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse())
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            url="https://example.org/papers/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+        assert len(fake.attachments) == 0
+        assert "already present" in result
