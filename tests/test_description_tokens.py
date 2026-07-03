@@ -41,6 +41,7 @@ TOOL_BUDGETS = {
     # tools/write.py
     "zotero_batch_update_tags":        (155, 350),
     "zotero_batch_update_extra":       (165, 370),
+    "zotero_attach_file":              (190, 430),
     # tools/search.py
     "zotero_search_items":             (175, 400),
     "zotero_search_by_tag":            (115, 265),
