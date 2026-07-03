@@ -44,3 +44,233 @@ class TestAttachmentFilenameExists:
         zot = FakeZotero()
         zot._children["ITEM1"] = [{"data": None}]
         assert not _helpers._attachment_filename_exists(zot, "ITEM1", "paper.pdf")
+
+
+from zotero_mcp import server
+
+
+class FakeZoteroForAttach(FakeZotero):
+    """FakeZotero extended with attachment_both recording."""
+
+    def __init__(self):
+        super().__init__()
+        self.attachments = []
+
+    def attachment_both(self, files, parentid=None, **kwargs):
+        self.attachments.append({"files": files, "parentid": parentid})
+        return {"success": {"0": "ATCH0001"}, "successful": {}, "failed": {}}
+
+
+def _patch_write_client(monkeypatch, fake_zot):
+    monkeypatch.setattr(
+        "zotero_mcp.tools._helpers._get_write_client",
+        lambda ctx: (fake_zot, fake_zot),
+    )
+
+
+def _patch_path_valid(monkeypatch):
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    monkeypatch.setattr("os.path.isfile", lambda p: True)
+    monkeypatch.setattr("os.path.islink", lambda p: False)
+    monkeypatch.setattr("os.path.isabs", lambda p: p.startswith("/"))
+
+
+# ---------------------------------------------------------------------------
+# attach_file: argument and item validation
+# ---------------------------------------------------------------------------
+
+
+class TestAttachFileValidation:
+    def test_requires_exactly_one_source_neither(self, monkeypatch, dummy_ctx):
+        _patch_write_client(monkeypatch, FakeZoteroForAttach())
+        result = server.attach_file(item_key="ITEM1", ctx=dummy_ctx)
+        assert "exactly one of file_path or url" in result
+
+    def test_requires_exactly_one_source_both(self, monkeypatch, dummy_ctx):
+        _patch_write_client(monkeypatch, FakeZoteroForAttach())
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/tmp/a.pdf",
+            url="https://example.org/a.pdf",
+            ctx=dummy_ctx,
+        )
+        assert "exactly one of file_path or url" in result
+
+    def test_local_only_mode_message(self, monkeypatch, dummy_ctx):
+        def raise_local(ctx):
+            raise ValueError(
+                "Cannot perform write operations in local-only mode. "
+                "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
+            )
+
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local)
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/tmp/a.pdf", ctx=dummy_ctx
+        )
+        assert "local-only mode" in result
+
+    def test_item_not_found(self, monkeypatch, dummy_ctx):
+        class NotFound(FakeZoteroForAttach):
+            def item(self, item_key, **kwargs):
+                raise RuntimeError("404")
+
+        _patch_write_client(monkeypatch, NotFound())
+        result = server.attach_file(
+            item_key="NOPE", file_path="/tmp/a.pdf", ctx=dummy_ctx
+        )
+        assert "Error" in result and "not found" in result
+
+    def test_rejects_attachment_key_with_parent_hint(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        fake._items = [
+            {
+                "key": "ATT1",
+                "data": {
+                    "itemType": "attachment",
+                    "parentItem": "PARENT99",
+                    "filename": "x.pdf",
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+        result = server.attach_file(
+            item_key="ATT1", file_path="/tmp/a.pdf", ctx=dummy_ctx
+        )
+        assert "itemType 'attachment'" in result
+        assert "PARENT99" in result
+
+    def test_rejects_note_key(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        fake._items = [{"key": "NOTE1", "data": {"itemType": "note"}}]
+        _patch_write_client(monkeypatch, fake)
+        result = server.attach_file(
+            item_key="NOTE1", file_path="/tmp/a.pdf", ctx=dummy_ctx
+        )
+        assert "Error" in result
+
+
+# ---------------------------------------------------------------------------
+# attach_file: local-file branch
+# ---------------------------------------------------------------------------
+
+
+class TestAttachFileLocal:
+    def test_happy_path_attaches_to_item(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake.attachments) == 1
+        att = fake.attachments[0]
+        assert att["parentid"] == "ITEM1"
+        assert att["files"][0] == ("smith-2020.pdf", "/Users/test/smith-2020.pdf")
+        assert "File attached" in result
+        assert "zotero_update_search_database" in result
+
+    def test_filename_override(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/dl (3).pdf",
+            filename="smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+        assert fake.attachments[0]["files"][0][0] == "smith-2020.pdf"
+
+    def test_skips_when_same_filename_present(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {"data": {"itemType": "attachment", "filename": "smith-2020.pdf"}}
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+        assert len(fake.attachments) == 0
+        assert "already present" in result
+        assert "not re-uploaded" in result
+
+    def test_rejects_symlink(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+        monkeypatch.setattr("os.path.islink", lambda p: True)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/Users/test/a.pdf", ctx=dummy_ctx
+        )
+        assert "Symlinks are not allowed" in result
+
+    def test_rejects_relative_path(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="relative/a.pdf", ctx=dummy_ctx
+        )
+        assert "absolute path" in result
+
+    def test_rejects_bad_extension(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/Users/test/a.exe", ctx=dummy_ctx
+        )
+        assert "Unsupported file type" in result
+
+    def test_missing_file(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+        monkeypatch.setattr("os.path.isfile", lambda p: False)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/Users/test/a.pdf", ctx=dummy_ctx
+        )
+        assert "File not found" in result
+
+    def test_webdav_suffix_passthrough(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._maybe_upload_to_webdav",
+            lambda attach_result, file_path, ctx: (
+                " (uploaded to WebDAV as ATCH0001.zip)"
+            ),
+        )
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/Users/test/a.pdf", ctx=dummy_ctx
+        )
+        assert "uploaded to WebDAV as ATCH0001.zip" in result
+
+    def test_upload_failure_reported_not_raised(self, monkeypatch, dummy_ctx):
+        class BoomUpload(FakeZoteroForAttach):
+            def attachment_both(self, files, parentid=None, **kwargs):
+                raise RuntimeError("quota exceeded")
+
+        _patch_write_client(monkeypatch, BoomUpload())
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/Users/test/a.pdf", ctx=dummy_ctx
+        )
+        assert result.startswith("Error")
+        assert "quota exceeded" in result
