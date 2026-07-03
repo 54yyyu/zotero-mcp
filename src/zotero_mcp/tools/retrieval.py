@@ -13,6 +13,7 @@ from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
+from zotero_mcp.config import load_config
 from zotero_mcp.tools import _helpers
 
 
@@ -148,13 +149,13 @@ def get_item_fulltext(
             from zotero_mcp.local_db import LocalZoteroReader
 
             if _utils.is_local_mode():
-                semantic_cfg = _helpers._load_zotero_mcp_config().get("semantic_search", {})
-                zotero_db_path = semantic_cfg.get("zotero_db_path")
-                extraction_cfg = semantic_cfg.get("extraction", {})
-                pdf_max_pages = extraction_cfg.get("pdf_max_pages")
+                cfg = load_config()
+                zotero_db_path = cfg.semantic_search.zotero_db_path
+                extraction = cfg.semantic_search.extraction
+                pdf_max_pages = extraction.pdf_max_pages
                 # Separate display limit for when Claude reads papers
                 # (reduces token usage vs. indexing which can be higher)
-                fulltext_display_max = extraction_cfg.get("fulltext_display_max_pages")
+                fulltext_display_max = extraction.fulltext_display_max_pages
 
                 # Use display limit if configured, otherwise fall back to
                 # pdf_max_pages, with a default cap of 10 pages.
@@ -267,11 +268,7 @@ def get_attachment_path(
     try:
         from zotero_mcp.local_db import LocalZoteroReader
 
-        zotero_db_path = (
-            _helpers._load_zotero_mcp_config()
-            .get("semantic_search", {})
-            .get("zotero_db_path")
-        )
+        zotero_db_path = load_config().semantic_search.zotero_db_path
 
         with LocalZoteroReader(db_path=zotero_db_path) as reader:
             attachments = reader.get_attachment_paths(item_key)
