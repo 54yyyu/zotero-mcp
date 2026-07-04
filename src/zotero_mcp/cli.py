@@ -122,12 +122,8 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
             except Exception:
                 pass
 
-        # Ensure semantic_search section exists
-        if "semantic_search" not in full_config:
-            full_config["semantic_search"] = {}
-
-        # Save the db_path
-        full_config["semantic_search"]["zotero_db_path"] = db_path
+        # Save the db_path at the top level
+        full_config["zotero_db_path"] = db_path
 
         # Write back to file
         with open(config_path, 'w') as f:

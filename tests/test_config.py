@@ -6,6 +6,7 @@ import pytest
 
 from zotero_mcp.config import (
     ExtractionConfig,
+    SemanticSearchConfig,
     ZoteroMcpConfig,
     _strip_nulls,
     load_config,
@@ -126,3 +127,26 @@ def test_load_malformed_json_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr("zotero_mcp.config.ZOTERO_MCP_CONFIG_PATH", p)
     cfg = load_config()
     assert cfg == ZoteroMcpConfig()
+
+
+# -- resolve_zotero_db_path ---------------------------------------------------
+
+
+def test_resolve_top_level_takes_precedence():
+    cfg = ZoteroMcpConfig(
+        zotero_db_path="/top/level.sqlite",
+        semantic_search=SemanticSearchConfig(zotero_db_path="/legacy/path.sqlite"),
+    )
+    assert cfg.resolve_zotero_db_path() == "/top/level.sqlite"
+
+
+def test_resolve_falls_back_to_semantic_search():
+    cfg = ZoteroMcpConfig(
+        semantic_search=SemanticSearchConfig(zotero_db_path="/legacy/path.sqlite"),
+    )
+    assert cfg.resolve_zotero_db_path() == "/legacy/path.sqlite"
+
+
+def test_resolve_returns_none_when_unset():
+    cfg = ZoteroMcpConfig()
+    assert cfg.resolve_zotero_db_path() is None

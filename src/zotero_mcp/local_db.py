@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .config import load_config
 from .utils import _normalize_for_search, is_local_mode
 
 logger = logging.getLogger(__name__)
@@ -936,7 +937,7 @@ def get_local_zotero_reader() -> LocalZoteroReader | None:
         return None
 
     try:
-        return LocalZoteroReader()
+        return LocalZoteroReader(db_path=load_config().resolve_zotero_db_path())
     except FileNotFoundError:
         return None
 

@@ -81,10 +81,21 @@ class SemanticSearchConfig:
 
 @dataclass
 class ZoteroMcpConfig:
+    zotero_db_path: str | None = None
     client_env: dict[str, str] = field(default_factory=dict)
     semantic_search: SemanticSearchConfig = field(
         default_factory=SemanticSearchConfig,
     )
+
+    def resolve_zotero_db_path(self) -> str | None:
+        """Return the Zotero database path with correct precedence.
+
+        Checks top-level ``zotero_db_path`` first, then falls back to
+        ``semantic_search.zotero_db_path`` for backward compatibility.
+        Returns ``None`` when neither is set, letting
+        ``LocalZoteroReader._find_zotero_db()`` auto-detect.
+        """
+        return self.zotero_db_path or self.semantic_search.zotero_db_path
 
 
 _config_adapter: TypeAdapter[ZoteroMcpConfig] = TypeAdapter(ZoteroMcpConfig)
@@ -93,9 +104,8 @@ _config_adapter: TypeAdapter[ZoteroMcpConfig] = TypeAdapter(ZoteroMcpConfig)
 def _strip_nulls(obj: Any) -> Any:
     """Recursively remove keys with ``None`` values from nested dicts.
 
-    This lets users write ``"extraction": null`` in their config without
-    causing a validation error — the key is treated as absent and the
-    dataclass default fills in.
+    Allows ``"extraction": null`` in config without causing a validation
+    error — the key is treated as absent and the dataclass default fills in.
     """
     if isinstance(obj, dict):
         return {k: _strip_nulls(v) for k, v in obj.items() if v is not None}
@@ -105,7 +115,7 @@ def _strip_nulls(obj: Any) -> Any:
 def load_config() -> ZoteroMcpConfig:
     """Load and validate ``~/.config/zotero-mcp/config.json``.
 
-    Returns a ``ZoteroMcpConfig`` with defaults filled in for any
+    Return a ``ZoteroMcpConfig`` with defaults filled in for any
     missing keys. A missing file, parse error, or validation error
     yields the default (all-empty) config so callers never need to
     guard against ``None``.

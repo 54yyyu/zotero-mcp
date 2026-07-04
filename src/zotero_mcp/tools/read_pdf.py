@@ -1,15 +1,14 @@
 """Tool for reading specific page ranges from PDF attachments."""
 
-import json
 import os
 import tempfile
-from pathlib import Path
 
 from fastmcp import Context
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
+from zotero_mcp.config import load_config
 from zotero_mcp.tools import _helpers
 
 
@@ -40,16 +39,7 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
         from zotero_mcp.local_db import LocalZoteroReader
 
         if _utils.is_local_mode():
-            config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-            zotero_db_path = None
-            if config_path.exists():
-                try:
-                    with open(config_path, encoding="utf-8") as _f:
-                        _cfg = json.load(_f)
-                        zotero_db_path = _cfg.get("semantic_search", {}).get("zotero_db_path")
-                except Exception:
-                    pass
-            with LocalZoteroReader(db_path=zotero_db_path) as reader:
+            with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
                 local_item = reader.get_item_by_key(item_key)
                 if local_item:
                     for att_key, path, ctype in reader._iter_parent_attachments(local_item.item_id):
