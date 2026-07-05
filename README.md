@@ -243,7 +243,7 @@ After installation, either:
    The local API is fast but read-only, so the MCP server uses the Zotero web API for write operations.
    
    To enable **write mode**:
-   - Set `ZOTERO_LOCAL: "false"`
+   - Keep `ZOTERO_LOCAL: "true"` — with API credentials set, the server runs in hybrid mode (fast local reads, web API writes)
    - Click [here](https://www.zotero.org/settings/security#applications) to generate a Zotero API key and replace `YOUR_API_KEY` with it
    - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
 
