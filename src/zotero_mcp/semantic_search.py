@@ -961,7 +961,13 @@ class ZoteroSemanticSearch:
 
                         # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
                         if chroma_client and not force_rebuild:
-                            existing_metadata = chroma_client.get_document_metadata(it.key)
+                            # With passage-chunking the stored ids are
+                            # "<key>#<n>", so also probe the first chunk —
+                            # otherwise every update re-extracts and re-embeds
+                            # the whole corpus.
+                            existing_metadata = chroma_client.get_document_metadata(
+                                it.key
+                            ) or chroma_client.get_document_metadata(f"{it.key}#0")
                             if existing_metadata:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
                                 local_has_fulltext = len(reader.get_fulltext_meta_for_item(it.item_id)) > 0
