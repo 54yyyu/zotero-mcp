@@ -683,6 +683,12 @@ class ZoteroSemanticSearch:
             # Mark so we don't retry on every incremental update
             metadata["has_fulltext"] = "failed"
 
+        # Record the attachment-key set (local mode only) so update runs can
+        # retry a "failed" item once its attachments change — attaching a file
+        # does not bump the parent's dateModified.
+        if (att_keys := data.get("attachmentKeys")) is not None:
+            metadata["attachment_keys"] = att_keys
+
         # Add tags as a single string
         if tags := data.get("tags"):
             metadata["tags"] = " ".join([tag.get("tag", "") for tag in tags])
@@ -959,25 +965,39 @@ class ZoteroSemanticSearch:
 
                         should_extract = True
 
+                        # Current attachment-key set, stored in metadata so a
+                        # later run can detect attachment changes. Attaching a
+                        # file does NOT bump the parent's dateModified, so the
+                        # date check alone never clears a "failed" marker.
+                        att_keys = ",".join(
+                            sorted(k for k, _p, _c in reader.get_fulltext_meta_for_item(it.item_id))
+                        )
+                        it._attachment_keys = att_keys
+
                         # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
                         if chroma_client and not force_rebuild:
                             existing_metadata = chroma_client.get_document_metadata(it.key)
                             if existing_metadata:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
-                                local_has_fulltext = len(reader.get_fulltext_meta_for_item(it.item_id)) > 0
+                                local_has_fulltext = bool(att_keys)
 
-                                # Skip if extraction previously failed AND the item hasn't been
-                                # modified since (handles case where user replaces a bad PDF)
+                                # Skip if extraction previously failed AND neither the item
+                                # nor its attachment set has changed since (handles both a
+                                # replaced bad PDF and a PDF newly attached to an item that
+                                # was indexed metadata-only)
                                 if chroma_has_fulltext == "failed":
                                     chroma_date = existing_metadata.get("date_modified", "")
                                     item_date = getattr(it, "date_modified", "") or ""
-                                    if chroma_date == item_date:
-                                        # Same modification date — don't retry failed extraction
+                                    stored_att_keys = existing_metadata.get("attachment_keys")
+                                    if chroma_date == item_date and stored_att_keys == att_keys:
+                                        # Nothing changed since the failure — don't retry
                                         should_extract = False
                                         skipped_existing += 1
                                         _skipped_failed.append(display or f"item {it.key}")
                                     else:
-                                        # Item was modified since last failure — retry
+                                        # Item or its attachments changed since last
+                                        # failure (legacy records without attachment_keys
+                                        # retry once, then converge) — retry
                                         updated_existing += 1
                                 elif not chroma_has_fulltext and local_has_fulltext:
                                     # Document exists but lacks fulltext - we need to update it
@@ -1053,7 +1073,9 @@ class ZoteroSemanticSearch:
                                 sys.stderr.write(f"    - {name}\n")
                             if len(_skipped_failed) > 5:
                                 sys.stderr.write(f"    ... and {len(_skipped_failed) - 5} more\n")
-                            sys.stderr.write("  (To retry these, run with --force-rebuild)\n")
+                            sys.stderr.write(
+                                "  (To retry these, attach or replace the PDF, or run with --force-rebuild)\n"
+                            )
                     except Exception:
                         pass
 
@@ -1088,6 +1110,11 @@ class ZoteroSemanticSearch:
                             "creators": self._parse_creators_string(item.creators) if item.creators else [],
                         },
                     }
+                    # Attachment-key set (computed during the extraction scan);
+                    # persisted to metadata so incremental runs can detect
+                    # newly attached files on previously-failed items.
+                    if (att := getattr(item, "_attachment_keys", None)) is not None:
+                        api_item["data"]["attachmentKeys"] = att
 
                     # Add notes if available
                     if item.notes:
