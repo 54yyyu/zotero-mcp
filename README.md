@@ -288,6 +288,8 @@ After installation, either:
    > absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) —
    > GUI apps don't always inherit your shell `PATH`.
 
+   > **Tip:** For _local_ write operations, you can try the [zotero_mcp_server_write](https://github.com/akchan/zotero_mcp_server_write)
+
 #### Usage
 
 1. Start Zotero desktop (make sure local API is enabled in preferences)
