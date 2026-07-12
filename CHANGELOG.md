@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Local database auto-discovery now honors a custom Zotero data directory** — the `extensions.zotero.dataDir` preference is read from the Zotero profile's `prefs.js` (macOS/Windows/Linux), so relocated data directories no longer fail with "Zotero database not found at ~/Zotero/zotero.sqlite" (#68). The `ZOTERO_DB_PATH` environment variable, documented in the README but previously unimplemented, now works as an override, and the not-found error lists every location checked plus how to fix it. `extensions.zotero.baseAttachmentPath` is likewise read from the profile's `prefs.js`, fixing resolution of linked attachments relative to a base directory.
+
 ## [0.6.1] - 2026-07-03
 
 ### Fixed
