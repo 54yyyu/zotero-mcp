@@ -308,6 +308,16 @@ Example prompts:
 - **"Research that relates to the intersection of AI and healthcare"** *(semantic search)*
 - **"Papers that discuss topics similar to this abstract: [paste text]"** *(semantic search)*
 
+### For Autohand Code
+
+After installing Zotero MCP, add a local read-only server with:
+
+```bash
+autohand mcp add zotero env ZOTERO_LOCAL=true zotero-mcp
+```
+
+Add `--scope project` after `add` to keep the server configuration in the current project. For hybrid or web API access, add the credentials described above to the `env` command. See [Autohand Code](https://github.com/autohandai/code-cli/) for current installation and CLI details.
+
 ### For Cherry Studio
 
 #### Configuration
