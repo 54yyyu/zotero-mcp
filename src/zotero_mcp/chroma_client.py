@@ -640,11 +640,19 @@ class ChromaClient:
             ids: List of unique IDs for each document
         """
         try:
-            self.collection.upsert(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids
-            )
+            # ChromaDB rejects batches larger than its max_batch_size
+            # (~5461). With passage-chunking enabled a batch of 25 books
+            # easily exceeds that, so split instead of failing.
+            try:
+                max_batch = int(self.client.get_max_batch_size())
+            except Exception:
+                max_batch = 5000
+            for i in range(0, len(ids), max_batch):
+                self.collection.upsert(
+                    documents=documents[i:i + max_batch],
+                    metadatas=metadatas[i:i + max_batch],
+                    ids=ids[i:i + max_batch]
+                )
             logger.info(f"Upserted {len(documents)} documents to ChromaDB collection")
         except Exception as e:
             logger.error(f"Error upserting documents to ChromaDB: {e}")
