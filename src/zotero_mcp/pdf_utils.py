@@ -219,19 +219,42 @@ def _get_spans_in_range(
 # Coordinate Conversion
 # =============================================================================
 
+def _page_to_pdf_transform(page) -> tuple[float, float, float, float, float, float]:
+    """
+    Inverse of page.transformation_matrix as (a, b, c, d, e, f).
+
+    Maps PyMuPDF page space (top-left origin, normalized to the CropBox so
+    page.rect is (0, 0, w, h)) back to native PDF user space (MediaBox
+    lower-left origin), which is where Zotero positions annotations. Besides
+    flipping the y-axis, this restores any non-zero page box origin and
+    accounts for page rotation.
+    """
+    a, b, c, d, e, f = page.transformation_matrix
+    det = a * d - b * c
+    return (
+        d / det,
+        -b / det,
+        -c / det,
+        a / det,
+        (c * f - d * e) / det,
+        (b * e - a * f) / det,
+    )
+
+
 def _convert_rects_to_zotero(
     bboxes: list[tuple[float, float, float, float]],
-    page_height: float,
+    page,
 ) -> tuple[list[list[float]], float, float]:
     """
     Convert PyMuPDF bounding boxes to Zotero's coordinate system.
 
-    PyMuPDF uses top-left origin (y increases downward).
-    Zotero/PDF uses bottom-left origin (y increases upward).
+    PyMuPDF uses top-left origin (y increases downward) relative to the
+    CropBox. Zotero uses native PDF user space: bottom-left origin
+    (y increases upward) relative to the MediaBox.
 
     Args:
         bboxes: List of (x0, y0, x1, y1) tuples from PyMuPDF
-        page_height: Height of the page
+        page: The fitz page the bboxes belong to
 
     Returns:
         Tuple of:
@@ -239,19 +262,26 @@ def _convert_rects_to_zotero(
         - Minimum y position (for sort index)
         - Minimum x position (for sort index)
     """
+    a, b, c, d, e, f = _page_to_pdf_transform(page)
+
     rects = []
     min_y = float("inf")
     min_x = float("inf")
 
     for bbox in bboxes:
         x0, y0, x1, y1 = bbox
-        # Transform Y coordinates
-        pdf_y1 = page_height - y1  # Bottom in PDF coords
-        pdf_y2 = page_height - y0  # Top in PDF coords
+        corner_xs = (a * x0 + c * y0 + e, a * x1 + c * y1 + e)
+        corner_ys = (b * x0 + d * y0 + f, b * x1 + d * y1 + f)
 
-        rects.append([x0, pdf_y1, x1, pdf_y2])
-        min_y = min(min_y, pdf_y1)
-        min_x = min(min_x, x0)
+        rect = [
+            min(corner_xs),
+            min(corner_ys),
+            max(corner_xs),
+            max(corner_ys),
+        ]
+        rects.append(rect)
+        min_y = min(min_y, rect[1])
+        min_x = min(min_x, rect[0])
 
     return rects, min_y, min_x
 
@@ -277,7 +307,7 @@ def _build_search_result(
     page_index: int,
     bboxes: list,
     texts: list[str],
-    page_height: float,
+    page,
 ) -> dict:
     """
     Build a successful search result dict.
@@ -286,12 +316,12 @@ def _build_search_result(
         page_index: 0-indexed page number
         bboxes: List of bounding boxes
         texts: List of matched text strings
-        page_height: Page height for coordinate conversion
+        page: The fitz page for coordinate conversion
 
     Returns:
         Dict with pageIndex, rects, sort_index, matched_text
     """
-    rects, min_y, min_x = _convert_rects_to_zotero(bboxes, page_height)
+    rects, min_y, min_x = _convert_rects_to_zotero(bboxes, page)
     sort_index = _build_sort_index(page_index, min_y, min_x)
 
     return {
@@ -439,8 +469,6 @@ def _anchor_based_search(page, page_index: int, search_text: str) -> dict | None
     Returns:
         Search result dict if found, None otherwise
     """
-    page_height = page.rect.height
-
     # Extract anchors
     start_anchor = _extract_anchor(search_text, from_start=True)
     end_anchor = _extract_anchor(search_text, from_start=False)
@@ -494,7 +522,7 @@ def _anchor_based_search(page, page_index: int, search_text: str) -> dict | None
     if not bboxes:
         return None
 
-    return _build_search_result(page_index, bboxes, texts, page_height)
+    return _build_search_result(page_index, bboxes, texts, page)
 
 
 def _fuzzy_search_page(
@@ -590,8 +618,6 @@ def _search_single_page(
     Returns:
         Search result dict if found, None otherwise
     """
-    page_height = page.rect.height
-
     # Strategy 1: Anchor-based matching for long passages
     if len(search_text) > ANCHOR_MIN_TEXT_LENGTH:
         result = _anchor_based_search(page, page_index, search_text)
@@ -608,7 +634,7 @@ def _search_single_page(
 
     if text_instances:
         rects, min_y, min_x = _convert_rects_to_zotero(
-            [r for r in text_instances], page_height
+            [r for r in text_instances], page
         )
         return {
             "pageIndex": page_index,
@@ -632,7 +658,7 @@ def _search_single_page(
             # Return if we have valid rects
             if fuzzy_result.get("rects"):
                 bboxes = fuzzy_result["rects"]
-                rects, min_y, min_x = _convert_rects_to_zotero(bboxes, page_height)
+                rects, min_y, min_x = _convert_rects_to_zotero(bboxes, page)
 
                 return {
                     "pageIndex": page_index,
@@ -878,10 +904,7 @@ def build_area_position_data(
             round((x + width) * page.rect.width, 4),
             round((y + height) * page.rect.height, 4),
         )]
-        rects, min_y, min_x = _convert_rects_to_zotero(
-            bbox,
-            page.rect.height,
-        )
+        rects, min_y, min_x = _convert_rects_to_zotero(bbox, page)
 
         return {
             "pageIndex": target_index,
