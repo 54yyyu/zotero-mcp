@@ -776,8 +776,9 @@ class LocalZoteroReader:
 
         return items
 
-    # Public helper to quickly check full text metadata for item
-    def get_fulltext_meta_for_item(self, item_id: int) -> tuple[str, str] | None:
+    # Public helper to quickly check full text metadata for item.
+    # Returns one [key, path, content_type] row per attachment of the item.
+    def get_fulltext_meta_for_item(self, item_id: int) -> list[list[str | None]]:
         return self._get_fulltext_meta_for_item(item_id)
 
     # Public helper to extract fulltext on demand for a specific item
