@@ -5,9 +5,11 @@ Provides direct SQLite access to Zotero's local database for faster semantic sea
 when running in local mode.
 """
 
+import json
 import logging
 import os
 import platform
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +41,67 @@ def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
     except Exception:
         result_queue.put("")
 
+
+
+def _read_string_pref(prefs_path: Path, pref: str) -> str | None:
+    """Read a string preference from a Zotero prefs.js file.
+
+    Returns None if the file cannot be read or the preference is absent.
+    """
+    try:
+        text = prefs_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.search(
+        r'user_pref\("' + re.escape(pref) + r'",\s*"([^"]*)"\)',
+        text,
+    )
+    if not m:
+        return None
+    raw = m.group(1)
+    # prefs.js values are JavaScript string literals; unescape backslash
+    # sequences so Windows paths like C:\\Users\\... resolve correctly.
+    try:
+        return json.loads(f'"{raw}"')
+    except ValueError:
+        return raw
+
+
+def _zotero_profiles_dirs() -> list[Path]:
+    """Return OS-specific directories that may contain Zotero profiles."""
+    system = platform.system()
+    home = Path.home()
+    if system == "Darwin":
+        return [home / "Library" / "Application Support" / "Zotero" / "Profiles"]
+    if system == "Windows":
+        appdata = os.getenv("APPDATA")
+        return [Path(appdata) / "Zotero" / "Zotero" / "Profiles"] if appdata else []
+    # Linux and others: profile folders live directly under ~/.zotero/zotero
+    return [home / ".zotero" / "zotero"]
+
+
+def _profile_prefs_files() -> list[Path]:
+    """Return prefs.js files from all Zotero profiles found on this system."""
+    prefs_files: list[Path] = []
+    for profiles_dir in _zotero_profiles_dirs():
+        if profiles_dir.is_dir():
+            prefs_files.extend(sorted(profiles_dir.glob("*/prefs.js")))
+    return prefs_files
+
+
+def _data_dirs_from_profiles() -> list[Path]:
+    """Collect custom data directories declared in Zotero profiles.
+
+    A user-configured data directory is stored as the
+    ``extensions.zotero.dataDir`` preference in the profile directory's
+    prefs.js — not inside the data directory itself.
+    """
+    data_dirs: list[Path] = []
+    for prefs_path in _profile_prefs_files():
+        data_dir = _read_string_pref(prefs_path, "extensions.zotero.dataDir")
+        if data_dir:
+            data_dirs.append(Path(data_dir))
+    return data_dirs
 
 
 @dataclass
@@ -121,7 +184,13 @@ class LocalZoteroReader:
 
     def _find_zotero_db(self) -> str:
         """
-        Auto-detect the Zotero database location based on OS.
+        Auto-detect the Zotero database location.
+
+        Resolution order:
+        1. The ``ZOTERO_DB_PATH`` environment variable.
+        2. A custom data directory configured in Zotero's preferences
+           (``extensions.zotero.dataDir`` in the profile's prefs.js).
+        3. The default data directory (``~/Zotero``).
 
         Returns:
             Path to zotero.sqlite file.
@@ -129,26 +198,47 @@ class LocalZoteroReader:
         Raises:
             FileNotFoundError: If database cannot be located.
         """
-        system = platform.system()
-
-        if system == "Darwin":  # macOS
-            db_path = Path.home() / "Zotero" / "zotero.sqlite"
-        elif system == "Windows":
-            # Try Windows 7+ location first
-            db_path = Path.home() / "Zotero" / "zotero.sqlite"
-            if not db_path.exists():
-                # Fallback to XP/2000 location
-                db_path = Path(os.path.expanduser("~/Documents and Settings")) / os.getenv("USERNAME", "") / "Zotero" / "zotero.sqlite"
-        else:  # Linux and others
-            db_path = Path.home() / "Zotero" / "zotero.sqlite"
-
-        if not db_path.exists():
+        env_path = os.getenv("ZOTERO_DB_PATH")
+        if env_path:
+            db_path = Path(env_path).expanduser()
+            if db_path.is_file():
+                return str(db_path)
             raise FileNotFoundError(
-                f"Zotero database not found at {db_path}. "
-                "Please ensure Zotero is installed and has been run at least once."
+                f"ZOTERO_DB_PATH is set to {db_path}, but no file exists there."
             )
 
-        return str(db_path)
+        # A data directory configured in Zotero's own preferences is
+        # authoritative; a leftover ~/Zotero from an old install is not.
+        candidates = [
+            data_dir / "zotero.sqlite" for data_dir in _data_dirs_from_profiles()
+        ]
+        candidates.append(Path.home() / "Zotero" / "zotero.sqlite")
+        if platform.system() == "Windows":
+            # Fallback to XP/2000 location
+            candidates.append(
+                Path(os.path.expanduser("~/Documents and Settings"))
+                / os.getenv("USERNAME", "")
+                / "Zotero"
+                / "zotero.sqlite"
+            )
+
+        seen: set[str] = set()
+        checked: list[Path] = []
+        for db_path in candidates:
+            if str(db_path) in seen:
+                continue
+            seen.add(str(db_path))
+            checked.append(db_path)
+            if db_path.is_file():
+                return str(db_path)
+
+        raise FileNotFoundError(
+            "Could not locate the Zotero database (checked: "
+            + ", ".join(str(c) for c in checked)
+            + "). If Zotero stores its data in a custom location, set the "
+            "ZOTERO_DB_PATH environment variable to your zotero.sqlite file "
+            "or configure the path by running `zotero-mcp setup`."
+        )
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection, creating if needed."""
@@ -172,22 +262,20 @@ class LocalZoteroReader:
         """Read the linked attachment base directory from Zotero's prefs.js.
 
         Returns the configured ``extensions.zotero.baseAttachmentPath`` or
-        ``None`` if the preference is not set or the file cannot be read.
+        ``None`` if the preference is not set or cannot be read. The
+        preference lives in the profile directory's prefs.js; a prefs.js
+        next to the database is also checked for unusual setups.
         """
-        prefs_path = Path(self.db_path).parent / "prefs.js"
-        if not prefs_path.exists():
-            return None
-        try:
-            import re
-            text = prefs_path.read_text(encoding="utf-8", errors="replace")
-            m = re.search(
-                r'user_pref\("extensions\.zotero\.baseAttachmentPath",\s*"([^"]+)"\)',
-                text,
+        prefs_files = [Path(self.db_path).parent / "prefs.js"]
+        prefs_files.extend(_profile_prefs_files())
+        for prefs_path in prefs_files:
+            if not prefs_path.exists():
+                continue
+            value = _read_string_pref(
+                prefs_path, "extensions.zotero.baseAttachmentPath"
             )
-            if m:
-                return Path(m.group(1))
-        except Exception:
-            pass
+            if value:
+                return Path(value)
         return None
 
     def _iter_parent_attachments(self, parent_item_id: int):

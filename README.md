@@ -366,7 +366,10 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 - `OLLAMA_EMBEDDING_MODEL`: Ollama embedding model name (qwen3-embedding by default)
 - `OLLAMA_BASE_URL`: Ollama server URL (default: http://localhost:11434)
-- `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
+- `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional). When unset, the
+  database is located automatically: a data directory configured in Zotero's
+  preferences (read from the profile's `prefs.js`) is tried first, then the
+  default `~/Zotero` location.
 
 ### Command-Line Options
 
