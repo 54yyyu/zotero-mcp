@@ -779,6 +779,7 @@ class ZoteroSemanticSearch:
             pdf_max_pages = None
             pdf_timeout = 30
             zotero_db_path = self.db_path  # CLI override takes precedence
+            collection_keys = None
             # If semantic_search config file exists, prefer its setting
             try:
                 if self.config_path and os.path.exists(self.config_path):
@@ -788,6 +789,7 @@ class ZoteroSemanticSearch:
                         extraction_cfg = semantic_cfg.get("extraction", {})
                         pdf_max_pages = extraction_cfg.get("pdf_max_pages")
                         pdf_timeout = extraction_cfg.get("pdf_timeout", 30)
+                        collection_keys = semantic_cfg.get("collection_keys")
                         # Use config db_path only if no CLI override
                         if not zotero_db_path:
                             zotero_db_path = semantic_cfg.get("zotero_db_path")
@@ -808,7 +810,9 @@ class ZoteroSemanticSearch:
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
-                local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
+                if collection_keys:
+                    sys.stderr.write(f"Filtering to collections: {collection_keys}\n")
+                local_items = reader.get_items_with_text(limit=limit, include_fulltext=False, collection_keys=collection_keys)
                 candidate_count = len(local_items)
                 sys.stderr.write(f"Found {candidate_count} candidate items.\n")
 
@@ -1599,6 +1603,31 @@ class ZoteroSemanticSearch:
             use_incremental = (
                 not force_full_rebuild and not extract_fulltext and limit is None and last_sync_version > 0
             )
+
+            # When a collection filter is configured, skip the API-based
+            # incremental path: it fetches changed items from the WHOLE
+            # library and its deletion pass compares against all library
+            # keys, both of which would bypass the filter. The local
+            # full-scan path applies collection_keys and skips
+            # already-indexed items, so filtered updates stay cheap.
+            configured_collection_keys = None
+            try:
+                if self.config_path and os.path.exists(self.config_path):
+                    with open(self.config_path) as _f:
+                        configured_collection_keys = (
+                            json.load(_f).get("semantic_search", {}).get("collection_keys")
+                        )
+            except Exception:
+                pass
+            if configured_collection_keys and use_incremental:
+                use_incremental = False
+                try:
+                    sys.stderr.write(
+                        f"Collection filter active ({configured_collection_keys}); "
+                        "using local full scan instead of API incremental update.\n"
+                    )
+                except Exception:
+                    pass
 
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []

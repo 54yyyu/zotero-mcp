@@ -758,12 +758,15 @@ class LocalZoteroReader:
         rows = conn.execute("SELECT key FROM items").fetchall()
         return {row[0] for row in rows}
 
-    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None) -> list[ZoteroItem]:
+    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None, collection_keys: list[str] | None = None) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
 
         Args:
             limit: Optional limit on number of items to return.
+            collection_keys: Optional list of collection keys; when set, only
+                items in those collections (or any of their subcollections)
+                are returned.
 
         Returns:
             List of ZoteroItem objects with text content.
@@ -825,6 +828,24 @@ class LocalZoteroReader:
         """
 
         params = []
+        if collection_keys:
+            # Restrict the corpus to the configured collections, including
+            # all of their subcollections (resolved recursively).
+            all_collection_ids = []
+            for ckey in collection_keys:
+                root = conn.execute("SELECT collectionID FROM collections WHERE key = ?", (ckey,)).fetchone()
+                if root:
+                    to_process = [root[0]]
+                    while to_process:
+                        cid = to_process.pop()
+                        all_collection_ids.append(cid)
+                        for sub in conn.execute("SELECT collectionID FROM collections WHERE parentCollectionID = ?", (cid,)).fetchall():
+                            to_process.append(sub[0])
+            if all_collection_ids:
+                placeholders = ','.join('?' * len(all_collection_ids))
+                query += f" AND i.itemID IN (SELECT DISTINCT itemID FROM collectionItems WHERE collectionID IN ({placeholders}))"
+                params.extend(all_collection_ids)
+
         if key_filter:
             query += " AND i.key = ?"
             params.append(key_filter)
