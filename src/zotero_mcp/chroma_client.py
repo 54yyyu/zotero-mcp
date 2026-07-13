@@ -795,16 +795,22 @@ class ChromaClient:
 
     def get_document_metadata(self, doc_id: str) -> dict[str, Any] | None:
         """
-        Get metadata for a document if it exists.
+        Get metadata for an item if it is indexed.
+
+        With passage chunking enabled, an item is stored only under its chunk
+        ids (``<key>#<n>``) and never under the bare item key, so an exact-id
+        lookup on the key alone misses every chunked item. Chunk 0 carries the
+        same item-level metadata (``date_modified``, ``has_fulltext``) that
+        callers need, so fall back to it.
 
         Args:
-            doc_id: Document ID to look up
+            doc_id: Item key (or full document id) to look up
 
         Returns:
-            Metadata dictionary if document exists, None otherwise
+            Metadata dictionary if the item is indexed, None otherwise
         """
         try:
-            result = self.collection.get(ids=[doc_id], include=["metadatas"])
+            result = self.collection.get(ids=[doc_id, f"{doc_id}#0"], include=["metadatas"])
             if result['ids'] and result['metadatas']:
                 return result['metadatas'][0]
             return None

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Chunking no longer forces a full re-extract and re-embed of the whole library on every update.** With `semantic_search.chunking` enabled (#350), items are indexed only under their chunk ids (`<key>#<n>`), but the "already indexed?" check in the local-fulltext path looked each item up by its bare key. That exact-id lookup never matched, so every item counted as new: each fulltext update re-extracted every PDF and re-embedded the entire library, silently and without an error. `get_document_metadata` now falls back to chunk 0, which carries the item-level `date_modified` and `has_fulltext` that the check needs, so unchanged items are skipped again.
+
 ## [0.6.1] - 2026-07-03
 
 ### Fixed
