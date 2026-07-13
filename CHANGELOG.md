@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-13
+
+### Added
+- **Opt-in collection filter for the semantic search database** — set `semantic_search.collection_keys` in `config.json` to build the vector database from only those collections (subcollections included, resolved recursively) instead of the whole library. Unset, behavior is unchanged (#370).
+
 ### Fixed
 - **Chunking no longer forces a full re-extract and re-embed of the whole library on every update.** With `semantic_search.chunking` enabled (#350), items are indexed only under their chunk ids (`<key>#<n>`), but the "already indexed?" check in the local-fulltext path looked each item up by its bare key. That exact-id lookup never matched, so every item counted as new: each fulltext update re-extracted every PDF and re-embedded the entire library, silently and without an error. `get_document_metadata` now falls back to chunk 0, which carries the item-level `date_modified` and `has_fulltext` that the check needs, so unchanged items are skipped again (#380).
 - **Local database auto-discovery now honors a custom Zotero data directory** — the `extensions.zotero.dataDir` preference is read from the Zotero profile's `prefs.js` (macOS/Windows/Linux), so relocated data directories no longer fail with "Zotero database not found at ~/Zotero/zotero.sqlite" (#68). The `ZOTERO_DB_PATH` environment variable, documented in the README but previously unimplemented, now works as an override, and the not-found error lists every location checked plus how to fix it. `extensions.zotero.baseAttachmentPath` is likewise read from the profile's `prefs.js`, fixing resolution of linked attachments relative to a base directory (#379).
+- **Items whose full-text extraction once failed are retried when their attachments change** — attaching a PDF later doesn't bump the parent's `dateModified`, so items first indexed metadata-only were permanently locked out of full-text indexing. The local-mode scan now records each item's attachment-key set and retries when it changes; legacy "failed" records retry once and converge (#373).
+- **ChromaDB upserts are split to the backend's max batch size** — with chunking enabled, a batch of long documents could exceed ChromaDB's `max_batch_size` (~5,461), failing the whole batch and degrading the retry pass to one-record-at-a-time upserts (#369).
+- **Created annotations land in the right place on PDFs with a non-zero page box origin** — highlight rectangles were written in PyMuPDF's CropBox-normalized space, but Zotero positions annotations in native PDF user space (MediaBox origin). Rects (and the derived sort index) are now mapped through the page's inverse transformation matrix, which also handles page rotation (#381).
 
 ## [0.6.1] - 2026-07-03
 
