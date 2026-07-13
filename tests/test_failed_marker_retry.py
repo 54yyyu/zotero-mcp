@@ -54,7 +54,7 @@ class FakeReader:
     def get_all_item_keys(self):
         return {"ITEMKEY1"}
 
-    def get_items_with_text(self, limit=None, include_fulltext=False, key_filter=None):
+    def get_items_with_text(self, limit=None, include_fulltext=False, key_filter=None, collection_keys=None):
         return [FakeItem()]
 
     def get_fulltext_meta_for_item(self, item_id):
