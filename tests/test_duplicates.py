@@ -505,3 +505,91 @@ class TestMergeDuplicatesConfirm:
 
         # Should succeed — DUP1 trashed via direct PATCH
         assert any("DUP1" in c["url"] for c in fake.client.patch_calls)
+
+
+class PagedChildrenFake(FakeZoteroForDuplicates):
+    """children() honors start/limit like the real Zotero API.
+
+    Without an explicit ``limit`` the API returns its default page of 25
+    results — exactly the behavior that truncates unpaginated call sites.
+    """
+
+    def children(self, item_key, start=0, limit=25, **kwargs):
+        kids = self._children.get(item_key, [])
+        return kids[int(start):int(start) + int(limit)]
+
+
+def _make_attachment(key, parent, filename, version=1):
+    return {"key": key, "version": version, "data": {
+        "key": key,
+        "itemType": "attachment",
+        "parentItem": parent,
+        "contentType": "application/pdf",
+        "filename": filename,
+        "md5": f"md5-{filename}",
+        "url": "",
+    }}
+
+
+class TestMergeDuplicatesPagination:
+    """merge_duplicates must see ALL children, not the API's first page of 25."""
+
+    def test_all_duplicate_children_reparented_past_first_api_page(self, monkeypatch, dummy_ctx):
+        """A duplicate with >100 children gets every child re-parented (not
+        just 25 — the rest would silently go to Trash with the duplicate)."""
+        fake = PagedChildrenFake()
+        n = 130  # > 100 so the fix's page_size=100 must also paginate
+        children = [
+            {"key": f"N{i:04d}", "version": 1, "data": {
+                "itemType": "note", "parentItem": "DUP1", "note": f"note {i}",
+            }}
+            for i in range(n)
+        ]
+        fake._items = [
+            _make_item("KEEP", "Keeper"),
+            _make_item("DUP1", "Dup"),
+            *children,
+        ]
+        fake._children = {"KEEP": [], "DUP1": children}
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+
+        result = server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
+        )
+
+        reparented = {
+            u["key"] for u in fake.update_calls
+            if u.get("key", "").startswith("N") and u["data"].get("parentItem") == "KEEP"
+        }
+        assert len(reparented) == n
+        assert f"Children re-parented: {n}" in result
+
+    def test_keeper_dedupe_signatures_scan_past_first_api_page(self, monkeypatch, dummy_ctx):
+        """Attachment dedupe must consider keeper children beyond the first
+        API page — otherwise a duplicate of keeper attachment #26+ gets
+        copied onto the keeper instead of skipped."""
+        fake = PagedChildrenFake()
+        keeper_children = [
+            _make_attachment(f"KA{i:04d}", "KEEP", f"paper-{i}.pdf") for i in range(130)
+        ]
+        # Same signature (contentType, filename, md5, url) as the keeper's
+        # last attachment — far past the first API page.
+        dup_att = _make_attachment("DUPATT01", "DUP1", "paper-129.pdf")
+        fake._items = [
+            _make_item("KEEP", "Keeper"),
+            _make_item("DUP1", "Dup"),
+            *keeper_children,
+            dup_att,
+        ]
+        fake._children = {"KEEP": keeper_children, "DUP1": [dup_att]}
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+
+        result = server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
+        )
+
+        reparented_keys = {u.get("key") for u in fake.update_calls}
+        assert "DUPATT01" not in reparented_keys, (
+            "duplicate attachment should be skipped, not re-parented onto keeper"
+        )
+        assert "1 duplicate attachments skipped" in result

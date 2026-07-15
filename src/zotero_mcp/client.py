@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from markitdown import MarkItDown
 from pyzotero import zotero
 
-from zotero_mcp.utils import format_creators
+from zotero_mcp.utils import _paginate, format_creators
 from zotero_mcp.webdav import (
     WebDAVNotConfiguredError,
     download_attachment_from_webdav,
@@ -492,7 +492,7 @@ def get_attachment_details(
 
     # For regular items, look for child attachments
     try:
-        children = zot.children(item_key)
+        children = _paginate(zot.children, item_key)
 
         # Group attachments by content type
         pdfs = []

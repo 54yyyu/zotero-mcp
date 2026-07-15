@@ -295,7 +295,7 @@ def get_annotations(
                     # Ensure PDF annotation tool is installed
                     if ensure_pdfannots_installed():
                         # Get PDF attachments via the resolved parent key
-                        children = zot.children(parent_item_key)
+                        children = _helpers._paginate(zot.children, parent_item_key)
                         pdf_attachments = [
                             item for item in children
                             if item.get("data", {}).get("contentType") == "application/pdf"

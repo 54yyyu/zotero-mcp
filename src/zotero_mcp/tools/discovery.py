@@ -254,7 +254,7 @@ def _item_has_pdf(zot, item: dict) -> bool:
     if not key:
         return False
     try:
-        children = zot.children(key)
+        children = _helpers._paginate(zot.children, key)
     except Exception:
         return False
     for child in children or []:

@@ -2229,13 +2229,14 @@ def merge_duplicates(
         if not dup_keys:
             return "Error: No duplicate keys to merge (after removing keeper if present)."
 
-        # Fetch all items and children
+        # Fetch all items and children (children() returns only the first
+        # API page without explicit pagination — see _paginate)
         keeper = write_zot.item(keeper_key)
-        keeper_children = write_zot.children(keeper_key)
+        keeper_children = _helpers._paginate(write_zot.children, keeper_key)
         duplicates = []
         for dk in dup_keys:
             dup_item = write_zot.item(dk)
-            dup_children = write_zot.children(dk)
+            dup_children = _helpers._paginate(write_zot.children, dk)
             duplicates.append({"item": dup_item, "children": dup_children})
 
         # Compute what will be merged
@@ -2437,7 +2438,7 @@ def get_pdf_outline(
         ctx.info(f"Getting PDF outline for item {item_key}")
 
         # Find PDF attachment
-        children = zot.children(item_key)
+        children = _helpers._paginate(zot.children, item_key)
         pdf_child = None
         for child in children:
             if child.get("data", {}).get("contentType") == "application/pdf":
