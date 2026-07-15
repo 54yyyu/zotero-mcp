@@ -2675,21 +2675,54 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
     """Dedupe-checked upload of ``filepath`` onto ``item_key``.
 
     Returns the user-facing markdown message. Idempotent: if the item
-    already has a child attachment stored under ``display_name``, nothing
-    is uploaded.
+    already has a child attachment stored under ``display_name`` or with
+    identical content (MD5), nothing is uploaded.
     """
-    if _helpers._attachment_filename_exists(write_zot, item_key, display_name):
+    file_md5 = _helpers._file_md5(filepath)
+    existing = _helpers._find_child_attachment(
+        write_zot,
+        item_key,
+        filename=display_name,
+        file_md5=file_md5,
+    )
+    if existing is not None:
+        data = existing.get("data", {}) or {}
+        existing_key = existing.get("key") or data.get("key")
+        key_note = f" (key `{existing_key}`)" if existing_key else ""
+        existing_name = data.get("filename")
+        if existing_name == display_name:
+            msg = (
+                f"Attachment already present on `{item_key}`: {display_name}"
+                f"{key_note} — not re-uploaded."
+            )
+            if file_md5 and data.get("md5") and data["md5"] != file_md5:
+                msg += (
+                    " Note: the local file's content differs from the stored "
+                    "copy — delete the existing attachment first to replace it."
+                )
+            return msg
         return (
-            f"Attachment already present on `{item_key}`: {display_name} "
-            "(not re-uploaded)"
+            f"Identical file (same MD5) already attached to `{item_key}` as "
+            f"'{existing_name}'{key_note} — '{display_name}' not re-uploaded."
         )
     attach_result = write_zot.attachment_both(
         [(display_name, filepath)],
         parentid=item_key,
     )
+    attachment_key = _helpers._extract_attachment_key(attach_result)
+    if (
+        attachment_key is None
+        and isinstance(attach_result, dict)
+        and attach_result.get("failure")
+    ):
+        return (
+            f"Error: upload of '{display_name}' to `{item_key}` failed: "
+            f"{attach_result['failure']}"
+        )
+    key_note = f" (key `{attachment_key}`)" if attachment_key else ""
     suffix = _helpers._maybe_upload_to_webdav(attach_result, filepath, ctx)
     return (
-        f"File attached to `{item_key}`: {display_name}{suffix}\n\n"
+        f"File attached to `{item_key}`: {display_name}{key_note}{suffix}\n\n"
         "_Note: To include this item in semantic search, run "
         "zotero_update_search_database._"
     )
@@ -2712,9 +2745,10 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         "file_path/url must be given. "
         "filename: optional stored-filename override; defaults to the "
         "file's basename or the URL's last path segment (falling back to "
-        "<item_key>.pdf). "
-        "Idempotent: if the item already has an attachment with the same "
-        "filename, nothing is re-uploaded. Requires a writable library "
+        "<item_key>.pdf); a missing extension is appended automatically. "
+        "Returns the created attachment's key. Idempotent: if the item "
+        "already has an attachment with the same filename or identical "
+        "content (MD5), nothing is re-uploaded. Requires a writable library "
         "(fails in local-only mode). Uploads count against the Zotero "
         "cloud storage quota unless WebDAV sync is configured. Run "
         "zotero_update_search_database afterwards to index the new file "
@@ -2775,6 +2809,11 @@ def attach_file(
                     f"Error: Unsupported file type '{ext}'. "
                     f"Allowed: {', '.join(sorted(_ATTACH_ALLOWED_EXTS))}"
                 )
+            if filename and not filename.lower().endswith(ext):
+                # Mirror the URL branch's .pdf enforcement: an override
+                # without the source's extension would strip it from the
+                # stored file (and break the MIME-type guess).
+                filename += ext
             display_name = filename or os.path.basename(file_path)
             ctx.info(f"Attaching local file to {item_key}: {display_name}")
             if filename and filename != os.path.basename(file_path):

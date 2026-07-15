@@ -1,5 +1,7 @@
 """Tests for zotero_attach_file (tools/write.attach_file) and its helpers."""
 
+import hashlib
+
 import pytest
 from conftest import DummyContext, FakeZotero
 
@@ -47,6 +49,106 @@ class TestAttachmentFilenameExists:
         assert not _helpers._attachment_filename_exists(zot, "ITEM1", "paper.pdf")
 
 
+class TestExtractAttachmentKey:
+    def test_key_from_success_entry(self):
+        result = {"success": [{"key": "ATCH0001"}], "failure": [], "unchanged": []}
+        assert _helpers._extract_attachment_key(result) == "ATCH0001"
+
+    def test_key_from_unchanged_entry(self):
+        result = {"success": [], "failure": [], "unchanged": [{"key": "ATCH0002"}]}
+        assert _helpers._extract_attachment_key(result) == "ATCH0002"
+
+    def test_none_when_no_entries(self):
+        result = {"success": [], "failure": [], "unchanged": []}
+        assert _helpers._extract_attachment_key(result) is None
+
+    def test_none_on_non_dict(self):
+        assert _helpers._extract_attachment_key(None) is None
+
+
+class TestFindChildAttachment:
+    def test_matches_filename(self):
+        zot = FakeZotero()
+        child = {"key": "ATT1", "data": {"filename": "paper.pdf"}}
+        zot._children["ITEM1"] = [child]
+        assert (
+            _helpers._find_child_attachment(zot, "ITEM1", filename="paper.pdf")
+            is child
+        )
+
+    def test_matches_md5(self):
+        zot = FakeZotero()
+        child = {"key": "ATT1", "data": {"filename": "other.pdf", "md5": "abc123"}}
+        zot._children["ITEM1"] = [child]
+        assert (
+            _helpers._find_child_attachment(
+                zot, "ITEM1", filename="paper.pdf", file_md5="abc123"
+            )
+            is child
+        )
+
+    def test_no_match_returns_none(self):
+        zot = FakeZotero()
+        zot._children["ITEM1"] = [
+            {"key": "ATT1", "data": {"filename": "other.pdf", "md5": "abc123"}}
+        ]
+        assert (
+            _helpers._find_child_attachment(
+                zot, "ITEM1", filename="paper.pdf", file_md5="def456"
+            )
+            is None
+        )
+
+    def test_none_md5_does_not_match_child_without_md5(self):
+        zot = FakeZotero()
+        zot._children["ITEM1"] = [{"key": "ATT1", "data": {"filename": "other.pdf"}}]
+        assert (
+            _helpers._find_child_attachment(
+                zot, "ITEM1", filename="paper.pdf", file_md5=None
+            )
+            is None
+        )
+
+    def test_children_error_returns_none(self):
+        class Boom(FakeZotero):
+            def children(self, item_key, **kwargs):
+                raise RuntimeError("api down")
+
+        assert (
+            _helpers._find_child_attachment(Boom(), "ITEM1", filename="paper.pdf")
+            is None
+        )
+
+    def test_scans_past_first_api_page(self):
+        """The Zotero API caps unpaginated requests (default 25 children) —
+        the scan must page through, or a match past the first page is missed."""
+
+        class PagedFake(FakeZotero):
+            def children(self, item_key, start=0, limit=25, **kwargs):
+                kids = self._children.get(item_key, [])
+                return kids[start : start + limit]
+
+        zot = PagedFake()
+        match = {"key": "ATT_PG2", "data": {"filename": "paper.pdf"}}
+        fillers = [{"key": f"NOTE{i:04d}", "data": {"itemType": "note"}} for i in range(150)]
+        zot._children["ITEM1"] = fillers + [match]
+        assert (
+            _helpers._find_child_attachment(zot, "ITEM1", filename="paper.pdf")
+            is match
+        )
+
+    def test_skips_trashed_children(self):
+        """A child in Zotero's trash must not count as 'already attached'."""
+        zot = FakeZotero()
+        zot._children["ITEM1"] = [
+            {"key": "ATT1", "data": {"filename": "paper.pdf", "deleted": 1}}
+        ]
+        assert (
+            _helpers._find_child_attachment(zot, "ITEM1", filename="paper.pdf")
+            is None
+        )
+
+
 class FakeZoteroForAttach(FakeZotero):
     """FakeZotero extended with attachment_both recording."""
 
@@ -56,7 +158,13 @@ class FakeZoteroForAttach(FakeZotero):
 
     def attachment_both(self, files, parentid=None, **kwargs):
         self.attachments.append({"files": files, "parentid": parentid})
-        return {"success": {"0": "ATCH0001"}, "successful": {}, "failed": {}}
+        # Shape matches pyzotero Zupload.upload(): status → list of payload
+        # dicts, each carrying the registered attachment key.
+        return {
+            "success": [{"key": "ATCH0001", "title": files[0][0]}],
+            "failure": [],
+            "unchanged": [],
+        }
 
 
 def _patch_write_client(monkeypatch, fake_zot):
@@ -67,7 +175,6 @@ def _patch_write_client(monkeypatch, fake_zot):
 
 
 def _patch_path_valid(monkeypatch):
-    monkeypatch.setattr("os.path.exists", lambda p: True)
     monkeypatch.setattr("os.path.isfile", lambda p: True)
     monkeypatch.setattr("os.path.islink", lambda p: False)
     monkeypatch.setattr("os.path.isabs", lambda p: p.startswith("/"))
@@ -234,6 +341,37 @@ class TestAttachFileLocal:
         assert "already present" in result
         assert "not re-uploaded" in result
 
+    def test_result_includes_attachment_key(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+        assert "ATCH0001" in result
+
+    def test_already_present_reports_existing_key(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "OLDATT01",
+                "data": {"itemType": "attachment", "filename": "smith-2020.pdf"},
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+        assert len(fake.attachments) == 0
+        assert "OLDATT01" in result
+
     def test_rejects_symlink(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()
         _patch_write_client(monkeypatch, fake)
@@ -305,6 +443,201 @@ class TestAttachFileLocal:
         )
         assert result.startswith("Error")
         assert "quota exceeded" in result
+
+    def test_upload_failure_entries_not_reported_as_success(
+        self, monkeypatch, dummy_ctx
+    ):
+        """Zupload can put the file on the failure list without raising —
+        that must not read as 'File attached'."""
+
+        class FailUpload(FakeZoteroForAttach):
+            def attachment_both(self, files, parentid=None, **kwargs):
+                return {
+                    "success": [],
+                    "failure": [{"title": files[0][0], "code": 400}],
+                    "unchanged": [],
+                }
+
+        _patch_write_client(monkeypatch, FailUpload())
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/Users/test/a.pdf", ctx=dummy_ctx
+        )
+        assert result.startswith("Error")
+        assert "File attached" not in result
+
+    def test_trashed_same_name_child_does_not_block_upload(
+        self, monkeypatch, dummy_ctx
+    ):
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "OLDATT01",
+                "data": {
+                    "itemType": "attachment",
+                    "filename": "smith-2020.pdf",
+                    "deleted": 1,
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+        assert len(fake.attachments) == 1
+        assert "File attached" in result
+
+    def test_filename_override_inherits_source_extension(
+        self, monkeypatch, dummy_ctx
+    ):
+        """A local-mode override without an extension must inherit the source
+        file's, mirroring the URL branch's .pdf enforcement — otherwise the
+        stored file loses its extension (and MIME-type guess)."""
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/dl (3).pdf",
+            filename="smith-2020",
+            ctx=dummy_ctx,
+        )
+        assert fake.attachments[0]["files"][0][0] == "smith-2020.pdf"
+
+
+# ---------------------------------------------------------------------------
+# attach_file: content-hash (MD5) dedupe — uses real files on disk
+# ---------------------------------------------------------------------------
+
+
+class TestAttachFileMd5Dedupe:
+    def test_same_content_different_filename_skipped(
+        self, tmp_path, monkeypatch, dummy_ctx
+    ):
+        content = b"%PDF-1.4 same-bytes"
+        pdf = tmp_path / "new-name.pdf"
+        pdf.write_bytes(content)
+
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "OLDATT01",
+                "data": {
+                    "itemType": "attachment",
+                    "filename": "old-name.pdf",
+                    "md5": hashlib.md5(content).hexdigest(),
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path=str(pdf), ctx=dummy_ctx
+        )
+        assert len(fake.attachments) == 0
+        assert "old-name.pdf" in result
+        assert "OLDATT01" in result
+        assert "not re-uploaded" in result
+
+    def test_different_content_still_uploads(self, tmp_path, monkeypatch, dummy_ctx):
+        pdf = tmp_path / "new-name.pdf"
+        pdf.write_bytes(b"%PDF-1.4 new-bytes")
+
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "OLDATT01",
+                "data": {
+                    "itemType": "attachment",
+                    "filename": "old-name.pdf",
+                    "md5": hashlib.md5(b"%PDF-1.4 other-bytes").hexdigest(),
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path=str(pdf), ctx=dummy_ctx
+        )
+        assert len(fake.attachments) == 1
+        assert "File attached" in result
+
+    def test_same_name_different_content_notes_mismatch(
+        self, tmp_path, monkeypatch, dummy_ctx
+    ):
+        """A filename match with different bytes is a replace attempt — the
+        skip message must say the stored content differs, not look like a
+        no-op re-run."""
+        pdf = tmp_path / "smith-2020.pdf"
+        pdf.write_bytes(b"%PDF-1.4 corrected-bytes")
+
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "OLDATT01",
+                "data": {
+                    "itemType": "attachment",
+                    "filename": "smith-2020.pdf",
+                    "md5": hashlib.md5(b"%PDF-1.4 old-bytes").hexdigest(),
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path=str(pdf), ctx=dummy_ctx
+        )
+        assert len(fake.attachments) == 0
+        assert "content differs" in result
+        assert "delete the existing attachment" in result
+
+    def test_child_without_md5_still_uploads(self, tmp_path, monkeypatch, dummy_ctx):
+        pdf = tmp_path / "new-name.pdf"
+        pdf.write_bytes(b"%PDF-1.4 new-bytes")
+
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {"key": "OLDATT01", "data": {"itemType": "attachment", "filename": "old-name.pdf"}}
+        ]
+        _patch_write_client(monkeypatch, fake)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path=str(pdf), ctx=dummy_ctx
+        )
+        assert len(fake.attachments) == 1
+        assert "File attached" in result
+
+    def test_md5_dedupe_applies_to_url_branch(self, monkeypatch, dummy_ctx):
+        content = b"%PDF-1.4 " + b"x" * 2000  # FakeResponse default payload
+
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "OLDATT01",
+                "data": {
+                    "itemType": "attachment",
+                    "filename": "old-name.pdf",
+                    "md5": hashlib.md5(content).hexdigest(),
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_guarded_get(monkeypatch, FakeResponse(content=content))
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            url="https://example.org/papers/smith-2020.pdf",
+            ctx=dummy_ctx,
+        )
+        assert len(fake.attachments) == 0
+        assert "old-name.pdf" in result
+        assert "not re-uploaded" in result
 
 
 # ---------------------------------------------------------------------------
