@@ -51,6 +51,35 @@ def is_local_mode() -> bool:
     value = os.getenv("ZOTERO_LOCAL", "")
     return value.lower() in {"true", "yes", "1"}
 
+
+# ---------------------------------------------------------------------------
+# Pagination helper
+# ---------------------------------------------------------------------------
+
+def _paginate(zot_method, *args, max_items=None, **kwargs):
+    """Fetch all results from a pyzotero method using manual pagination.
+
+    Avoids zot.everything() which can cause RLock pickling in MCP contexts.
+    Accepts the same positional and keyword arguments as the wrapped method,
+    plus an optional max_items to cap the total results.
+    """
+    items = []
+    start = 0
+    page_size = 100
+    while True:
+        batch = zot_method(*args, start=start, limit=page_size, **kwargs)
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+        if max_items and len(items) >= max_items:
+            items = items[:max_items]
+            break
+    return items
+
+
 def format_item_result(
     item: dict,
     index: int | None = None,

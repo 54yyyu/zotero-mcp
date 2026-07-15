@@ -13,6 +13,7 @@ import requests
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+from zotero_mcp.utils import _paginate
 
 # ---------------------------------------------------------------------------
 # Config file
@@ -34,34 +35,6 @@ def _load_zotero_mcp_config() -> dict:
             return json.load(f) or {}
     except (json.JSONDecodeError, OSError):
         return {}
-
-
-# ---------------------------------------------------------------------------
-# Pagination helper
-# ---------------------------------------------------------------------------
-
-def _paginate(zot_method, *args, max_items=None, **kwargs):
-    """Fetch all results from a pyzotero method using manual pagination.
-
-    Avoids zot.everything() which can cause RLock pickling in MCP contexts.
-    Accepts the same positional and keyword arguments as the wrapped method,
-    plus an optional max_items to cap the total results.
-    """
-    items = []
-    start = 0
-    page_size = 100
-    while True:
-        batch = zot_method(*args, start=start, limit=page_size, **kwargs)
-        if not batch:
-            break
-        items.extend(batch)
-        if len(batch) < page_size:
-            break
-        start += page_size
-        if max_items and len(items) >= max_items:
-            items = items[:max_items]
-            break
-    return items
 
 
 # ---------------------------------------------------------------------------
