@@ -1399,7 +1399,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                             parentid=item_key,
                         )
                         webdav_suffix = _helpers._maybe_upload_to_webdav(
-                            attach_result, filepath, ctx
+                            attach_result, filepath, ctx, write_zot=write_zot
                         )
                 pdf_status = "PDF attached" + webdav_suffix
             except Exception as e:
@@ -2669,7 +2669,7 @@ def add_from_file(
                     parentid=parent_key,
                 )
                 webdav_suffix = _helpers._maybe_upload_to_webdav(
-                    attach_result, file_path, ctx
+                    attach_result, file_path, ctx, write_zot=write_zot
                 )
             attach_info = f"File attached: {display_name}" + webdav_suffix
         except Exception as e:
