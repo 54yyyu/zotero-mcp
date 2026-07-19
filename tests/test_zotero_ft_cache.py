@@ -74,7 +74,7 @@ def test_zotero_ft_cache_short_circuits_pdf_extraction(tmp_path):
 
     result = reader._extract_fulltext_for_item(item_id=1)
     assert result is not None
-    text, source = result
+    text, source, was_cached = result
     assert "Full body text" in text
     assert source == "zotero-cache"
 
@@ -125,7 +125,7 @@ def test_storage_scan_recovers_from_renamed_pdf(tmp_path):
 
     reader._extract_text_from_pdf = _fake_extract  # type: ignore[assignment]
 
-    text, source = reader._extract_fulltext_for_item(item_id=1)
+    text, source, _was_cached = reader._extract_fulltext_for_item(item_id=1)
     assert text == "extracted via scan fallback"
     assert source == "pdf"
     assert captured["path"] == on_disk

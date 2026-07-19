@@ -262,6 +262,23 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         else:
             print("Using default Gemini base URL")
 
+        existing_gemini_batch = existing_semantic_config.get("gemini_batch", {}) if existing_semantic_config else {}
+        default_gemini_batch = bool(existing_gemini_batch.get("enabled", False))
+        default_hint = "Y/n" if default_gemini_batch else "y/N"
+        print("\nGemini indexing mode:")
+        print("Batch API lowers costs for database updates, but results are imported later after the batch completes.")
+        print("Note: Google marks the Gemini embeddings Batch API as experimental.")
+        raw = input(f"Use Gemini Batch API for database updates? [{default_hint}]: ").strip().lower()
+        if raw == "":
+            gemini_batch_enabled = default_gemini_batch
+        else:
+            gemini_batch_enabled = raw in ["y", "yes"]
+        config["gemini_batch"] = {"enabled": gemini_batch_enabled}
+        if gemini_batch_enabled:
+            print("Gemini Batch API will be used by default for update-db.")
+        else:
+            print("Realtime Gemini embeddings will be used by default for update-db.")
+
     elif choice == "4":
         config["embedding_model"] = "ollama"
         model_name = input("Enter Ollama embedding model name (default: qwen3-embedding): ").strip()
@@ -344,6 +361,22 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         except ValueError:
             print("Please enter a valid number")
 
+    print("\nPDF extraction can run several files in parallel (one subprocess per file).")
+    print("1 keeps the classic sequential behavior; 2-8 speeds up large libraries.")
+    default_workers = existing_semantic_config.get("extraction", {}).get("workers", 1) if existing_semantic_config else 1
+    while True:
+        raw = input(f"Parallel extraction workers [{default_workers}]: ").strip()
+        if raw == "":
+            extraction_workers = default_workers
+            break
+        try:
+            extraction_workers = int(raw)
+            if extraction_workers > 0:
+                break
+            print("Please enter a positive integer")
+        except ValueError:
+            print("Please enter a valid number")
+
     # Configure Zotero database path
     print("\n=== Zotero Database Path ===")
     print("By default, zotero-mcp auto-detects the Zotero database location.")
@@ -369,7 +402,18 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         print("Using auto-detect for Zotero database location.")
 
     config["update_config"] = update_config
-    config["extraction"] = {"pdf_max_pages": pdf_max_pages}
+    # Preserve manually-added extraction keys (e.g. pdf_timeout) across setup runs.
+    extraction_cfg = dict(existing_semantic_config.get("extraction", {})) if existing_semantic_config else {}
+    extraction_cfg["pdf_max_pages"] = pdf_max_pages
+    extraction_cfg["workers"] = extraction_workers
+    config["extraction"] = extraction_cfg
+    # Transient extracted-fulltext cache: survives failed embedding runs so
+    # slow PDF/web extraction is never redone; entries are dropped as soon as
+    # each item's embedding is stored (or imported, in batch mode).
+    if existing_semantic_config and existing_semantic_config.get("fulltext_cache"):
+        config["fulltext_cache"] = existing_semantic_config["fulltext_cache"]
+    else:
+        config.setdefault("fulltext_cache", {"enabled": True, "max_age_days": 30})
     # Web-API users: index fulltext from Zotero's server-side extraction by
     # default. Users can set this to false to keep the old metadata-only
     # behavior. The flag is ignored in local mode (ZOTERO_LOCAL=true uses
