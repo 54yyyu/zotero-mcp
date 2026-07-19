@@ -36,11 +36,17 @@ class FakeChromaClient:
     def get_existing_ids(self, ids):
         return {i for i in ids if i in self._ids}
 
-    def get_all_ids(self):
+    def get_all_ids(self, where=None):
         return set(self._ids)
 
     def get_document_metadata(self, doc_id):
         return None
+
+    def iter_metadatas(self, batch_size=500):
+        return iter(())
+
+    def update_metadatas(self, ids, metadatas):
+        pass
 
     def upsert_documents(self, documents, metadatas, ids):
         self.added.append((list(documents), list(metadatas), list(ids)))

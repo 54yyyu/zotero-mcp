@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Multi-library tagging in the semantic search index (#163, phase 1)** — ChromaDB documents are now tagged with a `group_id` field (0 = personal library, else the Zotero groupID — the same `0`/groupID convention already used by `zotero_switch_library`). `zotero_semantic_search` gains a `library_id` parameter (accepting `0`, `"user"`, or a group's numeric groupID; omitted to search every indexed library — the new default) that filters on `group_id` DB-side via a ChromaDB `where` clause, never a Python post-filter. Existing collections are migrated automatically on the next `zotero_update_search_database` run (metadata-only backfill, no re-embedding, no downtime). Note: full item enrichment for a search hit still uses the currently active library's client, so a hit from a group library other than the active one may show limited detail until that capability lands in a follow-up; the incremental-update deletion pass is likewise not yet scoped per library (tracked separately, see #393 and related issues).
+
 ## [0.6.2] - 2026-07-13
 
 ### Added

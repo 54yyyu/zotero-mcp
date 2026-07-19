@@ -54,6 +54,11 @@ class FakeReader:
     def get_all_item_keys(self):
         return {"ITEMKEY1"}
 
+    def get_key_group_map(self):
+        # Fixed result rather than a real query — this file tests
+        # failed-marker retry, not library attribution.
+        return ({"ITEMKEY1": 0}, set())
+
     def get_items_with_text(self, limit=None, include_fulltext=False, key_filter=None, collection_keys=None):
         return [FakeItem()]
 

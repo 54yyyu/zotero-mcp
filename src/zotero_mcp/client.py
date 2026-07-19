@@ -113,6 +113,21 @@ def get_active_library() -> dict[str, str]:
     return dict(_active_library_override)
 
 
+def get_active_group_id() -> int:
+    """group_id (0 = personal, else Zotero groupID) of the library
+    ``get_zotero_client()`` is currently scoped to."""
+    
+    override = _active_library_override
+    library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID") or "0"
+    library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+    if library_type == "group":
+        try:
+            return int(library_id)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 def _make_local_http_client() -> httpx.Client:
     """Return an httpx.Client pinned to HTTP/1.1 for the local Zotero server.
 
