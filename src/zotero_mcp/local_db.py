@@ -213,11 +213,8 @@ _SIMPLE_FIELD_SQL = {
         "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
         "WHERE d.itemID = i.itemID AND d.fieldID = 2)"
     ),
-    "date": (
-        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
-        "JOIN fields f ON d.fieldID = f.fieldID "
-        "WHERE d.itemID = i.itemID AND f.fieldName = 'date')"
-    ),
+    # "date" is handled separately below (_DATE_DISPLAY_SQL / _DATE_RANGE_SQL)
+    # — it needs an operator-aware expression, unlike every other field here.
     "DOI": (
         "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
         "JOIN fields f ON d.fieldID = f.fieldID "
@@ -233,8 +230,40 @@ _SIMPLE_FIELD_SQL = {
     "itemType": "it.typeName",
 }
 
-# "year" mirrors tools/search.py's _extract_values: the first 4 characters of
-# the date field, or no value at all when the date is shorter than that.
+# Zotero stores the "date" field as a multipart string in itemDataValues.value:
+# "<ISO YYYY-MM-DD, 00 for missing parts> <original user-typed text>" (e.g.
+# "2016-10-01 October 1, 2016", "2021-07-00 07/2021", "0000-00-00 <unparseable
+# text>"), confirmed against Zotero's own source (Zotero.Date.strToMultipart /
+# item.js's setField). The pyzotero/web-API "date" field returns ONLY the
+# display half (Zotero.Date.multipartToStr strips the ISO prefix before
+# returning it) — so a condition needs a DIFFERENT substring depending on the
+# operator, to match what each one is really comparing:
+#   - is/isNot/contains/doesNotContain/beginsWith/endsWith: the display text
+#     only (_DATE_DISPLAY_SQL) — matching what the API's "date" field is.
+#   - isGreaterThan/isLessThan/isBefore/isAfter: the first 10 chars, i.e. the
+#     ISO portion (_DATE_RANGE_SQL) — Zotero's own search.js does exactly this
+#     (`SUBSTR(value, 1, 10)`) for date range queries, since lexicographic
+#     comparison of "YYYY-MM-DD" strings is chronologically correct but
+#     comparing arbitrary display text ("October 1, 2016" vs "2020") is not.
+# "year" similarly mirrors Zotero's own item.js (`getField('date', true,
+# true).substr(0, 4)`) and searchConditions.js (`SUBSTR(value, 1, 4)`): the
+# first 4 characters of the RAW multipart value, which is always the ISO
+# year regardless of display format. Note this deliberately diverges from
+# tools/search.py's `_extract_values`, which takes `date[:4]` off the
+# *display* string and is wrong whenever that doesn't start with a year
+# (i.e. most non-ISO-typed dates) — a pre-existing bug, not something to
+# replicate; see the plan's Phase D bug list.
+_RANGE_OPERATIONS = frozenset({"isGreaterThan", "isLessThan", "isBefore", "isAfter"})
+
+_DATE_DISPLAY_SQL = (
+    "(SELECT SUBSTR(v.value, INSTR(v.value, ' ') + 1) FROM itemData d "
+    "JOIN itemDataValues v ON d.valueID = v.valueID JOIN fields f ON d.fieldID = f.fieldID "
+    "WHERE d.itemID = i.itemID AND f.fieldName = 'date')"
+)
+_DATE_RANGE_SQL = (
+    "(SELECT SUBSTR(v.value, 1, 10) FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
+    "JOIN fields f ON d.fieldID = f.fieldID WHERE d.itemID = i.itemID AND f.fieldName = 'date')"
+)
 _YEAR_FIELD_SQL = (
     "(SELECT SUBSTR(v.value, 1, 4) FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
     "JOIN fields f ON d.fieldID = f.fieldID "
@@ -1286,6 +1315,9 @@ class LocalZoteroReader:
             return _tag_condition(operation, value)
         if field_lower == "year":
             return _scalar_condition(_YEAR_FIELD_SQL, operation, value)
+        if field_lower == "date":
+            date_expr = _DATE_RANGE_SQL if operation in _RANGE_OPERATIONS else _DATE_DISPLAY_SQL
+            return _scalar_condition(date_expr, operation, value)
         if field_lower == "collection":
             return self._collection_condition(self._get_connection(), operation, value)
         resolved = _CONDITION_FIELD_ALIASES.get(field_lower, field)

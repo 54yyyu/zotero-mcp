@@ -98,6 +98,16 @@ def _build_db(db_path: Path) -> dict[str, int]:
     add_item(5, "PERS0005", 1, 1, title="Org Author Paper")
     add_item(6, "DELETEDKEY", 1, 1, title="Should Never Appear")
     add_item(7, "GRP00001", 1, 5, title="Group Library Paper about quantum")
+    # Real Zotero date storage is multipart: "<ISO YYYY-MM-DD> <original display
+    # text>" (confirmed against Zotero's own source — see local_db.py's
+    # _DATE_DISPLAY_SQL / _DATE_RANGE_SQL comment). These two exercise that:
+    # PERS0008's display text doesn't start with a year at all (the exact
+    # shape that broke the old pyzotero-based path's `year` extraction), and
+    # PERS0009's month/day are unknown ("00", Zotero's own sentinel).
+    add_item(8, "PERS0008", 1, 1, title="Multipart Date Paper",
+             date="2016-10-01 October 1, 2016")
+    add_item(9, "PERS0009", 1, 1, title="Unknown Month Paper",
+             date="2026-00-00 2026")
 
     conn.execute("INSERT INTO deletedItems (itemID) VALUES (6)")
 
@@ -309,6 +319,92 @@ def test_advanced_search_sql_year_excludes_older_item(tmp_path):
     keys = {r["key"] for r in result}
     assert "PERS0001" in keys
     assert "PERS0002" not in keys  # 2018, excluded
+
+
+def test_advanced_search_sql_year_correct_for_non_iso_display_date(tmp_path):
+    """PERS0008's display text ("October 1, 2016") doesn't start with a year at
+    all — the exact shape that made the old pyzotero-based path's `year`
+    extraction (`data.get("date")[:4]`) silently wrong (see the plan's Phase D
+    bug #12). `year` must be read from the RAW multipart value's ISO prefix,
+    not the display text, so this still correctly resolves to 2016."""
+    reader = _reader(tmp_path)
+    try:
+        result = reader.advanced_search_sql(
+            conditions=[
+                {"field": "year", "operation": "isGreaterThan", "value": "2015"},
+                {"field": "year", "operation": "isLessThan", "value": "2017"},
+            ],
+            group_id=0,
+        )
+    finally:
+        reader.close()
+    assert {r["key"] for r in result} == {"PERS0008"}
+
+
+def test_advanced_search_sql_date_contains_matches_display_text_only(tmp_path):
+    """The `date` field's `contains`/etc. operators must match the DISPLAY
+    text pyzotero's API actually returns, not the raw multipart value with
+    its ISO prefix — "October" should match, but the ISO prefix "2016-10"
+    (present in the raw value, absent from the display text) should not."""
+    reader = _reader(tmp_path)
+    try:
+        matches_display = reader.advanced_search_sql(
+            conditions=[{"field": "date", "operation": "contains", "value": "October"}],
+            group_id=0,
+        )
+        matches_iso_prefix = reader.advanced_search_sql(
+            conditions=[{"field": "date", "operation": "contains", "value": "2016-10"}],
+            group_id=0,
+        )
+    finally:
+        reader.close()
+    assert {r["key"] for r in matches_display} == {"PERS0008"}
+    assert matches_iso_prefix == []
+
+
+def test_advanced_search_sql_date_range_uses_iso_prefix_not_display_text(tmp_path):
+    """The `date` field's isGreaterThan/isLessThan/isBefore/isAfter operators
+    must compare the ISO-date prefix (Zotero's own search.js does exactly
+    this: SUBSTR(value, 1, 10)) — comparing the raw display text
+    ("October 1, 2016" vs "2015-01-01") would be lexicographic nonsense."""
+    reader = _reader(tmp_path)
+    try:
+        result = reader.advanced_search_sql(
+            conditions=[
+                {"field": "date", "operation": "isGreaterThan", "value": "2016-01-01"},
+                {"field": "date", "operation": "isLessThan", "value": "2017-01-01"},
+            ],
+            group_id=0,
+        )
+    finally:
+        reader.close()
+    assert {r["key"] for r in result} == {"PERS0008"}
+
+
+def test_advanced_search_sql_date_range_unknown_month_day_sorts_as_start_of_year(tmp_path):
+    """PERS0009's date is "2026-00-00 2026" (year known, month/day unknown —
+    Zotero's own "00" sentinel). Range comparisons treat it as sorting at the
+    very start of that year, matching Zotero's own SUBSTR(value,1,10)
+    lexicographic comparison (not a local_db.py-specific quirk)."""
+    reader = _reader(tmp_path)
+    try:
+        before_2026 = reader.advanced_search_sql(
+            conditions=[{"field": "date", "operation": "isLessThan", "value": "2026-01-01"}],
+            group_id=0,
+        )
+        year_condition = reader.advanced_search_sql(
+            conditions=[{"field": "year", "operation": "isLessThan", "value": "2026"}],
+            group_id=0,
+        )
+    finally:
+        reader.close()
+    # "2026-00-00" < "2026-01-01" lexicographically, even though the item is
+    # genuinely dated 2026 — an accepted property of multipart-date range
+    # queries, not a bug.
+    assert "PERS0009" in {r["key"] for r in before_2026}
+    # But the `year` field itself (an exact 4-char comparison) correctly
+    # excludes it from "before 2026".
+    assert "PERS0009" not in {r["key"] for r in year_condition}
 
 
 def test_advanced_search_sql_always_excludes_attachments_notes(tmp_path):
