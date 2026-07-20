@@ -53,8 +53,9 @@ def test_render_never_exceeds_terminal_width(monkeypatch):
     progress = ExtractionProgress(total=1, stream=stream)
     monkeypatch.setattr(progress, "_term_width", lambda: 40)
     progress.record("extracted", "An extremely long paper title that must be truncated somewhere")
-    line = stream.getvalue().split("\r")[-1]
-    assert len(line) <= 39
+    raw_line = stream.getvalue().split("\r")[-1]
+    visible_line = raw_line.replace("\x1b[K", "")
+    assert len(visible_line) <= 39
 
 
 def test_breaker_trips_after_threshold():

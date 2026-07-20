@@ -14,6 +14,27 @@ import sys
 import threading
 
 
+import unicodedata
+
+
+def _display_width(s: str) -> int:
+    """Calculate terminal display width (wide CJK characters count as 2 columns)."""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
+def _truncate_display_width(s: str, max_width: int) -> str:
+    """Truncate a string to fit within a visual terminal column width."""
+    cur_width = 0
+    res = []
+    for c in s:
+        w = 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+        if cur_width + w > max_width:
+            break
+        cur_width += w
+        res.append(c)
+    return "".join(res)
+
+
 class ExtractionProgress:
     """Counters plus a single-line stderr progress renderer.
 
@@ -63,7 +84,7 @@ class ExtractionProgress:
         # Caller holds the lock; rendering inside it keeps concurrent \r
         # writes from interleaving on the same terminal line.
         try:
-            max_len = self._term_width() - 1
+            max_cols = self._term_width() - 1
             status_parts = [
                 f"{self.counters[key]} {label}"
                 for key, label in self._STATUS_LABELS
@@ -71,13 +92,22 @@ class ExtractionProgress:
             ]
             status = f" ({', '.join(status_parts)})" if status_parts else ""
             prefix = f"{self._prefix} {self.completed}/{self.total}{status} — "
-            remaining = max_len - len(prefix) - 3
-            if remaining > 0 and display and len(display) > remaining:
-                display = display[:remaining] + "..."
-            line = f"{prefix}{display or 'working...'}"
-            if len(line) > max_len:
-                line = line[:max_len]
-            self._stream.write(f"\r{line}{' ' * max(0, max_len - len(line))}")
+            
+            # Clean display string of newlines or carriage returns
+            clean_display = (display or 'working...').replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+            
+            prefix_width = _display_width(prefix)
+            remaining_width = max_cols - prefix_width - 3
+            if remaining_width > 0 and _display_width(clean_display) > remaining_width:
+                clean_display = _truncate_display_width(clean_display, remaining_width) + "..."
+            
+            line = f"{prefix}{clean_display}"
+            if _display_width(line) > max_cols:
+                line = _truncate_display_width(line, max_cols)
+
+            # Use ANSI escape sequence \033[K (clear from cursor to end of line)
+            # to erase any leftover wide characters from previous renders.
+            self._stream.write(f"\r\033[K{line}")
             self._stream.flush()
         except Exception:
             pass
@@ -85,7 +115,7 @@ class ExtractionProgress:
     def clear_line(self) -> None:
         with self._lock:
             try:
-                self._stream.write(f"\r{' ' * (self._term_width() - 1)}\r")
+                self._stream.write("\r\033[K")
                 self._stream.flush()
             except Exception:
                 pass

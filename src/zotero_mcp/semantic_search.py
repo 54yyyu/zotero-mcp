@@ -1192,6 +1192,18 @@ class ZoteroSemanticSearch:
                         sys.stderr.write(", ".join(parts) + "\n")
                         if updated_existing > 0:
                             sys.stderr.write(f"  ({updated_existing} items updated with new fulltext)\n")
+
+                        # Print helpful legend explaining extraction results
+                        legend_items = []
+                        if counts.get("cache_hit"):
+                            legend_items.append("cached: reused text extracted in previous runs")
+                        if skipped_total > 0:
+                            legend_items.append("up to date: already indexed in database")
+                        if counts.get("failed"):
+                            legend_items.append("failed: no attached PDF, scanned image-only PDF, or protected file")
+                        if legend_items:
+                            sys.stderr.write("  Notes on results: " + "; ".join(legend_items) + "\n")
+
                         if _skipped_pdfs:
                             sys.stderr.write(f"  Skipped {len(_skipped_pdfs)} PDF(s) (timed out):\n")
                             for name in _skipped_pdfs:
@@ -1624,6 +1636,11 @@ class ZoteroSemanticSearch:
         stats: dict[str, Any],
     ) -> dict[str, Any]:
         """Prepare records and submit asynchronous OpenAI embedding batches."""
+        try:
+            sys.stderr.write(f"Formatting {len(items)} items into OpenAI batch records...\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
         records, prepare_stats = self._prepare_index_records(items)
         stats["processed_items"] += prepare_stats["processed"]
         stats["skipped_items"] += prepare_stats["skipped"]
@@ -1634,6 +1651,11 @@ class ZoteroSemanticSearch:
             stats["batch_error"] = "No documents were prepared for OpenAI Batch API submission"
             return stats
 
+        try:
+            sys.stderr.write(f"Uploading {len(records)} JSONL records to OpenAI Batch API...\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
         ids = [record["id"] for record in records]
         existing_ids = self.chroma_client.get_existing_ids(ids) if ids and not force_full_rebuild else set()
         model_name = self.chroma_client.embedding_config.get("model_name", "text-embedding-3-small")
@@ -1662,6 +1684,11 @@ class ZoteroSemanticSearch:
         stats: dict[str, Any],
     ) -> dict[str, Any]:
         """Prepare records and submit asynchronous Gemini embedding batches."""
+        try:
+            sys.stderr.write(f"Formatting {len(items)} items into Gemini batch records...\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
         records, prepare_stats = self._prepare_index_records(items)
         stats["processed_items"] += prepare_stats["processed"]
         stats["skipped_items"] += prepare_stats["skipped"]
@@ -1671,6 +1698,12 @@ class ZoteroSemanticSearch:
             stats["batch_submitted"] = False
             stats["batch_error"] = "No documents were prepared for Gemini Batch API submission"
             return stats
+
+        try:
+            sys.stderr.write(f"Uploading {len(records)} JSONL records to Gemini Batch API...\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
 
         ids = [record["id"] for record in records]
         existing_ids = self.chroma_client.get_existing_ids(ids) if ids and not force_full_rebuild else set()
