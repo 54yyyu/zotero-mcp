@@ -881,19 +881,22 @@ class ZoteroSemanticSearch:
                     config_path=self.config_path,
                 ) as reader,
             ):
+                # Phase 1: fetch metadata from local Zotero sqlite database
+                sys.stderr.write("Scanning local Zotero database for items...\n")
+                if collection_keys:
+                    sys.stderr.write(f"Filtering to collections: {collection_keys}\n")
+                sys.stderr.flush()
+
                 # Capture the snapshot's full key set on the SAME connection
                 # this scan uses. The staleness check after the (potentially
                 # long) extraction must compare against what this scan could
                 # actually see — a fresh read taken later could already
                 # include rows from a WAL checkpoint that landed mid-scan.
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
-                # Phase 1: fetch metadata only (fast)
-                sys.stderr.write("Scanning local Zotero database for items...\n")
-                if collection_keys:
-                    sys.stderr.write(f"Filtering to collections: {collection_keys}\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False, collection_keys=collection_keys)
                 candidate_count = len(local_items)
                 sys.stderr.write(f"Found {candidate_count} candidate items.\n")
+                sys.stderr.flush()
 
                 # Optional deduplication: if preprint and journalArticle share a DOI/title, keep journalArticle
                 # Build index by (normalized DOI or normalized title)

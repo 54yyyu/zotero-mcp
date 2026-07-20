@@ -6,10 +6,11 @@ This module provides tools for AI assistants to interact with Zotero libraries.
 
 from ._version import __version__ as __version__
 
-try:
-    from .server import mcp  # noqa: F401
-except ImportError:
-    pass
+__all__ = ["__version__", "mcp"]
 
-# These modules are not imported by default but are available
-# pdfannots_helper and pdfannots_downloader
+
+def __getattr__(name: str):
+    if name == "mcp":
+        from .server import mcp
+        return mcp
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
