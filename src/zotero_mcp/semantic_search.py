@@ -895,7 +895,29 @@ class ZoteroSemanticSearch:
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False, collection_keys=collection_keys)
                 candidate_count = len(local_items)
-                sys.stderr.write(f"Found {candidate_count} candidate items.\n")
+
+                # Format breakdown by library type (personal library vs group libraries)
+                user_items = 0
+                group_counts: dict[int, int] = {}
+                for it in local_items:
+                    lib_id = getattr(it, "library_id", 1)
+                    if lib_id == 1:
+                        user_items += 1
+                    else:
+                        group_counts[lib_id] = group_counts.get(lib_id, 0) + 1
+
+                if user_items and group_counts:
+                    group_word = "group" if len(group_counts) == 1 else "groups"
+                    breakdown_str = f" (including your personal library and {len(group_counts)} {group_word})"
+                elif group_counts:
+                    group_word = "group" if len(group_counts) == 1 else "groups"
+                    breakdown_str = f" (across {len(group_counts)} {group_word})"
+                elif user_items:
+                    breakdown_str = " (from your personal library)"
+                else:
+                    breakdown_str = ""
+
+                sys.stderr.write(f"Found {candidate_count} candidate items{breakdown_str}.\n")
                 sys.stderr.flush()
 
                 # Optional deduplication: if preprint and journalArticle share a DOI/title, keep journalArticle
@@ -955,13 +977,15 @@ class ZoteroSemanticSearch:
                 if total_to_extract != candidate_count:
                     try:
                         sys.stderr.write(
-                            f"After filtering/dedup: {total_to_extract} items to process. Extracting content...\n"
+                            f"After filtering/dedup: {total_to_extract} items to process. Extracting PDF and EPUB full text...\n"
                         )
+                        sys.stderr.flush()
                     except Exception:
                         pass
                 else:
                     try:
-                        sys.stderr.write("Extracting content...\n")
+                        sys.stderr.write("Extracting PDF and EPUB full text...\n")
+                        sys.stderr.flush()
                     except Exception:
                         pass
 

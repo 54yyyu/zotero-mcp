@@ -110,6 +110,7 @@ class ZoteroItem:
     item_id: int
     key: str
     item_type_id: int
+    library_id: int = 1
     item_type: str | None = None
     doi: str | None = None
     title: str | None = None
@@ -856,6 +857,7 @@ class LocalZoteroReader:
         SELECT
             i.itemID,
             i.key,
+            i.libraryID,
             i.itemTypeID,
             it.typeName as item_type,
             i.dateAdded,
@@ -929,7 +931,7 @@ class LocalZoteroReader:
             params.append(key_filter)
 
         query += """
-        GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
+        GROUP BY i.itemID, i.key, i.libraryID, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
                  title_val.value, abstract_val.value, extra_val.value
 
         ORDER BY i.dateModified DESC
@@ -946,6 +948,7 @@ class LocalZoteroReader:
             item = ZoteroItem(
                 item_id=row['itemID'],
                 key=row['key'],
+                library_id=row['libraryID'],
                 item_type_id=row['itemTypeID'],
                 item_type=row['item_type'],
                 doi=row['doi'],
