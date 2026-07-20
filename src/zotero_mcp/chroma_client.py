@@ -470,15 +470,29 @@ class ChromaClient:
 
         self.persist_directory = persist_directory
 
-        # Initialize ChromaDB client with stdout suppression
+        # Initialize ChromaDB client with stdout suppression and corrupted-DB auto-recovery
         with suppress_stdout():
-            self.client = chromadb.PersistentClient(
-                path=self.persist_directory,
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
+            try:
+                self.client = chromadb.PersistentClient(
+                    path=self.persist_directory,
+                    settings=Settings(
+                        anonymized_telemetry=False,
+                        allow_reset=True
+                    )
                 )
-            )
+            except Exception as e:
+                if "already exists" in str(e).lower() or "operationalerror" in str(e).lower():
+                    logger.warning(f"ChromaDB database at {self.persist_directory} is corrupted ({e}). Wiping directory for clean rebuild...")
+                    shutil.rmtree(self.persist_directory, ignore_errors=True)
+                    self.client = chromadb.PersistentClient(
+                        path=self.persist_directory,
+                        settings=Settings(
+                            anonymized_telemetry=False,
+                            allow_reset=True
+                        )
+                    )
+                else:
+                    raise
 
             # Set up embedding function
             self.embedding_function = self._create_embedding_function()
