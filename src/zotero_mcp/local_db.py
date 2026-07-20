@@ -619,7 +619,7 @@ class LocalZoteroReader:
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
             cached = self._read_zotero_ft_cache(key)
             if cached:
-                return (cached, "zotero-cache", False)
+                return (cached, "zotero-cache", True)
 
         best_pdf: tuple[Path, str] | None = None
         best_html: tuple[Path, str] | None = None
