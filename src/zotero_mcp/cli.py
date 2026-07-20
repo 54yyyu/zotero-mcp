@@ -676,9 +676,11 @@ def main():
             config_path = Path(config_path)
 
         try:
+            print("Connecting to ChromaDB database...", flush=True)
             # Create semantic search instance
             search = create_semantic_search(str(config_path))
 
+            print("Fetching collection status...", flush=True)
             # Get database status
             status = search.get_database_status()
 
