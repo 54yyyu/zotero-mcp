@@ -508,10 +508,12 @@ class ChromaClient:
                             # Compare stored model with configured model
                             configured_model = getattr(self.embedding_function, 'model_name', None)
                             if stored_model and configured_model and stored_model != configured_model:
-                                logger.warning(
-                                    f"Stored embedding model '{stored_model}' differs from "
-                                    f"configured '{configured_model}'. Resetting ChromaDB vector collection."
+                                msg = (
+                                    f"Stored embedding model '{stored_model}' differs from configured '{configured_model}'. "
+                                    "Resetting ChromaDB vector collection for rebuild (this may take a few minutes for large databases)..."
                                 )
+                                logger.warning(msg)
+                                print(msg, flush=True)
                                 self.client.delete_collection(name=self.collection_name)
                                 self.collection = self.client.create_collection(
                                     name=self.collection_name,
@@ -522,10 +524,13 @@ class ChromaClient:
 
             except Exception as e:
                 if "embedding function conflict" in str(e).lower():
-                    logger.warning(
+                    msg = (
                         f"Embedding model changed to '{self.embedding_model}'. "
-                        "Resetting ChromaDB vector collection for rebuild (your Zotero library and folders remain untouched)."
+                        "Resetting ChromaDB vector collection for rebuild (your Zotero library and folders remain untouched). "
+                        "This may take a few minutes for large databases while old vector records are cleared..."
                     )
+                    logger.warning(msg)
+                    print(msg, flush=True)
                     self.client.delete_collection(name=self.collection_name)
                     self.collection = self.client.create_collection(
                         name=self.collection_name,
@@ -783,6 +788,7 @@ class ChromaClient:
     def reset_collection(self) -> None:
         """Reset (clear) the collection."""
         try:
+            print("Clearing ChromaDB vector collection for rebuild (this may take a few minutes for large databases)...", flush=True)
             self.client.delete_collection(name=self.collection_name)
             self.collection = self.client.create_collection(
                 name=self.collection_name,
