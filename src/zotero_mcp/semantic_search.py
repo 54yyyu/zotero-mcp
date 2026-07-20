@@ -1652,7 +1652,12 @@ class ZoteroSemanticSearch:
             return stats
 
         try:
-            sys.stderr.write(f"Uploading {len(records)} JSONL records to OpenAI Batch API...\n")
+            if len(records) != len(items):
+                sys.stderr.write(
+                    f"Uploading {len(records)} passage chunk records (from {len(items)} items) to OpenAI Batch API...\n"
+                )
+            else:
+                sys.stderr.write(f"Uploading {len(records)} document records to OpenAI Batch API...\n")
             sys.stderr.flush()
         except Exception:
             pass
@@ -1700,7 +1705,12 @@ class ZoteroSemanticSearch:
             return stats
 
         try:
-            sys.stderr.write(f"Uploading {len(records)} JSONL records to Gemini Batch API...\n")
+            if len(records) != len(items):
+                sys.stderr.write(
+                    f"Uploading {len(records)} passage chunk records (from {len(items)} items) to Gemini Batch API...\n"
+                )
+            else:
+                sys.stderr.write(f"Uploading {len(records)} document records to Gemini Batch API...\n")
             sys.stderr.flush()
         except Exception:
             pass

@@ -182,9 +182,14 @@ def _print_update_stats(stats: dict) -> None:
     print(f"- Total items: {stats.get('total_items', 0)}")
     print(f"- Processed: {stats.get('processed_items', 0)}")
     if stats.get("batch_submitted"):
-        print(f"- Submitted: {stats.get('submitted_items', 0)}")
-        print(f"- Estimated new items: {stats.get('estimated_added_items', 0)}")
-        print(f"- Estimated existing items: {stats.get('estimated_updated_items', 0)}")
+        sub_count = stats.get('submitted_items', 0)
+        tot_items = stats.get('total_items', 0)
+        if sub_count != tot_items:
+            print(f"- Submitted: {sub_count} chunks/records (from {tot_items} items)")
+        else:
+            print(f"- Submitted: {sub_count} records")
+        print(f"- Estimated new records: {stats.get('estimated_added_items', 0)}")
+        print(f"- Estimated existing records: {stats.get('estimated_updated_items', 0)}")
     else:
         print(f"- Added: {stats.get('added_items', 0)}")
         print(f"- Updated: {stats.get('updated_items', 0)}")
