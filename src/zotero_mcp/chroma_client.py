@@ -510,7 +510,7 @@ class ChromaClient:
                             if stored_model and configured_model and stored_model != configured_model:
                                 logger.warning(
                                     f"Stored embedding model '{stored_model}' differs from "
-                                    f"configured '{configured_model}'. Resetting collection."
+                                    f"configured '{configured_model}'. Resetting ChromaDB vector collection."
                                 )
                                 self.client.delete_collection(name=self.collection_name)
                                 self.collection = self.client.create_collection(
@@ -524,7 +524,7 @@ class ChromaClient:
                 if "embedding function conflict" in str(e).lower():
                     logger.warning(
                         f"Embedding model changed to '{self.embedding_model}'. "
-                        "Resetting collection for rebuild."
+                        "Resetting ChromaDB vector collection for rebuild (your Zotero library and folders remain untouched)."
                     )
                     self.client.delete_collection(name=self.collection_name)
                     self.collection = self.client.create_collection(
