@@ -1595,9 +1595,14 @@ class ZoteroSemanticSearch:
         return target_sync_version
 
     def _prepare_index_records(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
-        """Prepare ChromaDB records without embedding or writing them."""
+        """Prepare ChromaDB records (supporting passage chunking) without embedding or writing them."""
         stats = {"processed": 0, "skipped": 0, "errors": 0}
         records: list[dict[str, Any]] = []
+
+        chunking = self._chunking_enabled
+        chunk_size = int(self._chunking_config.get("chunk_size", 1500))
+        overlap = int(self._chunking_config.get("overlap", 200))
+        max_chunks = int(self._chunking_config.get("max_chunks_per_item", 50000))
 
         for item in items:
             try:
@@ -1618,9 +1623,26 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
-                doc_text = self.chroma_client.truncate_text(doc_text)
-                records.append({"id": item_key, "document": doc_text, "metadata": metadata})
-                stats["processed"] += 1
+                if chunking:
+                    passages = split_into_passages(doc_text, chunk_size, overlap, max_chunks)
+                    if not passages:
+                        stats["skipped"] += 1
+                        continue
+                    for ci, (chunk_text, c0, c1) in enumerate(passages):
+                        cmeta = dict(metadata)
+                        cmeta["parent_item_key"] = item_key
+                        cmeta["chunk_index"] = ci
+                        cmeta["chunk_count"] = len(passages)
+                        cmeta["char_start"] = c0
+                        cmeta["char_end"] = c1
+                        chunk_id = f"{item_key}#{ci}" if len(passages) > 1 else item_key
+                        chunk_doc = self.chroma_client.truncate_text(chunk_text)
+                        records.append({"id": chunk_id, "document": chunk_doc, "metadata": cmeta})
+                    stats["processed"] += 1
+                else:
+                    doc_text = self.chroma_client.truncate_text(doc_text)
+                    records.append({"id": item_key, "document": doc_text, "metadata": metadata})
+                    stats["processed"] += 1
 
             except Exception as e:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
@@ -2135,7 +2157,7 @@ class ZoteroSemanticSearch:
         chunking = self._chunking_enabled
         chunk_size = int(self._chunking_config.get("chunk_size", 1500))
         overlap = int(self._chunking_config.get("overlap", 200))
-        max_chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
+        max_chunks = int(self._chunking_config.get("max_chunks_per_item", 50000))
 
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
