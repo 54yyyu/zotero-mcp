@@ -33,6 +33,9 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     # portable; real OpenAI users can raise embedding_config.request_batch_size.
     DEFAULT_REQUEST_BATCH_SIZE = 64
     default_request_batch_size = DEFAULT_REQUEST_BATCH_SIZE
+    DEFAULT_TOKENS_PER_MINUTE = 950000.0
+    default_tokens_per_minute = DEFAULT_TOKENS_PER_MINUTE
+
 
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,

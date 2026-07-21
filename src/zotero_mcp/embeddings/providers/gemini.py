@@ -61,6 +61,9 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
     # "at most 100 requests can be in one batch").
     GEMINI_MAX_BATCH = 100
     default_request_batch_size = GEMINI_MAX_BATCH
+    DEFAULT_TOKENS_PER_MINUTE = 950000.0
+    default_tokens_per_minute = DEFAULT_TOKENS_PER_MINUTE
+
 
     def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,

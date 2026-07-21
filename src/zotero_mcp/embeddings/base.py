@@ -71,6 +71,7 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
     """
 
     default_request_batch_size: int | None = None
+    default_tokens_per_minute: float | None = None
     max_parallel_requests_default = 1
     max_retries_default = 5
     chars_per_token = 4.0
@@ -92,6 +93,7 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         Called by each subclass's ``__init__`` after resolving its own
         provider-specific args (api key, client construction, ...).
         """
+        import os
         self.model_name = model_name
         self.base_url = base_url
         self.request_batch_size = (
@@ -104,7 +106,15 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         self.max_retries = (
             int(max_retries) if max_retries is not None else self.max_retries_default
         )
-        self.tokens_per_minute = float(tokens_per_minute) if tokens_per_minute else None
+        if tokens_per_minute is not None:
+            tpm_val = float(tokens_per_minute)
+        elif os.getenv("ZOTERO_TOKENS_PER_MINUTE"):
+            tpm_val = float(os.getenv("ZOTERO_TOKENS_PER_MINUTE", 0)) or None
+        else:
+            tpm_val = getattr(self, "default_tokens_per_minute", None)
+
+        self.tokens_per_minute = tpm_val
+
         # A user-configured rate_limit_rps is a hard cap: adaptation may only
         # lower/restore toward it, never exceed it. Burst is at least the
         # parallelism so workers aren't serialized on a single token.
