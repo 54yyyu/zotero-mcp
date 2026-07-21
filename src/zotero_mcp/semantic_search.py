@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import fulltext_cache, gemini_batch, openai_batch
+from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .local_db import LocalZoteroReader
@@ -30,13 +30,17 @@ logger = logging.getLogger(__name__)
 # Provider-specific knobs for the shared Batch API flows (_submit_batch_index,
 # _get_batch_status, _import_batch). Lambdas do module-attribute lookups at
 # call time so tests can monkeypatch e.g. ``openai_batch.find_manifest``.
+# ``importable_states``/``terminal_states`` are the shared normalized-state
+# sets (batch_common.STATE_*); decision logic must compare against them via
+# ``_entry_state(ops, batch)`` rather than the raw ``status`` field, since
+# pre-refactor manifests on disk carry raw provider strings with no ``state``.
 _BATCH_PROVIDER_OPS: dict[str, dict[str, Any]] = {
     "openai": {
         "module": openai_batch,
         "label": "OpenAI",
         "default_model": "text-embedding-3-small",
-        "importable_states": frozenset({"completed"}),
-        "terminal_states": frozenset({"completed", "failed", "expired", "cancelled"}),
+        "importable_states": batch_common.IMPORTABLE_STATES,
+        "terminal_states": batch_common.TERMINAL_STATES,
         "importable_desc": "completed",
         "create_client": lambda cfg: openai_batch.create_openai_client(cfg),
         "download_output": lambda client, batch, path: openai_batch.download_file_text(
@@ -45,21 +49,37 @@ _BATCH_PROVIDER_OPS: dict[str, dict[str, Any]] = {
         "parse_output": lambda text, id_order: openai_batch.parse_embedding_output(text),
         "uses_error_file": True,
         "default_max_enqueued_tokens": openai_batch.OPENAI_BATCH_MAX_ENQUEUED_TOKENS,
+        "normalize_status": lambda status: openai_batch.ADAPTER.normalize_status(status),
     },
     "gemini": {
         "module": gemini_batch,
         "label": "Gemini",
         "default_model": "gemini-embedding-001",
-        "importable_states": frozenset(gemini_batch.GEMINI_IMPORTABLE_STATES),
-        "terminal_states": frozenset(gemini_batch.GEMINI_TERMINAL_STATES),
+        "importable_states": batch_common.IMPORTABLE_STATES,
+        "terminal_states": batch_common.TERMINAL_STATES,
         "importable_desc": "succeeded",
         "create_client": lambda cfg: gemini_batch.create_gemini_client(cfg),
         "download_output": lambda client, batch, path: gemini_batch.download_results(client, batch, path),
         "parse_output": lambda text, id_order: gemini_batch.parse_embedding_output(text, id_order),
         "uses_error_file": False,
         "default_max_enqueued_tokens": gemini_batch.GEMINI_BATCH_MAX_ENQUEUED_TOKENS,
+        "normalize_status": lambda status: gemini_batch.ADAPTER.normalize_status(status),
     },
 }
+
+
+def _entry_state(ops: dict[str, Any], batch: dict[str, Any]) -> str:
+    """Normalized state for a manifest entry.
+
+    Recomputed from the raw ``status`` whenever one is present (rather than
+    trusting a cached ``state``, which can go stale relative to ``status`` —
+    e.g. tests that mutate ``batch["status"]`` directly to simulate an SDK
+    transition without updating ``state`` too). Falls back to a cached
+    ``state`` only for the degenerate case of an entry with no ``status``.
+    """
+    if "status" in batch:
+        return ops["normalize_status"](batch["status"])
+    return batch.get("state") or ops["normalize_status"](None)
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -2306,7 +2326,7 @@ class ZoteroSemanticSearch:
             incomplete = [
                 batch.get("batch_id") or "(pending)"
                 for batch in all_batches
-                if not batch.get("imported_at") and batch.get("status") not in importable_states
+                if not batch.get("imported_at") and _entry_state(ops, batch) not in importable_states
             ]
             if incomplete:
                 raise RuntimeError(
@@ -2353,7 +2373,7 @@ class ZoteroSemanticSearch:
                     # be submitted by the auto-loop or a later import call.
                     stats["batches_skipped"] += 1
                     continue
-                if batch.get("status") not in importable_states:
+                if _entry_state(ops, batch) not in importable_states:
                     stats["batches_skipped"] += 1
                     stats["errors"].append({
                         "batch_id": batch.get("batch_id"),
@@ -2496,7 +2516,7 @@ class ZoteroSemanticSearch:
                 break
             active = [
                 b for b in remaining
-                if b.get("batch_id") and b.get("status") not in terminal_states
+                if b.get("batch_id") and _entry_state(ops, b) not in terminal_states
             ]
             if not active and submitted == 0:
                 failed = [b.get("batch_id") or "(pending)" for b in remaining]

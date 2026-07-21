@@ -3,10 +3,13 @@
 Mirrors ``openai_batch``: the Batch API is asynchronous, so this module owns
 the local run manifests that tie Gemini batch job names back to the document
 text and metadata needed for ChromaDB. Provider-neutral machinery (JSONL I/O,
-manifests, record splitting) lives in ``batch_common``; this module keeps only
-Gemini-specific request building, submission, status mapping, and output
-parsing. Shared helpers are re-exported so existing callers and tests keep
-working unchanged.
+manifests, record splitting, the submit/refresh/pending-promotion flows)
+lives in ``batch_common``, driven by ``GeminiBatchAdapter`` below; this module
+keeps only Gemini-specific request building, submission, status mapping, and
+output parsing. Every existing module-level name is kept as a thin wrapper
+(delegating to the shared ``ADAPTER`` instance) with its exact prior
+signature, so callers/tests that monkeypatch these attributes keep working
+unchanged.
 
 Uses ``client.batches.create_embeddings`` from google-genai, which is marked
 experimental upstream (it targets the ``{model}:asyncBatchEmbedContent``
@@ -22,9 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import uuid
 import warnings
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +33,11 @@ from . import batch_common
 from .batch_common import (
     _json_dumps,
     _private_chmod,
-    _utc_now,
+    _utc_now,  # noqa: F401 — re-export
     estimate_tokens,  # noqa: F401 — re-exported for provider-symmetric callers/tests
     read_jsonl,  # noqa: F401 — re-exported so callers/tests can stay provider-symmetric
-    save_manifest,
-    write_jsonl,
+    save_manifest,  # noqa: F401 — re-exported; generic flows now call batch_common's directly
+    write_jsonl,  # noqa: F401 — re-exported; generic flows now call batch_common's directly
 )
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,10 @@ GEMINI_BATCH_MAX_ENQUEUED_TOKENS = 450_000
 # Char-based token estimate ratio for quota accounting (see batch_common).
 GEMINI_CHARS_PER_TOKEN = 3.5
 
-# JobState values that mean the job is finished (successfully or not).
+# JobState values that mean the job is finished (successfully or not). Kept
+# for back-compat (pre-refactor callers/tests reference these directly); the
+# normalized batch_common.TERMINAL_STATES/IMPORTABLE_STATES now drive
+# semantic_search's decision logic instead.
 GEMINI_TERMINAL_STATES = {
     "JOB_STATE_SUCCEEDED",
     "JOB_STATE_PARTIALLY_SUCCEEDED",
@@ -65,16 +69,31 @@ GEMINI_TERMINAL_STATES = {
 }
 GEMINI_IMPORTABLE_STATES = {"JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"}
 
+# Raw ``JobState`` enum names -> normalized batch_common vocabulary. Values
+# not listed here (unexpected/future JobState names) are treated as still
+# in-flight so a stalled auto-loop keeps polling rather than treating them as
+# terminal.
+_STATUS_MAP = {
+    "JOB_STATE_SUCCEEDED": batch_common.STATE_SUCCEEDED,
+    "JOB_STATE_PARTIALLY_SUCCEEDED": batch_common.STATE_PARTIAL,
+    "JOB_STATE_FAILED": batch_common.STATE_FAILED,
+    "JOB_STATE_CANCELLED": batch_common.STATE_CANCELLED,
+    "JOB_STATE_EXPIRED": batch_common.STATE_EXPIRED,
+    "JOB_STATE_PENDING": batch_common.STATE_SUBMITTED,
+    "JOB_STATE_QUEUED": batch_common.STATE_SUBMITTED,
+    "JOB_STATE_UNSPECIFIED": batch_common.STATE_SUBMITTED,
+    "JOB_STATE_RUNNING": batch_common.STATE_IN_PROGRESS,
+    "pending": batch_common.STATE_PENDING,
+}
+
+
+def _normalize_gemini_status(raw_status: str | None) -> str:
+    return _STATUS_MAP.get(raw_status or "", batch_common.STATE_IN_PROGRESS)
+
 
 def get_gemini_batch_root(config_path: str | None = None) -> Path:
     """Return the directory used to store Gemini batch manifests."""
-    if config_path:
-        root = Path(config_path).expanduser().parent / "gemini_batches"
-    else:
-        root = Path.home() / ".config" / "zotero-mcp" / "gemini_batches"
-    root.mkdir(parents=True, exist_ok=True)
-    _private_chmod(root)
-    return root
+    return batch_common.get_batch_root("gemini", config_path)
 
 
 def create_gemini_client(embedding_config: dict[str, Any] | None = None) -> Any:
@@ -153,7 +172,8 @@ def split_embedding_records(
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    return batch_common.load_manifest(path)
+    manifest = batch_common.load_manifest(path)
+    return batch_common.ensure_states(manifest, ADAPTER)
 
 
 def iter_manifests(config_path: str | None = None) -> list[Path]:
@@ -162,9 +182,10 @@ def iter_manifests(config_path: str | None = None) -> list[Path]:
 
 def find_manifest(config_path: str | None = None, batch_id: str | None = None) -> dict[str, Any]:
     """Find the newest manifest, or the manifest that contains a batch job name."""
-    return batch_common.find_manifest(
+    manifest = batch_common.find_manifest(
         get_gemini_batch_root(config_path), batch_id=batch_id, provider_label="Gemini batch"
     )
+    return batch_common.ensure_states(manifest, ADAPTER)
 
 
 def _warn_experimental_once() -> None:
@@ -210,85 +231,6 @@ def _submit_chunk(client: Any, input_path: Path, run_id: str, index: int, model_
     }
 
 
-def submit_embedding_batches(
-    records: list[dict[str, Any]],
-    model_name: str,
-    embedding_config: dict[str, Any] | None,
-    config_path: str | None = None,
-    force_full_rebuild: bool = False,
-    target_sync_version: int | None = None,
-    client: Any | None = None,
-    max_enqueued_tokens: int | None = None,
-    max_requests: int = GEMINI_BATCH_MAX_REQUESTS,
-) -> dict[str, Any]:
-    """Upload JSONL files and create one or more Gemini embedding batch jobs.
-
-    When ``max_enqueued_tokens`` is set, only chunks that fit the budget are
-    submitted now; the rest are written to disk and recorded as
-    ``status: "pending"`` manifest entries for :func:`submit_pending_batches`.
-    """
-    if not records:
-        raise ValueError("No documents were prepared for Gemini Batch API submission")
-
-    _warn_experimental_once()
-    client = client or create_gemini_client(embedding_config)
-    root = get_gemini_batch_root(config_path)
-    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
-    run_dir = root / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
-    _private_chmod(run_dir)
-
-    manifest: dict[str, Any] = {
-        "version": 2,
-        "provider": "gemini",
-        "run_id": run_id,
-        "created_at": _utc_now(),
-        "model": model_name,
-        "force_full_rebuild": bool(force_full_rebuild),
-        "target_sync_version": target_sync_version,
-        "max_enqueued_tokens": max_enqueued_tokens,
-        "manifest_path": str(run_dir / "manifest.json"),
-        "batches": [],
-    }
-
-    chunks = split_embedding_records(
-        records, model_name, max_requests=max_requests, max_tokens=max_enqueued_tokens
-    )
-    enqueued_tokens = 0
-    for index, (chunk_records, requests) in enumerate(chunks, start=1):
-        stem = f"batch-{index:03d}"
-        input_path = run_dir / f"{stem}-input.jsonl"
-        records_path = run_dir / f"{stem}-records.jsonl"
-        write_jsonl(input_path, requests)
-        write_jsonl(records_path, chunk_records)
-        chunk_tokens = sum(estimate_tokens(r["document"], GEMINI_CHARS_PER_TOKEN) for r in chunk_records)
-
-        entry: dict[str, Any] = {
-            "input_path": str(input_path),
-            "records_path": str(records_path),
-            "request_count": len(requests),
-            "request_tokens": chunk_tokens,
-            "imported_at": None,
-            "imported_count": 0,
-        }
-
-        fits_budget = (
-            max_enqueued_tokens is None
-            or enqueued_tokens == 0  # always submit at least one chunk
-            or enqueued_tokens + chunk_tokens <= max_enqueued_tokens
-        )
-        if fits_budget:
-            entry.update(_submit_chunk(client, input_path, run_id, index, model_name))
-            enqueued_tokens += chunk_tokens
-        else:
-            entry.update({"batch_id": None, "status": "pending"})
-
-        manifest["batches"].append(entry)
-        save_manifest(manifest)
-
-    return manifest
-
-
 def _job_state_name(batch_job: Any) -> str:
     state = getattr(batch_job, "state", None)
     if state is None and isinstance(batch_job, dict):
@@ -319,67 +261,6 @@ def _inlined_responses(batch_job: Any) -> list[Any] | None:
     if isinstance(dest, dict):
         return dest.get("inlined_embed_content_responses")
     return getattr(dest, "inlined_embed_content_responses", None)
-
-
-def refresh_manifest_status(
-    manifest: dict[str, Any],
-    embedding_config: dict[str, Any] | None,
-    batch_ids: set[str] | None = None,
-    client: Any | None = None,
-) -> dict[str, Any]:
-    """Retrieve current Gemini job state for selected batches and persist it."""
-    client = client or create_gemini_client(embedding_config)
-    for batch in manifest.get("batches", []):
-        if not batch.get("batch_id"):
-            continue  # pending chunk, not yet submitted
-        if batch_ids and batch.get("batch_id") not in batch_ids:
-            continue
-        batch_job = _call_quietly(client.batches.get, name=batch["batch_id"])
-        batch["status"] = _job_state_name(batch_job)
-        dest_file = _dest_file_name(batch_job)
-        if dest_file:
-            batch["dest_file_name"] = dest_file
-    save_manifest(manifest)
-    return manifest
-
-
-def submit_pending_batches(
-    manifest: dict[str, Any],
-    embedding_config: dict[str, Any] | None,
-    max_enqueued_tokens: int | None = None,
-    client: Any | None = None,
-) -> int:
-    """Submit pending chunks while they fit the enqueued-token budget.
-
-    Returns the number of newly submitted chunks. Refresh the manifest status
-    first so terminal batches no longer count against the budget.
-    """
-    if max_enqueued_tokens is None:
-        max_enqueued_tokens = manifest.get("max_enqueued_tokens")
-    if max_enqueued_tokens is None:
-        return 0
-    client = client or create_gemini_client(embedding_config)
-
-    enqueued = sum(
-        int(batch.get("request_tokens") or 0)
-        for batch in manifest.get("batches", [])
-        if batch.get("batch_id") and batch.get("status") not in GEMINI_TERMINAL_STATES
-    )
-
-    submitted = 0
-    run_id = manifest.get("run_id", "run")
-    model_name = manifest.get("model", "gemini-embedding-001")
-    for index, batch in enumerate(manifest.get("batches", []), start=1):
-        if batch.get("batch_id") or batch.get("status") != "pending":
-            continue
-        chunk_tokens = int(batch.get("request_tokens") or 0)
-        if enqueued and enqueued + chunk_tokens > max_enqueued_tokens:
-            continue
-        batch.update(_submit_chunk(client, Path(batch["input_path"]), run_id, index, model_name))
-        enqueued += chunk_tokens
-        submitted += 1
-        save_manifest(manifest)
-    return submitted
 
 
 def download_results(client: Any, batch: dict[str, Any], output_path: Path) -> str:
@@ -471,3 +352,120 @@ def parse_embedding_output(
         if row_key:
             embeddings[row_key] = values
     return embeddings, failures
+
+
+class GeminiBatchAdapter:
+    """``batch_common.BatchAdapter`` implementation for Gemini's Batch API.
+
+    Methods call the module-level functions above by bare name so that
+    monkeypatching this module's attributes (e.g. ``gemini_batch.create_gemini_client``)
+    is honored — Python resolves those names against this module's ``__dict__``
+    at call time, not at class-definition time.
+    """
+
+    provider = "gemini"
+    label = "Gemini"
+    default_model = "gemini-embedding-001"
+    max_requests = GEMINI_BATCH_MAX_REQUESTS
+    max_file_bytes = GEMINI_BATCH_MAX_FILE_BYTES
+    default_max_enqueued_tokens = GEMINI_BATCH_MAX_ENQUEUED_TOKENS
+    chars_per_token = GEMINI_CHARS_PER_TOKEN
+    uses_error_file = False
+
+    def create_client(self, embedding_config: dict[str, Any] | None) -> Any:
+        return create_gemini_client(embedding_config)
+
+    def build_request(self, record: dict[str, Any], model_name: str) -> dict[str, Any]:
+        return build_embedding_request(record, model_name)
+
+    def submit_chunk(
+        self, client: Any, input_path: Path, run_id: str, index: int, model_name: str
+    ) -> dict[str, Any]:
+        return _submit_chunk(client, input_path, run_id, index, model_name)
+
+    def retrieve_status(self, client: Any, batch_entry: dict[str, Any]) -> dict[str, Any]:
+        batch_job = _call_quietly(client.batches.get, name=batch_entry["batch_id"])
+        result: dict[str, Any] = {"status": _job_state_name(batch_job)}
+        dest_file = _dest_file_name(batch_job)
+        if dest_file:
+            result["dest_file_name"] = dest_file
+        return result
+
+    def normalize_status(self, raw_status: str | None) -> str:
+        return _normalize_gemini_status(raw_status)
+
+    def download_output(self, client: Any, batch_entry: dict[str, Any], output_path: Path) -> str:
+        return download_results(client, batch_entry, output_path)
+
+    def parse_output(
+        self, text: str, id_order: list[str]
+    ) -> tuple[dict[str, list[float]], list[dict[str, Any]]]:
+        return parse_embedding_output(text, id_order)
+
+    def download_errors(
+        self, client: Any, batch_entry: dict[str, Any], output_path: Path
+    ) -> list[dict[str, Any]]:
+        return []
+
+
+ADAPTER = GeminiBatchAdapter()
+
+
+def submit_embedding_batches(
+    records: list[dict[str, Any]],
+    model_name: str,
+    embedding_config: dict[str, Any] | None,
+    config_path: str | None = None,
+    force_full_rebuild: bool = False,
+    target_sync_version: int | None = None,
+    client: Any | None = None,
+    max_enqueued_tokens: int | None = None,
+    max_requests: int = GEMINI_BATCH_MAX_REQUESTS,
+) -> dict[str, Any]:
+    """Upload JSONL files and create one or more Gemini embedding batch jobs.
+
+    When ``max_enqueued_tokens`` is set, only chunks that fit the budget are
+    submitted now; the rest are written to disk and recorded as
+    ``status: "pending"`` manifest entries for :func:`submit_pending_batches`.
+    """
+    _warn_experimental_once()
+    return batch_common.submit_embedding_batches(
+        ADAPTER,
+        records=records,
+        model_name=model_name,
+        embedding_config=embedding_config,
+        config_path=config_path,
+        force_full_rebuild=force_full_rebuild,
+        target_sync_version=target_sync_version,
+        client=client,
+        max_enqueued_tokens=max_enqueued_tokens,
+        max_requests=max_requests,
+    )
+
+
+def refresh_manifest_status(
+    manifest: dict[str, Any],
+    embedding_config: dict[str, Any] | None,
+    batch_ids: set[str] | None = None,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Retrieve current Gemini job state for selected batches and persist it."""
+    return batch_common.refresh_manifest_status(
+        ADAPTER, manifest, embedding_config, batch_ids=batch_ids, client=client
+    )
+
+
+def submit_pending_batches(
+    manifest: dict[str, Any],
+    embedding_config: dict[str, Any] | None,
+    max_enqueued_tokens: int | None = None,
+    client: Any | None = None,
+) -> int:
+    """Submit pending chunks while they fit the enqueued-token budget.
+
+    Returns the number of newly submitted chunks. Refresh the manifest status
+    first so terminal batches no longer count against the budget.
+    """
+    return batch_common.submit_pending_batches(
+        ADAPTER, manifest, embedding_config, max_enqueued_tokens=max_enqueued_tokens, client=client
+    )

@@ -23,6 +23,7 @@ the embedding function by name on reload. This module must reproduce
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -84,10 +85,33 @@ def register_provider(spec: ProviderSpec) -> ProviderSpec:
 def batch_capable_providers() -> list[str]:
     """Names of providers with a batch adapter attached.
 
-    Empty today (batch adapters arrive in Phase 3) — drives the CLI's
-    ``--provider`` choices once they exist.
+    Empty until something calls :func:`attach_batch_adapter` — drives the
+    CLI's ``--provider`` choices once Phase 4 wires that call in.
     """
     return [name for name, spec in PROVIDERS.items() if spec.batch is not None]
+
+
+def attach_batch_adapter(name: str, adapter: Any) -> ProviderSpec:
+    """Attach a ``BatchAdapter`` to an already-registered provider spec.
+
+    ``ProviderSpec`` is frozen, so this replaces the stored spec via
+    ``dataclasses.replace``. Available as of Phase 3 but deliberately not
+    called anywhere yet (not from ``openai_batch``/``gemini_batch`` module
+    scope, not from ``semantic_search``): ``PROVIDERS`` is a process-wide
+    singleton, and both of those modules are imported — for their unrelated
+    module-level wrapper functions — by test files that the full suite
+    collects before ``test_provider_registry.py`` runs. Calling this at
+    import time would mutate ``PROVIDERS`` for the rest of the pytest
+    session and break
+    ``test_provider_registry.py::test_batch_capable_providers_empty_until_phase_3``,
+    which pins the Phase-2 invariant that ``batch`` stays ``None`` until
+    something explicit wires it up. Phase 4 (cli.py, which is the first
+    consumer of ``batch_capable_providers()``) is the right place to call
+    this and to retire that now-superseded test.
+    """
+    updated = dataclasses.replace(PROVIDERS[name], batch=adapter)
+    PROVIDERS[name] = updated
+    return updated
 
 
 def _openai_ef_factory(config: dict[str, Any]) -> Any:
