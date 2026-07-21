@@ -621,6 +621,37 @@ All add tools take a `collections` parameter accepting collection keys, names, o
 uv run pytest tests/     # 294 tests, ~2 seconds
 ```
 
+### Live Provider Tests (optional)
+`tests/live/` exercises the shared embedding-provider machinery
+(`RemoteEmbeddingFunction`) against real backends instead of mocks:
+sub-batching, parallel-request ordering, adaptive rate limiting, and retry
+behavior against a real local Ollama server; HTTP fault injection (429/500,
+`Retry-After`, exhausted retries) against a local stub server; ChromaDB
+persist/reload round-trips on scratch directories; and sentinel-vector drift
+checks that catch accidental changes to text-shaping or provider defaults.
+
+A plain `uv run pytest tests/` collects these tests but always skips them —
+none of it ever touches the network by default. To actually run them:
+
+1. Start a local Ollama server and pull the embedding model it needs:
+   ```bash
+   ollama serve
+   ollama pull nomic-embed-text
+   ```
+2. Run the live suite:
+   ```bash
+   ZOTERO_MCP_LIVE_TESTS=1 uv run pytest tests/live/ -v
+   ```
+
+The OpenAI and Gemini live tests are gated separately: they only run when
+your `~/.config/zotero-mcp/config.json` has that provider configured as
+`semantic_search.embedding_model`, in which case they reuse your production
+`embedding_config` (model name, API key) to make a handful of real,
+negligible-cost API calls. The reasoning is that whoever runs the live suite
+is already using that provider in production, so the calls are exercising a
+configuration they need anyway. A provider that isn't configured on your
+machine skips cleanly instead of failing.
+
 ### Integration Test Plan
 A 45-point live integration test plan is included at `docs/integration-test-plan.md`. It's designed to be given to Claude in Claude Desktop, which will execute each test against your real Zotero library. Tests cover all tools, PDF attachment cascade, attach_mode, BetterBibTeX lookups, and multi-step showcase prompts. See the file for full instructions.
 
