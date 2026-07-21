@@ -2324,6 +2324,20 @@ class ZoteroSemanticSearch:
 
                     def producer_task() -> None:
                         nonlocal seen_items
+                        buf_docs: list[str] = []
+                        buf_metas: list[dict[str, Any]] = []
+                        buf_ids: list[str] = []
+                        buf_keys: list[tuple[str, bool]] = []
+
+                        def flush_producer_buf() -> None:
+                            if not buf_docs:
+                                return
+                            chunk_queue.put((list(buf_docs), list(buf_metas), list(buf_ids), list(buf_keys)))
+                            buf_docs.clear()
+                            buf_metas.clear()
+                            buf_ids.clear()
+                            buf_keys.clear()
+
                         for item in all_items:
                             seen_items += 1
                             title = item.get("data", {}).get("title", "")
@@ -2348,52 +2362,40 @@ class ZoteroSemanticSearch:
                                 item_key = item_keys[0] if item_keys else None
                                 is_existing = item_key in existing_keys if item_key else False
                                 for doc, meta, doc_id in zip(docs, metas, ids):
-                                    chunk_queue.put((doc, meta, doc_id, item_key, is_existing))
+                                    buf_docs.append(doc)
+                                    buf_metas.append(meta)
+                                    buf_ids.append(doc_id)
+                                    if item_key:
+                                        buf_keys.append((item_key, is_existing))
+                                    if len(buf_docs) >= request_batch_size:
+                                        flush_producer_buf()
                             else:
                                 logger.info(
                                     f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
                                 )
 
+                        flush_producer_buf()
+
                         for _ in range(max_parallel):
                             chunk_queue.put(_SENTINEL)
 
                     def worker_task() -> None:
-                        buf_docs: list[str] = []
-                        buf_metas: list[dict[str, Any]] = []
-                        buf_ids: list[str] = []
-                        buf_keys: list[tuple[str, bool]] = []
-
-                        def flush_buf() -> None:
-                            if not buf_docs:
-                                return
-                            try:
-                                embeddings = embedding_function(buf_docs)
-                                vector_queue.put((list(buf_docs), list(buf_metas), list(buf_ids), list(buf_keys), embeddings))
-                            except Exception as exc:
-                                logger.warning(f"Sub-batch embedding failed ({exc}), saving for retry")
-                                for doc, meta, doc_id in zip(buf_docs, buf_metas, buf_ids):
-                                    _failed_docs.append((doc, meta, doc_id))
-                                stats["errors"] += len(buf_docs)
-                            finally:
-                                buf_docs.clear()
-                                buf_metas.clear()
-                                buf_ids.clear()
-                                buf_keys.clear()
-
                         while True:
                             q_item = chunk_queue.get()
                             if q_item is _SENTINEL:
-                                flush_buf()
                                 vector_queue.put(_SENTINEL)
                                 break
-                            doc, meta, doc_id, item_key, is_existing = q_item
-                            buf_docs.append(doc)
-                            buf_metas.append(meta)
-                            buf_ids.append(doc_id)
-                            if item_key:
-                                buf_keys.append((item_key, is_existing))
-                            if len(buf_docs) >= request_batch_size:
-                                flush_buf()
+                            sub_docs, sub_metas, sub_ids, sub_keys = q_item
+                            try:
+                                embeddings = embedding_function(sub_docs)
+                                vector_queue.put((sub_docs, sub_metas, sub_ids, sub_keys, embeddings))
+                            except Exception as exc:
+                                logger.warning(f"Sub-batch embedding failed ({exc}), saving for retry")
+                                for doc, meta, doc_id in zip(sub_docs, sub_metas, sub_ids):
+                                    _failed_docs.append((doc, meta, doc_id))
+                                stats["errors"] += len(sub_docs)
+
+
 
                     with ThreadPoolExecutor(max_workers=max_parallel + 1, thread_name_prefix="zmcp-stream") as pool:
                         producer_future = pool.submit(producer_task)
