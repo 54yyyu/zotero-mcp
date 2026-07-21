@@ -2348,17 +2348,27 @@ class ZoteroSemanticSearch:
 
                         import time as _time
                         last_report_ts = 0.0
+                        last_report_pct = -1
+
+                        is_verbose = logging.getLogger().isEnabledFor(logging.INFO)
 
                         for item in all_items:
                             seen_items += 1
+                            pct = int(seen_items / total * 100) if total else 0
                             now = _time.monotonic()
-                            if now - last_report_ts >= 0.1:
-                                last_report_ts = now
-                                title = item.get("data", {}).get("title", "")
-                                if title and len(title) > 60:
-                                    title = title[:57] + "..."
-                                pct = int(seen_items / total * 100) if total else 0
-                                _report(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
+
+                            if is_verbose:
+                                if pct != last_report_pct and (pct % 5 == 0 or seen_items == total or seen_items == 1):
+                                    last_report_pct = pct
+                                    _report(f"  [{pct:3d}%] Prepared {seen_items}/{total} items for embedding...\n")
+                            else:
+                                if now - last_report_ts >= 0.1:
+                                    last_report_ts = now
+                                    title = item.get("data", {}).get("title", "")
+                                    if title and len(title) > 60:
+                                        title = title[:57] + "..."
+                                    _report(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
+
 
 
                             slice_work = self._prepare_and_classify_slice([item], force_full_rebuild)
