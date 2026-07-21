@@ -2346,31 +2346,9 @@ class ZoteroSemanticSearch:
                             buf_ids.clear()
                             buf_keys.clear()
 
-                        import time as _time
-                        last_report_ts = 0.0
-                        last_report_pct = -1
-
-                        is_verbose = logging.getLogger().isEnabledFor(logging.INFO)
-
                         for item in all_items:
+
                             seen_items += 1
-                            pct = int(seen_items / total * 100) if total else 0
-                            now = _time.monotonic()
-
-                            if is_verbose:
-                                if pct != last_report_pct and (pct % 5 == 0 or seen_items == total or seen_items == 1):
-                                    last_report_pct = pct
-                                    _report(f"  [{pct:3d}%] Prepared {seen_items}/{total} items for embedding...\n")
-                            else:
-                                if now - last_report_ts >= 0.1:
-                                    last_report_ts = now
-                                    title = item.get("data", {}).get("title", "")
-                                    if title and len(title) > 60:
-                                        title = title[:57] + "..."
-                                    _report(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
-
-
-
                             slice_work = self._prepare_and_classify_slice([item], force_full_rebuild)
                             prep_stats = slice_work["prep_stats"]
                             stats["processed_items"] += prep_stats["processed"]
@@ -2420,8 +2398,6 @@ class ZoteroSemanticSearch:
                                     _failed_docs.append((doc, meta, doc_id))
                                 stats["errors"] += len(sub_docs)
 
-
-
                     with ThreadPoolExecutor(max_workers=max_parallel + 1, thread_name_prefix="zmcp-stream") as pool:
                         producer_future = pool.submit(producer_task)
                         worker_futures = [pool.submit(worker_task) for _ in range(max_parallel)]
@@ -2448,6 +2424,13 @@ class ZoteroSemanticSearch:
                                             stats["added_items"] += 1
                                 if write_keys:
                                     stats["cache_evicted"] = stats.get("cache_evicted", 0) + self._evict_fulltext_cache(list(write_keys.keys()))
+
+                                completed_count = len(accounted_keys) + stats["skipped_items"]
+                                pct = int(completed_count / total * 100) if total else 0
+                                if logging.getLogger().isEnabledFor(logging.INFO):
+                                    _report(f"  [{pct:3d}%] {completed_count}/{total} items indexed in database\n")
+                                else:
+                                    _report(f"\r  [{pct:3d}%] {completed_count}/{total} items indexed in database")
                             except Exception as exc:
                                 logger.warning(f"ChromaDB bulk upsert failed ({exc}), saving for retry")
                                 for doc, meta, doc_id in zip(write_docs, write_metas, write_ids):
@@ -2459,6 +2442,7 @@ class ZoteroSemanticSearch:
                                 write_ids.clear()
                                 write_vectors.clear()
                                 write_keys.clear()
+
 
                         while active_workers > 0 or not vector_queue.empty():
                             try:
