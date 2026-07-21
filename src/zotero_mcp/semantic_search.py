@@ -2338,13 +2338,20 @@ class ZoteroSemanticSearch:
                             buf_ids.clear()
                             buf_keys.clear()
 
+                        import time as _time
+                        last_report_ts = 0.0
+
                         for item in all_items:
                             seen_items += 1
-                            title = item.get("data", {}).get("title", "")
-                            if title and len(title) > 60:
-                                title = title[:57] + "..."
-                            pct = int(seen_items / total * 100) if total else 0
-                            _report(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
+                            now = _time.monotonic()
+                            if now - last_report_ts >= 0.1:
+                                last_report_ts = now
+                                title = item.get("data", {}).get("title", "")
+                                if title and len(title) > 60:
+                                    title = title[:57] + "..."
+                                pct = int(seen_items / total * 100) if total else 0
+                                _report(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
+
 
                             slice_work = self._prepare_and_classify_slice([item], force_full_rebuild)
                             prep_stats = slice_work["prep_stats"]

@@ -252,7 +252,8 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         provider_name = getattr(self, "name", None)
         name_str = provider_name() if callable(provider_name) else self.__class__.__name__
 
-        info_str = f"[{name_str} API] Embedded {chunk_count} chunks (~{estimated_tokens} tokens) in {elapsed_ms:.1f}ms"
+        info_str = f"\r\033[K[{name_str} API] Embedded {chunk_count} chunks (~{estimated_tokens} tokens) in {elapsed_ms:.1f}ms"
+
 
         if headers and hasattr(headers, "get"):
             get_h = lambda k: headers.get(k) or headers.get(k.lower()) or headers.get(k.title())
