@@ -263,10 +263,18 @@ def _acquire_update_lock(lock_path: Path):
 def _report(message: str) -> None:
     """Write a progress/status message to stderr, never failing the caller."""
     try:
+        if logging.getLogger().isEnabledFor(logging.INFO):
+            if message.startswith("\r"):
+                message = message.lstrip("\r").rstrip("\r")
+                if not message.strip():
+                    return
+                if not message.endswith("\n"):
+                    message = message + "\n"
         sys.stderr.write(message)
         sys.stderr.flush()
     except Exception:
         pass
+
 
 
 def _realtime_slice_size(embedding_function: Any) -> int:
