@@ -22,9 +22,11 @@ lazily on first use instead of requiring ``__init__`` to have run.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +220,12 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         # cost. Texts reaching here have already been truncated upstream.
         estimated_tokens = int(sum(len(str(t)) for t in texts) / self.chars_per_token)
         attempt = 0
+        limiter_wait_ms = 0.0
         while True:
+            t_acq = time.monotonic()
             limiter.acquire(estimated_tokens=estimated_tokens)
+            limiter_wait_ms += (time.monotonic() - t_acq) * 1000.0
+
             t0 = time.monotonic()
             try:
                 res = self._embed_batch(texts, is_query=is_query)
@@ -237,16 +243,17 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
                     continue
                 raise
             else:
-                elapsed_ms = (time.monotonic() - t0) * 1000.0
+                http_ms = (time.monotonic() - t0) * 1000.0
                 limiter.on_success()
-                self._log_telemetry(len(texts), estimated_tokens, elapsed_ms, headers)
+                self._log_telemetry(len(texts), estimated_tokens, http_ms, limiter_wait_ms, headers)
                 return result
 
     def _log_telemetry(
         self,
         chunk_count: int,
         estimated_tokens: int,
-        elapsed_ms: float,
+        http_ms: float,
+        limiter_wait_ms: float,
         headers: Any | None,
     ) -> None:
         if not logger.isEnabledFor(logging.INFO):
@@ -254,15 +261,18 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
 
         provider_name = getattr(self, "name", None)
         name_str = provider_name() if callable(provider_name) else self.__class__.__name__
+        thread_name = threading.current_thread().name
 
-        info_str = f"[{name_str} API] Embedded {chunk_count} chunks (~{estimated_tokens} tokens) in {elapsed_ms:.1f}ms"
+        info_str = f"[{name_str} API] [{thread_name}] Embedded {chunk_count} chunks (~{estimated_tokens} tokens) in {http_ms:.1f}ms"
 
         if headers and hasattr(headers, "get"):
             get_h = lambda k: headers.get(k) or headers.get(k.lower()) or headers.get(k.title())
 
             proc_ms = _safe_int(get_h("openai-processing-ms"))
             if proc_ms is not None:
-                info_str += f" (server: {proc_ms}ms)"
+                info_str += f" (server: {proc_ms}ms, wait: {limiter_wait_ms:.1f}ms)"
+            else:
+                info_str += f" (wait: {limiter_wait_ms:.1f}ms)"
 
             rem_tok = _safe_int(get_h("x-ratelimit-remaining-tokens"))
             lim_tok = _safe_int(get_h("x-ratelimit-limit-tokens"))
@@ -270,8 +280,11 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
             if rem_tok is not None and lim_tok is not None and lim_tok > 0:
                 tok_load = (1.0 - (rem_tok / lim_tok)) * 100.0
                 info_str += f" | Token Load: {tok_load:.1f}% ({rem_tok:,}/{lim_tok:,} left)"
+        else:
+            info_str += f" (wait: {limiter_wait_ms:.1f}ms)"
 
         logger.info(info_str)
+
 
 
 
