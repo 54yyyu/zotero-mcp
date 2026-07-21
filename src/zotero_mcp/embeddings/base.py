@@ -218,9 +218,9 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         # cost. Texts reaching here have already been truncated upstream.
         estimated_tokens = int(sum(len(str(t)) for t in texts) / self.chars_per_token)
         attempt = 0
-        t0 = time.monotonic()
         while True:
             limiter.acquire(estimated_tokens=estimated_tokens)
+            t0 = time.monotonic()
             try:
                 res = self._embed_batch(texts, is_query=is_query)
                 headers = None
@@ -260,6 +260,10 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         if headers and hasattr(headers, "get"):
             get_h = lambda k: headers.get(k) or headers.get(k.lower()) or headers.get(k.title())
 
+            proc_ms = _safe_int(get_h("openai-processing-ms"))
+            if proc_ms is not None:
+                info_str += f" (server: {proc_ms}ms)"
+
             rem_tok = _safe_int(get_h("x-ratelimit-remaining-tokens"))
             lim_tok = _safe_int(get_h("x-ratelimit-limit-tokens"))
 
@@ -268,6 +272,7 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
                 info_str += f" | Token Load: {tok_load:.1f}% ({rem_tok:,}/{lim_tok:,} left)"
 
         logger.info(info_str)
+
 
 
 
