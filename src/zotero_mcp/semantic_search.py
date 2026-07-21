@@ -2269,19 +2269,10 @@ class ZoteroSemanticSearch:
 
                 # User-friendly progress reporting
                 total = stats["total_items"] = len(all_items)
-                _report(f"\nIndexing {total} items...\n\n")
-                # Process items in batches. 25 items ≈ 200k tokens per
-                # request-group at the ~8k-token-per-item truncation cap,
-                # comfortably under OpenAI's ~300k token-per-request limit.
-                # Embedding functions with max_parallel_requests > 1
-                # (RemoteEmbeddingFunction subclasses running a
-                # ThreadPoolExecutor) need a bigger slice per outer-loop
-                # iteration to keep every worker thread fed, so we scale by
-                # parallelism; ChromaDB's own upsert splitting handles the
-                # rest. Capped at 200 so per-slice token totals stay bounded
-                # and progress reporting doesn't go long stretches silent.
                 embedding_function = getattr(self.chroma_client, "embedding_function", None)
                 max_parallel = getattr(embedding_function, "max_parallel_requests", 1) or 1
+                _report(f"\nIndexing {total} items ({max_parallel} parallel worker thread{'s' if max_parallel != 1 else ''})...\n\n")
+
                 # Streaming keeps the embedding pool continuously fed across
                 # slice boundaries instead of blocking on one slice's
                 # embeddings before preparing the next (see

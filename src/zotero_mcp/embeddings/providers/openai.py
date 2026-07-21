@@ -35,6 +35,9 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     default_request_batch_size = DEFAULT_REQUEST_BATCH_SIZE
     DEFAULT_TOKENS_PER_MINUTE = 950000.0
     default_tokens_per_minute = DEFAULT_TOKENS_PER_MINUTE
+    DEFAULT_MAX_PARALLEL_REQUESTS = 4
+    max_parallel_requests_default = DEFAULT_MAX_PARALLEL_REQUESTS
+
 
 
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
