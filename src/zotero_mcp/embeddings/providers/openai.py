@@ -159,6 +159,14 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
 
     def truncate(self, text: str, max_tokens: int) -> str:
         """Truncate using tiktoken cl100k_base (correct for OpenAI models)."""
+        # Every BPE token covers at least one byte, so token count can never
+        # exceed the UTF-8 byte length: a text at or under max_tokens bytes
+        # is guaranteed to fit, and encoding it would be a no-op. Skipping
+        # the encode matters because tiktoken's pre-tokenizer regex falls
+        # into fancy_regex backtracking on PDF-extracted text (reference
+        # lists, URLs, number tables) and dominated indexing CPU time.
+        if len(text.encode("utf-8")) <= max_tokens:
+            return text
         try:
             import tiktoken
             if not hasattr(self, '_tokenizer'):
