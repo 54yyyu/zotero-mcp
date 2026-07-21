@@ -23,13 +23,14 @@ except ImportError as e:
         "Install it with: pip install 'zotero-mcp-server[semantic]'"
     ) from e
 
+from zotero_mcp.embeddings import RemoteEmbeddingFunction
 from zotero_mcp.utils import suppress_stdout
 
 logger = logging.getLogger(__name__)
 
 
 @register_embedding_function
-class OpenAIEmbeddingFunction(EmbeddingFunction):
+class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     """Custom OpenAI embedding function for ChromaDB.
 
     Registered under the name "openai" so ChromaDB rebuilds it (rather than its
@@ -47,17 +48,20 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
     # /v1/embeddings, Mistral is 512, etc.). Defaulting to 64 keeps the code
     # portable; real OpenAI users can raise embedding_config.request_batch_size.
     DEFAULT_REQUEST_BATCH_SIZE = 64
+    default_request_batch_size = DEFAULT_REQUEST_BATCH_SIZE
 
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
-                 rate_limit_rps: float | None = None, service_tier: str | None = None):
+                 rate_limit_rps: float | None = None, service_tier: str | None = None,
+                 max_parallel_requests: int | None = None, max_retries: int | None = None):
         import threading
-        self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
-        self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
-        self.rate_limit_rps: float | None = float(rate_limit_rps) if rate_limit_rps else None
+        base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.service_tier: str | None = service_tier or os.getenv("OPENAI_SERVICE_TIER")
+        # Legacy fixed-interval throttle state. No longer used by __call__
+        # (which now goes through AdaptiveRateLimiter via RemoteEmbeddingFunction),
+        # but kept because tests/test_openai_embedding_batching.py calls
+        # _wait_for_rate_limit() directly and inspects _last_request_ts.
         self._rate_lock = threading.Lock()
         self._last_request_ts: float = 0.0
         if not self.api_key:
@@ -66,23 +70,28 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         try:
             import openai
             client_kwargs = {"api_key": self.api_key}
-            if self.base_url:
-                client_kwargs["base_url"] = self.base_url
+            if base_url:
+                client_kwargs["base_url"] = base_url
             self.client = openai.OpenAI(**client_kwargs)
         except ImportError:
             raise ImportError("openai package is required for OpenAI embeddings")
+
+        self._init_common(
+            model_name=model_name,
+            base_url=base_url,
+            request_batch_size=request_batch_size,
+            rate_limit_rps=rate_limit_rps,
+            max_parallel_requests=max_parallel_requests,
+            max_retries=max_retries,
+        )
 
     @staticmethod
     def name() -> str:
         return "openai"
 
     def get_config(self) -> dict[str, Any]:
-        cfg = {
-            "model_name": self.model_name,
-            "base_url": self.base_url,
-            "request_batch_size": self.request_batch_size,
-            "rate_limit_rps": self.rate_limit_rps,
-        }
+        cfg = {"model_name": self.model_name, "base_url": self.base_url}
+        cfg.update(self._common_config())
         if getattr(self, "service_tier", None):
             cfg["service_tier"] = self.service_tier
         return cfg
@@ -96,13 +105,15 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             request_batch_size=config.get("request_batch_size"),
             rate_limit_rps=config.get("rate_limit_rps"),
             service_tier=config.get("service_tier"),
+            max_parallel_requests=config.get("max_parallel_requests"),
+            max_retries=config.get("max_retries"),
         )
 
     def _wait_for_rate_limit(self) -> None:
-        """Sleep as needed so successive embedding requests stay under
-        ``rate_limit_rps``. Applied per HTTP request (including each sub-batch)
-        so rate-limited providers see a steady cadence regardless of how many
-        inputs the caller passed. The lock keeps parallel threads honest.
+        """Pre-AdaptiveRateLimiter fixed-interval throttle. Deprecated and no
+        longer called internally (see AdaptiveRateLimiter in
+        embeddings/ratelimit.py) — kept only because
+        tests/test_openai_embedding_batching.py invokes it directly.
         """
         rps = self.rate_limit_rps
         if not rps or rps <= 0:
@@ -115,8 +126,8 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
                 time.sleep(wait)
             self._last_request_ts = time.monotonic()
 
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using the OpenAI-compatible API.
+    def _embed_batch(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
+        """Issue one OpenAI embeddings request.
 
         ``encoding_format="float"`` is set explicitly. The OpenAI SDK otherwise
         negotiates base64 by default, which OpenRouter's Gemini embedding
@@ -125,25 +136,43 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         float makes every OpenAI-compatible backend, native OpenAI included,
         respond deterministically.
         """
-        batch_size = self.request_batch_size or self.DEFAULT_REQUEST_BATCH_SIZE
-        vecs: Embeddings = []
-        for i in range(0, len(input), batch_size):
-            sub = input[i:i + batch_size]
-            self._wait_for_rate_limit()
-            req_kwargs = {
-                "model": self.model_name,
-                "input": sub,
-                "encoding_format": "float",
-            }
-            if getattr(self, "service_tier", None):
-                req_kwargs["service_tier"] = self.service_tier
-            response = self.client.embeddings.create(**req_kwargs)
-            vecs.extend(data.embedding for data in response.data)
-        return vecs
+        req_kwargs = {
+            "model": self.model_name,
+            "input": texts,
+            "encoding_format": "float",
+        }
+        if getattr(self, "service_tier", None):
+            req_kwargs["service_tier"] = self.service_tier
+        response = self.client.embeddings.create(**req_kwargs)
+        return [data.embedding for data in response.data]
 
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string. No special handling needed for OpenAI."""
-        return self.__call__([text])[0]
+    def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
+        """openai.RateLimitError and 5xx APIStatusError are retryable; honor
+        Retry-After from the response headers when the SDK surfaces it.
+        """
+        try:
+            import openai
+        except ImportError:
+            return False, None
+        if isinstance(exc, openai.RateLimitError):
+            return True, self._parse_retry_after(exc)
+        if isinstance(exc, openai.APIStatusError) and getattr(exc, "status_code", 0) >= 500:
+            return True, None
+        return False, None
+
+    @staticmethod
+    def _parse_retry_after(exc: Exception) -> float | None:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None) if response is not None else None
+        if not headers:
+            return None
+        value = headers.get("Retry-After") if hasattr(headers, "get") else None
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def truncate(self, text: str, max_tokens: int) -> str:
         """Truncate using tiktoken cl100k_base (correct for OpenAI models)."""
@@ -163,7 +192,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 
 
 @register_embedding_function
-class GeminiEmbeddingFunction(EmbeddingFunction):
+class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai.
 
     Registered under the name "gemini" so ChromaDB can rebuild it from a
@@ -175,10 +204,10 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     # task instruction in the prompt text itself, which empirically shifts
     # the embedding space (cos ~0.84 vs raw baseline) and preserves asymmetric
     # doc/query tuning (cos ~0.94 between doc-prefix and query-prefix).
-    # These are the canonical prefixes; __call__ and embed_query prepend them
-    # to every v2 input. They MUST stay in sync with V2_PREFIX_TOKEN_BUDGET
-    # below: if you lengthen a prefix, bump the budget so truncation still
-    # leaves room for it under the model's hard cap.
+    # These are the canonical prefixes; _prepare_document/_prepare_query
+    # prepend them to every v2 input. They MUST stay in sync with
+    # V2_PREFIX_TOKEN_BUDGET below: if you lengthen a prefix, bump the budget
+    # so truncation still leaves room for it under the model's hard cap.
     V2_DOC_PREFIX = "Represent this document for retrieval:\n\n"
     V2_QUERY_PREFIX = "Represent this query for retrieval:\n\n"
 
@@ -195,19 +224,32 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     # prefix tokens are reserved separately (see V2_PREFIX_TOKEN_BUDGET).
     max_input_tokens = 2000
 
-    def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None, base_url: str | None = None):
-        self.model_name = model_name
+    # embed_query truncates before prepending the task prefix (see
+    # embed_query's docstring in the base class + _prepare_query below);
+    # OpenAI/Ollama don't truncate at query time, only Gemini does.
+    truncate_queries = True
+
+    # Gemini's embed_content API caps at 100 items per batch (verified
+    # empirically: batch=100 OK, batch=250 → 400 INVALID_ARGUMENT with
+    # "at most 100 requests can be in one batch").
+    GEMINI_MAX_BATCH = 100
+    default_request_batch_size = GEMINI_MAX_BATCH
+
+    def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None,
+                 base_url: str | None = None, request_batch_size: int | None = None,
+                 rate_limit_rps: float | None = None, max_parallel_requests: int | None = None,
+                 max_retries: int | None = None):
         # Model-aware token limit. For v2 models, derive from:
         #   hard_cap (8192) - safety_margin (192, for char-based truncation
         #   imprecision) - V2_PREFIX_TOKEN_BUDGET (20, reserved for the
-        #   in-prompt task instruction prepended in __call__/embed_query).
+        #   in-prompt task instruction prepended in _prepare_document/_prepare_query).
         # Net effective budget for text body: 8192 - 192 - 20 = 7980 tokens.
         # This guarantees post-prefix payload <= hard cap even at the
         # truncation limit, formally closing the cap-enforcement gap.
         if "gemini-embedding-2" in model_name:
             self.max_input_tokens = 8000 - self.V2_PREFIX_TOKEN_BUDGET
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        self.base_url = base_url or os.getenv("GEMINI_BASE_URL")
+        base_url = base_url or os.getenv("GEMINI_BASE_URL")
         if not self.api_key:
             raise ValueError("Gemini API key is required")
 
@@ -215,20 +257,31 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
             from google import genai
             from google.genai import types
             client_kwargs = {"api_key": self.api_key}
-            if self.base_url:
-                http_options = types.HttpOptions(baseUrl=self.base_url)
+            if base_url:
+                http_options = types.HttpOptions(baseUrl=base_url)
                 client_kwargs["http_options"] = http_options
             self.client = genai.Client(**client_kwargs)
             self.types = types
         except ImportError:
             raise ImportError("google-genai package is required for Gemini embeddings")
 
+        self._init_common(
+            model_name=model_name,
+            base_url=base_url,
+            request_batch_size=request_batch_size,
+            rate_limit_rps=rate_limit_rps,
+            max_parallel_requests=max_parallel_requests,
+            max_retries=max_retries,
+        )
+
     @staticmethod
     def name() -> str:
         return "gemini"
 
     def get_config(self) -> dict[str, Any]:
-        return {"model_name": self.model_name, "base_url": self.base_url}
+        cfg = {"model_name": self.model_name, "base_url": self.base_url}
+        cfg.update(self._common_config())
+        return cfg
 
     @staticmethod
     def build_from_config(config: dict[str, Any]) -> "GeminiEmbeddingFunction":
@@ -236,12 +289,11 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
             model_name=config.get("model_name", "gemini-embedding-001"),
             api_key=config.get("api_key"),
             base_url=config.get("base_url"),
+            request_batch_size=config.get("request_batch_size"),
+            rate_limit_rps=config.get("rate_limit_rps"),
+            max_parallel_requests=config.get("max_parallel_requests"),
+            max_retries=config.get("max_retries"),
         )
-
-    # Gemini's embed_content API caps at 100 items per batch (verified
-    # empirically: batch=100 OK, batch=250 → 400 INVALID_ARGUMENT with
-    # "at most 100 requests can be in one batch").
-    GEMINI_MAX_BATCH = 100
 
     def _is_v2(self) -> bool:
         # gemini-embedding-2-* does not support the task_type config field
@@ -249,71 +301,54 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         # the task hint in the prompt text instead.
         return "gemini-embedding-2" in self.model_name
 
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using Gemini API, batching up to 100 per call."""
-        is_v2 = self._is_v2()
-        # Materialize once so we can slice regardless of input iterable type.
-        texts = list(input)
-        if is_v2:
-            # v2 models: task instruction goes in the prompt, no config.
-            # V2_PREFIX_TOKEN_BUDGET is already reserved from max_input_tokens
-            # in __init__, so upstream truncation guarantees the combined
-            # payload stays under the model's hard cap.
-            prepared = [f"{self.V2_DOC_PREFIX}{t}" for t in texts]
-        else:
-            prepared = texts
+    def _prepare_document(self, text: str) -> str:
+        # v2 models: task instruction goes in the prompt, no config.
+        # V2_PREFIX_TOKEN_BUDGET is already reserved from max_input_tokens
+        # in __init__, so upstream truncation guarantees the combined
+        # payload stays under the model's hard cap.
+        return f"{self.V2_DOC_PREFIX}{text}" if self._is_v2() else text
 
-        embeddings: list = []
-        for start in range(0, len(prepared), self.GEMINI_MAX_BATCH):
-            batch = prepared[start:start + self.GEMINI_MAX_BATCH]
-            if is_v2:
-                response = self.client.models.embed_content(
-                    model=self.model_name,
-                    contents=batch,
-                )
-            else:
-                response = self.client.models.embed_content(
-                    model=self.model_name,
-                    contents=batch,
-                    config=self.types.EmbedContentConfig(
-                        task_type="retrieval_document",
-                        title="Zotero library document",
-                    ),
-                )
-            embeddings.extend(e.values for e in response.embeddings)
-        return embeddings
+    def _prepare_query(self, text: str) -> str:
+        return f"{self.V2_QUERY_PREFIX}{text}" if self._is_v2() else text
 
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string using retrieval_query task type."""
-        # Truncate before any prefix prepending. For v2 models max_input_tokens
-        # already excludes V2_PREFIX_TOKEN_BUDGET (reserved in __init__), so
-        # the post-prefix payload stays under the model's hard cap. For v1
-        # models truncation prevents API errors on pathological queries that
-        # the upstream pipeline does not pre-truncate (queries bypass the
-        # _process_item_batch truncate_text path that documents go through).
-        text = self.truncate(text, self.max_input_tokens)
+    def _embed_batch(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
+        """Issue one Gemini embed_content request.
+
+        v2 models never take an EmbedContentConfig (the task hint already
+        lives in the prompt text via _prepare_document/_prepare_query); v1
+        models select retrieval_document vs retrieval_query via ``is_query``
+        since v1's request shape (unlike v2's) differs between the two.
+        """
         if self._is_v2():
-            prompt_text = f"{self.V2_QUERY_PREFIX}{text}"
+            response = self.client.models.embed_content(model=self.model_name, contents=texts)
+        elif is_query:
             response = self.client.models.embed_content(
                 model=self.model_name,
-                contents=[prompt_text],
+                contents=texts,
+                config=self.types.EmbedContentConfig(task_type="retrieval_query"),
             )
         else:
             response = self.client.models.embed_content(
                 model=self.model_name,
-                contents=[text],
+                contents=texts,
                 config=self.types.EmbedContentConfig(
-                    task_type="retrieval_query",
+                    task_type="retrieval_document",
+                    title="Zotero library document",
                 ),
             )
-        return response.embeddings[0].values
+        return [e.values for e in response.embeddings]
 
-    def truncate(self, text: str, max_tokens: int) -> str:
-        """Truncate using character-based estimation for Gemini (~4 chars/token)."""
-        max_chars = max_tokens * 4
-        if len(text) > max_chars:
-            text = text[:max_chars]
-        return text
+    def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
+        """google.genai.errors.APIError with code 429 or >=500 is retryable."""
+        try:
+            from google.genai import errors as genai_errors
+        except ImportError:
+            return False, None
+        if isinstance(exc, genai_errors.APIError):
+            code = getattr(exc, "code", None)
+            if code == 429 or (isinstance(code, int) and code >= 500):
+                return True, None
+        return False, None
 
 
 @register_embedding_function
@@ -376,7 +411,7 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
 
 
 @register_embedding_function
-class OllamaEmbeddingFunction(EmbeddingFunction):
+class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
     """Custom Ollama embedding function for ChromaDB.
 
     Uses Ollama's local HTTP API. Registered under the name ``ollama`` so
@@ -387,26 +422,46 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
     # Ollama models vary; use a conservative, char-based fallback budget.
     max_input_tokens = 8000
 
-    def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None):
-        self.model_name = model_name
-        self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+    # None means "send the whole input as a single request" — Ollama's
+    # /api/embed already accepts an arbitrarily long batch locally, so there
+    # is no request-size cap to sub-batch against by default.
+    default_request_batch_size = None
+
+    def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None,
+                 request_batch_size: int | None = None, rate_limit_rps: float | None = None,
+                 max_parallel_requests: int | None = None, max_retries: int | None = None):
+        base_url = (base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+        self._init_common(
+            model_name=model_name,
+            base_url=base_url,
+            request_batch_size=request_batch_size,
+            rate_limit_rps=rate_limit_rps,
+            max_parallel_requests=max_parallel_requests,
+            max_retries=max_retries,
+        )
 
     @staticmethod
     def name() -> str:
         return "ollama"
 
     def get_config(self) -> dict[str, Any]:
-        return {"model_name": self.model_name, "base_url": self.base_url}
+        cfg = {"model_name": self.model_name, "base_url": self.base_url}
+        cfg.update(self._common_config())
+        return cfg
 
     @staticmethod
     def build_from_config(config: dict[str, Any]) -> "OllamaEmbeddingFunction":
         return OllamaEmbeddingFunction(
             model_name=config.get("model_name", "qwen3-embedding"),
             base_url=config.get("base_url"),
+            request_batch_size=config.get("request_batch_size"),
+            rate_limit_rps=config.get("rate_limit_rps"),
+            max_parallel_requests=config.get("max_parallel_requests"),
+            max_retries=config.get("max_retries"),
         )
 
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using Ollama's /api/embed endpoint.
+    def _embed_batch(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
+        """Issue one request to Ollama's /api/embed endpoint.
 
         Unlike the deprecated /api/embeddings route (single ``prompt`` -> single
         ``embedding``), /api/embed accepts a batch via ``input`` and returns a
@@ -418,7 +473,6 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         except ImportError:
             raise ImportError("requests package is required for Ollama embeddings")
 
-        texts = list(input)
         if not texts:
             return []
 
@@ -437,16 +491,23 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
             )
         return embeddings
 
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string. No special handling needed for Ollama."""
-        return self.__call__([text])[0]
-
-    def truncate(self, text: str, max_tokens: int) -> str:
-        """Truncate using character-based estimation for local Ollama models."""
-        max_chars = max_tokens * 4
-        if len(text) > max_chars:
-            text = text[:max_chars]
-        return text
+    def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
+        """429/5xx HTTP responses and connection-level failures are retryable —
+        Ollama runs locally, so connection errors are usually the server still
+        loading the model rather than something permanently wrong.
+        """
+        try:
+            import requests
+        except ImportError:
+            return False, None
+        if isinstance(exc, requests.HTTPError):
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 429 or (isinstance(status, int) and status >= 500):
+                return True, None
+            return False, None
+        if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+            return True, None
+        return False, None
 
 
 class ChromaClient:
@@ -577,18 +638,33 @@ class ChromaClient:
                 model_name=model_name, api_key=api_key, base_url=base_url,
                 request_batch_size=self.embedding_config.get("request_batch_size"),
                 rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
+                service_tier=self.embedding_config.get("service_tier"),
+                max_parallel_requests=self.embedding_config.get("max_parallel_requests"),
+                max_retries=self.embedding_config.get("max_retries"),
             )
 
         elif self.embedding_model == "gemini":
             model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
             api_key = self.embedding_config.get("api_key")
             base_url = self.embedding_config.get("base_url")
-            return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
+            return GeminiEmbeddingFunction(
+                model_name=model_name, api_key=api_key, base_url=base_url,
+                request_batch_size=self.embedding_config.get("request_batch_size"),
+                rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
+                max_parallel_requests=self.embedding_config.get("max_parallel_requests"),
+                max_retries=self.embedding_config.get("max_retries"),
+            )
 
         elif self.embedding_model == "ollama":
             model_name = self.embedding_config.get("model_name", "qwen3-embedding")
             base_url = self.embedding_config.get("base_url")
-            return OllamaEmbeddingFunction(model_name=model_name, base_url=base_url)
+            return OllamaEmbeddingFunction(
+                model_name=model_name, base_url=base_url,
+                request_batch_size=self.embedding_config.get("request_batch_size"),
+                rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
+                max_parallel_requests=self.embedding_config.get("max_parallel_requests"),
+                max_retries=self.embedding_config.get("max_retries"),
+            )
 
         elif self.embedding_model == "qwen":
             model_name = self.embedding_config.get("model_name", "Qwen/Qwen3-Embedding-0.6B")

@@ -615,6 +615,29 @@ class ZoteroSemanticSearch:
         requested = self._load_batch_enabled("gemini") if use_gemini_batch is None else use_gemini_batch
         return bool(requested and self.chroma_client.embedding_model == "gemini")
 
+    def _apply_service_tier_override(self, service_tier: str | None) -> None:
+        """Apply a ``--service-tier`` override to the realtime embedding function.
+
+        Only the realtime OpenAI path reads ``embedding_function.service_tier``
+        (see ``OpenAIEmbeddingFunction._embed_batch``); Batch API job submission
+        builds its own request bodies and never consults this, so callers must
+        only invoke this once batch mode has been ruled out. Providers without
+        a ``service_tier`` attribute are logged and left untouched rather than
+        raising — a stray flag on a non-OpenAI provider is a no-op, not a crash.
+        """
+        if not service_tier:
+            return
+        ef = self.chroma_client.embedding_function
+        if hasattr(ef, "service_tier"):
+            ef.service_tier = service_tier
+            self.chroma_client.embedding_config["service_tier"] = service_tier
+            logger.info(f"Using OpenAI service_tier={service_tier!r} for this update run.")
+        else:
+            logger.debug(
+                f"--service-tier={service_tier!r} requested but the configured "
+                "embedding function has no service_tier attribute; ignoring."
+            )
+
     def _load_last_sync_version(self) -> int:
         """Last Zotero library version fully indexed into ChromaDB.
 
@@ -2023,6 +2046,10 @@ class ZoteroSemanticSearch:
                     stats["duration"] = str(end_time - start_time)
                     stats["end_time"] = end_time.isoformat()
                     return stats
+
+                # Batch mode (returned above) ignores --service-tier entirely;
+                # only the realtime path below reads it.
+                self._apply_service_tier_override(service_tier)
 
                 # User-friendly progress reporting
                 total = stats["total_items"] = len(all_items)
