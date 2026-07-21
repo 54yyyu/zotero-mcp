@@ -668,6 +668,9 @@ def main():
         import logging
         log_level = logging.INFO if getattr(args, "verbose", False) else logging.WARNING
         logging.basicConfig(level=log_level, format="%(message)s", force=True)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 
         # Setup Zotero environment variables
