@@ -24,6 +24,7 @@ except ImportError as e:
     ) from e
 
 from zotero_mcp.embeddings import RemoteEmbeddingFunction
+from zotero_mcp.embeddings.registry import resolve_provider
 from zotero_mcp.utils import suppress_stdout
 
 logger = logging.getLogger(__name__)
@@ -629,60 +630,20 @@ class ChromaClient:
                     raise
 
     def _create_embedding_function(self) -> EmbeddingFunction:
-        """Create the appropriate embedding function based on configuration."""
-        if self.embedding_model == "openai":
-            model_name = self.embedding_config.get("model_name", "text-embedding-3-small")
-            api_key = self.embedding_config.get("api_key")
-            base_url = self.embedding_config.get("base_url")
-            return OpenAIEmbeddingFunction(
-                model_name=model_name, api_key=api_key, base_url=base_url,
-                request_batch_size=self.embedding_config.get("request_batch_size"),
-                rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
-                service_tier=self.embedding_config.get("service_tier"),
-                max_parallel_requests=self.embedding_config.get("max_parallel_requests"),
-                max_retries=self.embedding_config.get("max_retries"),
-            )
+        """Create the appropriate embedding function based on configuration.
 
-        elif self.embedding_model == "gemini":
-            model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
-            api_key = self.embedding_config.get("api_key")
-            base_url = self.embedding_config.get("base_url")
-            return GeminiEmbeddingFunction(
-                model_name=model_name, api_key=api_key, base_url=base_url,
-                request_batch_size=self.embedding_config.get("request_batch_size"),
-                rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
-                max_parallel_requests=self.embedding_config.get("max_parallel_requests"),
-                max_retries=self.embedding_config.get("max_retries"),
-            )
-
-        elif self.embedding_model == "ollama":
-            model_name = self.embedding_config.get("model_name", "qwen3-embedding")
-            base_url = self.embedding_config.get("base_url")
-            return OllamaEmbeddingFunction(
-                model_name=model_name, base_url=base_url,
-                request_batch_size=self.embedding_config.get("request_batch_size"),
-                rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
-                max_parallel_requests=self.embedding_config.get("max_parallel_requests"),
-                max_retries=self.embedding_config.get("max_retries"),
-            )
-
-        elif self.embedding_model == "qwen":
-            model_name = self.embedding_config.get("model_name", "Qwen/Qwen3-Embedding-0.6B")
-            return HuggingFaceEmbeddingFunction(model_name=model_name)
-
-        elif self.embedding_model == "embeddinggemma":
-            model_name = self.embedding_config.get("model_name", "google/embeddinggemma-300m")
-            return HuggingFaceEmbeddingFunction(model_name=model_name)
-
-        elif self.embedding_model not in ["default", "openai", "gemini", "ollama"]:
-            # Treat any other value as a HuggingFace model name
-            return HuggingFaceEmbeddingFunction(model_name=self.embedding_model)
-
-        else:
-            # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
-            ef = chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
-            ef.max_input_tokens = 256  # all-MiniLM-L6-v2 max_seq_length
-            return ef
+        Delegates the "which provider does this model string mean" decision
+        to ``resolve_provider`` (embeddings/registry.py), which reproduces the
+        old if/elif chain exactly. ``extra`` carries any config the model
+        string itself implies (e.g. the HuggingFace model name behind the
+        "qwen"/"embeddinggemma" aliases, or an arbitrary HF model string);
+        merging as ``{**extra, **self.embedding_config}`` means an explicit
+        ``model_name`` in embedding_config still wins over the alias default,
+        matching today's ``embedding_config.get("model_name", <alias
+        default>)`` behavior.
+        """
+        spec, extra = resolve_provider(self.embedding_model)
+        return spec.ef_factory({**extra, **self.embedding_config})
 
     @property
     def embedding_max_tokens(self) -> int:
@@ -986,49 +947,37 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     # Previous code unconditionally REPLACED config["embedding_config"] with env
     # values, silently dropping model_name from config.json whenever any
     # provider env var (e.g. GOOGLE_API_KEY leaked from another tool) was set.
-    if config["embedding_model"] == "openai":
+    #
+    # Driven generically by the resolved provider's EnvSpec (registry.py) instead
+    # of one hardcoded if/elif block per provider. Providers with no env spec
+    # (huggingface model names, "default") have an empty EnvSpec and skip the
+    # merge entirely, same as today. api_key resolution tries each
+    # ``env.api_key_vars`` in order (Gemini: GEMINI_API_KEY then GOOGLE_API_KEY).
+    # model_name/base_url are only filled from env when config.json left them
+    # unset. For providers that ``requires_api_key`` (openai/gemini), the merged
+    # config is only written back when an api_key was actually resolved — an
+    # unconfigured provider must not silently gain a half-built embedding_config
+    # (e.g. a bare model_name with no key, which would fail construction later
+    # with a worse error than "provider not configured"). Ollama has no api key
+    # requirement, so its merge is unconditional, matching today's behavior.
+    spec, _extra = resolve_provider(config["embedding_model"])
+    env = spec.env
+    if env.api_key_vars or env.model_var or env.base_url_var:
         ec = dict(config.get("embedding_config") or {})
-        if not ec.get("api_key"):
-            env_key = os.getenv("OPENAI_API_KEY")
-            if env_key:
-                ec["api_key"] = env_key
-        if not ec.get("model_name"):
-            ec["model_name"] = os.getenv(
-                "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
-            )
-        if not ec.get("base_url"):
-            env_base = os.getenv("OPENAI_BASE_URL")
+        if env.api_key_vars and not ec.get("api_key"):
+            for var in env.api_key_vars:
+                env_key = os.getenv(var)
+                if env_key:
+                    ec["api_key"] = env_key
+                    break
+        if env.model_var and not ec.get("model_name"):
+            ec["model_name"] = os.getenv(env.model_var, spec.default_model)
+        if env.base_url_var and not ec.get("base_url"):
+            env_base = os.getenv(env.base_url_var)
             if env_base:
                 ec["base_url"] = env_base
-        if ec.get("api_key"):
+        if not env.requires_api_key or ec.get("api_key"):
             config["embedding_config"] = ec
-
-    elif config["embedding_model"] == "gemini":
-        ec = dict(config.get("embedding_config") or {})
-        if not ec.get("api_key"):
-            env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-            if env_key:
-                ec["api_key"] = env_key
-        if not ec.get("model_name"):
-            ec["model_name"] = os.getenv(
-                "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"
-            )
-        if not ec.get("base_url"):
-            env_base = os.getenv("GEMINI_BASE_URL")
-            if env_base:
-                ec["base_url"] = env_base
-        if ec.get("api_key"):
-            config["embedding_config"] = ec
-
-    elif config["embedding_model"] == "ollama":
-        ec = dict(config.get("embedding_config") or {})
-        if not ec.get("model_name"):
-            ec["model_name"] = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding")
-        if not ec.get("base_url"):
-            env_base = os.getenv("OLLAMA_BASE_URL")
-            if env_base:
-                ec["base_url"] = env_base
-        config["embedding_config"] = ec
 
     return ChromaClient(
         collection_name=config["collection_name"],
