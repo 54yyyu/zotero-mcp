@@ -20,6 +20,7 @@ from typing import Any
 from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
+from .embeddings.registry import batch_capable_providers
 from .local_db import LocalZoteroReader
 from .progress import ConsecutiveFailureBreaker, ExtractionProgress
 from .utils import format_creators, is_local_mode, suppress_stdout
@@ -173,6 +174,25 @@ def _report(message: str) -> None:
         sys.stderr.flush()
     except Exception:
         pass
+
+
+def _realtime_slice_size(embedding_function: Any) -> int:
+    """How many items the realtime indexing loop hands to one
+    ``_process_item_batch``/``upsert_documents`` call at a time.
+
+    The base size of 25 keeps one request-group under ~200k estimated tokens
+    (25 × 8000 max tokens/item), comfortably inside OpenAI's ~300k
+    token-per-request limit. ``RemoteEmbeddingFunction`` subclasses with
+    ``max_parallel_requests > 1`` run a ``ThreadPoolExecutor`` internally, so a
+    25-item slice would starve all but one worker thread; scaling the slice
+    by parallelism keeps that pool fed. The result is capped at 200 so a
+    single slice's estimated token total stays bounded and progress reporting
+    (which prints per item within a slice) doesn't go long stretches without
+    an update. ChromaDB's own upsert batching splits any oversized slice
+    further as needed.
+    """
+    ef_parallel = getattr(embedding_function, "max_parallel_requests", 1) or 1
+    return min(25 * max(1, ef_parallel), 200)
 
 
 _DEFAULT_UPDATE_CONFIG = {
@@ -625,15 +645,81 @@ class ZoteroSemanticSearch:
                 logger.warning(f"Error loading {provider} batch throttle config: {e}")
         return config
 
+    def _resolve_batch_enabled(self, provider: str, override: bool | None) -> bool:
+        """Resolve CLI override + config default for a provider's batch indexing.
+
+        ``override`` wins when given; otherwise falls back to
+        `semantic_search.<provider>_batch.enabled`. Either way, batch mode is
+        only actually active when the configured embedding model matches
+        ``provider`` — selecting a provider whose embedding space isn't the
+        one actually configured would submit requests built from the wrong
+        provider's config (see ``_submit_batch_index``, which reads
+        ``self.chroma_client.embedding_config`` directly).
+        """
+        requested = self._load_batch_enabled(provider) if override is None else override
+        return bool(requested and self.chroma_client.embedding_model == provider)
+
+    def _resolve_batch_mode(
+        self,
+        use_batch: bool | None = None,
+        batch_provider: str | None = None,
+        use_openai_batch: bool | None = None,
+        use_gemini_batch: bool | None = None,
+    ) -> tuple[bool, str]:
+        """Resolve which provider (if any) runs the Batch API this run.
+
+        Returns ``(enabled, provider)``. Priority: explicit ``batch_provider``
+        > explicit ``use_batch`` > legacy ``use_openai_batch``/
+        ``use_gemini_batch`` > per-provider config defaults.
+
+        An explicit ``batch_provider`` that doesn't match the configured
+        embedding model is an error, not a silent realtime fallback — batch
+        submission builds requests from this model's embedding_config, so
+        honoring the request is impossible (the CLI validates the legacy
+        per-provider flags the same way). ``use_batch=False`` still forces
+        realtime mode without dropping the explicit provider choice.
+        """
+        providers_with_batch = batch_capable_providers()
+        if batch_provider is not None and batch_provider not in providers_with_batch:
+            raise ValueError(
+                f"Unknown batch_provider {batch_provider!r}; must be one of "
+                f"{providers_with_batch} (providers with Batch API support)."
+            )
+        if batch_provider is not None:
+            if use_batch is False:
+                return False, batch_provider
+            if self.chroma_client.embedding_model != batch_provider:
+                raise ValueError(
+                    f"batch_provider={batch_provider!r} requires embedding_model "
+                    f"{batch_provider!r}, but '{self.chroma_client.embedding_model}' "
+                    "is configured."
+                )
+            return True, batch_provider
+        if use_batch is not None:
+            # Generic on/off toggle with no explicit provider: infer the
+            # provider from the configured embedding model.
+            model = self.chroma_client.embedding_model
+            if use_batch and model not in providers_with_batch:
+                raise ValueError(
+                    f"use_batch=True requires a batch-capable embedding_model; "
+                    f"'{model}' has no Batch API support (supported: {providers_with_batch})."
+                )
+            provider = model if model in providers_with_batch else providers_with_batch[0]
+            return self._resolve_batch_enabled(provider, use_batch), provider
+        # Nothing explicit: legacy per-provider config-driven resolution,
+        # unchanged from pre-Phase-4 behavior.
+        resolved_openai = self._resolve_batch_enabled("openai", use_openai_batch)
+        resolved_gemini = self._resolve_batch_enabled("gemini", use_gemini_batch)
+        provider = "openai" if resolved_openai else "gemini"
+        return resolved_openai or resolved_gemini, provider
+
     def _resolve_openai_batch_enabled(self, use_openai_batch: bool | None) -> bool:
         """Resolve CLI override + config default for OpenAI batch indexing."""
-        requested = self._load_batch_enabled("openai") if use_openai_batch is None else use_openai_batch
-        return bool(requested and self.chroma_client.embedding_model == "openai")
+        return self._resolve_batch_enabled("openai", use_openai_batch)
 
     def _resolve_gemini_batch_enabled(self, use_gemini_batch: bool | None) -> bool:
         """Resolve CLI override + config default for Gemini batch indexing."""
-        requested = self._load_batch_enabled("gemini") if use_gemini_batch is None else use_gemini_batch
-        return bool(requested and self.chroma_client.embedding_model == "gemini")
+        return self._resolve_batch_enabled("gemini", use_gemini_batch)
 
     def _apply_service_tier_override(self, service_tier: str | None) -> None:
         """Apply a ``--service-tier`` override to the realtime embedding function.
@@ -1800,6 +1886,8 @@ class ZoteroSemanticSearch:
         auto_loop: bool = False,
         batch_poll_interval: int = 60,
         service_tier: str | None = None,
+        use_batch: bool | None = None,
+        batch_provider: str | None = None,
     ) -> dict[str, Any]:
         """
         Update the semantic search database with items from Zotero.
@@ -1807,10 +1895,14 @@ class ZoteroSemanticSearch:
         Args:
                 unless explicitly disabled). Ignored in local mode since
                 `extract_fulltext` provides richer local extraction.
-            use_openai_batch: Override for OpenAI Batch API indexing. None
-                uses `semantic_search.openai_batch.enabled`.
-            use_gemini_batch: Override for Gemini Batch API indexing. None
-                uses `semantic_search.gemini_batch.enabled`.
+            use_openai_batch: Deprecated — use `use_batch`/`batch_provider`
+                instead. Override for OpenAI Batch API indexing. None uses
+                `semantic_search.openai_batch.enabled`. Ignored whenever
+                `use_batch` is not None.
+            use_gemini_batch: Deprecated — use `use_batch`/`batch_provider`
+                instead. Override for Gemini Batch API indexing. None uses
+                `semantic_search.gemini_batch.enabled`. Ignored whenever
+                `use_batch` is not None.
             extraction_workers: Concurrent PDF extractions during
                 extract_fulltext. None uses
                 `semantic_search.extraction.workers` (default 1).
@@ -1822,6 +1914,15 @@ class ZoteroSemanticSearch:
                 batches, and submitting pending chunks until the whole run is
                 imported. Only meaningful in batch mode.
             batch_poll_interval: Seconds between auto-loop polls.
+            use_batch: Generic Batch API override, replacing
+                `use_openai_batch`/`use_gemini_batch`. When not None, it wins
+                over the legacy flags entirely. Combined with `batch_provider`,
+                selects that provider explicitly; alone, the provider is the
+                configured `embedding_model` if it supports the Batch API
+                (raises `ValueError` on `True` otherwise).
+            batch_provider: Explicit Batch API provider name (must be one of
+                `batch_capable_providers()`; raises `ValueError` otherwise).
+                None lets `use_batch`/the legacy flags/config decide.
 
         Returns:
             Update statistics
@@ -1879,10 +1980,13 @@ class ZoteroSemanticSearch:
                 # Web-API fulltext only applies when not using the local sqlite
                 # extractor (extract_fulltext=True takes precedence in local mode)
                 include_fulltext_via_api = include_fulltext and not extract_fulltext
-                use_openai_batch = self._resolve_openai_batch_enabled(use_openai_batch)
-                use_gemini_batch = self._resolve_gemini_batch_enabled(use_gemini_batch)
-                use_batch = use_openai_batch or use_gemini_batch
-                batch_provider = "openai" if use_openai_batch else "gemini"
+
+                use_batch, batch_provider = self._resolve_batch_mode(
+                    use_batch=use_batch,
+                    batch_provider=batch_provider,
+                    use_openai_batch=use_openai_batch,
+                    use_gemini_batch=use_gemini_batch,
+                )
 
                 # Opportunistic hygiene: drop cache entries from abandoned runs.
                 if self._get_fulltext_cache_config().get("enabled", True):
@@ -2007,7 +2111,7 @@ class ZoteroSemanticSearch:
                 logger.info(f"Found {stats['total_items']} items to process")
 
                 if use_batch:
-                    provider_label = "OpenAI" if batch_provider == "openai" else "Gemini"
+                    provider_label = _BATCH_PROVIDER_OPS[batch_provider]["label"]
                     stats["batch_mode"] = True
                     stats["batch_provider"] = batch_provider
 
@@ -2074,10 +2178,17 @@ class ZoteroSemanticSearch:
                 # User-friendly progress reporting
                 total = stats["total_items"] = len(all_items)
                 _report(f"\nIndexing {total} items...\n\n")
-                # Process items in batches
-                # Keep batch size under OpenAI's 300k token-per-request limit
-                # (25 × 8000 max tokens = 200k, well within the limit)
-                batch_size = 25
+                # Process items in batches. 25 items ≈ 200k tokens per
+                # request-group at the ~8k-token-per-item truncation cap,
+                # comfortably under OpenAI's ~300k token-per-request limit.
+                # Embedding functions with max_parallel_requests > 1
+                # (RemoteEmbeddingFunction subclasses running a
+                # ThreadPoolExecutor) need a bigger slice per outer-loop
+                # iteration to keep every worker thread fed, so we scale by
+                # parallelism; ChromaDB's own upsert splitting handles the
+                # rest. Capped at 200 so per-slice token totals stay bounded
+                # and progress reporting doesn't go long stretches silent.
+                batch_size = _realtime_slice_size(getattr(self.chroma_client, "embedding_function", None))
                 seen_items = 0
                 _failed_docs = []  # Collect failures for end-of-run retry
                 for i in range(0, len(all_items), batch_size):
@@ -2673,17 +2784,21 @@ class ZoteroSemanticSearch:
         """Get status information about the semantic search database."""
         collection_info = self.chroma_client.get_collection_info()
 
+        # One "<provider>_batch" entry per batch-capable provider (today:
+        # "openai_batch"/"gemini_batch", unchanged in shape from before this
+        # was generalized — callers like cli.py key off those exact names).
+        batch_status = {
+            f"{provider}_batch": {
+                "enabled": self._load_batch_enabled(provider),
+                "active": self._resolve_batch_enabled(provider, None),
+            }
+            for provider in batch_capable_providers()
+        }
+
         return {
             "collection_info": collection_info,
             "update_config": self.update_config,
-            "openai_batch": {
-                "enabled": self._load_batch_enabled("openai"),
-                "active": self._resolve_openai_batch_enabled(None),
-            },
-            "gemini_batch": {
-                "enabled": self._load_batch_enabled("gemini"),
-                "active": self._resolve_gemini_batch_enabled(None),
-            },
+            **batch_status,
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
         }

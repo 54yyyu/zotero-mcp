@@ -29,6 +29,8 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from zotero_mcp.embeddings.registry import attach_batch_adapter
+
 from . import batch_common
 from .batch_common import (
     _json_dumps,
@@ -409,6 +411,12 @@ class GeminiBatchAdapter:
 
 
 ADAPTER = GeminiBatchAdapter()
+
+# Register this module's adapter with the provider registry so
+# ``batch_capable_providers()`` (registry.py) reports "gemini" and the CLI's
+# ``--batch-provider``/``--provider`` choices include it. See openai_batch.py's
+# matching call for why this is safe at import time here.
+attach_batch_adapter("gemini", ADAPTER)
 
 
 def submit_embedding_batches(

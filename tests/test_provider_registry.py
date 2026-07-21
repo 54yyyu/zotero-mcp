@@ -410,9 +410,15 @@ def test_chars_per_token_values():
     assert PROVIDERS["ollama"].chars_per_token == 4.0
 
 
-def test_batch_capable_providers_empty_until_phase_3():
-    assert PROVIDERS["openai"].batch is None
-    assert PROVIDERS["gemini"].batch is None
+def test_batch_capable_providers_lists_openai_and_gemini():
+    """Phase 4 wires ``attach_batch_adapter`` at ``openai_batch``/``gemini_batch``
+    import time (see those modules' module-scope calls), so importing them
+    here mutates the process-wide ``PROVIDERS`` registry — matching what
+    happens in any real process that touches batch functionality."""
+    import zotero_mcp.gemini_batch  # noqa: F401
+    import zotero_mcp.openai_batch  # noqa: F401
     from zotero_mcp.embeddings.registry import batch_capable_providers
 
-    assert batch_capable_providers() == []
+    assert PROVIDERS["openai"].batch is not None
+    assert PROVIDERS["gemini"].batch is not None
+    assert batch_capable_providers() == ["openai", "gemini"]

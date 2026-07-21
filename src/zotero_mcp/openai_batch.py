@@ -18,6 +18,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from zotero_mcp.embeddings.registry import attach_batch_adapter
+
 from . import batch_common
 from .batch_common import (
     _json_dumps,  # noqa: F401 — re-exported for provider-symmetric callers/tests
@@ -280,6 +282,15 @@ class OpenAIBatchAdapter:
 
 
 ADAPTER = OpenAIBatchAdapter()
+
+# Register this module's adapter with the provider registry so
+# ``batch_capable_providers()`` (registry.py) reports "openai" and the CLI's
+# ``--batch-provider``/``--provider`` choices include it. Safe at import time
+# here (unlike inside registry.py itself, see attach_batch_adapter's
+# docstring): this module doesn't import the registry back, so there's no
+# risk of PROVIDERS mutating mid-collection for unrelated test modules that
+# import the registry directly.
+attach_batch_adapter("openai", ADAPTER)
 
 
 def submit_embedding_batches(
