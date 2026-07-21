@@ -430,6 +430,8 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         ("publisher", "publisher"),
         ("place", "address"),
         ("DOI", "doi"),
+        ("ISBN", "isbn"),
+        ("ISSN", "issn"),
         ("url", "url"),
         ("abstractNote", "abstract")
     ]
