@@ -1,102 +1,27 @@
 """
 Semantic search functionality for Zotero MCP.
 
-This module provides semantic search capabilities by integrating ChromaDB
-with the existing Zotero client to enable vector-based similarity search
-over research libraries. ``ZoteroSemanticSearch`` is the entry point; its
-``update_database()`` method is the whole indexing pipeline, described below.
+Integrates ChromaDB with the Zotero client to provide vector-based similarity search over research libraries. ``ZoteroSemanticSearch`` is the main entry point; ``update_database()`` runs the indexing pipeline described below.
 
 Architecture
 ============
 
-Two independent ways to get embeddings into ChromaDB
-------------------------------------------------------
-- **Realtime** (default): this module calls the embedding API directly and
-  writes results as it goes. Everything below this section describes the
-  realtime path.
-- **Batch API** (OpenAI/Gemini, opt-in via config or ``--openai-batch`` /
-  ``--gemini-batch`` / ``--batch-provider``): records are prepared the same
-  way (see below) but handed to ``openai_batch.py``/``gemini_batch.py`` for
-  asynchronous submission at ~50% cost, polled and imported later via
-  ``_submit_batch_index``/``_get_batch_status``/``_import_batch``. Not
-  covered further here.
+Two Modes
+---------
+- **Realtime** (default): Prepares items, generates embeddings, and streams vector commits directly into ChromaDB.
+- **Batch API** (opt-in): Assembles records for asynchronous submission to OpenAI/Gemini batch APIs at ~50% cost.
 
-Realtime pipeline stages
+Realtime Pipeline Stages
 -------------------------
-1. **Item fetch** (`update_database`): either a since-version delta against
-   the Zotero web API (`_get_changed_items_from_api`) or a full/local scan
-   (`_get_items_from_source`), depending on incremental-sync eligibility.
-2. **Fulltext extraction** happens *before* indexing starts, as a separate,
-   already-completed pass over all candidate items (local PDF/EPUB
-   extraction with on-disk caching via `fulltext_cache.py`, or web-API
-   fulltext). By the time `update_database`'s main loop runs, every item's
-   text is already sitting in memory — record preparation below does no I/O.
-3. **Record preparation** (`_prepare_index_records`): pure, in-memory,
-   side-effect-free. Assembles each item's document text (title/creators/
-   abstract/tags/fulltext via `_create_document_text`) and metadata
-   (`_create_metadata`), optionally splitting into passages
-   (`split_into_passages`, governed by the `chunking` config: `chunk_size`,
-   `overlap`, `max_chunks_per_item`, producing `<item_key>#<chunk_index>`
-   ids) and truncating to the provider's token limit. **Shared verbatim by
-   both the realtime and Batch API paths** — its output shape must never
-   drift between them (this is unit-tested); only *when/how often* it's
-   called may differ.
-4. **Classification** (`_prepare_and_classify_slice`): `update_database`'s
-   outer loop works through the fetched items in **slices** — fixed-size
-   groups of `_realtime_slice_size()` items (not to be confused with the
-   passage *chunking* in step 3, which splits the text of one item) — so
-   that record preparation, classification, and the eventual Chroma write
-   all operate on a manageable group at a time rather than the whole
-   library at once. For one such slice, this step checks which item keys
-   already exist in Chroma (`get_existing_ids`) to drive added-vs-updated
-   accounting, and — when chunking is on — deletes an item's stale chunks
-   (`delete_item_chunks`) *before* any of its new ones are written, so a
-   shrinking document never leaves orphaned passages behind.
-5. **Embed + write**: two implementations of the same contract, chosen by
-   `update_database` per run:
-   - **Legacy synchronous** (`_process_item_batch`, used when
-     `max_parallel_requests <= 1` or `chroma_client` lacks
-     `upsert_embeddings`): one slice at a time — prepare, classify, hand the
-     slice to `chroma_client.upsert_documents`, which triggers ChromaDB's
-     embedding-function callback (`RemoteEmbeddingFunction.__call__`,
-     `embeddings/base.py`) and blocks until every sub-batch in the slice
-     resolves before the loop can prepare the next slice.
-   - **Streaming** (`_dispatch_slice` / `_drain_futures` / `_finalize_slice`,
-     used whenever real parallelism is configured): one persistent
-     `ThreadPoolExecutor` lives for the whole run. The orchestrator keeps
-     preparing and dispatching further slices' sub-batches
-     (`embedding_function(docs)` calls) without waiting for earlier slices
-     to finish embedding, bounded by a sliding in-flight-sub-batch cap
-     (`2 * max_parallel_requests`) checked before *every* submission — not
-     just once per slice, since a single heavily-chunked slice can hold far
-     more sub-batches than the cap on its own. A slice is only written to
-     Chroma (`upsert_embeddings`, precomputed vectors, no embedding-function
-     callback) once *all* of its own sub-batches have resolved — atomic
-     all-or-nothing per slice, matching the legacy path's failure
-     granularity. **Single-writer invariant:** `chroma_client` (SQLite-
-     backed, no locking of its own) is only ever touched from the
-     orchestrator thread; pool worker threads only ever call the embedding
-     function, never Chroma directly.
-6. **Rate limiting / retries**, shared by both embed+write implementations
-   above and identical either way: `RemoteEmbeddingFunction._embed_with_retry`
-   (`embeddings/base.py`) runs every request through `AdaptiveRateLimiter`
-   (`embeddings/ratelimit.py`) — a dual token-bucket pacing *both* requests/
-   sec (reactive: unarmed until a real 429/5xx, then AIMD backoff/recovery)
-   and, when a provider configures `tokens_per_minute`, tokens/min
-   (proactive: armed from the start, since a provider's TPM ceiling is
-   normally known up front — this prevents a burst of concurrent large
-   requests from silently exhausting a whole minute's token budget before
-   the reactive RPS dimension would ever notice).
-7. **Failure recovery**: any slice/batch whose upsert fails is deferred to
-   `_failed_docs` (a plain list — safe without locking because only the
-   orchestrator thread ever touches it, in both the legacy and streaming
-   paths) and retried once, individually, after the main loop fully drains
-   — credited to `stats["recovered_items"]` rather than added/updated, since
-   the original add-vs-update lookup never ran for a failed batch.
-
-Everything above only concerns the *realtime* path; grep for
-`_BATCH_PROVIDER_OPS` to find the parallel Batch API machinery.
+1. **Fetch & Extract**: Retrieves candidate items from Zotero (local DB or Web API) and extracts text from cached PDFs/EPUBs.
+2. **Record Preparation**: Builds metadata and splits item text into passage chunks (`chunk_size`, `overlap`, `max_chunks_per_item`).
+3. **Queue-Based Streaming Execution**:
+   - **Producer**: Processes items, classifies existing keys in ChromaDB, and pushes chunk sub-batches to ``chunk_queue``.
+   - **Workers** (concurrent `ThreadPoolExecutor`): Fetch sub-batches, request embeddings in parallel from the provider API, and push vectors to ``vector_queue``.
+   - **Chroma Committer**: Collects vectors, bulk-upserts embeddings to ChromaDB, and updates indexing progress.
+4. **Failure Recovery**: Any sub-batches or upserts that fail are collected in `_failed_docs` and retried after the main loop finishes.
 """
+
 
 import contextlib
 import json
