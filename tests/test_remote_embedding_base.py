@@ -290,7 +290,7 @@ def test_openai_build_from_config_defaults_old_persisted_config(monkeypatch):
     cfg = ef.get_config()
     assert cfg["request_batch_size"] == OpenAIEmbeddingFunction.DEFAULT_REQUEST_BATCH_SIZE
     assert cfg["rate_limit_rps"] is None
-    assert cfg["max_parallel_requests"] == 1
+    assert cfg["max_parallel_requests"] == OpenAIEmbeddingFunction.DEFAULT_MAX_PARALLEL_REQUESTS
     assert cfg["max_retries"] == 5
 
 
@@ -326,8 +326,9 @@ def test_gemini_build_from_config_defaults_old_persisted_config(monkeypatch):
     cfg = ef.get_config()
     assert cfg["request_batch_size"] == GeminiEmbeddingFunction.GEMINI_MAX_BATCH
     assert cfg["rate_limit_rps"] is None
-    assert cfg["max_parallel_requests"] == 1
+    assert cfg["max_parallel_requests"] == GeminiEmbeddingFunction.DEFAULT_MAX_PARALLEL_REQUESTS
     assert cfg["max_retries"] == 5
+
 
 
 def test_ollama_build_from_config_roundtrips_all_fields():
