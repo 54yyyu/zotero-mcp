@@ -10,7 +10,6 @@ succeed hermetically.
 import random
 import sys
 import time
-from unittest.mock import patch
 
 import pytest
 
@@ -267,7 +266,6 @@ def test_openai_build_from_config_roundtrips_all_fields(monkeypatch):
         model_name="text-embedding-3-large",
         request_batch_size=32,
         rate_limit_rps=7.5,
-        service_tier="flex",
         max_parallel_requests=3,
         max_retries=2,
     )
@@ -277,7 +275,6 @@ def test_openai_build_from_config_roundtrips_all_fields(monkeypatch):
     assert rebuilt_cfg["model_name"] == "text-embedding-3-large"
     assert rebuilt_cfg["request_batch_size"] == 32
     assert rebuilt_cfg["rate_limit_rps"] == 7.5
-    assert rebuilt_cfg["service_tier"] == "flex"
     assert rebuilt_cfg["max_parallel_requests"] == 3
     assert rebuilt_cfg["max_retries"] == 2
 
@@ -368,58 +365,20 @@ def test_ollama_build_from_config_defaults_old_persisted_config():
 
 
 # ---------------------------------------------------------------------------
-# --service-tier plumbing (smallest seam: the helper update_database calls)
+# Removed-feature guard
 # ---------------------------------------------------------------------------
 
 
-class _FakeChromaClientWithServiceTier:
-    def __init__(self, has_service_tier_attr=True):
-        self.embedding_config = {}
-        self.embedding_function = (
-            _EFWithServiceTier() if has_service_tier_attr else _EFWithoutServiceTier()
-        )
+def test_service_tier_fully_removed():
+    """service_tier was removed: OpenAI's flex processing never covered the
+    embeddings endpoint, and the SDK's embeddings.create rejects the kwarg
+    with a TypeError. Old persisted configs may still carry the key —
+    build_from_config must ignore it rather than crash."""
+    pytest.importorskip("openai")
+    from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
 
-
-class _EFWithServiceTier:
-    service_tier = None
-
-
-class _EFWithoutServiceTier:
-    pass
-
-
-def test_apply_service_tier_override_sets_attribute_and_config():
-    from zotero_mcp import semantic_search
-
-    with patch.object(semantic_search, "get_zotero_client", return_value=object()):
-        search = semantic_search.ZoteroSemanticSearch(
-            chroma_client=_FakeChromaClientWithServiceTier()
-        )
-    search._apply_service_tier_override("flex")
-    assert search.chroma_client.embedding_function.service_tier == "flex"
-    assert search.chroma_client.embedding_config["service_tier"] == "flex"
-
-
-def test_apply_service_tier_override_noop_for_provider_without_attribute():
-    from zotero_mcp import semantic_search
-
-    with patch.object(semantic_search, "get_zotero_client", return_value=object()):
-        search = semantic_search.ZoteroSemanticSearch(
-            chroma_client=_FakeChromaClientWithServiceTier(has_service_tier_attr=False)
-        )
-    # Must not raise even though the EF has no service_tier attribute.
-    search._apply_service_tier_override("flex")
-    assert not hasattr(search.chroma_client.embedding_function, "service_tier")
-    assert "service_tier" not in search.chroma_client.embedding_config
-
-
-def test_apply_service_tier_override_noop_when_not_requested():
-    from zotero_mcp import semantic_search
-
-    with patch.object(semantic_search, "get_zotero_client", return_value=object()):
-        search = semantic_search.ZoteroSemanticSearch(
-            chroma_client=_FakeChromaClientWithServiceTier()
-        )
-    search._apply_service_tier_override(None)
-    assert search.chroma_client.embedding_function.service_tier is None
-    assert "service_tier" not in search.chroma_client.embedding_config
+    ef = OpenAIEmbeddingFunction.build_from_config(
+        {"api_key": "test-key-no-network", "service_tier": "flex"}
+    )
+    assert not hasattr(ef, "service_tier")
+    assert "service_tier" not in ef.get_config()

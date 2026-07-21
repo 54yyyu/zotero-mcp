@@ -460,8 +460,6 @@ def main():
                                       "(requires batch mode)")
     update_db_parser.add_argument("--batch-poll-interval", type=int, default=60,
                                  help="Seconds between --auto-loop status polls (default: 60)")
-    update_db_parser.add_argument("--service-tier", choices=["auto", "default", "flex"], default=None,
-                                 help="OpenAI service tier for realtime embeddings (e.g. 'flex' for 50%% discount)")
 
     # Batch lifecycle commands (provider-neutral). The openai-batch-* forms
     # are kept as backward-compatible aliases pinned to --provider openai.
@@ -738,7 +736,6 @@ def main():
                 batch_max_requests=args.batch_max_requests,
                 auto_loop=args.auto_loop,
                 batch_poll_interval=args.batch_poll_interval,
-                service_tier=args.service_tier,
             )
 
             _print_update_stats(stats)

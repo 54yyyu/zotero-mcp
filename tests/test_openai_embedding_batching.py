@@ -8,6 +8,8 @@ install it).
 
 import threading
 
+import pytest
+
 from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
 
 
@@ -86,11 +88,23 @@ def test_get_config_roundtrips_new_fields():
     assert cfg["model_name"] == "text-embedding-3-small"
 
 
-def test_service_tier_passed_to_api_create():
+def test_request_kwargs_match_real_sdk_signature():
+    """Every kwarg _embed_batch sends must exist on the real SDK's
+    ``embeddings.create`` signature.
+
+    Guards against the service_tier class of bug: a kwarg that every mocked
+    client happily accepts but the real openai SDK rejects with a TypeError
+    at call time, breaking all realtime embedding requests in production
+    while the whole (mock-based) test suite stays green.
+    """
+    import inspect
+
+    openai = pytest.importorskip("openai")
+
     ef, calls = _make(batch_size=64)
-    ef.service_tier = "flex"
-    assert ef.get_config()["service_tier"] == "flex"
     ef([0, 1])
     assert len(calls) == 1
-    assert calls[0]["service_tier"] == "flex"
+    sdk_params = set(inspect.signature(openai.resources.embeddings.Embeddings.create).parameters)
+    unknown = set(calls[0]) - sdk_params
+    assert not unknown, f"_embed_batch sends kwargs the real SDK rejects: {unknown}"
 

@@ -36,12 +36,11 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
 
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
-                 rate_limit_rps: float | None = None, service_tier: str | None = None,
+                 rate_limit_rps: float | None = None,
                  max_parallel_requests: int | None = None, max_retries: int | None = None):
         import threading
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         base_url = base_url or os.getenv("OPENAI_BASE_URL")
-        self.service_tier: str | None = service_tier or os.getenv("OPENAI_SERVICE_TIER")
         # Legacy fixed-interval throttle state. No longer used by __call__
         # (which now goes through AdaptiveRateLimiter via RemoteEmbeddingFunction),
         # but kept because tests/test_openai_embedding_batching.py calls
@@ -76,8 +75,6 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     def get_config(self) -> dict[str, Any]:
         cfg = {"model_name": self.model_name, "base_url": self.base_url}
         cfg.update(self._common_config())
-        if getattr(self, "service_tier", None):
-            cfg["service_tier"] = self.service_tier
         return cfg
 
     @staticmethod
@@ -88,7 +85,6 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             base_url=config.get("base_url"),
             request_batch_size=config.get("request_batch_size"),
             rate_limit_rps=config.get("rate_limit_rps"),
-            service_tier=config.get("service_tier"),
             max_parallel_requests=config.get("max_parallel_requests"),
             max_retries=config.get("max_retries"),
         )
@@ -119,15 +115,18 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         the SDK then raises "No embedding data received" intermittently. Forcing
         float makes every OpenAI-compatible backend, native OpenAI included,
         respond deterministically.
+
+        No ``service_tier`` is ever sent: OpenAI's flex processing does not
+        cover the embeddings endpoint (only Responses/Chat Completions), and
+        the SDK's ``embeddings.create`` rejects the kwarg with a TypeError.
+        The 50%-discount path for embeddings is the Batch API
+        (``openai_batch.py``).
         """
-        req_kwargs = {
-            "model": self.model_name,
-            "input": texts,
-            "encoding_format": "float",
-        }
-        if getattr(self, "service_tier", None):
-            req_kwargs["service_tier"] = self.service_tier
-        response = self.client.embeddings.create(**req_kwargs)
+        response = self.client.embeddings.create(
+            model=self.model_name,
+            input=texts,
+            encoding_format="float",
+        )
         return [data.embedding for data in response.data]
 
     def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:

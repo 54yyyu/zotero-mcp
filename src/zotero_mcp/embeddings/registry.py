@@ -126,7 +126,6 @@ def _openai_ef_factory(config: dict[str, Any]) -> Any:
         base_url=config.get("base_url"),
         request_batch_size=config.get("request_batch_size"),
         rate_limit_rps=config.get("rate_limit_rps"),
-        service_tier=config.get("service_tier"),
         max_parallel_requests=config.get("max_parallel_requests"),
         max_retries=config.get("max_retries"),
     )
