@@ -244,9 +244,10 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
                 raise
             else:
                 http_ms = (time.monotonic() - t0) * 1000.0
-                limiter.on_success()
+                limiter.on_success(headers)
                 self._log_telemetry(len(texts), estimated_tokens, http_ms, limiter_wait_ms, headers)
                 return result
+
 
     def _log_telemetry(
         self,

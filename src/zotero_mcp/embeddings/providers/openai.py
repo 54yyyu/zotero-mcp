@@ -58,13 +58,19 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             raise ValueError("OpenAI API key is required")
 
         try:
+            import httpx
             import openai
-            client_kwargs = {"api_key": self.api_key}
+            http_client = httpx.Client(
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            client_kwargs = {"api_key": self.api_key, "http_client": http_client}
             if base_url:
                 client_kwargs["base_url"] = base_url
             self.client = openai.OpenAI(**client_kwargs)
         except ImportError:
             raise ImportError("openai package is required for OpenAI embeddings")
+
 
         self._init_common(
             model_name=model_name,

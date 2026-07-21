@@ -124,11 +124,13 @@ class AdaptiveRateLimiter:
         if wait > 0:
             self._sleep(wait)
 
-    def on_success(self) -> None:
+    def on_success(self, headers: Any | None = None) -> None:
         """Additive increase: current rate(s) creep up toward their max.
 
         No-op per dimension while that dimension is unarmed — an unthrottled
         provider has no rate to creep, it just keeps running at native speed.
+        If provider headers indicate ample token headroom (>30% remaining),
+        refill the local token bucket so parallel workers are not held back.
         """
         with self._lock:
             if self._rps is not None:
@@ -141,7 +143,25 @@ class AdaptiveRateLimiter:
                 self._tps = self._tps + increment
                 if self._max_tps is not None:
                     self._tps = min(self._tps, self._max_tps)
+
+                if headers and hasattr(headers, "get"):
+                    get_h = lambda k: headers.get(k) or headers.get(k.lower()) or headers.get(k.title())
+                    try:
+                        rem_val = get_h("x-ratelimit-remaining-tokens")
+                        lim_val = get_h("x-ratelimit-limit-tokens")
+                        if rem_val is not None and lim_val is not None:
+                            rem_tok = float(rem_val)
+                            lim_tok = float(lim_val)
+                            if lim_tok > 0 and (rem_tok / lim_tok) > 0.3:
+                                self._token_bucket = min(
+                                    self._token_capacity,
+                                    self._token_bucket + (self._token_capacity * 0.5),
+                                )
+                    except (ValueError, TypeError):
+                        pass
+
             self._consecutive_throttles = 0
+
 
     def on_throttle(self, retry_after: float | None) -> float:
         """Multiplicative decrease; returns the delay the caller should sleep.
