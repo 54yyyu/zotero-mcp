@@ -91,7 +91,7 @@ def test_extract_fulltext_uses_vtt_when_only_attachment(tmp_path):
     result = reader._extract_fulltext_for_item(item_id=1)
 
     assert result is not None
-    text, source = result
+    text, source, _was_cached = result
     assert "Introduction to the topic" in text
     assert source == "file"
 
@@ -114,7 +114,7 @@ def test_extract_fulltext_prefers_pdf_over_textual(tmp_path):
         ],
         fake_path_for={"PDF0001": pdf, "TXT0001": txt},
     )
-    text, source = reader._extract_fulltext_for_item(item_id=1)
+    text, source, _was_cached = reader._extract_fulltext_for_item(item_id=1)
     assert text == "PDF content extracted"
     assert source == "pdf"
 
@@ -126,7 +126,7 @@ def test_extract_fulltext_falls_back_to_textual_when_no_pdf_html(tmp_path):
         attachments=[("T0001", "storage:transcript.txt", "text/plain")],
         fake_path_for={"T0001": txt},
     )
-    text, source = reader._extract_fulltext_for_item(item_id=1)
+    text, source, _was_cached = reader._extract_fulltext_for_item(item_id=1)
     assert text == "transcript body"
     assert source == "file"
 

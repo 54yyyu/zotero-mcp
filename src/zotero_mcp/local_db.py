@@ -110,6 +110,7 @@ class ZoteroItem:
     item_id: int
     key: str
     item_type_id: int
+    library_id: int = 1
     item_type: str | None = None
     doi: str | None = None
     title: str | None = None
@@ -163,7 +164,22 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
 
-    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None, pdf_timeout: int = 30):
+    # Class-level fallbacks so subclasses that bypass __init__ (test stubs do
+    # this) still work — with the transient fulltext cache OFF, so they can
+    # never write into the user's real cache directory.
+    extraction_workers: int = 1
+    fulltext_cache_enabled: bool = False
+    config_path: str | None = None
+
+    def __init__(
+        self,
+        db_path: str | None = None,
+        pdf_max_pages: int | None = None,
+        pdf_timeout: int = 30,
+        extraction_workers: int = 1,
+        fulltext_cache_enabled: bool = True,
+        config_path: str | None = None,
+    ):
         """
         Initialize the local database reader.
 
@@ -171,11 +187,23 @@ class LocalZoteroReader:
             db_path: Optional path to zotero.sqlite. If None, auto-detect.
             pdf_max_pages: Maximum pages to extract from PDFs.
             pdf_timeout: Seconds to wait for PDF extraction before killing the process.
+            extraction_workers: How many extractions may run concurrently.
+                1 (the default) keeps the historical fully sequential behavior;
+                higher values let the caller drive extract_fulltext_for_item
+                from a thread pool (each PDF already runs in its own
+                subprocess, so N threads means N parallel child processes).
+            fulltext_cache_enabled: Whether to read/write the transient
+                plain-text cache (see fulltext_cache module).
+            config_path: Semantic-search config path, used only to locate the
+                fulltext cache directory next to it.
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
         self.pdf_timeout: int = pdf_timeout
+        self.extraction_workers: int = max(1, int(extraction_workers or 1))
+        self.fulltext_cache_enabled: bool = fulltext_cache_enabled
+        self.config_path: str | None = config_path
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -248,7 +276,10 @@ class LocalZoteroReader:
             # even read-only connections. immutable=1 skips all lock checks —
             # safe here since we only read and tolerate slightly stale data.
             uri = f"file:{self.db_path}?immutable=1"
-            self._connection = sqlite3.connect(uri, uri=True)
+            # check_same_thread=False lets extraction worker threads share the
+            # connection. Safe here: the connection is immutable/read-only and
+            # every query fully consumes its own cursor within one call.
+            self._connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
             self._connection.row_factory = sqlite3.Row
         return self._connection
 
@@ -562,7 +593,9 @@ class LocalZoteroReader:
         # rather than a stub or thumbnail.
         return max(candidates, key=lambda p: p.stat().st_size)
 
-    def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
+    def _extract_fulltext_for_item(
+        self, item_id: int, item_key: str | None = None
+    ) -> tuple[str, str, bool] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference order:
@@ -575,16 +608,22 @@ class LocalZoteroReader:
         If the sqlite-recorded filename doesn't resolve on disk, scan the
         attachment's storage folder for a content-type-matching file before
         giving up (#291, #265).
+
+        Returns ``(text, source, was_cached)`` where ``was_cached`` is True
+        when the text came from the transient fulltext cache (a previous run
+        extracted it but its embedding never landed). ``item_key`` is the
+        parent item's Zotero key, recorded in the cache so entries can be
+        evicted once the item is successfully embedded.
         """
         # 1. Zotero's own full-text cache — use it whenever present.
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
             cached = self._read_zotero_ft_cache(key)
             if cached:
-                return (cached, "zotero-cache")
+                return (cached, "zotero-cache", True)
 
-        best_pdf = None
-        best_html = None
-        best_other = None
+        best_pdf: tuple[Path, str] | None = None
+        best_html: tuple[Path, str] | None = None
+        best_other: tuple[Path, str] | None = None
         for key, path, ctype in self._iter_parent_attachments(item_id):
             resolved = self._resolve_attachment_path(key, path or "")
             if not resolved or not resolved.exists():
@@ -593,23 +632,63 @@ class LocalZoteroReader:
                 if not resolved or not resolved.exists():
                     continue
             if ctype == "application/pdf" and best_pdf is None:
-                best_pdf = resolved
+                best_pdf = (resolved, key)
             elif (ctype or "").startswith("text/html") and best_html is None:
-                best_html = resolved
+                best_html = (resolved, key)
             elif best_other is None and self._is_extractable_attachment(resolved, ctype):
-                best_other = resolved
+                best_other = (resolved, key)
         # Prefer PDF, then HTML, then any extractable text file.
-        target = best_pdf or best_html or best_other
-        if not target:
+        chosen = best_pdf or best_html or best_other
+        if not chosen:
             return None
+        target, attachment_key = chosen
+
+        # 2. Transient plain-text cache: a previous run already extracted this
+        # exact file (same mtime/size, same page cap) but its embedding never
+        # completed.
+        stat = None
+        cache_profile = f"maxpages={self.pdf_max_pages}"
+        if self.fulltext_cache_enabled:
+            from . import fulltext_cache
+
+            try:
+                stat = target.stat()
+            except OSError:
+                stat = None
+            if stat is not None:
+                hit = fulltext_cache.get_cached_text(
+                    attachment_key,
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    profile=cache_profile,
+                    config_path=self.config_path,
+                )
+                if hit is not None:
+                    return (hit[0], hit[1], True)
+
         text = self._extract_text_from_file(target)
         if text == _EXTRACTION_TIMEOUT:
-            return (_EXTRACTION_TIMEOUT, "timeout")
+            return (_EXTRACTION_TIMEOUT, "timeout", False)
         if not text:
             return None
         # Determine source type
         source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
-        return (text, source)
+        if self.fulltext_cache_enabled and stat is not None:
+            try:
+                fulltext_cache.put_cached_text(
+                    attachment_key,
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    source=source,
+                    item_key=item_key,
+                    text=text,
+                    path=str(target),
+                    profile=cache_profile,
+                    config_path=self.config_path,
+                )
+            except Exception as e:
+                logger.debug(f"Could not cache fulltext for {attachment_key}: {e}")
+        return (text, source, False)
 
     def close(self):
         """Close database connection."""
@@ -778,6 +857,7 @@ class LocalZoteroReader:
         SELECT
             i.itemID,
             i.key,
+            i.libraryID,
             i.itemTypeID,
             it.typeName as item_type,
             i.dateAdded,
@@ -851,7 +931,7 @@ class LocalZoteroReader:
             params.append(key_filter)
 
         query += """
-        GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
+        GROUP BY i.itemID, i.key, i.libraryID, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
                  title_val.value, abstract_val.value, extra_val.value
 
         ORDER BY i.dateModified DESC
@@ -868,6 +948,7 @@ class LocalZoteroReader:
             item = ZoteroItem(
                 item_id=row['itemID'],
                 key=row['key'],
+                library_id=row['libraryID'],
                 item_type_id=row['itemTypeID'],
                 item_type=row['item_type'],
                 doi=row['doi'],
@@ -891,8 +972,10 @@ class LocalZoteroReader:
         return self._get_fulltext_meta_for_item(item_id)
 
     # Public helper to extract fulltext on demand for a specific item
-    def extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
-        return self._extract_fulltext_for_item(item_id)
+    def extract_fulltext_for_item(
+        self, item_id: int, item_key: str | None = None
+    ) -> tuple[str, str, bool] | None:
+        return self._extract_fulltext_for_item(item_id, item_key=item_key)
 
     def get_attachment_paths(self, parent_key: str) -> list[dict]:
         """Return resolved filesystem paths for a parent item's attachments.

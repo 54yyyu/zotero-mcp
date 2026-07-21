@@ -1,10 +1,27 @@
 """
 Semantic search functionality for Zotero MCP.
 
-This module provides semantic search capabilities by integrating ChromaDB
-with the existing Zotero client to enable vector-based similarity search
-over research libraries.
+Integrates ChromaDB with the Zotero client to provide vector-based similarity search over research libraries. ``ZoteroSemanticSearch`` is the main entry point; ``update_database()`` runs the indexing pipeline described below.
+
+Architecture
+============
+
+Two Modes
+---------
+- **Realtime** (default): Prepares items, generates embeddings, and streams vector commits directly into ChromaDB.
+- **Batch API** (opt-in): Assembles records for asynchronous submission to OpenAI/Gemini batch APIs at ~50% cost.
+
+Realtime Pipeline Stages
+-------------------------
+1. **Fetch & Extract**: Retrieves candidate items from Zotero (local DB or Web API) and extracts text from cached PDFs/EPUBs.
+2. **Record Preparation**: Builds metadata and splits item text into passage chunks (`chunk_size`, `overlap`, `max_chunks_per_item`).
+3. **Queue-Based Streaming Execution**:
+   - **Producer**: Processes items, classifies existing keys in ChromaDB, and pushes chunk sub-batches to ``chunk_queue``.
+   - **Workers** (concurrent `ThreadPoolExecutor`): Fetch sub-batches, request embeddings in parallel from the provider API, and push vectors to ``vector_queue``.
+   - **Chroma Committer**: Collects vectors, bulk-upserts embeddings to ChromaDB, and updates indexing progress.
+4. **Failure Recovery**: Any sub-batches or upserts that fail are collected in `_failed_docs` and retried after the main loop finishes.
 """
+
 
 import contextlib
 import json
@@ -13,26 +30,75 @@ import os
 import re
 import sys
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-try:
-    import tiktoken
-
-    _tokenizer = tiktoken.get_encoding("cl100k_base")
-except Exception:
-    tiktoken = None
-    _tokenizer = None
-
-
-from . import openai_batch
+from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
+from .embeddings.registry import batch_capable_providers
 from .local_db import LocalZoteroReader
+from .progress import ConsecutiveFailureBreaker, ExtractionProgress
 from .utils import format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
+
+
+# Provider-specific knobs for the shared Batch API flows (_submit_batch_index,
+# _get_batch_status, _import_batch). Lambdas do module-attribute lookups at
+# call time so tests can monkeypatch e.g. ``openai_batch.find_manifest``.
+# ``importable_states``/``terminal_states`` are the shared normalized-state
+# sets (batch_common.STATE_*); decision logic must compare against them via
+# ``_entry_state(ops, batch)`` rather than the raw ``status`` field, since
+# pre-refactor manifests on disk carry raw provider strings with no ``state``.
+_BATCH_PROVIDER_OPS: dict[str, dict[str, Any]] = {
+    "openai": {
+        "module": openai_batch,
+        "label": "OpenAI",
+        "default_model": "text-embedding-3-small",
+        "importable_states": batch_common.IMPORTABLE_STATES,
+        "terminal_states": batch_common.TERMINAL_STATES,
+        "importable_desc": "completed",
+        "create_client": lambda cfg: openai_batch.create_openai_client(cfg),
+        "download_output": lambda client, batch, path: openai_batch.download_file_text(
+            client, batch["output_file_id"], path
+        ),
+        "parse_output": lambda text, id_order: openai_batch.parse_embedding_output(text),
+        "uses_error_file": True,
+        "default_max_enqueued_tokens": openai_batch.OPENAI_BATCH_MAX_ENQUEUED_TOKENS,
+        "normalize_status": lambda status: openai_batch.ADAPTER.normalize_status(status),
+    },
+    "gemini": {
+        "module": gemini_batch,
+        "label": "Gemini",
+        "default_model": "gemini-embedding-001",
+        "importable_states": batch_common.IMPORTABLE_STATES,
+        "terminal_states": batch_common.TERMINAL_STATES,
+        "importable_desc": "succeeded",
+        "create_client": lambda cfg: gemini_batch.create_gemini_client(cfg),
+        "download_output": lambda client, batch, path: gemini_batch.download_results(client, batch, path),
+        "parse_output": lambda text, id_order: gemini_batch.parse_embedding_output(text, id_order),
+        "uses_error_file": False,
+        "default_max_enqueued_tokens": gemini_batch.GEMINI_BATCH_MAX_ENQUEUED_TOKENS,
+        "normalize_status": lambda status: gemini_batch.ADAPTER.normalize_status(status),
+    },
+}
+
+
+def _entry_state(ops: dict[str, Any], batch: dict[str, Any]) -> str:
+    """Normalized state for a manifest entry.
+
+    Recomputed from the raw ``status`` whenever one is present (rather than
+    trusting a cached ``state``, which can go stale relative to ``status`` —
+    e.g. tests that mutate ``batch["status"]`` directly to simulate an SDK
+    transition without updating ``state`` too). Falls back to a cached
+    ``state`` only for the degenerate case of an entry with no ``status``.
+    """
+    if "status" in batch:
+        return ops["normalize_status"](batch["status"])
+    return batch.get("state") or ops["normalize_status"](None)
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -119,23 +185,40 @@ def _acquire_update_lock(lock_path: Path):
             fd.close()
 
 
-def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
-    """Truncate text to fit within embedding model token limit.
+def _report(message: str) -> None:
+    """Write a progress/status message to stderr, never failing the caller."""
+    try:
+        if logging.getLogger().isEnabledFor(logging.INFO):
+            if message.startswith("\r"):
+                message = message.lstrip("\r").rstrip("\r")
+                if not message.strip():
+                    return
+                if not message.endswith("\n"):
+                    message = message + "\n"
+        sys.stderr.write(message)
+        sys.stderr.flush()
+    except Exception:
+        pass
 
-    Uses tiktoken for accurate token counting when available,
-    falls back to conservative character-based estimation.
+
+
+def _realtime_slice_size(embedding_function: Any) -> int:
+    """How many items the realtime indexing loop hands to one
+    ``_process_item_batch``/``upsert_documents`` call at a time.
+
+    The base size of 25 keeps one request-group under ~200k estimated tokens
+    (25 × 8000 max tokens/item), comfortably inside OpenAI's ~300k
+    token-per-request limit. ``RemoteEmbeddingFunction`` subclasses with
+    ``max_parallel_requests > 1`` run a ``ThreadPoolExecutor`` internally, so a
+    25-item slice would starve all but one worker thread; scaling the slice
+    by parallelism keeps that pool fed. The result is capped at 200 so a
+    single slice's estimated token total stays bounded and progress reporting
+    (which prints per item within a slice) doesn't go long stretches without
+    an update. ChromaDB's own upsert batching splits any oversized slice
+    further as needed.
     """
-    if _tokenizer is not None:
-        tokens = _tokenizer.encode(text, disallowed_special=())
-        if len(tokens) > max_tokens:
-            tokens = tokens[:max_tokens]
-            text = _tokenizer.decode(tokens)
-    else:
-        # Fallback: conservative char limit (~1.5 chars/token for non-Latin scripts)
-        max_chars = max_tokens * 2
-        if len(text) > max_chars:
-            text = text[:max_chars]
-    return text
+    ef_parallel = getattr(embedding_function, "max_parallel_requests", 1) or 1
+    return min(25 * max(1, ef_parallel), 200)
 
 
 _DEFAULT_UPDATE_CONFIG = {
@@ -349,6 +432,9 @@ class CrossEncoderReranker:
     """Optional cross-encoder re-ranker for semantic search results."""
 
     def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        """Load the cross-encoder model. Blocking (downloads/loads weights on
+        first use) — call via `get_cached_reranker`/`warmup_reranker` rather
+        than constructing directly in a request path."""
         from sentence_transformers import CrossEncoder
 
         self.model = CrossEncoder(model_name)
@@ -433,6 +519,10 @@ class ZoteroSemanticSearch:
         # indexing and existing collections byte-for-byte).
         self._chunking_config = self._load_chunking_config()
 
+        # Transient fulltext cache (on by default; survives failed embedding
+        # runs so extraction is never redone — see fulltext_cache module).
+        self._fulltext_cache_config = self._load_fulltext_cache_config()
+
     def _load_chunking_config(self) -> dict[str, Any]:
         """Load passage-chunking configuration from file or use defaults.
 
@@ -458,6 +548,7 @@ class ZoteroSemanticSearch:
 
     @property
     def _chunking_enabled(self) -> bool:
+        """Whether passage chunking (`semantic_search.chunking.enabled`) is on."""
         return bool(self._chunking_config.get("enabled", False))
 
     def _load_reranker_config(self) -> dict[str, Any]:
@@ -502,8 +593,46 @@ class ZoteroSemanticSearch:
             logger.warning(f"Error loading include_fulltext setting: {e}")
             return True
 
-    def _load_openai_batch_enabled(self) -> bool:
-        """Whether OpenAI Batch API indexing is enabled by semantic config."""
+    def _get_fulltext_cache_config(self) -> dict[str, Any]:
+        """Fulltext cache config, tolerating instances built via
+        object.__new__ (some tests construct ZoteroSemanticSearch that way,
+        bypassing __init__ and its attribute set-up)."""
+        config = getattr(self, "_fulltext_cache_config", None)
+        if config is None:
+            config = self._load_fulltext_cache_config()
+            self._fulltext_cache_config = config
+        return config
+
+    def _load_fulltext_cache_config(self) -> dict[str, Any]:
+        """Load transient fulltext cache configuration (on by default)."""
+        config: dict[str, Any] = {"enabled": True, "max_age_days": 30}
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    config.update(json.load(f).get("semantic_search", {}).get("fulltext_cache", {}))
+            except Exception as e:
+                logger.warning(f"Error loading fulltext_cache config: {e}")
+        return config
+
+    def _evict_fulltext_cache(self, item_keys) -> int:
+        """Drop cache entries for items whose embeddings are now stored.
+
+        Best-effort: eviction failures must never fail an indexing run.
+        """
+        if not self._get_fulltext_cache_config().get("enabled", True):
+            return 0
+        try:
+            return fulltext_cache.evict_many(item_keys, config_path=self.config_path)
+        except Exception as e:
+            logger.debug(f"Fulltext cache eviction failed: {e}")
+            return 0
+
+    def _load_batch_enabled(self, provider: str) -> bool:
+        """Whether Batch API indexing for a provider is enabled by config.
+
+        Reads `semantic_search.<provider>_batch.enabled` ("openai_batch" /
+        "gemini_batch" — provider-specific sibling keys, no migration needed).
+        """
         if not self.config_path or not os.path.exists(self.config_path):
             return False
         try:
@@ -512,18 +641,115 @@ class ZoteroSemanticSearch:
                 value = (
                     file_config
                     .get("semantic_search", {})
-                    .get("openai_batch", {})
+                    .get(f"{provider}_batch", {})
                     .get("enabled", False)
                 )
                 return bool(value)
         except Exception as e:
-            logger.warning(f"Error loading OpenAI batch setting: {e}")
+            logger.warning(f"Error loading {provider} batch setting: {e}")
             return False
+
+    def _load_batch_throttle_config(self, provider: str) -> dict[str, Any]:
+        """Read throttling limits for a provider's Batch API submissions.
+
+        `semantic_search.<provider>_batch.batch_max_enqueued_tokens` caps how
+        many estimated tokens may be queued with the provider at once — the
+        quota whose violation surfaces as 429 RESOURCE_EXHAUSTED on large
+        chunked libraries. `batch_max_requests` caps requests per uploaded
+        JSONL file. Defaults are safe Tier 1 limits; raise them in config (or
+        via CLI flags) on higher tiers.
+        """
+        config: dict[str, Any] = {
+            "batch_max_enqueued_tokens": _BATCH_PROVIDER_OPS[provider]["default_max_enqueued_tokens"],
+            "batch_max_requests": 50_000,
+        }
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f)
+                block = file_config.get("semantic_search", {}).get(f"{provider}_batch", {})
+                for key in config:
+                    if block.get(key) is not None:
+                        config[key] = int(block[key])
+            except Exception as e:
+                logger.warning(f"Error loading {provider} batch throttle config: {e}")
+        return config
+
+    def _resolve_batch_enabled(self, provider: str, override: bool | None) -> bool:
+        """Resolve CLI override + config default for a provider's batch indexing.
+
+        ``override`` wins when given; otherwise falls back to
+        `semantic_search.<provider>_batch.enabled`. Either way, batch mode is
+        only actually active when the configured embedding model matches
+        ``provider`` — selecting a provider whose embedding space isn't the
+        one actually configured would submit requests built from the wrong
+        provider's config (see ``_submit_batch_index``, which reads
+        ``self.chroma_client.embedding_config`` directly).
+        """
+        requested = self._load_batch_enabled(provider) if override is None else override
+        return bool(requested and self.chroma_client.embedding_model == provider)
+
+    def _resolve_batch_mode(
+        self,
+        use_batch: bool | None = None,
+        batch_provider: str | None = None,
+        use_openai_batch: bool | None = None,
+        use_gemini_batch: bool | None = None,
+    ) -> tuple[bool, str]:
+        """Resolve which provider (if any) runs the Batch API this run.
+
+        Returns ``(enabled, provider)``. Priority: explicit ``batch_provider``
+        > explicit ``use_batch`` > legacy ``use_openai_batch``/
+        ``use_gemini_batch`` > per-provider config defaults.
+
+        An explicit ``batch_provider`` that doesn't match the configured
+        embedding model is an error, not a silent realtime fallback — batch
+        submission builds requests from this model's embedding_config, so
+        honoring the request is impossible (the CLI validates the legacy
+        per-provider flags the same way). ``use_batch=False`` still forces
+        realtime mode without dropping the explicit provider choice.
+        """
+        providers_with_batch = batch_capable_providers()
+        if batch_provider is not None and batch_provider not in providers_with_batch:
+            raise ValueError(
+                f"Unknown batch_provider {batch_provider!r}; must be one of "
+                f"{providers_with_batch} (providers with Batch API support)."
+            )
+        if batch_provider is not None:
+            if use_batch is False:
+                return False, batch_provider
+            if self.chroma_client.embedding_model != batch_provider:
+                raise ValueError(
+                    f"batch_provider={batch_provider!r} requires embedding_model "
+                    f"{batch_provider!r}, but '{self.chroma_client.embedding_model}' "
+                    "is configured."
+                )
+            return True, batch_provider
+        if use_batch is not None:
+            # Generic on/off toggle with no explicit provider: infer the
+            # provider from the configured embedding model.
+            model = self.chroma_client.embedding_model
+            if use_batch and model not in providers_with_batch:
+                raise ValueError(
+                    f"use_batch=True requires a batch-capable embedding_model; "
+                    f"'{model}' has no Batch API support (supported: {providers_with_batch})."
+                )
+            provider = model if model in providers_with_batch else providers_with_batch[0]
+            return self._resolve_batch_enabled(provider, use_batch), provider
+        # Nothing explicit: legacy per-provider config-driven resolution,
+        # unchanged from pre-Phase-4 behavior.
+        resolved_openai = self._resolve_batch_enabled("openai", use_openai_batch)
+        resolved_gemini = self._resolve_batch_enabled("gemini", use_gemini_batch)
+        provider = "openai" if resolved_openai else "gemini"
+        return resolved_openai or resolved_gemini, provider
 
     def _resolve_openai_batch_enabled(self, use_openai_batch: bool | None) -> bool:
         """Resolve CLI override + config default for OpenAI batch indexing."""
-        requested = self._load_openai_batch_enabled() if use_openai_batch is None else use_openai_batch
-        return bool(requested and self.chroma_client.embedding_model == "openai")
+        return self._resolve_batch_enabled("openai", use_openai_batch)
+
+    def _resolve_gemini_batch_enabled(self, use_gemini_batch: bool | None) -> bool:
+        """Resolve CLI override + config default for Gemini batch indexing."""
+        return self._resolve_batch_enabled("gemini", use_gemini_batch)
 
     def _load_last_sync_version(self) -> int:
         """Last Zotero library version fully indexed into ChromaDB.
@@ -620,8 +846,6 @@ class ZoteroSemanticSearch:
         # Note content (if available)
         if note := data.get("note"):
             # Clean HTML from notes
-            import re
-
             note_text = re.sub(r"<[^>]+>", "", note)
             extra_fields.append(note_text)
 
@@ -717,6 +941,7 @@ class ZoteroSemanticSearch:
         chroma_client: ChromaClient | None = None,
         force_rebuild: bool = False,
         include_fulltext_via_api: bool = False,
+        extraction_workers: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
@@ -748,7 +973,11 @@ class ZoteroSemanticSearch:
                     "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode."
                 )
             return self._get_items_from_local_db(
-                limit, extract_fulltext=extract_fulltext, chroma_client=chroma_client, force_rebuild=force_rebuild
+                limit,
+                extract_fulltext=extract_fulltext,
+                chroma_client=chroma_client,
+                force_rebuild=force_rebuild,
+                extraction_workers=extraction_workers,
             )
         else:
             return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
@@ -759,6 +988,7 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
         chroma_client: ChromaClient | None = None,
         force_rebuild: bool = False,
+        extraction_workers: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get items from local Zotero database.
@@ -768,6 +998,8 @@ class ZoteroSemanticSearch:
             extract_fulltext: Whether to extract fulltext content
             chroma_client: ChromaDB client to check for existing documents (None to skip checks)
             force_rebuild: Whether to force extraction even if item exists
+            extraction_workers: Concurrent PDF extractions (CLI override);
+                None falls back to `semantic_search.extraction.workers` (default 1)
 
         Returns:
             List of items in API-compatible format
@@ -778,6 +1010,7 @@ class ZoteroSemanticSearch:
             # Load per-run config, including extraction limits and db path if provided
             pdf_max_pages = None
             pdf_timeout = 30
+            config_workers = 1
             zotero_db_path = self.db_path  # CLI override takes precedence
             collection_keys = None
             # If semantic_search config file exists, prefer its setting
@@ -789,6 +1022,7 @@ class ZoteroSemanticSearch:
                         extraction_cfg = semantic_cfg.get("extraction", {})
                         pdf_max_pages = extraction_cfg.get("pdf_max_pages")
                         pdf_timeout = extraction_cfg.get("pdf_timeout", 30)
+                        config_workers = extraction_cfg.get("workers", 1)
                         collection_keys = semantic_cfg.get("collection_keys")
                         # Use config db_path only if no CLI override
                         if not zotero_db_path:
@@ -796,29 +1030,72 @@ class ZoteroSemanticSearch:
             except Exception:
                 pass
 
+            if extraction_workers is None:
+                extraction_workers = config_workers
+            try:
+                extraction_workers = int(extraction_workers)
+            except (TypeError, ValueError):
+                extraction_workers = 1
+            # Cap the pool: each worker holds one pdfminer subprocess, and
+            # oversubscribing cores just thrashes memory for no throughput.
+            extraction_workers = max(1, min(extraction_workers, os.cpu_count() or 4, 8))
+
+            fulltext_cache_enabled = bool(self._get_fulltext_cache_config().get("enabled", True))
+
             with (
                 suppress_stdout(),
                 LocalZoteroReader(
-                    db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, pdf_timeout=pdf_timeout
+                    db_path=zotero_db_path,
+                    pdf_max_pages=pdf_max_pages,
+                    pdf_timeout=pdf_timeout,
+                    extraction_workers=extraction_workers,
+                    fulltext_cache_enabled=fulltext_cache_enabled,
+                    config_path=self.config_path,
                 ) as reader,
             ):
+                # Phase 1: fetch metadata from local Zotero sqlite database
+                sys.stderr.write("Scanning local Zotero database for items...\n")
+                if collection_keys:
+                    sys.stderr.write(f"Filtering to collections: {collection_keys}\n")
+                sys.stderr.flush()
+
                 # Capture the snapshot's full key set on the SAME connection
                 # this scan uses. The staleness check after the (potentially
                 # long) extraction must compare against what this scan could
                 # actually see — a fresh read taken later could already
                 # include rows from a WAL checkpoint that landed mid-scan.
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
-                # Phase 1: fetch metadata only (fast)
-                sys.stderr.write("Scanning local Zotero database for items...\n")
-                if collection_keys:
-                    sys.stderr.write(f"Filtering to collections: {collection_keys}\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False, collection_keys=collection_keys)
                 candidate_count = len(local_items)
-                sys.stderr.write(f"Found {candidate_count} candidate items.\n")
+
+                # Format breakdown by library type (personal library vs group libraries)
+                user_items = 0
+                group_counts: dict[int, int] = {}
+                for it in local_items:
+                    lib_id = getattr(it, "library_id", 1)
+                    if lib_id == 1:
+                        user_items += 1
+                    else:
+                        group_counts[lib_id] = group_counts.get(lib_id, 0) + 1
+
+                if user_items and group_counts:
+                    group_word = "group" if len(group_counts) == 1 else "groups"
+                    breakdown_str = f" (including your personal library and {len(group_counts)} {group_word})"
+                elif group_counts:
+                    group_word = "group" if len(group_counts) == 1 else "groups"
+                    breakdown_str = f" (across {len(group_counts)} {group_word})"
+                elif user_items:
+                    breakdown_str = " (from your personal library)"
+                else:
+                    breakdown_str = ""
+
+                sys.stderr.write(f"Found {candidate_count} candidate items{breakdown_str}.\n")
+                sys.stderr.flush()
 
                 # Optional deduplication: if preprint and journalArticle share a DOI/title, keep journalArticle
                 # Build index by (normalized DOI or normalized title)
                 def norm(s: str | None) -> str | None:
+                    """Whitespace/case-fold a DOI or title for dedup-key comparison."""
                     if not s:
                         return None
                     return "".join(s.lower().split())
@@ -829,6 +1106,8 @@ class ZoteroSemanticSearch:
                     title_key = ("title", norm(getattr(it, "title", None))) if getattr(it, "title", None) else None
 
                     def consider(k):
+                        """Record `it` as the best candidate seen so far for
+                        dedup key `k`, preferring journalArticle over preprint."""
                         if not k:
                             return
                         cur = key_to_best.get(k)
@@ -871,53 +1150,41 @@ class ZoteroSemanticSearch:
                 local_items = filtered_items
                 total_to_extract = len(local_items)
                 if total_to_extract != candidate_count:
-                    try:
-                        sys.stderr.write(
-                            f"After filtering/dedup: {total_to_extract} items to process. Extracting content...\n"
-                        )
-                    except Exception:
-                        pass
+                    _report(
+                        f"After filtering/dedup: {total_to_extract} items to process. Extracting PDF and EPUB full text...\n"
+                    )
                 else:
-                    try:
-                        sys.stderr.write("Extracting content...\n")
-                    except Exception:
-                        pass
-
+                    _report("Extracting PDF and EPUB full text...\n")
                 # Phase 2: selectively extract fulltext only when requested
                 if extract_fulltext:
-                    extracted = 0
-                    skipped_existing = 0
                     updated_existing = 0
                     items_to_process = []
+                    to_extract: list[tuple[Any, str]] = []  # (item, display)
 
-                    consecutive_timeouts = 0
                     MAX_CONSECUTIVE_TIMEOUTS = 5
-                    _extraction_stopped = False  # Set True when circuit breaker trips
+                    breaker = ConsecutiveFailureBreaker(MAX_CONSECUTIVE_TIMEOUTS)
 
                     total_local = len(local_items)
                     _skipped_pdfs = []  # Collect timeout/error names for summary
                     _skipped_failed = []  # Items skipped because extraction previously failed
+                    progress = ExtractionProgress(total_local)
 
                     # Show startup note
-                    try:
-                        sys.stderr.write(
-                            "\n  Note: Most papers take 1-3 seconds. Some larger or complex PDFs\n"
-                            "  may take up to 30 seconds. Password-protected or corrupted files\n"
-                            "  will be skipped automatically. The system moves on to the next\n"
-                            "  paper if a file can't be processed in time.\n\n"
-                        )
-                        sys.stderr.flush()
-                    except Exception:
-                        pass
-
+                    _report(
+                        "\n  Note: Most papers take 1-3 seconds. Some larger or complex PDFs\n"
+                        "  may take up to 30 seconds. Password-protected or corrupted files\n"
+                        "  will be skipped automatically. The system moves on to the next\n"
+                        "  paper if a file can't be processed in time.\n\n"
+                    )
                     # Temporarily suppress local_db logger to prevent timeout warnings
                     # from disrupting the progress line — we collect them ourselves
                     _local_db_logger = logging.getLogger("zotero_mcp.local_db")
                     _prev_level = _local_db_logger.level
                     _local_db_logger.setLevel(logging.CRITICAL)
 
-                    for item_idx, it in enumerate(local_items, 1):
-                        # Build display string: Author (Year) — Title
+                    def _display_for(it) -> str:
+                        """Build the "Author (Year) — Title" string shown in
+                        extraction progress output for one item."""
                         title = getattr(it, "title", "") or ""
                         creators = getattr(it, "creators", "") or ""
                         date = getattr(it, "date_added", "") or ""
@@ -937,36 +1204,12 @@ class ZoteroSemanticSearch:
                         display = f"{citation}{title}"
                         if len(display) > 60:
                             display = display[:57] + "..."
+                        return display
 
-                        # Single-line progress with \r overwrite
-                        # MUST fit within terminal width to prevent wrapping
-                        try:
-                            try:
-                                term_width = os.get_terminal_size().columns
-                            except (OSError, ValueError):
-                                term_width = 80
-                            # Build the line and truncate to terminal width - 1
-                            # (- 1 to prevent the cursor from wrapping to next line)
-                            max_len = term_width - 1
-                            status_parts = []
-                            if skipped_existing > 0:
-                                status_parts.append(f"{skipped_existing} up to date")
-                            if extracted > 0:
-                                status_parts.append(f"{extracted} extracted")
-                            status = f" ({', '.join(status_parts)})" if status_parts else ""
-                            prefix = f"  Processing {item_idx}/{total_local}{status} — "
-                            # Truncate display to fit remaining space
-                            remaining = max_len - len(prefix) - 3  # -3 for "..."
-                            if remaining > 0 and display and len(display) > remaining:
-                                display = display[:remaining] + "..."
-                            line = f"{prefix}{display or 'working...'}"
-                            if len(line) > max_len:
-                                line = line[:max_len]
-                            sys.stderr.write(f"\r{line}{' ' * max(0, max_len - len(line))}")
-                            sys.stderr.flush()
-                        except Exception:
-                            pass
-
+                    # Phase A (sequential, cheap): decide per item whether
+                    # extraction is needed, based on what ChromaDB already has.
+                    for it in local_items:
+                        display = _display_for(it)
                         should_extract = True
 
                         # Current attachment-key set, stored in metadata so a
@@ -999,7 +1242,7 @@ class ZoteroSemanticSearch:
                                     if chroma_date == item_date and stored_att_keys == att_keys:
                                         # Nothing changed since the failure — don't retry
                                         should_extract = False
-                                        skipped_existing += 1
+                                        progress.record("skipped_failed", display)
                                         _skipped_failed.append(display or f"item {it.key}")
                                     else:
                                         # Item or its attachments changed since last
@@ -1011,81 +1254,137 @@ class ZoteroSemanticSearch:
                                     updated_existing += 1
                                 else:
                                     should_extract = False
-                                    skipped_existing += 1
+                                    progress.record("skipped_existing", display)
 
                         if should_extract:
-                            # Extract fulltext if item doesn't have it yet
-                            # (skip if circuit breaker has tripped)
-                            if not getattr(it, "fulltext", None) and not _extraction_stopped:
-                                text = reader.extract_fulltext_for_item(it.item_id)
-                                # Circuit breaker: stop PDF extraction after consecutive timeouts
-                                if isinstance(text, tuple) and len(text) == 2 and text[1] == "timeout":
-                                    _skipped_pdfs.append(display or f"item {it.key}")
-                                    consecutive_timeouts += 1
-                                    if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
-                                        logger.warning(
-                                            f"Stopping PDF extraction after {MAX_CONSECUTIVE_TIMEOUTS} "
-                                            f"consecutive timeouts — remaining items will use metadata only"
-                                        )
-                                        try:
-                                            sys.stderr.write(
-                                                f"\n  Warning: PDF extraction stopped after {MAX_CONSECUTIVE_TIMEOUTS} "
-                                                f"consecutive timeouts. Remaining items will be indexed with "
-                                                f"metadata only (titles, abstracts, authors).\n\n"
-                                            )
-                                        except Exception:
-                                            pass
-                                        _extraction_stopped = True
-                                    # Don't skip the item — still add it with metadata only
-                                    it._fulltext_attempted = True  # Mark so metadata knows extraction was tried
-                                else:
-                                    # Reset counter on successful extraction
-                                    if text:
-                                        consecutive_timeouts = 0
-                                    if text:
-                                        # Support new (text, source) return format
-                                        if isinstance(text, tuple) and len(text) == 2:
-                                            it.fulltext, it.fulltext_source = text[0], text[1]
-                                        else:
-                                            it.fulltext = text
-                                    else:
-                                        # Extraction returned empty — mark as attempted
-                                        it._fulltext_attempted = True
-                            extracted += 1
                             items_to_process.append(it)
+                            if not getattr(it, "fulltext", None):
+                                to_extract.append((it, display))
+                            else:
+                                progress.record("pending_index", display)
 
-                            # (progress shown inline above via \r)
+                    # Phase B: run the (slow) extractions, optionally across a
+                    # thread pool. Each PDF extraction already runs in its own
+                    # subprocess (see local_db._extract_text_from_pdf), so N
+                    # threads blocked in subprocess.run give N truly parallel
+                    # child processes — without the macOS multiprocessing
+                    # spawn hazard documented there (issue #178).
+                    _NOT_ATTEMPTED = object()
+
+                    def _extract_one(it):
+                        """Extract one item's fulltext, or skip it (returning
+                        the `_NOT_ATTEMPTED` sentinel) once the consecutive-
+                        timeout circuit breaker has tripped."""
+                        if breaker.tripped:
+                            return _NOT_ATTEMPTED
+                        return reader.extract_fulltext_for_item(it.item_id, item_key=it.key)
+
+                    def _apply_extraction_result(it, result, display) -> None:
+                        """Fold one `_extract_one` result into `it`/`progress`/
+                        the circuit breaker: sets `it.fulltext` on success,
+                        records a timeout/failure/not-attempted outcome
+                        otherwise. Runs on the caller's thread regardless of
+                        whether extraction itself ran in a worker thread."""
+                        if result is _NOT_ATTEMPTED:
+                            # Circuit breaker tripped before this item ran;
+                            # index it metadata-only, retry extraction next run.
+                            progress.record("not_attempted", display)
+                            return
+                        if isinstance(result, tuple) and len(result) >= 2 and result[1] == "timeout":
+                            _skipped_pdfs.append(display or f"item {it.key}")
+                            it._fulltext_attempted = True  # Mark so metadata knows extraction was tried
+                            tripped_now = breaker.record(True)
+                            progress.record("timeout", display)
+                            if tripped_now:
+                                logger.warning(
+                                    f"Stopping PDF extraction after {MAX_CONSECUTIVE_TIMEOUTS} "
+                                    f"consecutive timeouts — remaining items will use metadata only"
+                                )
+                                progress.clear_line()
+                                _report(
+                                    f"\n  Warning: PDF extraction stopped after {MAX_CONSECUTIVE_TIMEOUTS} "
+                                    f"consecutive timeouts. Remaining items will be indexed with "
+                                    f"metadata only (titles, abstracts, authors).\n\n"
+                                )
+                            return
+                        if result:
+                            breaker.record(False)
+                            it.fulltext, it.fulltext_source = result[0], result[1]
+                            was_cached = len(result) >= 3 and bool(result[2])
+                            progress.record("cache_hit" if was_cached else "extracted", display)
+                        else:
+                            # Extraction returned empty — mark as attempted
+                            it._fulltext_attempted = True
+                            progress.record("failed", display)
+
+                    workers = max(1, min(extraction_workers, len(to_extract) or 1))
+                    if workers <= 1:
+                        for it, display in to_extract:
+                            _apply_extraction_result(it, _extract_one(it), display)
+                    else:
+                        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                        with ThreadPoolExecutor(
+                            max_workers=workers, thread_name_prefix="zmcp-extract"
+                        ) as pool:
+                            futures = {
+                                pool.submit(_extract_one, it): (it, display)
+                                for it, display in to_extract
+                            }
+                            for future in as_completed(futures):
+                                it, display = futures[future]
+                                try:
+                                    result = future.result()
+                                except Exception as e:
+                                    logger.debug(f"Extraction failed for {it.key}: {e}")
+                                    result = None
+                                _apply_extraction_result(it, result, display)
 
                     # Restore local_db logger
                     _local_db_logger.setLevel(_prev_level)
 
                     # Clear progress line and show extraction summary
-                    try:
-                        sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line
-                        parts = [f"  Extraction complete: {extracted} items to index"]
-                        if skipped_existing > 0:
-                            parts.append(f"{skipped_existing} already up to date")
-                        sys.stderr.write(", ".join(parts) + "\n")
-                        if updated_existing > 0:
-                            sys.stderr.write(f"  ({updated_existing} items updated with new fulltext)\n")
-                        if _skipped_pdfs:
-                            sys.stderr.write(f"  Skipped {len(_skipped_pdfs)} PDF(s) (timed out):\n")
-                            for name in _skipped_pdfs:
-                                sys.stderr.write(f"    - {name}\n")
-                        if _skipped_failed:
-                            sys.stderr.write(
-                                f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n"
-                            )
-                            for name in _skipped_failed[:5]:  # Show first 5
-                                sys.stderr.write(f"    - {name}\n")
-                            if len(_skipped_failed) > 5:
-                                sys.stderr.write(f"    ... and {len(_skipped_failed) - 5} more\n")
-                            sys.stderr.write(
-                                "  (To retry these, attach or replace the PDF, or run with --force-rebuild)\n"
-                            )
-                    except Exception:
-                        pass
+                    counts = progress.finish()
+                    parts = [f"  Extraction complete: {len(items_to_process)} items to index"]
+                    if counts.get("extracted"):
+                        parts.append(f"{counts['extracted']} extracted")
+                    if counts.get("cache_hit"):
+                        parts.append(f"{counts['cache_hit']} from cache")
+                    skipped_total = counts.get("skipped_existing", 0) + counts.get("skipped_failed", 0)
+                    if skipped_total > 0:
+                        parts.append(f"{skipped_total} already up to date")
+                    if counts.get("failed"):
+                        parts.append(f"{counts['failed']} failed")
+                    _report(", ".join(parts) + "\n")
+                    if updated_existing > 0:
+                        _report(f"  ({updated_existing} items updated with new fulltext)\n")
 
+                    # Print helpful legend explaining extraction results
+                    legend_items = []
+                    if counts.get("cache_hit"):
+                        legend_items.append("cached: reused text extracted in previous runs")
+                    if skipped_total > 0:
+                        legend_items.append("up to date: already indexed in database")
+                    if counts.get("failed"):
+                        legend_items.append("failed: no attached PDF, scanned image-only PDF, or protected file")
+                    if legend_items:
+                        _report("  Notes on results: " + "; ".join(legend_items) + "\n")
+
+                    if _skipped_pdfs:
+                        _report(f"  Skipped {len(_skipped_pdfs)} PDF(s) (timed out):\n")
+                        for name in _skipped_pdfs:
+                            _report(f"    - {name}\n")
+                    if _skipped_failed:
+                        _report(
+                            f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n"
+                        )
+                        for name in _skipped_failed[:5]:  # Show first 5
+                            _report(f"    - {name}\n")
+                        if len(_skipped_failed) > 5:
+                            _report(f"    ... and {len(_skipped_failed) - 5} more\n")
+                        _report(
+                            "  (To retry these, attach or replace the PDF, or run with --force-rebuild)\n"
+                        )
                     # Replace local_items with filtered list
                     local_items = items_to_process
                 else:
@@ -1183,6 +1482,9 @@ class ZoteroSemanticSearch:
         """
 
         def _extract_content(resp: Any) -> str:
+            """Normalize a `fulltext_item` response to plain text: pyzotero
+            returns a dict with a `content` key, but tolerate a bare string
+            too rather than assuming the shape."""
             if isinstance(resp, dict):
                 return str(resp.get("content", "") or "")
             if isinstance(resp, str):
@@ -1230,12 +1532,10 @@ class ZoteroSemanticSearch:
         total = len(items)
         if not total:
             return
-        try:
-            sys.stderr.write(f"\nFetching fulltext for {total} items via web API...\n")
-            sys.stderr.flush()
-        except Exception:
-            pass
+        _report(f"\nFetching fulltext for {total} items via web API...\n")
+        cache_enabled = bool(self._get_fulltext_cache_config().get("enabled", True))
         fetched = 0
+        cache_hits = 0
         for idx, item in enumerate(items, 1):
             key = item.get("key", "")
             data = item.setdefault("data", {})
@@ -1245,24 +1545,42 @@ class ZoteroSemanticSearch:
                 continue
             if not key:
                 continue
-            text, source = self._fetch_fulltext_via_web_api(key)
+            version = int(item.get("version") or 0)
+            text = source = ""
+            was_cached = False
+            if cache_enabled:
+                try:
+                    hit = fulltext_cache.get_cached_web_text(key, version, config_path=self.config_path)
+                except Exception:
+                    hit = None
+                if hit is not None:
+                    text, source = hit
+                    was_cached = True
+            if not text:
+                text, source = self._fetch_fulltext_via_web_api(key)
             if text:
                 data["fulltext"] = text
                 data["fulltextSource"] = source
                 fetched += 1
+                if was_cached:
+                    cache_hits += 1
+                elif cache_enabled:
+                    # Keep the fetched text until this item's embedding lands,
+                    # so a failed embedding run never refetches it.
+                    try:
+                        fulltext_cache.put_cached_web_text(
+                            key, version, source, text, config_path=self.config_path
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not cache web fulltext for {key}: {e}")
             else:
                 data["fulltext_attempted"] = True
             if idx % 25 == 0 or idx == total:
-                try:
-                    sys.stderr.write(f"\r  Fulltext: {idx}/{total} items checked, {fetched} with text")
-                    sys.stderr.flush()
-                except Exception:
-                    pass
-        try:
-            sys.stderr.write("\n")
-        except Exception:
-            pass
-
+                cached_note = f" ({cache_hits} from cache)" if cache_hits else ""
+                _report(
+                    f"\r  Fulltext: {idx}/{total} items checked, {fetched} with text{cached_note}"
+                )
+        _report("\n")
     def _get_items_from_api(self, limit: int | None = None, include_fulltext: bool = False) -> list[dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
@@ -1431,9 +1749,14 @@ class ZoteroSemanticSearch:
         return target_sync_version
 
     def _prepare_index_records(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
-        """Prepare ChromaDB records without embedding or writing them."""
+        """Prepare ChromaDB records (supporting passage chunking) without embedding or writing them."""
         stats = {"processed": 0, "skipped": 0, "errors": 0}
         records: list[dict[str, Any]] = []
+
+        chunking = self._chunking_enabled
+        chunk_size = int(self._chunking_config.get("chunk_size", 1500))
+        overlap = int(self._chunking_config.get("overlap", 200))
+        max_chunks = int(self._chunking_config.get("max_chunks_per_item", 50000))
 
         for item in items:
             try:
@@ -1454,9 +1777,28 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
-                doc_text = self.chroma_client.truncate_text(doc_text)
-                records.append({"id": item_key, "document": doc_text, "metadata": metadata})
-                stats["processed"] += 1
+                if chunking:
+                    passages = split_into_passages(doc_text, chunk_size, overlap, max_chunks)
+                    if not passages:
+                        stats["skipped"] += 1
+                        continue
+                    for ci, (chunk_text, c0, c1) in enumerate(passages):
+                        cmeta = dict(metadata)
+                        cmeta["parent_item_key"] = item_key
+                        cmeta["chunk_index"] = ci
+                        cmeta["n_chunks"] = len(passages)
+                        cmeta["char_start"] = c0
+                        cmeta["char_end"] = c1
+                        page = _page_for_offset(doc_text, c0)
+                        if page is not None:
+                            cmeta["page"] = page
+                        chunk_doc = self.chroma_client.truncate_text(chunk_text)
+                        records.append({"id": f"{item_key}#{ci}", "document": chunk_doc, "metadata": cmeta})
+                    stats["processed"] += 1
+                else:
+                    doc_text = self.chroma_client.truncate_text(doc_text)
+                    records.append({"id": item_key, "document": doc_text, "metadata": metadata})
+                    stats["processed"] += 1
 
             except Exception as e:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
@@ -1464,14 +1806,21 @@ class ZoteroSemanticSearch:
 
         return records, stats
 
-    def _submit_openai_batch_index(
+    def _submit_batch_index(
         self,
+        provider: str,
         items: list[dict[str, Any]],
         force_full_rebuild: bool,
         target_sync_version: int | None,
         stats: dict[str, Any],
+        max_enqueued_tokens: int | None = None,
+        max_requests: int | None = None,
     ) -> dict[str, Any]:
-        """Prepare records and submit asynchronous OpenAI embedding batches."""
+        """Prepare records and submit asynchronous embedding batches."""
+        ops = _BATCH_PROVIDER_OPS[provider]
+        module = ops["module"]
+        label = ops["label"]
+        _report(f"Formatting {len(items)} items into {label} batch records...\n")
         records, prepare_stats = self._prepare_index_records(items)
         stats["processed_items"] += prepare_stats["processed"]
         stats["skipped_items"] += prepare_stats["skipped"]
@@ -1479,28 +1828,71 @@ class ZoteroSemanticSearch:
 
         if not records:
             stats["batch_submitted"] = False
-            stats["batch_error"] = "No documents were prepared for OpenAI Batch API submission"
+            stats["batch_error"] = f"No documents were prepared for {label} Batch API submission"
             return stats
 
+        if len(records) != len(items):
+            _report(
+                f"Uploading {len(records)} passage chunk records (from {len(items)} items) to {label} Batch API...\n"
+            )
+        else:
+            _report(f"Uploading {len(records)} document records to {label} Batch API...\n")
         ids = [record["id"] for record in records]
         existing_ids = self.chroma_client.get_existing_ids(ids) if ids and not force_full_rebuild else set()
-        model_name = self.chroma_client.embedding_config.get("model_name", "text-embedding-3-small")
-        manifest = openai_batch.submit_embedding_batches(
+        model_name = self.chroma_client.embedding_config.get("model_name", ops["default_model"])
+        submit_kwargs: dict[str, Any] = {}
+        if max_enqueued_tokens is not None:
+            submit_kwargs["max_enqueued_tokens"] = max_enqueued_tokens
+        if max_requests is not None:
+            submit_kwargs["max_requests"] = max_requests
+        manifest = module.submit_embedding_batches(
             records=records,
             model_name=model_name,
             embedding_config=self.chroma_client.embedding_config,
             config_path=self.config_path,
             force_full_rebuild=force_full_rebuild,
             target_sync_version=target_sync_version,
+            **submit_kwargs,
         )
         stats["batch_submitted"] = True
         stats["batch_run_id"] = manifest["run_id"]
         stats["batch_manifest"] = manifest["manifest_path"]
-        stats["batch_ids"] = [batch["batch_id"] for batch in manifest.get("batches", [])]
+        stats["batch_ids"] = [b["batch_id"] for b in manifest.get("batches", []) if b.get("batch_id")]
+        stats["batch_pending"] = sum(1 for b in manifest.get("batches", []) if b.get("status") == "pending")
         stats["submitted_items"] = len(records)
         stats["estimated_updated_items"] = len(existing_ids)
         stats["estimated_added_items"] = len(ids) - len(existing_ids)
         return stats
+
+    def _submit_openai_batch_index(
+        self,
+        items: list[dict[str, Any]],
+        force_full_rebuild: bool,
+        target_sync_version: int | None,
+        stats: dict[str, Any],
+        max_enqueued_tokens: int | None = None,
+        max_requests: int | None = None,
+    ) -> dict[str, Any]:
+        """Prepare records and submit asynchronous OpenAI embedding batches."""
+        return self._submit_batch_index(
+            "openai", items, force_full_rebuild, target_sync_version, stats,
+            max_enqueued_tokens=max_enqueued_tokens, max_requests=max_requests,
+        )
+
+    def _submit_gemini_batch_index(
+        self,
+        items: list[dict[str, Any]],
+        force_full_rebuild: bool,
+        target_sync_version: int | None,
+        stats: dict[str, Any],
+        max_enqueued_tokens: int | None = None,
+        max_requests: int | None = None,
+    ) -> dict[str, Any]:
+        """Prepare records and submit asynchronous Gemini embedding batches."""
+        return self._submit_batch_index(
+            "gemini", items, force_full_rebuild, target_sync_version, stats,
+            max_enqueued_tokens=max_enqueued_tokens, max_requests=max_requests,
+        )
 
     def update_database(
         self,
@@ -1509,22 +1901,49 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
         include_fulltext: bool | None = None,
         use_openai_batch: bool | None = None,
+        use_gemini_batch: bool | None = None,
+        extraction_workers: int | None = None,
+        batch_max_tokens: int | None = None,
+        batch_max_requests: int | None = None,
+        auto_loop: bool = False,
+        batch_poll_interval: int = 60,
+        use_batch: bool | None = None,
+        batch_provider: str | None = None,
     ) -> dict[str, Any]:
         """
-        Update the semantic search database with Zotero items.
+        Update the semantic search database with items from Zotero.
 
         Args:
-            force_full_rebuild: Whether to rebuild the entire database
-            limit: Limit number of items to process (for testing)
-            extract_fulltext: Whether to extract fulltext content from the
-                local Zotero sqlite database (requires ZOTERO_LOCAL=true)
-            include_fulltext: Whether to fetch server-side extracted
-                fulltext via the Zotero web API. Defaults to the
-                `semantic_search.include_fulltext` config setting (True
                 unless explicitly disabled). Ignored in local mode since
                 `extract_fulltext` provides richer local extraction.
-            use_openai_batch: Override for OpenAI Batch API indexing. None
-                uses `semantic_search.openai_batch.enabled`.
+            use_openai_batch: Deprecated — use `use_batch`/`batch_provider`
+                instead. Override for OpenAI Batch API indexing. None uses
+                `semantic_search.openai_batch.enabled`. Ignored whenever
+                `use_batch` is not None.
+            use_gemini_batch: Deprecated — use `use_batch`/`batch_provider`
+                instead. Override for Gemini Batch API indexing. None uses
+                `semantic_search.gemini_batch.enabled`. Ignored whenever
+                `use_batch` is not None.
+            extraction_workers: Concurrent PDF extractions during
+                extract_fulltext. None uses
+                `semantic_search.extraction.workers` (default 1).
+            batch_max_tokens: Override for the enqueued-token throttle
+                (`semantic_search.<provider>_batch.batch_max_enqueued_tokens`).
+            batch_max_requests: Override for the per-file request cap
+                (`semantic_search.<provider>_batch.batch_max_requests`).
+            auto_loop: After submitting, keep polling, importing completed
+                batches, and submitting pending chunks until the whole run is
+                imported. Only meaningful in batch mode.
+            batch_poll_interval: Seconds between auto-loop polls.
+            use_batch: Generic Batch API override, replacing
+                `use_openai_batch`/`use_gemini_batch`. When not None, it wins
+                over the legacy flags entirely. Combined with `batch_provider`,
+                selects that provider explicitly; alone, the provider is the
+                configured `embedding_model` if it supports the Batch API
+                (raises `ValueError` on `True` otherwise).
+            batch_provider: Explicit Batch API provider name (must be one of
+                `batch_capable_providers()`; raises `ValueError` otherwise).
+                None lets `use_batch`/the legacy flags/config decide.
 
         Returns:
             Update statistics
@@ -1550,269 +1969,455 @@ class ZoteroSemanticSearch:
         # `zotero-mcp update-db` manually. A cross-process flock avoids
         # double work and potential ChromaDB corruption.
         lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
-        lock_cm = _acquire_update_lock(lock_path)
-        acquired = lock_cm.__enter__()
-        if not acquired:
-            lock_cm.__exit__(None, None, None)
-            holder_pid, holder_alive = read_lock_holder(lock_path)
-            if holder_pid and not holder_alive:
-                logger.warning(
-                    "Update lock at %s is held by dead pid %s (stale). "
-                    "flock should have released it; set ZOTERO_MCP_FORCE_UPDATE=1 "
-                    "to bypass if this persists.",
-                    lock_path,
-                    holder_pid,
-                )
-            else:
-                logger.warning(
-                    "Another semantic-search update is already running "
-                    "(lock held at %s by pid %s); skipping this invocation. "
-                    "This is expected when the MCP server's background sync is "
-                    "active. Set ZOTERO_MCP_FORCE_UPDATE=1 to override.",
-                    lock_path,
-                    holder_pid if holder_pid else "unknown",
-                )
-            stats["duration"] = "0:00:00"
-            stats["skipped_reason"] = "another_update_in_progress"
-            return stats
+        with _acquire_update_lock(lock_path) as acquired:
+            if not acquired:
+                holder_pid, holder_alive = read_lock_holder(lock_path)
+                if holder_pid and not holder_alive:
+                    logger.warning(
+                        "Update lock at %s is held by dead pid %s (stale). "
+                        "flock should have released it; set ZOTERO_MCP_FORCE_UPDATE=1 "
+                        "to bypass if this persists.",
+                        lock_path,
+                        holder_pid,
+                    )
+                else:
+                    logger.warning(
+                        "Another semantic-search update is already running "
+                        "(lock held at %s by pid %s); skipping this invocation. "
+                        "This is expected when the MCP server's background sync is "
+                        "active. Set ZOTERO_MCP_FORCE_UPDATE=1 to override.",
+                        lock_path,
+                        holder_pid if holder_pid else "unknown",
+                    )
+                stats["duration"] = "0:00:00"
+                stats["skipped_reason"] = "another_update_in_progress"
+                return stats
 
-        try:
-            # Resolve include_fulltext default from config if not specified
-            if include_fulltext is None:
-                include_fulltext = self._load_include_fulltext_setting()
-
-            # Web-API fulltext only applies when not using the local sqlite
-            # extractor (extract_fulltext=True takes precedence in local mode)
-            include_fulltext_via_api = include_fulltext and not extract_fulltext
-            use_openai_batch = self._resolve_openai_batch_enabled(use_openai_batch)
-
-            # In batch mode, defer destructive rebuilds until import so the
-            # existing search index remains usable while the batch runs.
-            if force_full_rebuild and not use_openai_batch:
-                logger.info("Force rebuilding database...")
-                self.chroma_client.reset_collection()
-
-            # Decide whether to use since-based incremental ingest.
-            # Incremental requires: not a forced rebuild, not a local-extraction
-            # run (incremental path covers web-API metadata and optionally
-            # fulltext only), not a test limit, and a known prior sync version.
-            last_sync_version = self._load_last_sync_version() if not force_full_rebuild else 0
-            use_incremental = (
-                not force_full_rebuild and not extract_fulltext and limit is None and last_sync_version > 0
-            )
-
-            # When a collection filter is configured, skip the API-based
-            # incremental path: it fetches changed items from the WHOLE
-            # library and its deletion pass compares against all library
-            # keys, both of which would bypass the filter. The local
-            # full-scan path applies collection_keys and skips
-            # already-indexed items, so filtered updates stay cheap.
-            configured_collection_keys = None
             try:
-                if self.config_path and os.path.exists(self.config_path):
-                    with open(self.config_path) as _f:
-                        configured_collection_keys = (
-                            json.load(_f).get("semantic_search", {}).get("collection_keys")
+                # Resolve include_fulltext default from config if not specified
+                if include_fulltext is None:
+                    include_fulltext = self._load_include_fulltext_setting()
+
+                # Web-API fulltext only applies when not using the local sqlite
+                # extractor (extract_fulltext=True takes precedence in local mode)
+                include_fulltext_via_api = include_fulltext and not extract_fulltext
+
+                use_batch, batch_provider = self._resolve_batch_mode(
+                    use_batch=use_batch,
+                    batch_provider=batch_provider,
+                    use_openai_batch=use_openai_batch,
+                    use_gemini_batch=use_gemini_batch,
+                )
+
+                # Opportunistic hygiene: drop cache entries from abandoned runs.
+                if self._get_fulltext_cache_config().get("enabled", True):
+                    try:
+                        fulltext_cache.purge_stale(
+                            max_age_days=int(self._get_fulltext_cache_config().get("max_age_days", 30)),
+                            config_path=self.config_path,
                         )
-            except Exception:
-                pass
-            if configured_collection_keys and use_incremental:
-                use_incremental = False
+                    except Exception as e:
+                        logger.debug(f"Fulltext cache purge failed: {e}")
+
+                # In batch mode, defer destructive rebuilds until import so the
+                # existing search index remains usable while the batch runs.
+                if force_full_rebuild and not use_batch:
+                    logger.info("Force rebuilding database...")
+                    self.chroma_client.reset_collection()
+
+                # Decide whether to use since-based incremental ingest.
+                # Incremental requires: not a forced rebuild, not a local-extraction
+                # run (incremental path covers web-API metadata and optionally
+                # fulltext only), not a test limit, and a known prior sync version.
+                last_sync_version = self._load_last_sync_version() if not force_full_rebuild else 0
+                use_incremental = (
+                    not force_full_rebuild and not extract_fulltext and limit is None and last_sync_version > 0
+                )
+
+                # When a collection filter is configured, skip the API-based
+                # incremental path: it fetches changed items from the WHOLE
+                # library and its deletion pass compares against all library
+                # keys, both of which would bypass the filter. The local
+                # full-scan path applies collection_keys and skips
+                # already-indexed items, so filtered updates stay cheap.
+                configured_collection_keys = None
                 try:
-                    sys.stderr.write(
+                    if self.config_path and os.path.exists(self.config_path):
+                        with open(self.config_path) as _f:
+                            configured_collection_keys = (
+                                json.load(_f).get("semantic_search", {}).get("collection_keys")
+                            )
+                except Exception:
+                    pass
+                if configured_collection_keys and use_incremental:
+                    use_incremental = False
+                    _report(
                         f"Collection filter active ({configured_collection_keys}); "
                         "using local full scan instead of API incremental update.\n"
                     )
-                except Exception:
-                    pass
+                target_sync_version: int | None = None
+                all_items: list[dict[str, Any]] = []
+                if use_incremental:
+                    try:
+                        target_sync_version = self.zotero_client.last_modified_version()
+                    except Exception as e:
+                        logger.warning(f"last_modified_version() failed, falling back to full scan: {e}")
+                        use_incremental = False
 
-            target_sync_version: int | None = None
-            all_items: list[dict[str, Any]] = []
-            if use_incremental:
-                try:
-                    target_sync_version = self.zotero_client.last_modified_version()
-                except Exception as e:
-                    logger.warning(f"last_modified_version() failed, falling back to full scan: {e}")
-                    use_incremental = False
-
-            if use_incremental and target_sync_version == last_sync_version:
-                # No changes since last sync; skip ingest but still touch last_update
-                try:
-                    sys.stderr.write(
+                if use_incremental and target_sync_version == last_sync_version:
+                    # No changes since last sync; skip ingest but still touch last_update
+                    _report(
                         f"\nLibrary unchanged since last sync (version {last_sync_version}); no items to reindex.\n"
                     )
-                except Exception:
-                    pass
-                self.update_config["last_update"] = datetime.now().isoformat()
-                self._save_update_config(last_sync_version=target_sync_version)
-                end_time = datetime.now()
-                stats["duration"] = str(end_time - start_time)
-                stats["end_time"] = end_time.isoformat()
-                return stats
+                    self.update_config["last_update"] = datetime.now().isoformat()
+                    self._save_update_config(last_sync_version=target_sync_version)
+                    end_time = datetime.now()
+                    stats["duration"] = str(end_time - start_time)
+                    stats["end_time"] = end_time.isoformat()
+                    return stats
 
-            if use_incremental:
-                all_items, current_library_keys = self._get_changed_items_from_api(
-                    since_version=last_sync_version,
-                    include_fulltext=include_fulltext_via_api,
-                )
-                # Delete collection entries that are no longer present in the
-                # library. Map any chunk ids (``<key>#<n>``) back to item keys
-                # so deletion works identically whether or not chunking is on.
-                try:
-                    stored_ids = self.chroma_client.get_all_ids()
-                    stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
-                    to_delete_keys = [k for k in (stored_item_keys - current_library_keys) if k]
-                    if to_delete_keys:
-                        if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
-                            for k in to_delete_keys:
-                                self.chroma_client.delete_item_chunks(k)
-                        else:
-                            self.chroma_client.delete_documents(to_delete_keys)
-                        stats["deleted_items"] = len(to_delete_keys)
-                        try:
-                            sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
-                        except Exception:
-                            pass
-                except Exception as e:
-                    logger.warning(f"Deletion pass failed: {e}")
-            else:
-                # Full scan: bootstrap or forced rebuild.
-                # Capture the library version BEFORE scanning so any changes
-                # made during the scan will be picked up by the next
-                # incremental run. Skipping this after a force_full_rebuild
-                # would leave last_sync_version stale and the next
-                # incremental run would miss items that haven't changed
-                # since the old watermark (because they were just deleted
-                # along with the collection).
-                try:
-                    target_sync_version = self.zotero_client.last_modified_version()
-                except Exception as e:
-                    logger.warning(f"last_modified_version() failed: {e}")
-                    target_sync_version = None
-                all_items = self._get_items_from_source(
-                    limit=limit,
-                    extract_fulltext=extract_fulltext,
-                    chroma_client=self.chroma_client if not force_full_rebuild else None,
-                    force_rebuild=force_full_rebuild,
-                    include_fulltext_via_api=include_fulltext_via_api,
-                )
-                # The local-extraction scan may lag behind the API version
-                # captured above (immutable sqlite reads skip WAL contents);
-                # only promote the watermark if the snapshot was complete.
-                if extract_fulltext and target_sync_version is not None:
-                    target_sync_version = self._verify_local_snapshot_version(
-                        target_sync_version
+                if use_incremental:
+                    all_items, current_library_keys = self._get_changed_items_from_api(
+                        since_version=last_sync_version,
+                        include_fulltext=include_fulltext_via_api,
+                    )
+                    # Delete collection entries that are no longer present in the
+                    # library. Map any chunk ids (``<key>#<n>``) back to item keys
+                    # so deletion works identically whether or not chunking is on.
+                    try:
+                        stored_ids = self.chroma_client.get_all_ids()
+                        stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
+                        to_delete_keys = [k for k in (stored_item_keys - current_library_keys) if k]
+                        if to_delete_keys:
+                            if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
+                                for k in to_delete_keys:
+                                    self.chroma_client.delete_item_chunks(k)
+                            else:
+                                self.chroma_client.delete_documents(to_delete_keys)
+                            stats["deleted_items"] = len(to_delete_keys)
+                            _report(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
+                    except Exception as e:
+                        logger.warning(f"Deletion pass failed: {e}")
+                else:
+                    # Full scan: bootstrap or forced rebuild.
+                    # Capture the library version BEFORE scanning so any changes
+                    # made during the scan will be picked up by the next
+                    # incremental run. Skipping this after a force_full_rebuild
+                    # would leave last_sync_version stale and the next
+                    # incremental run would miss items that haven't changed
+                    # since the old watermark (because they were just deleted
+                    # along with the collection).
+                    try:
+                        target_sync_version = self.zotero_client.last_modified_version()
+                    except Exception as e:
+                        logger.warning(f"last_modified_version() failed: {e}")
+                        target_sync_version = None
+                    all_items = self._get_items_from_source(
+                        limit=limit,
+                        extract_fulltext=extract_fulltext,
+                        chroma_client=self.chroma_client if not force_full_rebuild else None,
+                        force_rebuild=force_full_rebuild,
+                        include_fulltext_via_api=include_fulltext_via_api,
+                        extraction_workers=extraction_workers,
+                    )
+                    # The local-extraction scan may lag behind the API version
+                    # captured above (immutable sqlite reads skip WAL contents);
+                    # only promote the watermark if the snapshot was complete.
+                    if extract_fulltext and target_sync_version is not None:
+                        target_sync_version = self._verify_local_snapshot_version(
+                            target_sync_version
+                        )
+
+                stats["total_items"] = len(all_items)
+                logger.info(f"Found {stats['total_items']} items to process")
+
+                if use_batch:
+                    provider_label = _BATCH_PROVIDER_OPS[batch_provider]["label"]
+                    stats["batch_mode"] = True
+                    stats["batch_provider"] = batch_provider
+
+                    throttle = self._load_batch_throttle_config(batch_provider)
+                    max_enqueued_tokens = (
+                        batch_max_tokens
+                        if batch_max_tokens is not None
+                        else throttle["batch_max_enqueued_tokens"]
+                    )
+                    max_requests = (
+                        batch_max_requests
+                        if batch_max_requests is not None
+                        else throttle["batch_max_requests"]
                     )
 
-            stats["total_items"] = len(all_items)
-            logger.info(f"Found {stats['total_items']} items to process")
+                    _report(f"\nSubmitting {len(all_items)} items to {provider_label} Batch API...\n")
+                    stats = self._submit_batch_index(
+                        batch_provider,
+                        all_items,
+                        force_full_rebuild=force_full_rebuild,
+                        target_sync_version=target_sync_version,
+                        stats=stats,
+                        max_enqueued_tokens=max_enqueued_tokens,
+                        max_requests=max_requests,
+                    )
+                    if not stats.get("batch_submitted"):
+                        end_time = datetime.now()
+                        stats["duration"] = str(end_time - start_time)
+                        stats["end_time"] = end_time.isoformat()
+                        return stats
 
-            if use_openai_batch:
-                stats["batch_mode"] = True
-                try:
-                    sys.stderr.write(f"\nSubmitting {len(all_items)} items to OpenAI Batch API...\n")
-                    sys.stderr.flush()
-                except Exception:
-                    pass
-                stats = self._submit_openai_batch_index(
-                    all_items,
-                    force_full_rebuild=force_full_rebuild,
-                    target_sync_version=target_sync_version,
-                    stats=stats,
-                )
-                try:
+                    n_submitted = len(stats.get("batch_ids", []))
+                    n_pending = stats.get("batch_pending", 0)
                     batch_ids = ", ".join(stats.get("batch_ids", []))
-                    sys.stderr.write(
-                        "  Submitted OpenAI embedding batch"
-                        f"{'es' if len(stats.get('batch_ids', [])) != 1 else ''}: {batch_ids}\n"
+                    _report(
+                        f"  Submitted {provider_label} embedding batch"
+                        f"{'es' if n_submitted != 1 else ''}: {batch_ids}\n"
                     )
-                    sys.stderr.write("  Run 'zotero-mcp openai-batch-status' to check progress.\n")
-                    sys.stderr.write("  Run 'zotero-mcp openai-batch-import' after the batch completes.\n")
-                except Exception:
-                    pass
-                end_time = datetime.now()
-                stats["duration"] = str(end_time - start_time)
-                stats["end_time"] = end_time.isoformat()
-                return stats
+                    if n_pending:
+                        _report(
+                            f"  Throttled at ~{max_enqueued_tokens:,} enqueued tokens: "
+                            f"{n_pending} chunk(s) parked as pending — they submit as running batches finish.\n"
+                        )
+                    if auto_loop:
+                        _report(f"  Auto-loop enabled: polling every {batch_poll_interval}s until all chunks import.\n")
+                        self.auto_loop_batch_pipeline(
+                            batch_provider,
+                            poll_interval=batch_poll_interval,
+                            max_enqueued_tokens=max_enqueued_tokens,
+                            stats=stats,
+                        )
+                    else:
+                        _report("  Run 'zotero-mcp batch-status' to check progress.\n")
+                        _report("  Run 'zotero-mcp batch-import' after the batch completes.\n")
+                    end_time = datetime.now()
+                    stats["duration"] = str(end_time - start_time)
+                    stats["end_time"] = end_time.isoformat()
+                    return stats
 
-            # User-friendly progress reporting
-            total = stats["total_items"] = len(all_items)
-            try:
-                sys.stderr.write(f"\nIndexing {total} items...\n\n")
-                sys.stderr.flush()
-            except Exception:
-                pass
+                # User-friendly progress reporting
+                total = stats["total_items"] = len(all_items)
+                embedding_function = getattr(self.chroma_client, "embedding_function", None)
+                max_parallel = getattr(embedding_function, "max_parallel_requests", 1) or 1
+                _report(f"\nIndexing {total} items ({max_parallel} parallel worker thread{'s' if max_parallel != 1 else ''})...\n\n")
 
-            # Process items in batches
-            # Keep batch size under OpenAI's 300k token-per-request limit
-            # (25 × 8000 max tokens = 200k, well within the limit)
-            batch_size = 25
-            seen_items = 0
-            _failed_docs = []  # Collect failures for end-of-run retry
-            for i in range(0, len(all_items), batch_size):
-                batch = all_items[i : i + batch_size]
-
-                # Show per-item progress within this batch
-                for item in batch:
-                    seen_items += 1
-                    title = item.get("data", {}).get("title", "")
-                    if title and len(title) > 60:
-                        title = title[:57] + "..."
-                    pct = int(seen_items / total * 100) if total else 0
-                    try:
-                        sys.stderr.write(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
-                        sys.stderr.flush()
-                    except Exception:
-                        pass
-
-                batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
-
-                stats["processed_items"] += batch_stats["processed"]
-                stats["added_items"] += batch_stats["added"]
-                stats["updated_items"] += batch_stats["updated"]
-                stats["skipped_items"] += batch_stats["skipped"]
-                stats["errors"] += batch_stats["errors"]
-
-                logger.info(
-                    f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
+                # Streaming keeps the embedding pool continuously fed across
+                # slice boundaries instead of blocking on one slice's
+                # embeddings before preparing the next (see
+                # _dispatch_slice/_drain_futures/_finalize_slice below).
+                # Configs without real parallelism, or a chroma_client double
+                # missing upsert_embeddings, keep the exact synchronous
+                # _process_item_batch path with zero behavior change.
+                use_streaming = (
+                    embedding_function is not None
+                    and max_parallel > 1
+                    and hasattr(self.chroma_client, "upsert_embeddings")
                 )
+                batch_size = _realtime_slice_size(embedding_function)
+                seen_items = 0
+                _failed_docs = []  # Collect failures for end-of-run retry
 
-            # Retry any documents that failed during the main run
-            if _failed_docs:
-                try:
-                    sys.stderr.write(f"\r{' ' * 120}\r")
-                    sys.stderr.write(f"\n  Retrying {len(_failed_docs)} failed items...\n")
-                except Exception:
-                    pass
+                if not use_streaming:
+                    for i in range(0, len(all_items), batch_size):
+                        batch = all_items[i : i + batch_size]
 
-                import time as _retry_time
+                        # Show per-item progress within this batch
+                        for item in batch:
+                            seen_items += 1
+                            title = item.get("data", {}).get("title", "")
+                            if title and len(title) > 60:
+                                title = title[:57] + "..."
+                            pct = int(seen_items / total * 100) if total else 0
+                            _report(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
+                        batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
 
-                _retry_time.sleep(1)  # Brief pause before retry
+                        stats["processed_items"] += batch_stats["processed"]
+                        stats["added_items"] += batch_stats["added"]
+                        stats["updated_items"] += batch_stats["updated"]
+                        stats["skipped_items"] += batch_stats["skipped"]
+                        stats["errors"] += batch_stats["errors"]
+                        stats["cache_evicted"] = stats.get("cache_evicted", 0) + batch_stats.get("cache_evicted", 0)
 
-                retry_ok = 0
-                retry_fail = 0
-                for doc, meta, doc_id in _failed_docs:
-                    try:
-                        self.chroma_client.upsert_documents([doc], [meta], [doc_id])
-                        retry_ok += 1
-                        stats["errors"] -= 1  # Remove from error count
-                        # Don't classify as added vs updated — when the
-                        # original batch failed, the add/update lookup never
-                        # ran, so we don't know which category it belongs in.
-                        # Track recovered items in their own bucket.
-                        stats["recovered_items"] += 1
-                    except Exception as e2:
-                        retry_fail += 1
-                        logger.error(f"Retry failed for {doc_id}: {e2}")
+                        logger.info(
+                            f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
+                        )
+                else:
+                    import queue
 
-                try:
-                    sys.stderr.write(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
-                except Exception:
-                    pass
+                    request_batch_size = getattr(embedding_function, "request_batch_size", None) or batch_size
+                    _SENTINEL = object()
+                    chunk_queue: queue.Queue = queue.Queue(maxsize=1000)
+                    vector_queue: queue.Queue = queue.Queue(maxsize=1000)
 
-            # Clear the progress line and show summary
-            try:
-                sys.stderr.write(f"\r{' ' * 120}\r")  # Clear line
+                    def producer_task() -> None:
+                        nonlocal seen_items
+                        buf_docs: list[str] = []
+                        buf_metas: list[dict[str, Any]] = []
+                        buf_ids: list[str] = []
+                        buf_keys: list[tuple[str, bool]] = []
+
+                        def flush_producer_buf() -> None:
+                            if not buf_docs:
+                                return
+                            chunk_queue.put((list(buf_docs), list(buf_metas), list(buf_ids), list(buf_keys)))
+                            buf_docs.clear()
+                            buf_metas.clear()
+                            buf_ids.clear()
+                            buf_keys.clear()
+
+                        for item in all_items:
+
+                            seen_items += 1
+                            slice_work = self._prepare_and_classify_slice([item], force_full_rebuild)
+                            prep_stats = slice_work["prep_stats"]
+                            stats["processed_items"] += prep_stats["processed"]
+                            stats["skipped_items"] += prep_stats["skipped"]
+                            stats["errors"] += prep_stats["errors"]
+
+                            docs = slice_work["documents"]
+                            metas = slice_work["metadatas"]
+                            ids = slice_work["ids"]
+                            item_keys = slice_work["item_keys_order"]
+                            existing_keys = slice_work["existing_item_keys"]
+
+                            if docs:
+                                item_key = item_keys[0] if item_keys else None
+                                is_existing = item_key in existing_keys if item_key else False
+                                for doc, meta, doc_id in zip(docs, metas, ids):
+                                    buf_docs.append(doc)
+                                    buf_metas.append(meta)
+                                    buf_ids.append(doc_id)
+                                    if item_key:
+                                        buf_keys.append((item_key, is_existing))
+                                    if len(buf_docs) >= request_batch_size:
+                                        flush_producer_buf()
+                            else:
+                                logger.info(
+                                    f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
+                                )
+
+                        flush_producer_buf()
+
+                        for _ in range(max_parallel):
+                            chunk_queue.put(_SENTINEL)
+
+                    def worker_task() -> None:
+                        while True:
+                            q_item = chunk_queue.get()
+                            if q_item is _SENTINEL:
+                                vector_queue.put(_SENTINEL)
+                                break
+                            sub_docs, sub_metas, sub_ids, sub_keys = q_item
+                            try:
+                                embeddings = embedding_function(sub_docs)
+                                vector_queue.put((sub_docs, sub_metas, sub_ids, sub_keys, embeddings))
+                            except Exception as exc:
+                                logger.warning(f"Sub-batch embedding failed ({exc}), saving for retry")
+                                for doc, meta, doc_id in zip(sub_docs, sub_metas, sub_ids):
+                                    _failed_docs.append((doc, meta, doc_id))
+                                stats["errors"] += len(sub_docs)
+
+                    with ThreadPoolExecutor(max_workers=max_parallel + 1, thread_name_prefix="zmcp-stream") as pool:
+                        producer_future = pool.submit(producer_task)
+                        worker_futures = [pool.submit(worker_task) for _ in range(max_parallel)]
+
+                        active_workers = max_parallel
+                        write_docs: list[str] = []
+                        write_metas: list[dict[str, Any]] = []
+                        write_ids: list[str] = []
+                        write_vectors: list[list[float]] = []
+                        write_keys: dict[str, bool] = {}
+                        accounted_keys: set[str] = set()
+
+                        def flush_chroma() -> None:
+                            if not write_vectors:
+                                return
+                            try:
+                                self.chroma_client.upsert_embeddings(write_docs, write_metas, write_ids, write_vectors)
+                                for k, is_exist in write_keys.items():
+                                    if k not in accounted_keys:
+                                        accounted_keys.add(k)
+                                        if is_exist:
+                                            stats["updated_items"] += 1
+                                        else:
+                                            stats["added_items"] += 1
+                                if write_keys:
+                                    stats["cache_evicted"] = stats.get("cache_evicted", 0) + self._evict_fulltext_cache(list(write_keys.keys()))
+
+                                completed_count = len(accounted_keys) + stats["skipped_items"]
+                                pct = int(completed_count / total * 100) if total else 0
+                                if logging.getLogger().isEnabledFor(logging.INFO):
+                                    _report(f"  [{pct:3d}%] {completed_count}/{total} items indexed in database\n")
+                                else:
+                                    _report(f"\r  [{pct:3d}%] {completed_count}/{total} items indexed in database")
+                            except Exception as exc:
+                                logger.warning(f"ChromaDB bulk upsert failed ({exc}), saving for retry")
+                                for doc, meta, doc_id in zip(write_docs, write_metas, write_ids):
+                                    _failed_docs.append((doc, meta, doc_id))
+                                stats["errors"] += len(write_docs)
+                            finally:
+                                write_docs.clear()
+                                write_metas.clear()
+                                write_ids.clear()
+                                write_vectors.clear()
+                                write_keys.clear()
+
+
+                        while active_workers > 0 or not vector_queue.empty():
+                            try:
+                                v_item = vector_queue.get(timeout=0.1)
+                            except queue.Empty:
+                                flush_chroma()
+                                continue
+
+                            if v_item is _SENTINEL:
+                                active_workers -= 1
+                                continue
+
+                            docs, metas, ids, keys, vectors = v_item
+                            write_docs.extend(docs)
+                            write_metas.extend(metas)
+                            write_ids.extend(ids)
+                            write_vectors.extend(vectors)
+                            for k, is_exist in keys:
+                                write_keys[k] = is_exist
+
+                            if len(write_vectors) >= 200:
+                                flush_chroma()
+
+                        flush_chroma()
+                        producer_future.result()
+                        for wf in worker_futures:
+                            wf.result()
+
+
+
+                # Retry any documents that failed during the main run
+                if _failed_docs:
+                    _report(f"\r{' ' * 120}\r")
+                    _report(f"\n  Retrying {len(_failed_docs)} failed items...\n")
+                    import time as _retry_time
+
+                    _retry_time.sleep(1)  # Brief pause before retry
+
+                    retry_ok = 0
+                    retry_fail = 0
+                    for doc, meta, doc_id in _failed_docs:
+                        try:
+                            self.chroma_client.upsert_documents([doc], [meta], [doc_id])
+                            retry_ok += 1
+                            self._evict_fulltext_cache([doc_id.split("#", 1)[0]])
+                            stats["errors"] -= 1  # Remove from error count
+                            # Don't classify as added vs updated — when the
+                            # original batch failed, the add/update lookup never
+                            # ran, so we don't know which category it belongs in.
+                            # Track recovered items in their own bucket.
+                            stats["recovered_items"] += 1
+                        except Exception as e2:
+                            retry_fail += 1
+                            logger.error(f"Retry failed for {doc_id}: {e2}")
+
+                    _report(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
+
+                # Clear the progress line and show summary
+                _report(f"\r{' ' * 120}\r")  # Clear line
                 summary = (
                     f"  Done: {stats['processed_items']} indexed, "
                     f"{stats['skipped_items']} skipped, "
@@ -1820,33 +2425,85 @@ class ZoteroSemanticSearch:
                 )
                 if stats["recovered_items"]:
                     summary += f", {stats['recovered_items']} recovered"
-                sys.stderr.write(summary + "\n")
-            except Exception:
-                pass
+                if stats.get("cache_evicted"):
+                    summary += f", {stats['cache_evicted']} cached texts cleaned up"
+                _report(summary + "\n")
+                # Update last update time, and promote last_sync_version on success
+                self.update_config["last_update"] = datetime.now().isoformat()
+                self._save_update_config(last_sync_version=target_sync_version)
 
-            # Update last update time, and promote last_sync_version on success
-            self.update_config["last_update"] = datetime.now().isoformat()
-            self._save_update_config(last_sync_version=target_sync_version)
+                end_time = datetime.now()
+                stats["duration"] = str(end_time - start_time)
+                stats["end_time"] = end_time.isoformat()
 
-            end_time = datetime.now()
-            stats["duration"] = str(end_time - start_time)
-            stats["end_time"] = end_time.isoformat()
+                logger.info(f"Database update completed in {stats['duration']}")
+                return stats
 
-            logger.info(f"Database update completed in {stats['duration']}")
-            return stats
+            except Exception as e:
+                logger.error(f"Error updating database: {e}")
+                stats["error"] = str(e)
+                end_time = datetime.now()
+                stats["duration"] = str(end_time - start_time)
+                return stats
 
-        except Exception as e:
-            logger.error(f"Error updating database: {e}")
-            stats["error"] = str(e)
-            end_time = datetime.now()
-            stats["duration"] = str(end_time - start_time)
-            return stats
-        finally:
-            # Release the update flock on every exit path. Paired with the
-            # __enter__ call above; the "not acquired" branch releases
-            # separately before its early return, so this finally only runs
-            # for the path where we actually hold the lock.
-            lock_cm.__exit__(None, None, None)
+    def _prepare_and_classify_slice(
+        self,
+        items: list[dict[str, Any]],
+        force_rebuild: bool = False,
+    ) -> dict[str, Any]:
+        """Prepare records for `items` and classify existing-vs-new, deleting
+        stale chunks for any item being re-indexed.
+
+        Split out of `_process_item_batch` so the realtime streaming indexer
+        can run this (cheap, chroma-metadata-only) step for one slice without
+        blocking on that slice's embeddings — see `_dispatch_slice`/
+        `_finalize_slice`. `_process_item_batch` itself still calls this for
+        its own first half, so this must stay byte-identical to what it
+        replaced.
+
+        Record building (text assembly, metadata, chunking, truncation) lives
+        in _prepare_index_records so the realtime and Batch API paths can
+        never drift apart. The chunk metadata it emits (n_chunks, page,
+        ``<key>#<n>`` ids) is identical either way.
+        """
+        records, prep_stats = self._prepare_index_records(items)
+        chunking = self._chunking_enabled
+
+        documents: list[str] = [r["document"] for r in records]
+        metadatas: list[dict[str, Any]] = [r["metadata"] for r in records]
+        ids: list[str] = [r["id"] for r in records]
+        # One entry per *item* successfully prepared (not per chunk) so add/
+        # update accounting stays item-granular regardless of chunking.
+        item_keys_order: list[str] = list(
+            dict.fromkeys(r["metadata"].get("parent_item_key") or r["id"] for r in records)
+        )
+
+        # Which items already existed (drives added-vs-updated). When
+        # chunking, also clear an item's stale passages before re-adding so
+        # a shrinking document never leaves orphaned chunks behind.
+        existing_item_keys: set[str] = set()
+        if documents and not force_rebuild:
+            if chunking:
+                probe_ids = [f"{k}#0" for k in item_keys_order]
+                existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
+                existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
+                if hasattr(self.chroma_client, "delete_item_chunks"):
+                    for k in dict.fromkeys(item_keys_order):
+                        try:
+                            self.chroma_client.delete_item_chunks(k)
+                        except Exception as e:
+                            logger.debug(f"delete_item_chunks({k}) failed: {e}")
+            else:
+                existing_item_keys = self.chroma_client.get_existing_ids(ids)
+
+        return {
+            "documents": documents,
+            "metadatas": metadatas,
+            "ids": ids,
+            "item_keys_order": item_keys_order,
+            "existing_item_keys": existing_item_keys,
+            "prep_stats": prep_stats,
+        }
 
     def _process_item_batch(
         self,
@@ -1854,104 +2511,37 @@ class ZoteroSemanticSearch:
         force_rebuild: bool = False,
         _failed_docs: list | None = None,
     ) -> dict[str, int]:
-        """Process a batch of items.
+        """Process a batch of items synchronously: prepare+classify, embed
+        (via ChromaDB's embedding-function callback inside upsert_documents),
+        write, all as one blocking call.
+
+        This is the fallback path used when the streaming indexer doesn't
+        apply (see `update_database`) — e.g. `max_parallel_requests <= 1` or
+        a chroma_client double without `upsert_embeddings`. Behavior here is
+        unchanged from before the streaming split.
 
         _failed_docs: optional list (passed by reference from update_database)
         that collects (doc_text, metadata, doc_id) tuples for batches that fail
-        mid-run. Without this, the retry path at update_database:839-865 is
+        mid-run. Without this, the end-of-run retry path in update_database is
         dead code — a NameError raised here would crash the whole reindex,
         making every transient ChromaDB error fatal instead of recoverable.
         """
-        stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
+        stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0, "cache_evicted": 0}
 
-        chunking = self._chunking_enabled
-        chunk_size = int(self._chunking_config.get("chunk_size", 1500))
-        overlap = int(self._chunking_config.get("overlap", 200))
-        max_chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
+        slice_work = self._prepare_and_classify_slice(items, force_rebuild)
+        prep_stats = slice_work["prep_stats"]
+        stats["processed"] = prep_stats["processed"]
+        stats["skipped"] = prep_stats["skipped"]
+        stats["errors"] = prep_stats["errors"]
 
-        documents: list[str] = []
-        metadatas: list[dict[str, Any]] = []
-        ids: list[str] = []
-        # One entry per *item* successfully prepared (not per chunk) so add/
-        # update accounting stays item-granular regardless of chunking.
-        item_keys_order: list[str] = []
-
-        for item in items:
-            try:
-                item_key = item.get("key", "")
-                if not item_key:
-                    stats["skipped"] += 1
-                    continue
-
-                # Create document text and metadata
-                # Always include structured fields; append fulltext when available
-                fulltext = item.get("data", {}).get("fulltext", "")
-                structured_text = self._create_document_text(item)
-                if fulltext.strip():
-                    doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
-                else:
-                    doc_text = structured_text
-                metadata = self._create_metadata(item)
-
-                if not doc_text.strip():
-                    stats["skipped"] += 1
-                    continue
-
-                if chunking:
-                    # Index one vector per overlapping passage so search can
-                    # return a grounded quote and long PDFs stay searchable
-                    # past the single-vector truncation limit.
-                    passages = split_into_passages(doc_text, chunk_size, overlap, max_chunks)
-                    if not passages:
-                        stats["skipped"] += 1
-                        continue
-                    n_chunks = len(passages)
-                    for ci, (chunk_text, c0, c1) in enumerate(passages):
-                        cmeta = dict(metadata)
-                        cmeta["parent_item_key"] = item_key
-                        cmeta["chunk_index"] = ci
-                        cmeta["n_chunks"] = n_chunks
-                        cmeta["char_start"] = c0
-                        cmeta["char_end"] = c1
-                        page = _page_for_offset(doc_text, c0)
-                        if page is not None:
-                            cmeta["page"] = page
-                        documents.append(self.chroma_client.truncate_text(chunk_text))
-                        metadatas.append(cmeta)
-                        ids.append(f"{item_key}#{ci}")
-                else:
-                    # Truncate to fit the configured embedding model's token limit
-                    documents.append(self.chroma_client.truncate_text(doc_text))
-                    metadatas.append(metadata)
-                    ids.append(item_key)
-
-                item_keys_order.append(item_key)
-                stats["processed"] += 1
-
-            except Exception as e:
-                logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
-                stats["errors"] += 1
+        documents = slice_work["documents"]
+        metadatas = slice_work["metadatas"]
+        ids = slice_work["ids"]
+        item_keys_order = slice_work["item_keys_order"]
+        existing_item_keys = slice_work["existing_item_keys"]
 
         # Add documents to ChromaDB if any
         if documents:
-            # Which items already existed (drives added-vs-updated). When
-            # chunking, also clear an item's stale passages before re-adding so
-            # a shrinking document never leaves orphaned chunks behind.
-            existing_item_keys: set[str] = set()
-            if not force_rebuild:
-                if chunking:
-                    probe_ids = [f"{k}#0" for k in item_keys_order]
-                    existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
-                    existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
-                    if hasattr(self.chroma_client, "delete_item_chunks"):
-                        for k in dict.fromkeys(item_keys_order):
-                            try:
-                                self.chroma_client.delete_item_chunks(k)
-                            except Exception as e:
-                                logger.debug(f"delete_item_chunks({k}) failed: {e}")
-                else:
-                    existing_item_keys = self.chroma_client.get_existing_ids(ids)
-
             try:
                 self.chroma_client.upsert_documents(documents, metadatas, ids)
                 for k in item_keys_order:
@@ -1959,6 +2549,9 @@ class ZoteroSemanticSearch:
                         stats["updated"] += 1
                     else:
                         stats["added"] += 1
+                # Embeddings are stored — the transient fulltext cache has
+                # served its purpose for these items.
+                stats["cache_evicted"] = self._evict_fulltext_cache(item_keys_order)
             except Exception as e:
                 # Batch failed — collect failures for end-of-run retry.
                 # ChromaDB's ONNX tokenizer can fail intermittently in bursts;
@@ -1977,14 +2570,160 @@ class ZoteroSemanticSearch:
 
         return stats
 
-    def get_openai_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Refresh and return OpenAI Batch API status for the latest run or selected batches."""
+    # -- Realtime streaming indexer ------------------------------------------
+    #
+    # The three methods below are the streaming counterpart to
+    # `_process_item_batch`: instead of blocking on one slice's embeddings
+    # before the outer loop can prepare the next slice, `update_database`
+    # dispatches each slice's sub-batches to a persistent worker pool and
+    # keeps preparing/dispatching further slices while earlier ones are
+    # still in flight, draining completed sub-batches opportunistically.
+    #
+    # Every `chroma_client` call in this trio happens on the orchestrator
+    # (calling) thread only — `_dispatch_slice` submits work but never reads
+    # results, `_drain_futures` only touches the in-memory `slices` buffer,
+    # and `_finalize_slice` is invoked by `_drain_futures` from the same
+    # thread that's driving the loop in `update_database`. Pool worker
+    # threads only ever call the embedding function itself. This keeps
+    # ChromaDB access single-threaded exactly as it is today, since
+    # `chroma_client` (SQLite-backed) has no locking of its own around
+    # concurrent access.
+
+    def _dispatch_slice(
+        self,
+        slice_work: dict[str, Any],
+        embedding_function: Any,
+        request_batch_size: int,
+        pool: ThreadPoolExecutor,
+        in_flight: dict[Any, tuple[int, int, int]],
+        slices: dict[int, dict[str, Any]],
+        slice_id: int,
+        max_in_flight: int,
+        drain_blocking: Any,
+    ) -> None:
+        """Split `slice_work`'s documents into `request_batch_size` sub-batches
+        and submit each to `pool`. A sub-batch call is `embedding_function(docs)`
+        — with <= request_batch_size docs this always takes
+        RemoteEmbeddingFunction.__call__'s existing single-sub-batch sequential
+        branch, so it reuses the already-thread-safe rate-limited embed path
+        with no new lower-level API.
+
+        `max_in_flight`/`drain_blocking` bound how far dispatch can run ahead
+        of completion: checked before *every* sub-batch submission, not just
+        once per slice — with chunking, a single slice can hold far more
+        sub-batches than `max_in_flight` (a 200-item slice can chunk into
+        thousands of passages), so a per-slice-only check would let one
+        slice alone blow past the cap before it's ever enforced.
+        """
+        ids = slice_work["ids"]
+        n = len(ids)
+        slices[slice_id] = {**slice_work, "embeddings": [None] * n, "n_pending": 0, "error": None}
+        if n == 0:
+            return
+        size = request_batch_size or n  # falsy request_batch_size => one request
+        documents = slice_work["documents"]
+        starts = list(range(0, n, size))
+        slices[slice_id]["n_pending"] = len(starts)
+        for start in starts:
+            while len(in_flight) >= max_in_flight:
+                drain_blocking()
+            end = min(start + size, n)
+            future = pool.submit(embedding_function, documents[start:end])
+            in_flight[future] = (slice_id, start, end)
+
+    def _drain_futures(
+        self,
+        in_flight: dict[Any, tuple[int, int, int]],
+        slices: dict[int, dict[str, Any]],
+        on_slice_done: Any,
+        block: bool,
+    ) -> None:
+        """Harvest completed sub-batch futures — blocking for at least one if
+        `block`, otherwise a non-blocking sweep — fold each into its slice's
+        embeddings buffer, and call `on_slice_done(slice_id)` once a slice's
+        sub-batches have all resolved (successfully or not).
+        """
+        if not in_flight:
+            return
+        if block:
+            done = futures_wait(list(in_flight.keys()), return_when=FIRST_COMPLETED).done
+        else:
+            done = {f for f in in_flight if f.done()}
+        for future in done:
+            slice_id, start, end = in_flight.pop(future)
+            st = slices[slice_id]
+            try:
+                st["embeddings"][start:end] = future.result()
+            except Exception as e:
+                # First error wins; the slice is finalized as failed once
+                # every one of its sub-batches has resolved either way.
+                if st["error"] is None:
+                    st["error"] = e
+            st["n_pending"] -= 1
+            if st["n_pending"] == 0:
+                on_slice_done(slice_id)
+
+    def _finalize_slice(
+        self,
+        slice_id: int,
+        slices: dict[int, dict[str, Any]],
+        stats: dict[str, Any],
+        _failed_docs: list,
+    ) -> int:
+        """Write a fully-embedded slice via upsert_embeddings and credit
+        stats, or defer the whole slice to `_failed_docs` on any sub-batch
+        failure — matching `_process_item_batch`'s all-or-nothing failure
+        granularity (today, one bad sub-batch inside
+        RemoteEmbeddingFunction.__call__ already fails its entire
+        upsert_documents call the same way). Returns items completed, for
+        progress reporting. Orchestrator-thread only.
+        """
+        st = slices.pop(slice_id)
+        documents, metadatas, ids = st["documents"], st["metadatas"], st["ids"]
+        item_keys_order = st["item_keys_order"]
+        existing_item_keys = st["existing_item_keys"]
+
+        stats["processed_items"] += st["prep_stats"]["processed"]
+        stats["skipped_items"] += st["prep_stats"]["skipped"]
+        stats["errors"] += st["prep_stats"]["errors"]
+
+        if not documents:
+            return len(item_keys_order)
+
+        if st["error"] is not None:
+            logger.warning(f"Slice embedding failed ({st['error']}), saving for retry")
+            for j in range(len(documents)):
+                _failed_docs.append((documents[j], metadatas[j], ids[j]))
+            stats["errors"] += len(documents)
+            return len(item_keys_order)
+
+        try:
+            self.chroma_client.upsert_embeddings(documents, metadatas, ids, st["embeddings"])
+            for k in item_keys_order:
+                if k in existing_item_keys:
+                    stats["updated_items"] += 1
+                else:
+                    stats["added_items"] += 1
+            stats["cache_evicted"] = stats.get("cache_evicted", 0) + self._evict_fulltext_cache(item_keys_order)
+        except Exception as e:
+            logger.warning(f"Slice upsert_embeddings failed ({e}), saving for retry")
+            for j in range(len(documents)):
+                _failed_docs.append((documents[j], metadatas[j], ids[j]))
+            stats["errors"] += len(documents)
+
+        return len(item_keys_order)
+
+    def _get_batch_status(self, provider: str, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Refresh and return Batch API status for the latest run or selected batches."""
+        ops = _BATCH_PROVIDER_OPS[provider]
+        module = ops["module"]
+        label = ops["label"]
         selected_ids = set(batch_ids or [])
-        manifest = openai_batch.find_manifest(
+        manifest = module.find_manifest(
             config_path=self.config_path,
             batch_id=next(iter(selected_ids), None),
         )
-        manifest = openai_batch.refresh_manifest_status(
+        manifest = module.refresh_manifest_status(
             manifest,
             embedding_config=self.chroma_client.embedding_config,
             batch_ids=selected_ids or None,
@@ -1995,8 +2734,9 @@ class ZoteroSemanticSearch:
         ]
         missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
         if missing_ids:
-            raise FileNotFoundError(f"No OpenAI batch manifest entries found for: {', '.join(sorted(missing_ids))}")
+            raise FileNotFoundError(f"No {label} batch manifest entries found for: {', '.join(sorted(missing_ids))}")
         return {
+            "provider": provider,
             "run_id": manifest.get("run_id"),
             "manifest_path": manifest.get("manifest_path"),
             "model": manifest.get("model"),
@@ -2004,14 +2744,35 @@ class ZoteroSemanticSearch:
             "batches": batches,
         }
 
-    def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Import completed OpenAI Batch API embeddings into ChromaDB."""
+    def get_openai_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Refresh and return OpenAI Batch API status for the latest run or selected batches."""
+        return self._get_batch_status("openai", batch_ids)
+
+    def get_gemini_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Refresh and return Gemini Batch API status for the latest run or selected batches."""
+        return self._get_batch_status("gemini", batch_ids)
+
+    def _import_batch(
+        self,
+        provider: str,
+        batch_ids: list[str] | None = None,
+        _skip_lock: bool = False,
+    ) -> dict[str, Any]:
+        """Import completed Batch API embeddings into ChromaDB.
+
+        ``_skip_lock`` is for the auto-loop, which already holds the update
+        lock via ``update_database`` — re-acquiring would self-deadlock.
+        """
+        ops = _BATCH_PROVIDER_OPS[provider]
+        module = ops["module"]
+        label = ops["label"]
+        importable_states = ops["importable_states"]
         selected_ids = set(batch_ids or [])
-        manifest = openai_batch.find_manifest(
+        manifest = module.find_manifest(
             config_path=self.config_path,
             batch_id=next(iter(selected_ids), None),
         )
-        manifest = openai_batch.refresh_manifest_status(
+        manifest = module.refresh_manifest_status(
             manifest,
             embedding_config=self.chroma_client.embedding_config,
             batch_ids=selected_ids or None,
@@ -2024,24 +2785,25 @@ class ZoteroSemanticSearch:
         ]
         missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
         if missing_ids:
-            raise FileNotFoundError(f"No OpenAI batch manifest entries found for: {', '.join(sorted(missing_ids))}")
+            raise FileNotFoundError(f"No {label} batch manifest entries found for: {', '.join(sorted(missing_ids))}")
         if not batches:
-            raise ValueError("No matching OpenAI batches found in the local manifest")
+            raise ValueError(f"No matching {label} batches found in the local manifest")
         if manifest.get("force_full_rebuild") and selected_ids and len(batches) != len(all_batches):
-            raise RuntimeError("Force-rebuild OpenAI batch runs must be imported as a complete run")
+            raise RuntimeError(f"Force-rebuild {label} batch runs must be imported as a complete run")
         if manifest.get("force_full_rebuild"):
             incomplete = [
-                batch.get("batch_id")
+                batch.get("batch_id") or "(pending)"
                 for batch in all_batches
-                if not batch.get("imported_at") and batch.get("status") != "completed"
+                if not batch.get("imported_at") and _entry_state(ops, batch) not in importable_states
             ]
             if incomplete:
                 raise RuntimeError(
-                    "Force-rebuild OpenAI batch runs can only be imported after all batches complete: "
+                    f"Force-rebuild {label} batch runs can only be imported after all batches complete: "
                     + ", ".join(incomplete)
                 )
 
         stats = {
+            "provider": provider,
             "run_id": manifest.get("run_id"),
             "manifest_path": manifest.get("manifest_path"),
             "batches_seen": len(batches),
@@ -2056,13 +2818,11 @@ class ZoteroSemanticSearch:
         }
 
         lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
-        lock_cm = _acquire_update_lock(lock_path)
-        acquired = lock_cm.__enter__()
-        if not acquired:
-            lock_cm.__exit__(None, None, None)
-            raise RuntimeError(f"Another semantic-search update is already running (lock held at {lock_path})")
+        lock_ctx = contextlib.nullcontext(True) if _skip_lock else _acquire_update_lock(lock_path)
+        with lock_ctx as acquired:
+            if not acquired:
+                raise RuntimeError(f"Another semantic-search update is already running (lock held at {lock_path})")
 
-        try:
             already_imported = any(batch.get("imported_at") for batch in all_batches)
             if (
                 manifest.get("force_full_rebuild")
@@ -2071,37 +2831,45 @@ class ZoteroSemanticSearch:
             ):
                 self.chroma_client.reset_collection()
 
-            client = openai_batch.create_openai_client(self.chroma_client.embedding_config)
+            client = ops["create_client"](self.chroma_client.embedding_config)
             for batch in batches:
                 if batch.get("imported_at"):
                     stats["batches_skipped"] += 1
                     continue
-                if batch.get("status") != "completed":
+                if not batch.get("batch_id"):
+                    # Pending chunk not yet submitted (throttled run); it will
+                    # be submitted by the auto-loop or a later import call.
+                    stats["batches_skipped"] += 1
+                    continue
+                if _entry_state(ops, batch) not in importable_states:
                     stats["batches_skipped"] += 1
                     stats["errors"].append({
                         "batch_id": batch.get("batch_id"),
-                        "error": f"Batch status is {batch.get('status')}, not completed",
+                        "error": f"Batch status is {batch.get('status')}, not {ops['importable_desc']}",
                     })
                     continue
-                output_file_id = batch.get("output_file_id")
-                if not output_file_id:
+                if ops["uses_error_file"] and not batch.get("output_file_id"):
                     stats["batches_skipped"] += 1
                     stats["errors"].append({"batch_id": batch.get("batch_id"), "error": "Missing output_file_id"})
                     continue
 
-                output_path = Path(batch["records_path"]).with_name(Path(batch["records_path"]).stem + "-output.jsonl")
+                records_path = Path(batch["records_path"])
+                output_path = records_path.with_name(records_path.stem + "-output.jsonl")
                 if output_path.exists():
                     output_text = output_path.read_text(encoding="utf-8")
                 else:
-                    output_text = openai_batch.download_file_text(client, output_file_id, output_path)
-                embeddings_by_id, row_failures = openai_batch.parse_embedding_output(output_text)
+                    output_text = ops["download_output"](client, batch, output_path)
 
-                if batch.get("error_file_id"):
-                    error_path = Path(batch["records_path"]).with_name(Path(batch["records_path"]).stem + "-errors.jsonl")
-                    error_text = openai_batch.download_file_text(client, batch["error_file_id"], error_path)
-                    row_failures.extend(openai_batch.parse_error_output(error_text))
+                chunk_records = module.read_jsonl(records_path)
+                records = {record["id"]: record for record in chunk_records}
+                id_order = [record["id"] for record in chunk_records]
+                embeddings_by_id, row_failures = ops["parse_output"](output_text, id_order)
 
-                records = {record["id"]: record for record in openai_batch.read_jsonl(Path(batch["records_path"]))}
+                if ops["uses_error_file"] and batch.get("error_file_id"):
+                    error_path = records_path.with_name(records_path.stem + "-errors.jsonl")
+                    error_text = module.download_file_text(client, batch["error_file_id"], error_path)
+                    row_failures.extend(module.parse_error_output(error_text))
+
                 ids = [doc_id for doc_id in embeddings_by_id if doc_id in records]
                 unexpected_output_ids = [doc_id for doc_id in embeddings_by_id if doc_id not in records]
                 failure_ids = {
@@ -2137,18 +2905,108 @@ class ZoteroSemanticSearch:
                     stats["imported_items"] += len(ids)
                     stats["updated_items"] += len(existing_ids)
                     stats["added_items"] += len(ids) - len(existing_ids)
+                    # Imported embeddings supersede the transient fulltext
+                    # cache for these items (chunk ids map back to item keys).
+                    # Failed/missing rows are NOT evicted — a rerun of
+                    # update-db must find their extracted text in the cache.
+                    stats["cache_evicted"] = stats.get("cache_evicted", 0) + self._evict_fulltext_cache(
+                        {doc_id.split("#", 1)[0] for doc_id in ids}
+                    )
 
                 batch["imported_at"] = datetime.now().isoformat()
                 batch["imported_count"] = len(ids)
                 stats["batches_imported"] += 1
 
-            openai_batch.save_manifest(manifest)
+            module.save_manifest(manifest)
             if all(batch.get("imported_at") for batch in all_batches):
                 self.update_config["last_update"] = datetime.now().isoformat()
                 self._save_update_config(last_sync_version=manifest.get("target_sync_version"))
             return stats
-        finally:
-            lock_cm.__exit__(None, None, None)
+
+    def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Import completed OpenAI Batch API embeddings into ChromaDB."""
+        return self._import_batch("openai", batch_ids)
+
+    def import_gemini_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Import completed Gemini Batch API embeddings into ChromaDB."""
+        return self._import_batch("gemini", batch_ids)
+
+    def auto_loop_batch_pipeline(
+        self,
+        provider: str,
+        poll_interval: int = 60,
+        max_enqueued_tokens: int | None = None,
+        stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Drive a throttled batch run to completion: poll → import → submit pending.
+
+        Loops until every manifest entry for the latest run is imported, or
+        until no further progress is possible (all remaining batches terminal
+        with failures, and nothing left to submit). The on-disk manifest is
+        always consistent, so Ctrl-C or a crash resumes cleanly on the next
+        ``batch-import`` or ``--auto-loop`` invocation.
+
+        Must be called with the update lock already held (``update_database``);
+        it uses ``_skip_lock`` on its internal imports.
+        """
+        import time
+
+        ops = _BATCH_PROVIDER_OPS[provider]
+        module = ops["module"]
+        label = ops["label"]
+        terminal_states = ops["terminal_states"]
+        aggregate = {"provider": provider, "polls": 0, "imported_items": 0, "submitted_chunks": 0}
+
+        while True:
+            try:
+                import_stats = self._import_batch(provider, _skip_lock=True)
+                aggregate["imported_items"] += import_stats.get("imported_items", 0)
+            except RuntimeError as e:
+                # Force-rebuild manifests are all-or-nothing: _import_batch
+                # refuses until every batch is importable. That state is
+                # expected mid-run — keep polling.
+                logger.debug(f"auto-loop import deferred: {e}")
+            aggregate["polls"] += 1
+
+            manifest = module.find_manifest(config_path=self.config_path)
+            client = ops["create_client"](self.chroma_client.embedding_config)
+            submitted = module.submit_pending_batches(
+                manifest,
+                embedding_config=self.chroma_client.embedding_config,
+                max_enqueued_tokens=max_enqueued_tokens,
+                client=client,
+            )
+            aggregate["submitted_chunks"] += submitted
+
+            entries = manifest.get("batches", [])
+            remaining = [b for b in entries if not b.get("imported_at")]
+            if not remaining:
+                break
+            active = [
+                b for b in remaining
+                if b.get("batch_id") and _entry_state(ops, b) not in terminal_states
+            ]
+            if not active and submitted == 0:
+                failed = [b.get("batch_id") or "(pending)" for b in remaining]
+                _report(
+                    f"  [{label} auto-loop] no progress possible — {len(remaining)} chunk(s) "
+                    f"failed or are stuck ({', '.join(failed)}). Inspect with 'zotero-mcp batch-status'.\n"
+                )
+                aggregate["stalled"] = failed
+                break
+
+            n_pending = sum(1 for b in remaining if b.get("status") == "pending")
+            _report(
+                f"  [{label} auto-loop] {len(entries) - len(remaining)}/{len(entries)} chunks imported, "
+                f"{submitted} newly submitted, {n_pending} pending; next poll in {poll_interval}s.\n"
+            )
+            time.sleep(poll_interval)
+
+        if "stalled" not in aggregate:
+            _report(f"  [{label} auto-loop] run complete: {aggregate['imported_items']} embeddings imported.\n")
+        if stats is not None:
+            stats["auto_loop"] = aggregate
+        return aggregate
 
     def search(self,
                query: str,
@@ -2283,13 +3141,21 @@ class ZoteroSemanticSearch:
         """Get status information about the semantic search database."""
         collection_info = self.chroma_client.get_collection_info()
 
+        # One "<provider>_batch" entry per batch-capable provider (today:
+        # "openai_batch"/"gemini_batch", unchanged in shape from before this
+        # was generalized — callers like cli.py key off those exact names).
+        batch_status = {
+            f"{provider}_batch": {
+                "enabled": self._load_batch_enabled(provider),
+                "active": self._resolve_batch_enabled(provider, None),
+            }
+            for provider in batch_capable_providers()
+        }
+
         return {
             "collection_info": collection_info,
             "update_config": self.update_config,
-            "openai_batch": {
-                "enabled": self._load_openai_batch_enabled(),
-                "active": self._resolve_openai_batch_enabled(None),
-            },
+            **batch_status,
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
         }

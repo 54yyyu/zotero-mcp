@@ -36,7 +36,7 @@ def test_extract_fulltext_preserves_long_text(tmp_path):
     reader = FakeLocalZoteroReader(fake_text=long_text, fake_pdf_path=fake_pdf)
     result = reader._extract_fulltext_for_item(1)
     assert result is not None
-    text, source = result
+    text, source, _was_cached = result
     assert len(text) == 25000, f"Text was truncated to {len(text)} chars"
     assert source == "pdf"
 

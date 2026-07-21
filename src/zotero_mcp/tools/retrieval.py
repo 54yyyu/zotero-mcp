@@ -164,7 +164,12 @@ def get_item_fulltext(
                 elif pdf_max_pages is None:
                     pdf_max_pages = DEFAULT_FULLTEXT_DISPLAY_MAX
 
-                with LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
+                # fulltext_cache_enabled=False: this reader extracts with the
+                # *display* page cap, which may be lower than the indexing cap
+                # — caching its output would poison update-db with truncated text.
+                with LocalZoteroReader(
+                    db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, fulltext_cache_enabled=False
+                ) as reader:
                     local_item = reader.get_item_by_key(item_key)
                     if local_item:
                         extracted = reader.extract_fulltext_for_item(local_item.item_id)

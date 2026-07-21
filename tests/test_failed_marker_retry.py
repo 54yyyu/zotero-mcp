@@ -60,9 +60,9 @@ class FakeReader:
     def get_fulltext_meta_for_item(self, item_id):
         return [list(row) for row in self._attachments]
 
-    def extract_fulltext_for_item(self, item_id):
+    def extract_fulltext_for_item(self, item_id, item_key=None):
         self.extract_calls += 1
-        return ("extracted text", "pdf")
+        return ("extracted text", "pdf", False)
 
 
 class FakeChromaClient:

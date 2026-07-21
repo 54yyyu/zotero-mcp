@@ -542,18 +542,6 @@ class TestTiktokenSpecialTokenHandling:
         result = client.truncate_text(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
         assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
 
-    def test_truncate_to_tokens_with_special_tokens(self):
-        from zotero_mcp.semantic_search import _truncate_to_tokens
-
-        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5)
-        assert result == self._expected_truncation(self.SPECIAL_TOKEN_TEXT, 5)
-
-    def test_truncate_to_tokens_preserves_special_token_text(self):
-        from zotero_mcp.semantic_search import _truncate_to_tokens
-
-        result = _truncate_to_tokens(self.SPECIAL_TOKEN_TEXT, max_tokens=5000)
-        assert result == self.SPECIAL_TOKEN_TEXT
-
 
 # ---------------------------------------------------------------------------
 # Fix 5: Cross-encoder re-ranking

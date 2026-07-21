@@ -56,6 +56,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21",
     "pytest-timeout>=2.0.0",
+    "pytest-httpserver>=1.0.8",
     "ruff>=0.9.0",
 ]
 
@@ -87,6 +88,22 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 timeout = 30
 testpaths = ["tests"]
+# Without this, pytest resolves conftest.py's module name purely from its
+# file stem when there's no __init__.py chain (repo convention: no
+# tests/**/__init__.py). tests/live/conftest.py would then collide with
+# tests/conftest.py under the shared name "conftest" — pytest explicitly
+# clears sys.modules["conftest"] before loading the second one (see
+# _pytest.config.PytestPluginManager._importconftest), which silently
+# breaks every existing `from conftest import FakeZotero` (etc.) import in
+# tests/*.py for the rest of the session. Enabling namespace-package-aware
+# resolution gives each conftest.py a distinct dotted name (e.g.
+# "tests.conftest" vs "tests.live.conftest") without requiring __init__.py
+# anywhere or switching --import-mode (which would itself break the bare
+# `from conftest import X` convention used throughout tests/).
+consider_namespace_packages = true
 filterwarnings = [
     "ignore::DeprecationWarning",
+]
+markers = [
+    "live: hits a real network service or local fault-injection stub; skipped unless ZOTERO_MCP_LIVE_TESTS=1",
 ]

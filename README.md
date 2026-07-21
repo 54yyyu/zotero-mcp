@@ -199,6 +199,12 @@ zotero-mcp update-db --openai-batch
 zotero-mcp openai-batch-status
 zotero-mcp openai-batch-import
 
+# Throttled, fully autonomous batch indexing (recommended for large libraries):
+# submits only what fits your provider tier's enqueued-token quota, then polls,
+# imports finished batches, and submits the next chunks until everything is indexed
+zotero-mcp update-db --openai-batch --auto-loop
+zotero-mcp update-db --gemini-batch --auto-loop --batch-max-tokens 4500000  # Tier 2
+
 # Force realtime OpenAI embeddings even if Batch API is enabled in config
 zotero-mcp update-db --no-openai-batch
 
@@ -371,6 +377,12 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
 - OpenAI Batch API indexing is configured by `zotero-mcp setup` and can be overridden with
   `zotero-mcp update-db --openai-batch` or `--no-openai-batch`
+- Batch throttling: `semantic_search.openai_batch.batch_max_enqueued_tokens` and
+  `semantic_search.gemini_batch.batch_max_enqueued_tokens` in `config.json` cap how many
+  estimated tokens may be queued with the provider at once (defaults are safe Tier 1 limits:
+  2,500,000 OpenAI / 450,000 Gemini; Tier 2 ≈ 18M / 4.5M, Tier 3 ≈ 90M / 9M).
+  `batch_max_requests` caps requests per uploaded file (default 50,000). CLI overrides:
+  `--batch-max-tokens` / `--batch-max-requests`.
 - `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
@@ -403,6 +415,8 @@ zotero-mcp update --force                  # Force update even if up to date
 # Semantic search database management
 zotero-mcp update-db                       # Update semantic search database (fast, metadata-only)
 zotero-mcp update-db --openai-batch        # Submit OpenAI embeddings through Batch API
+zotero-mcp update-db --openai-batch --auto-loop  # Throttled autonomous batch indexing to completion
+zotero-mcp update-db --gemini-batch --auto-loop --batch-max-tokens 4500000  # Gemini Tier 2
 zotero-mcp update-db --no-openai-batch     # Force realtime OpenAI embeddings for this run
 zotero-mcp openai-batch-status             # Check latest OpenAI embedding batch status
 zotero-mcp openai-batch-import             # Import completed OpenAI batch embeddings
@@ -606,6 +620,37 @@ All add tools take a `collections` parameter accepting collection keys, names, o
 ```bash
 uv run pytest tests/     # 294 tests, ~2 seconds
 ```
+
+### Live Provider Tests (optional)
+`tests/live/` exercises the shared embedding-provider machinery
+(`RemoteEmbeddingFunction`) against real backends instead of mocks:
+sub-batching, parallel-request ordering, adaptive rate limiting, and retry
+behavior against a real local Ollama server; HTTP fault injection (429/500,
+`Retry-After`, exhausted retries) against a local stub server; ChromaDB
+persist/reload round-trips on scratch directories; and sentinel-vector drift
+checks that catch accidental changes to text-shaping or provider defaults.
+
+A plain `uv run pytest tests/` collects these tests but always skips them —
+none of it ever touches the network by default. To actually run them:
+
+1. Start a local Ollama server and pull the embedding model it needs:
+   ```bash
+   ollama serve
+   ollama pull nomic-embed-text
+   ```
+2. Run the live suite:
+   ```bash
+   ZOTERO_MCP_LIVE_TESTS=1 uv run pytest tests/live/ -v
+   ```
+
+The OpenAI and Gemini live tests are gated separately: they only run when
+your `~/.config/zotero-mcp/config.json` has that provider configured as
+`semantic_search.embedding_model`, in which case they reuse your production
+`embedding_config` (model name, API key) to make a handful of real,
+negligible-cost API calls. The reasoning is that whoever runs the live suite
+is already using that provider in production, so the calls are exercising a
+configuration they need anyway. A provider that isn't configured on your
+machine skips cleanly instead of failing.
 
 ### Integration Test Plan
 A 45-point live integration test plan is included at `docs/integration-test-plan.md`. It's designed to be given to Claude in Claude Desktop, which will execute each test against your real Zotero library. Tests cover all tools, PDF attachment cascade, attach_mode, BetterBibTeX lookups, and multi-step showcase prompts. See the file for full instructions.

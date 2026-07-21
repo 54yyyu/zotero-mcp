@@ -3,6 +3,8 @@
 import os
 import pytest
 
+from zotero_mcp import fulltext_cache as _fulltext_cache_module
+
 # Marker for tests that use tmp_path and fail on GitHub Actions
 skip_on_ci = pytest.mark.skipif(
     os.environ.get("CI") == "true",
@@ -162,6 +164,28 @@ class _FakeResponse:
     @property
     def is_success(self):
         return 200 <= self.status_code < 300
+
+
+@pytest.fixture(autouse=True)
+def _isolate_fulltext_cache_default_root(tmp_path, monkeypatch):
+    """Redirect the transient fulltext cache to a per-test tmp directory
+    whenever a test exercises it with ``config_path=None``.
+
+    Several test files build a ``ZoteroSemanticSearch`` without a config
+    path (e.g. web-API fulltext tests). Without this fixture, unmocked
+    caching code would fall back to the real
+    ``~/.config/zotero-mcp/fulltext_cache`` and both pollute the developer's
+    actual config directory and leak stale entries between unrelated test
+    runs (item keys like "A"/"B" collide across test files).
+    """
+    real_get_root = _fulltext_cache_module.get_fulltext_cache_root
+
+    def _isolated_get_root(config_path=None):
+        if config_path is None:
+            config_path = str(tmp_path / "_autouse_fulltext_cache_home" / "config.json")
+        return real_get_root(config_path)
+
+    monkeypatch.setattr(_fulltext_cache_module, "get_fulltext_cache_root", _isolated_get_root)
 
 
 @pytest.fixture
