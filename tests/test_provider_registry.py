@@ -399,7 +399,9 @@ def test_zotero_embedding_model_env_fills_absent_model(monkeypatch, tmp_path):
 
 
 def test_all_expected_providers_registered():
-    assert set(PROVIDERS) == {"openai", "gemini", "ollama", "huggingface", "default"}
+    # "voyage" was added in Phase 5 as the extensibility proof (see
+    # tests/test_voyage_provider.py) — this enumeration grows with it.
+    assert set(PROVIDERS) == {"openai", "gemini", "ollama", "huggingface", "default", "voyage"}
 
 
 def test_chars_per_token_values():

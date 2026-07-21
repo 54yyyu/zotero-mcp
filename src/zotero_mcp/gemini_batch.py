@@ -29,6 +29,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from zotero_mcp.embeddings.providers.gemini import GeminiEmbeddingFunction
 from zotero_mcp.embeddings.registry import attach_batch_adapter
 
 from . import batch_common
@@ -135,8 +136,6 @@ def apply_text_shaping(text: str, model_name: str) -> str:
     request field instead (see build_embedding_request).
     """
     if _is_v2_model(model_name):
-        from .chroma_client import GeminiEmbeddingFunction
-
         return f"{GeminiEmbeddingFunction.V2_DOC_PREFIX}{text}"
     return text
 

@@ -3,15 +3,14 @@ exist and how do we build/configure them", replacing the
 ``_create_embedding_function`` if/elif chain and the three near-identical
 env-merge blocks in ``chroma_client.create_chroma_client``.
 
-Phase 2 of the embedding-provider refactor. This module is deliberately NOT
-imported from ``zotero_mcp.embeddings.__init__`` (which is imported by
-``chroma_client`` at module scope): ``ef_factory`` callables need the EF
-classes that are still defined in ``chroma_client.py`` (they move to
-``embeddings/providers/`` in a later phase), so importing them eagerly here
-would create ``chroma_client -> embeddings -> registry -> chroma_client``.
-Each factory below does a *late* (call-time) ``import zotero_mcp.chroma_client``
-instead, and callers reach this module directly as
-``zotero_mcp.embeddings.registry`` rather than via the package ``__init__``.
+Phase 2 of the embedding-provider refactor; Phase 5 moved the concrete EF
+classes out of ``chroma_client.py`` into ``embeddings/providers/``, so this
+module now imports its ``ef_factory`` callables' classes directly from those
+provider modules at top level (no more late/call-time imports): the provider
+modules depend only on ``embeddings/base.py``, never on ``chroma_client`` or
+this module, so there is no import cycle. This module is still deliberately
+NOT imported from ``zotero_mcp.embeddings.__init__`` — callers reach it
+directly as ``zotero_mcp.embeddings.registry``.
 
 Registered names (``"openai"``, ``"gemini"``, ``"huggingface"``, ``"ollama"``)
 are frozen — ChromaDB persists the name in a collection's config and rebuilds
@@ -27,6 +26,12 @@ import dataclasses
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from zotero_mcp.embeddings.providers.gemini import GeminiEmbeddingFunction
+from zotero_mcp.embeddings.providers.huggingface import HuggingFaceEmbeddingFunction
+from zotero_mcp.embeddings.providers.ollama import OllamaEmbeddingFunction
+from zotero_mcp.embeddings.providers.openai import OpenAIEmbeddingFunction
+from zotero_mcp.embeddings.providers.voyage import VoyageEmbeddingFunction
 
 
 @dataclass(frozen=True)
@@ -115,8 +120,6 @@ def attach_batch_adapter(name: str, adapter: Any) -> ProviderSpec:
 
 
 def _openai_ef_factory(config: dict[str, Any]) -> Any:
-    from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
-
     return OpenAIEmbeddingFunction(
         model_name=config.get("model_name", "text-embedding-3-small"),
         api_key=config.get("api_key"),
@@ -130,8 +133,6 @@ def _openai_ef_factory(config: dict[str, Any]) -> Any:
 
 
 def _gemini_ef_factory(config: dict[str, Any]) -> Any:
-    from zotero_mcp.chroma_client import GeminiEmbeddingFunction
-
     return GeminiEmbeddingFunction(
         model_name=config.get("model_name", "gemini-embedding-001"),
         api_key=config.get("api_key"),
@@ -144,8 +145,6 @@ def _gemini_ef_factory(config: dict[str, Any]) -> Any:
 
 
 def _ollama_ef_factory(config: dict[str, Any]) -> Any:
-    from zotero_mcp.chroma_client import OllamaEmbeddingFunction
-
     return OllamaEmbeddingFunction(
         model_name=config.get("model_name", "qwen3-embedding"),
         base_url=config.get("base_url"),
@@ -157,8 +156,6 @@ def _ollama_ef_factory(config: dict[str, Any]) -> Any:
 
 
 def _huggingface_ef_factory(config: dict[str, Any]) -> Any:
-    from zotero_mcp.chroma_client import HuggingFaceEmbeddingFunction
-
     return HuggingFaceEmbeddingFunction(model_name=config.get("model_name"))
 
 
@@ -168,6 +165,18 @@ def _default_ef_factory(config: dict[str, Any]) -> Any:
     ef = chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
     ef.max_input_tokens = 256  # all-MiniLM-L6-v2 max_seq_length (today's fallback branch)
     return ef
+
+
+def _voyage_ef_factory(config: dict[str, Any]) -> Any:
+    return VoyageEmbeddingFunction(
+        model_name=config.get("model_name", "voyage-3.5"),
+        api_key=config.get("api_key"),
+        base_url=config.get("base_url"),
+        request_batch_size=config.get("request_batch_size"),
+        rate_limit_rps=config.get("rate_limit_rps"),
+        max_parallel_requests=config.get("max_parallel_requests"),
+        max_retries=config.get("max_retries"),
+    )
 
 
 # chars_per_token values mirror OPENAI_CHARS_PER_TOKEN (openai_batch.py) and
@@ -247,6 +256,22 @@ register_provider(
     )
 )
 
+register_provider(
+    ProviderSpec(
+        name="voyage",
+        label="Voyage AI",
+        default_model="voyage-3.5",
+        ef_factory=_voyage_ef_factory,
+        env=EnvSpec(
+            api_key_vars=("VOYAGE_API_KEY",),
+            model_var="VOYAGE_EMBEDDING_MODEL",
+            base_url_var="VOYAGE_BASE_URL",
+            requires_api_key=True,
+        ),
+        chars_per_token=4.0,
+    )
+)
+
 
 def resolve_provider(embedding_model: str) -> tuple[ProviderSpec, dict[str, Any]]:
     """Resolve an ``embedding_model`` string to its ``ProviderSpec`` plus any
@@ -254,19 +279,30 @@ def resolve_provider(embedding_model: str) -> tuple[ProviderSpec, dict[str, Any]
     HuggingFace alias -> concrete model_name mapping).
 
     Reproduces ``ChromaClient._create_embedding_function``'s old if/elif
-    chain exactly:
-      - ``"openai"`` / ``"gemini"`` / ``"ollama"`` -> that provider, no extras.
+    chain exactly, generalized so any newly registered provider is reachable
+    by its bare name with zero changes to this function:
+      - any ``embedding_model`` that is itself a key in ``PROVIDERS`` other
+        than ``"huggingface"``/``"default"`` -> that provider, no extras. This
+        is what makes adding a new provider (e.g. ``"voyage"``) resolvable
+        just by registering its spec — the literal strings ``"openai"``,
+        ``"gemini"``, ``"ollama"`` used to be hardcoded here; "voyage" reaches
+        this same branch with no further change to this function.
       - ``"qwen"`` -> huggingface, extra ``{"model_name": "Qwen/Qwen3-Embedding-0.6B"}``.
       - ``"embeddinggemma"`` -> huggingface, extra ``{"model_name": "google/embeddinggemma-300m"}``.
         Both aliases: an explicit ``model_name`` in embedding_config still wins
         because the caller merges as ``{**extra, **embedding_config}``.
       - any other string that isn't ``"default"`` -> huggingface, extra
-        ``{"model_name": embedding_model}`` (the string itself).
+        ``{"model_name": embedding_model}`` (the string itself). This
+        deliberately keeps the legacy quirk that the literal string
+        ``"huggingface"`` is treated as an HF model name (looked up via this
+        branch, not the direct-name branch above, since "huggingface" is
+        explicitly excluded from it) and never resolves to the huggingface
+        *provider* spec directly.
       - ``"default"`` -> the "default" spec (ChromaDB's built-in EF).
     """
     huggingface_spec = PROVIDERS["huggingface"]
 
-    if embedding_model in ("openai", "gemini", "ollama"):
+    if embedding_model in PROVIDERS and embedding_model not in ("huggingface", "default"):
         return PROVIDERS[embedding_model], {}
 
     if embedding_model in huggingface_spec.model_aliases:
