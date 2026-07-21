@@ -308,6 +308,39 @@ def test_chroma_client_upsert_embeddings_passes_precomputed_vectors():
     }
 
 
+def test_upsert_embeddings_splits_by_max_batch_size():
+    """A slice larger than ChromaDB's max_batch_size must be split into
+    multiple collection.upsert() calls, mirroring upsert_documents's existing
+    chunking — otherwise a heavily-chunked realtime slice routed through
+    upsert_embeddings (the streaming indexing path) would overflow it."""
+    class FakeCollection:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def upsert(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class FakeInnerClient:
+        def get_max_batch_size(self):
+            return 2
+
+    client = ChromaClient.__new__(ChromaClient)
+    client.collection = FakeCollection()
+    client.client = FakeInnerClient()
+
+    client.upsert_embeddings(
+        documents=["d1", "d2", "d3", "d4", "d5"],
+        metadatas=[{"i": i} for i in range(5)],
+        ids=[f"id{i}" for i in range(5)],
+        embeddings=[[float(i)] for i in range(5)],
+    )
+
+    assert len(client.collection.calls) == 3
+    assert [c["ids"] for c in client.collection.calls] == [["id0", "id1"], ["id2", "id3"], ["id4"]]
+    assert client.collection.calls[0]["embeddings"] == [[0.0], [1.0]]
+    assert client.collection.calls[2]["embeddings"] == [[4.0]]
+
+
 def test_import_openai_batch_reports_records_missing_from_output(tmp_path, monkeypatch):
     class ImportChromaClient(FakeChromaClient):
         def __init__(self):

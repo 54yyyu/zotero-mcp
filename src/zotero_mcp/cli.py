@@ -420,6 +420,9 @@ def main():
                                       "'semantic_search.extraction.workers' or 1; capped at CPU count / 8)")
     update_db_parser.add_argument("--clear-fulltext-cache", action="store_true",
                                  help="Clear the transient extracted-fulltext cache before running")
+    update_db_parser.add_argument("-v", "--verbose", action="store_true",
+                                 help="Enable verbose output including real-time API load and latency telemetry")
+
     openai_batch_group = update_db_parser.add_mutually_exclusive_group()
     openai_batch_group.add_argument("--openai-batch", dest="openai_batch", action="store_true",
                                    help="Submit OpenAI embeddings through the asynchronous Batch API "
@@ -662,8 +665,14 @@ def main():
             )
             sys.exit(1)
 
+        import logging
+        log_level = logging.INFO if getattr(args, "verbose", False) else logging.WARNING
+        logging.basicConfig(level=log_level, format="%(message)s", force=True)
+
+
         # Setup Zotero environment variables
         setup_zotero_environment()
+
 
         from zotero_mcp.semantic_search import create_semantic_search
 

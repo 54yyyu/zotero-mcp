@@ -37,7 +37,8 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
                  rate_limit_rps: float | None = None,
-                 max_parallel_requests: int | None = None, max_retries: int | None = None):
+                 max_parallel_requests: int | None = None, max_retries: int | None = None,
+                 tokens_per_minute: float | None = None):
         import threading
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         base_url = base_url or os.getenv("OPENAI_BASE_URL")
@@ -66,6 +67,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             rate_limit_rps=rate_limit_rps,
             max_parallel_requests=max_parallel_requests,
             max_retries=max_retries,
+            tokens_per_minute=tokens_per_minute,
         )
 
     @staticmethod
@@ -87,6 +89,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             rate_limit_rps=config.get("rate_limit_rps"),
             max_parallel_requests=config.get("max_parallel_requests"),
             max_retries=config.get("max_retries"),
+            tokens_per_minute=config.get("tokens_per_minute"),
         )
 
     def _wait_for_rate_limit(self) -> None:
@@ -106,7 +109,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
                 time.sleep(wait)
             self._last_request_ts = time.monotonic()
 
-    def _embed_batch(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
+    def _embed_batch(self, texts: list[str], is_query: bool = False) -> tuple[list[list[float]], Any] | list[list[float]]:
         """Issue one OpenAI embeddings request.
 
         ``encoding_format="float"`` is set explicitly. The OpenAI SDK otherwise
@@ -122,12 +125,23 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         The 50%-discount path for embeddings is the Batch API
         (``openai_batch.py``).
         """
-        response = self.client.embeddings.create(
-            model=self.model_name,
-            input=texts,
-            encoding_format="float",
-        )
-        return [data.embedding for data in response.data]
+        try:
+            raw_response = self.client.embeddings.with_raw_response.create(
+                model=self.model_name,
+                input=texts,
+                encoding_format="float",
+            )
+            response = raw_response.parse()
+            headers = dict(raw_response.headers)
+            return [data.embedding for data in response.data], headers
+        except AttributeError:
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=texts,
+                encoding_format="float",
+            )
+            return [data.embedding for data in response.data]
+
 
     def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
         """openai.RateLimitError and 5xx APIStatusError are retryable; honor

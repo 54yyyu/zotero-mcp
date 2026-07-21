@@ -247,12 +247,20 @@ class ChromaClient:
         returned asynchronously without calling the realtime embeddings API.
         """
         try:
-            self.collection.upsert(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids,
-                embeddings=embeddings,
-            )
+            # Same rationale as upsert_documents: ChromaDB rejects batches
+            # larger than its max_batch_size (~5461), and a heavily chunked
+            # slice can exceed that.
+            try:
+                max_batch = int(self.client.get_max_batch_size())
+            except Exception:
+                max_batch = 5000
+            for i in range(0, len(ids), max_batch):
+                self.collection.upsert(
+                    documents=documents[i:i + max_batch],
+                    metadatas=metadatas[i:i + max_batch],
+                    ids=ids[i:i + max_batch],
+                    embeddings=embeddings[i:i + max_batch],
+                )
             logger.info(f"Upserted {len(documents)} precomputed embeddings to ChromaDB collection")
         except Exception as e:
             logger.error(f"Error upserting precomputed embeddings to ChromaDB: {e}")

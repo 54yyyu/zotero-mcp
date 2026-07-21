@@ -21,8 +21,21 @@ lazily on first use instead of requiring ``__init__`` to have run.
 
 from __future__ import annotations
 
+import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+def _safe_int(val: Any) -> int | None:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
 
 try:
     from chromadb import Documents, EmbeddingFunction, Embeddings
@@ -37,7 +50,9 @@ from zotero_mcp.embeddings.ratelimit import AdaptiveRateLimiter
 # Common config keys every RemoteEmbeddingFunction subclass round-trips
 # through get_config()/build_from_config(), read with .get(...) + a default
 # so configs persisted before these keys existed still build.
-COMMON_CONFIG_KEYS = ("request_batch_size", "rate_limit_rps", "max_parallel_requests", "max_retries")
+COMMON_CONFIG_KEYS = (
+    "request_batch_size", "rate_limit_rps", "max_parallel_requests", "max_retries", "tokens_per_minute",
+)
 
 
 class RemoteEmbeddingFunction(EmbeddingFunction):
@@ -70,6 +85,7 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         rate_limit_rps: float | None,
         max_parallel_requests: int | None,
         max_retries: int | None,
+        tokens_per_minute: float | None = None,
     ) -> None:
         """Set the attributes common to every remote provider.
 
@@ -88,6 +104,7 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         self.max_retries = (
             int(max_retries) if max_retries is not None else self.max_retries_default
         )
+        self.tokens_per_minute = float(tokens_per_minute) if tokens_per_minute else None
         # A user-configured rate_limit_rps is a hard cap: adaptation may only
         # lower/restore toward it, never exceed it. Burst is at least the
         # parallelism so workers aren't serialized on a single token.
@@ -95,6 +112,8 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
             initial_rps=self.rate_limit_rps,
             max_rps=self.rate_limit_rps,
             burst=max(4, self.max_parallel_requests),
+            tpm=self.tokens_per_minute,
+            max_tpm=self.tokens_per_minute,
         )
 
     def _common_config(self) -> dict[str, Any]:
@@ -109,6 +128,7 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
                 self, "max_parallel_requests", self.max_parallel_requests_default
             ),
             "max_retries": getattr(self, "max_retries", self.max_retries_default),
+            "tokens_per_minute": getattr(self, "tokens_per_minute", None),
         }
 
     def _get_limiter(self) -> AdaptiveRateLimiter:
@@ -116,7 +136,10 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         if limiter is None:
             rps = getattr(self, "rate_limit_rps", None)
             max_parallel = getattr(self, "max_parallel_requests", 1) or 1
-            limiter = AdaptiveRateLimiter(initial_rps=rps, max_rps=rps, burst=max(4, max_parallel))
+            tpm = getattr(self, "tokens_per_minute", None)
+            limiter = AdaptiveRateLimiter(
+                initial_rps=rps, max_rps=rps, burst=max(4, max_parallel), tpm=tpm, max_tpm=tpm,
+            )
             self.limiter = limiter
         return limiter
 
@@ -180,11 +203,21 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
         """acquire() -> _embed_batch() -> on_success()/on_throttle()+retry."""
         limiter = self._get_limiter()
         max_retries = getattr(self, "max_retries", self.max_retries_default) or 0
+        # Rough estimate, not a precise token count: good enough to pace the
+        # TPM bucket (see ratelimit.py) without tiktoken's per-request CPU
+        # cost. Texts reaching here have already been truncated upstream.
+        estimated_tokens = int(sum(len(str(t)) for t in texts) / self.chars_per_token)
         attempt = 0
+        t0 = time.monotonic()
         while True:
-            limiter.acquire()
+            limiter.acquire(estimated_tokens=estimated_tokens)
             try:
-                result = self._embed_batch(texts, is_query=is_query)
+                res = self._embed_batch(texts, is_query=is_query)
+                headers = None
+                if isinstance(res, tuple) and len(res) == 2:
+                    result, headers = res
+                else:
+                    result = res
             except Exception as exc:
                 retryable, retry_after = self._classify_error(exc)
                 if retryable and attempt < max_retries:
@@ -194,8 +227,44 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
                     continue
                 raise
             else:
+                elapsed_ms = (time.monotonic() - t0) * 1000.0
                 limiter.on_success()
+                self._log_telemetry(len(texts), estimated_tokens, elapsed_ms, headers)
                 return result
+
+    def _log_telemetry(
+        self,
+        chunk_count: int,
+        estimated_tokens: int,
+        elapsed_ms: float,
+        headers: Any | None,
+    ) -> None:
+        provider_name = getattr(self, "name", None)
+        name_str = provider_name() if callable(provider_name) else self.__class__.__name__
+
+        info_str = f"[{name_str} API] Embedded {chunk_count} chunks (~{estimated_tokens} tokens) in {elapsed_ms:.1f}ms"
+
+        if headers and hasattr(headers, "get"):
+            get_h = lambda k: headers.get(k) or headers.get(k.lower()) or headers.get(k.title())
+
+            rem_tok = _safe_int(get_h("x-ratelimit-remaining-tokens"))
+            lim_tok = _safe_int(get_h("x-ratelimit-limit-tokens"))
+            rem_req = _safe_int(get_h("x-ratelimit-remaining-requests"))
+            lim_req = _safe_int(get_h("x-ratelimit-limit-requests"))
+
+            parts = []
+            if rem_tok is not None and lim_tok is not None and lim_tok > 0:
+                tok_load = (1.0 - (rem_tok / lim_tok)) * 100.0
+                parts.append(f"Token Load: {tok_load:.1f}% ({rem_tok:,}/{lim_tok:,} left)")
+            if rem_req is not None and lim_req is not None and lim_req > 0:
+                req_load = (1.0 - (rem_req / lim_req)) * 100.0
+                parts.append(f"Req Load: {req_load:.1f}% ({rem_req:,}/{lim_req:,} left)")
+
+            if parts:
+                info_str += " | " + " | ".join(parts)
+
+        logger.info(info_str)
+
 
     # -- provider hooks ------------------------------------------------------
 

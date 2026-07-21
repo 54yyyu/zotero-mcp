@@ -163,3 +163,84 @@ def test_max_rps_is_a_hard_cap_even_after_recovery_from_throttle():
     for _ in range(1000):
         limiter.on_success()
     assert limiter._rps == 4.0
+
+
+# -- TPM bucket: proactive, tokens-per-minute pacing ------------------------
+#
+# Unlike RPS, this dimension is armed immediately from a configured `tpm`
+# rather than learned from a throttle — see ratelimit.py's module docstring
+# for why (a burst of concurrent large requests can exhaust a whole minute's
+# token budget before RPS-only pacing would ever notice).
+
+
+def test_tpm_unset_makes_estimated_tokens_a_noop():
+    """No tpm configured: acquire() must ignore estimated_tokens entirely,
+    matching pre-existing RPS-only behavior exactly."""
+    limiter, clock, sleeper = _make_limiter(initial_rps=None)
+    for _ in range(20):
+        limiter.acquire(estimated_tokens=1_000_000)
+    assert sleeper.calls == []
+
+
+def test_tpm_armed_from_construction_no_throttle_needed():
+    """Unlike RPS, a configured tpm paces from the very first acquire()."""
+    limiter, clock, sleeper = _make_limiter(initial_rps=None, tpm=60.0, token_burst=10.0)
+    limiter.acquire(estimated_tokens=10)  # exactly drains the 10-token burst
+    assert sleeper.calls == []
+    limiter.acquire(estimated_tokens=10)  # bucket empty: tps = 1.0, so 10s wait
+    assert len(sleeper.calls) == 1
+    assert abs(sleeper.calls[0] - 10.0) < 1e-9
+
+
+def test_tpm_default_burst_is_quarter_of_budget():
+    limiter, clock, sleeper = _make_limiter(initial_rps=None, tpm=400.0)
+    assert limiter._token_capacity == 100.0
+
+
+def test_tpm_and_rps_wait_independently_max_wins():
+    """Both dimensions armed: acquire() must wait for whichever is more
+    restrictive, not sum or ignore either one."""
+    limiter, clock, sleeper = _make_limiter(
+        initial_rps=100.0, burst=1, tpm=60.0, token_burst=1.0,
+    )
+    limiter.acquire(estimated_tokens=1)  # drains both burst=1 buckets
+    assert sleeper.calls == []
+    limiter.acquire(estimated_tokens=1)
+    # RPS wait ~= 1/100 = 0.01s; TPM wait = 1/(60/60) = 1.0s. Must take the max.
+    assert len(sleeper.calls) == 1
+    assert abs(sleeper.calls[0] - 1.0) < 1e-6
+
+
+def test_tpm_oversized_single_request_does_not_deadlock():
+    """A request bigger than the whole burst capacity must wait for the
+    bucket to fill (not forever) and then be let through rather than hang."""
+    limiter, clock, sleeper = _make_limiter(initial_rps=None, tpm=60.0, token_burst=5.0)
+    limiter.acquire(estimated_tokens=50)  # bucket starts full (5.0 >= needed=5.0): no wait
+    assert sleeper.calls == []
+    limiter.acquire(estimated_tokens=50)  # bucket now drained: must wait for it to refill to capacity
+    assert len(sleeper.calls) == 1
+    # tps = 1.0 token/sec; waiting for the bucket to reach its 5.0 cap takes 5s.
+    assert abs(sleeper.calls[0] - 5.0) < 1e-9
+
+
+def test_on_throttle_halves_tpm_only_when_armed():
+    limiter, clock, sleeper = _make_limiter(initial_rps=None, tpm=600.0, min_tpm=1.0)
+    assert limiter._tps == 10.0
+    limiter.on_throttle(retry_after=None)
+    assert limiter._tps == 5.0
+
+
+def test_on_throttle_is_noop_for_tpm_when_unarmed():
+    limiter, clock, sleeper = _make_limiter(initial_rps=1.0, burst=1)
+    limiter.on_throttle(retry_after=None)
+    assert limiter._tps is None
+
+
+def test_on_success_grows_tpm_toward_max_tpm():
+    limiter, clock, sleeper = _make_limiter(
+        initial_rps=None, tpm=60.0, max_tpm=120.0, min_tpm=0.1,
+    )
+    limiter.on_throttle(retry_after=None)  # halve to 0.5 tps
+    for _ in range(200):
+        limiter.on_success()
+    assert limiter._tps == 2.0  # max_tpm=120 -> cap of 2.0 tokens/sec
