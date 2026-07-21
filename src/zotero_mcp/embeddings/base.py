@@ -262,26 +262,13 @@ class RemoteEmbeddingFunction(EmbeddingFunction):
 
             rem_tok = _safe_int(get_h("x-ratelimit-remaining-tokens"))
             lim_tok = _safe_int(get_h("x-ratelimit-limit-tokens"))
-            rem_req = _safe_int(get_h("x-ratelimit-remaining-requests"))
-            lim_req = _safe_int(get_h("x-ratelimit-limit-requests"))
 
-            parts = []
             if rem_tok is not None and lim_tok is not None and lim_tok > 0:
                 tok_load = (1.0 - (rem_tok / lim_tok)) * 100.0
-                parts.append(f"Token Load: {tok_load:.1f}% ({rem_tok:,}/{lim_tok:,} left)")
-            if rem_req is not None and lim_req is not None and lim_req > 0:
-                req_load = (1.0 - (rem_req / lim_req)) * 100.0
-                parts.append(f"Req Load: {req_load:.1f}% ({rem_req:,}/{lim_req:,} left)")
-
-            if parts:
-                info_str += " | " + " | ".join(parts)
+                info_str += f" | Token Load: {tok_load:.1f}% ({rem_tok:,}/{lim_tok:,} left)"
 
         logger.info(info_str)
-        try:
-            from zotero_mcp.semantic_search import _report
-            _report(info_str + "\n")
-        except Exception:
-            pass
+
 
 
 

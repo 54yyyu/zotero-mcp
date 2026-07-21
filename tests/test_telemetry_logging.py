@@ -42,8 +42,7 @@ def test_telemetry_logging_parses_headers_and_calculates_load(caplog):
     assert "2 chunks" in caplog.text
     assert "Token Load: 33.3%" in caplog.text
     assert "200,000/300,000 left" in caplog.text
-    assert "Req Load: 20.0%" in caplog.text
-    assert "4,000/5,000 left" in caplog.text
+
 
 
 def test_telemetry_logging_handles_missing_headers_gracefully(caplog):
