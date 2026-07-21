@@ -279,3 +279,46 @@ def test_enrich_caps_at_limit(monkeypatch):
     }
     enriched = s._enrich_search_results(chroma_results, "q", limit=2)
     assert [r["item_key"] for r in enriched] == ["A", "B"]
+
+
+# ---------------------------------------------------------------------------
+# Batch-path record preparation (must match _process_item_batch metadata)
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_index_records_matches_realtime_chunk_metadata(monkeypatch):
+    """Batch-submitted passages must be interchangeable with realtime ones:
+    same ``<key>#<n>`` id scheme (even for a single chunk), same ``n_chunks``
+    key, and ``page`` provenance when the text carries form-feed breaks."""
+    s = _chunking_search(monkeypatch)
+    item = _long_item("ITEM0001")
+    # Give the fulltext an early page break so page mapping is exercised.
+    item["data"]["fulltext"] = "Mindfulness reduces relapse. " * 5 + "\f" + "Mindfulness reduces relapse. " * 55
+
+    records, stats = s._prepare_index_records([item])
+
+    assert stats["processed"] == 1
+    assert len(records) > 1
+    assert all(r["id"].startswith("ITEM0001#") for r in records)
+    meta0 = records[0]["metadata"]
+    assert meta0["parent_item_key"] == "ITEM0001"
+    assert meta0["chunk_index"] == 0
+    assert meta0["n_chunks"] == len(records)
+    assert "chunk_count" not in meta0
+    assert "char_start" in meta0 and "char_end" in meta0
+    # Later chunks begin on page 2 (after the form feed).
+    assert records[-1]["metadata"]["page"] == 2
+
+
+def test_prepare_index_records_single_chunk_still_uses_chunk_id(monkeypatch):
+    """A document that fits in one passage is still stored as ``<key>#0`` so
+    the id scheme never depends on which indexing path ran."""
+    s = _chunking_search(monkeypatch)
+    item = {
+        "key": "SHORT001",
+        "data": {"title": "Short Paper", "itemType": "journalArticle", "creators": []},
+    }
+    records, stats = s._prepare_index_records([item])
+    assert stats["processed"] == 1
+    assert [r["id"] for r in records] == ["SHORT001#0"]
+    assert records[0]["metadata"]["n_chunks"] == 1

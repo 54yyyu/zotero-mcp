@@ -2,6 +2,10 @@
 
 The Batch API is asynchronous, so this module owns the local run manifests that
 tie OpenAI batch IDs back to the document text and metadata needed for ChromaDB.
+Provider-neutral machinery (JSONL I/O, manifests, record splitting) lives in
+``batch_common``; this module keeps only OpenAI-specific request building,
+submission, status mapping, and output parsing. Shared helpers are re-exported
+so existing callers and tests keep working unchanged.
 """
 
 from __future__ import annotations
@@ -13,47 +17,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import batch_common
+from .batch_common import (
+    _json_dumps,  # noqa: F401 — re-exported for provider-symmetric callers/tests
+    _jsonable,
+    _object_attr,
+    _private_chmod,
+    _utc_now,
+    estimate_tokens,  # noqa: F401 — re-export
+    read_jsonl,  # noqa: F401 — re-exported so callers/tests can stay provider-symmetric
+    save_manifest,
+    write_jsonl,
+)
+
 OPENAI_BATCH_ENDPOINT = "/v1/embeddings"
 OPENAI_BATCH_COMPLETION_WINDOW = "24h"
 OPENAI_BATCH_MAX_REQUESTS = 50_000
 OPENAI_BATCH_MAX_FILE_BYTES = 200 * 1024 * 1024
 
+# Safe Tier 1 default for throttled submissions (OpenAI Tier 1 caps enqueued
+# batch tokens at 3M); users on higher tiers can raise it in config.
+OPENAI_BATCH_MAX_ENQUEUED_TOKENS = 2_500_000
 
-def _private_chmod(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600 if path.is_file() else 0o700)
-    except OSError:
-        pass
-
-
-def _json_dumps(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-
-
-def _object_attr(obj: Any, key: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
-def _jsonable(value: Any) -> Any:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, list | tuple):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if hasattr(value, "model_dump"):
-        return _jsonable(value.model_dump())
-    if hasattr(value, "to_dict"):
-        return _jsonable(value.to_dict())
-    if hasattr(value, "__dict__"):
-        return _jsonable(vars(value))
-    return str(value)
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+# Char-based token estimate ratio for quota accounting (see batch_common).
+OPENAI_CHARS_PER_TOKEN = 3.0
 
 
 def get_openai_batch_root(config_path: str | None = None) -> Path:
@@ -105,84 +92,58 @@ def split_embedding_records(
     model_name: str,
     max_requests: int = OPENAI_BATCH_MAX_REQUESTS,
     max_file_bytes: int = OPENAI_BATCH_MAX_FILE_BYTES,
+    max_tokens: int | None = None,
 ) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """Split records into JSONL-sized chunks accepted by the Batch API."""
-    chunks: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
-    current_records: list[dict[str, Any]] = []
-    current_requests: list[dict[str, Any]] = []
-    current_bytes = 0
-
-    for record in records:
-        request = build_embedding_request(record, model_name)
-        line_bytes = len((_json_dumps(request) + "\n").encode("utf-8"))
-        if line_bytes > max_file_bytes:
-            raise ValueError(f"OpenAI batch request for {record['id']} exceeds the 200 MB file limit")
-
-        would_exceed_count = len(current_requests) >= max_requests
-        would_exceed_bytes = current_requests and current_bytes + line_bytes > max_file_bytes
-        if would_exceed_count or would_exceed_bytes:
-            chunks.append((current_records, current_requests))
-            current_records = []
-            current_requests = []
-            current_bytes = 0
-
-        current_records.append(record)
-        current_requests.append(request)
-        current_bytes += line_bytes
-
-    if current_requests:
-        chunks.append((current_records, current_requests))
-
-    return chunks
-
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(_json_dumps(row) + "\n")
-    _private_chmod(path)
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
-
-
-def save_manifest(manifest: dict[str, Any]) -> None:
-    manifest_path = Path(manifest["manifest_path"])
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
-    _private_chmod(manifest_path)
+    return batch_common.split_embedding_records(
+        records,
+        lambda record: build_embedding_request(record, model_name),
+        max_requests=max_requests,
+        max_file_bytes=max_file_bytes,
+        provider_label="OpenAI",
+        max_tokens=max_tokens,
+        chars_per_token=OPENAI_CHARS_PER_TOKEN,
+    )
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as f:
-        manifest = json.load(f)
-    manifest["manifest_path"] = str(path)
-    return manifest
+    return batch_common.load_manifest(path)
 
 
 def iter_manifests(config_path: str | None = None) -> list[Path]:
-    root = get_openai_batch_root(config_path)
-    return sorted(root.glob("*/manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return batch_common.iter_manifests(get_openai_batch_root(config_path))
 
 
 def find_manifest(config_path: str | None = None, batch_id: str | None = None) -> dict[str, Any]:
     """Find the newest manifest, or the manifest that contains a batch ID."""
-    for path in iter_manifests(config_path):
-        manifest = load_manifest(path)
-        if batch_id is None:
-            return manifest
-        if any(batch.get("batch_id") == batch_id for batch in manifest.get("batches", [])):
-            return manifest
-    if batch_id:
-        raise FileNotFoundError(f"No OpenAI batch manifest found for batch ID {batch_id}")
-    raise FileNotFoundError("No OpenAI batch manifests found")
+    return batch_common.find_manifest(
+        get_openai_batch_root(config_path), batch_id=batch_id, provider_label="OpenAI batch"
+    )
+
+
+def _submit_chunk(client: Any, input_path: Path, run_id: str, index: int) -> dict[str, Any]:
+    """Upload one chunk file and create its OpenAI batch; returns manifest fields."""
+    with open(input_path, "rb") as input_file:
+        input_file_obj = client.files.create(file=input_file, purpose="batch")
+    input_file_id = _object_attr(input_file_obj, "id")
+
+    batch_obj = client.batches.create(
+        input_file_id=input_file_id,
+        endpoint=OPENAI_BATCH_ENDPOINT,
+        completion_window=OPENAI_BATCH_COMPLETION_WINDOW,
+        metadata={
+            "zotero_mcp_run_id": run_id,
+            "zotero_mcp_chunk": str(index),
+        },
+    )
+    return {
+        "batch_id": _object_attr(batch_obj, "id"),
+        "input_file_id": input_file_id,
+        "status": _object_attr(batch_obj, "status", "validating"),
+        "output_file_id": _object_attr(batch_obj, "output_file_id"),
+        "error_file_id": _object_attr(batch_obj, "error_file_id"),
+        "request_counts": _jsonable(_object_attr(batch_obj, "request_counts")),
+    }
 
 
 def submit_embedding_batches(
@@ -193,8 +154,15 @@ def submit_embedding_batches(
     force_full_rebuild: bool = False,
     target_sync_version: int | None = None,
     client: Any | None = None,
+    max_enqueued_tokens: int | None = None,
+    max_requests: int = OPENAI_BATCH_MAX_REQUESTS,
 ) -> dict[str, Any]:
-    """Upload JSONL files and create one or more OpenAI embedding batches."""
+    """Upload JSONL files and create one or more OpenAI embedding batches.
+
+    When ``max_enqueued_tokens`` is set, only chunks that fit the budget are
+    submitted now; the rest are written to disk and recorded as
+    ``status: "pending"`` manifest entries for :func:`submit_pending_batches`.
+    """
     if not records:
         raise ValueError("No documents were prepared for OpenAI Batch API submission")
 
@@ -206,7 +174,8 @@ def submit_embedding_batches(
     _private_chmod(run_dir)
 
     manifest: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
+        "provider": "openai",
         "run_id": run_id,
         "created_at": _utc_now(),
         "endpoint": OPENAI_BATCH_ENDPOINT,
@@ -214,47 +183,44 @@ def submit_embedding_batches(
         "model": model_name,
         "force_full_rebuild": bool(force_full_rebuild),
         "target_sync_version": target_sync_version,
+        "max_enqueued_tokens": max_enqueued_tokens,
         "manifest_path": str(run_dir / "manifest.json"),
         "batches": [],
     }
 
-    chunks = split_embedding_records(records, model_name)
+    chunks = split_embedding_records(
+        records, model_name, max_requests=max_requests, max_tokens=max_enqueued_tokens
+    )
+    enqueued_tokens = 0
     for index, (chunk_records, requests) in enumerate(chunks, start=1):
         stem = f"batch-{index:03d}"
         input_path = run_dir / f"{stem}-input.jsonl"
         records_path = run_dir / f"{stem}-records.jsonl"
         write_jsonl(input_path, requests)
         write_jsonl(records_path, chunk_records)
+        chunk_tokens = sum(estimate_tokens(r["document"], OPENAI_CHARS_PER_TOKEN) for r in chunk_records)
 
-        with open(input_path, "rb") as input_file:
-            input_file_obj = client.files.create(file=input_file, purpose="batch")
-        input_file_id = _object_attr(input_file_obj, "id")
+        entry: dict[str, Any] = {
+            "input_path": str(input_path),
+            "records_path": str(records_path),
+            "request_count": len(requests),
+            "request_tokens": chunk_tokens,
+            "imported_at": None,
+            "imported_count": 0,
+        }
 
-        batch_obj = client.batches.create(
-            input_file_id=input_file_id,
-            endpoint=OPENAI_BATCH_ENDPOINT,
-            completion_window=OPENAI_BATCH_COMPLETION_WINDOW,
-            metadata={
-                "zotero_mcp_run_id": run_id,
-                "zotero_mcp_chunk": str(index),
-            },
+        fits_budget = (
+            max_enqueued_tokens is None
+            or enqueued_tokens == 0  # always submit at least one chunk
+            or enqueued_tokens + chunk_tokens <= max_enqueued_tokens
         )
+        if fits_budget:
+            entry.update(_submit_chunk(client, input_path, run_id, index))
+            enqueued_tokens += chunk_tokens
+        else:
+            entry.update({"batch_id": None, "status": "pending"})
 
-        manifest["batches"].append(
-            {
-                "batch_id": _object_attr(batch_obj, "id"),
-                "input_file_id": input_file_id,
-                "status": _object_attr(batch_obj, "status", "validating"),
-                "output_file_id": _object_attr(batch_obj, "output_file_id"),
-                "error_file_id": _object_attr(batch_obj, "error_file_id"),
-                "request_counts": _jsonable(_object_attr(batch_obj, "request_counts")),
-                "input_path": str(input_path),
-                "records_path": str(records_path),
-                "request_count": len(requests),
-                "imported_at": None,
-                "imported_count": 0,
-            }
-        )
+        manifest["batches"].append(entry)
         save_manifest(manifest)
 
     return manifest
@@ -269,6 +235,8 @@ def refresh_manifest_status(
     """Retrieve current OpenAI status for selected batches and persist it."""
     client = client or create_openai_client(embedding_config)
     for batch in manifest.get("batches", []):
+        if not batch.get("batch_id"):
+            continue  # pending chunk, not yet submitted
         if batch_ids and batch.get("batch_id") not in batch_ids:
             continue
         batch_obj = client.batches.retrieve(batch["batch_id"])
@@ -278,6 +246,45 @@ def refresh_manifest_status(
         batch["request_counts"] = _jsonable(_object_attr(batch_obj, "request_counts", batch.get("request_counts")))
     save_manifest(manifest)
     return manifest
+
+
+def submit_pending_batches(
+    manifest: dict[str, Any],
+    embedding_config: dict[str, Any] | None,
+    max_enqueued_tokens: int | None = None,
+    client: Any | None = None,
+) -> int:
+    """Submit pending chunks while they fit the enqueued-token budget.
+
+    Returns the number of newly submitted chunks. Refresh the manifest status
+    first so terminal batches no longer count against the budget.
+    """
+    if max_enqueued_tokens is None:
+        max_enqueued_tokens = manifest.get("max_enqueued_tokens")
+    if max_enqueued_tokens is None:
+        return 0
+    client = client or create_openai_client(embedding_config)
+
+    terminal = {"completed", "failed", "expired", "cancelled"}
+    enqueued = sum(
+        int(batch.get("request_tokens") or 0)
+        for batch in manifest.get("batches", [])
+        if batch.get("batch_id") and batch.get("status") not in terminal
+    )
+
+    submitted = 0
+    run_id = manifest.get("run_id", "run")
+    for index, batch in enumerate(manifest.get("batches", []), start=1):
+        if batch.get("batch_id") or batch.get("status") != "pending":
+            continue
+        chunk_tokens = int(batch.get("request_tokens") or 0)
+        if enqueued and enqueued + chunk_tokens > max_enqueued_tokens:
+            continue
+        batch.update(_submit_chunk(client, Path(batch["input_path"]), run_id, index))
+        enqueued += chunk_tokens
+        submitted += 1
+        save_manifest(manifest)
+    return submitted
 
 
 def content_to_text(content: Any) -> str:

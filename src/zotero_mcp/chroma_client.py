@@ -8,6 +8,7 @@ for semantic search over Zotero libraries.
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -49,13 +50,14 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
 
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
-                 rate_limit_rps: float | None = None):
+                 rate_limit_rps: float | None = None, service_tier: str | None = None):
         import threading
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
         self.rate_limit_rps: float | None = float(rate_limit_rps) if rate_limit_rps else None
+        self.service_tier: str | None = service_tier or os.getenv("OPENAI_SERVICE_TIER")
         self._rate_lock = threading.Lock()
         self._last_request_ts: float = 0.0
         if not self.api_key:
@@ -75,12 +77,15 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         return "openai"
 
     def get_config(self) -> dict[str, Any]:
-        return {
+        cfg = {
             "model_name": self.model_name,
             "base_url": self.base_url,
             "request_batch_size": self.request_batch_size,
             "rate_limit_rps": self.rate_limit_rps,
         }
+        if getattr(self, "service_tier", None):
+            cfg["service_tier"] = self.service_tier
+        return cfg
 
     @staticmethod
     def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
@@ -90,6 +95,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             base_url=config.get("base_url"),
             request_batch_size=config.get("request_batch_size"),
             rate_limit_rps=config.get("rate_limit_rps"),
+            service_tier=config.get("service_tier"),
         )
 
     def _wait_for_rate_limit(self) -> None:
@@ -124,11 +130,14 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         for i in range(0, len(input), batch_size):
             sub = input[i:i + batch_size]
             self._wait_for_rate_limit()
-            response = self.client.embeddings.create(
-                model=self.model_name,
-                input=sub,
-                encoding_format="float",
-            )
+            req_kwargs = {
+                "model": self.model_name,
+                "input": sub,
+                "encoding_format": "float",
+            }
+            if getattr(self, "service_tier", None):
+                req_kwargs["service_tier"] = self.service_tier
+            response = self.client.embeddings.create(**req_kwargs)
             vecs.extend(data.embedding for data in response.data)
         return vecs
 
@@ -627,29 +636,6 @@ class ChromaClient:
             if len(text) > max_chars:
                 text = text[:max_chars]
         return text
-
-    def add_documents(self,
-                     documents: list[str],
-                     metadatas: list[dict[str, Any]],
-                     ids: list[str]) -> None:
-        """
-        Add documents to the collection.
-
-        Args:
-            documents: List of document texts to embed
-            metadatas: List of metadata dictionaries for each document
-            ids: List of unique IDs for each document
-        """
-        try:
-            self.collection.add(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids
-            )
-            logger.info(f"Added {len(documents)} documents to ChromaDB collection")
-        except Exception as e:
-            logger.error(f"Error adding documents to ChromaDB: {e}")
-            raise
 
     def upsert_documents(self,
                         documents: list[str],

@@ -199,6 +199,12 @@ zotero-mcp update-db --openai-batch
 zotero-mcp openai-batch-status
 zotero-mcp openai-batch-import
 
+# Throttled, fully autonomous batch indexing (recommended for large libraries):
+# submits only what fits your provider tier's enqueued-token quota, then polls,
+# imports finished batches, and submits the next chunks until everything is indexed
+zotero-mcp update-db --openai-batch --auto-loop
+zotero-mcp update-db --gemini-batch --auto-loop --batch-max-tokens 4500000  # Tier 2
+
 # Force realtime OpenAI embeddings even if Batch API is enabled in config
 zotero-mcp update-db --no-openai-batch
 
@@ -371,6 +377,12 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
 - OpenAI Batch API indexing is configured by `zotero-mcp setup` and can be overridden with
   `zotero-mcp update-db --openai-batch` or `--no-openai-batch`
+- Batch throttling: `semantic_search.openai_batch.batch_max_enqueued_tokens` and
+  `semantic_search.gemini_batch.batch_max_enqueued_tokens` in `config.json` cap how many
+  estimated tokens may be queued with the provider at once (defaults are safe Tier 1 limits:
+  2,500,000 OpenAI / 450,000 Gemini; Tier 2 ≈ 18M / 4.5M, Tier 3 ≈ 90M / 9M).
+  `batch_max_requests` caps requests per uploaded file (default 50,000). CLI overrides:
+  `--batch-max-tokens` / `--batch-max-requests`.
 - `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
 - `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
@@ -403,6 +415,8 @@ zotero-mcp update --force                  # Force update even if up to date
 # Semantic search database management
 zotero-mcp update-db                       # Update semantic search database (fast, metadata-only)
 zotero-mcp update-db --openai-batch        # Submit OpenAI embeddings through Batch API
+zotero-mcp update-db --openai-batch --auto-loop  # Throttled autonomous batch indexing to completion
+zotero-mcp update-db --gemini-batch --auto-loop --batch-max-tokens 4500000  # Gemini Tier 2
 zotero-mcp update-db --no-openai-batch     # Force realtime OpenAI embeddings for this run
 zotero-mcp openai-batch-status             # Check latest OpenAI embedding batch status
 zotero-mcp openai-batch-import             # Import completed OpenAI batch embeddings

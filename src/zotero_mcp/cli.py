@@ -201,9 +201,21 @@ def _print_update_stats(stats: dict) -> None:
         print(f"- Manifest: {stats.get('batch_manifest')}")
         for batch_id in stats.get("batch_ids", []):
             print(f"- Batch ID: {batch_id}")
-        print("\nNext steps:")
-        print("  zotero-mcp batch-status")
-        print("  zotero-mcp batch-import")
+        if stats.get("batch_pending"):
+            print(f"- Pending chunks (throttled): {stats['batch_pending']}")
+        if stats.get("auto_loop"):
+            al = stats["auto_loop"]
+            print(
+                f"- Auto-loop: {al.get('polls', 0)} polls, "
+                f"{al.get('submitted_chunks', 0)} pending chunks submitted, "
+                f"{al.get('imported_items', 0)} embeddings imported"
+            )
+            if al.get("stalled"):
+                print(f"- WARNING: stalled chunks: {', '.join(al['stalled'])}")
+        else:
+            print("\nNext steps:")
+            print("  zotero-mcp batch-status")
+            print("  zotero-mcp batch-import")
 
 
 def _provider_label(provider: str) -> str:
@@ -232,13 +244,20 @@ def _print_batch_status(status: dict, provider: str = "openai") -> None:
         if not isinstance(counts, dict):
             counts = {}
         print()
-        print(f"Batch: {batch.get('batch_id')}")
+        print(f"Batch: {batch.get('batch_id') or '(not yet submitted)'}")
         print(f"- Status: {batch.get('status')}")
         print(f"- Requests: {batch.get('request_count', counts.get('total', 'Unknown'))}")
+        if batch.get("request_tokens"):
+            print(f"- Est. tokens: {batch['request_tokens']:,}")
         if counts:
             print(f"- Completed: {counts.get('completed', 0)}")
             print(f"- Failed: {counts.get('failed', 0)}")
         print(f"- Imported: {batch.get('imported_at') or 'No'}")
+    batches = status.get("batches", [])
+    pending = [b for b in batches if b.get("status") == "pending"]
+    if pending:
+        pending_tokens = sum(int(b.get("request_tokens") or 0) for b in pending)
+        print(f"\nPending chunks (throttled): {len(pending)} (~{pending_tokens:,} tokens)")
 
 
 def _print_batch_import(stats: dict, provider: str = "openai") -> None:
@@ -304,6 +323,8 @@ def main():
             "Batch API indexing (OpenAI or Gemini):\n"
             "  zotero-mcp update-db --openai-batch     Submit OpenAI embeddings asynchronously\n"
             "  zotero-mcp update-db --gemini-batch     Submit Gemini embeddings asynchronously\n"
+            "  zotero-mcp update-db --gemini-batch --auto-loop\n"
+            "                                          Submit throttled, then poll/import/submit to completion\n"
             "  zotero-mcp batch-status                 Check submitted batch status\n"
             "  zotero-mcp batch-import                 Import completed embeddings\n"
             "  zotero-mcp help update-db               Show update-db options\n"
@@ -378,6 +399,21 @@ def main():
     gemini_batch_group.add_argument("--no-gemini-batch", dest="gemini_batch", action="store_false",
                                    help="Use realtime embeddings even if Gemini Batch API is enabled in config")
     update_db_parser.set_defaults(gemini_batch=None)
+    update_db_parser.add_argument("--batch-max-tokens", type=int, default=None,
+                                 help="Max estimated tokens enqueued with the batch provider at once "
+                                      "(overrides semantic_search.<provider>_batch.batch_max_enqueued_tokens). "
+                                      "Tier presets — Gemini/OpenAI: Tier 1 = 450000/2500000, "
+                                      "Tier 2 = 4500000/18000000, Tier 3 = 9000000/90000000")
+    update_db_parser.add_argument("--batch-max-requests", type=int, default=None,
+                                 help="Max requests per uploaded batch JSONL file (default 50000)")
+    update_db_parser.add_argument("--auto-loop", action="store_true",
+                                 help="After submitting, poll status, import completed batches, and "
+                                      "submit pending chunks until the whole run is imported "
+                                      "(requires batch mode)")
+    update_db_parser.add_argument("--batch-poll-interval", type=int, default=60,
+                                 help="Seconds between --auto-loop status polls (default: 60)")
+    update_db_parser.add_argument("--service-tier", choices=["auto", "default", "flex"], default=None,
+                                 help="OpenAI service tier for realtime embeddings (e.g. 'flex' for 50%% discount)")
 
     # Batch lifecycle commands (provider-neutral). The openai-batch-* forms
     # are kept as backward-compatible aliases pinned to --provider openai.
@@ -598,6 +634,21 @@ def main():
                 cleared = fulltext_cache.clear_all(config_path=str(config_path))
                 print(f"Cleared {cleared} cached fulltext entr{'y' if cleared == 1 else 'ies'}.")
 
+            if args.auto_loop:
+                batch_requested = (
+                    args.openai_batch is True
+                    or args.gemini_batch is True
+                    or search._resolve_openai_batch_enabled(args.openai_batch)
+                    or search._resolve_gemini_batch_enabled(args.gemini_batch)
+                )
+                if not batch_requested:
+                    print(
+                        "Error: --auto-loop requires batch mode "
+                        "(--openai-batch/--gemini-batch or batch enabled in config).",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
             print("Starting database update...")
             if args.fulltext:
                 from zotero_mcp.utils import is_local_mode
@@ -617,6 +668,11 @@ def main():
                 use_openai_batch=args.openai_batch,
                 use_gemini_batch=args.gemini_batch,
                 extraction_workers=args.extraction_workers,
+                batch_max_tokens=args.batch_max_tokens,
+                batch_max_requests=args.batch_max_requests,
+                auto_loop=args.auto_loop,
+                batch_poll_interval=args.batch_poll_interval,
+                service_tier=args.service_tier,
             )
 
             _print_update_stats(stats)

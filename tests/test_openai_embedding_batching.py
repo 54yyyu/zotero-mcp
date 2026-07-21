@@ -30,8 +30,10 @@ def _make(batch_size=64, rps=None):
 
     class _Embeddings:
         @staticmethod
-        def create(model, input, encoding_format):
-            calls.append({"input": list(input), "encoding_format": encoding_format})
+        def create(model, input, encoding_format, **kwargs):
+            c = {"input": list(input), "encoding_format": encoding_format}
+            c.update(kwargs)
+            calls.append(c)
             return _Resp(input)
 
     class _Client:
@@ -82,3 +84,13 @@ def test_get_config_roundtrips_new_fields():
     assert cfg["request_batch_size"] == 128
     assert cfg["rate_limit_rps"] == 5.0
     assert cfg["model_name"] == "text-embedding-3-small"
+
+
+def test_service_tier_passed_to_api_create():
+    ef, calls = _make(batch_size=64)
+    ef.service_tier = "flex"
+    assert ef.get_config()["service_tier"] == "flex"
+    ef([0, 1])
+    assert len(calls) == 1
+    assert calls[0]["service_tier"] == "flex"
+
