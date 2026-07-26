@@ -27,6 +27,17 @@ from zotero_mcp.utils import suppress_stdout
 logger = logging.getLogger(__name__)
 
 
+def _restrict_directory_permissions(path: Path) -> None:
+    """Best-effort owner-only permissions for sensitive local storage."""
+    if os.name != "posix":
+        return
+
+    try:
+        os.chmod(path, 0o700)
+    except OSError as exc:
+        logger.warning("Could not restrict permissions on %s: %s", path, exc)
+
+
 @register_embedding_function
 class OpenAIEmbeddingFunction(EmbeddingFunction):
     """Custom OpenAI embedding function for ChromaDB.
@@ -465,7 +476,8 @@ class ChromaClient:
         if persist_directory is None:
             # Use user's config directory by default
             config_dir = Path.home() / ".config" / "zotero-mcp"
-            config_dir.mkdir(parents=True, exist_ok=True)
+            config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _restrict_directory_permissions(config_dir)
             persist_directory = str(config_dir / "chroma_db")
 
         self.persist_directory = persist_directory
