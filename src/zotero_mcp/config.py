@@ -71,6 +71,13 @@ class SemanticSearchConfig:
     include_fulltext: bool = True
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
+    # Per-library incremental-sync watermarks, keyed by group_id as a string
+    # ("0" = personal library). Every Zotero library has its own independent
+    # version counter, so one shared scalar corrupted sync state whenever the
+    # active library changed (#393).
+    last_sync_versions: dict[str, int] = field(default_factory=dict)
+    # Legacy pre-#393 scalar. Kept for backward compatibility: it is migrated
+    # on read and mirrored on write for the personal library only.
     last_sync_version: int = 0
 
 
