@@ -278,7 +278,15 @@ def search_items(
                             sem_search = create_semantic_search(str(config_path))
                             _search_logger.debug(f"[CASCADE] semantic init: {_time.monotonic() - t0:.2f}s")
                             t0 = _time.monotonic()
-                            sem_results = sem_search.search(query=query, limit=limit or 10)
+                            # The semantic index can span multiple libraries
+                            # (#163) while this tool's own results come from
+                            # exactly one (whichever zot is scoped to) — scope
+                            # the fallback the same way so it never surfaces a
+                            # group-library hit for what looks like a
+                            # single-library search.
+                            sem_results = sem_search.search(
+                                query=query, limit=limit or 10, group_id=_client.get_active_group_id()
+                            )
                             _search_logger.debug(f"[CASCADE] semantic query: {_time.monotonic() - t0:.2f}s")
                             if sem_results and sem_results.get("results"):
                                 seen_keys: set[str] = set()
@@ -776,12 +784,17 @@ def advanced_search(
         "to a query using AI embeddings — the BEST tool for finding papers "
         "on a topic (e.g. 'papers about mindfulness-based therapy'), far "
         "more efficient than scanning collection items or reading "
-        "abstracts. Works across the entire active library. "
+        "abstracts. Searches across every indexed library by default (your "
+        "personal library plus any group libraries that have been synced); "
+        "use library_id to scope to one. "
         "query: the topic or concept; natural-language phrases work well. "
         "limit: max results (default 10). "
         "filters: optional metadata filters as a dict (e.g. "
         "{'itemType': 'journalArticle', 'year': '2023'}); also accepts a "
         "JSON string. "
+        "library_id: optional — restrict results to one library. 0 or "
+        "'user' for your personal library, or a group's numeric groupID "
+        "(see zotero_list_libraries). Omit to search all indexed libraries. "
         "Requires the semantic search database to be POPULATED — run "
         "zotero_update_search_database first if you just installed the "
         "server or added new items; check readiness with "
@@ -797,6 +810,7 @@ def semantic_search(
     query: str,
     limit: int = 10,
     filters: dict[str, str] | str | None = None,
+    library_id: int | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -807,6 +821,9 @@ def semantic_search(
         query: Search query text - can be concepts, topics, or natural language descriptions
         limit: Maximum number of results to return (default: 10)
         filters: Optional metadata filters as dict or JSON string. Example: {"item_type": "note"}
+        library_id: Optional library scope — 0/"user" for the personal library, a
+            groupID for a group library, or None (default) to search every
+            indexed library.
         ctx: MCP context
 
     Returns:
@@ -815,6 +832,11 @@ def semantic_search(
     try:
         if not query.strip():
             return "Error: Search query cannot be empty"
+
+        try:
+            group_id = _helpers._parse_library_id_param(library_id)
+        except ValueError as e:
+            return f"Error: {e}"
 
         # Parse and validate filters parameter
         if filters is not None:
@@ -862,7 +884,7 @@ def semantic_search(
         _maybe_fire_presearch_sync(search)
 
         # Perform search
-        results = search.search(query=query, limit=limit, filters=filters)
+        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
 
         if results.get("error"):
             return f"Semantic search error: {results['error']}"

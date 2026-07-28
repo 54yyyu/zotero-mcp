@@ -28,8 +28,8 @@ except Exception:
 
 from . import openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
-from .client import get_zotero_client
-from .local_db import LocalZoteroReader
+from .client import get_active_group_id, get_zotero_client
+from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
@@ -144,6 +144,12 @@ _DEFAULT_UPDATE_CONFIG = {
     "last_update": None,
     "update_days": 7,
 }
+
+# Bumped when the ChromaDB metadata shape changes in a way that requires a
+# one-time migration of existing documents. Version 2 (#163) added the
+# `group_id` field. A persisted collection whose config.json records a lower
+# (or absent, i.e. 0) version gets migrated via `_backfill_group_ids()`.
+_INDEX_SCHEMA_VERSION = 2
 
 
 def load_update_config(config_path: str | None) -> dict[str, Any]:
@@ -531,6 +537,12 @@ class ZoteroSemanticSearch:
         Zero means "no prior successful sync; bootstrap required". Used to
         drive since-based incremental ingest via pyzotero's
         `item_versions(since=V)` and `new_fulltext(since=V)`.
+
+        NOTE: this watermark is shared across all libraries rather than
+        tracked per library — switching the active library with
+        `zotero_switch_library` can cause incremental updates to compare
+        against the wrong library's version counter. Tracked as a separate,
+        independent issue: https://github.com/54yyyu/zotero-mcp/issues/393
         """
         if not self.config_path or not os.path.exists(self.config_path):
             return 0
@@ -573,6 +585,99 @@ class ZoteroSemanticSearch:
                 json.dump(full_config, f, indent=2)
         except Exception as e:
             logger.error(f"Error saving update config: {e}")
+
+    def _load_index_schema_version(self) -> int:
+        """Schema version of the persisted ChromaDB collection's metadata shape."""
+        if not self.config_path or not os.path.exists(self.config_path):
+            return 0
+        try:
+            with open(self.config_path) as f:
+                value = json.load(f).get("semantic_search", {}).get("index_schema_version", 0)
+                return int(value) if value is not None else 0
+        except Exception as e:
+            logger.warning(f"Error loading index_schema_version: {e}")
+            return 0
+
+    def _save_index_schema_version(self, version: int) -> None:
+        """Record that the collection's metadata now matches ``version``."""
+        if not self.config_path:
+            return
+        config_dir = Path(self.config_path).parent
+        config_dir.mkdir(parents=True, exist_ok=True)
+        full_config = {}
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    full_config = json.load(f)
+            except Exception:
+                pass
+        full_config.setdefault("semantic_search", {})["index_schema_version"] = int(version)
+        try:
+            with open(self.config_path, "w") as f:
+                json.dump(full_config, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving index_schema_version: {e}")
+
+    def _backfill_group_ids(self) -> dict[str, int]:
+        """One-time metadata-only migration: tag pre-#163 docs with ``group_id``.
+
+        Docs indexed before #163 carry no ``group_id`` metadata key. This
+        pages through the collection and attaches one via
+        ``ChromaClient.update_metadatas()`` — metadata-only, so no
+        re-embedding and no doc-id change. Local mode attributes each doc
+        via ``LocalZoteroReader.get_key_group_map()`` (ground truth from the
+        live database, keyed by ``item_key``); web mode — and any local-mode
+        item missing from the live DB (e.g. since deleted) — falls back to
+        the currently active library's group_id, since a pre-#163
+        collection only ever held one library's docs at a time. Idempotent:
+        docs that already carry ``group_id`` are left untouched, so a
+        partial/interrupted run just resumes on the next call.
+
+        Returns ``{"scanned": N, "migrated": N}``.
+        """
+        stats = {"scanned": 0, "migrated": 0}
+
+        key_group_map: dict[str, int] | None = None
+        if is_local_mode():
+            try:
+                zotero_db_path = self.db_path
+                if not zotero_db_path and self.config_path and os.path.exists(self.config_path):
+                    with open(self.config_path) as f:
+                        zotero_db_path = (
+                            json.load(f).get("semantic_search", {}).get("zotero_db_path")
+                        )
+                with LocalZoteroReader(db_path=zotero_db_path) as reader:
+                    key_group_map, _ = reader.get_key_group_map()
+            except Exception as e:
+                logger.warning(
+                    f"group_id backfill: could not read local database, "
+                    f"falling back to active-library attribution: {e}"
+                )
+                key_group_map = None
+
+        fallback_group_id = get_active_group_id()
+
+        for ids, metadatas in self.chroma_client.iter_metadatas():
+            stats["scanned"] += len(ids)
+            update_ids: list[str] = []
+            update_metas: list[dict[str, Any]] = []
+            for doc_id, meta in zip(ids, metadatas):
+                meta = dict(meta or {})
+                if "group_id" in meta:
+                    continue
+                item_key = meta.get("item_key") or doc_id.split("#", 1)[0]
+                if key_group_map is not None and item_key in key_group_map:
+                    group_id = key_group_map[item_key]
+                else:
+                    group_id = fallback_group_id
+                meta["group_id"] = int(group_id)
+                update_ids.append(doc_id)
+                update_metas.append(meta)
+            if update_ids:
+                self.chroma_client.update_metadatas(update_ids, update_metas)
+                stats["migrated"] += len(update_ids)
+
+        return stats
 
     def _create_document_text(self, item: dict[str, Any]) -> str:
         """
@@ -671,6 +776,11 @@ class ZoteroSemanticSearch:
             "publication": data.get("publicationTitle", ""),
             "url": data.get("url", ""),
             "doi": data.get("DOI", ""),
+            # Library attribution (#163): 0 = personal, else groupID. Every
+            # item-producing path (local scan, API scan, incremental API
+            # fetch) stamps data["group_id"] before this runs; default to
+            # personal only for the hypothetical case of an untagged caller.
+            "group_id": int(data.get("group_id", PERSONAL_LIBRARY_GROUP_ID) or 0),
         }
         # If fulltext was extracted (or attempted), mark it so incremental
         # updates don't keep re-trying items that failed extraction
@@ -808,11 +918,19 @@ class ZoteroSemanticSearch:
                 # actually see — a fresh read taken later could already
                 # include rows from a WAL checkpoint that landed mid-scan.
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
+                # Library attribution (#163): map every item key to its
+                # group_id (0 = personal, else Zotero groupID) via direct SQL
+                # on the same connection this scan uses. Feed/publications
+                # items have no group_id equivalent and are dropped below
+                # rather than mis-tagged as personal.
+                key_group_map, excluded_keys = reader.get_key_group_map()
                 # Phase 1: fetch metadata only (fast)
                 sys.stderr.write("Scanning local Zotero database for items...\n")
                 if collection_keys:
                     sys.stderr.write(f"Filtering to collections: {collection_keys}\n")
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False, collection_keys=collection_keys)
+                if excluded_keys:
+                    local_items = [it for it in local_items if it.key not in excluded_keys]
                 candidate_count = len(local_items)
                 sys.stderr.write(f"Found {candidate_count} candidate items.\n")
 
@@ -1115,6 +1233,11 @@ class ZoteroSemanticSearch:
                             "dateAdded": item.date_added,
                             "dateModified": item.date_modified,
                             "creators": self._parse_creators_string(item.creators) if item.creators else [],
+                            # Library attribution (#163): 0 = personal, else
+                            # groupID. Ground truth from get_key_group_map();
+                            # defaults to personal for the rare item missing
+                            # from the map (e.g. added mid-scan).
+                            "group_id": key_group_map.get(item.key, PERSONAL_LIBRARY_GROUP_ID),
                         },
                     }
                     # Attachment-key set (computed during the extraction scan);
@@ -1263,6 +1386,20 @@ class ZoteroSemanticSearch:
         except Exception:
             pass
 
+    def _tag_group_id(self, items: list[dict[str, Any]]) -> None:
+        """Stamp every item's ``data.group_id`` with the active library, in place.
+
+        Web-API item/version fetches always cover exactly one library — the
+        one ``get_zotero_client()`` is currently pointed at (override or env
+        vars) — so every item an API-mode scan or incremental fetch returns
+        can be tagged with the correct library via
+        ``client.get_active_group_id()``, the same lookup the search-tool
+        fallback cascade uses.
+        """
+        group_id = get_active_group_id()
+        for item in items:
+            item.setdefault("data", {})["group_id"] = group_id
+
     def _get_items_from_api(self, limit: int | None = None, include_fulltext: bool = False) -> list[dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
@@ -1322,6 +1459,8 @@ class ZoteroSemanticSearch:
         if include_fulltext:
             self._attach_web_fulltext(all_items)
 
+        self._tag_group_id(all_items)
+
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
 
@@ -1374,6 +1513,8 @@ class ZoteroSemanticSearch:
 
         if include_fulltext and changed_items:
             self._attach_web_fulltext(changed_items)
+
+        self._tag_group_id(changed_items)
 
         return changed_items, current_keys
 
@@ -1577,6 +1718,29 @@ class ZoteroSemanticSearch:
             return stats
 
         try:
+            # One-time metadata migration (#163): tag any pre-existing docs
+            # that lack group_id. Skipped on a force rebuild — the reset
+            # below wipes the collection anyway, so every doc gets tagged
+            # fresh via the normal indexing path.
+            if not force_full_rebuild and self._load_index_schema_version() < _INDEX_SCHEMA_VERSION:
+                try:
+                    backfill_stats = self._backfill_group_ids()
+                    if backfill_stats["migrated"]:
+                        try:
+                            sys.stderr.write(
+                                f"Migrated {backfill_stats['migrated']} existing document(s) "
+                                "to the multi-library index format.\n"
+                            )
+                        except Exception:
+                            pass
+                    self._save_index_schema_version(_INDEX_SCHEMA_VERSION)
+                except Exception as e:
+                    logger.error(
+                        f"group_id metadata backfill failed ({e}); existing documents "
+                        "may be missing library attribution. Run with --force-rebuild "
+                        "to fully reindex, or retry the update."
+                    )
+
             # Resolve include_fulltext default from config if not specified
             if include_fulltext is None:
                 include_fulltext = self._load_include_fulltext_setting()
@@ -2153,7 +2317,8 @@ class ZoteroSemanticSearch:
     def search(self,
                query: str,
                limit: int = 10,
-               filters: dict[str, Any] | None = None) -> dict[str, Any]:
+               filters: dict[str, Any] | None = None,
+               group_id: int | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -2161,6 +2326,10 @@ class ZoteroSemanticSearch:
             query: Search query text
             limit: Maximum number of results to return
             filters: Optional metadata filters
+            group_id: Restrict results to one library (0 = personal, else
+                groupID). ``None`` (default) searches every indexed library —
+                DB-side filtering via a ChromaDB ``where`` clause, never a
+                Python post-filter.
 
         Returns:
             Search results with Zotero item details
@@ -2178,8 +2347,13 @@ class ZoteroSemanticSearch:
                 multiplier = self._reranker_config.get("candidate_multiplier", 3)
                 fetch_limit = max(fetch_limit, limit * multiplier)
 
+            where = filters
+            if group_id is not None:
+                group_clause = {"group_id": int(group_id)}
+                where = {"$and": [filters, group_clause]} if filters else group_clause
+
             # Perform semantic search
-            results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=filters)
+            results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)
 
             # Re-rank results with cross-encoder if enabled. With chunking we
             # rerank ALL candidates (grouping to `limit` items happens in
@@ -2200,6 +2374,7 @@ class ZoteroSemanticSearch:
                 "query": query,
                 "limit": limit,
                 "filters": filters,
+                "group_id": group_id,
                 "results": enriched_results,
                 "total_found": len(enriched_results),
             }
@@ -2210,6 +2385,7 @@ class ZoteroSemanticSearch:
                 "query": query,
                 "limit": limit,
                 "filters": filters,
+                "group_id": group_id,
                 "results": [],
                 "total_found": 0,
                 "error": str(e),

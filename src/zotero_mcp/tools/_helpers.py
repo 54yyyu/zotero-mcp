@@ -192,6 +192,33 @@ def _normalize_limit(limit: int | str | None, default: int = 10, max_val: int = 
     return max(1, min(limit, max_val))
 
 
+def _parse_library_id_param(value: int | str | None) -> int | None:
+    """Parse a `library_id` filter param into a group_id (0=personal library).
+
+    Accepts an int, a numeric string (the Zotero groupID), "0"/"user" for
+    the personal library, or None (no filter — search all indexed
+    libraries). This is the single-parameter convention `zotero_semantic_search`
+    exposes; `zotero_switch_library` instead takes separate library_id +
+    library_type args since it must also validate library_type ("feed" has
+    no meaning here — feed libraries are never semantically indexed).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.lower() == "user":
+            return 0
+        try:
+            return int(stripped)
+        except ValueError:
+            raise ValueError(
+                f"Invalid library_id: {value!r}. Use an integer groupID, 0, or 'user'."
+            ) from None
+    return int(value)
+
+
 def _normalize_str_list_input(value, field_name="value"):
     """Normalize list-like user input into a list of non-empty strings."""
     if value is None:

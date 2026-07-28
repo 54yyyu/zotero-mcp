@@ -1,6 +1,7 @@
+import sqlite3
 from pathlib import Path
 
-from zotero_mcp.local_db import LocalZoteroReader, ZoteroItem
+from zotero_mcp.local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader, ZoteroItem
 
 
 class FakeLocalZoteroReader(LocalZoteroReader):
@@ -315,3 +316,132 @@ def test_get_feed_items_includes_doi(tmp_path):
         reader.close()
 
     assert items[0]["DOI"] == "10.1234/example.doi"
+
+
+# ---------------------------------------------------------------------------
+# get_key_group_map (#163): library attribution for the semantic indexer
+# ---------------------------------------------------------------------------
+
+GROUP_ID = 6015547
+
+
+def _create_multilib_db(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE libraries (
+            libraryID INTEGER PRIMARY KEY,
+            type TEXT NOT NULL,
+            editable INT NOT NULL,
+            filesEditable INT NOT NULL
+        );
+        CREATE TABLE groups (
+            groupID INTEGER PRIMARY KEY,
+            libraryID INT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            version INT NOT NULL
+        );
+        CREATE TABLE items (
+            itemID INTEGER PRIMARY KEY,
+            key TEXT,
+            libraryID INT
+        );
+        CREATE TABLE deletedItems (
+            itemID INTEGER PRIMARY KEY
+        );
+        """
+    )
+    # libraryID 1 = personal ("user"), matching Zotero's own convention.
+    conn.execute("INSERT INTO libraries VALUES (1, 'user', 1, 1)")
+    conn.execute("INSERT INTO libraries VALUES (5, 'group', 1, 1)")
+    conn.execute("INSERT INTO libraries VALUES (10, 'feed', 0, 0)")
+    conn.execute("INSERT INTO libraries VALUES (20, 'publications', 1, 0)")
+    conn.execute(
+        f"INSERT INTO groups (groupID, libraryID, name, description, version) "
+        f"VALUES ({GROUP_ID}, 5, 'AI in entrepreneurship', '', 1)"
+    )
+
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (1, 'USERKEY1', 1)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (2, 'GROUPKEY1', 5)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (3, 'FEEDKEY1', 10)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (4, 'PUBKEY1', 20)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (5, 'DELETEDKEY1', 1)")
+    conn.execute("INSERT INTO deletedItems (itemID) VALUES (5)")
+    conn.commit()
+    conn.close()
+
+
+def test_get_key_group_map_user_library_maps_to_zero(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert result.groups["USERKEY1"] == PERSONAL_LIBRARY_GROUP_ID == 0
+
+
+def test_get_key_group_map_group_library_maps_to_group_id(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert result.groups["GROUPKEY1"] == GROUP_ID
+
+
+def test_get_key_group_map_feed_items_excluded_not_personal(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert "FEEDKEY1" not in result.groups
+    assert "FEEDKEY1" in result.excluded_keys
+
+
+def test_get_key_group_map_publications_library_excluded_not_personal(tmp_path):
+    """'My Publications' has no group_id equivalent; must not silently
+    collapse into the personal library (0)."""
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert "PUBKEY1" not in result.groups
+    assert "PUBKEY1" in result.excluded_keys
+
+
+def test_get_key_group_map_deleted_items_omitted_entirely(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert "DELETEDKEY1" not in result.groups
+    assert "DELETEDKEY1" not in result.excluded_keys
+
+
+def test_get_key_group_map_full_key_set_partition(tmp_path):
+    """Every non-deleted key ends up in exactly one of groups/excluded_keys."""
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert set(result.groups) | result.excluded_keys == {
+        "USERKEY1", "GROUPKEY1", "FEEDKEY1", "PUBKEY1",
+    }
+    assert not (set(result.groups) & result.excluded_keys)

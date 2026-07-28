@@ -13,7 +13,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .config import load_config
 from .utils import _normalize_for_search, is_local_mode
@@ -22,6 +22,25 @@ logger = logging.getLogger(__name__)
 
 # Sentinel returned by _extract_text_from_pdf on timeout
 _EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
+
+# Library identity used throughout zotero-mcp (ChromaDB metadata, the
+# `zotero_switch_library` tool, etc.): 0 for the personal ("user") library,
+# else the Zotero server-assigned groupID. This matches Zotero's own
+# sentinel for the account-less personal library.
+PERSONAL_LIBRARY_GROUP_ID = 0
+
+
+class KeyGroupMap(NamedTuple):
+    """Result of :meth:`LocalZoteroReader.get_key_group_map`.
+
+    ``groups`` maps every non-deleted item key in the database to its
+    library's group_id. ``excluded_keys`` holds keys from libraries with no
+    group_id equivalent (feeds, "My Publications") — these are excluded from
+    the semantic index and global search rather than mis-tagged as personal.
+    """
+
+    groups: dict[str, int]
+    excluded_keys: set[str]
 
 
 def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
@@ -758,6 +777,46 @@ class LocalZoteroReader:
         conn = self._get_connection()
         rows = conn.execute("SELECT key FROM items").fetchall()
         return {row[0] for row in rows}
+
+    def get_key_group_map(self) -> KeyGroupMap:
+        """Map every non-deleted item key to its library's group_id.
+
+        Runs a single query joining ``items`` -> ``libraries`` -> ``groups``,
+        translating each item's ``libraryID`` to the codebase-wide group_id
+        (``0`` for the personal library, else the Zotero ``groupID``) in SQL.
+        Items in libraries with no group_id equivalent (feed subscriptions,
+        "My Publications") are returned in ``excluded_keys`` instead, so
+        callers can drop them from the semantic index rather than silently
+        mis-attribute them to the personal library.
+        """
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT i.key AS item_key, l.type AS lib_type, g.groupID AS group_id
+            FROM items i
+            JOIN libraries l ON i.libraryID = l.libraryID
+            LEFT JOIN groups g ON l.libraryID = g.libraryID
+            WHERE i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            """
+        ).fetchall()
+
+        groups: dict[str, int] = {}
+        excluded_keys: set[str] = set()
+        for row in rows:
+            key = row["item_key"]
+            lib_type = row["lib_type"]
+            group_id = row["group_id"]
+            if lib_type == "user":
+                groups[key] = PERSONAL_LIBRARY_GROUP_ID
+            elif lib_type == "group" and group_id is not None:
+                groups[key] = int(group_id)
+            else:
+                # Feeds, "My Publications", or any other non-group/user
+                # library type have no group_id equivalent — exclude rather
+                # than mis-attribute to the personal library.
+                excluded_keys.add(key)
+
+        return KeyGroupMap(groups, excluded_keys)
 
     def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None, collection_keys: list[str] | None = None) -> list[ZoteroItem]:
         """

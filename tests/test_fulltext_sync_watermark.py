@@ -35,6 +35,17 @@ def make_zotero_db(path, keys):
             "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, ?, 1, 0)",
             (i, key),
         )
+    # libraries/groups: required by LocalZoteroReader.get_key_group_map (#163),
+    # which every local-db item scan now runs to attribute items to a library.
+    conn.execute(
+        "CREATE TABLE libraries (libraryID INTEGER PRIMARY KEY, type TEXT, "
+        "editable INT, filesEditable INT)"
+    )
+    conn.execute("INSERT INTO libraries VALUES (1, 'user', 1, 1)")
+    conn.execute(
+        "CREATE TABLE groups (groupID INTEGER PRIMARY KEY, libraryID INT UNIQUE, "
+        "name TEXT, description TEXT, version INT)"
+    )
     # Empty side tables referenced by get_items_with_text / get_item_count
     conn.execute("CREATE TABLE deletedItems (itemID INTEGER PRIMARY KEY)")
     conn.execute(
@@ -81,8 +92,14 @@ class FakeChroma:
     def reset_collection(self):
         raise AssertionError("reset_collection should not be called")
 
-    def get_all_ids(self):
+    def get_all_ids(self, where=None):
         return set()
+
+    def iter_metadatas(self, batch_size=500):
+        return iter(())
+
+    def update_metadatas(self, ids, metadatas):
+        pass
 
 
 def make_search(db_path, zotero, config_path=None):
