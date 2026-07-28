@@ -164,16 +164,15 @@ class TestFindDuplicatesNoPicle:
 
 # ---------------------------------------------------------------------------
 # Bug 4: PDF outline tried to import _get_storage_dir as standalone function
-# and used a broken local mode path. Now uses zot.dump() for all modes.
+# and used a broken local mode path. It now downloads through
+# client.download_attachment_file (local -> WebDAV -> web), which dumps via
+# the client rather than reading a storage path directly (#372).
 # ---------------------------------------------------------------------------
 
 class TestPdfOutlineDownloadMethod:
-    """PDF outline always uses zot.dump(), not direct file path access."""
+    """PDF outline downloads the attachment, never touches a storage path."""
 
     def test_dump_called_not_direct_path(self, monkeypatch):
-        import sys
-        import types
-
         dump_called = []
 
         class FakeZotDump(FakeZotero):
@@ -200,16 +199,14 @@ class TestPdfOutlineDownloadMethod:
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
 
-        # Mock fitz
-        class FakeDoc:
-            def get_toc(self):
-                return [[1, "Intro", 1]]
-            def close(self):
-                pass
+        # The TOC is read out-of-process since #372; stub the outcome.
+        from zotero_mcp.tools import write as write_tools
 
-        fake_fitz = types.ModuleType("fitz")
-        fake_fitz.open = lambda *a, **kw: FakeDoc()
-        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        monkeypatch.setattr(
+            write_tools,
+            "_extract_pdf_toc",
+            lambda *a, **kw: write_tools.TocOutcome("ok", [[1, "Intro", 1]]),
+        )
 
         ctx = DummyContext()
         result = server.get_pdf_outline(item_key="PARENT01", ctx=ctx)

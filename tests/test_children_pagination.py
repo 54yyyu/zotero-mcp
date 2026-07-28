@@ -8,14 +8,12 @@ API, with more than 100 children so ``_paginate``'s ``page_size=100`` must
 itself request at least two pages.
 """
 
-import sys
-import types
-
 from conftest import FakeZotero
 
 from zotero_mcp import client as client_module
 from zotero_mcp import server
 from zotero_mcp.tools import discovery
+from zotero_mcp.tools import write as write_tools
 
 
 class PagedChildrenZotero(FakeZotero):
@@ -101,17 +99,13 @@ class TestItemHasPdfPagination:
 
 class TestGetPdfOutlinePagination:
     def test_finds_pdf_attachment_past_first_api_page(self, monkeypatch, dummy_ctx):
-        fake_fitz = types.ModuleType("fitz")
-
-        class _Doc:
-            def get_toc(self):
-                return [(1, "Introduction", 1)]
-
-            def close(self):
-                pass
-
-        fake_fitz.open = lambda *a, **k: _Doc()
-        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        # The TOC is read out-of-process since #372; stub the outcome.
+        monkeypatch.setattr(
+            write_tools,
+            "_extract_pdf_toc",
+            lambda *a, **k: write_tools.TocOutcome("ok", [(1, "Introduction", 1)]),
+        )
+        monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: None)
 
         zot = PagedChildrenZotero()
         pdf = _pdf("PDF00001")

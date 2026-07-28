@@ -40,6 +40,22 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
 
         if _utils.is_local_mode():
             with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
+                # The key may name the PDF attachment itself. Attachments have
+                # no children, so the parent scan below comes up empty and we
+                # would wrongly report "No PDF attachment found" (#372).
+                attachment = reader.get_attachment_by_key(item_key)
+                if attachment and "pdf" in (attachment["content_type"] or "").lower():
+                    resolved = reader._resolve_attachment_path(
+                        item_key, attachment["zotero_path"] or ""
+                    )
+                    if not (resolved and resolved.exists()):
+                        # Recorded filename drifted on disk — scan the folder (#291)
+                        resolved = reader._scan_storage_for_attachment(
+                            item_key, attachment["content_type"]
+                        )
+                    if resolved and resolved.exists():
+                        return str(resolved), attachment["title"] or item_key
+
                 local_item = reader.get_item_by_key(item_key)
                 if local_item:
                     for att_key, path, ctype in reader._iter_parent_attachments(local_item.item_id):

@@ -976,6 +976,49 @@ class LocalZoteroReader:
             })
         return out
 
+    def get_attachment_by_key(self, attachment_key: str) -> dict | None:
+        """Return the attachment row addressed by its OWN key.
+
+        ``get_item_by_key`` cannot see attachments: the query behind it
+        excludes the 'attachment', 'note' and 'annotation' item types. So a
+        key that names a PDF attachment directly (rather than its parent)
+        needs its own lookup — without it, callers scan the attachment's
+        (always empty) child list and conclude there is no PDF (#372).
+
+        Each entry has: ``key``, ``content_type``, ``zotero_path`` (the raw
+        stored path like ``storage:foo.pdf``), ``title`` and ``parent_key``.
+        Returns ``None`` if the key does not name a live attachment.
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            """
+            SELECT att.key as attachmentKey,
+                   ia.path as path,
+                   ia.contentType as contentType,
+                   title_val.value as title,
+                   parent.key as parentKey
+            FROM itemAttachments ia
+            JOIN items att ON att.itemID = ia.itemID
+            LEFT JOIN items parent ON parent.itemID = ia.parentItemID
+            LEFT JOIN itemData title_data
+                ON title_data.itemID = att.itemID AND title_data.fieldID = 1
+            LEFT JOIN itemDataValues title_val
+                ON title_data.valueID = title_val.valueID
+            WHERE att.key = ?
+            AND att.itemID NOT IN (SELECT itemID FROM deletedItems)
+            """,
+            (attachment_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "key": row["attachmentKey"],
+            "content_type": row["contentType"],
+            "zotero_path": row["path"],
+            "title": row["title"],
+            "parent_key": row["parentKey"],
+        }
+
     def get_item_by_key(self, key: str) -> ZoteroItem | None:
         """
         Get a specific item by its Zotero key.
