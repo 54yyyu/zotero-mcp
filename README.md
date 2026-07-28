@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.54yyyu/zotero-mcp -->
+
 # Zotero MCP: Chat with your Research Library—Local or Web—in Claude, ChatGPT, and more.
 
 <p align="center">

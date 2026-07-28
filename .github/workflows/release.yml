@@ -68,3 +68,43 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
+  publish-registry:
+    needs: publish
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+    permissions:
+      id-token: write   # required for mcp-publisher's GitHub OIDC login
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Sync server.json version to the release tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.json.tmp
+          mv server.json.tmp server.json
+          cat server.json
+      - name: Wait for the release to appear on PyPI
+        # The registry verifies that the referenced version actually exists on PyPI,
+        # and the index can lag a few seconds behind the upload in the previous job.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 30); do
+            if curl -sf "https://pypi.org/pypi/zotero-mcp-server/$VERSION/json" > /dev/null; then
+              echo "zotero-mcp-server $VERSION is live on PyPI"
+              exit 0
+            fi
+            echo "attempt $i: not on PyPI yet, retrying in 10s"
+            sleep 10
+          done
+          echo "zotero-mcp-server $VERSION never appeared on PyPI"
+          exit 1
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+      - name: Publish to the MCP Registry
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish
+

@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.4] - 2026-07-28
+
+### Added
+- **Listed in the official MCP Registry** (`registry.modelcontextprotocol.io`) as `io.github.54yyyu/zotero-mcp`. A `server.json` at the repo root describes the PyPI package, its stdio transport, and the four env vars a client needs to prompt for (`ZOTERO_LOCAL`, `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`); ownership is proven by the `mcp-name:` marker in the README, which is what PyPI serves as the package description. The release workflow republishes on every tag via GitHub OIDC, so the registry version can't drift from PyPI. Registry clients install by the distribution name rather than the console-script name, so `zotero-mcp-server` is now also a console-script alias for `zotero-mcp` and `uvx zotero-mcp-server serve` works without `--from`.
 
 ### Fixed
 - **`zotero-mcp update` no longer offers, or performs, a downgrade.** The check was `current_version != latest_version`, so any install ahead of the last PyPI release — every git checkout and dev build — was told an update was available, and running it replaced the newer code with the older release. Ordering is now compared rather than inequality, via `packaging.version.Version` where available and a numeric-tuple fallback where it isn't (`packaging` is not a declared dependency, only a common transitive one). Being ahead is reported as such instead of as a bare "already up to date", and `--force` from an ahead version warns before downgrading. As a side effect the comparison is numeric rather than lexical, so `0.10.0` is correctly newer than `0.9.0`.

@@ -68,6 +68,9 @@ dev = [
 [project.scripts]
 zotero-cli = "zotero_mcp.cli_standalone:main"
 zotero-mcp = "zotero_mcp.cli:main"
+# Alias matching the PyPI distribution name, so `uvx zotero-mcp-server serve` works
+# without --from. MCP Registry clients derive the command from the package identifier.
+zotero-mcp-server = "zotero_mcp.cli:main"
 
 
 [tool.hatch.version]
