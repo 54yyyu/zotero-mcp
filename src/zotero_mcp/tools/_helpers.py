@@ -793,13 +793,18 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
             )
             if suffix is not None:
                 return suffix
-            attach_result = write_zot.attachment_both(
-                [(filename, filepath)],
-                parentid=item_key,
+            ok, suffix, _key = _attach_and_verify(
+                write_zot,
+                filename,
+                filepath,
+                item_key,
+                ctx,
+                content_type="application/pdf",
             )
-            return _maybe_upload_to_webdav(
-                attach_result, filepath, ctx, write_zot=write_zot
-            )
+            if not ok:
+                ctx.info(f"PDF attach failed: {suffix}")
+                return None
+            return suffix
     except Exception as e:
         ctx.info(f"PDF download/attach failed: {e}")
         return None
@@ -958,6 +963,130 @@ def _extract_attachment_key(attach_result):
             if isinstance(entry, dict) and entry.get("key"):
                 return entry["key"]
     return None
+
+
+def _describe_attach_failure(attach_result):
+    """Short reason string for a pyzotero upload result that landed no file.
+
+    ``attachment_both()`` reports client-side rejections by returning the
+    payload in ``failure`` rather than raising (#403), so a caller that
+    only checks for exceptions reports success for a file that never
+    landed. Returns ``None`` when the result did register an attachment.
+    """
+    if _extract_attachment_key(attach_result) is not None:
+        return None
+    if not isinstance(attach_result, dict):
+        return f"unexpected upload result: {attach_result!r}"
+    failures = attach_result.get("failure") or []
+    if failures:
+        return f"upload rejected by pyzotero: {failures}"
+    return "upload returned no attachment key"
+
+
+def _assert_upload_capable(write_zot):
+    """Raise ValueError if *write_zot* cannot upload file bytes.
+
+    Zotero's local HTTP API has no attachment/upload endpoints — the
+    template fetch that starts ``attachment_both()`` 404s against
+    ``localhost:23119`` (#403). Failing fast here beats a confusing
+    "No endpoint found" deep inside pyzotero.
+    """
+    if getattr(write_zot, "local", False):
+        raise ValueError(
+            "Cannot upload file bytes through Zotero's local API — it has no "
+            "attachment endpoints. Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID "
+            "to enable hybrid mode (local reads, web-API writes)."
+        )
+
+
+def _two_step_attach(write_zot, filename, file_path, parent_key, ctx, content_type=None):
+    """Create the attachment item, then upload its bytes; verify md5 landed.
+
+    Fallback for the case in #403 where ``attachment_both()`` fails
+    client-side (it puts the full filesystem path in ``filename`` and
+    leaves ``md5`` unset). Creating the item with the basename and only
+    then uploading with the full path succeeds where the combined call
+    does not. Returns ``(attachment_key, None)`` on success or
+    ``(None, reason)`` on failure, cleaning up the orphaned shell so a
+    failed upload doesn't leave a fileless attachment behind.
+    """
+    template = write_zot.item_template("attachment", linkmode="imported_file")
+    template["title"] = filename
+    template["filename"] = filename
+    template["parentItem"] = parent_key
+    if content_type:
+        template["contentType"] = content_type
+
+    result = write_zot.create_items([template])
+    if not (isinstance(result, dict) and result.get("success")):
+        return None, f"could not create attachment item: {result}"
+    attachment_key = next(iter(result["success"].values()))
+    success_versions = result.get("successVersions") or {}
+    attachment_version = next(iter(success_versions.values()), None)
+
+    try:
+        attachment = write_zot.item(attachment_key)["data"]
+        # The full path is only correct for the upload step; the stored
+        # filename stays the basename set on the template above.
+        attachment["filename"] = file_path
+        upload = write_zot.upload_attachments([attachment])
+        if isinstance(upload, dict) and upload.get("failure"):
+            raise RuntimeError(f"upload rejected: {upload['failure']}")
+        # Only md5 on the stored item proves the bytes actually landed.
+        if not write_zot.item(attachment_key)["data"].get("md5"):
+            raise RuntimeError("upload reported success but no md5 was stored")
+        return attachment_key, None
+    except Exception as e:
+        try:
+            if attachment_version is None:
+                attachment_version = write_zot.item(attachment_key)["version"]
+            write_zot.delete_item(
+                {"key": attachment_key, "version": attachment_version}
+            )
+            ctx.info(f"Cleaned up orphan attachment shell {attachment_key}")
+        except Exception as del_err:
+            ctx.info(f"Cleanup of orphan shell {attachment_key} failed: {del_err}")
+            return None, (
+                f"{e}; attachment {attachment_key} exists but has no file "
+                f"bytes and could not be deleted: {del_err}"
+            )
+        return None, str(e)
+
+
+def _attach_and_verify(
+    write_zot, filename, file_path, parent_key, ctx, content_type=None
+):
+    """Upload *file_path* onto *parent_key*, confirming the file landed.
+
+    Returns ``(ok, suffix, attachment_key)``. ``suffix`` is the user-facing
+    tail to append to a "file attached" message when ``ok``; when not
+    ``ok`` it is the reason the attach failed, and the caller must NOT
+    claim success (#403, the root cause behind #278 / #306 / #399).
+    """
+    _assert_upload_capable(write_zot)
+
+    attach_result = write_zot.attachment_both(
+        [(filename, file_path)],
+        parentid=parent_key,
+    )
+    reason = _describe_attach_failure(attach_result)
+    if reason is None:
+        suffix = _maybe_upload_to_webdav(
+            attach_result, file_path, ctx, write_zot=write_zot
+        )
+        return True, suffix, _extract_attachment_key(attach_result)
+
+    ctx.info(f"attachment_both failed ({reason}); retrying as create + upload")
+    attachment_key, fallback_reason = _two_step_attach(
+        write_zot, filename, file_path, parent_key, ctx, content_type=content_type
+    )
+    if attachment_key is None:
+        return False, f"{reason}; two-step retry also failed: {fallback_reason}", None
+
+    suffix = _maybe_upload_to_webdav(
+        {"success": [{"key": attachment_key}]}, file_path, ctx, write_zot=write_zot
+    )
+    return True, suffix, attachment_key
 
 
 def _file_md5(path):

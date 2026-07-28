@@ -420,7 +420,7 @@ class TestAttachFileLocal:
         _patch_path_valid(monkeypatch)
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._maybe_upload_to_webdav",
-            lambda attach_result, file_path, ctx: (
+            lambda attach_result, file_path, ctx, write_zot=None: (
                 " (uploaded to WebDAV as ATCH0001.zip)"
             ),
         )

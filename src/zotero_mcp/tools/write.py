@@ -1398,15 +1398,21 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                         ctx,
                         content_type="application/pdf",
                     )
+                    attach_ok = True
                     if webdav_suffix is None:
-                        attach_result = write_zot.attachment_both(
-                            [(filename, filepath)],
-                            parentid=item_key,
+                        attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
+                            write_zot,
+                            filename,
+                            filepath,
+                            item_key,
+                            ctx,
+                            content_type="application/pdf",
                         )
-                        webdav_suffix = _helpers._maybe_upload_to_webdav(
-                            attach_result, filepath, ctx, write_zot=write_zot
-                        )
-                pdf_status = "PDF attached" + webdav_suffix
+                pdf_status = (
+                    "PDF attached" + webdav_suffix
+                    if attach_ok
+                    else f"no PDF attached ({webdav_suffix})"
+                )
             except Exception as e:
                 ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
                 pdf_status = f"no PDF attached ({e})"
@@ -2664,15 +2670,21 @@ def add_from_file(
                 ctx,
                 content_type=_helpers._guess_content_type(display_name),
             )
+            attach_ok = True
             if webdav_suffix is None:
-                attach_result = write_zot.attachment_both(
-                    [(display_name, file_path)],
-                    parentid=parent_key,
+                attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
+                    write_zot,
+                    display_name,
+                    file_path,
+                    parent_key,
+                    ctx,
+                    content_type=_helpers._guess_content_type(display_name),
                 )
-                webdav_suffix = _helpers._maybe_upload_to_webdav(
-                    attach_result, file_path, ctx, write_zot=write_zot
-                )
-            attach_info = f"File attached: {display_name}" + webdav_suffix
+            attach_info = (
+                f"File attached: {display_name}" + webdav_suffix
+                if attach_ok
+                else f"Item created but file attachment FAILED: {webdav_suffix}"
+            )
         except Exception as e:
             attach_info = f"Item created but file attachment failed: {e}"
 
@@ -2723,22 +2735,19 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
             f"Identical file (same MD5) already attached to `{item_key}` as "
             f"'{existing_name}'{key_note} — '{display_name}' not re-uploaded."
         )
-    attach_result = write_zot.attachment_both(
-        [(display_name, filepath)],
-        parentid=item_key,
+    ok, suffix, attachment_key = _helpers._attach_and_verify(
+        write_zot,
+        display_name,
+        filepath,
+        item_key,
+        ctx,
+        content_type=_helpers._guess_content_type(display_name),
     )
-    attachment_key = _helpers._extract_attachment_key(attach_result)
-    if (
-        attachment_key is None
-        and isinstance(attach_result, dict)
-        and attach_result.get("failure")
-    ):
+    if not ok:
         return (
-            f"Error: upload of '{display_name}' to `{item_key}` failed: "
-            f"{attach_result['failure']}"
+            f"Error: upload of '{display_name}' to `{item_key}` failed: {suffix}"
         )
     key_note = f" (key `{attachment_key}`)" if attachment_key else ""
-    suffix = _helpers._maybe_upload_to_webdav(attach_result, filepath, ctx)
     return (
         f"File attached to `{item_key}`: {display_name}{key_note}{suffix}\n\n"
         "_Note: To include this item in semantic search, run "

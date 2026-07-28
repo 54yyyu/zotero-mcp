@@ -51,6 +51,15 @@ class _AttachZotero(FakeZotero):
 
     def attachment_both(self, files, parentid=None, **kwargs):
         self.attachments.append({"files": files, "parentid": parentid})
+        # Shape matters: pyzotero reports client-side rejections by putting
+        # the payload in "failure" rather than raising (#403), so callers
+        # check for a registered key. A fake that returns None reads as a
+        # failed upload.
+        return {
+            "success": [{"key": f"ATCH{len(self.attachments):04d}"}],
+            "failure": [],
+            "unchanged": [],
+        }
 
 
 def _allow_ssrf_guard(monkeypatch):
