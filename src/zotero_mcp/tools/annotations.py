@@ -232,7 +232,12 @@ def get_annotations(
                                                     "annotationComment": processed.get("comment", ""),
                                                     "annotationColor": processed.get("color", ""),
                                                     "parentItem": item_key,
-                                                    "tags": [],
+                                                    # Better BibTeX hands tags back as
+                                                    # bare strings; normalize to Zotero's
+                                                    # {"tag": ...} shape so they render (#377).
+                                                    "tags": _helpers._normalize_item_tags(
+                                                        processed.get("tags") or anno.get("tags")
+                                                    ),
                                                     "_pdf_page": processed.get("page", 0),
                                                     "_pageLabel": processed.get("pageLabel", ""),
                                                     "_attachment_title": attachment.get("title", ""),
@@ -330,7 +335,9 @@ def get_annotations(
                                                 "annotationComment": ext.get("comment", ""),
                                                 "annotationColor": ext.get("color", ""),
                                                 "parentItem": item_key,
-                                                "tags": [],
+                                                # pdfannots2json only emits tags for some
+                                                # annotation kinds; carry them when present (#377).
+                                                "tags": _helpers._normalize_item_tags(ext.get("tags")),
                                                 "_pdf_page": ext.get("page", 0),
                                                 "_from_pdf_extraction": True,
                                                 "_attachment_title": attachment.get("data", {}).get("title", "PDF")
@@ -444,11 +451,10 @@ def get_annotations(
             if "_image_path" in data and os.path.exists(data["_image_path"]):
                 output.append("**Image:** This annotation includes an image (not displayed in this interface)")
 
-            # Tags
-            if tags := data.get("tags"):
+            # Tags (normalized so a non-web-API source can't KeyError here)
+            if tags := _helpers._normalize_item_tags(data.get("tags")):
                 tag_list = [f"`{t['tag']}`" for t in tags]
-                if tag_list:
-                    output.append(f"**Tags:** {' '.join(tag_list)}")
+                output.append(f"**Tags:** {' '.join(tag_list)}")
 
             output.append("")  # Empty line between annotations
 

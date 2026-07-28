@@ -347,6 +347,10 @@ def process_annotation(annotation: dict[str, Any], attachment: dict[str, Any], f
             'color': color,
             'annotatedText': text,
             'comment': comment,
+            # Tags live on the annotation itself; carry them through so callers
+            # can surface them (#377). Shape varies by Better BibTeX version
+            # (bare strings or {"tag": ...} dicts) — callers normalize.
+            'tags': annotation.get('tags', []),
             'page': page,
             'pageLabel': page_label,
             'x': x,

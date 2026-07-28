@@ -77,6 +77,33 @@ def _get_write_client(ctx):
     )
 
 
+def _get_bibliography_client(ctx=None):
+    """Return a client able to render CSL bibliographies/citations.
+
+    Zotero's local HTTP API has no citation engine — any request carrying
+    ``content=bib`` / ``citation`` / ``bibtex`` is rejected with "Local API
+    does not support Atom output" (#371). Only the web API can render, so
+    mirror the hybrid pattern in ``_get_write_client``: render through the
+    web client whenever web credentials are configured (applying the active
+    library override so a switched-to group library is targeted), and raise
+    an actionable ValueError in local-only mode instead of surfacing the raw
+    Atom error.
+    """
+    if not _utils.is_local_mode():
+        return _client.get_zotero_client()
+    web_zot = _client.get_web_zotero_client()
+    if web_zot is not None:
+        apply_library_override(web_zot, _client.get_active_library())
+        if ctx is not None:
+            ctx.info("Routing bibliography rendering through the Zotero web API")
+        return web_zot
+    raise ValueError(
+        "Bibliography and citation rendering requires Zotero's web API CSL "
+        "engine; the local API has no citation engine. "
+        "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
+    )
+
+
 def fetch_trashed_collections(zot) -> list[dict]:
     """Return collections in the active library's trash, or [] on failure.
 
@@ -296,6 +323,47 @@ def _normalize_tag_filter(value):
             return [s] if s else []
         return []
     return []
+
+
+def _normalize_item_tags(value):
+    """Normalize tags read off an item/annotation into Zotero's dict shape.
+
+    Zotero stores tags as ``[{"tag": "name", "type": 1}, ...]`` and the
+    rendering layers index them with ``t["tag"]``. Annotation sources other
+    than the web API hand tags back in looser shapes — Better BibTeX's
+    JSON-RPC returns bare strings, pdfannots2json omits the field entirely —
+    so normalize to the dict shape (preserving ``type`` when present) and
+    drop empties rather than letting a renderer KeyError (#377).
+    """
+    if not value:
+        return []
+    if isinstance(value, (str, dict)):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    normalized: list[dict] = []
+    for entry in value:
+        if isinstance(entry, dict):
+            name = next(
+                (
+                    str(entry[key]).strip()
+                    for key in ("tag", "name", "value")
+                    if entry.get(key) is not None and str(entry[key]).strip()
+                ),
+                "",
+            )
+            if not name:
+                continue
+            tag = {"tag": name}
+            if entry.get("type") is not None:
+                tag["type"] = entry["type"]
+            normalized.append(tag)
+            continue
+        name = str(entry).strip()
+        if name:
+            normalized.append({"tag": name})
+    return normalized
 
 
 def _resolve_collection_names(zot, names, ctx=None):
