@@ -800,7 +800,7 @@ def advanced_search(
         "server or added new items; check readiness with "
         "zotero_get_search_database_status. "
         "Available only when the [semantic] optional dependency is "
-        "installed (pip install zotero-mcp-server[semantic]). "
+        "installed. "
         "Example: zotero_semantic_search(query='mindfulness-based "
         "cognitive therapy for depression', limit=5)."
     )
@@ -868,8 +868,8 @@ def semantic_search(
             from zotero_mcp.semantic_search import create_semantic_search
         except ImportError:
             return (
-                "Semantic search is not available. Install the required packages with:\n"
-                "  pip install zotero-mcp-server[semantic]\n\n"
+                "Semantic search is not available.\n"
+                f"{_utils.install_hint('semantic')}\n\n"
                 "This installs chromadb, sentence-transformers, and related dependencies."
             )
 
@@ -995,8 +995,8 @@ def update_search_database(
             from zotero_mcp.semantic_search import create_semantic_search
         except ImportError:
             return (
-                "Semantic search is not available. Install the required packages with:\n"
-                "  pip install zotero-mcp-server[semantic]\n\n"
+                "Semantic search is not available.\n"
+                f"{_utils.install_hint('semantic')}\n\n"
                 "This installs chromadb, sentence-transformers, and related dependencies."
             )
 
@@ -1083,8 +1083,8 @@ def get_search_database_status(*, ctx: Context) -> str:
             from zotero_mcp.semantic_search import load_update_config, should_update
         except ImportError:
             return (
-                "Semantic search is not available. Install the required packages with:\n"
-                "  pip install zotero-mcp-server[semantic]\n\n"
+                "Semantic search is not available.\n"
+                f"{_utils.install_hint('semantic')}\n\n"
                 "This installs chromadb, sentence-transformers, and related dependencies."
             )
 

@@ -105,7 +105,7 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
     description="Read specific page range(s) from a PDF attachment of a Zotero item. "
     "Use this when you know which pages to read — for example after getting the PDF "
     "outline via zotero_get_pdf_outline. Pages are 1-indexed. "
-    "Requires PyMuPDF: pip install zotero-mcp-server[pdf]",
+    "Requires PyMuPDF (the [pdf] extra).",
 )
 def read_pdf_pages(
     item_key: str,
@@ -143,7 +143,7 @@ def read_pdf_pages(
         try:
             import fitz
         except ImportError:
-            return "PyMuPDF is required for PDF page reading. Install it with: pip install zotero-mcp-server[pdf]"
+            return f"PyMuPDF is required for PDF page reading. {_utils.install_hint('pdf')}"
 
         doc = fitz.open(pdf_path)
         total_pages = len(doc)

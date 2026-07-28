@@ -22,6 +22,8 @@ import re
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
+from zotero_mcp.utils import install_hint
+
 if TYPE_CHECKING:
     from typing import Any
 
@@ -717,8 +719,7 @@ def find_text_position(
         import fitz
     except ImportError:
         raise ImportError(
-            "pymupdf is required for PDF text search. "
-            "Install it with: pip install pymupdf"
+            f"pymupdf is required for PDF text search. {install_hint('pdf')}"
         )
 
     doc = fitz.open(pdf_path)
@@ -818,8 +819,7 @@ def verify_pdf_attachment(pdf_path: str) -> bool:
         import fitz
     except ImportError:
         raise ImportError(
-            "PDF annotation features require PyMuPDF. "
-            "Install it with: pip install zotero-mcp-server[pdf]"
+            f"PDF annotation features require PyMuPDF. {install_hint('pdf')}"
         )
     try:
         doc = fitz.open(pdf_path)
@@ -882,8 +882,7 @@ def build_area_position_data(
         import fitz
     except ImportError:
         raise ImportError(
-            "pymupdf is required for PDF area annotations. "
-            "Install it with: pip install pymupdf"
+            f"pymupdf is required for PDF area annotations. {install_hint('pdf')}"
         )
 
     doc = fitz.open(pdf_path)

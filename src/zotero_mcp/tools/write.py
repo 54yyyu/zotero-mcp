@@ -2552,7 +2552,7 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
         "are accepted; attachment-to-parent resolution is automatic. "
         "Find the right key with zotero_get_item_children if unsure. "
         "Scope: PDFs only (EPUBs have no outline extraction here). "
-        "Requires PyMuPDF (pip install zotero-mcp-server[pdf]). "
+        "Requires PyMuPDF (the [pdf] extra). "
         "Read-only; works in local or web mode. "
         "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
     )

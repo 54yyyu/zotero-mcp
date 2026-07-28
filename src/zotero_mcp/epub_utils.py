@@ -23,6 +23,8 @@ from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Literal
 from xml.etree import ElementTree as ET
 
+from zotero_mcp.utils import install_hint
+
 if TYPE_CHECKING:
     from typing import Any
 
@@ -812,7 +814,7 @@ def _get_epub_spine(epub_path: str) -> list[dict]:
         import ebooklib
         from ebooklib import epub
     except ImportError:
-        raise ImportError("ebooklib is required for EPUB support. Install with: pip install ebooklib")
+        raise ImportError(f"ebooklib is required for EPUB support. {install_hint('pdf')}")
 
     book = epub.read_epub(epub_path)
     spine_items = []
