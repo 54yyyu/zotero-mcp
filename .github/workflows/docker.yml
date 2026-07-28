@@ -1,0 +1,104 @@
+name: Build and publish Docker images
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: core
+            extras: ""
+          - flavor: all
+            extras: all
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name
+        id: image
+        run: |
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=short,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build flavor tag set
+        id: tags
+        shell: bash
+        run: |
+          flavor="${{ matrix.flavor }}"
+          {
+            echo "value<<EOF"
+            while IFS= read -r tag; do
+              [ -z "$tag" ] && continue
+              echo "${tag}-${flavor}"
+            done <<< "${{ steps.meta.outputs.tags }}"
+
+            if [ "$flavor" = "all" ]; then
+              while IFS= read -r tag; do
+                [ -z "$tag" ] && continue
+                echo "$tag"
+              done <<< "${{ steps.meta.outputs.tags }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and (conditionally) publish
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.value }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.variant=${{ matrix.flavor }}
+          build-args: |
+            INSTALL_EXTRAS=${{ matrix.extras }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

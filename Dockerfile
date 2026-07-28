@@ -4,17 +4,23 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
+# Select dependency flavor at build time.
+# Valid values: "" (core), "all", "semantic", "pdf", "scite".
+ARG INSTALL_EXTRAS=""
+
 # Copy the project files
 COPY . /app
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Install build dependencies and install the package
 RUN pip install --no-cache-dir build hatchling \
-    && pip install --no-cache-dir .
+    && if [ -n "$INSTALL_EXTRAS" ]; then pip install --no-cache-dir ".[${INSTALL_EXTRAS}]"; else pip install --no-cache-dir .; fi \
+    && chmod 755 /usr/local/bin/entrypoint.sh
 
 # Run as a non-root user (defense-in-depth for multi-tenant hosts)
 RUN useradd --create-home --shell /usr/sbin/nologin app \
     && chown -R app:app /app
 USER app
 
-# Start the MCP server
-ENTRYPOINT ["zotero-mcp", "serve", "--transport", "stdio"]
+# Default to MCP server mode; can switch to CLI via ZOTERO_APP=cli.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
