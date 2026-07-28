@@ -4,6 +4,7 @@ Zotero client wrapper for MCP server.
 
 import functools
 import os
+import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -569,9 +570,18 @@ def download_attachment_file(
     Download an attachment using the best available source.
 
     The fallback order is:
-    1. local Zotero API (works with local storage or desktop-managed WebDAV)
-    2. Direct WebDAV access via environment variables
-    3. Zotero Web API (works with Zotero cloud storage)
+    1. local Zotero storage, resolved straight off the local SQLite DB
+    2. local Zotero API (works with local storage or desktop-managed WebDAV)
+    3. Direct WebDAV access via environment variables
+    4. Zotero Web API (works with Zotero cloud storage)
+
+    Step 1 exists because none of the later steps can serve a *linked* file.
+    The local API answers ``/file`` for a linked attachment with a 302 to a
+    ``file://`` URL, which httpx refuses to follow ("unsupported protocol"),
+    and a linked file is by definition never uploaded to WebDAV or Zotero
+    storage — so all three remaining sources fail on an attachment that is
+    sitting readable on the same disk. Reading the path out of the DB avoids
+    the redirect entirely and is faster for ordinary stored files too.
     """
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -582,6 +592,52 @@ def download_attachment_file(
     def _cleanup_target() -> None:
         if target_path.exists() and target_path.stat().st_size == 0:
             target_path.unlink()
+
+    def _try_local_storage() -> AttachmentDownloadResult | None:
+        """Resolve the attachment off disk via the local Zotero SQLite DB.
+
+        Gated on local mode so a web-API user pointed at a group library never
+        matches an unrelated same-key row in a personal DB that happens to
+        exist on the machine.
+        """
+        try:
+            from zotero_mcp.config import load_config
+            from zotero_mcp.local_db import LocalZoteroReader
+            from zotero_mcp.utils import is_local_mode
+
+            if not is_local_mode():
+                return None
+
+            with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
+                attachment = reader.get_attachment_by_key(attachment_key)
+                if attachment is None:
+                    return None
+
+                resolved = reader._resolve_attachment_path(
+                    attachment_key, attachment["zotero_path"] or ""
+                )
+                if not (resolved and resolved.exists()):
+                    # Recorded filename drifted on disk — scan the folder (#291)
+                    resolved = reader._scan_storage_for_attachment(
+                        attachment_key, attachment["content_type"]
+                    )
+                if not (resolved and resolved.exists() and resolved.stat().st_size > 0):
+                    return None
+
+                # Copy rather than hand back the library path: callers treat
+                # the returned file as a scratch copy and delete it, which on
+                # a linked file would destroy the user's original (#372).
+                shutil.copyfile(resolved, target_path)
+                return AttachmentDownloadResult(
+                    path=target_path,
+                    source="Local storage",
+                    errors=errors,
+                )
+        except Exception as exc:
+            errors.append(f"Local storage: {exc}")
+            _cleanup_target()
+
+        return None
 
     def _try_dump(label: str, zot_client: zotero.Zotero | None) -> AttachmentDownloadResult | None:
         if zot_client is None:
@@ -602,6 +658,10 @@ def download_attachment_file(
             _cleanup_target()
 
         return None
+
+    storage_result = _try_local_storage()
+    if storage_result:
+        return storage_result
 
     local_result = _try_dump("Local Zotero", local_client)
     if local_result:

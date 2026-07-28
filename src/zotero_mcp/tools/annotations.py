@@ -51,7 +51,8 @@ def _download_attachment_for_processing(
         "- **Zotero Cloud Storage**: Ensure file syncing is enabled in Zotero preferences\n"
         "- **WebDAV Storage**: Configure ZOTERO_WEBDAV_URL, ZOTERO_WEBDAV_USERNAME, and "
         "ZOTERO_WEBDAV_PASSWORD in the MCP env file, or run local Zotero with remote access enabled\n"
-        "- **Linked files**: Linked attachments (not imported) cannot be accessed remotely"
+        "- **Linked files**: Linked attachments are readable only from the machine holding "
+        "the file — set ZOTERO_LOCAL=true so they can be resolved from local Zotero storage"
     )
 
 

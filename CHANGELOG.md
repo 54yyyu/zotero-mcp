@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`zotero-mcp update` no longer offers, or performs, a downgrade.** The check was `current_version != latest_version`, so any install ahead of the last PyPI release — every git checkout and dev build — was told an update was available, and running it replaced the newer code with the older release. Ordering is now compared rather than inequality, via `packaging.version.Version` where available and a numeric-tuple fallback where it isn't (`packaging` is not a declared dependency, only a common transitive one). Being ahead is reported as such instead of as a bare "already up to date", and `--force` from an ahead version warns before downgrading. As a side effect the comparison is numeric rather than lexical, so `0.10.0` is correctly newer than `0.9.0`.
+- **Linked-file attachments are readable in local mode.** `download_attachment_file` started at `zot.dump()`, and for a *linked* attachment Zotero's local API answers `/file` with a 302 to a `file://` URL that httpx refuses to follow ("unsupported protocol"). A linked file is by definition never uploaded to WebDAV or Zotero storage either, so all three remaining sources failed on a file sitting readable on the same disk. The attachment path is now resolved out of `zotero.sqlite` first, which also spares ordinary stored files an API round trip. `zotero_get_annotations` was the visible casualty — unlike the fulltext and `read_pdf` paths it had no local-database step in front of the downloader — and its "linked attachments cannot be accessed remotely" error now points at `ZOTERO_LOCAL=true` instead, since that is the condition under which they do work. The resolved file is copied rather than handed back by path: callers treat the result as scratch and delete it, which on a linked file would have destroyed the user's original (the `_cleanup_path` failure mode from #372).
+
 ## [0.6.3] - 2026-07-28
 
 ### Added
