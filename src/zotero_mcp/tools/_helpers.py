@@ -1,5 +1,6 @@
 """Shared private helpers used across tool modules."""
 
+import hashlib
 import json
 import os
 import re
@@ -810,16 +811,7 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx):
     if not _webdav.is_webdav_configured():
         return ""
 
-    attachment_key = None
-    if isinstance(attach_result, dict):
-        for status in ("success", "unchanged"):
-            for entry in attach_result.get(status, []) or []:
-                if isinstance(entry, dict) and entry.get("key"):
-                    attachment_key = entry["key"]
-                    break
-            if attachment_key:
-                break
-
+    attachment_key = _extract_attachment_key(attach_result)
     if not attachment_key:
         return ""
 
@@ -836,6 +828,68 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx):
             f" (WARNING: WebDAV upload failed — {e}; "
             f"attachment {attachment_key} exists but has no file bytes on WebDAV)"
         )
+
+
+def _extract_attachment_key(attach_result):
+    """First attachment key in a pyzotero upload result, or ``None``.
+
+    ``Zupload.upload()`` returns ``{"success": [...], "failure": [...],
+    "unchanged": [...]}`` with the registered key on each payload entry.
+    """
+    if not isinstance(attach_result, dict):
+        return None
+    for status in ("success", "unchanged"):
+        for entry in attach_result.get(status, []) or []:
+            if isinstance(entry, dict) and entry.get("key"):
+                return entry["key"]
+    return None
+
+
+def _file_md5(path):
+    """MD5 hex digest of ``path``, or ``None`` if unreadable.
+
+    Non-fatal so content dedupe degrades to filename-only rather than
+    failing the attach.
+    """
+    try:
+        digest = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _find_child_attachment(write_zot, parent_key, filename=None, file_md5=None):
+    """First child of ``parent_key`` stored as ``filename`` or hashing to ``file_md5``.
+
+    Either criterion matching returns the child dict; ``None`` criteria are
+    skipped (a child without an ``md5`` field never matches ``file_md5=None``).
+    Paginates past the API's default page size and ignores trashed children
+    (``deleted`` flag), so a match beyond the first page isn't missed and a
+    trashed attachment doesn't count as "already attached".
+    Non-fatal: errors while listing children count as "no match", so attach
+    flows degrade to re-uploading rather than failing outright.
+    """
+    try:
+        kids = _paginate(write_zot.children, parent_key)
+    except Exception:
+        return None
+    for kid in kids:
+        data = kid.get("data", {}) or {}
+        if data.get("deleted"):
+            continue
+        if filename is not None and data.get("filename") == filename:
+            return kid
+        if file_md5 is not None and data.get("md5") == file_md5:
+            return kid
+    return None
+
+
+def _attachment_filename_exists(write_zot, parent_key, filename):
+    """True if ``parent_key`` already has a child attachment stored as ``filename``."""
+    return _find_child_attachment(write_zot, parent_key, filename=filename) is not None
 
 
 def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):

@@ -586,6 +586,7 @@ zotero_remove_item_relation(
 - `zotero_add_from_file`: Import a local PDF or EPUB file with automatic DOI extraction
 
 All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item. They also take `if_exists` (`"duplicate"` — default — always creates; `"file"` reuses an existing item matching the DOI/arXiv ID/ISBN/URL, filing it into missing collections and adding missing tags; `"skip"` leaves a match untouched) and `create_missing_collections` (create unknown collection specs, including path chains, instead of failing). The `zotero-cli add` commands default to `--if-exists file`.
+- `zotero_attach_file`: Attach a local file or a PDF URL to an existing item by key (no new item created; returns the attachment key; idempotent per filename and content hash)
 - `zotero_create_collection`: Create a new collection (folder/project) in your library
 - `zotero_search_collections`: Search for collections by name to find their keys
 - `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)

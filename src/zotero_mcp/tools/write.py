@@ -3,10 +3,12 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 import time as _time
 import xml.etree.ElementTree as ET
 from typing import Annotated, Literal
+from urllib.parse import unquote, urlparse
 
 import requests
 from pydantic import Field
@@ -21,6 +23,9 @@ from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
+
+# Shared by add_from_file and attach_file. URL attach mode is PDF-only.
+_ATTACH_ALLOWED_EXTS = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf"}
 
 
 def _resolve_collections_arg(
@@ -2552,7 +2557,7 @@ def add_from_file(
             return f"Error: {e}"
 
         ext = os.path.splitext(file_path)[1].lower()
-        allowed_exts = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf"}
+        allowed_exts = _ATTACH_ALLOWED_EXTS
         if ext not in allowed_exts:
             return f"Error: Unsupported file type '{ext}'. Allowed: {', '.join(sorted(allowed_exts))}"
 
@@ -2633,13 +2638,8 @@ def add_from_file(
         try:
             display_name = os.path.basename(file_path)
             if item_reused:
-                try:
-                    kids = write_zot.children(parent_key)
-                except Exception:
-                    kids = []
-                if any(
-                    (k.get("data", {}) or {}).get("filename") == display_name
-                    for k in kids
+                if _helpers._attachment_filename_exists(
+                    write_zot, parent_key, display_name
                 ):
                     return (
                         f"{result_msg}\n"
@@ -2670,6 +2670,224 @@ def add_from_file(
     except Exception as e:
         ctx.error(f"Error adding from file: {e}")
         return f"Error adding from file: {e}"
+
+
+def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
+    """Dedupe-checked upload of ``filepath`` onto ``item_key``.
+
+    Returns the user-facing markdown message. Idempotent: if the item
+    already has a child attachment stored under ``display_name`` or with
+    identical content (MD5), nothing is uploaded.
+    """
+    file_md5 = _helpers._file_md5(filepath)
+    existing = _helpers._find_child_attachment(
+        write_zot,
+        item_key,
+        filename=display_name,
+        file_md5=file_md5,
+    )
+    if existing is not None:
+        data = existing.get("data", {}) or {}
+        existing_key = existing.get("key") or data.get("key")
+        key_note = f" (key `{existing_key}`)" if existing_key else ""
+        existing_name = data.get("filename")
+        if existing_name == display_name:
+            msg = (
+                f"Attachment already present on `{item_key}`: {display_name}"
+                f"{key_note} — not re-uploaded."
+            )
+            if file_md5 and data.get("md5") and data["md5"] != file_md5:
+                msg += (
+                    " Note: the local file's content differs from the stored "
+                    "copy — delete the existing attachment first to replace it."
+                )
+            return msg
+        return (
+            f"Identical file (same MD5) already attached to `{item_key}` as "
+            f"'{existing_name}'{key_note} — '{display_name}' not re-uploaded."
+        )
+    attach_result = write_zot.attachment_both(
+        [(display_name, filepath)],
+        parentid=item_key,
+    )
+    attachment_key = _helpers._extract_attachment_key(attach_result)
+    if (
+        attachment_key is None
+        and isinstance(attach_result, dict)
+        and attach_result.get("failure")
+    ):
+        return (
+            f"Error: upload of '{display_name}' to `{item_key}` failed: "
+            f"{attach_result['failure']}"
+        )
+    key_note = f" (key `{attachment_key}`)" if attachment_key else ""
+    suffix = _helpers._maybe_upload_to_webdav(attach_result, filepath, ctx)
+    return (
+        f"File attached to `{item_key}`: {display_name}{key_note}{suffix}\n\n"
+        "_Note: To include this item in semantic search, run "
+        "zotero_update_search_database._"
+    )
+
+
+@mcp.tool(
+    name="zotero_attach_file",
+    description=(
+        "Attach a file to an EXISTING Zotero item as an imported child "
+        "attachment (uploads the file bytes). Use when the item is already "
+        "in the library and you have its key — e.g. attaching a PDF you "
+        "found for a reference. To create a NEW item from a file, use "
+        "zotero_add_from_file instead. "
+        "item_key: key of the existing REGULAR item. Passing an "
+        "attachment/note key fails with a hint to use its parent. "
+        "file_path: ABSOLUTE local path (.pdf, .epub, .djvu, .doc, .docx, "
+        ".odt, .rtf). "
+        "url: direct http(s) link, downloaded server-side — PDF-only; for "
+        "other formats download locally and use file_path. Exactly one of "
+        "file_path/url must be given. "
+        "filename: optional stored-filename override; defaults to the "
+        "file's basename or the URL's last path segment (falling back to "
+        "<item_key>.pdf); a missing extension is appended automatically. "
+        "Returns the created attachment's key. Idempotent: if the item "
+        "already has an attachment with the same filename or identical "
+        "content (MD5), nothing is re-uploaded. Requires a writable library "
+        "(fails in local-only mode). Uploads count against the Zotero "
+        "cloud storage quota unless WebDAV sync is configured. Run "
+        "zotero_update_search_database afterwards to index the new file "
+        "for semantic search. "
+        "Example: zotero_attach_file(item_key='ABCD2345', "
+        "file_path='/Users/me/smith-2020.pdf')."
+    ),
+)
+@with_zotero_api_lock
+def attach_file(
+    item_key: str,
+    file_path: str | None = None,
+    url: str | None = None,
+    filename: str | None = None,
+    *,
+    ctx: Context,
+) -> str:
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if bool(file_path) == bool(url):
+            return "Error: Provide exactly one of file_path or url."
+
+        # Validate the parent item before touching any file.
+        try:
+            item = write_zot.item(item_key)
+        except Exception as e:
+            return f"Error: Item '{item_key}' not found ({e})."
+        item_data = item.get("data", {}) or {}
+        item_type = item_data.get("itemType")
+        if item_type in ("attachment", "note", "annotation"):
+            parent = item_data.get("parentItem")
+            hint = f" Use its parent item key '{parent}' instead." if parent else ""
+            return (
+                f"Error: '{item_key}' has itemType '{item_type}', not a "
+                f"regular item — attachments must go on the parent item.{hint}"
+            )
+
+        if filename:
+            # Strip any path components from a caller-supplied name.
+            filename = os.path.basename(filename.strip())
+
+        if file_path:
+            # Path validation — check symlink BEFORE resolving
+            if os.path.islink(file_path):
+                return "Error: Symlinks are not allowed for security reasons."
+            if not os.path.isabs(file_path):
+                return "Error: file_path must be an absolute path."
+            file_path = os.path.realpath(file_path)
+            if not os.path.isfile(file_path):
+                return f"Error: File not found: {file_path}"
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext not in _ATTACH_ALLOWED_EXTS:
+                return (
+                    f"Error: Unsupported file type '{ext}'. "
+                    f"Allowed: {', '.join(sorted(_ATTACH_ALLOWED_EXTS))}"
+                )
+            if filename and not filename.lower().endswith(ext):
+                # Mirror the URL branch's .pdf enforcement: an override
+                # without the source's extension would strip it from the
+                # stored file (and break the MIME-type guess).
+                filename += ext
+            display_name = filename or os.path.basename(file_path)
+            ctx.info(f"Attaching local file to {item_key}: {display_name}")
+            if filename and filename != os.path.basename(file_path):
+                # pyzotero's attachment_both() derives the *stored* filename
+                # from the real file's basename, not the title tuple element
+                # — stage the file under the override name in a scratch dir
+                # so the override actually controls what gets stored (and so
+                # the dedupe check in _upload_attachment, which compares
+                # against stored filenames, converges on re-run).
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    staged_path = os.path.join(tmpdir, filename)
+                    shutil.copy2(file_path, staged_path)
+                    # Must run inside the with-block — temp file disappears on exit.
+                    return _upload_attachment(
+                        write_zot, item_key, display_name, staged_path, ctx
+                    )
+            return _upload_attachment(write_zot, item_key, display_name, file_path, ctx)
+
+        return _attach_from_url(write_zot, item_key, url, filename, ctx)
+
+    except Exception as e:
+        ctx.error(f"Error attaching file: {e}")
+        return f"Error attaching file: {e}"
+
+
+def _attach_from_url(write_zot, item_key, url, filename, ctx):
+    """Download ``url`` (PDF-only) and attach it to ``item_key``.
+
+    The URL is user/LLM-supplied, so it goes through ``_guarded_pdf_get``
+    (SSRF guard + per-hop redirect re-validation) like the third-party
+    OA-PDF URLs elsewhere in the codebase.
+    """
+    if not url.lower().startswith(("http://", "https://")):
+        return "Error: url must be an http(s) URL."
+
+    ctx.info(f"Downloading PDF for {item_key}: {url}")
+    resp = _helpers._guarded_pdf_get(url, ctx)
+    if resp is None:
+        return (
+            "Error: URL rejected (unreachable, resolves to a private "
+            "network, or too many redirects)."
+        )
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        return f"Error: Download failed: {e}"
+
+    content_type = resp.headers.get("Content-Type", "")
+    if "pdf" not in content_type and "octet-stream" not in content_type:
+        return (
+            f"Error: URL did not return a PDF (Content-Type: "
+            f"{content_type}). For non-PDF formats, download the file "
+            "locally and use file_path."
+        )
+
+    if not filename:
+        seg = os.path.basename(unquote(urlparse(url).path))
+        filename = seg if seg.lower().endswith(".pdf") else f"{item_key}.pdf"
+    elif not filename.lower().endswith(".pdf"):
+        filename += ".pdf"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = os.path.join(tmpdir, filename)
+        with open(filepath, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        if os.path.getsize(filepath) < 1000:
+            return (
+                "Error: Downloaded file is under 1 KB — likely an error "
+                "page, not a real PDF."
+            )
+        # Must run inside the with-block — temp file disappears on exit.
+        return _upload_attachment(write_zot, item_key, filename, filepath, ctx)
 
 
 def _build_relation_uri(library_type: str, library_id: str, item_key: str) -> str:
