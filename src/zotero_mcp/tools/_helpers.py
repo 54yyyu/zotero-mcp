@@ -779,18 +779,29 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
                 ctx.info("Downloaded file too small, likely not a real PDF")
                 return None
 
+            suffix = _webdav_first_attach(
+                write_zot,
+                filename,
+                filepath,
+                item_key,
+                ctx,
+                content_type="application/pdf",
+            )
+            if suffix is not None:
+                return suffix
             attach_result = write_zot.attachment_both(
                 [(filename, filepath)],
                 parentid=item_key,
             )
-            # Must run inside the with-block — temp file disappears on exit.
-            return _maybe_upload_to_webdav(attach_result, filepath, ctx)
+            return _maybe_upload_to_webdav(
+                attach_result, filepath, ctx, write_zot=write_zot
+            )
     except Exception as e:
         ctx.info(f"PDF download/attach failed: {e}")
         return None
 
 
-def _maybe_upload_to_webdav(attach_result, file_path, ctx):
+def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     """Suffix to append to a user-facing 'file attached' message.
 
     PR #279 added WebDAV-aware upload to ``zotero_add_from_file``. The same
@@ -824,10 +835,110 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx):
         return f" (uploaded to WebDAV as {attachment_key}.zip)"
     except Exception as e:
         ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
-        return (
-            f" (WARNING: WebDAV upload failed — {e}; "
-            f"attachment {attachment_key} exists but has no file bytes on WebDAV)"
-        )
+        # A failed PUT leaves the attachment item with no file bytes — an
+        # orphan that confuses the Zotero UI and breaks sync. Clean it up,
+        # and only fall back to the "no file bytes" warning if the delete
+        # itself fails.
+        try:
+            attachment_version = next(
+                (
+                    entry.get("version")
+                    for status in ("success", "unchanged")
+                    for entry in (attach_result.get(status, []) or [])
+                    if isinstance(entry, dict) and entry.get("key") == attachment_key
+                ),
+                None,
+            )
+            if write_zot is not None:
+                if attachment_version is None:
+                    attachment_version = write_zot.item(attachment_key)["version"]
+                write_zot.delete_item({"key": attachment_key, "version": attachment_version})
+                ctx.info(f"Cleaned up orphan attachment {attachment_key}")
+                return f" (WARNING: WebDAV upload failed — {e}; attachment {attachment_key} was deleted)"
+            raise RuntimeError("no writable client available for cleanup")
+        except Exception as del_err:
+            ctx.info(f"Cleanup of orphan attachment {attachment_key} failed: {del_err}")
+            return (
+                f" (WARNING: WebDAV upload failed — {e}; "
+                f"attachment {attachment_key} exists but has no file bytes on WebDAV "
+                f"and could not be deleted: {del_err})"
+            )
+
+
+def _guess_content_type(filename):
+    """Guess a Zotero ``contentType`` from a filename's extension.
+
+    Covers the file types ``add_from_file`` accepts (PDF, EPUB, DJVU, plus a
+    few common extras). Returns ``None`` when there is no useful guess so the
+    caller can leave the field unset and let Zotero fall back.
+    """
+    if not filename:
+        return None
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    return {
+        "pdf": "application/pdf",
+        "epub": "application/epub+zip",
+        "djvu": "image/vnd.djvu",
+        "html": "text/html",
+        "txt": "text/plain",
+        "doc": "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "rtf": "application/rtf",
+        "odt": "application/vnd.oasis.opendocument.text",
+    }.get(ext)
+
+
+def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, content_type=None):
+    """Create attachment shell + WebDAV upload when WebDAV is configured; else return None.
+
+    Returns a user-facing suffix or None (caller falls back to attachment_both).
+    ``content_type``, when given, is written to the attachment shell's
+    ``contentType`` field so Zotero renders and opens the file correctly
+    (e.g. ``application/pdf``).
+    """
+    from zotero_mcp import webdav as _webdav
+
+    if not _webdav.is_webdav_configured():
+        return None
+
+    template = write_zot.item_template("attachment", linkmode="imported_file")
+    template["title"] = filename
+    template["filename"] = filename
+    template["parentItem"] = parent_key
+    if content_type:
+        template["contentType"] = content_type
+    result = write_zot.create_items([template])
+    if not (isinstance(result, dict) and result.get("success")):
+        return " (WARNING: could not create attachment shell)"
+    attachment_key = next(iter(result["success"].values()))
+    # successVersions is keyed in parallel to success; delete_item() needs the
+    # version for its If-Unmodified-Since-Version header. Older pyzotero may
+    # omit the field, so fall back to a fetch.
+    success_versions = result.get("successVersions") or {}
+    attachment_version = next(iter(success_versions.values()), None)
+
+    try:
+        _webdav.upload_attachment_to_webdav(attachment_key=attachment_key, file_path=file_path)
+        ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
+        return f" (uploaded to WebDAV as {attachment_key}.zip)"
+    except Exception as e:
+        ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
+        # A failed PUT leaves the shell with no file bytes — an orphan that
+        # confuses the Zotero UI and breaks sync. Clean it up, and only fall
+        # back to the "no file bytes" warning if the delete itself fails.
+        try:
+            if attachment_version is None:
+                attachment_version = write_zot.item(attachment_key)["version"]
+            write_zot.delete_item({"key": attachment_key, "version": attachment_version})
+            ctx.info(f"Cleaned up orphan attachment shell {attachment_key}")
+            return f" (WARNING: WebDAV upload failed — {e}; attachment shell {attachment_key} was deleted)"
+        except Exception as del_err:
+            ctx.info(f"Cleanup of orphan shell {attachment_key} failed: {del_err}")
+            return (
+                f" (WARNING: WebDAV upload failed — {e}; "
+                f"attachment {attachment_key} exists but has no file bytes on WebDAV "
+                f"and could not be deleted: {del_err})"
+            )
 
 
 def _extract_attachment_key(attach_result):

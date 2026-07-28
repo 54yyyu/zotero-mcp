@@ -1,6 +1,5 @@
 """Tests for direct WebDAV attachment access."""
 
-import pytest
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from conftest import skip_on_ci
@@ -281,3 +280,288 @@ def test_upload_explicit_timeout_wins_over_env(tmp_path, monkeypatch):
 
     # Explicit caller arg takes precedence over the env var.
     assert session.timeouts == [(10.0, 45.0), (10.0, 45.0)]
+
+
+# ---------------------------------------------------------------------------
+# _webdav_first_attach (shell + PUT orchestration)
+# ---------------------------------------------------------------------------
+
+
+class _NoOpCtx:
+    def info(self, *_a, **_kw):
+        return None
+
+    def error(self, *_a, **_kw):
+        return None
+
+    def warning(self, *_a, **_kw):
+        return None
+
+
+class _ShellZotero:
+    """Minimal pyzotero stand-in for the _webdav_first_attach flow.
+
+    Records the template passed to create_items, returns a deterministic
+    attachment key, and tracks delete_item calls so cleanup-on-failure can
+    be asserted.
+    """
+
+    def __init__(self, attachment_key="ATTCHKEY0", attachment_version=42):
+        self._attachment_key = attachment_key
+        self._attachment_version = attachment_version
+        self.created_template = None
+        self.deleted_payloads = []
+        self.delete_fails = False
+
+    def item_template(self, item_type, **kwargs):
+        return {"itemType": item_type, **kwargs}
+
+    def create_items(self, items, **kwargs):
+        self.created_template = items[0]
+        return {
+            "success": {"0": self._attachment_key},
+            # Mirrors pyzotero: successVersions is keyed in parallel to
+            # success and carries the new item version.
+            "successVersions": {"0": self._attachment_version},
+            "failed": {},
+        }
+
+    def delete_item(self, payload, last_modified=None):
+        # Mirror pyzotero's contract: payload is a dict with key/version
+        # (or a list of such dicts). A bare string must be rejected so a
+        # regression of the call site is caught here rather than in prod.
+        if isinstance(payload, str):
+            raise TypeError("delete_item expects a dict with 'key'/'version', got str")
+        if isinstance(payload, list):
+            keys = [p["key"] for p in payload]
+            versions = [p["version"] for p in payload]
+        else:
+            keys = [payload["key"]]
+            versions = [payload["version"]]
+        self.deleted_payloads.append(payload)
+        assert all(v == self._attachment_version for v in versions), f"unexpected version(s): {versions}"
+        if self.delete_fails:
+            raise RuntimeError("delete refused")
+        return keys
+
+
+def _src_pdf(tmp_path):
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"%PDF-1.4 webdav shell test")
+    return src
+
+
+@skip_on_ci
+def test_webdav_first_attach_unconfigured_returns_none(tmp_path, monkeypatch):
+    """No WebDAV env -> _webdav_first_attach returns None so the caller falls
+    through to its existing attachment_both flow untouched.
+    """
+    from zotero_mcp.tools import _helpers
+
+    monkeypatch.delenv("ZOTERO_WEBDAV_URL", raising=False)
+    monkeypatch.delenv("ZOTERO_WEBDAV_USERNAME", raising=False)
+    monkeypatch.delenv("ZOTERO_WEBDAV_PASSWORD", raising=False)
+
+    zot = _ShellZotero()
+    src = _src_pdf(tmp_path)
+    result = _helpers._webdav_first_attach(zot, "paper.pdf", src, "PARENT0", _NoOpCtx(), content_type="application/pdf")
+    assert result is None
+    assert zot.created_template is None  # no shell created
+
+
+@skip_on_ci
+def test_webdav_first_attach_configured_creates_shell_and_uploads(tmp_path, monkeypatch):
+    """WebDAV configured -> shell created with contentType, PUT issued with the right key."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=201)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _ShellZotero(attachment_key="ATTCHKEY0")
+    src = _src_pdf(tmp_path)
+
+    result = _helpers._webdav_first_attach(zot, "paper.pdf", src, "PARENT0", _NoOpCtx(), content_type="application/pdf")
+
+    # Shell carries title/filename/parentItem and the contentType.
+    assert zot.created_template["title"] == "paper.pdf"
+    assert zot.created_template["filename"] == "paper.pdf"
+    assert zot.created_template["parentItem"] == "PARENT0"
+    assert zot.created_template["contentType"] == "application/pdf"
+
+    # PUT went out under the shell's attachment key.
+    assert session.calls[0][0] == "https://dav.example.com/zotero/ATTCHKEY0.zip"
+    assert session.calls[1][0] == "https://dav.example.com/zotero/ATTCHKEY0.prop"
+
+    assert result == " (uploaded to WebDAV as ATTCHKEY0.zip)"
+    assert zot.deleted_payloads == []  # no cleanup on success
+
+
+@skip_on_ci
+def test_webdav_first_attach_put_failure_deletes_shell_and_warns(tmp_path, monkeypatch):
+    """PUT failure -> shell deleted via delete_item and the suffix warns about it."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=500)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _ShellZotero(attachment_key="ATTCHKEY0")
+    src = _src_pdf(tmp_path)
+
+    result = _helpers._webdav_first_attach(zot, "paper.pdf", src, "PARENT0", _NoOpCtx(), content_type="application/pdf")
+
+    # The orphaned shell was deleted so the Zotero UI/sync stays consistent.
+    assert zot.deleted_payloads == [{"key": "ATTCHKEY0", "version": 42}]
+    assert "WARNING" in result
+    assert "ATTCHKEY0" in result
+    assert "was deleted" in result
+
+
+@skip_on_ci
+def test_webdav_first_attach_put_failure_falls_back_to_warning_if_delete_fails(tmp_path, monkeypatch):
+    """If the cleanup delete itself fails, the suffix retains the old 'no file bytes' wording."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=500)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _ShellZotero(attachment_key="ATTCHKEY0")
+    zot.delete_fails = True
+    src = _src_pdf(tmp_path)
+
+    result = _helpers._webdav_first_attach(zot, "paper.pdf", src, "PARENT0", _NoOpCtx(), content_type="application/pdf")
+
+    assert zot.deleted_payloads == [{"key": "ATTCHKEY0", "version": 42}]  # delete was attempted
+    assert "WARNING" in result
+    assert "could not be deleted" in result
+
+
+# ---------------------------------------------------------------------------
+# _maybe_upload_to_webdav (the attachment_both + PUT path)
+# ---------------------------------------------------------------------------
+
+
+class _AttachBothZotero:
+    """Fake client for the _maybe_upload_to_webdav flow.
+
+    attachment_both succeeded (so the key/version are in attach_result),
+    and delete_item is wired exactly like pyzotero so cleanup-on-PUT-failure
+    can be asserted.
+    """
+
+    def __init__(self, attachment_key="ATTCH2", attachment_version=7):
+        self._key = attachment_key
+        self._version = attachment_version
+        self.deleted_payloads = []
+        self.delete_fails = False
+
+    def item(self, key):
+        return {"key": key, "version": self._version}
+
+    def delete_item(self, payload, last_modified=None):
+        if isinstance(payload, str):
+            raise TypeError("delete_item expects a dict with 'key'/'version', got str")
+        if isinstance(payload, list):
+            keys = [p["key"] for p in payload]
+            versions = [p["version"] for p in payload]
+        else:
+            keys = [payload["key"]]
+            versions = [payload["version"]]
+        self.deleted_payloads.append(payload)
+        assert all(v == self._version for v in versions), f"unexpected version(s): {versions}"
+        if self.delete_fails:
+            raise RuntimeError("delete refused")
+        return keys
+
+    def attachment_both(self, *_a, **_kw):
+        return {
+            "success": [{"key": self._key, "version": self._version}],
+            "unchanged": [],
+            "failed": {},
+        }
+
+
+def _attach_result(key="ATTCH2", version=7):
+    return {
+        "success": [{"key": key, "version": version}],
+        "unchanged": [],
+        "failed": {},
+    }
+
+
+@skip_on_ci
+def test_maybe_upload_success_returns_suffix(tmp_path, monkeypatch):
+    """Successful PUT -> short success suffix, no cleanup."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=201)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _AttachBothZotero()
+    src = _src_pdf(tmp_path)
+
+    result = _helpers._maybe_upload_to_webdav(_attach_result(), src, _NoOpCtx(), write_zot=zot)
+
+    assert session.calls[0][0] == "https://dav.example.com/zotero/ATTCH2.zip"
+    assert result == " (uploaded to WebDAV as ATTCH2.zip)"
+    assert zot.deleted_payloads == []  # no cleanup on success
+
+
+@skip_on_ci
+def test_maybe_upload_put_failure_deletes_attachment_and_warns(tmp_path, monkeypatch):
+    """PUT failure after attachment_both -> the just-created attachment is deleted."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=500)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _AttachBothZotero(attachment_key="ATTCH2", attachment_version=7)
+    src = _src_pdf(tmp_path)
+
+    result = _helpers._maybe_upload_to_webdav(_attach_result("ATTCH2", 7), src, _NoOpCtx(), write_zot=zot)
+
+    assert zot.deleted_payloads == [{"key": "ATTCH2", "version": 7}]
+    assert "WARNING" in result
+    assert "ATTCH2" in result
+    assert "was deleted" in result
+
+
+@skip_on_ci
+def test_maybe_upload_put_failure_falls_back_if_delete_fails(tmp_path, monkeypatch):
+    """If cleanup delete itself fails, suffix keeps the old 'no file bytes' wording."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=500)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _AttachBothZotero(attachment_key="ATTCH2", attachment_version=7)
+    zot.delete_fails = True
+    src = _src_pdf(tmp_path)
+
+    result = _helpers._maybe_upload_to_webdav(_attach_result("ATTCH2", 7), src, _NoOpCtx(), write_zot=zot)
+
+    assert zot.deleted_payloads == [{"key": "ATTCH2", "version": 7}]  # delete was attempted
+    assert "WARNING" in result
+    assert "could not be deleted" in result
+
+
+@skip_on_ci
+def test_maybe_upload_no_key_returns_empty(tmp_path, monkeypatch):
+    """When no attachment key can be extracted, no PUT and no cleanup happen."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    monkeypatch.setattr("requests.Session", lambda: _RecordingPutSession())
+
+    zot = _AttachBothZotero()
+    src = _src_pdf(tmp_path)
+
+    result = _helpers._maybe_upload_to_webdav({"success": [], "unchanged": []}, src, _NoOpCtx())
+
+    assert result == ""
+    assert zot.deleted_payloads == []
