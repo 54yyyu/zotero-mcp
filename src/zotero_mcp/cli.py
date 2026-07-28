@@ -56,22 +56,26 @@ def load_claude_desktop_env_vars():
     # Global guard to skip Claude detection entirely
     if str(os.environ.get("ZOTERO_NO_CLAUDE", "")).lower() in ("1", "true", "yes"):
         return {}
-    from zotero_mcp.setup_helper import find_claude_config
+    from zotero_mcp.setup_helper import find_existing_claude_configs
 
     try:
-        config_path = find_claude_config()
-        if not config_path or not config_path.exists():
-            return {}
+        # More than one Claude Desktop build can be installed (issue #392);
+        # use the first config that actually configures the zotero server.
+        for config_path in find_existing_claude_configs():
+            try:
+                with open(config_path) as f:
+                    config = json.load(f)
+            except Exception:
+                continue
 
-        with open(config_path) as f:
-            config = json.load(f)
+            # Extract Zotero MCP server environment variables
+            mcp_servers = config.get("mcpServers", {})
+            zotero_config = mcp_servers.get("zotero", {})
+            env_vars = zotero_config.get("env", {})
+            if env_vars:
+                return env_vars
 
-        # Extract Zotero MCP server environment variables
-        mcp_servers = config.get("mcpServers", {})
-        zotero_config = mcp_servers.get("zotero", {})
-        env_vars = zotero_config.get("env", {})
-
-        return env_vars
+        return {}
 
     except Exception:
         return {}

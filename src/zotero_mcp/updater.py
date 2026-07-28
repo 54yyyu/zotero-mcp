@@ -187,17 +187,10 @@ def backup_configurations() -> Path:
     """
     backup_dir = Path(tempfile.mkdtemp(prefix="zotero_mcp_backup_"))
 
-    # Backup Claude Desktop configs
-    claude_config_paths = [
-        Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
-        Path.home() / "Library" / "Application Support" / "Claude Desktop" / "claude_desktop_config.json",
-        Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json",
-        Path(os.environ.get("APPDATA", "")) / "Claude Desktop" / "claude_desktop_config.json",
-        Path.home() / ".config" / "Claude" / "claude_desktop_config.json",
-        Path.home() / ".config" / "Claude Desktop" / "claude_desktop_config.json",
-    ]
+    # Backup Claude Desktop configs (all known build locations, issue #392)
+    from zotero_mcp.setup_helper import claude_config_candidates
 
-    for config_path in claude_config_paths:
+    for config_path in claude_config_candidates():
         if config_path.exists():
             try:
                 backup_path = backup_dir / "claude_desktop_config.json"
