@@ -203,3 +203,71 @@ def test_export_bibliography_api_error(monkeypatch):
 
     out = synthesis.export_bibliography(item_keys=["ABCD1234"], ctx=DummyContext())
     assert "web API" in out.lower() or "ZOTERO_API_KEY" in out
+
+
+# ---------------------------------------------------------------------------
+# export_bibliography — local/hybrid mode routing (#371)
+# ---------------------------------------------------------------------------
+
+
+class _LocalOnlyZotero(FakeZotero):
+    """Local API stub: rejects any CSL/Atom rendering request like Zotero does."""
+
+    def items(self, **kwargs):
+        if kwargs.get("content"):
+            raise RuntimeError("Local API does not support Atom output")
+        return self._items
+
+    def collection_items(self, key, **kwargs):
+        if kwargs.get("content"):
+            raise RuntimeError("Local API does not support Atom output")
+        return super().collection_items(key, **kwargs)
+
+
+def test_export_bibliography_routes_to_web_client_in_hybrid_mode(monkeypatch):
+    """Local mode + web credentials → render through the web client (#371)."""
+    local = _LocalOnlyZotero()
+    web = _BibZotero()
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: local)
+    monkeypatch.setattr(zotero_client, "get_web_zotero_client", lambda: web)
+    monkeypatch.setattr(zotero_client, "get_active_library", dict)
+
+    out = synthesis.export_bibliography(item_keys=["ABCD1234"], ctx=DummyContext())
+
+    assert "Smith, J. (2020). Title. Journal." in out
+    assert "Atom output" not in out
+    # The web client did the rendering, not the local one.
+    assert web.last_kwargs.get("content") == "bib"
+
+
+def test_export_bibliography_web_client_honors_library_override(monkeypatch):
+    """Exporting while switched to a group library targets that library."""
+    web = _BibZotero()
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
+    monkeypatch.setattr(zotero_client, "get_zotero_client", _LocalOnlyZotero)
+    monkeypatch.setattr(zotero_client, "get_web_zotero_client", lambda: web)
+    monkeypatch.setattr(
+        zotero_client,
+        "get_active_library",
+        lambda: {"library_id": "987654", "library_type": "group"},
+    )
+
+    synthesis.export_bibliography(collection_key="COLL1234", ctx=DummyContext())
+
+    assert web.library_id == "987654"
+    # pyzotero wants the plural URL segment.
+    assert web.library_type == "groups"
+
+
+def test_export_bibliography_local_only_mode_message(monkeypatch):
+    """Local-only mode → actionable message, not the raw Atom error (#371)."""
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
+    monkeypatch.setattr(zotero_client, "get_zotero_client", _LocalOnlyZotero)
+    monkeypatch.setattr(zotero_client, "get_web_zotero_client", lambda: None)
+
+    out = synthesis.export_bibliography(item_keys=["ABCD1234"], ctx=DummyContext())
+
+    assert "ZOTERO_API_KEY" in out
+    assert "ZOTERO_LIBRARY_ID" in out
+    assert "Atom output" not in out

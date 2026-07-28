@@ -40,7 +40,7 @@ class FakeZoteroForAnnotations:
         return all_children[start:start + limit]
 
 
-def _annotation(key, parent, text):
+def _annotation(key, parent, text, tags=None):
     return {
         "key": key,
         "data": {
@@ -49,7 +49,7 @@ def _annotation(key, parent, text):
             "annotationText": text,
             "annotationComment": "",
             "parentItem": parent,
-            "tags": [],
+            "tags": [] if tags is None else tags,
         },
     }
 
@@ -172,6 +172,147 @@ def test_get_annotations_reports_none_when_empty(monkeypatch):
 
     assert "No annotations found" in result
     assert "Bare Paper" in result
+
+
+def test_get_annotations_surfaces_tags(monkeypatch):
+    """Tags on an annotation are rendered, not dropped (#377)."""
+    parents = {
+        "ATTACH01": {"data": {"title": "PDF", "itemType": "attachment"}},
+    }
+    children = {
+        "ATTACH01": [
+            _annotation(
+                "ANNO0001", "ATTACH01", "tagged highlight",
+                tags=[{"tag": "method", "type": 1}, {"tag": "to-read"}],
+            ),
+        ],
+    }
+    fake = FakeZoteroForAnnotations(parents, children)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setenv("ZOTERO_LOCAL", "")
+
+    result = server.get_annotations(item_key="ATTACH01", ctx=DummyContext())
+
+    assert "**Tags:** `method` `to-read`" in result
+
+
+def test_get_annotations_tolerates_missing_or_odd_tags(monkeypatch):
+    """None / bare-string tags don't crash and render sensibly (#377)."""
+    parents = {
+        "ATTACH01": {"data": {"title": "PDF", "itemType": "attachment"}},
+    }
+    children = {
+        "ATTACH01": [
+            _annotation("ANNO0001", "ATTACH01", "no tags", tags=None),
+            _annotation("ANNO0002", "ATTACH01", "string tags", tags=["plain"]),
+        ],
+    }
+    fake = FakeZoteroForAnnotations(parents, children)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setenv("ZOTERO_LOCAL", "")
+
+    result = server.get_annotations(item_key="ATTACH01", ctx=DummyContext())
+
+    assert "Error fetching annotations" not in result
+    assert "**Tags:** `plain`" in result
+    # The untagged annotation gets no Tags line.
+    assert result.count("**Tags:**") == 1
+
+
+def test_get_annotations_better_bibtex_path_carries_tags(monkeypatch):
+    """Better BibTeX annotations keep their tags (bare strings) (#377)."""
+    import zotero_mcp.better_bibtex_client as bbt
+
+    class _FakeBBT:
+        def is_zotero_running(self):
+            return True
+
+        def _make_request(self, method, params=None):
+            return [{"citekey": "smith2020", "library": "1"}]
+
+        def get_attachments(self, citekey, library="*"):
+            return [{
+                "itemKey": "ATTACH01",
+                "title": "Full Text PDF",
+                "path": "/tmp/smith2020.pdf",
+                "annotations": [{
+                    "key": "ANNO0001",
+                    "annotationType": "highlight",
+                    "annotationText": "bbt highlight",
+                    "annotationComment": "",
+                    "annotationColor": "#ffd400",
+                    "annotationPageLabel": "3",
+                    "tags": ["method", "to-read"],
+                }],
+            }]
+
+        def get_annotations_from_attachment(self, attachment):
+            return attachment.get("annotations", [])
+
+    parents = {
+        "PAPER001": {"data": {
+            "title": "A Paper",
+            "itemType": "journalArticle",
+            "extra": "Citation Key: smith2020",
+        }},
+    }
+    fake = FakeZoteroForAnnotations(parents, {})
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr(bbt, "ZoteroBetterBibTexAPI", lambda *a, **k: _FakeBBT())
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
+
+    result = server.get_annotations(item_key="PAPER001", ctx=DummyContext())
+
+    assert "bbt highlight" in result
+    assert "**Tags:** `method` `to-read`" in result
+
+
+def test_get_annotations_pdf_extraction_path_carries_tags(monkeypatch):
+    """Directly-extracted PDF annotations keep their tags (#377)."""
+    import zotero_mcp.pdfannots_helper as pdfhelper
+
+    class _DumpingZotero(FakeZoteroForAnnotations):
+        def dump(self, key, filename=None, path=None):
+            with open(f"{path}/{filename}", "wb") as f:
+                f.write(b"%PDF-1.4 fake")
+
+    parents = {
+        "PAPER001": {"data": {"title": "A Paper", "itemType": "journalArticle"}},
+    }
+    children = {
+        "PAPER001": [
+            {"key": "ATTACH01", "data": {
+                "itemType": "attachment",
+                "contentType": "application/pdf",
+                "title": "Full Text PDF",
+            }},
+        ],
+        "ATTACH01": [],
+    }
+    fake = _DumpingZotero(parents, children)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr(pdfhelper, "ensure_pdfannots_installed", lambda: True)
+    monkeypatch.setattr(
+        pdfhelper,
+        "extract_annotations_from_pdf",
+        lambda path, outdir=None, **kw: [{
+            "id": "a1",
+            "type": "highlight",
+            "annotatedText": "pdf highlight",
+            "comment": "",
+            "color": "#ffd400",
+            "page": 2,
+            "tags": [{"tag": "from-pdf", "type": 1}],
+        }],
+    )
+    monkeypatch.setenv("ZOTERO_LOCAL", "")
+
+    result = server.get_annotations(
+        item_key="PAPER001", use_pdf_extraction=True, ctx=DummyContext()
+    )
+
+    assert "pdf highlight" in result
+    assert "**Tags:** `from-pdf`" in result
 
 
 def test_get_annotations_paginates_through_many_annotations(monkeypatch):

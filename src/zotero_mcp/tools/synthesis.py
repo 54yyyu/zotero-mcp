@@ -259,8 +259,9 @@ def _render_entries(rendered) -> list[str]:
         ".bib files). "
         "Output: markdown naming the style/format, then the rendered entries "
         "(a fenced block for bibtex, a numbered list otherwise). "
-        "Requires bibliography rendering support — if the API errors (e.g. "
-        "local read-only mode), the tool suggests web API mode. "
+        "Rendering runs on the Zotero web API's CSL engine — the local API "
+        "has no citation engine, so in local mode this routes through the "
+        "web API and needs ZOTERO_API_KEY + ZOTERO_LIBRARY_ID configured. "
         "Example: zotero_export_bibliography(item_keys=['RTKZQI8E'], "
         "style='apa', export_format='bib')."
     ),
@@ -296,7 +297,9 @@ def export_bibliography(
             keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
 
         ctx.info(f"Exporting bibliography (format={export_format}, style={style})")
-        zot = _client.get_zotero_client()
+        # Rendering always goes through the web API's CSL engine — the local
+        # API rejects content=bib/citation/bibtex outright (#371).
+        zot = _helpers._get_bibliography_client(ctx)
 
         content = "bibtex" if export_format == "bibtex" else export_format
 
