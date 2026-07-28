@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Multi-library tagging in the semantic search index (#163, phase 1)** — ChromaDB documents are now tagged with a `group_id` field (0 = personal library, else the Zotero groupID — the same `0`/groupID convention already used by `zotero_switch_library`). `zotero_semantic_search` gains a `library_id` parameter (accepting `0`, `"user"`, or a group's numeric groupID; omitted to search every indexed library — the new default) that filters on `group_id` DB-side via a ChromaDB `where` clause, never a Python post-filter. Existing collections are migrated automatically on the next `zotero_update_search_database` run (metadata-only backfill, no re-embedding, no downtime). Note: full item enrichment for a search hit still uses the currently active library's client, so a hit from a group library other than the active one may show limited detail until that capability lands in a follow-up; the incremental-update deletion pass is likewise not yet scoped per library (tracked separately, see #393 and related issues).
 
+### Fixed
+- **`zotero_get_pdf_outline` no longer takes the whole MCP server down.** `fitz.Document.get_toc()` segfaults on some born-digital journal PDFs; a segfault cannot be caught in-process, so the server died with it ("Server disconnected") and left orphaned processes behind. The outline is now read in a short-lived child process with a timeout — a crash or hang comes back as a plain error message and the server keeps running. The download also moved from the legacy `zot.dump()` call to the shared multi-source downloader, so WebDAV- and local-storage-backed attachments work, and a key naming the PDF attachment itself is accepted (#372).
+- **`zotero_read_pdf_pages` accepts a PDF attachment key**, as its description always claimed. It previously scanned the key's children for a PDF — an attachment has none — and answered "No PDF attachment found" for the very item that *was* the PDF. The local reader gained `get_attachment_by_key()` for this, since attachments are invisible to the item-level lookup (#372).
+
 ## [0.6.2] - 2026-07-13
 
 ### Added

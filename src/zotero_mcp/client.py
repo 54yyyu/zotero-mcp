@@ -496,7 +496,9 @@ def get_attachment_details(
     """
     data = item.get("data", {})
     item_type = data.get("itemType")
-    item_key = data.get("key")
+    # Top-level "key" is the reliable one: some API responses (and the local
+    # Zotero server) omit it from the nested data object (#372).
+    item_key = data.get("key") or item.get("key")
 
     # Direct attachment
     if item_type == "attachment":
