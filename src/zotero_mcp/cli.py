@@ -648,6 +648,11 @@ def main():
 
         from zotero_mcp.semantic_search import create_semantic_search
 
+        # Batch size for paginated collection scans (see _iter_all_metadatas).
+        # Keeps each col.get() well under SQLite's bound-variable ceiling
+        # regardless of collection size.
+        DB_INSPECT_BATCH_SIZE = 500
+
         # Determine config path
         config_path = args.config_path
         if not config_path:
@@ -660,27 +665,54 @@ def main():
             client = search.chroma_client
             col = client.collection
 
+            def _iter_all_metadatas(batch_size=DB_INSPECT_BATCH_SIZE, include_documents=False):
+                """Paginate through the whole collection in bounded batches.
+
+                A single unbounded ``col.get(include=[...])`` call (no limit/offset)
+                asks Chroma's SQLite backend to bind one parameter per row for the
+                entire collection; past roughly a few tens of thousands of rows this
+                exceeds SQLite's bound-variable ceiling and raises
+                ``too many SQL variables``. Fetching in small batches keeps every
+                query well under that limit regardless of collection size, and lets
+                filtering scan the *whole* collection instead of silently being
+                limited to whatever the first raw batch happened to contain.
+                """
+                inc = ["metadatas", "documents"] if include_documents else ["metadatas"]
+                total = col.count()
+                offset = 0
+                while offset < total:
+                    batch = col.get(limit=batch_size, offset=offset, include=inc)
+                    metas = batch.get("metadatas", [])
+                    if not metas:
+                        break
+                    docs = batch.get("documents", [None] * len(metas)) if include_documents else [None] * len(metas)
+                    for m, d in zip(metas, docs):
+                        yield (m or {}), d
+                    offset += batch_size
+
             if args.stats:
-                # Show aggregate stats (merged from former db-stats)
-                meta = col.get(include=["metadatas"])  # type: ignore
-                metas = meta.get("metadatas", [])
+                # Show aggregate stats (merged from former db-stats).
+                #
+                # Single streaming pass over _iter_all_metadatas(): only the
+                # small aggregates below (counters) are held in memory, never
+                # a list of the collection's ~100k+ metadata dicts.
                 print("=== Semantic DB Inspection (Stats) ===")
                 info = client.get_collection_info()
                 print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")
                 print(f"Count: {info.get('count')}")
 
-                # Item type distribution
-                item_types = [ (m or {}).get("item_type", "") for m in metas ]
-                ct_types = Counter(item_types)
-                print("Item types:")
-                for t, c in ct_types.most_common(20):
-                    print(f"  {t or '(missing)'}: {c}")
-
-                # Fulltext coverage by type (pdf/html)
+                ct_types = Counter()
+                ct_titles = Counter()
                 coverage = {}
-                for m in metas:
+                for m, _ in _iter_all_metadatas():
                     m = m or {}
                     t = m.get("item_type", "") or "(missing)"
+                    ct_types[t] += 1
+
+                    title = m.get("title", "")
+                    if title:
+                        ct_titles[title] += 1
+
                     cov = coverage.setdefault(t, {"total": 0, "with_fulltext": 0, "pdf": 0, "html": 0})
                     cov["total"] += 1
                     if m.get("has_fulltext"):
@@ -690,36 +722,33 @@ def main():
                             cov["pdf"] += 1
                         elif src == "html":
                             cov["html"] += 1
+
+                print("Item types:")
+                for t, c in ct_types.most_common(20):
+                    print(f"  {t or '(missing)'}: {c}")
+
                 print("Fulltext coverage (by type):")
                 for t, cov in coverage.items():
                     print(f"  {t}: {cov['with_fulltext']}/{cov['total']} (pdf:{cov['pdf']}, html:{cov['html']})")
 
-                # Common titles (may indicate duplicates)
-                titles = [ (m or {}).get("title", "") for m in metas ]
-                from collections import Counter as _Counter
-                ct_titles = _Counter([t for t in titles if t])
-                common = [(t,c) for t,c in ct_titles.most_common(10)]
+                common = ct_titles.most_common(10)
                 if common:
                     print("Common titles:")
                     for t, c in common:
                         print(f"  {t[:80]}{'...' if len(t)>80 else ''}: {c}")
                 return
 
-            include = ["metadatas"]
-            if args.show_documents:
-                include.append("documents")
-
-            # Fetch up to limit; filter client-side if requested
-            data = col.get(limit=args.limit, include=include)
-
             print("=== Semantic DB Inspection ===")
             total = client.get_collection_info().get("count", 0)
             print(f"Total documents: {total}")
             print(f"Showing up to: {args.limit}")
 
+            # Scan the whole collection in batches (not just the first raw batch),
+            # so --filter actually finds matches wherever they live in a large
+            # collection instead of only checking whatever `limit` records the
+            # backend happened to return first.
             shown = 0
-            for i, meta in enumerate(data.get("metadatas", [])):
-                meta = meta or {}
+            for meta, doc in _iter_all_metadatas(include_documents=args.show_documents):
                 title = meta.get("title", "")
                 creators = meta.get("creators", "")
                 if args.filter_text:
@@ -728,10 +757,10 @@ def main():
                         continue
                 print(f"- {title} | {creators}")
                 if args.show_documents:
-                    doc = (data.get("documents", [""])[i] or "").strip()
-                    snippet = doc[:200].replace("\n", " ") + ("..." if len(doc) > 200 else "")
+                    full = (doc or "").strip()
+                    snippet = full[:200].replace("\n", " ")
                     if snippet:
-                        print(f"  doc: {snippet}")
+                        print(f"  doc: {snippet}{'...' if len(full) > 200 else ''}")
                 shown += 1
                 if shown >= args.limit:
                     break
