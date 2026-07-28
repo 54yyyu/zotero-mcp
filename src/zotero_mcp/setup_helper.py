@@ -143,7 +143,11 @@ def find_claude_config(verbose: bool = False):
         print(f"Claude Desktop config not found. Using default path: {default_path}")
     return default_path
 
-def setup_semantic_search(existing_semantic_config: dict | None = None, semantic_config_only_arg: bool = False) -> dict:
+def setup_semantic_search(
+    existing_semantic_config: dict | None = None,
+    semantic_config_only_arg: bool = False,
+    existing_db_path: str | None = None,
+) -> tuple[dict, str | None]:
     """Interactive setup for semantic search configuration."""
     print("\n=== Semantic Search Configuration ===")
 
@@ -152,7 +156,7 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         model = existing_semantic_config.get("embedding_model", "unknown")
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
-        db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
+        db_path = existing_db_path or existing_semantic_config.get("zotero_db_path") or "auto-detect"
         openai_batch = existing_semantic_config.get("openai_batch", {}).get("enabled", False)
         print("Found existing semantic search configuration:")
         print(f"  - Embedding model: {model}")
@@ -165,7 +169,7 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
         print("If you change to a new configuration, a database rebuild is advised.")
         print("Would you like to keep your existing configuration? (y/n): ", end="")
         if input().strip().lower() in ['y', 'yes']:
-            return existing_semantic_config
+            return existing_semantic_config, existing_db_path
 
     print("Configure embedding models for semantic search over your Zotero library.")
 
@@ -348,7 +352,7 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
     print("\n=== Zotero Database Path ===")
     print("By default, zotero-mcp auto-detects the Zotero database location.")
     print("If Zotero is installed in a custom location, you can specify the path here.")
-    default_db_path = existing_semantic_config.get("zotero_db_path", "") if existing_semantic_config else ""
+    default_db_path = existing_db_path or (existing_semantic_config.get("zotero_db_path", "") if existing_semantic_config else "")
     db_path_hint = default_db_path if default_db_path else "auto-detect"
     raw_db_path = input(f"Zotero database path [{db_path_hint}]: ").strip()
 
@@ -399,13 +403,14 @@ def setup_semantic_search(existing_semantic_config: dict | None = None, semantic
             "overlap": 200,
             "max_chunks_per_item": 20,
         })
-    if zotero_db_path:
-        config["zotero_db_path"] = zotero_db_path
-
-    return config
+    return config, zotero_db_path
 
 
-def save_semantic_search_config(config: dict, semantic_config_path: Path) -> bool:
+def save_semantic_search_config(
+    config: dict,
+    semantic_config_path: Path,
+    zotero_db_path: str | None = None,
+) -> bool:
     """Save semantic search configuration to file."""
     try:
         # Ensure config directory exists
@@ -424,6 +429,10 @@ def save_semantic_search_config(config: dict, semantic_config_path: Path) -> boo
         # Add semantic search config
         full_semantic_config["semantic_search"] = config
 
+        # Store zotero_db_path at the top level (not under semantic_search)
+        if zotero_db_path:
+            full_semantic_config["zotero_db_path"] = zotero_db_path
+
         # Write config
         with open(semantic_config_path, 'w') as f:
             json.dump(full_semantic_config, f, indent=2)
@@ -435,6 +444,17 @@ def save_semantic_search_config(config: dict, semantic_config_path: Path) -> boo
     except Exception as e:
         print(f"Error saving semantic search config: {e}")
         return False
+
+def load_top_level_db_path(config_path: Path) -> str | None:
+    """Load the top-level ``zotero_db_path`` from the config file."""
+    if not config_path.exists():
+        return None
+    try:
+        with open(config_path) as f:
+            return json.load(f).get("zotero_db_path")
+    except Exception:
+        return None
+
 
 def load_semantic_search_config(semantic_config_path: Path) -> dict:
     """Load existing semantic search configuration."""
@@ -613,16 +633,17 @@ def main(cli_args=None):
     semantic_config_dir = Path.home() / ".config" / "zotero-mcp"
     semantic_config_path = semantic_config_dir / "config.json"
     existing_semantic_config = load_semantic_search_config(semantic_config_path)
+    existing_db_path = load_top_level_db_path(semantic_config_path)
     semantic_config_changed = False
 
     # Handle semantic search only configuration
     if args.semantic_config_only:
         print("Configuring semantic search only...")
-        new_semantic_config = setup_semantic_search(existing_semantic_config)
+        new_semantic_config, zotero_db_path = setup_semantic_search(existing_semantic_config, existing_db_path=existing_db_path)
         semantic_config_changed = existing_semantic_config != new_semantic_config
         # only save if semantic config changed
         if semantic_config_changed:
-            if save_semantic_search_config(new_semantic_config, semantic_config_path):
+            if save_semantic_search_config(new_semantic_config, semantic_config_path, zotero_db_path):
                 print("\nSemantic search configuration complete!")
                 print(f"Configuration saved to: {semantic_config_path}")
                 print("\nTo initialize the database, run: zotero-mcp update-db")
@@ -683,11 +704,11 @@ def main(cli_args=None):
             print("\nWould you like to configure semantic search? (y/n): ", end="")
         # Either way:
         if input().strip().lower() in ['y', 'yes']:
-            new_semantic_config = setup_semantic_search(existing_semantic_config)
+            new_semantic_config, zotero_db_path = setup_semantic_search(existing_semantic_config, existing_db_path=existing_db_path)
             if existing_semantic_config != new_semantic_config:
                 semantic_config_changed = True
                 existing_semantic_config = new_semantic_config  # Update the config to use
-                save_semantic_search_config(existing_semantic_config, semantic_config_path)
+                save_semantic_search_config(existing_semantic_config, semantic_config_path, zotero_db_path)
 
     print("\nSetup with the following settings:")
     print(f"  Local API: {use_local}")

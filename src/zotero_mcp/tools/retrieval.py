@@ -13,6 +13,7 @@ from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
+from zotero_mcp.config import load_config
 from zotero_mcp.tools import _helpers
 
 
@@ -148,13 +149,13 @@ def get_item_fulltext(
             from zotero_mcp.local_db import LocalZoteroReader
 
             if _utils.is_local_mode():
-                semantic_cfg = _helpers._load_zotero_mcp_config().get("semantic_search", {})
-                zotero_db_path = semantic_cfg.get("zotero_db_path")
-                extraction_cfg = semantic_cfg.get("extraction", {})
-                pdf_max_pages = extraction_cfg.get("pdf_max_pages")
+                config = load_config()
+                zotero_db_path = config.resolve_zotero_db_path()
+                extraction = config.semantic_search.extraction
+                pdf_max_pages = extraction.pdf_max_pages
                 # Separate display limit for when Claude reads papers
                 # (reduces token usage vs. indexing which can be higher)
-                fulltext_display_max = extraction_cfg.get("fulltext_display_max_pages")
+                fulltext_display_max = extraction.fulltext_display_max_pages
 
                 # Use display limit if configured, otherwise fall back to
                 # pdf_max_pages, with a default cap of 10 pages.
@@ -267,13 +268,7 @@ def get_attachment_path(
     try:
         from zotero_mcp.local_db import LocalZoteroReader
 
-        zotero_db_path = (
-            _helpers._load_zotero_mcp_config()
-            .get("semantic_search", {})
-            .get("zotero_db_path")
-        )
-
-        with LocalZoteroReader(db_path=zotero_db_path) as reader:
+        with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
             attachments = reader.get_attachment_paths(item_key)
 
         if not attachments:
@@ -974,7 +969,7 @@ def list_libraries(*, ctx: Context) -> str:
         if local:
             from zotero_mcp.local_db import LocalZoteroReader
 
-            reader = LocalZoteroReader()
+            reader = LocalZoteroReader(db_path=load_config().resolve_zotero_db_path())
             try:
                 libraries = reader.get_libraries()
 
@@ -1150,7 +1145,7 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
         try:
             from zotero_mcp.local_db import LocalZoteroReader
 
-            reader = LocalZoteroReader()
+            reader = LocalZoteroReader(db_path=load_config().resolve_zotero_db_path())
             try:
                 libraries = reader.get_libraries()
                 if library_type == "group":
@@ -1208,7 +1203,7 @@ def list_feeds(*, ctx: Context) -> str:
         ctx.info("Listing RSS feeds")
         from zotero_mcp.local_db import LocalZoteroReader
 
-        reader = LocalZoteroReader()
+        reader = LocalZoteroReader(db_path=load_config().resolve_zotero_db_path())
         try:
             feeds = reader.get_feeds()
             if not feeds:
@@ -1281,7 +1276,7 @@ def get_feed_items(
         ctx.info(f"Fetching items from feed (libraryID={library_id})")
         from zotero_mcp.local_db import LocalZoteroReader
 
-        reader = LocalZoteroReader()
+        reader = LocalZoteroReader(db_path=load_config().resolve_zotero_db_path())
         try:
             # Verify this is actually a feed
             feeds = reader.get_feeds()

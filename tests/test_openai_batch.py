@@ -128,7 +128,7 @@ def test_setup_openai_new_config_defaults_to_batch(monkeypatch):
     monkeypatch.setattr(builtins, "input", lambda *args: next(answers))
     monkeypatch.setattr(setup_helper.getpass, "getpass", lambda *args: "sk-test")
 
-    config = setup_helper.setup_semantic_search()
+    config, _db_path = setup_helper.setup_semantic_search()
 
     assert config["embedding_model"] == "openai"
     assert config["openai_batch"] == {"enabled": True}

@@ -7,7 +7,6 @@ import re
 import socket
 import tempfile
 from ipaddress import ip_address
-from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -15,28 +14,6 @@ import requests
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp.utils import _paginate
-
-# ---------------------------------------------------------------------------
-# Config file
-# ---------------------------------------------------------------------------
-
-ZOTERO_MCP_CONFIG_PATH = Path.home() / ".config" / "zotero-mcp" / "config.json"
-
-
-def _load_zotero_mcp_config() -> dict:
-    """Return the parsed ``~/.config/zotero-mcp/config.json``, or ``{}``.
-
-    Missing file or parse errors yield an empty dict so callers can use
-    ``.get(...)`` chains without guarding.
-    """
-    if not ZOTERO_MCP_CONFIG_PATH.exists():
-        return {}
-    try:
-        with open(ZOTERO_MCP_CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f) or {}
-    except (json.JSONDecodeError, OSError):
-        return {}
-
 
 # ---------------------------------------------------------------------------
 # Constants
