@@ -56,6 +56,13 @@ To use Zotero MCP with Claude Desktop:
    - On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - On Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
+   Some Claude Desktop builds store the file elsewhere, for example
+   `%LOCALAPPDATA%\Claude-3p\claude_desktop_config.json` on Windows or
+   `~/Library/Application Support/Claude-3p/claude_desktop_config.json` on macOS.
+   `zotero-mcp setup` probes all of these locations, writes to every
+   `claude_desktop_config.json` it finds, and prints the absolute path(s) it
+   wrote so you can confirm it matched the build you actually run.
+
 3. Add the Zotero MCP server to the configuration:
    ```json
    {
