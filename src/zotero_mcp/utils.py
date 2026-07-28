@@ -7,6 +7,63 @@ from unidecode import unidecode
 
 html_re = re.compile(r"<.*?>")
 
+# Distribution name on PyPI, used to build install/upgrade hints.
+PACKAGE_NAME = "zotero-mcp-server"
+
+
+def detect_install_flavor() -> str | None:
+    """Best-effort detection of how this package was installed.
+
+    ``uv tool install`` places the package under ``.../uv/tools/<name>/lib/...``
+    and pipx under ``.../pipx/venvs/<name>/lib/...``. Anything else (venv,
+    conda, system site-packages) is most likely pip-managed, but we cannot
+    prove it, so it is reported as unknown (``None``).
+
+    Returns:
+        ``"uv"``, ``"pipx"``, or ``None`` when the flavor is undetermined.
+    """
+    path = os.path.abspath(__file__).replace("\\", "/")
+    if "/uv/tools/" in path:
+        return "uv"
+    if "/pipx/venvs/" in path:
+        return "pipx"
+    return None
+
+
+def install_command(extra: str | None = None, flavor: str | None = None) -> str:
+    """Return the command that installs/upgrades the package with *extra*.
+
+    Args:
+        extra: Optional extras name (e.g. ``"semantic"``, ``"pdf"``).
+        flavor: Override for the detected installer ("uv", "pipx", "pip").
+    """
+    target = f"{PACKAGE_NAME}[{extra}]" if extra else PACKAGE_NAME
+    flavor = flavor or detect_install_flavor()
+    if flavor == "uv":
+        return f"uv tool install --upgrade '{target}'"
+    if flavor == "pipx":
+        return f"pipx install --force '{target}'"
+    return f"pip install '{target}'"
+
+
+def install_hint(extra: str | None = None) -> str:
+    """Install instruction matching how zotero-mcp was actually installed.
+
+    A hardcoded ``pip install`` line is wrong — and silently does nothing
+    useful — for ``uv tool``/pipx installs (issue #388). When the flavor is
+    unambiguous we print only the command that works there; otherwise we print
+    the pip command together with the uv and pipx equivalents so no user is
+    left with a command that cannot work for them.
+    """
+    flavor = detect_install_flavor()
+    if flavor:
+        return f"Install it with: {install_command(extra, flavor)}"
+    return (
+        f"Install it with: {install_command(extra, 'pip')} "
+        f"(uv: {install_command(extra, 'uv')}; "
+        f"pipx: {install_command(extra, 'pipx')})"
+    )
+
 
 @contextmanager
 def suppress_stdout():

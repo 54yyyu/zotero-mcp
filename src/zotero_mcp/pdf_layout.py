@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import re
 
+from zotero_mcp.utils import install_hint
+
 # Region filtering / merging thresholds (normalized page units)
 LAYOUT_MIN_REGION_AREA = 0.01       # drop regions smaller than 1% of page area
 LAYOUT_MAX_REGION_AREA = 0.95       # drop page-wide background artifacts
@@ -352,8 +354,7 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
         import fitz
     except ImportError:
         raise ImportError(
-            "PDF layout detection requires PyMuPDF. "
-            "Install it with: pip install zotero-mcp-server[pdf]"
+            f"PDF layout detection requires PyMuPDF. {install_hint('pdf')}"
         )
 
     try:

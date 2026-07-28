@@ -1212,7 +1212,7 @@ def delete_note(
         "color: hex color (default '#ffd400' yellow). "
         "comment: optional note attached to the highlight. "
         "tags: optional list of tag strings to apply to the annotation. "
-        "Requires PyMuPDF (pip install zotero-mcp-server[pdf]) and a "
+        "Requires PyMuPDF (the [pdf] extra) and a "
         "writable library (web API key or hybrid mode). "
         "Example: zotero_create_annotation(attachment_key='NHZFE5A7', "
         "page=4, text='mindfulness-based therapy', comment='definition to "
