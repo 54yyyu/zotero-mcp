@@ -28,7 +28,7 @@ except Exception:
 
 from . import openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
-from .client import get_active_group_id, get_zotero_client
+from .client import get_active_group_id, get_active_library, get_zotero_client
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
@@ -531,32 +531,90 @@ class ZoteroSemanticSearch:
         requested = self._load_openai_batch_enabled() if use_openai_batch is None else use_openai_batch
         return bool(requested and self.chroma_client.embedding_model == "openai")
 
+    def _active_library_key(self) -> str:
+        """Config key for the library ``self.zotero_client`` is scoped to.
+
+        Same identity as the ``group_id`` stamped on indexed documents:
+        ``"0"`` is the personal library, anything else a Zotero groupID.
+        """
+        return str(get_active_group_id())
+
+    def _migrate_legacy_sync_version(self, legacy: Any, library_key: str) -> int:
+        """Interpret a pre-#393 scalar ``last_sync_version`` for one library.
+
+        The scalar carries no record of which library produced it, so it can
+        only be reused where provenance is unambiguous: when no runtime
+        library override is active, the client is scoped to the
+        env-configured default library, which is the only library a config
+        could have been tracking across restarts (``zotero_switch_library``
+        overrides live in memory and are never persisted). That covers every
+        existing single-library user, who keeps their watermark and avoids a
+        needless full re-scan on upgrade.
+
+        When a switch *is* active the scalar is discarded: a redundant full
+        scan is cheap next to trusting a foreign library's counter, which
+        makes ``item_versions(since=...)`` return nothing and silently skips
+        the entire library.
+        """
+        if legacy is None:
+            return 0
+        if get_active_library():
+            logger.info(
+                "Ignoring legacy last_sync_version while a library override is "
+                f"active (library {library_key}); bootstrapping this library's "
+                "own sync watermark instead."
+            )
+            return 0
+        try:
+            return int(legacy)
+        except (TypeError, ValueError):
+            return 0
+
     def _load_last_sync_version(self) -> int:
-        """Last Zotero library version fully indexed into ChromaDB.
+        """Last Zotero library version fully indexed into ChromaDB for the
+        library the Zotero client is currently scoped to.
 
-        Zero means "no prior successful sync; bootstrap required". Used to
-        drive since-based incremental ingest via pyzotero's
-        `item_versions(since=V)` and `new_fulltext(since=V)`.
+        Zero means "no prior successful sync for this library; bootstrap
+        required". Used to drive since-based incremental ingest via
+        pyzotero's `item_versions(since=V)` and `new_fulltext(since=V)`.
 
-        NOTE: this watermark is shared across all libraries rather than
-        tracked per library — switching the active library with
-        `zotero_switch_library` can cause incremental updates to compare
-        against the wrong library's version counter. Tracked as a separate,
-        independent issue: https://github.com/54yyyu/zotero-mcp/issues/393
+        Watermarks are stored per library under `last_sync_versions`, keyed
+        by group_id ("0" = personal). Every Zotero library has its own
+        independent, monotonically increasing version counter, so the single
+        shared scalar this replaces corrupted sync state for both libraries
+        after `zotero_switch_library` (#393).
         """
         if not self.config_path or not os.path.exists(self.config_path):
             return 0
         try:
             with open(self.config_path) as f:
-                file_config = json.load(f)
-                value = file_config.get("semantic_search", {}).get("last_sync_version", 0)
-                return int(value) if value is not None else 0
+                section = json.load(f).get("semantic_search", {}) or {}
         except Exception as e:
             logger.warning(f"Error loading last_sync_version: {e}")
             return 0
 
-    def _save_update_config(self, last_sync_version: int | None = None) -> None:
-        """Save update configuration and optionally update last_sync_version."""
+        library_key = self._active_library_key()
+        versions = section.get("last_sync_versions")
+        if isinstance(versions, dict):
+            # The map is authoritative once written: a library absent from it
+            # has never been synced, so it must bootstrap rather than inherit
+            # another library's counter.
+            try:
+                return int(versions.get(library_key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        return self._migrate_legacy_sync_version(
+            section.get("last_sync_version"), library_key
+        )
+
+    def _save_update_config(
+        self,
+        last_sync_version: int | None = None,
+        library_key: str | None = None,
+    ) -> None:
+        """Save update configuration and optionally update the sync watermark
+        of ``library_key`` (defaults to the currently active library)."""
         if not self.config_path:
             return
 
@@ -578,7 +636,18 @@ class ZoteroSemanticSearch:
 
         full_config["semantic_search"]["update_config"] = self.update_config
         if last_sync_version is not None:
-            full_config["semantic_search"]["last_sync_version"] = int(last_sync_version)
+            key = str(library_key) if library_key is not None else self._active_library_key()
+            versions = full_config["semantic_search"].get("last_sync_versions")
+            if not isinstance(versions, dict):
+                versions = {}
+            versions[key] = int(last_sync_version)
+            full_config["semantic_search"]["last_sync_versions"] = versions
+            # Back-compat mirror of the pre-#393 scalar, personal library
+            # only: an older zotero-mcp (or a downgrade) reads that key and
+            # applies it to whatever library it is pointed at, so a group's
+            # counter must never leak into it.
+            if key == str(PERSONAL_LIBRARY_GROUP_ID):
+                full_config["semantic_search"]["last_sync_version"] = int(last_sync_version)
 
         try:
             with open(self.config_path, "w") as f:
@@ -1633,6 +1702,7 @@ class ZoteroSemanticSearch:
             config_path=self.config_path,
             force_full_rebuild=force_full_rebuild,
             target_sync_version=target_sync_version,
+            group_id=get_active_group_id(),
         )
         stats["batch_submitted"] = True
         stats["batch_run_id"] = manifest["run_id"]
@@ -1798,6 +1868,20 @@ class ZoteroSemanticSearch:
                 except Exception as e:
                     logger.warning(f"last_modified_version() failed, falling back to full scan: {e}")
                     use_incremental = False
+
+            if use_incremental and last_sync_version > (target_sync_version or 0):
+                # A library's version counter never decreases, so a watermark
+                # ahead of it cannot have come from this library (e.g. a
+                # legacy scalar migrated from a differently-scoped install).
+                # Trusting it would make item_versions(since=...) return an
+                # empty dict and silently skip the whole library (#393).
+                logger.warning(
+                    f"Stored sync watermark ({last_sync_version}) is ahead of "
+                    f"library {self._active_library_key()}'s current version "
+                    f"({target_sync_version}); falling back to a full scan."
+                )
+                use_incremental = False
+                last_sync_version = 0
 
             if use_incremental and target_sync_version == last_sync_version:
                 # No changes since last sync; skip ingest but still touch last_update
@@ -2309,7 +2393,13 @@ class ZoteroSemanticSearch:
             openai_batch.save_manifest(manifest)
             if all(batch.get("imported_at") for batch in all_batches):
                 self.update_config["last_update"] = datetime.now().isoformat()
-                self._save_update_config(last_sync_version=manifest.get("target_sync_version"))
+                # Promote the watermark of the library the batch was submitted
+                # against, not whichever library happens to be active now.
+                manifest_group_id = manifest.get("group_id")
+                self._save_update_config(
+                    last_sync_version=manifest.get("target_sync_version"),
+                    library_key=None if manifest_group_id is None else str(manifest_group_id),
+                )
             return stats
         finally:
             lock_cm.__exit__(None, None, None)
