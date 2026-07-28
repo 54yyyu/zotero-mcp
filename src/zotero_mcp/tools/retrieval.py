@@ -654,7 +654,7 @@ def get_item_children(
             parent_title = f"Item {item_key}"
 
         # Then get the children
-        children = zot.children(item_key)
+        children = _helpers._paginate(zot.children, item_key)
         if not children:
             return f"No child items found for: {parent_title} (Key: {item_key})"
 
@@ -797,7 +797,7 @@ def get_items_children(
             output.append(f"## {title} (`{key}`)")
 
             try:
-                children = zot.children(key)
+                children = _helpers._paginate(zot.children, key)
             except Exception as e:
                 output.append(f"  Error fetching children: {e}")
                 output.append("")

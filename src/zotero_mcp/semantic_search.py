@@ -30,7 +30,7 @@ from . import openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .local_db import LocalZoteroReader
-from .utils import format_creators, is_local_mode, suppress_stdout
+from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
 
@@ -1200,7 +1200,7 @@ class ZoteroSemanticSearch:
 
         # 2. Walk PDF attachment children and try each in order.
         try:
-            children = self.zotero_client.children(item_key) or []
+            children = _paginate(self.zotero_client.children, item_key) or []
         except Exception as e:
             logger.debug(f"children({item_key}) failed: {e}")
             children = []

@@ -196,7 +196,7 @@ class TestMergeAttachmentDedup:
             # For child re-fetch during execute, return the child itself
             next((c for c in keeper_children + dup_children if c.get("key") == k), {"key": k, "version": 1, "data": {}})
         )
-        write_zot.children.side_effect = lambda k: (
+        write_zot.children.side_effect = lambda k, **kwargs: (
             keeper_children if k == "KEEPER" else
             dup_children if k == "DUP1" else []
         )

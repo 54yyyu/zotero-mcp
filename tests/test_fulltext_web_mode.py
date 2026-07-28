@@ -102,9 +102,12 @@ class FakeZoteroClient:
             raise LookupError(f"item {key} not found")
         return self.items_by_key[key]
 
-    def children(self, key):
+    def children(self, key, start=0, limit=25, **kwargs):
+        # Real Zotero API paging: without an explicit limit only the first
+        # 25 children are returned.
         self.calls.append(("children", key))
-        return list(self.children_by_parent.get(key, []))
+        kids = self.children_by_parent.get(key, [])
+        return kids[int(start):int(start) + int(limit)]
 
     def fulltext_item(self, key):
         self.calls.append(("fulltext_item", key))
@@ -209,6 +212,28 @@ def test_fetch_fulltext_skips_non_pdf_children(monkeypatch):
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     text, source = search._fetch_fulltext_via_web_api("PAR")
     # Should skip the HTML attachment and return the PDF's content
+    assert text == "PDF text."
+    assert source == "web-api:attachment:PDF"
+
+
+def test_fetch_fulltext_walks_children_past_first_api_page(monkeypatch):
+    """A PDF attachment past the API's default first page of 25 children
+    must still be found — otherwise the item is silently never indexed."""
+    parent = _paper("PAR")
+    notes = [
+        {"key": f"N{i:03d}", "version": 1, "data": {"key": f"N{i:03d}", "itemType": "note"}}
+        for i in range(130)  # > 100 so the fix's page_size=100 must also paginate
+    ]
+    child_pdf = {"key": "PDF", "version": 1,
+                 "data": {"key": "PDF", "itemType": "attachment", "contentType": "application/pdf"}}
+    zot = FakeZoteroClient()
+    zot.load_scenario(
+        [parent],
+        fulltext={"PDF": {"content": "PDF text."}},
+        children={"PAR": notes + [child_pdf]},  # PDF is the 131st child
+    )
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    text, source = search._fetch_fulltext_via_web_api("PAR")
     assert text == "PDF text."
     assert source == "web-api:attachment:PDF"
 
