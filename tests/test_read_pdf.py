@@ -1,12 +1,14 @@
 """Tests for zotero_read_pdf_pages tool."""
 
 import sys
+import tempfile
 import types
 
 import pytest
 from conftest import DummyContext, FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.tools import read_pdf as read_pdf_tools
 
 # ---------------------------------------------------------------------------
 # Helpers: fake fitz module and document
@@ -74,7 +76,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, [FakePage("Page 1 content.")] * 10, total=10)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=3, ctx=dummy_ctx)
@@ -93,7 +95,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, pages)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=4, ctx=dummy_ctx)
@@ -111,7 +113,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, [FakePage("hello")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "My Paper Title"),
+            lambda _k, _c: ("/tmp/test.pdf", "My Paper Title", True),
         )
 
         result = server.read_pdf_pages(item_key="KEY123", start_page=1, ctx=dummy_ctx)
@@ -150,7 +152,7 @@ class TestErrors:
         _patch_fitz(monkeypatch, [FakePage("p1")], total=1)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=5, ctx=dummy_ctx)
@@ -162,7 +164,7 @@ class TestErrors:
         _patch_fitz(monkeypatch, [FakePage("p1")] * 3, total=3)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=10, ctx=dummy_ctx)
@@ -174,7 +176,7 @@ class TestErrors:
         _patch_fitz(monkeypatch, [FakePage("p")] * 100, total=100)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=55, ctx=dummy_ctx)
@@ -184,7 +186,7 @@ class TestErrors:
     def test_missing_fitz_module(self, monkeypatch, dummy_ctx, fake_zot):
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
         monkeypatch.setitem(sys.modules, "fitz", None)
 
@@ -201,7 +203,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage("p1"), FakePage("p2"), FakePage("p3")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=2, ctx=dummy_ctx)
@@ -214,7 +216,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage("first"), FakePage("last")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, ctx=dummy_ctx)
@@ -226,10 +228,70 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage(""), FakePage("has text"), FakePage("")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx)
 
         assert "[No extractable text on this page]" in result
         assert "has text" in result
+
+
+class TestCleanupPathSafety:
+    """`_cleanup_path` deletes a directory, so its guards have to be tight.
+
+    The original guard was `parent.startswith(tempfile.gettempdir())`. On
+    Linux that is `/tmp`, so `_cleanup_path("/tmp/test.pdf")` resolved its
+    parent to `/tmp` and called `shutil.rmtree("/tmp")` — wiping the system
+    temp directory, including pytest's own temp root, which surfaced as
+    unrelated tests erroring with FileNotFoundError. macOS never showed it
+    because `gettempdir()` there lives under `/var/folders`.
+    """
+
+    def test_never_removes_the_temp_root_itself(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        canary = tmp_path / "canary.txt"
+        canary.write_text("do not delete me")
+
+        read_pdf_tools._cleanup_path(str(tmp_path / "test.pdf"))
+
+        assert tmp_path.exists()
+        assert canary.exists()
+
+    def test_ignores_directories_we_did_not_create(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        storage = tmp_path / "storage" / "ABCD1234"
+        storage.mkdir(parents=True)
+        pdf = storage / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        read_pdf_tools._cleanup_path(str(pdf))
+
+        assert pdf.exists(), "a file in the user's Zotero storage must survive"
+
+    def test_removes_our_own_download_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        owned = tmp_path / "zotero_pdf_abc123"
+        owned.mkdir()
+        pdf = owned / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        read_pdf_tools._cleanup_path(str(pdf))
+
+        assert not owned.exists()
+
+    def test_library_file_is_not_released_by_the_tool(self, monkeypatch, dummy_ctx, fake_zot):
+        """A local-storage hit reports is_temp=False and must survive the read."""
+        _patch_fitz(monkeypatch, [FakePage("Body text.")], total=1)
+        removed = []
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._cleanup_path", lambda p: removed.append(p)
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c: ("/home/me/Zotero/storage/ABCD/paper.pdf", "Paper", False),
+        )
+
+        server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
+
+        assert removed == []
