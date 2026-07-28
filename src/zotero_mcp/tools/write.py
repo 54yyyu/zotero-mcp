@@ -2615,7 +2615,7 @@ def get_pdf_outline(
         if outcome.status == "no_pymupdf":
             return (
                 "Error: PyMuPDF (fitz) is required for PDF outline extraction. "
-                "Install it with: pip install zotero-mcp-server[pdf]"
+                f"{_utils.install_hint('pdf')}"
             )
         if outcome.status == "crashed":
             return (
