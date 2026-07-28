@@ -1,0 +1,62 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.54yyyu/zotero-mcp",
+  "title": "Zotero MCP",
+  "description": "Search, read, annotate, and add to your Zotero research library, local or web.",
+  "version": "0.6.4",
+  "websiteUrl": "https://stevenyuyy.com/zotero-mcp/",
+  "repository": {
+    "url": "https://github.com/54yyyu/zotero-mcp",
+    "source": "github",
+    "id": "953089294"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "zotero-mcp-server",
+      "version": "0.6.4",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve",
+          "valueHint": "serve"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "ZOTERO_LOCAL",
+          "description": "Read from the local Zotero desktop app instead of the web API. Requires Zotero 7+ with the local API enabled in Settings > Advanced.",
+          "format": "boolean",
+          "default": "true",
+          "isRequired": false
+        },
+        {
+          "name": "ZOTERO_API_KEY",
+          "description": "Zotero Web API key from https://www.zotero.org/settings/keys. Only needed when ZOTERO_LOCAL is false, or for write operations in hybrid mode.",
+          "format": "string",
+          "isSecret": true,
+          "isRequired": false
+        },
+        {
+          "name": "ZOTERO_LIBRARY_ID",
+          "description": "Zotero user or group library ID. Only needed when ZOTERO_LOCAL is false, or for write operations in hybrid mode.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "ZOTERO_LIBRARY_TYPE",
+          "description": "Whether ZOTERO_LIBRARY_ID refers to a personal or a group library.",
+          "format": "string",
+          "default": "user",
+          "choices": ["user", "group"],
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}
