@@ -387,6 +387,11 @@ def main():
     # Setup info command
     subparsers.add_parser("setup-info", help="Show installation path and configuration info for MCP clients")
 
+    # Schema refresh command
+    subparsers.add_parser(
+        "schema-refresh",
+        help="Refresh the cached Zotero base-field schema from the server now")
+
     args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
 
     # If no command is provided, default to 'serve'
@@ -398,6 +403,23 @@ def main():
     if args.command == "version":
         from zotero_mcp._version import __version__
         print(f"Zotero MCP v{__version__}")
+        sys.exit(0)
+
+    elif args.command == "schema-refresh":
+        from zotero_mcp import schema
+        before = schema.get_table().get("version")
+        if schema.refresh(force=True) == "offline":
+            print(
+                "Could not reach the Zotero schema server; keeping the current "
+                f"copy (version {before}).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        after = schema.get_table().get("version")
+        if after != before:
+            print(f"Zotero schema refreshed: version {before} -> {after}.")
+        else:
+            print(f"Zotero schema already current (version {after}).")
         sys.exit(0)
 
     elif args.command == "setup-info":

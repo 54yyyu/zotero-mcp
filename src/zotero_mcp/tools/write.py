@@ -15,6 +15,7 @@ from pydantic import Field
 
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
+from zotero_mcp import schema as _schema
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
@@ -1890,22 +1891,31 @@ def update_item(
         if citation_key is not None:
             field_updates["citationKey"] = citation_key
 
+        # Resolve each generic param to the item type's actual field key and
+        # validate against the type's declared field set (from the vendored/
+        # refreshed Zotero schema) rather than the field's presence on the
+        # fetched item. This routes base-field renames (statute title ->
+        # nameOfAct) and adds a valid-but-absent field instead of skipping it,
+        # which also subsumes the old citationKey special-case. For an item
+        # type absent from the schema table (e.g. newer than the vendored floor
+        # with refresh unavailable) fall back to the legacy presence gate.
+        item_type = data.get("itemType", "")
+        known_fields = _schema.valid_fields(item_type)
         skipped = []
         for field, value in field_updates.items():
+            actual = _schema.resolve_field(item_type, field)
             param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
-            if field in data:
-                old = data[field]
+            is_valid = actual in known_fields if known_fields else actual in data
+            if not is_valid:
+                skipped.append(param_name)
+                continue
+            if actual in data:
+                old = data[actual]
                 if old != value:
                     changes.append(f"- **{param_name}**: '{old}' -> '{value}'")
-                data[field] = value
-            elif field == "citationKey":
-                # citationKey is universally valid; absence on the fetched
-                # item just means BBT has not yet auto-pinned a key, so we
-                # add rather than skip-as-invalid-for-item-type.
-                changes.append(f"- **{param_name}**: (none) -> '{value}'")
-                data[field] = value
             else:
-                skipped.append(param_name)
+                changes.append(f"- **{param_name}**: (none) -> '{value}'")
+            data[actual] = value
 
         # Creators
         if creators is not None:

@@ -76,7 +76,20 @@ async def server_lifespan(server: FastMCP):
         except Exception as e:
             sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
 
+    async def _refresh_schema():
+        # TTL-gated conditional GET; degrades to the vendored floor on failure.
+        try:
+            from zotero_mcp import schema
+            if await asyncio.to_thread(schema.refresh) == "offline":
+                sys.stderr.write(
+                    "Warning: could not refresh the Zotero schema; using the "
+                    "cached or vendored copy.\n"
+                )
+        except Exception as e:
+            sys.stderr.write(f"Warning: Zotero schema refresh task failed: {e}\n")
+
     asyncio.create_task(_background_update())
+    asyncio.create_task(_refresh_schema())
 
     yield {}
 
