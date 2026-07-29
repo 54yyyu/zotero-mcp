@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **OpenAI Batch API imports no longer fail on large libraries.** `ChromaClient.upsert_documents` already split upserts into chunks of `client.get_max_batch_size()` to stay under ChromaDB's batch limit, but `upsert_embeddings` — the method the batch-import path uses to write precomputed vectors — upserted the whole payload in a single call, so any import larger than ChromaDB's `max_batch_size` (~5461) failed outright (e.g. "Batch size of 6312 is greater than max batch size of 5461"). `upsert_embeddings` now chunks the same way (#410).
+
 ## [0.6.4] - 2026-07-28
 
 ### Added
