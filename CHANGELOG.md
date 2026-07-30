@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Online research repository discovery** with `zotero_search_online_papers`,
+  `zotero_lookup_online_paper`, and `zotero_get_research_provider_status`.
+  Searches Crossref, Semantic Scholar, Europe PMC, and arXiv concurrently, with
+  optional OpenAlex support. Results are normalized, deduplicated, merged with
+  field-level provenance, ranked by reciprocal-rank fusion, and returned even
+  when an individual provider fails.
+
 ## [0.6.4] - 2026-07-28
 
 ### Added

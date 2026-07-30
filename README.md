@@ -41,6 +41,13 @@
 - Browse collections, tags, and recent additions
 - Semantic search for conceptual and topic-based discovery
 
+### 🌐 Discover Research Online
+- Search Crossref, Semantic Scholar, Europe PMC, and arXiv concurrently
+- Optionally include OpenAlex when an API key is configured
+- Normalize and deduplicate records while preserving field-level provenance
+- Merge DOI metadata, abstracts, open-access PDF links, and citation counts
+- Continue with partial results when an individual provider is unavailable
+
 ### 📚 Access Your Content
 - Retrieve detailed metadata for any item (markdown or BibTeX export)
 - Get full text content (when available)
@@ -383,6 +390,15 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
   preferences (read from the profile's `prefs.js`) is tried first, then the
   default `~/Zotero` location.
 
+**Online Research Discovery:**
+- `SCHOLAR_API_EMAIL`: Contact email for providers' polite API pools (recommended)
+- `SEMANTIC_SCHOLAR_API_KEY`: Optional; improves Semantic Scholar rate limits
+- `OPENALEX_API_KEY`: Optional; enables OpenAlex search and DOI enrichment
+
+Crossref, Semantic Scholar, Europe PMC, and arXiv work without credentials.
+See [Research Repository Providers](docs/research-providers.md) for coverage,
+tradeoffs, and the normalized result contract.
+
 ### Command-Line Options
 
 ```bash
@@ -607,6 +623,16 @@ zotero_remove_item_relation(
 - `zotero_get_tags`: List all tags
 - `zotero_get_recent`: Get recently added items
 - `zotero_search_by_tag`: Search your library using custom tag filters
+
+### 🌐 Online Research Discovery Tools
+- `zotero_search_online_papers`: Search selected scholarly repositories concurrently and return deduplicated, provenance-aware metadata
+- `zotero_lookup_online_paper`: Reconcile metadata for one DOI across selected repositories
+- `zotero_get_research_provider_status`: Show provider coverage and whether optional credentials are configured
+
+Example prompts:
+- “Find recent papers on multilingual retrieval-augmented generation, with abstracts.”
+- “Look up DOI `10.18653/v1/N18-3011` across the online repositories.”
+- “Search Europe PMC and Crossref for bilingual lexical retrieval from 2020 onward.”
 
 ### 📚 Content Tools
 - `zotero_get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
