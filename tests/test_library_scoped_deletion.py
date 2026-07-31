@@ -46,6 +46,11 @@ class FakeZoteroClient:
         self.bare_versions_error = bare_versions_error
         self.calls = []
 
+    def items(self, start=0, limit=100, **kwargs):
+        if start:
+            return []
+        return [self.item(k) for k in self.versions_state]
+
     def item_versions(self, since=None, **kwargs):
         self.calls.append(("item_versions", since))
         if since is None:
@@ -85,9 +90,17 @@ class RecordingChroma:
 
     def get_all_ids(self, where=None):
         if where and "group_id" in where:
+            cond = where["group_id"]
+            if isinstance(cond, dict) and "$ne" in cond:
+                # Chroma $ne matches docs missing the key too (verified
+                # against chromadb 1.5.x).
+                return {
+                    i for i, m in self._docs.items()
+                    if m.get("group_id") != cond["$ne"]
+                }
             return {
                 i for i, m in self._docs.items()
-                if m.get("group_id") == where["group_id"]
+                if m.get("group_id") == cond
             }
         return set(self._docs)
 
@@ -115,9 +128,13 @@ class RecordingChroma:
         for i in ids:
             self._docs.pop(i, None)
 
-    def delete_item_chunks(self, item_key):
+    def delete_item_chunks(self, item_key, group_id=None):
         self.chunk_deletes.append(item_key)
-        for i in [d for d, m in self._docs.items() if m.get("parent_item_key") == item_key]:
+        for i in [
+            d for d, m in self._docs.items()
+            if m.get("parent_item_key") == item_key
+            and (group_id is None or m.get("group_id") == group_id)
+        ]:
             self._docs.pop(i, None)
 
     def reset_collection(self):
@@ -289,6 +306,109 @@ def test_empty_item_versions_against_nonempty_store_skips_deletion(monkeypatch, 
     assert stats["deletion_skipped_reason"] == "empty_item_versions"
 
 
+def test_mixed_attribution_chunks_are_deleted_only_within_the_library(monkeypatch, tmp_path):
+    """delete_item_chunks by bare parent_item_key would broaden a scoped
+    deletion candidate into an unscoped delete: a chunk set whose members
+    carry different group_ids (partial rewrite, key collision) must lose
+    only the syncing library's chunks."""
+    chroma = RecordingChroma({
+        "LIVE#0": dict(_personal_doc("LIVE"), parent_item_key="LIVE"),
+        "KEY#0": dict(_personal_doc("KEY"), parent_item_key="KEY"),
+        "KEY#1": dict(_group_doc("KEY"), parent_item_key="KEY"),
+    })
+    zot = FakeZoteroClient(versions_state={"LIVE": 3})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+    monkeypatch.setattr(
+        type(search), "_chunking_enabled", property(lambda self: True)
+    )
+
+    search.update_database()
+
+    assert "KEY#0" not in chroma._docs, "the personal chunk should be cleaned"
+    assert "KEY#1" in chroma._docs, "another library's chunk was deleted"
+
+
+# ---------------------------------------------------------------------------
+# Skipped deletion must stay retryable: the watermark may not advance past a
+# deletion pass that never ran, or the documented rerun-with-override
+# workflow silently does nothing (the unchanged-version early return fires).
+# ---------------------------------------------------------------------------
+
+def test_guarded_skip_keeps_watermark_so_override_rerun_actually_deletes(monkeypatch, tmp_path):
+    docs, live, dead = _many_personal_docs(n_live=5, n_dead=35)
+    chroma = RecordingChroma(docs)
+    zot = FakeZoteroClient(versions_state={k: 3 for k in live})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    first = search.update_database()
+    assert first["deletion_skipped_reason"] == "mass_deletion_guard"
+    saved = json.loads(open(config_path).read())["semantic_search"]
+    assert saved["last_sync_versions"]["0"] == 5, (
+        "a skipped deletion pass must not promote the watermark"
+    )
+
+    second = search.update_database(allow_mass_deletion=True)
+    assert second["deleted_items"] == 35
+    assert sorted(chroma.deleted) == dead
+
+
+def test_api_failure_skip_keeps_watermark(monkeypatch, tmp_path):
+    chroma = RecordingChroma({"PERS_LIVE": _personal_doc("PERS_LIVE")})
+    zot = FakeZoteroClient(
+        versions_state={"PERS_LIVE": 9},
+        bare_versions_error=RuntimeError("503"),
+    )
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    search.update_database()
+
+    saved = json.loads(open(config_path).read())["semantic_search"]
+    assert saved["last_sync_versions"]["0"] == 5
+
+
+# ---------------------------------------------------------------------------
+# force-rebuild safety: a reset destroys the WHOLE collection while the
+# rebuild repopulates only the active library
+# ---------------------------------------------------------------------------
+
+def test_force_rebuild_refuses_when_collection_holds_other_libraries(monkeypatch, tmp_path):
+    chroma = RecordingChroma({
+        "PERS_LIVE": _personal_doc("PERS_LIVE"),
+        "GRP_LIVE": _group_doc("GRP_LIVE"),
+    })
+    zot = FakeZoteroClient(versions_state={"PERS_LIVE": 9})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database(force_full_rebuild=True)
+
+    assert chroma.reset_calls == 0, "reset would drop another library's documents"
+    assert "GRP_LIVE" in chroma._docs
+    assert "allow-mass-deletion" in stats.get("error", "")
+
+    stats2 = search.update_database(force_full_rebuild=True, allow_mass_deletion=True)
+    assert "error" not in stats2
+    assert chroma.reset_calls == 1
+
+
+def test_force_rebuild_with_limit_requires_explicit_opt_in(monkeypatch, tmp_path):
+    """--force-rebuild --limit N resets everything and deliberately
+    repopulates only N items; that combination must not be reachable by
+    accident."""
+    chroma = RecordingChroma({"PERS_LIVE": _personal_doc("PERS_LIVE")})
+    zot = FakeZoteroClient(versions_state={"PERS_LIVE": 9})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database(force_full_rebuild=True, limit=1)
+
+    assert chroma.reset_calls == 0
+    assert "allow-mass-deletion" in stats.get("error", "")
+
+
 # ---------------------------------------------------------------------------
 # Mass-deletion guard
 # ---------------------------------------------------------------------------
@@ -348,6 +468,37 @@ def test_allow_mass_deletion_also_accepts_an_emptied_library(monkeypatch, tmp_pa
 
     assert sorted(chroma.deleted) == ["PERS_A", "PERS_B"]
     assert stats["deleted_items"] == 2
+
+
+def test_24_deletions_stay_below_the_guard_floor(monkeypatch, tmp_path):
+    """Documents the guard's boundary: a truncated item_versions() response
+    can still cost up to _MASS_DELETION_MIN_DOCS - 1 items per run. This is
+    an accepted trade-off (see design); the constant is load-bearing."""
+    docs, live, dead = _many_personal_docs(n_live=5, n_dead=24)
+    chroma = RecordingChroma(docs)
+    zot = FakeZoteroClient(versions_state={k: 3 for k in live})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database()
+
+    assert stats["deleted_items"] == 24
+    assert sorted(chroma.deleted) == dead
+
+
+def test_guard_trips_at_exactly_both_thresholds(monkeypatch, tmp_path):
+    """25 deletions out of 100 stored: >= on both bounds means exactly-at
+    trips the guard."""
+    docs, live, dead = _many_personal_docs(n_live=75, n_dead=25)
+    chroma = RecordingChroma(docs)
+    zot = FakeZoteroClient(versions_state={k: 3 for k in live})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database()
+
+    assert stats["deletion_skipped_reason"] == "mass_deletion_guard"
+    assert chroma.deleted == []
 
 
 def test_small_scale_deletions_pass_the_guard(monkeypatch, tmp_path):

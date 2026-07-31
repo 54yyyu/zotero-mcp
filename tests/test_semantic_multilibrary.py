@@ -130,11 +130,20 @@ def test_create_metadata_includes_group_id_from_data(monkeypatch):
     assert meta["group_id"] == GROUP_ID
 
 
-def test_create_metadata_defaults_group_id_to_personal_when_missing(monkeypatch):
+@pytest.mark.parametrize("data", [
+    {"title": "T"},                     # group_id never set
+    {"title": "T", "group_id": None},   # local scan found no map entry
+])
+def test_create_metadata_omits_group_id_when_attribution_is_unknown(monkeypatch, data):
+    """Defaulting missing attribution to 'personal' mints positive
+    attribution out of nothing — and positive attribution is deletion
+    authority under the scoped deletion pass. Unknown must stay unknown:
+    untagged docs are excluded from deletion and re-tagged the next time
+    evidence-based ingest sees them."""
     search = _build_search(monkeypatch, _FakeChromaClient())
-    item = {"key": "K1", "data": {"title": "T"}}
+    item = {"key": "K1", "data": dict(data)}
     meta = search._create_metadata(item)
-    assert meta["group_id"] == 0
+    assert "group_id" not in meta
 
 
 # ---------------------------------------------------------------------------

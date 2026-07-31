@@ -820,7 +820,7 @@ class ChromaClient:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
             raise
 
-    def delete_item_chunks(self, item_key: str) -> None:
+    def delete_item_chunks(self, item_key: str, group_id: int | None = None) -> None:
         """Delete all passage chunks belonging to one item (chunked collections).
 
         Passage chunks carry ``parent_item_key`` in their metadata; deleting by
@@ -828,11 +828,21 @@ class ChromaClient:
         chunks are re-upserted, so a document that shrank to fewer passages
         never leaves orphaned chunks behind. No-op-safe on item-level
         collections (nothing matches the filter).
+
+        Args:
+            item_key: Parent item whose chunks to delete.
+            group_id: When given, restrict the delete to chunks attributed to
+                that library — the deletion pass passes its run scope so a
+                mixed-attribution chunk set (partial rewrite, key collision)
+                never loses another library's chunks.
         """
+        where: dict[str, Any] = {"parent_item_key": item_key}
+        if group_id is not None:
+            where = {"$and": [{"parent_item_key": item_key}, {"group_id": int(group_id)}]}
         try:
-            self.collection.delete(where={"parent_item_key": item_key})
+            self.collection.delete(where=where)
         except Exception as e:
-            logger.debug(f"delete_item_chunks({item_key}) failed: {e}")
+            logger.warning(f"delete_item_chunks({item_key}) failed: {e}")
 
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
@@ -950,6 +960,13 @@ class ChromaClient:
         masquerading as an empty collection would silently disable the
         migration with zero documents tagged.
         """
+        batch_size = int(batch_size)
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        # Cap at the same order as the backend batch limit so a caller cannot
+        # accidentally defeat the bounded-ids protection this method exists
+        # to provide.
+        batch_size = min(batch_size, 5000)
         all_ids = sorted(self.collection.get(include=[]).get("ids") or [])
         for start in range(0, len(all_ids), batch_size):
             chunk = all_ids[start:start + batch_size]
@@ -975,6 +992,8 @@ class ChromaClient:
             try:
                 max_batch = int(self.client.get_max_batch_size())
             except Exception:
+                max_batch = 5000
+            if max_batch < 1:
                 max_batch = 5000
             for i in range(0, len(ids), max_batch):
                 self.collection.update(

@@ -449,5 +449,4 @@ def test_get_key_group_map_full_key_set_partition(tmp_path):
     assert set(result.groups) | result.excluded_keys == {
         "USERKEY1", "GROUPKEY1", "FEEDKEY1", "PUBKEY1", "DELETEDKEY1",
     }
-    assert not set(result.groups) & result.excluded_keys
     assert not (set(result.groups) & result.excluded_keys)

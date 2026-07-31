@@ -353,6 +353,26 @@ def test_switching_libraries_keeps_watermarks_independent(monkeypatch, tmp_path)
     assert chroma.deleted == []
 
 
+def test_unprovable_group_identity_aborts_the_run(monkeypatch, tmp_path):
+    """A client that claims group scope but has an unparseable library_id
+    must abort the run — falling back to the mutable module override would
+    import identity (and thus tagging, watermark and deletion authority)
+    from state unrelated to the client the data comes from."""
+    config_path = _write_config(tmp_path)
+    broken = FakeZoteroClient(["GRP1"], library_version=1200)
+    broken.library_id = "not-a-number"
+    broken.library_type = "groups"
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, broken, chroma, config_path=config_path)
+
+    stats = search.update_database()
+
+    assert "error" in stats
+    assert chroma.added == []
+    assert chroma.deleted == []
+    assert "last_sync_versions" not in _saved(config_path)
+
+
 def test_legacy_scalar_is_not_adopted_by_a_client_scoped_elsewhere(monkeypatch, tmp_path):
     """The pre-#393 scalar's provenance is the env-configured default
     library. Whether to trust it must be judged against the RUN's pinned
@@ -399,6 +419,34 @@ def test_update_run_scopes_to_the_clients_library_not_the_module_override(monkey
     assert metas, "expected the group item to be indexed"
     assert all(m["group_id"] == GROUP_ID for m in metas)
     assert _saved(config_path)["last_sync_versions"] == {str(GROUP_ID): 1200}
+
+
+def test_override_flipped_mid_run_does_not_repoint_the_run(monkeypatch, tmp_path):
+    """The actual race, not just static precedence: a zotero_switch_library
+    landing while the run is in flight (here: during the item fetch) must
+    not affect this run's tagging or watermark key."""
+    config_path = _write_config(tmp_path)
+
+    class _FlippingZot(FakeZoteroClient):
+        def items(self, start=0, limit=100, **kwargs):
+            # Another tool call switches the active library mid-run.
+            zclient.set_active_library("999111", "group")
+            return super().items(start=start, limit=limit, **kwargs)
+
+    group = _FlippingZot(["GRP1"], library_version=1200)
+    group.library_id = str(GROUP_ID)
+    group.library_type = "groups"
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, group, chroma, config_path=config_path)
+
+    search.update_database()
+
+    metas = [m for batch in chroma.added for m in batch[1]]
+    assert metas and all(m["group_id"] == GROUP_ID for m in metas)
+    versions = _saved(config_path)["last_sync_versions"]
+    assert versions == {str(GROUP_ID): 1200}, (
+        "the mid-run switch leaked into the run's watermark key"
+    )
 
 
 def test_watermark_ahead_of_library_version_forces_full_scan(monkeypatch, tmp_path):

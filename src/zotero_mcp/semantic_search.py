@@ -556,15 +556,29 @@ class ZoteroSemanticSearch:
         ``zotero_switch_library`` tool call can change while a background
         update run is in flight, and an identity read at call time would
         attach the wrong library to this run's tagging, watermark and
-        deletion scope. Falls back to ``get_active_group_id()`` for client
-        doubles that carry no scope attributes.
+        deletion scope. (``get_zotero_client()`` constructs a fresh pyzotero
+        instance per call and switching mutates only the override, so a
+        bound client's scope attributes cannot change under us.)
+
+        A client that CLAIMS group scope but has an unparseable library_id
+        raises: identity is deletion authority under the scoped deletion
+        pass, and importing it from the mutable override instead would
+        attach another library's identity to this client's data. Client
+        doubles that carry no scope attributes at all fall back to
+        ``get_active_group_id()``.
         """
         library_type = getattr(self.zotero_client, "library_type", None)
         if library_type in ("group", "groups"):
             try:
                 return int(getattr(self.zotero_client, "library_id", None))
             except (TypeError, ValueError):
-                return get_active_group_id()
+                raise ValueError(
+                    "Cannot determine the Zotero client's group id "
+                    f"(library_type={library_type!r}, library_id="
+                    f"{getattr(self.zotero_client, 'library_id', None)!r}); "
+                    "refusing to run a scope-sensitive update with unprovable "
+                    "library identity."
+                ) from None
         if library_type in ("user", "users"):
             return PERSONAL_LIBRARY_GROUP_ID
         return get_active_group_id()
@@ -971,12 +985,15 @@ class ZoteroSemanticSearch:
             "publication": data.get("publicationTitle", ""),
             "url": data.get("url", ""),
             "doi": data.get("DOI", ""),
-            # Library attribution (#163): 0 = personal, else groupID. Every
-            # item-producing path (local scan, API scan, incremental API
-            # fetch) stamps data["group_id"] before this runs; default to
-            # personal only for the hypothetical case of an untagged caller.
-            "group_id": int(data.get("group_id", PERSONAL_LIBRARY_GROUP_ID) or 0),
         }
+        # Library attribution (#163): 0 = personal, else groupID. Every
+        # item-producing path (local scan, API scan, incremental API fetch)
+        # stamps data["group_id"] before this runs. When attribution is
+        # unknown (key missing from the local map), the key is OMITTED, not
+        # defaulted: positive attribution is deletion authority under the
+        # group_id-scoped deletion pass, so unknown must stay unknown.
+        if (group_id := data.get("group_id")) is not None:
+            metadata["group_id"] = int(group_id)
         # If fulltext was extracted (or attempted), mark it so incremental
         # updates don't keep re-trying items that failed extraction
         if data.get("fulltext"):
@@ -1297,7 +1314,15 @@ class ZoteroSemanticSearch:
                             # "<key>#<n>"; get_document_metadata falls back to
                             # chunk 0 so chunked items are still recognized.
                             existing_metadata = chroma_client.get_document_metadata(it.key)
-                            if existing_metadata:
+                            if existing_metadata and "group_id" not in existing_metadata:
+                                # Indexed before multi-library attribution and
+                                # not (yet) covered by the backfill: re-upsert
+                                # so the doc gains its group_id — otherwise an
+                                # unchanged untagged doc is skipped as "up to
+                                # date" forever and stays excluded from
+                                # library-filtered search and cleanup.
+                                updated_existing += 1
+                            elif existing_metadata:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
                                 local_has_fulltext = bool(att_keys)
 
@@ -1430,9 +1455,12 @@ class ZoteroSemanticSearch:
                             "creators": self._parse_creators_string(item.creators) if item.creators else [],
                             # Library attribution (#163): 0 = personal, else
                             # groupID. Ground truth from get_key_group_map();
-                            # defaults to personal for the rare item missing
-                            # from the map (e.g. added mid-scan).
-                            "group_id": key_group_map.get(item.key, PERSONAL_LIBRARY_GROUP_ID),
+                            # an item missing from the map (e.g. added
+                            # mid-scan) stays UNATTRIBUTED — a guessed
+                            # "personal" would be positive attribution minted
+                            # from nothing, i.e. deletion authority. The next
+                            # incremental sync re-tags it with evidence.
+                            "group_id": key_group_map.get(item.key),
                         },
                     }
                     # Attachment-key set (computed during the extraction scan);
@@ -1936,6 +1964,40 @@ class ZoteroSemanticSearch:
             # library.
             self._run_group_id = self._client_group_id()
 
+            # --force-rebuild resets the ENTIRE collection but repopulates
+            # only the active library. Combinations that would silently drop
+            # indexed data need the same explicit opt-in as any other mass
+            # deletion.
+            if force_full_rebuild and not allow_mass_deletion:
+                error = None
+                if limit is not None:
+                    error = (
+                        f"--force-rebuild with --limit would reset the whole "
+                        f"collection and repopulate only {limit} item(s); rerun "
+                        "with --allow-mass-deletion to confirm."
+                    )
+                else:
+                    foreign = self.chroma_client.get_all_ids(
+                        where={"group_id": {"$ne": int(self._run_group_id)}}
+                    )
+                    if foreign:
+                        error = (
+                            f"--force-rebuild would reset the whole collection, but "
+                            f"{len(foreign)} document(s) are not attributed to the "
+                            f"active library (library {self._active_library_key()}) — "
+                            "other libraries' documents and unattributed documents "
+                            "would be dropped permanently, since a rebuild "
+                            "repopulates only the active library. Rerun with "
+                            "--allow-mass-deletion to confirm."
+                        )
+                if error:
+                    logger.error(error)
+                    stats["error"] = error
+                    end_time = datetime.now()
+                    stats["duration"] = str(end_time - start_time)
+                    stats["end_time"] = end_time.isoformat()
+                    return stats
+
             # One-time metadata migration (#163): tag any pre-existing docs
             # that lack group_id. Skipped on a force rebuild — the reset
             # below wipes the collection anyway, so every doc gets tagged
@@ -2055,7 +2117,10 @@ class ZoteroSemanticSearch:
                 except Exception:
                     pass
                 self.update_config["last_update"] = datetime.now().isoformat()
-                self._save_update_config(last_sync_version=target_sync_version)
+                self._save_update_config(
+                    last_sync_version=target_sync_version,
+                    library_key=str(self._run_group_id),
+                )
                 end_time = datetime.now()
                 stats["duration"] = str(end_time - start_time)
                 stats["end_time"] = end_time.isoformat()
@@ -2125,7 +2190,14 @@ class ZoteroSemanticSearch:
                         elif to_delete_keys:
                             if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
                                 for k in to_delete_keys:
-                                    self.chroma_client.delete_item_chunks(k)
+                                    # Scoped: a chunk set can carry mixed
+                                    # group_ids (partial rewrite, key
+                                    # collision); a bare parent-key delete
+                                    # would broaden this scoped candidate
+                                    # into an unscoped delete.
+                                    self.chroma_client.delete_item_chunks(
+                                        k, group_id=int(self._run_group_id)
+                                    )
                             else:
                                 self.chroma_client.delete_documents(to_delete_keys)
                             stats["deleted_items"] = len(to_delete_keys)
@@ -2169,6 +2241,11 @@ class ZoteroSemanticSearch:
 
             if use_openai_batch:
                 stats["batch_mode"] = True
+                if stats.get("deletion_skipped_reason"):
+                    # The manifest's target_sync_version is promoted at import
+                    # time; a skipped deletion pass must stay retryable there
+                    # exactly as on the realtime path.
+                    target_sync_version = None
                 try:
                     sys.stderr.write(f"\nSubmitting {len(all_items)} items to OpenAI Batch API...\n")
                     sys.stderr.flush()
@@ -2284,9 +2361,19 @@ class ZoteroSemanticSearch:
             except Exception:
                 pass
 
-            # Update last update time, and promote last_sync_version on success
+            # Update last update time, and promote last_sync_version on success.
+            # A run whose deletion pass was SKIPPED must not promote: the next
+            # run would take the unchanged-version early return and never
+            # re-enter deletion detection, so the documented rerun with
+            # --allow-mass-deletion would silently do nothing.
             self.update_config["last_update"] = datetime.now().isoformat()
-            self._save_update_config(last_sync_version=target_sync_version)
+            if stats.get("deletion_skipped_reason"):
+                self._save_update_config()
+            else:
+                self._save_update_config(
+                    last_sync_version=target_sync_version,
+                    library_key=str(self._run_group_id),
+                )
 
             end_time = datetime.now()
             stats["duration"] = str(end_time - start_time)

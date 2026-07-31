@@ -36,6 +36,13 @@ from zotero_mcp.chroma_client import ChromaClient
 GROUP_ID = 6015547
 
 
+@pytest.fixture(autouse=True)
+def _clean_environment(monkeypatch):
+    monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
+    monkeypatch.delenv("ZOTERO_LIBRARY_ID", raising=False)
+    monkeypatch.delenv("ZOTERO_LIBRARY_TYPE", raising=False)
+
+
 @pytest.fixture()
 def client(tmp_path):
     return ChromaClient(
@@ -144,16 +151,37 @@ def test_update_metadatas_round_trip(client):
     # chromadb 1.5.x merges metadata on update; other versions replace.
     # Either way the keys we sent must be present afterwards.
     assert metas[ids[0]]["item_key"] == ids[0]
+    # Pin the installed backend's merge semantics: a partial update must not
+    # drop keys it did not send (callers still pass full dicts so the
+    # backfill stays correct on replace-semantics versions too).
+    assert metas[ids[0]]["title"] == "Doc 0"
+
+
+def test_iter_metadatas_rejects_invalid_batch_size(client):
+    with pytest.raises(ValueError):
+        list(client.iter_metadatas(batch_size=0))
 
 
 def test_update_metadatas_splits_oversized_batches(client, monkeypatch):
     ids = _seed(client, 12)
     monkeypatch.setattr(client.client, "get_max_batch_size", lambda: 5)
+    # Spy on the underlying update so the SPLITTING is proven, not just the
+    # end state (the real backend accepts 12 at once, so an end-state-only
+    # assertion could never fail if the loop were deleted).
+    batch_sizes = []
+    real_update = client.collection.update
+
+    def spy(**kwargs):
+        batch_sizes.append(len(kwargs.get("ids") or []))
+        return real_update(**kwargs)
+
+    monkeypatch.setattr(client.collection, "update", spy)
 
     client.update_metadatas(
         ids, [{"item_key": i, "group_id": 0} for i in ids]
     )
 
+    assert batch_sizes == [5, 5, 2]
     assert client.get_all_ids(where={"group_id": 0}) == set(ids)
 
 
@@ -200,6 +228,86 @@ def test_get_all_ids_where_never_matches_untagged_docs(client):
 
     assert client.get_all_ids(where={"group_id": 0}) == set()
     assert client.get_all_ids(where={"group_id": GROUP_ID}) == set()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end against the real client: the exact production composition (real
+# iterator + real metadata updates + backfill / deletion logic) that the
+# fake-only API drift hid.
+# ---------------------------------------------------------------------------
+
+def test_backfill_end_to_end_against_real_chroma(client, monkeypatch):
+    from zotero_mcp import semantic_search
+
+    tagged = _seed(client, 10, tagged_group_id=GROUP_ID, prefix="T")
+    untagged = _seed(client, 1200, prefix="N")
+    evidenced = set(untagged[:700])
+
+    class _Zot:
+        def item_versions(self, **kw):
+            return {k: 3 for k in evidenced}
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: _Zot())
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=client)
+
+    stats = search._backfill_group_ids()
+
+    assert stats == {"scanned": 1210, "migrated": 700, "unattributed": 500}
+    assert client.get_all_ids(where={"group_id": 0}) == evidenced
+    assert client.get_all_ids(where={"group_id": GROUP_ID}) == set(tagged)
+
+    # Idempotent second pass: nothing newly migrated, nothing guessed.
+    stats2 = search._backfill_group_ids()
+    assert stats2 == {"scanned": 1210, "migrated": 0, "unattributed": 500}
+
+
+def test_scoped_deletion_end_to_end_against_real_chroma(client, monkeypatch, tmp_path):
+    import json
+
+    from zotero_mcp import semantic_search
+
+    client.upsert_embeddings(
+        documents=["live", "dead", "group"],
+        metadatas=[
+            {"item_key": "PERS_LIVE", "group_id": 0},
+            {"item_key": "PERS_DEAD", "group_id": 0},
+            {"item_key": "GRP_LIVE", "group_id": GROUP_ID},
+        ],
+        ids=["PERS_LIVE", "PERS_DEAD", "GRP_LIVE"],
+        embeddings=[[1.0, 2.0, 3.0, 4.0]] * 3,
+    )
+    _seed(client, 1, prefix="UNTAGGED")
+
+    class _Zot:
+        def item_versions(self, since=None, **kw):
+            return {} if since is not None else {"PERS_LIVE": 9}
+
+        def last_modified_version(self, **kw):
+            return 9
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "semantic_search": {
+            "embedding_model": "default",
+            "update_config": {"auto_update": False, "update_frequency": "manual"},
+            "include_fulltext": False,
+            "index_schema_version": semantic_search._INDEX_SCHEMA_VERSION,
+            "last_sync_versions": {"0": 5},
+        }
+    }))
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: _Zot())
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
+    search = semantic_search.ZoteroSemanticSearch(
+        chroma_client=client, config_path=str(config_path)
+    )
+
+    stats = search.update_database()
+
+    assert stats["deleted_items"] == 1
+    remaining = client.get_all_ids()
+    assert "PERS_DEAD" not in remaining
+    assert {"PERS_LIVE", "GRP_LIVE", "UNTAGGED00000"} <= remaining
 
 
 # ---------------------------------------------------------------------------
