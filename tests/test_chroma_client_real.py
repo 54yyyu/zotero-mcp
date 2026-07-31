@@ -196,6 +196,7 @@ def test_get_all_ids_where_never_matches_untagged_docs(client):
 def _fake_chroma_classes():
     import test_fulltext_sync_watermark
     import test_fulltext_web_mode
+    import test_library_scoped_deletion
     import test_semantic_multilibrary
     import test_sync_watermark_per_library
 
@@ -204,6 +205,7 @@ def _fake_chroma_classes():
         test_sync_watermark_per_library.FakeChromaClient,
         test_fulltext_web_mode.FakeChromaClient,
         test_fulltext_sync_watermark.FakeChroma,
+        test_library_scoped_deletion.RecordingChroma,
     ]
 
 

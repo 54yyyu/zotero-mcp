@@ -46,7 +46,10 @@ class FakeChromaClient:
 
     def __init__(self, preloaded_ids=None):
         self.embedding_max_tokens = 8000
-        self._ids = set(preloaded_ids or [])
+        # Metadata store so get_all_ids(where=...) honors the real class's
+        # DB-side group_id filtering; preloaded docs model previously-indexed
+        # personal-library items (group_id 0, the post-migration steady state).
+        self._metas = {i: {"item_key": i, "group_id": 0} for i in (preloaded_ids or [])}
         self.added = []
         self.deleted = []
         self.reset_calls = 0
@@ -55,10 +58,15 @@ class FakeChromaClient:
         return text
 
     def get_existing_ids(self, ids):
-        return {i for i in ids if i in self._ids}
+        return {i for i in ids if i in self._metas}
 
     def get_all_ids(self, where=None):
-        return set(self._ids)
+        if where and "group_id" in where:
+            return {
+                i for i, m in self._metas.items()
+                if m.get("group_id") == where["group_id"]
+            }
+        return set(self._metas)
 
     def get_document_metadata(self, doc_id):
         return None
@@ -67,11 +75,13 @@ class FakeChromaClient:
         return iter(())
 
     def update_metadatas(self, ids, metadatas):
-        pass
+        for i, m in zip(ids, metadatas):
+            self._metas.setdefault(i, {}).update(m)
 
     def upsert_documents(self, documents, metadatas, ids):
         self.added.append((list(documents), list(metadatas), list(ids)))
-        self._ids.update(ids)
+        for i, m in zip(ids, metadatas):
+            self._metas[i] = dict(m)
 
     def add_documents(self, documents, metadatas, ids):
         self.upsert_documents(documents, metadatas, ids)
@@ -79,11 +89,11 @@ class FakeChromaClient:
     def delete_documents(self, ids):
         self.deleted.extend(list(ids))
         for i in ids:
-            self._ids.discard(i)
+            self._metas.pop(i, None)
 
     def reset_collection(self):
         self.reset_calls += 1
-        self._ids = set()
+        self._metas = {}
 
 
 class FakeZoteroClient:
@@ -336,10 +346,11 @@ def test_switching_libraries_keeps_watermarks_independent(monkeypatch, tmp_path)
     assert stats["processed_items"] == 1  # only PERS2 changed since 50000
     versions = _saved(config_path)["last_sync_versions"]
     assert versions == {"0": 50010, str(GROUP_ID): 1200}
-    # NOTE: the incremental deletion pass still compares stored ids against
-    # the *active* library's key set, so the group's documents are dropped
-    # here. That is a separate pre-existing bug (not the watermark), tracked
-    # independently; this test deliberately asserts only on watermarks.
+    # The personal sync's deletion pass is scoped to group_id 0, so the
+    # group's document — indexed in step 2 and untouched since — survives
+    # the round-trip (#404: it used to be deleted here).
+    assert "GRP1" in chroma.get_all_ids()
+    assert chroma.deleted == []
 
 
 def test_update_run_scopes_to_the_clients_library_not_the_module_override(monkeypatch, tmp_path):

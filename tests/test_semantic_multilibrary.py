@@ -1,14 +1,12 @@
 """Tests for group_id into ChromaDB metadata + DB-side filtering (#163, phase 1).
 
 Covers: metadata tagging (local scan + web-API scan), feed exclusion,
-metadata-only migration backfill, and DB-side `where` filtering in
-`search()`.
+metadata-only migration backfill (evidence-based attribution), and DB-side
+`where` filtering in `search()`.
 
-Out of scope for this PR (see linked issues, fixed in the bug-fix phase that
-follows the global-search PR): per-library sync_versions
-(https://github.com/54yyyu/zotero-mcp/issues/393) and scoping the deletion
-passes to one library — both are pre-existing bugs independent of group_id,
-not required for tagging/filtering correctness. Also deferred: cross-library
+Related coverage elsewhere: per-library sync_versions (#393) in
+test_sync_watermark_per_library.py; the library-scoped deletion pass (#404)
+in test_library_scoped_deletion.py. Still deferred upstream: cross-library
 result enrichment (fetching a group hit's full item via a client scoped to
 that group).
 """
@@ -74,7 +72,12 @@ class _FakeChromaClient:
     def get_existing_ids(self, ids):
         return {i for i in ids if i in self._docs}
 
-    def get_all_ids(self):
+    def get_all_ids(self, where=None):
+        if where and "group_id" in where:
+            return {
+                i for i, m in self._docs.items()
+                if m.get("group_id") == where["group_id"]
+            }
         return set(self._docs)
 
     def get_document_metadata(self, doc_id):
