@@ -289,6 +289,81 @@ def test_empty_item_versions_against_nonempty_store_skips_deletion(monkeypatch, 
     assert stats["deletion_skipped_reason"] == "empty_item_versions"
 
 
+# ---------------------------------------------------------------------------
+# Mass-deletion guard
+# ---------------------------------------------------------------------------
+
+def _many_personal_docs(n_live, n_dead):
+    docs = {}
+    live = [f"LIVE{i:03d}" for i in range(n_live)]
+    dead = [f"DEAD{i:03d}" for i in range(n_dead)]
+    for k in live + dead:
+        docs[k] = _personal_doc(k)
+    return docs, live, dead
+
+
+def test_mass_deletion_is_guarded(monkeypatch, tmp_path):
+    """Deleting most of a library in one sync is far more likely to be a
+    truncated item_versions() response or a scoping regression than a real
+    purge; require an explicit opt-in."""
+    docs, live, dead = _many_personal_docs(n_live=5, n_dead=35)
+    chroma = RecordingChroma(docs)
+    zot = FakeZoteroClient(versions_state={k: 3 for k in live})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database()
+
+    assert chroma.deleted == []
+    assert stats["deleted_items"] == 0
+    assert stats["deletion_skipped_reason"] == "mass_deletion_guard"
+
+
+def test_allow_mass_deletion_overrides_the_guard(monkeypatch, tmp_path):
+    docs, live, dead = _many_personal_docs(n_live=5, n_dead=35)
+    chroma = RecordingChroma(docs)
+    zot = FakeZoteroClient(versions_state={k: 3 for k in live})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database(allow_mass_deletion=True)
+
+    assert sorted(chroma.deleted) == dead
+    assert stats["deleted_items"] == 35
+    assert "deletion_skipped_reason" not in stats
+
+
+def test_allow_mass_deletion_also_accepts_an_emptied_library(monkeypatch, tmp_path):
+    """The empty-item_versions skip protects against API faults; a user who
+    really emptied their library clears it with the same explicit opt-in."""
+    chroma = RecordingChroma({
+        "PERS_A": _personal_doc("PERS_A"),
+        "PERS_B": _personal_doc("PERS_B"),
+    })
+    zot = FakeZoteroClient(versions_state={}, library_version=9)
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database(allow_mass_deletion=True)
+
+    assert sorted(chroma.deleted) == ["PERS_A", "PERS_B"]
+    assert stats["deleted_items"] == 2
+
+
+def test_small_scale_deletions_pass_the_guard(monkeypatch, tmp_path):
+    """Ordinary cleanup — a few items below both thresholds — needs no flag."""
+    docs, live, dead = _many_personal_docs(n_live=37, n_dead=3)
+    chroma = RecordingChroma(docs)
+    zot = FakeZoteroClient(versions_state={k: 3 for k in live})
+    config_path = _write_config(tmp_path, {"0": 5})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database()
+
+    assert sorted(chroma.deleted) == dead
+    assert stats["deleted_items"] == 3
+
+
 def test_get_all_ids_returning_nothing_deletes_nothing(monkeypatch, tmp_path):
     """get_all_ids swallows backend errors into an empty set; the deletion
     pass must treat that as 'nothing eligible', not crash or over-delete."""

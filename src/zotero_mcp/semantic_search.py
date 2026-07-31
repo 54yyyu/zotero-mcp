@@ -157,6 +157,15 @@ _DEFAULT_UPDATE_CONFIG = {
 # version number is not proof the migration that saved it was correct.
 _INDEX_SCHEMA_VERSION = 3
 
+# The incremental deletion pass refuses (without an explicit opt-in) to
+# remove at least this many docs AND at least this fraction of the syncing
+# library's indexed docs in one run: that fingerprint is far more likely a
+# truncated item_versions() response or a scoping regression than a real
+# purge, and deletions from a derived index are only cheap to undo until
+# the next re-embed.
+_MASS_DELETION_MIN_DOCS = 25
+_MASS_DELETION_MIN_FRACTION = 0.25
+
 
 def load_update_config(config_path: str | None) -> dict[str, Any]:
     """Read the semantic-search ``update_config`` block from disk.
@@ -1815,6 +1824,7 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
         include_fulltext: bool | None = None,
         use_openai_batch: bool | None = None,
+        allow_mass_deletion: bool = False,
     ) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
@@ -1831,6 +1841,12 @@ class ZoteroSemanticSearch:
                 `extract_fulltext` provides richer local extraction.
             use_openai_batch: Override for OpenAI Batch API indexing. None
                 uses `semantic_search.openai_batch.enabled`.
+            allow_mass_deletion: One-run opt-in for a deletion pass that
+                would remove a large share of the library's indexed docs
+                (or all of them, when item_versions() reports the library
+                empty). Deliberately a parameter, not an env var: nothing
+                persistent can disable the guard, and the server's
+                unattended background sync can never mass-delete.
 
         Returns:
             Update statistics
@@ -2035,23 +2051,47 @@ class ZoteroSemanticSearch:
                     if current_library_keys is None:
                         # item_versions() failed: unknown is not "empty".
                         stats["deletion_skipped_reason"] = "item_versions_unavailable"
-                    elif not current_library_keys and stored_item_keys:
+                    elif (
+                        not current_library_keys
+                        and stored_item_keys
+                        and not allow_mass_deletion
+                    ):
                         # HTTP-200-but-empty against a non-empty store is
                         # indistinguishable from an API fault, and wiping a
                         # small library this way would slip under any
-                        # count-based guard. A genuinely emptied library can
-                        # still be cleaned via --force-rebuild.
+                        # count-based guard. A user who really emptied the
+                        # library opts in with --allow-mass-deletion.
                         logger.warning(
                             f"item_versions() returned no items while {len(stored_item_keys)} "
                             f"document(s) are indexed for library {self._active_library_key()}; "
-                            "treating this as an API fault and skipping deletion detection."
+                            "treating this as an API fault and skipping deletion "
+                            "detection. If the library really is empty, rerun with "
+                            "--allow-mass-deletion."
                         )
                         stats["deletion_skipped_reason"] = "empty_item_versions"
                     else:
                         to_delete_keys = sorted(
                             k for k in (stored_item_keys - current_library_keys) if k
                         )
-                        if to_delete_keys:
+                        if (
+                            to_delete_keys
+                            and not allow_mass_deletion
+                            and len(to_delete_keys) >= _MASS_DELETION_MIN_DOCS
+                            and len(to_delete_keys)
+                            >= _MASS_DELETION_MIN_FRACTION * len(stored_item_keys)
+                        ):
+                            sample = ", ".join(to_delete_keys[:5])
+                            logger.warning(
+                                f"Deletion pass wants to remove {len(to_delete_keys)} of "
+                                f"{len(stored_item_keys)} indexed document(s) for library "
+                                f"{self._active_library_key()} ({sample}, ...). That volume "
+                                "usually means a truncated item_versions() response or a "
+                                "sync-scoping bug, not a real purge — skipping. If the "
+                                "deletions are intentional, rerun once with "
+                                "--allow-mass-deletion."
+                            )
+                            stats["deletion_skipped_reason"] = "mass_deletion_guard"
+                        elif to_delete_keys:
                             if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
                                 for k in to_delete_keys:
                                     self.chroma_client.delete_item_chunks(k)

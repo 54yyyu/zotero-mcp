@@ -426,6 +426,7 @@ def cmd_db(args):
             limit=args.limit,
             extract_fulltext=fulltext,
             use_openai_batch=getattr(args, "openai_batch", None),
+            allow_mass_deletion=getattr(args, "allow_mass_deletion", False),
         )
         _print_update_stats(stats)
         if stats.get("error"):
@@ -793,6 +794,7 @@ def build_parser() -> argparse.ArgumentParser:
     dbu.add_argument("--force-rebuild", action="store_true")
     dbu.add_argument("--limit", type=int)
     dbu.add_argument("--fulltext", action="store_true")
+    dbu.add_argument("--allow-mass-deletion", action="store_true")
     dbu.add_argument("--config-path")
     dbu.add_argument("--db-path")
     dbu_batch = dbu.add_mutually_exclusive_group()
