@@ -779,7 +779,7 @@ class LocalZoteroReader:
         return {row[0] for row in rows}
 
     def get_key_group_map(self) -> KeyGroupMap:
-        """Map every non-deleted item key to its library's group_id.
+        """Map every item key — including trashed items — to its library's group_id.
 
         Runs a single query joining ``items`` -> ``libraries`` -> ``groups``,
         translating each item's ``libraryID`` to the codebase-wide group_id
@@ -788,6 +788,12 @@ class LocalZoteroReader:
         "My Publications") are returned in ``excluded_keys`` instead, so
         callers can drop them from the semantic index rather than silently
         mis-attribute them to the personal library.
+
+        Trashed items are deliberately included: the group_id backfill needs
+        their true library so each library's own scoped deletion pass cleans
+        its trash from the index. Live-item consumers are unaffected — every
+        item scan already excludes ``deletedItems`` at its own source, so
+        trashed keys in this map are never looked up by them.
         """
         conn = self._get_connection()
         rows = conn.execute(
@@ -796,7 +802,6 @@ class LocalZoteroReader:
             FROM items i
             JOIN libraries l ON i.libraryID = l.libraryID
             LEFT JOIN groups g ON l.libraryID = g.libraryID
-            WHERE i.itemID NOT IN (SELECT itemID FROM deletedItems)
             """
         ).fetchall()
 

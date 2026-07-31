@@ -149,7 +149,13 @@ _DEFAULT_UPDATE_CONFIG = {
 # one-time migration of existing documents. Version 2 (#163) added the
 # `group_id` field. A persisted collection whose config.json records a lower
 # (or absent, i.e. 0) version gets migrated via `_backfill_group_ids()`.
-_INDEX_SCHEMA_VERSION = 2
+# Version 3: the backfill became evidence-based (guessed attribution never
+# feeds the group_id-scoped deletion pass). Bumped past 2 even though no
+# released build ever completed a version-2 backfill — the sole save site
+# sat behind a call that always raised — so that any index migrated by
+# intermediate development code re-runs the corrected migration; a saved
+# version number is not proof the migration that saved it was correct.
+_INDEX_SCHEMA_VERSION = 3
 
 
 def load_update_config(config_path: str | None) -> dict[str, Any]:
@@ -715,24 +721,69 @@ class ZoteroSemanticSearch:
         except Exception as e:
             logger.error(f"Error saving index_schema_version: {e}")
 
+    def _load_backfill_unattributed(self) -> int:
+        """Count of docs the last backfill could not attribute to a library."""
+        if not self.config_path or not os.path.exists(self.config_path):
+            return 0
+        try:
+            with open(self.config_path) as f:
+                value = json.load(f).get("semantic_search", {}).get("backfill_unattributed", 0)
+                return int(value) if value else 0
+        except Exception:
+            return 0
+
+    def _save_backfill_unattributed(self, count: int) -> None:
+        """Persist the unattributed-doc count so later updates keep warning."""
+        if not self.config_path:
+            return
+        full_config = {}
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    full_config = json.load(f)
+            except Exception:
+                pass
+        section = full_config.setdefault("semantic_search", {})
+        if count:
+            section["backfill_unattributed"] = int(count)
+        else:
+            section.pop("backfill_unattributed", None)
+        try:
+            with open(self.config_path, "w") as f:
+                json.dump(full_config, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving backfill_unattributed: {e}")
+
     def _backfill_group_ids(self) -> dict[str, int]:
         """One-time metadata-only migration: tag pre-#163 docs with ``group_id``.
 
         Docs indexed before #163 carry no ``group_id`` metadata key. This
         pages through the collection and attaches one via
         ``ChromaClient.update_metadatas()`` — metadata-only, so no
-        re-embedding and no doc-id change. Local mode attributes each doc
-        via ``LocalZoteroReader.get_key_group_map()`` (ground truth from the
-        live database, keyed by ``item_key``); web mode — and any local-mode
-        item missing from the live DB (e.g. since deleted) — falls back to
-        the currently active library's group_id, since a pre-#163
-        collection only ever held one library's docs at a time. Idempotent:
-        docs that already carry ``group_id`` are left untouched, so a
-        partial/interrupted run just resumes on the next call.
+        re-embedding and no doc-id change.
 
-        Returns ``{"scanned": N, "migrated": N}``.
+        Attribution is strictly evidence-based, because the deletion pass is
+        scoped by ``group_id`` and a guessed tag is a future deletion
+        warrant. Evidence, in order:
+
+        1. ``LocalZoteroReader.get_key_group_map()`` (local mode): ground
+           truth from the live database, trashed items included so trash is
+           attributed to its true library.
+        2. Membership in the active library's ``item_versions()`` — fetched
+           lazily, at most once per run. In local mode this also covers
+           WAL-fresh items the immutable sqlite read cannot see (#292); a
+           fetch failure propagates so the caller retries next update rather
+           than tagging by guesswork.
+        3. No evidence → left untagged and counted. Untagged docs are
+           excluded from library-filtered search and can never match the
+           deletion pass's ``group_id`` filter.
+
+        Idempotent: docs that already carry ``group_id`` are left untouched,
+        so a partial/interrupted run just resumes on the next call.
+
+        Returns ``{"scanned": N, "migrated": N, "unattributed": N}``.
         """
-        stats = {"scanned": 0, "migrated": 0}
+        stats = {"scanned": 0, "migrated": 0, "unattributed": 0}
 
         key_group_map: dict[str, int] | None = None
         if is_local_mode():
@@ -748,11 +799,13 @@ class ZoteroSemanticSearch:
             except Exception as e:
                 logger.warning(
                     f"group_id backfill: could not read local database, "
-                    f"falling back to active-library attribution: {e}"
+                    f"falling back to active-library-membership attribution: {e}"
                 )
                 key_group_map = None
 
-        fallback_group_id = get_active_group_id()
+        run_group_id = getattr(self, "_run_group_id", None)
+        active_group_id = run_group_id if run_group_id is not None else get_active_group_id()
+        active_library_keys: set[str] | None = None
 
         for ids, metadatas in self.chroma_client.iter_metadatas():
             stats["scanned"] += len(ids)
@@ -766,7 +819,15 @@ class ZoteroSemanticSearch:
                 if key_group_map is not None and item_key in key_group_map:
                     group_id = key_group_map[item_key]
                 else:
-                    group_id = fallback_group_id
+                    if active_library_keys is None:
+                        active_library_keys = set(
+                            (self.zotero_client.item_versions() or {}).keys()
+                        )
+                    if item_key in active_library_keys:
+                        group_id = active_group_id
+                    else:
+                        stats["unattributed"] += 1
+                        continue
                 meta["group_id"] = int(group_id)
                 update_ids.append(doc_id)
                 update_metas.append(meta)
@@ -1839,13 +1900,26 @@ class ZoteroSemanticSearch:
                             )
                         except Exception:
                             pass
+                    self._save_backfill_unattributed(backfill_stats.get("unattributed", 0))
                     self._save_index_schema_version(_INDEX_SCHEMA_VERSION)
                 except Exception as e:
                     logger.error(
                         f"group_id metadata backfill failed ({e}); existing documents "
-                        "may be missing library attribution. Run with --force-rebuild "
-                        "to fully reindex, or retry the update."
+                        "may be missing library attribution, so library-filtered "
+                        "search will not cover them and deletion cleanup will skip "
+                        "them. The backfill retries on the next update."
                     )
+
+            # Unattributed docs are excluded from library-filtered search and
+            # from deletion cleanup; keep that visible on every update, not
+            # just the one that discovered it.
+            unattributed = self._load_backfill_unattributed()
+            if unattributed:
+                logger.warning(
+                    f"{unattributed} indexed document(s) have no library attribution "
+                    "(left by the last group_id backfill); they are excluded from "
+                    "library-filtered search and from deletion cleanup."
+                )
 
             # Resolve include_fulltext default from config if not specified
             if include_fulltext is None:
