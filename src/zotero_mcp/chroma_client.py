@@ -8,6 +8,7 @@ for semantic search over Zotero libraries.
 import json
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -908,18 +909,75 @@ class ChromaClient:
         except Exception:
             return set()
 
-    def get_all_ids(self) -> set[str]:
+    def get_all_ids(self, where: dict[str, Any] | None = None) -> set[str]:
         """Return every id currently stored in the collection.
 
         Used by incremental sync to compute deletions: items in the local
         collection but no longer present in the Zotero library.
+
+        Args:
+            where: Optional ChromaDB metadata filter (e.g.
+                ``{"group_id": 0}``) applied DB-side. Documents missing a
+                filtered key never match, so callers scoping by ``group_id``
+                structurally exclude unattributed documents.
+
+        Errors return an empty set, which every caller treats as "nothing
+        eligible" — deletion passes fail toward deleting nothing.
         """
         try:
-            result = self.collection.get(include=[])
+            result = self.collection.get(where=where, include=[])
             return set(result.get("ids", []))
         except Exception as e:
             logger.error(f"Error listing collection ids: {e}")
             return set()
+
+    def iter_metadatas(self, batch_size: int = 500) -> Iterator[tuple[list[str], list[dict[str, Any]]]]:
+        """Stream ``(ids, metadatas)`` over the whole collection in batches.
+
+        Snapshots the id set first, then pages metadata with
+        ``collection.get(ids=chunk)`` — deliberately not ``limit``/``offset``,
+        whose ordering across pages is an undocumented implementation detail,
+        and never one unbounded ids list (the "too many SQL variables"
+        failure, #368). Callers may update already-yielded documents between
+        batches (the group_id backfill does); a snapshot makes that safe by
+        construction. Documents deleted mid-iteration are simply absent from
+        their page.
+        """
+        all_ids = sorted(self.get_all_ids())
+        for start in range(0, len(all_ids), batch_size):
+            chunk = all_ids[start:start + batch_size]
+            result = self.collection.get(ids=chunk, include=["metadatas"])
+            ids = result.get("ids") or []
+            if not ids:
+                continue
+            metadatas = result.get("metadatas") or [{} for _ in ids]
+            yield ids, metadatas
+
+    def update_metadatas(self, ids: list[str], metadatas: list[dict[str, Any]]) -> None:
+        """Metadata-only update for existing documents; never re-embeds.
+
+        Callers must pass complete metadata dicts: chromadb 1.5.x merges
+        the given keys into existing metadata, while other versions have
+        replaced the whole dict — full dicts behave identically under both.
+        Split under the backend's max batch size like ``upsert_documents``
+        (#369).
+        """
+        if not ids:
+            return
+        try:
+            try:
+                max_batch = int(self.client.get_max_batch_size())
+            except Exception:
+                max_batch = 5000
+            for i in range(0, len(ids), max_batch):
+                self.collection.update(
+                    ids=ids[i:i + max_batch],
+                    metadatas=metadatas[i:i + max_batch],
+                )
+            logger.info(f"Updated metadata for {len(ids)} documents")
+        except Exception as e:
+            logger.error(f"Error updating document metadata: {e}")
+            raise
 
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:
