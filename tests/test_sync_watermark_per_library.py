@@ -342,6 +342,31 @@ def test_switching_libraries_keeps_watermarks_independent(monkeypatch, tmp_path)
     # independently; this test deliberately asserts only on watermarks.
 
 
+def test_update_run_scopes_to_the_clients_library_not_the_module_override(monkeypatch, tmp_path):
+    """The updater must take its library identity from the Zotero client it
+    reads keys and versions from. The module-level active-library override
+    is mutable shared state: a zotero_switch_library tool call can land
+    while the server's background update is mid-run, and any identity read
+    at call time would attach the wrong library to this run's tagging,
+    watermark — and, once deletion is group_id-scoped, deletion authority."""
+    config_path = _write_config(tmp_path)
+    group = FakeZoteroClient(["GRP1"], library_version=1200)
+    # pyzotero clients expose their scope (library_type in its plural URL
+    # form); the fake mirrors that.
+    group.library_id = str(GROUP_ID)
+    group.library_type = "groups"
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, group, chroma, config_path=config_path)
+    # The override — module state — says "personal" for the whole run.
+
+    search.update_database()
+
+    metas = [m for batch in chroma.added for m in batch[1]]
+    assert metas, "expected the group item to be indexed"
+    assert all(m["group_id"] == GROUP_ID for m in metas)
+    assert _saved(config_path)["last_sync_versions"] == {str(GROUP_ID): 1200}
+
+
 def test_watermark_ahead_of_library_version_forces_full_scan(monkeypatch, tmp_path):
     """Defence in depth for configs that already carry a foreign watermark: a
     library's counter never decreases, so a watermark ahead of it cannot be

@@ -531,12 +531,40 @@ class ZoteroSemanticSearch:
         requested = self._load_openai_batch_enabled() if use_openai_batch is None else use_openai_batch
         return bool(requested and self.chroma_client.embedding_model == "openai")
 
+    def _client_group_id(self) -> int:
+        """group_id of the library ``self.zotero_client`` is actually scoped to.
+
+        Read off the client object itself (pyzotero stores its scope as
+        ``library_type``/``library_id``, with ``library_type`` normalized to
+        the plural URL form), NOT from the module-level active-library
+        override: the override is mutable shared state that a
+        ``zotero_switch_library`` tool call can change while a background
+        update run is in flight, and an identity read at call time would
+        attach the wrong library to this run's tagging, watermark and
+        deletion scope. Falls back to ``get_active_group_id()`` for client
+        doubles that carry no scope attributes.
+        """
+        library_type = getattr(self.zotero_client, "library_type", None)
+        if library_type in ("group", "groups"):
+            try:
+                return int(getattr(self.zotero_client, "library_id", None))
+            except (TypeError, ValueError):
+                return get_active_group_id()
+        if library_type in ("user", "users"):
+            return PERSONAL_LIBRARY_GROUP_ID
+        return get_active_group_id()
+
     def _active_library_key(self) -> str:
         """Config key for the library ``self.zotero_client`` is scoped to.
 
         Same identity as the ``group_id`` stamped on indexed documents:
         ``"0"`` is the personal library, anything else a Zotero groupID.
+        Inside an update run this is the run's pinned library identity
+        (see ``_client_group_id``).
         """
+        run_group_id = getattr(self, "_run_group_id", None)
+        if run_group_id is not None:
+            return str(run_group_id)
         return str(get_active_group_id())
 
     def _migrate_legacy_sync_version(self, legacy: Any, library_key: str) -> int:
@@ -1459,13 +1487,13 @@ class ZoteroSemanticSearch:
         """Stamp every item's ``data.group_id`` with the active library, in place.
 
         Web-API item/version fetches always cover exactly one library — the
-        one ``get_zotero_client()`` is currently pointed at (override or env
-        vars) — so every item an API-mode scan or incremental fetch returns
-        can be tagged with the correct library via
-        ``client.get_active_group_id()``, the same lookup the search-tool
-        fallback cascade uses.
+        one ``self.zotero_client`` is scoped to — so every item an API-mode
+        scan or incremental fetch returns can be tagged with that library.
+        Inside an update run the identity is pinned once per run; outside
+        one it falls back to the active-library lookup.
         """
-        group_id = get_active_group_id()
+        run_group_id = getattr(self, "_run_group_id", None)
+        group_id = run_group_id if run_group_id is not None else get_active_group_id()
         for item in items:
             item.setdefault("data", {})["group_id"] = group_id
 
@@ -1788,6 +1816,14 @@ class ZoteroSemanticSearch:
             return stats
 
         try:
+            # Pin this run's library identity once, from the client the run
+            # will read items/versions from. Everything scope-sensitive in
+            # the run (tagging, watermark key, backfill attribution, the
+            # deletion pass) uses this snapshot, so a concurrent
+            # zotero_switch_library cannot re-point half a run at another
+            # library.
+            self._run_group_id = self._client_group_id()
+
             # One-time metadata migration (#163): tag any pre-existing docs
             # that lack group_id. Skipped on a force rebuild — the reset
             # below wipes the collection anyway, so every doc gets tagged
@@ -2090,6 +2126,7 @@ class ZoteroSemanticSearch:
             stats["duration"] = str(end_time - start_time)
             return stats
         finally:
+            self._run_group_id = None
             # Release the update flock on every exit path. Paired with the
             # __enter__ call above; the "not acquired" branch releases
             # separately before its early return, so this finally only runs
