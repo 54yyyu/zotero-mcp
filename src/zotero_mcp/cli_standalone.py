@@ -179,7 +179,7 @@ def cmd_annotations(args):
         print(annotations.get_annotations(
             item_key=getattr(args, "item_key", None),
             use_pdf_extraction=args.pdf_extraction,
-            limit=args.limit, ctx=ctx,
+            limit=args.limit, format=args.format, ctx=ctx,
         ))
     elif args.subcommand == "create":
         print(annotations.create_annotation(
@@ -644,6 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
     al.add_argument("--item-key")
     al.add_argument("--pdf-extraction", action="store_true")
     al.add_argument("--limit", type=int, default=100)
+    al.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ac = a_sub.add_parser("create", help="Create an annotation on a PDF/EPUB")
     ac.add_argument("--attachment-key", required=True)
     ac.add_argument("--page", required=True, type=int)

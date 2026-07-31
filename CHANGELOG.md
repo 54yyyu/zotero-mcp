@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Structured JSON annotation export.** `zotero_get_annotations(format="json")` returns normalized annotation records with paper and attachment keys, page metadata, text, comments, color, tags, timestamps, and source. `zotero_synthesize_annotations(format="json")` returns the same records grouped by paper alongside structured notes and summary counts. The standalone CLI exposes this as `zotero-cli annotations list --format json` (#215). Records are normalized across all three annotation sources: `page` is always the page label, `page_index` always 0-based (Better BibTeX and direct PDF extraction report 1-based pages internally), and `color_category` is derived for every source rather than only the Better BibTeX one.
+
+### Changed
+- `zotero_synthesize_annotations` groups its digest by item key instead of by title, so two distinct papers that share a title are no longer merged into one section. Markdown headings are qualified with the item key when a title collides.
+
 ## [0.6.4] - 2026-07-28
 
 ### Added
