@@ -110,6 +110,22 @@ def test_iter_metadatas_empty_collection_yields_nothing(client):
     assert list(client.iter_metadatas()) == []
 
 
+def test_iter_metadatas_propagates_backend_errors(client, monkeypatch):
+    """A backend failure must raise, never masquerade as an empty
+    collection: the backfill's one-time schema gate closes permanently on
+    'success', so a swallowed error here would silently disable the
+    migration with zero documents tagged."""
+    _seed(client, 3)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(client.collection, "get", boom)
+
+    with pytest.raises(RuntimeError, match="database is locked"):
+        list(client.iter_metadatas())
+
+
 # ---------------------------------------------------------------------------
 # update_metadatas
 # ---------------------------------------------------------------------------
@@ -191,22 +207,47 @@ def test_get_all_ids_where_never_matches_untagged_docs(client):
 # real ChromaClient with a signature that accepts the fake's call shape. This
 # is the structural guard against the drift that shipped the dead backfill.
 # (Test-only helpers on fakes must be underscore-prefixed to stay exempt.)
+#
+# Fakes are DISCOVERED, not enumerated: any module-level class in tests/ whose
+# name contains "chroma" (other than this file's imports) is pinned, so a new
+# fake is covered the day it is written. Modules that fail to import (missing
+# optional deps, module-level skips) are skipped; a sanity floor asserts
+# discovery still sees the core fakes.
 # ---------------------------------------------------------------------------
 
 def _fake_chroma_classes():
-    import test_fulltext_sync_watermark
-    import test_fulltext_web_mode
-    import test_library_scoped_deletion
-    import test_semantic_multilibrary
-    import test_sync_watermark_per_library
+    import importlib
+    import pathlib
 
-    return [
-        test_semantic_multilibrary._FakeChromaClient,
-        test_sync_watermark_per_library.FakeChromaClient,
-        test_fulltext_web_mode.FakeChromaClient,
-        test_fulltext_sync_watermark.FakeChroma,
-        test_library_scoped_deletion.RecordingChroma,
-    ]
+    classes = []
+    for path in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
+        if path.stem == pathlib.Path(__file__).stem:
+            continue
+        try:
+            mod = importlib.import_module(path.stem)
+        except BaseException:  # module-level pytest.skip or missing optional dep
+            continue
+        for obj in vars(mod).values():
+            if (
+                isinstance(obj, type)
+                and obj.__module__ == mod.__name__
+                and "chroma" in obj.__name__.lower()
+                and obj is not ChromaClient
+            ):
+                classes.append(obj)
+    return classes
+
+
+def test_fake_discovery_sees_the_core_fakes():
+    names = {f"{c.__module__}.{c.__qualname__}" for c in _fake_chroma_classes()}
+    for expected in (
+        "test_semantic_multilibrary._FakeChromaClient",
+        "test_sync_watermark_per_library.FakeChromaClient",
+        "test_fulltext_web_mode.FakeChromaClient",
+        "test_fulltext_sync_watermark.FakeChroma",
+        "test_library_scoped_deletion.RecordingChroma",
+    ):
+        assert expected in names
 
 
 @pytest.mark.parametrize("fake_cls", _fake_chroma_classes(),
@@ -222,13 +263,25 @@ def test_fakes_conform_to_real_chroma_client_api(fake_cls):
             "group_id backfill shipped"
         )
         fake_params = list(inspect.signature(member).parameters.values())[1:]  # drop self
-        call_kwargs = {}
+        pos_args = []
+        kw_args = {}
+        has_var = False
         for p in fake_params:
             if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-                continue
-            call_kwargs[p.name] = None
+                has_var = True
+            elif p.kind == inspect.Parameter.KEYWORD_ONLY:
+                kw_args[p.name] = None
+            else:
+                pos_args.append(None)
+        if has_var and not pos_args and not kw_args:
+            # A pure *args/**kwargs fake accepts any call the real accepts;
+            # method existence is the only checkable contract.
+            continue
         try:
-            inspect.signature(real).bind(None, **call_kwargs)
+            # Positional binding checks arity without requiring the fake's
+            # positional parameter NAMES to match (production calls these
+            # methods positionally); keyword-only params bind by name.
+            inspect.signature(real).bind(None, *pos_args, **kw_args)
         except TypeError as e:
             pytest.fail(
                 f"real ChromaClient.{name} signature rejects the fake's call shape "

@@ -379,6 +379,26 @@ def test_backfill_does_not_fetch_item_versions_when_map_covers_everything(monkey
     assert stats == {"scanned": 1, "migrated": 1, "unattributed": 0}
 
 
+def test_backfill_empty_item_versions_is_treated_as_a_fault(monkeypatch):
+    """An HTTP-200-but-empty item_versions() body is the same response shape
+    the deletion pass refuses to act on. Accepting it here as negative
+    evidence would mark the one-time migration complete with every doc
+    unattributed — permanently, since the schema-version gate then closes."""
+    chroma = _FakeChromaClient({"KEY1": {"item_key": "KEY1"}})
+
+    class _EmptyZot(_StubZot):
+        def item_versions(self, **kw):
+            return {}
+
+    search = _build_search(
+        monkeypatch, chroma, is_local=False, get_zotero_client_fn=lambda: _EmptyZot()
+    )
+
+    with pytest.raises(Exception, match="no items"):
+        search._backfill_group_ids()
+    assert "group_id" not in chroma._docs["KEY1"]
+
+
 def test_backfill_item_versions_failure_propagates_and_tags_nothing(monkeypatch):
     """No evidence available → raise (update_database catches and retries
     next run). Nothing may be tagged by guesswork on the way out."""
@@ -488,6 +508,9 @@ def test_backfill_failure_log_does_not_recommend_force_rebuild(monkeypatch, tmp_
     failures = [r.message for r in caplog.records if "backfill failed" in r.message]
     assert failures, "expected the backfill failure to be logged"
     assert all("force-rebuild" not in m and "force_rebuild" not in m for m in failures)
+    # A failed backfill must not close the one-time-migration gate.
+    saved = json.loads(open(config_path).read())["semantic_search"]
+    assert "index_schema_version" not in saved
 
 
 def test_unattributed_count_is_persisted_and_rewarned_on_later_updates(monkeypatch, tmp_path, caplog):

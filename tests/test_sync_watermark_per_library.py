@@ -353,6 +353,29 @@ def test_switching_libraries_keeps_watermarks_independent(monkeypatch, tmp_path)
     assert chroma.deleted == []
 
 
+def test_legacy_scalar_is_not_adopted_by_a_client_scoped_elsewhere(monkeypatch, tmp_path):
+    """The pre-#393 scalar's provenance is the env-configured default
+    library. Whether to trust it must be judged against the RUN's pinned
+    library — not the live override, which can be cleared/changed mid-run:
+    a group-scoped run would otherwise inherit the personal library's
+    counter and silently skip every group change below it."""
+    config_path = _write_config(tmp_path, {"last_sync_version": 500})
+    group = FakeZoteroClient(["GRP1"], library_version=1200)
+    group.library_id = str(GROUP_ID)
+    group.library_type = "groups"
+    chroma = FakeChromaClient()
+    # No override active (module state says "personal"); the client — and
+    # so the run — is scoped to the group.
+    search = _build_search(monkeypatch, group, chroma, config_path=config_path)
+
+    stats = search.update_database()
+
+    assert stats["processed_items"] == 1
+    # Bootstrap full scan, not incremental against the foreign scalar:
+    assert not any(c[0] == "item_versions" and c[1] for c in group.calls)
+    assert _saved(config_path)["last_sync_versions"][str(GROUP_ID)] == 1200
+
+
 def test_update_run_scopes_to_the_clients_library_not_the_module_override(monkeypatch, tmp_path):
     """The updater must take its library identity from the Zotero client it
     reads keys and versions from. The module-level active-library override

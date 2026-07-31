@@ -28,7 +28,7 @@ except Exception:
 
 from . import openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
-from .client import get_active_group_id, get_active_library, get_zotero_client
+from .client import get_active_group_id, get_zotero_client
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
@@ -569,6 +569,17 @@ class ZoteroSemanticSearch:
             return PERSONAL_LIBRARY_GROUP_ID
         return get_active_group_id()
 
+    def _pinned_group_id(self) -> int:
+        """The run's pinned library identity, or the live active-library
+        lookup outside an update run. Every scope-sensitive read inside a
+        run must go through this (or ``_active_library_key``), never through
+        ``get_active_group_id()`` directly — the module-level override can
+        change mid-run."""
+        run_group_id = getattr(self, "_run_group_id", None)
+        if run_group_id is not None:
+            return run_group_id
+        return get_active_group_id()
+
     def _active_library_key(self) -> str:
         """Config key for the library ``self.zotero_client`` is scoped to.
 
@@ -577,10 +588,7 @@ class ZoteroSemanticSearch:
         Inside an update run this is the run's pinned library identity
         (see ``_client_group_id``).
         """
-        run_group_id = getattr(self, "_run_group_id", None)
-        if run_group_id is not None:
-            return str(run_group_id)
-        return str(get_active_group_id())
+        return str(self._pinned_group_id())
 
     def _migrate_legacy_sync_version(self, legacy: Any, library_key: str) -> int:
         """Interpret a pre-#393 scalar ``last_sync_version`` for one library.
@@ -594,18 +602,27 @@ class ZoteroSemanticSearch:
         existing single-library user, who keeps their watermark and avoids a
         needless full re-scan on upgrade.
 
-        When a switch *is* active the scalar is discarded: a redundant full
-        scan is cheap next to trusting a foreign library's counter, which
-        makes ``item_versions(since=...)`` return nothing and silently skips
-        the entire library.
+        When the library at hand is any other, the scalar is discarded: a
+        redundant full scan is cheap next to trusting a foreign library's
+        counter, which makes ``item_versions(since=...)`` return nothing and
+        silently skips the entire library. Provenance is judged against
+        ``library_key`` — the run's pinned identity — rather than a live
+        read of the mutable override, which can be cleared or changed
+        mid-run by a concurrent ``zotero_switch_library``.
         """
         if legacy is None:
             return 0
-        if get_active_library():
+        env_default_group_id = PERSONAL_LIBRARY_GROUP_ID
+        if os.getenv("ZOTERO_LIBRARY_TYPE", "user") == "group":
+            try:
+                env_default_group_id = int(os.getenv("ZOTERO_LIBRARY_ID") or 0)
+            except (TypeError, ValueError):
+                env_default_group_id = PERSONAL_LIBRARY_GROUP_ID
+        if library_key != str(env_default_group_id):
             logger.info(
-                "Ignoring legacy last_sync_version while a library override is "
-                f"active (library {library_key}); bootstrapping this library's "
-                "own sync watermark instead."
+                f"Ignoring legacy last_sync_version for library {library_key}: "
+                "the scalar's provenance is the env-configured default library; "
+                "bootstrapping this library's own sync watermark instead."
             )
             return 0
         try:
@@ -812,8 +829,7 @@ class ZoteroSemanticSearch:
                 )
                 key_group_map = None
 
-        run_group_id = getattr(self, "_run_group_id", None)
-        active_group_id = run_group_id if run_group_id is not None else get_active_group_id()
+        active_group_id = self._pinned_group_id()
         active_library_keys: set[str] | None = None
 
         for ids, metadatas in self.chroma_client.iter_metadatas():
@@ -832,6 +848,18 @@ class ZoteroSemanticSearch:
                         active_library_keys = set(
                             (self.zotero_client.item_versions() or {}).keys()
                         )
+                        if not active_library_keys:
+                            # The same HTTP-200-but-empty response shape the
+                            # deletion pass treats as an API fault. Accepting
+                            # it as negative evidence would mark the one-time
+                            # migration complete with these docs unattributed
+                            # — permanently, once the schema gate closes.
+                            raise Exception(
+                                "item_versions() returned no items while indexed "
+                                "documents need library-membership evidence; "
+                                "treating this as an API fault. The backfill "
+                                "will retry on the next update."
+                            )
                     if item_key in active_library_keys:
                         group_id = active_group_id
                     else:
@@ -1562,8 +1590,7 @@ class ZoteroSemanticSearch:
         Inside an update run the identity is pinned once per run; outside
         one it falls back to the active-library lookup.
         """
-        run_group_id = getattr(self, "_run_group_id", None)
-        group_id = run_group_id if run_group_id is not None else get_active_group_id()
+        group_id = self._pinned_group_id()
         for item in items:
             item.setdefault("data", {})["group_id"] = group_id
 
@@ -1806,7 +1833,9 @@ class ZoteroSemanticSearch:
             config_path=self.config_path,
             force_full_rebuild=force_full_rebuild,
             target_sync_version=target_sync_version,
-            group_id=get_active_group_id(),
+            # The manifest's group_id keys the watermark save at import time;
+            # it must carry the run's pinned identity, not the live override.
+            group_id=self._pinned_group_id(),
         )
         stats["batch_submitted"] = True
         stats["batch_run_id"] = manifest["run_id"]
@@ -1938,9 +1967,11 @@ class ZoteroSemanticSearch:
             unattributed = self._load_backfill_unattributed()
             if unattributed:
                 logger.warning(
-                    f"{unattributed} indexed document(s) have no library attribution "
-                    "(left by the last group_id backfill); they are excluded from "
-                    "library-filtered search and from deletion cleanup."
+                    f"Up to {unattributed} indexed document(s) have no library "
+                    "attribution (count from the last group_id backfill; documents "
+                    "re-indexed since then may have gained attribution). Unattributed "
+                    "documents are excluded from library-filtered search and from "
+                    "deletion cleanup."
                 )
 
             # Resolve include_fulltext default from config if not specified

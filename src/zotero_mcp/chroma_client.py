@@ -942,8 +942,15 @@ class ChromaClient:
         batches (the group_id backfill does); a snapshot makes that safe by
         construction. Documents deleted mid-iteration are simply absent from
         their page.
+
+        Backend failures RAISE — deliberately not routed through
+        ``get_all_ids``, whose swallow-into-empty-set contract is safe for
+        deletion ("nothing eligible") but inverts here: the backfill's
+        one-time schema gate closes permanently on "success", so an error
+        masquerading as an empty collection would silently disable the
+        migration with zero documents tagged.
         """
-        all_ids = sorted(self.get_all_ids())
+        all_ids = sorted(self.collection.get(include=[]).get("ids") or [])
         for start in range(0, len(all_ids), batch_size):
             chunk = all_ids[start:start + batch_size]
             result = self.collection.get(ids=chunk, include=["metadatas"])
