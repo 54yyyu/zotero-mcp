@@ -170,6 +170,36 @@ def test_update_db_batch_flag_resolution_reads_config(tmp_path, monkeypatch):
     assert non_openai._resolve_openai_batch_enabled(True) is False
 
 
+def test_batch_manifest_group_id_uses_the_runs_pinned_library(monkeypatch):
+    """The manifest's group_id keys the watermark save at import time. It
+    must come from the run's pinned library identity, not the mutable
+    module-level override — a zotero_switch_library landing during the long
+    prepare/upload window would otherwise write library A's sync version
+    under library B's watermark key (the #393 corruption, reborn)."""
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
+    search._run_group_id = 6015547  # pinned at run start; override says personal
+
+    captured = {}
+
+    def capture_submit(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": "r", "manifest_path": "/tmp/m.json", "batches": []}
+
+    monkeypatch.setattr(semantic_search.openai_batch, "submit_embedding_batches", capture_submit)
+    search._submit_openai_batch_index(
+        [{
+            "key": "K1",
+            "data": {"title": "T", "itemType": "journalArticle", "abstractNote": "A", "creators": []},
+        }],
+        force_full_rebuild=False,
+        target_sync_version=123,
+        stats={"processed_items": 0, "skipped_items": 0, "errors": 0},
+    )
+
+    assert captured["group_id"] == 6015547
+
+
 def test_failed_batch_submit_does_not_report_added_or_updated(monkeypatch):
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
     search = semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())

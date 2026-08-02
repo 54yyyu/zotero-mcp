@@ -73,6 +73,13 @@ class FakeReader:
 class FakeChromaClient:
     def __init__(self, stored_metadata):
         self.embedding_max_tokens = 8000
+        # Stored docs here model the post-migration steady state (attributed
+        # to the personal library) unless a test says otherwise: a doc with
+        # NO group_id is deliberately re-upserted by the scan regardless of
+        # the failed marker, which would defeat these skip/retry assertions.
+        if stored_metadata is not None:
+            stored_metadata = dict(stored_metadata)
+            stored_metadata.setdefault("group_id", 0)
         self._stored = stored_metadata
 
     def get_document_metadata(self, key):
@@ -122,6 +129,34 @@ def test_failed_item_skipped_when_nothing_changed(monkeypatch):
     items, reader = _run_scan(monkeypatch, stored, attachments=[])
     assert items == []
     assert reader.extract_calls == 0
+
+
+def test_untagged_doc_is_reupserted_despite_failed_marker(monkeypatch):
+    """A doc with no group_id predates multi-library attribution and was not
+    covered by the backfill; the scan must re-upsert it so it gains its
+    attribution — otherwise it is skipped as 'up to date' forever and stays
+    excluded from library-filtered search and deletion cleanup."""
+    stored = {
+        "has_fulltext": "failed",
+        "date_modified": DATE_MODIFIED,
+        "attachment_keys": "",
+    }
+
+    class _UntaggedChroma(FakeChromaClient):
+        def __init__(self, stored_metadata):
+            super().__init__(stored_metadata)
+            self._stored.pop("group_id", None)
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    reader = FakeReader(attachments=[])
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: reader)
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=_UntaggedChroma(stored))
+    search.db_path = "unused"
+
+    items = search._get_items_from_local_db(extract_fulltext=True)
+
+    assert [it["key"] for it in items] == ["ITEMKEY1"]
 
 
 def test_failed_item_retried_when_attachment_added(monkeypatch):

@@ -335,6 +335,10 @@ def main():
                                  help="Limit number of items to process (for testing)")
     update_db_parser.add_argument("--fulltext", action="store_true",
                                  help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
+    update_db_parser.add_argument("--allow-mass-deletion", action="store_true",
+                                 help="One-run opt-in when the deletion pass would remove "
+                                      "a large share of the library's indexed documents "
+                                      "(e.g. after intentionally purging the library)")
     update_db_parser.add_argument("--config-path",
                                  help="Path to semantic search configuration file")
     update_db_parser.add_argument("--db-path",
@@ -556,6 +560,7 @@ def main():
                 limit=args.limit,
                 extract_fulltext=args.fulltext,
                 use_openai_batch=args.openai_batch,
+                allow_mass_deletion=args.allow_mass_deletion,
             )
 
             _print_update_stats(stats)

@@ -8,6 +8,7 @@ for semantic search over Zotero libraries.
 import json
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -825,7 +826,7 @@ class ChromaClient:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
             raise
 
-    def delete_item_chunks(self, item_key: str) -> None:
+    def delete_item_chunks(self, item_key: str, group_id: int | None = None) -> None:
         """Delete all passage chunks belonging to one item (chunked collections).
 
         Passage chunks carry ``parent_item_key`` in their metadata; deleting by
@@ -833,11 +834,21 @@ class ChromaClient:
         chunks are re-upserted, so a document that shrank to fewer passages
         never leaves orphaned chunks behind. No-op-safe on item-level
         collections (nothing matches the filter).
+
+        Args:
+            item_key: Parent item whose chunks to delete.
+            group_id: When given, restrict the delete to chunks attributed to
+                that library — the deletion pass passes its run scope so a
+                mixed-attribution chunk set (partial rewrite, key collision)
+                never loses another library's chunks.
         """
+        where: dict[str, Any] = {"parent_item_key": item_key}
+        if group_id is not None:
+            where = {"$and": [{"parent_item_key": item_key}, {"group_id": int(group_id)}]}
         try:
-            self.collection.delete(where={"parent_item_key": item_key})
+            self.collection.delete(where=where)
         except Exception as e:
-            logger.debug(f"delete_item_chunks({item_key}) failed: {e}")
+            logger.warning(f"delete_item_chunks({item_key}) failed: {e}")
 
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
@@ -914,18 +925,91 @@ class ChromaClient:
         except Exception:
             return set()
 
-    def get_all_ids(self) -> set[str]:
+    def get_all_ids(self, where: dict[str, Any] | None = None) -> set[str]:
         """Return every id currently stored in the collection.
 
         Used by incremental sync to compute deletions: items in the local
         collection but no longer present in the Zotero library.
+
+        Args:
+            where: Optional ChromaDB metadata filter (e.g.
+                ``{"group_id": 0}``) applied DB-side. Documents missing a
+                filtered key never match, so callers scoping by ``group_id``
+                structurally exclude unattributed documents.
+
+        Errors return an empty set, which every caller treats as "nothing
+        eligible" — deletion passes fail toward deleting nothing.
         """
         try:
-            result = self.collection.get(include=[])
+            result = self.collection.get(where=where, include=[])
             return set(result.get("ids", []))
         except Exception as e:
             logger.error(f"Error listing collection ids: {e}")
             return set()
+
+    def iter_metadatas(self, batch_size: int = 500) -> Iterator[tuple[list[str], list[dict[str, Any]]]]:
+        """Stream ``(ids, metadatas)`` over the whole collection in batches.
+
+        Snapshots the id set first, then pages metadata with
+        ``collection.get(ids=chunk)`` — deliberately not ``limit``/``offset``,
+        whose ordering across pages is an undocumented implementation detail,
+        and never one unbounded ids list (the "too many SQL variables"
+        failure, #368). Callers may update already-yielded documents between
+        batches (the group_id backfill does); a snapshot makes that safe by
+        construction. Documents deleted mid-iteration are simply absent from
+        their page.
+
+        Backend failures RAISE — deliberately not routed through
+        ``get_all_ids``, whose swallow-into-empty-set contract is safe for
+        deletion ("nothing eligible") but inverts here: the backfill's
+        one-time schema gate closes permanently on "success", so an error
+        masquerading as an empty collection would silently disable the
+        migration with zero documents tagged.
+        """
+        batch_size = int(batch_size)
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        # Cap at the same order as the backend batch limit so a caller cannot
+        # accidentally defeat the bounded-ids protection this method exists
+        # to provide.
+        batch_size = min(batch_size, 5000)
+        all_ids = sorted(self.collection.get(include=[]).get("ids") or [])
+        for start in range(0, len(all_ids), batch_size):
+            chunk = all_ids[start:start + batch_size]
+            result = self.collection.get(ids=chunk, include=["metadatas"])
+            ids = result.get("ids") or []
+            if not ids:
+                continue
+            metadatas = result.get("metadatas") or [{} for _ in ids]
+            yield ids, metadatas
+
+    def update_metadatas(self, ids: list[str], metadatas: list[dict[str, Any]]) -> None:
+        """Metadata-only update for existing documents; never re-embeds.
+
+        Callers must pass complete metadata dicts: chromadb 1.5.x merges
+        the given keys into existing metadata, while other versions have
+        replaced the whole dict — full dicts behave identically under both.
+        Split under the backend's max batch size like ``upsert_documents``
+        (#369).
+        """
+        if not ids:
+            return
+        try:
+            try:
+                max_batch = int(self.client.get_max_batch_size())
+            except Exception:
+                max_batch = 5000
+            if max_batch < 1:
+                max_batch = 5000
+            for i in range(0, len(ids), max_batch):
+                self.collection.update(
+                    ids=ids[i:i + max_batch],
+                    metadatas=metadatas[i:i + max_batch],
+                )
+            logger.info(f"Updated metadata for {len(ids)} documents")
+        except Exception as e:
+            logger.error(f"Error updating document metadata: {e}")
+            raise
 
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:

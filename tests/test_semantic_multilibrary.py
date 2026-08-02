@@ -1,18 +1,18 @@
 """Tests for group_id into ChromaDB metadata + DB-side filtering (#163, phase 1).
 
 Covers: metadata tagging (local scan + web-API scan), feed exclusion,
-metadata-only migration backfill, and DB-side `where` filtering in
-`search()`.
+metadata-only migration backfill (evidence-based attribution), and DB-side
+`where` filtering in `search()`.
 
-Out of scope for this PR (see linked issues, fixed in the bug-fix phase that
-follows the global-search PR): per-library sync_versions
-(https://github.com/54yyyu/zotero-mcp/issues/393) and scoping the deletion
-passes to one library — both are pre-existing bugs independent of group_id,
-not required for tagging/filtering correctness. Also deferred: cross-library
+Related coverage elsewhere: per-library sync_versions (#393) in
+test_sync_watermark_per_library.py; the library-scoped deletion pass (#404)
+in test_library_scoped_deletion.py. Still deferred upstream: cross-library
 result enrichment (fetching a group hit's full item via a client scoped to
 that group).
 """
 
+import json
+import logging
 import sqlite3
 import sys
 
@@ -72,7 +72,12 @@ class _FakeChromaClient:
     def get_existing_ids(self, ids):
         return {i for i in ids if i in self._docs}
 
-    def get_all_ids(self):
+    def get_all_ids(self, where=None):
+        if where and "group_id" in where:
+            return {
+                i for i, m in self._docs.items()
+                if m.get("group_id") == where["group_id"]
+            }
         return set(self._docs)
 
     def get_document_metadata(self, doc_id):
@@ -125,11 +130,20 @@ def test_create_metadata_includes_group_id_from_data(monkeypatch):
     assert meta["group_id"] == GROUP_ID
 
 
-def test_create_metadata_defaults_group_id_to_personal_when_missing(monkeypatch):
+@pytest.mark.parametrize("data", [
+    {"title": "T"},                     # group_id never set
+    {"title": "T", "group_id": None},   # local scan found no map entry
+])
+def test_create_metadata_omits_group_id_when_attribution_is_unknown(monkeypatch, data):
+    """Defaulting missing attribution to 'personal' mints positive
+    attribution out of nothing — and positive attribution is deletion
+    authority under the scoped deletion pass. Unknown must stay unknown:
+    untagged docs are excluded from deletion and re-tagged the next time
+    evidence-based ingest sees them."""
     search = _build_search(monkeypatch, _FakeChromaClient())
-    item = {"key": "K1", "data": {"title": "T"}}
+    item = {"key": "K1", "data": dict(data)}
     meta = search._create_metadata(item)
-    assert meta["group_id"] == 0
+    assert "group_id" not in meta
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +208,23 @@ def test_get_changed_items_from_api_tags_active_group(monkeypatch):
 # Local-scan attribution + feed exclusion (LocalZoteroReader.get_key_group_map)
 # ---------------------------------------------------------------------------
 
+class _MapReader:
+    """LocalZoteroReader double returning a fixed key→group map."""
+
+    def __init__(self, groups, excluded=()):
+        self._groups = dict(groups)
+        self._excluded = set(excluded)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_key_group_map(self):
+        return (self._groups, self._excluded)
+
+
 def _build_multilib_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.executescript(
@@ -229,6 +260,8 @@ def _build_multilib_db(db_path):
     add_item(1, "PERSONAL1", 1, "Personal Paper")
     add_item(2, "GROUPITEM1", 5, "Group Paper")
     add_item(3, "FEEDITEM1", 10, "Feed Paper")
+    add_item(4, "TRASHED1", 5, "Trashed Group Paper")
+    conn.execute("INSERT INTO deletedItems VALUES (4)")
     conn.commit()
     conn.close()
 
@@ -248,22 +281,44 @@ def test_local_db_scan_tags_group_id_and_excludes_feeds(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Migration backfill (metadata-only, idempotent)
+# Migration backfill (metadata-only, idempotent, evidence-based)
+#
+# Attribution must be evidence-based because the deletion pass is scoped by
+# group_id: a guessed tag is a future deletion warrant. Evidence is, in
+# order: the local database's key→group map (local mode), then membership
+# in the active library's item_versions(). No evidence → left untagged,
+# which structurally excludes the doc from deletion.
 # ---------------------------------------------------------------------------
 
-def test_backfill_group_ids_web_mode_uses_active_library(monkeypatch):
-    chroma = _FakeChromaClient({"KEY1": {"item_key": "KEY1", "title": "T"}})
-    search = _build_search(monkeypatch, chroma, is_local=False)
+def test_backfill_web_mode_tags_only_keys_evidenced_in_active_library(monkeypatch):
+    """The old behavior tagged every unknown doc with the active library's
+    id — which mis-attributes every other library's docs in a pre-#163
+    multi-library collection, and mis-attribution authorizes deletion once
+    the deletion pass is group_id-scoped."""
+    chroma = _FakeChromaClient({
+        "KEY1": {"item_key": "KEY1", "title": "T"},
+        "OTHERLIB": {"item_key": "OTHERLIB", "title": "T2"},
+    })
+
+    class _VersionsZot(_StubZot):
+        def item_versions(self, **kw):
+            return {"KEY1": 7}
+
+    search = _build_search(
+        monkeypatch, chroma, is_local=False, get_zotero_client_fn=lambda: _VersionsZot()
+    )
 
     stats = search._backfill_group_ids()
-    assert stats == {"scanned": 1, "migrated": 1}
+    assert stats == {"scanned": 2, "migrated": 1, "unattributed": 1}
     assert chroma._docs["KEY1"]["group_id"] == 0
+    assert "group_id" not in chroma._docs["OTHERLIB"]
     # Document text/embedding untouched — only update_metadatas was called.
     assert chroma.update_calls == [(["KEY1"], [{"item_key": "KEY1", "title": "T", "group_id": 0}])]
 
-    # Idempotent: nothing left to migrate on a second run.
+    # Idempotent: nothing newly migrated on a second run; the unevidenced
+    # doc is still counted, never guessed at.
     stats2 = search._backfill_group_ids()
-    assert stats2 == {"scanned": 1, "migrated": 0}
+    assert stats2 == {"scanned": 2, "migrated": 0, "unattributed": 1}
 
 
 def test_backfill_group_ids_local_mode_uses_key_group_map(monkeypatch):
@@ -273,17 +328,10 @@ def test_backfill_group_ids_local_mode_uses_key_group_map(monkeypatch):
     })
     search = _build_search(monkeypatch, chroma, is_local=True)
 
-    class _NullReader:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def get_key_group_map(self):
-            return ({"GROUPKEY": GROUP_ID, "USERKEY": 0}, set())
-
-    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: _NullReader())
+    monkeypatch.setattr(
+        semantic_search, "LocalZoteroReader",
+        lambda **kw: _MapReader({"GROUPKEY": GROUP_ID, "USERKEY": 0}),
+    )
 
     stats = search._backfill_group_ids()
     assert stats["migrated"] == 2
@@ -291,14 +339,208 @@ def test_backfill_group_ids_local_mode_uses_key_group_map(monkeypatch):
     assert chroma._docs["USERKEY"]["group_id"] == 0
 
 
+def test_backfill_local_mode_unknown_key_uses_item_versions_membership(monkeypatch):
+    """A key missing from the local map may be WAL-fresh (invisible to the
+    immutable sqlite read, #292) — the live local API is the tie-breaker.
+    A key with no evidence anywhere stays untagged."""
+    chroma = _FakeChromaClient({
+        "MAPPED": {"item_key": "MAPPED"},
+        "WALFRESH": {"item_key": "WALFRESH"},
+        "GONE": {"item_key": "GONE"},
+    })
+
+    class _VersionsZot(_StubZot):
+        def item_versions(self, **kw):
+            return {"MAPPED": 3, "WALFRESH": 9}
+
+    search = _build_search(
+        monkeypatch, chroma, is_local=True, get_zotero_client_fn=lambda: _VersionsZot()
+    )
+    monkeypatch.setattr(
+        semantic_search, "LocalZoteroReader", lambda **kw: _MapReader({"MAPPED": GROUP_ID})
+    )
+
+    stats = search._backfill_group_ids()
+
+    assert stats == {"scanned": 3, "migrated": 2, "unattributed": 1}
+    assert chroma._docs["MAPPED"]["group_id"] == GROUP_ID
+    assert chroma._docs["WALFRESH"]["group_id"] == 0  # active library = personal
+    assert "group_id" not in chroma._docs["GONE"]
+
+
+def test_backfill_does_not_fetch_item_versions_when_map_covers_everything(monkeypatch):
+    """The API call is evidence of last resort, fetched lazily — a run whose
+    local map attributes every doc must not touch the API at all."""
+    chroma = _FakeChromaClient({"GROUPKEY": {"item_key": "GROUPKEY"}})
+
+    class _ExplodingZot(_StubZot):
+        def item_versions(self, **kw):
+            raise AssertionError("item_versions must not be called")
+
+    search = _build_search(
+        monkeypatch, chroma, is_local=True, get_zotero_client_fn=lambda: _ExplodingZot()
+    )
+    monkeypatch.setattr(
+        semantic_search, "LocalZoteroReader", lambda **kw: _MapReader({"GROUPKEY": GROUP_ID})
+    )
+
+    stats = search._backfill_group_ids()
+    assert stats == {"scanned": 1, "migrated": 1, "unattributed": 0}
+
+
+def test_backfill_empty_item_versions_is_treated_as_a_fault(monkeypatch):
+    """An HTTP-200-but-empty item_versions() body is the same response shape
+    the deletion pass refuses to act on. Accepting it here as negative
+    evidence would mark the one-time migration complete with every doc
+    unattributed — permanently, since the schema-version gate then closes."""
+    chroma = _FakeChromaClient({"KEY1": {"item_key": "KEY1"}})
+
+    class _EmptyZot(_StubZot):
+        def item_versions(self, **kw):
+            return {}
+
+    search = _build_search(
+        monkeypatch, chroma, is_local=False, get_zotero_client_fn=lambda: _EmptyZot()
+    )
+
+    with pytest.raises(Exception, match="no items"):
+        search._backfill_group_ids()
+    assert "group_id" not in chroma._docs["KEY1"]
+
+
+def test_backfill_item_versions_failure_propagates_and_tags_nothing(monkeypatch):
+    """No evidence available → raise (update_database catches and retries
+    next run). Nothing may be tagged by guesswork on the way out."""
+    chroma = _FakeChromaClient({"KEY1": {"item_key": "KEY1"}})
+
+    class _DownZot(_StubZot):
+        def item_versions(self, **kw):
+            raise RuntimeError("api down")
+
+    search = _build_search(
+        monkeypatch, chroma, is_local=False, get_zotero_client_fn=lambda: _DownZot()
+    )
+
+    with pytest.raises(Exception, match="api down"):
+        search._backfill_group_ids()
+    assert "group_id" not in chroma._docs["KEY1"]
+
+
 def test_backfill_group_ids_skips_already_tagged_docs(monkeypatch):
     chroma = _FakeChromaClient({"KEY1": {"item_key": "KEY1", "group_id": GROUP_ID}})
     search = _build_search(monkeypatch, chroma, is_local=False)
 
     stats = search._backfill_group_ids()
-    assert stats == {"scanned": 1, "migrated": 0}
+    assert stats == {"scanned": 1, "migrated": 0, "unattributed": 0}
     assert chroma.update_calls == []
     assert chroma._docs["KEY1"]["group_id"] == GROUP_ID  # untouched
+
+
+def test_key_group_map_includes_trashed_items_with_their_library(tmp_path):
+    """Trashed items keep their true library's gid in the map, so the
+    backfill attributes trash honestly and each library's own scoped
+    deletion pass cleans it — instead of the old blanket fallback tagging
+    it with whatever library happened to be active."""
+    from zotero_mcp.local_db import LocalZoteroReader
+
+    db_path = tmp_path / "zotero.sqlite"
+    _build_multilib_db(db_path)
+
+    with LocalZoteroReader(db_path=str(db_path)) as reader:
+        groups, _excluded = reader.get_key_group_map()
+
+    assert groups["TRASHED1"] == GROUP_ID
+    assert groups["PERSONAL1"] == 0
+
+
+# ---------------------------------------------------------------------------
+# update_database integration: backfill failure message + unattributed count
+# ---------------------------------------------------------------------------
+
+class _UpdateZot(_StubZot):
+    """items()/versions-capable stub for full update_database runs."""
+
+    def __init__(self, keys=()):
+        super().__init__()
+        self._keys = list(keys)
+
+    def items(self, start=0, limit=100, **kw):
+        if start:
+            return []
+        return [
+            {"key": k, "version": 1, "data": {
+                "key": k, "itemType": "journalArticle", "title": k,
+                "dateAdded": "2024-01-01T00:00:00Z", "dateModified": "2024-01-01T00:00:00Z",
+            }} for k in self._keys
+        ]
+
+    def item_versions(self, since=None, **kw):
+        return {k: 5 for k in self._keys}
+
+    def last_modified_version(self, **kw):
+        return 5
+
+    def children(self, *a, **kw):
+        return []
+
+
+def _write_update_config(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "semantic_search": {
+            "embedding_model": "default",
+            "update_config": {"auto_update": False, "update_frequency": "manual"},
+            "include_fulltext": False,
+        }
+    }))
+    return str(config_path)
+
+
+def test_backfill_failure_log_does_not_recommend_force_rebuild(monkeypatch, tmp_path, caplog):
+    """--force-rebuild permanently drops any doc population the current
+    ingest paths cannot recreate and re-embeds the whole collection;
+    recommending it as the repair for a failed metadata backfill turns a
+    metadata bug into data loss."""
+    config_path = _write_update_config(tmp_path)
+    chroma = _FakeChromaClient()
+    search = _build_search(monkeypatch, chroma, config_path=config_path,
+                           get_zotero_client_fn=lambda: _UpdateZot())
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(search, "_backfill_group_ids", _boom)
+
+    with caplog.at_level(logging.ERROR, logger="zotero_mcp.semantic_search"):
+        search.update_database()
+
+    failures = [r.message for r in caplog.records if "backfill failed" in r.message]
+    assert failures, "expected the backfill failure to be logged"
+    assert all("force-rebuild" not in m and "force_rebuild" not in m for m in failures)
+    # A failed backfill must not close the one-time-migration gate.
+    saved = json.loads(open(config_path).read())["semantic_search"]
+    assert "index_schema_version" not in saved
+
+
+def test_unattributed_count_is_persisted_and_rewarned_on_later_updates(monkeypatch, tmp_path, caplog):
+    """Docs with no attribution evidence are excluded from library-filtered
+    search and from deletion cleanup. That state must stay visible on every
+    update, not be a one-time log line."""
+    config_path = _write_update_config(tmp_path)
+    chroma = _FakeChromaClient({"GHOST": {"item_key": "GHOST", "title": "gone"}})
+    search = _build_search(monkeypatch, chroma, config_path=config_path,
+                           get_zotero_client_fn=lambda: _UpdateZot(["KEY1"]))
+
+    search.update_database()
+
+    saved = json.loads(open(config_path).read())["semantic_search"]
+    assert saved["backfill_unattributed"] == 1
+    assert saved["index_schema_version"] == 3
+
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.semantic_search"):
+        search.update_database()
+    warned = [r.message for r in caplog.records if "attribut" in r.message]
+    assert warned, "later updates must keep warning about unattributed docs"
 
 
 # ---------------------------------------------------------------------------

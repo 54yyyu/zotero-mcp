@@ -25,7 +25,11 @@ class FakeChromaClient:
 
     def __init__(self, preloaded_ids=None):
         self.embedding_max_tokens = 8000
-        self._ids = set(preloaded_ids or [])
+        # Preloaded docs model previously-indexed personal-library items, so
+        # they carry the group_id the post-migration steady state gives them.
+        # The metadata store exists so get_all_ids(where=...) can honor the
+        # real class's DB-side filtering instead of silently ignoring it.
+        self._metas = {i: {"item_key": i, "group_id": 0} for i in (preloaded_ids or [])}
         self.added = []  # list of (docs, metas, ids)
         self.deleted = []  # list of ids deleted
         self.reset_calls = 0
@@ -34,10 +38,15 @@ class FakeChromaClient:
         return text[:4000]
 
     def get_existing_ids(self, ids):
-        return {i for i in ids if i in self._ids}
+        return {i for i in ids if i in self._metas}
 
     def get_all_ids(self, where=None):
-        return set(self._ids)
+        if where and "group_id" in where:
+            return {
+                i for i, m in self._metas.items()
+                if m.get("group_id") == where["group_id"]
+            }
+        return set(self._metas)
 
     def get_document_metadata(self, doc_id):
         return None
@@ -46,12 +55,13 @@ class FakeChromaClient:
         return iter(())
 
     def update_metadatas(self, ids, metadatas):
-        pass
+        for i, m in zip(ids, metadatas):
+            self._metas.setdefault(i, {}).update(m)
 
     def upsert_documents(self, documents, metadatas, ids):
         self.added.append((list(documents), list(metadatas), list(ids)))
-        for i in ids:
-            self._ids.add(i)
+        for i, m in zip(ids, metadatas):
+            self._metas[i] = dict(m)
 
     def add_documents(self, documents, metadatas, ids):
         self.upsert_documents(documents, metadatas, ids)
@@ -59,11 +69,11 @@ class FakeChromaClient:
     def delete_documents(self, ids):
         self.deleted.extend(list(ids))
         for i in ids:
-            self._ids.discard(i)
+            self._metas.pop(i, None)
 
     def reset_collection(self):
         self.reset_calls += 1
-        self._ids = set()
+        self._metas = {}
 
 
 class FakeZoteroClient:

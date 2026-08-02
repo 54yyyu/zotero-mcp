@@ -46,7 +46,10 @@ class FakeChromaClient:
 
     def __init__(self, preloaded_ids=None):
         self.embedding_max_tokens = 8000
-        self._ids = set(preloaded_ids or [])
+        # Metadata store so get_all_ids(where=...) honors the real class's
+        # DB-side group_id filtering; preloaded docs model previously-indexed
+        # personal-library items (group_id 0, the post-migration steady state).
+        self._metas = {i: {"item_key": i, "group_id": 0} for i in (preloaded_ids or [])}
         self.added = []
         self.deleted = []
         self.reset_calls = 0
@@ -55,10 +58,15 @@ class FakeChromaClient:
         return text
 
     def get_existing_ids(self, ids):
-        return {i for i in ids if i in self._ids}
+        return {i for i in ids if i in self._metas}
 
     def get_all_ids(self, where=None):
-        return set(self._ids)
+        if where and "group_id" in where:
+            return {
+                i for i, m in self._metas.items()
+                if m.get("group_id") == where["group_id"]
+            }
+        return set(self._metas)
 
     def get_document_metadata(self, doc_id):
         return None
@@ -67,11 +75,13 @@ class FakeChromaClient:
         return iter(())
 
     def update_metadatas(self, ids, metadatas):
-        pass
+        for i, m in zip(ids, metadatas):
+            self._metas.setdefault(i, {}).update(m)
 
     def upsert_documents(self, documents, metadatas, ids):
         self.added.append((list(documents), list(metadatas), list(ids)))
-        self._ids.update(ids)
+        for i, m in zip(ids, metadatas):
+            self._metas[i] = dict(m)
 
     def add_documents(self, documents, metadatas, ids):
         self.upsert_documents(documents, metadatas, ids)
@@ -79,11 +89,11 @@ class FakeChromaClient:
     def delete_documents(self, ids):
         self.deleted.extend(list(ids))
         for i in ids:
-            self._ids.discard(i)
+            self._metas.pop(i, None)
 
     def reset_collection(self):
         self.reset_calls += 1
-        self._ids = set()
+        self._metas = {}
 
 
 class FakeZoteroClient:
@@ -336,10 +346,107 @@ def test_switching_libraries_keeps_watermarks_independent(monkeypatch, tmp_path)
     assert stats["processed_items"] == 1  # only PERS2 changed since 50000
     versions = _saved(config_path)["last_sync_versions"]
     assert versions == {"0": 50010, str(GROUP_ID): 1200}
-    # NOTE: the incremental deletion pass still compares stored ids against
-    # the *active* library's key set, so the group's documents are dropped
-    # here. That is a separate pre-existing bug (not the watermark), tracked
-    # independently; this test deliberately asserts only on watermarks.
+    # The personal sync's deletion pass is scoped to group_id 0, so the
+    # group's document — indexed in step 2 and untouched since — survives
+    # the round-trip (#404: it used to be deleted here).
+    assert "GRP1" in chroma.get_all_ids()
+    assert chroma.deleted == []
+
+
+def test_unprovable_group_identity_aborts_the_run(monkeypatch, tmp_path):
+    """A client that claims group scope but has an unparseable library_id
+    must abort the run — falling back to the mutable module override would
+    import identity (and thus tagging, watermark and deletion authority)
+    from state unrelated to the client the data comes from."""
+    config_path = _write_config(tmp_path)
+    broken = FakeZoteroClient(["GRP1"], library_version=1200)
+    broken.library_id = "not-a-number"
+    broken.library_type = "groups"
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, broken, chroma, config_path=config_path)
+
+    stats = search.update_database()
+
+    assert "error" in stats
+    assert chroma.added == []
+    assert chroma.deleted == []
+    assert "last_sync_versions" not in _saved(config_path)
+
+
+def test_legacy_scalar_is_not_adopted_by_a_client_scoped_elsewhere(monkeypatch, tmp_path):
+    """The pre-#393 scalar's provenance is the env-configured default
+    library. Whether to trust it must be judged against the RUN's pinned
+    library — not the live override, which can be cleared/changed mid-run:
+    a group-scoped run would otherwise inherit the personal library's
+    counter and silently skip every group change below it."""
+    config_path = _write_config(tmp_path, {"last_sync_version": 500})
+    group = FakeZoteroClient(["GRP1"], library_version=1200)
+    group.library_id = str(GROUP_ID)
+    group.library_type = "groups"
+    chroma = FakeChromaClient()
+    # No override active (module state says "personal"); the client — and
+    # so the run — is scoped to the group.
+    search = _build_search(monkeypatch, group, chroma, config_path=config_path)
+
+    stats = search.update_database()
+
+    assert stats["processed_items"] == 1
+    # Bootstrap full scan, not incremental against the foreign scalar:
+    assert not any(c[0] == "item_versions" and c[1] for c in group.calls)
+    assert _saved(config_path)["last_sync_versions"][str(GROUP_ID)] == 1200
+
+
+def test_update_run_scopes_to_the_clients_library_not_the_module_override(monkeypatch, tmp_path):
+    """The updater must take its library identity from the Zotero client it
+    reads keys and versions from. The module-level active-library override
+    is mutable shared state: a zotero_switch_library tool call can land
+    while the server's background update is mid-run, and any identity read
+    at call time would attach the wrong library to this run's tagging,
+    watermark — and, once deletion is group_id-scoped, deletion authority."""
+    config_path = _write_config(tmp_path)
+    group = FakeZoteroClient(["GRP1"], library_version=1200)
+    # pyzotero clients expose their scope (library_type in its plural URL
+    # form); the fake mirrors that.
+    group.library_id = str(GROUP_ID)
+    group.library_type = "groups"
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, group, chroma, config_path=config_path)
+    # The override — module state — says "personal" for the whole run.
+
+    search.update_database()
+
+    metas = [m for batch in chroma.added for m in batch[1]]
+    assert metas, "expected the group item to be indexed"
+    assert all(m["group_id"] == GROUP_ID for m in metas)
+    assert _saved(config_path)["last_sync_versions"] == {str(GROUP_ID): 1200}
+
+
+def test_override_flipped_mid_run_does_not_repoint_the_run(monkeypatch, tmp_path):
+    """The actual race, not just static precedence: a zotero_switch_library
+    landing while the run is in flight (here: during the item fetch) must
+    not affect this run's tagging or watermark key."""
+    config_path = _write_config(tmp_path)
+
+    class _FlippingZot(FakeZoteroClient):
+        def items(self, start=0, limit=100, **kwargs):
+            # Another tool call switches the active library mid-run.
+            zclient.set_active_library("999111", "group")
+            return super().items(start=start, limit=limit, **kwargs)
+
+    group = _FlippingZot(["GRP1"], library_version=1200)
+    group.library_id = str(GROUP_ID)
+    group.library_type = "groups"
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, group, chroma, config_path=config_path)
+
+    search.update_database()
+
+    metas = [m for batch in chroma.added for m in batch[1]]
+    assert metas and all(m["group_id"] == GROUP_ID for m in metas)
+    versions = _saved(config_path)["last_sync_versions"]
+    assert versions == {str(GROUP_ID): 1200}, (
+        "the mid-run switch leaked into the run's watermark key"
+    )
 
 
 def test_watermark_ahead_of_library_version_forces_full_scan(monkeypatch, tmp_path):

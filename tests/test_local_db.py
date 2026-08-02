@@ -420,7 +420,11 @@ def test_get_key_group_map_publications_library_excluded_not_personal(tmp_path):
     assert "PUBKEY1" in result.excluded_keys
 
 
-def test_get_key_group_map_deleted_items_omitted_entirely(tmp_path):
+def test_get_key_group_map_includes_trashed_items_with_their_library(tmp_path):
+    """Trashed items stay in the map, attributed to their true library: the
+    group_id backfill relies on that so each library's own scoped deletion
+    pass cleans its trash. Live-item scans never look trashed keys up —
+    their item sources already exclude deletedItems."""
     db_path = tmp_path / "zotero.sqlite"
     _create_multilib_db(db_path)
     reader = LocalZoteroReader(db_path=str(db_path))
@@ -428,12 +432,13 @@ def test_get_key_group_map_deleted_items_omitted_entirely(tmp_path):
         result = reader.get_key_group_map()
     finally:
         reader.close()
-    assert "DELETEDKEY1" not in result.groups
+    assert result.groups["DELETEDKEY1"] == 0
     assert "DELETEDKEY1" not in result.excluded_keys
 
 
 def test_get_key_group_map_full_key_set_partition(tmp_path):
-    """Every non-deleted key ends up in exactly one of groups/excluded_keys."""
+    """Every key — trashed included — ends up in exactly one of
+    groups/excluded_keys."""
     db_path = tmp_path / "zotero.sqlite"
     _create_multilib_db(db_path)
     reader = LocalZoteroReader(db_path=str(db_path))
@@ -442,6 +447,6 @@ def test_get_key_group_map_full_key_set_partition(tmp_path):
     finally:
         reader.close()
     assert set(result.groups) | result.excluded_keys == {
-        "USERKEY1", "GROUPKEY1", "FEEDKEY1", "PUBKEY1",
+        "USERKEY1", "GROUPKEY1", "FEEDKEY1", "PUBKEY1", "DELETEDKEY1",
     }
     assert not (set(result.groups) & result.excluded_keys)
