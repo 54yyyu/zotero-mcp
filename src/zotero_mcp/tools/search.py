@@ -751,6 +751,7 @@ def advanced_search(
                 break
             start += batch_size
 
+        sort_warning: str | None = None
         if sort_by:
             sort_field = sort_by.strip()
             reverse = sort_direction == "desc"
@@ -759,9 +760,34 @@ def advanced_search(
                 data = item.get("data", {}) if isinstance(item, dict) else {}
                 if sort_field in {"creator", "author"}:
                     return _utils.format_creators(data.get("creators", []))
+                if sort_field in {"date", "year", "publicationDate"}:
+                    # data["date"] is Zotero's *display* string ("October 1,
+                    # 2016"), so sorting it lexically orders by month name.
+                    # meta.parsedDate is the normalized ISO form the API
+                    # computes for exactly this purpose.
+                    meta = item.get("meta", {}) if isinstance(item, dict) else {}
+                    parsed = str(meta.get("parsedDate", "") or "").strip()
+                    if parsed:
+                        return parsed
+                    # No parsedDate (local API, sparse records): fall back to
+                    # the first 4-digit year in the display string, which at
+                    # least sorts by year instead of by month name.
+                    match = re.search(r"\b(\d{4})\b", str(data.get("date", "")))
+                    return match.group(1) if match else ""
                 return str(data.get(sort_field, "")).lower()
 
-            results.sort(key=_sort_key, reverse=reverse)
+            # A sort field absent from every result (misspelled, or simply not
+            # present in this backend's item shape) used to sort every key to
+            # "" and silently return library order as though it had been
+            # honored. Say so instead (#418).
+            if results and not any(_sort_key(item) for item in results):
+                sort_warning = (
+                    f"Requested sort by `{sort_field}` was not applied: no result carries "
+                    f"that field. Results are in library order. Sortable fields include "
+                    f"dateAdded, dateModified, title, date, creator."
+                )
+            else:
+                results.sort(key=_sort_key, reverse=reverse)
 
         if not results:
             return "No items found matching the search criteria."
@@ -777,6 +803,9 @@ def advanced_search(
             output.append(
                 f"{i}. {condition['field']} {condition['operation']} \"{condition['value']}\""
             )
+        if sort_warning:
+            output.append("")
+            output.append(f"> **Note:** {sort_warning}")
         output.append("")
         output.append("## Results")
 
