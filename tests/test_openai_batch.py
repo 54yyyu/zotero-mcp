@@ -307,6 +307,39 @@ def test_chroma_client_upsert_embeddings_passes_precomputed_vectors():
     }
 
 
+def test_chroma_client_upsert_embeddings_splits_batches_over_max_batch_size():
+    class FakeCollection:
+        def __init__(self):
+            self.calls = []
+
+        def upsert(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class FakeUnderlyingClient:
+        def get_max_batch_size(self):
+            return 2
+
+    client = ChromaClient.__new__(ChromaClient)
+    client.collection = FakeCollection()
+    client.client = FakeUnderlyingClient()
+
+    client.upsert_embeddings(
+        documents=["doc1", "doc2", "doc3", "doc4", "doc5"],
+        metadatas=[{"i": i} for i in range(5)],
+        ids=["ID1", "ID2", "ID3", "ID4", "ID5"],
+        embeddings=[[float(i)] for i in range(5)],
+    )
+
+    assert [call["ids"] for call in client.collection.calls] == [
+        ["ID1", "ID2"],
+        ["ID3", "ID4"],
+        ["ID5"],
+    ]
+    assert client.collection.calls[0]["documents"] == ["doc1", "doc2"]
+    assert client.collection.calls[0]["embeddings"] == [[0.0], [1.0]]
+    assert client.collection.calls[2]["metadatas"] == [{"i": 4}]
+
+
 def test_import_openai_batch_reports_records_missing_from_output(tmp_path, monkeypatch):
     class ImportChromaClient(FakeChromaClient):
         def __init__(self):
