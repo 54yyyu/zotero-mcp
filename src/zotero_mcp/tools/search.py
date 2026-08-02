@@ -647,6 +647,19 @@ def advanced_search(
                         values.append(str(tag.get("tag", "")).strip())
                 return values
 
+            if field_lower in {"collection", "collections"}:
+                # Membership lives in data["collections"] (a list of keys);
+                # data["collection"] does not exist, so the generic branch
+                # below used to extract [""] and no collection condition could
+                # ever match (#418). Direct membership only, matching Zotero's
+                # own "Collection is X" with subcollections not included.
+                collections = data.get("collections", []) or []
+                keys = [str(k).strip() for k in collections if str(k).strip()]
+                # An item in no collection must still satisfy `isNot`, so fall
+                # back to a single empty value rather than an empty list (which
+                # _matches_condition rejects outright).
+                return keys or [""]
+
             if field_lower == "year":
                 date_value = str(data.get("date", "")).strip()
                 return [date_value[:4]] if len(date_value) >= 4 else []

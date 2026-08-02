@@ -79,3 +79,118 @@ def test_advanced_search_rejects_unknown_operation(monkeypatch):
     )
 
     assert "Unsupported operation" in result
+
+
+# ---------------------------------------------------------------------------
+# Collection conditions (#418)
+# ---------------------------------------------------------------------------
+
+def _collection_items():
+    """Two items in the target collection, one outside it, one in none."""
+    return [
+        {
+            "key": "AAA11111",
+            "data": {
+                "itemType": "journalArticle", "title": "In Scope One",
+                "date": "2024", "creators": [],
+                "tags": [{"tag": "_ai-noted"}],
+                "collections": ["MSYFGVKG"],
+            },
+        },
+        {
+            "key": "BBB22222",
+            "data": {
+                "itemType": "journalArticle", "title": "In Scope Two",
+                "date": "2023", "creators": [],
+                "tags": [{"tag": "_ai-noted"}],
+                # Also filed elsewhere — membership is a list, not a scalar.
+                "collections": ["OTHERKEY", "MSYFGVKG"],
+            },
+        },
+        {
+            "key": "CCC33333",
+            "data": {
+                "itemType": "journalArticle", "title": "Out Of Scope",
+                "date": "2022", "creators": [],
+                "tags": [{"tag": "_ai-noted"}],
+                "collections": ["OTHERKEY"],
+            },
+        },
+        {
+            "key": "DDD44444",
+            "data": {
+                "itemType": "journalArticle", "title": "Unfiled Item",
+                "date": "2021", "creators": [], "tags": [],
+                "collections": [],
+            },
+        },
+    ]
+
+
+def test_collection_condition_matches_membership(monkeypatch):
+    """The reporter's case B: a collection condition ANDed with a tag.
+
+    Membership is stored in data["collections"], but extraction read a
+    non-existent data["collection"], so every collection condition compared
+    against "" and matched nothing.
+    """
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: FakeZotero(_collection_items()))
+
+    result = server.advanced_search(
+        conditions=[
+            {"field": "collection", "operation": "is", "value": "MSYFGVKG"},
+            {"field": "tag", "operation": "contains", "value": "_ai-noted"},
+        ],
+        join_mode="all",
+        limit=500,
+        ctx=DummyContext(),
+    )
+
+    assert "In Scope One" in result
+    assert "In Scope Two" in result
+    assert "Out Of Scope" not in result
+    assert "Unfiled Item" not in result
+
+
+def test_collection_condition_alone(monkeypatch):
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: FakeZotero(_collection_items()))
+
+    result = server.advanced_search(
+        conditions=[{"field": "collection", "operation": "is", "value": "MSYFGVKG"}],
+        ctx=DummyContext(),
+    )
+
+    assert "In Scope One" in result and "In Scope Two" in result
+    assert "Out Of Scope" not in result
+
+
+def test_collection_is_not_excludes_members_and_keeps_unfiled(monkeypatch):
+    """`isNot` must keep an item that is in no collection at all."""
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: FakeZotero(_collection_items()))
+
+    result = server.advanced_search(
+        conditions=[{"field": "collection", "operation": "isNot", "value": "MSYFGVKG"}],
+        ctx=DummyContext(),
+    )
+
+    assert "In Scope One" not in result
+    assert "In Scope Two" not in result
+    assert "Out Of Scope" in result
+    assert "Unfiled Item" in result
+
+
+def test_collections_plural_is_accepted(monkeypatch):
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: FakeZotero(_collection_items()))
+
+    result = server.advanced_search(
+        conditions=[{"field": "collections", "operation": "is", "value": "OTHERKEY"}],
+        ctx=DummyContext(),
+    )
+
+    assert "Out Of Scope" in result
+    assert "In Scope Two" in result
+    assert "In Scope One" not in result
