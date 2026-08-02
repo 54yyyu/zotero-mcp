@@ -21,7 +21,12 @@ classifiers = [
 dependencies = [
     "pyzotero>=1.8.0",
     "python-dotenv>=1.0.0",
-    "markitdown[pdf]",
+    # PDF text extraction. Rust with prebuilt abi3 wheels for every platform
+    # we support and no Python dependencies of its own. Pinned exactly while
+    # it is pre-1.0 — the extraction output is user-visible.
+    "pdf-inspector==0.2.6",
+    # HTML snapshots only.
+    "markdownify>=1.2",
     "pydantic>=2.0.0",
     "requests>=2.28.0",
     # <4 until the FastMCP 4 migration: FastMCP 4 targets the stateless

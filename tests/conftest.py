@@ -1,12 +1,24 @@
 """Shared test fixtures for Zotero MCP tests."""
 
 import os
+import sys
+
 import pytest
 
 # Marker for tests that use tmp_path and fail on GitHub Actions
 skip_on_ci = pytest.mark.skipif(
     os.environ.get("CI") == "true",
     reason="tmp_path fixture unreliable on GitHub Actions"
+)
+
+# Marker for tests whose *fixtures* hardcode POSIX paths ("/Users/test/x.pdf",
+# "file:///…"). The code under test is cross-platform; the assertions are not,
+# because Windows resolves those strings to "D:\Users\test\x.pdf". Skipped
+# rather than deleted so the coverage stays real on Linux and macOS —
+# rewriting them platform-neutrally is worth doing but is not this change.
+skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fixture hardcodes POSIX paths; the behaviour under test is not platform-specific",
 )
 
 

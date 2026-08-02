@@ -16,12 +16,31 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from .config import load_config
+from .extract import (
+    categorize_attachment,
+    extract_file,
+    normalize_attachment_priority,
+    pick_by_priority,
+)
 from .utils import _normalize_for_search, is_local_mode
 
 logger = logging.getLogger(__name__)
 
-# Sentinel returned by _extract_text_from_pdf on timeout
-_EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
+# Pages extracted per PDF when nothing else is configured. Overridable via
+# the ``pdf_max_pages`` extraction config or ``ZOTERO_PDF_MAXPAGES``.
+#
+# Set for headroom, not for recall. What actually bounds indexed text is
+# downstream: ~8k embedding tokens for a whole-document row, or
+# ``chunking.max_chunks_per_item`` windows when chunking is on — both land
+# near 7-8 pages of a typical paper (~3.9k chars/page). Raising this alone
+# therefore does not widen what the index sees; it only stops extraction
+# being the binding limit for anyone who raises those downstream settings.
+#
+# It is close to free either way: pdf-inspector computes font statistics
+# across the whole document before emitting any page, so parse time is
+# per-document, not per-page — measured at ~380 ms/doc whether the cap is
+# 10 or 50.
+DEFAULT_PDF_MAX_PAGES = 50
 
 # Library identity used throughout zotero-mcp (ChromaDB metadata, the
 # `zotero_switch_library` tool, etc.): 0 for the personal ("user") library,
@@ -41,26 +60,6 @@ class KeyGroupMap(NamedTuple):
 
     groups: dict[str, int]
     excluded_keys: set[str]
-
-
-def _extract_pdf_worker(file_path: str, maxpages: int, result_queue):
-    """Legacy worker — kept for backward compatibility but no longer used.
-
-    The actual extraction now uses subprocess.run (see _extract_text_from_pdf)
-    to avoid a deadlock on macOS where multiprocessing's 'spawn' start method
-    re-imports the zotero_mcp package, triggering FastMCP server initialization
-    in the child process. See https://github.com/54yyyu/zotero-mcp/issues/178
-    """
-    try:
-        import logging as _logging
-        _logging.getLogger("pdfminer").setLevel(_logging.ERROR)
-
-        from pdfminer.high_level import extract_text
-        text = extract_text(file_path, maxpages=maxpages) or ""
-        result_queue.put(text)
-    except Exception:
-        result_queue.put("")
-
 
 
 def _read_string_pref(prefs_path: Path, pref: str) -> str | None:
@@ -183,24 +182,28 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
 
-    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None, pdf_timeout: int = 30):
+    def __init__(
+        self,
+        db_path: str | None = None,
+        pdf_max_pages: int | None = None,
+        attachment_priority=None,
+    ):
         """
         Initialize the local database reader.
 
         Args:
             db_path: Optional path to zotero.sqlite. If None, auto-detect.
             pdf_max_pages: Maximum pages to extract from PDFs.
-            pdf_timeout: Seconds to wait for PDF extraction before killing the process.
+            attachment_priority: Order in which attachment kinds are tried
+                for an item with several readable files. None means the
+                default (PDF > HTML > rest).
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
-        self.pdf_timeout: int = pdf_timeout
-        # Reduce noise from pdfminer warnings
-        try:
-            logging.getLogger("pdfminer").setLevel(logging.ERROR)
-        except Exception:
-            pass
+        self.attachment_priority: tuple[str, ...] = normalize_attachment_priority(
+            attachment_priority
+        )
 
     def _find_zotero_db(self) -> str:
         """
@@ -365,153 +368,25 @@ class LocalZoteroReader:
 
         return None
 
-    def _extract_text_from_pdf(self, file_path: Path) -> str:
-        """Extract text from a PDF using pdfminer in a subprocess with timeout.
+    def _resolve_pdf_max_pages(self) -> int:
+        """Page cap for PDF extraction.
 
-        Uses subprocess.run instead of multiprocessing.Process to avoid a
-        deadlock on macOS: multiprocessing's 'spawn' start method re-imports
-        the zotero_mcp package in the child process, which triggers FastMCP
-        server initialization and blocks forever. subprocess.run starts a
-        clean Python process that only imports pdfminer.
-
-        See: https://github.com/54yyyu/zotero-mcp/issues/178
-
-
-        Returns the extracted text, empty string on failure, or
-        _EXTRACTION_TIMEOUT sentinel if the process was killed due to timeout.
+        Indexing a whole library shouldn't pull every page of every
+        thousand-page book into the embedding store, so an explicit cap
+        always applies. A non-positive configured value falls through to the
+        env override and then the default rather than meaning "unlimited".
         """
-        import subprocess
-        import sys
-
-        # Page limit (preserve existing fallback chain)
         if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
-            maxpages = self.pdf_max_pages
-        else:
-            max_pages_env = os.getenv("ZOTERO_PDF_MAXPAGES")
-            try:
-                maxpages = int(max_pages_env) if max_pages_env else 10
-            except ValueError:
-                maxpages = 10
-
-        timeout = self.pdf_timeout or 30
-
-        # Inline pdfminer script — imports ONLY pdfminer, not zotero_mcp,
-        # so the child process never triggers FastMCP initialization.
-        script = (
-            "import sys, logging; "
-            "logging.getLogger('pdfminer').setLevel(logging.ERROR); "
-            "from pdfminer.high_level import extract_text; "
-            "sys.stdout.write(extract_text(sys.argv[1], maxpages=int(sys.argv[2])) or '')"
-        )
-
-        # Strip API keys from the child's environment: pdfminer does not need
-        # them, and leaking them via crash dumps or /proc/<pid>/environ is
-        # needless exposure. Keep the rest of the env so the interpreter still
-        # finds system libraries, temp dirs, locale, etc.
-        child_env = os.environ.copy()
-        for _k in (
-            "OPENAI_API_KEY",
-            "GEMINI_API_KEY",
-            "GOOGLE_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "ZOTERO_API_KEY",
-        ):
-            child_env.pop(_k, None)
-
-        # Force UTF-8 on the child's stdio. Without this, Windows consoles
-        # default to GBK/cp1252 and pdfminer extracting any non-ASCII text
-        # raises UnicodeEncodeError when ``sys.stdout.write`` flushes —
-        # turning a perfectly readable PDF into a "failed" extraction that
-        # the indexer then refuses to retry until force-rebuild (#286).
-        child_env.setdefault("PYTHONIOENCODING", "utf-8")
-        child_env.setdefault("PYTHONUTF8", "1")
-
+            return self.pdf_max_pages
         try:
-            result = subprocess.run(
-                [sys.executable, "-c", script, str(file_path), str(maxpages)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                env=child_env,
-            )
-            if result.returncode == 0:
-                return result.stdout
-            logger.warning(
-                f"PDF extraction failed (exit {result.returncode}): {file_path.name}: "
-                f"{result.stderr[:200] if result.stderr else 'no error output'}"
-            )
-            return ""
-        except subprocess.TimeoutExpired:
-            sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line before warning
-            logger.warning(f"PDF extraction timed out after {timeout}s: {file_path.name}")
-            return _EXTRACTION_TIMEOUT
-        except Exception as e:
-            sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line before warning
-            logger.warning(f"PDF extraction failed: {file_path.name}: {e}")
-            return ""
-
-    def _extract_text_from_html(self, file_path: Path) -> str:
-        """Extract text from HTML using markitdown if available; fallback to stripping tags."""
-        # Try markitdown first
-        try:
-            from markitdown import MarkItDown
-            md = MarkItDown()
-            result = md.convert(str(file_path))
-            return result.text_content or ""
-        except Exception:
-            pass
-        # Fallback using a simple parser
-        try:
-            from bs4 import BeautifulSoup  # type: ignore
-            html = file_path.read_text(errors="ignore")
-            return BeautifulSoup(html, "html.parser").get_text(" ")
-        except Exception:
-            return ""
-
-    # Extensions / MIME types we know we can read as plain text. Used by
-    # ``_is_extractable_attachment`` to gate non-PDF/HTML attachments into
-    # the fulltext extractor. Binary formats (.docx, .pptx, .epub, video,
-    # etc.) are intentionally excluded — ``read_text`` returns garbage for
-    # those and we don't want to pollute the semantic index with it.
-    _TEXTUAL_SUFFIXES = frozenset({
-        ".txt", ".vtt", ".srt", ".sbv", ".md", ".markdown", ".rst",
-        ".csv", ".tsv", ".json", ".xml", ".log", ".text",
-    })
-    _TEXTUAL_CONTENT_TYPES = frozenset({
-        "text/plain", "text/vtt", "text/markdown", "text/csv",
-        "text/tab-separated-values", "text/srt", "application/json",
-        "application/xml", "text/xml",
-    })
-
-    @classmethod
-    def _is_extractable_attachment(cls, file_path: Path, ctype: str | None) -> bool:
-        """Return True when ``_extract_text_from_file`` can return useful text.
-
-        PDF and HTML are handled by their dedicated extractors elsewhere. For
-        anything else, accept the attachment iff its MIME type or extension
-        is in the textual allowlist — never accept arbitrary binaries.
-        """
-        normalized_ctype = (ctype or "").lower()
-        if normalized_ctype.startswith("text/"):
-            return True
-        if normalized_ctype in cls._TEXTUAL_CONTENT_TYPES:
-            return True
-        return file_path.suffix.lower() in cls._TEXTUAL_SUFFIXES
+            return int(os.getenv("ZOTERO_PDF_MAXPAGES") or DEFAULT_PDF_MAX_PAGES)
+        except ValueError:
+            return DEFAULT_PDF_MAX_PAGES
 
     def _extract_text_from_file(self, file_path: Path) -> str:
-        """Extract text content from a file based on extension, with fallbacks."""
-        suffix = file_path.suffix.lower()
-        if suffix == ".pdf":
-            return self._extract_text_from_pdf(file_path)
-        if suffix in {".html", ".htm"}:
-            return self._extract_text_from_html(file_path)
-        # Generic best-effort
-        try:
-            return file_path.read_text(errors="ignore")
-        except Exception:
-            return ""
+        """Extract text from an attachment file, or "" if nothing readable."""
+        doc = extract_file(file_path, max_pages=self._resolve_pdf_max_pages())
+        return doc.text if doc else ""
 
     def _get_fulltext_meta_for_item(self, item_id: int):
         meta = []
@@ -524,11 +399,15 @@ class LocalZoteroReader:
         """Return the text in Zotero's ``.zotero-ft-cache`` for an attachment.
 
         Zotero writes a plain-text full-text cache next to each indexed PDF /
-        EPUB at ``storage/<attachment_key>/.zotero-ft-cache``. Using it has
-        two upsides:
-        - it's already-extracted text (no pdfminer subprocess needed);
-        - it doesn't depend on filename matching, so it survives Zotero
-          file-naming drift / non-ASCII filename rewrites (#291).
+        EPUB at ``storage/<attachment_key>/.zotero-ft-cache``. It is a
+        fallback rather than the primary path: the text is flat pdftotext
+        output with no heading structure, and most files carry no page
+        separators, so chunks derived from it have no page provenance.
+
+        What it still buys us is reach. It is keyed by attachment key rather
+        than filename, so it survives Zotero file-naming drift / non-ASCII
+        rewrites (#291), and it covers formats we don't parse ourselves
+        (EPUB) as well as files that fail to parse.
 
         Returns ``None`` if the cache file is absent, empty, or unreadable.
         """
@@ -586,25 +465,23 @@ class LocalZoteroReader:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference order:
-        1. ``.zotero-ft-cache`` (Zotero's own already-indexed text — survives
-           filename drift, no subprocess needed) — source ``"zotero-cache"``.
-        2. PDF extraction — source ``"pdf"``.
-        3. HTML extraction — source ``"html"``.
-        4. Textual attachments (.txt, .vtt, .srt, etc.) — source ``"file"``.
+        1. Our own extraction of the best attachment on disk, chosen by
+           ``attachment_priority`` — source ``"pdf"``, ``"html"`` or
+           ``"file"``.
+        2. ``.zotero-ft-cache`` — source ``"zotero-cache"``.
+
+        Our parser goes first because it is the only path that yields heading
+        structure and the page separators chunk provenance needs; the cache is
+        flat pdftotext output (see :meth:`_read_zotero_ft_cache`). The cache
+        still covers everything the parser cannot reach: attachments whose
+        file won't resolve, formats we don't read (EPUB), and files that fail
+        to parse.
 
         If the sqlite-recorded filename doesn't resolve on disk, scan the
         attachment's storage folder for a content-type-matching file before
         giving up (#291, #265).
         """
-        # 1. Zotero's own full-text cache — use it whenever present.
-        for key, _path, _ctype in self._iter_parent_attachments(item_id):
-            cached = self._read_zotero_ft_cache(key)
-            if cached:
-                return (cached, "zotero-cache")
-
-        best_pdf = None
-        best_html = None
-        best_other = None
+        candidates = []
         for key, path, ctype in self._iter_parent_attachments(item_id):
             resolved = self._resolve_attachment_path(key, path or "")
             if not resolved or not resolved.exists():
@@ -612,24 +489,36 @@ class LocalZoteroReader:
                 resolved = self._scan_storage_for_attachment(key, ctype)
                 if not resolved or not resolved.exists():
                     continue
-            if ctype == "application/pdf" and best_pdf is None:
-                best_pdf = resolved
-            elif (ctype or "").startswith("text/html") and best_html is None:
-                best_html = resolved
-            elif best_other is None and self._is_extractable_attachment(resolved, ctype):
-                best_other = resolved
-        # Prefer PDF, then HTML, then any extractable text file.
-        target = best_pdf or best_html or best_other
-        if not target:
-            return None
-        text = self._extract_text_from_file(target)
-        if text == _EXTRACTION_TIMEOUT:
-            return (_EXTRACTION_TIMEOUT, "timeout")
-        if not text:
-            return None
-        # Determine source type
-        source = "pdf" if target.suffix.lower() == ".pdf" else ("html" if target.suffix.lower() in {".html", ".htm"} else "file")
-        return (text, source)
+            category = categorize_attachment(resolved, ctype)
+            if category is None:
+                continue
+            try:
+                size = resolved.stat().st_size
+            except OSError:
+                size = 0
+            candidates.append((category, size, resolved))
+
+        # 1. Best attachment by the configured priority.
+        target = pick_by_priority(candidates, self.attachment_priority)
+        if target:
+            text = self._extract_text_from_file(target)
+            if text:
+                suffix = target.suffix.lower()
+                if suffix == ".pdf":
+                    source = "pdf"
+                elif suffix in {".html", ".htm"}:
+                    source = "html"
+                else:
+                    source = "file"
+                return (text, source)
+
+        # 2. Zotero's own cache, for whatever step 1 could not read.
+        for key, _path, _ctype in self._iter_parent_attachments(item_id):
+            cached = self._read_zotero_ft_cache(key)
+            if cached:
+                return (cached, "zotero-cache")
+
+        return None
 
     def close(self):
         """Close database connection."""

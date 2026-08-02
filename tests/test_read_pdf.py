@@ -1,52 +1,56 @@
 """Tests for zotero_read_pdf_pages tool."""
 
-import sys
 import tempfile
-import types
 
 import pytest
 from conftest import DummyContext, FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.extract import PAGE_SEPARATOR, ExtractedDoc
 from zotero_mcp.tools import read_pdf as read_pdf_tools
 
 # ---------------------------------------------------------------------------
-# Helpers: fake fitz module and document
+# Helpers: fake the extraction seam
 # ---------------------------------------------------------------------------
 
 
-class FakePage:
-    def __init__(self, text):
-        self._text = text
+def _patch_extract(monkeypatch, page_texts, total=None, needs_ocr=()):
+    """Stand in for ``extract_pdf``/``pdf_page_count`` with known page text.
 
-    def get_text(self):
-        return self._text
+    Mirrors the real contract the tool depends on: out-of-range indices are
+    dropped, and ``page_numbers`` reports the absolute source page for each
+    returned page.
+    """
+    total_pages = total if total is not None else len(page_texts)
+
+    def _fake_page_count(_path):
+        return total_pages
+
+    def _fake_extract_pdf(_path, *, pages=None, max_pages=None):
+        wanted = [
+            p for p in (range(total_pages) if pages is None else pages)
+            if 0 <= p < total_pages
+        ]
+        texts = [page_texts[p % len(page_texts)] for p in wanted]
+        return ExtractedDoc(
+            text=PAGE_SEPARATOR.join(texts),
+            pages=tuple(texts),
+            page_numbers=tuple(wanted),
+            page_count=total_pages,
+            source="pdf",
+            needs_ocr=tuple(needs_ocr),
+        )
+
+    monkeypatch.setattr("zotero_mcp.tools.read_pdf.pdf_page_count", _fake_page_count)
+    monkeypatch.setattr("zotero_mcp.tools.read_pdf.extract_pdf", _fake_extract_pdf)
 
 
-class FakeDocument:
-    def __init__(self, pages, total=None):
-        self._pages = pages
-        self._total = total if total is not None else len(pages)
+def _patch_extract_failure(monkeypatch, exc):
+    """Make the seam raise, as it does for a corrupt or non-PDF file."""
+    def _boom(_path):
+        raise exc
 
-    def __len__(self):
-        return self._total
-
-    def __getitem__(self, index):
-        return self._pages[index]
-
-    def close(self):
-        pass
-
-
-def _make_fake_fitz(pages, total=None):
-    fake_fitz = types.ModuleType("fitz")
-    fake_fitz.open = lambda *args, **kwargs: FakeDocument(pages, total)  # noqa: ARG005
-    return fake_fitz
-
-
-def _patch_fitz(monkeypatch, pages, total=None):
-    fake_fitz = _make_fake_fitz(pages, total)
-    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+    monkeypatch.setattr("zotero_mcp.tools.read_pdf.pdf_page_count", _boom)
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +77,7 @@ class TestHappyPath:
     """Single page and page range reads."""
 
     def test_single_page(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage("Page 1 content.")] * 10, total=10)
+        _patch_extract(monkeypatch, ["Page 1 content."] * 10, total=10)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
@@ -85,14 +89,13 @@ class TestHappyPath:
         assert "Page 1 content." in result
 
     def test_page_range(self, monkeypatch, dummy_ctx, fake_zot):
-        pages = [
-            FakePage("Content of page 1."),
-            FakePage("Content of page 2."),
-            FakePage("Content of page 3."),
-            FakePage("Content of page 4."),
-            FakePage("Content of page 5."),
-        ]
-        _patch_fitz(monkeypatch, pages)
+        _patch_extract(monkeypatch, [
+            "Content of page 1.",
+            "Content of page 2.",
+            "Content of page 3.",
+            "Content of page 4.",
+            "Content of page 5.",
+        ])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
@@ -110,7 +113,7 @@ class TestHappyPath:
         assert "## Page 5" not in result
 
     def test_header_contains_metadata(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage("hello")])
+        _patch_extract(monkeypatch, ["hello"])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "My Paper Title", True),
@@ -149,7 +152,7 @@ class TestErrors:
         assert "No PDF attachment found" in result
 
     def test_start_page_out_of_range(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage("p1")], total=1)
+        _patch_extract(monkeypatch, ["p1"], total=1)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
@@ -161,7 +164,7 @@ class TestErrors:
         assert "1-1" in result
 
     def test_end_page_out_of_range(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage("p1")] * 3, total=3)
+        _patch_extract(monkeypatch, ["p1"] * 3, total=3)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
@@ -173,7 +176,7 @@ class TestErrors:
         assert "1-3" in result
 
     def test_too_many_pages(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage("p")] * 100, total=100)
+        _patch_extract(monkeypatch, ["p"] * 100, total=100)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
@@ -183,16 +186,19 @@ class TestErrors:
 
         assert "max 50" in result
 
-    def test_missing_fitz_module(self, monkeypatch, dummy_ctx, fake_zot):
+    def test_unreadable_pdf_reports_the_reason(self, monkeypatch, dummy_ctx, fake_zot):
+        """A corrupt or non-PDF file surfaces the parser's message rather
+        than an empty page range."""
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
-        monkeypatch.setitem(sys.modules, "fitz", None)
+        _patch_extract_failure(monkeypatch, ValueError("Not a PDF: file is empty"))
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
 
-        assert "PyMuPDF" in result
+        assert "Could not read PDF" in result
+        assert "Not a PDF" in result
 
 
 class TestEdgeCases:
@@ -200,7 +206,7 @@ class TestEdgeCases:
 
     def test_end_page_equals_start_page(self, monkeypatch, dummy_ctx, fake_zot):
         """When end_page == start_page, should behave like single page."""
-        _patch_fitz(monkeypatch, [FakePage("p1"), FakePage("p2"), FakePage("p3")])
+        _patch_extract(monkeypatch, ["p1", "p2", "p3"])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
@@ -213,7 +219,7 @@ class TestEdgeCases:
         assert "## Page 3" not in result
 
     def test_reads_last_page(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage("first"), FakePage("last")])
+        _patch_extract(monkeypatch, ["first", "last"])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
@@ -225,7 +231,7 @@ class TestEdgeCases:
         assert "last" in result
 
     def test_empty_page_text(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage(""), FakePage("has text"), FakePage("")])
+        _patch_extract(monkeypatch, ["", "has text", ""])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
@@ -282,7 +288,7 @@ class TestCleanupPathSafety:
 
     def test_library_file_is_not_released_by_the_tool(self, monkeypatch, dummy_ctx, fake_zot):
         """A local-storage hit reports is_temp=False and must survive the read."""
-        _patch_fitz(monkeypatch, [FakePage("Body text.")], total=1)
+        _patch_extract(monkeypatch, ["Body text."], total=1)
         removed = []
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._cleanup_path", lambda p: removed.append(p)

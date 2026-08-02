@@ -434,7 +434,14 @@ def setup_semantic_search(
         print("Using auto-detect for Zotero database location.")
 
     config["update_config"] = update_config
-    config["extraction"] = {"pdf_max_pages": pdf_max_pages}
+    # Merge rather than replace: setup only prompts for the page cap, and
+    # rewriting the whole section would silently drop hand-edited keys such
+    # as attachment_priority and fulltext_display_max_pages.
+    extraction_config = dict(
+        (existing_semantic_config or {}).get("extraction") or {}
+    )
+    extraction_config["pdf_max_pages"] = pdf_max_pages
+    config["extraction"] = extraction_config
     # Web-API users: index fulltext from Zotero's server-side extraction by
     # default. Users can set this to false to keep the old metadata-only
     # behavior. The flag is ignored in local mode (ZOTERO_LOCAL=true uses

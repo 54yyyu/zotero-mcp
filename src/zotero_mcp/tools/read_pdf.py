@@ -9,8 +9,8 @@ from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp.config import load_config
+from zotero_mcp.extract import extract_pdf, pdf_page_count
 from zotero_mcp.tools import _helpers
-
 
 _TMPDIR_PREFIX = "zotero_pdf_"
 
@@ -105,7 +105,9 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
 
     # Fallback: resolve via the multi-source downloader (local -> WebDAV ->
     # Zotero cloud) so WebDAV-backed attachments work, not just cloud storage.
-    attachment = _client.get_attachment_details(zot, item)
+    # PDF only: this tool renders page ranges, so a markdown-first
+    # attachment_priority must not hand it a file it cannot paginate.
+    attachment = _client.get_attachment_details(zot, item, priority=("pdf",))
     if not attachment:
         return None
 
@@ -142,7 +144,7 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
     description="Read specific page range(s) from a PDF attachment of a Zotero item. "
     "Use this when you know which pages to read — for example after getting the PDF "
     "outline via zotero_get_pdf_outline. Pages are 1-indexed. "
-    "Requires PyMuPDF (the [pdf] extra).",
+    "Returns Markdown with the page's heading structure preserved.",
 )
 def read_pdf_pages(
     item_key: str,
@@ -183,26 +185,32 @@ def read_pdf_pages(
                 _cleanup_path(pdf_path)
 
         try:
-            import fitz
-        except ImportError:
-            return f"PyMuPDF is required for PDF page reading. {_utils.install_hint('pdf')}"
+            total_pages = pdf_page_count(pdf_path)
+        except Exception as exc:
+            _release()
+            return f"Could not read PDF for item {item_key}: {exc}"
 
-        doc = fitz.open(pdf_path)
-        total_pages = len(doc)
         actual_end = end_page if end_page is not None else start_page
 
         if start_page < 1 or start_page > total_pages:
-            doc.close()
             _release()
             return f"Start page {start_page} is out of range. PDF has {total_pages} pages (1-{total_pages})."
         if end_page is not None and end_page > total_pages:
-            doc.close()
             _release()
             return f"End page {end_page} is out of range. PDF has {total_pages} pages (1-{total_pages})."
 
-        # Zero-indexed page numbers for PyMuPDF
-        zstart = start_page - 1
-        zend = actual_end - 1
+        requested = actual_end - start_page + 1
+        if requested > 50:
+            _release()
+            return f"Requested {requested} pages (max 50). Please narrow your page range."
+
+        try:
+            # extract_pdf takes 0-indexed pages; the tool's API is 1-indexed.
+            doc = extract_pdf(pdf_path, pages=list(range(start_page - 1, actual_end)))
+        except Exception as exc:
+            return f"Could not read PDF for item {item_key}: {exc}"
+        finally:
+            _release()
 
         output = [
             f"# PDF Pages {start_page}-{actual_end} of {title}",
@@ -211,25 +219,16 @@ def read_pdf_pages(
             "",
         ]
 
-        page_count = zend - zstart + 1
-        if page_count > 50:
-            doc.close()
-            _release()
-            return f"Requested {page_count} pages (max 50). Please narrow your page range."
-
-        for page_num in range(zstart, zend + 1):
-            page = doc[page_num]
-            text = page.get_text()
-            output.append(f"## Page {page_num + 1}")
+        for page_index, markdown in zip(doc.page_numbers, doc.pages):
+            output.append(f"## Page {page_index + 1}")
             output.append("")
-            if text.strip():
-                output.append(text.strip())
+            if markdown.strip():
+                output.append(markdown.strip())
+            elif page_index in doc.needs_ocr:
+                output.append("*[No text layer on this page — it is a scanned image]*")
             else:
                 output.append("*[No extractable text on this page]*")
             output.append("")
-
-        doc.close()
-        _release()
         return _helpers._prepend_size_warning(
             "\n".join(output),
             "Consider using zotero_semantic_search to find specific content instead of reading full pages.",

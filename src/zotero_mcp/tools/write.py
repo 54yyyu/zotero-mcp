@@ -2449,9 +2449,7 @@ _TOC_EXIT_NO_PYMUPDF = 3
 _TOC_TIMEOUT = 30
 
 # Child script. It imports ONLY fitz — never zotero_mcp — so the subprocess
-# cannot trigger FastMCP server initialization, the same constraint that
-# forced subprocess over multiprocessing in local_db._extract_text_from_pdf
-# (macOS 'spawn' deadlock, #178).
+# cannot trigger FastMCP server initialization (macOS 'spawn' deadlock, #178).
 _TOC_CHILD_SCRIPT = (
     "import json, sys\n"
     "try:\n"

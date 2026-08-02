@@ -78,7 +78,9 @@ def _collect_tool_descriptions():
 
     descriptions: dict[str, str] = {}
     for f in files:
-        content = f.read_text()
+        # encoding is explicit: the tool descriptions contain non-ASCII, and
+        # the default on Windows is cp1252, which cannot decode them.
+        content = f.read_text(encoding="utf-8")
         for m in block_re.finditer(content):
             block = m.group(1)
             name_m = name_re.search(block)

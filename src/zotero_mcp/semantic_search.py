@@ -29,6 +29,7 @@ except Exception:
 from . import openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_active_group_id, get_zotero_client
+from .extract import PAGE_SEPARATOR
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
@@ -267,11 +268,11 @@ def should_update(update_config: dict[str, Any]) -> bool:
 # Passage-level chunking (Tier-1 grounded retrieval)
 # ---------------------------------------------------------------------------
 
-# Sentinel separating PDF pages in extracted fulltext, when present. Page-aware
-# extractors may insert a form-feed between pages; the chunker uses it to map a
-# character offset back to a 1-indexed page. Absent it, only char offsets are
-# reported and ``page`` is omitted from passage metadata.
-_PAGE_SEPARATOR = "\f"
+# Separator between PDF pages in extracted fulltext. ``extract`` always emits
+# it; text that reached us another way (Zotero's own full-text cache) may not
+# carry it, in which case only char offsets are reported and ``page`` is
+# omitted from passage metadata.
+_PAGE_SEPARATOR = PAGE_SEPARATOR
 
 
 def split_into_passages(
@@ -319,6 +320,22 @@ def split_into_passages(
         # Guarantee forward progress even when overlap is large.
         start = new_start if new_start > start else end
     return passages
+
+
+def _attachment_priority_changed(existing_metadata: dict, current_tag: str) -> bool:
+    """True when a document was extracted under a different attachment priority.
+
+    A document indexed before this field existed carries no tag. That is
+    treated as "unchanged", not as a mismatch: every pre-existing index would
+    otherwise re-extract in full on the first run after upgrading, which is a
+    lot of work to impose on someone who never touched the setting. Those
+    documents pick the tag up the next time they are re-indexed for any other
+    reason, and converge from there.
+    """
+    stored = existing_metadata.get("attachment_priority")
+    if stored is None:
+        return False
+    return stored != current_tag
 
 
 def _page_for_offset(text: str, offset: int) -> int | None:
@@ -1011,6 +1028,12 @@ class ZoteroSemanticSearch:
         if (att_keys := data.get("attachmentKeys")) is not None:
             metadata["attachment_keys"] = att_keys
 
+        # Which attachment kind won when this document was extracted. A later
+        # run compares it to the current setting: change the priority and the
+        # stored text may now come from the wrong file (#378).
+        if (att_priority := data.get("attachmentPriority")) is not None:
+            metadata["attachment_priority"] = att_priority
+
         # Add tags as a single string
         if tags := data.get("tags"):
             metadata["tags"] = " ".join([tag.get("tag", "") for tag in tags])
@@ -1099,7 +1122,7 @@ class ZoteroSemanticSearch:
         try:
             # Load per-run config, including extraction limits and db path if provided
             pdf_max_pages = None
-            pdf_timeout = 30
+            attachment_priority = None
             zotero_db_path = self.db_path  # CLI override takes precedence
             collection_keys = None
             # If semantic_search config file exists, prefer its setting
@@ -1110,7 +1133,7 @@ class ZoteroSemanticSearch:
                         semantic_cfg = _cfg.get("semantic_search", {})
                         extraction_cfg = semantic_cfg.get("extraction", {})
                         pdf_max_pages = extraction_cfg.get("pdf_max_pages")
-                        pdf_timeout = extraction_cfg.get("pdf_timeout", 30)
+                        attachment_priority = extraction_cfg.get("attachment_priority")
                         collection_keys = semantic_cfg.get("collection_keys")
                         # Use config db_path only if no CLI override
                         if not zotero_db_path:
@@ -1121,9 +1144,14 @@ class ZoteroSemanticSearch:
             with (
                 suppress_stdout(),
                 LocalZoteroReader(
-                    db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, pdf_timeout=pdf_timeout
+                    db_path=zotero_db_path,
+                    pdf_max_pages=pdf_max_pages,
+                    attachment_priority=attachment_priority,
                 ) as reader,
             ):
+                # Stamped on every document so a later run can tell that the
+                # chosen attachment kind may have changed under it.
+                priority_tag = ",".join(reader.attachment_priority)
                 # Capture the snapshot's full key set on the SAME connection
                 # this scan uses. The staleness check after the (potentially
                 # long) extraction must compare against what this scan could
@@ -1220,31 +1248,15 @@ class ZoteroSemanticSearch:
                     updated_existing = 0
                     items_to_process = []
 
-                    consecutive_timeouts = 0
-                    MAX_CONSECUTIVE_TIMEOUTS = 5
-                    _extraction_stopped = False  # Set True when circuit breaker trips
-
                     total_local = len(local_items)
-                    _skipped_pdfs = []  # Collect timeout/error names for summary
                     _skipped_failed = []  # Items skipped because extraction previously failed
 
-                    # Show startup note
-                    try:
-                        sys.stderr.write(
-                            "\n  Note: Most papers take 1-3 seconds. Some larger or complex PDFs\n"
-                            "  may take up to 30 seconds. Password-protected or corrupted files\n"
-                            "  will be skipped automatically. The system moves on to the next\n"
-                            "  paper if a file can't be processed in time.\n\n"
-                        )
-                        sys.stderr.flush()
-                    except Exception:
-                        pass
-
-                    # Temporarily suppress local_db logger to prevent timeout warnings
-                    # from disrupting the progress line — we collect them ourselves
-                    _local_db_logger = logging.getLogger("zotero_mcp.local_db")
-                    _prev_level = _local_db_logger.level
-                    _local_db_logger.setLevel(logging.CRITICAL)
+                    # Temporarily suppress the extractor's logger: a warning
+                    # about one unreadable attachment would otherwise land in
+                    # the middle of the \r progress line.
+                    _extract_logger = logging.getLogger("zotero_mcp.extract")
+                    _prev_level = _extract_logger.level
+                    _extract_logger.setLevel(logging.CRITICAL)
 
                     for item_idx, it in enumerate(local_items, 1):
                         # Build display string: Author (Year) — Title
@@ -1307,6 +1319,7 @@ class ZoteroSemanticSearch:
                             sorted(k for k, _p, _c in reader.get_fulltext_meta_for_item(it.item_id))
                         )
                         it._attachment_keys = att_keys
+                        it._attachment_priority = priority_tag
 
                         # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
                         if chroma_client and not force_rebuild:
@@ -1347,55 +1360,34 @@ class ZoteroSemanticSearch:
                                 elif not chroma_has_fulltext and local_has_fulltext:
                                     # Document exists but lacks fulltext - we need to update it
                                     updated_existing += 1
+                                elif _attachment_priority_changed(
+                                    existing_metadata, priority_tag
+                                ):
+                                    # The stored text may have come from an
+                                    # attachment the user has since deprioritized
+                                    # — re-extract rather than serve a stale
+                                    # PDF-derived embedding (#378).
+                                    updated_existing += 1
                                 else:
                                     should_extract = False
                                     skipped_existing += 1
 
                         if should_extract:
                             # Extract fulltext if item doesn't have it yet
-                            # (skip if circuit breaker has tripped)
-                            if not getattr(it, "fulltext", None) and not _extraction_stopped:
+                            if not getattr(it, "fulltext", None):
                                 text = reader.extract_fulltext_for_item(it.item_id)
-                                # Circuit breaker: stop PDF extraction after consecutive timeouts
-                                if isinstance(text, tuple) and len(text) == 2 and text[1] == "timeout":
-                                    _skipped_pdfs.append(display or f"item {it.key}")
-                                    consecutive_timeouts += 1
-                                    if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
-                                        logger.warning(
-                                            f"Stopping PDF extraction after {MAX_CONSECUTIVE_TIMEOUTS} "
-                                            f"consecutive timeouts — remaining items will use metadata only"
-                                        )
-                                        try:
-                                            sys.stderr.write(
-                                                f"\n  Warning: PDF extraction stopped after {MAX_CONSECUTIVE_TIMEOUTS} "
-                                                f"consecutive timeouts. Remaining items will be indexed with "
-                                                f"metadata only (titles, abstracts, authors).\n\n"
-                                            )
-                                        except Exception:
-                                            pass
-                                        _extraction_stopped = True
-                                    # Don't skip the item — still add it with metadata only
-                                    it._fulltext_attempted = True  # Mark so metadata knows extraction was tried
+                                if text:
+                                    it.fulltext, it.fulltext_source = text
                                 else:
-                                    # Reset counter on successful extraction
-                                    if text:
-                                        consecutive_timeouts = 0
-                                    if text:
-                                        # Support new (text, source) return format
-                                        if isinstance(text, tuple) and len(text) == 2:
-                                            it.fulltext, it.fulltext_source = text[0], text[1]
-                                        else:
-                                            it.fulltext = text
-                                    else:
-                                        # Extraction returned empty — mark as attempted
-                                        it._fulltext_attempted = True
+                                    # Nothing readable — mark so the metadata
+                                    # records that we did try.
+                                    it._fulltext_attempted = True
                             extracted += 1
                             items_to_process.append(it)
 
                             # (progress shown inline above via \r)
 
-                    # Restore local_db logger
-                    _local_db_logger.setLevel(_prev_level)
+                    _extract_logger.setLevel(_prev_level)
 
                     # Clear progress line and show extraction summary
                     try:
@@ -1406,10 +1398,6 @@ class ZoteroSemanticSearch:
                         sys.stderr.write(", ".join(parts) + "\n")
                         if updated_existing > 0:
                             sys.stderr.write(f"  ({updated_existing} items updated with new fulltext)\n")
-                        if _skipped_pdfs:
-                            sys.stderr.write(f"  Skipped {len(_skipped_pdfs)} PDF(s) (timed out):\n")
-                            for name in _skipped_pdfs:
-                                sys.stderr.write(f"    - {name}\n")
                         if _skipped_failed:
                             sys.stderr.write(
                                 f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n"
@@ -1468,6 +1456,8 @@ class ZoteroSemanticSearch:
                     # newly attached files on previously-failed items.
                     if (att := getattr(item, "_attachment_keys", None)) is not None:
                         api_item["data"]["attachmentKeys"] = att
+                    if (prio := getattr(item, "_attachment_priority", None)) is not None:
+                        api_item["data"]["attachmentPriority"] = prio
 
                     # Add notes if available
                     if item.notes:

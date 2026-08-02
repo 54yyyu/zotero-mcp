@@ -15,6 +15,8 @@ stored files without a round-trip.
 import sqlite3
 import types
 
+from conftest import skip_on_windows
+
 from zotero_mcp import client as client_module
 
 ATTACHMENT_KEY = "ATT00001"
@@ -97,6 +99,7 @@ class ExplodingClient:
         raise Exception("unsupported protocol 'file://'")
 
 
+@skip_on_windows
 def test_linked_file_resolves_without_touching_dump(tmp_path, monkeypatch):
     """The regression: a linked file is served from disk, not via the API."""
     linked = tmp_path / "papers" / "linked.pdf"

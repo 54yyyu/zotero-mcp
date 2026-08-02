@@ -10,8 +10,8 @@ item ``has_fulltext='failed'`` — which incremental updates then skip until
 Two fixes here:
 
 - ``.zotero-ft-cache``: Zotero writes a plain-text already-extracted
-  full-text cache next to each indexed PDF. Reading it skips pdfminer
-  entirely and is immune to filename drift.
+  full-text cache next to each indexed PDF. Reading it skips our own
+  extraction entirely and is immune to filename drift.
 - Storage-dir scan fallback: when the recorded path doesn't resolve, look
   in the attachment's storage folder for a file whose extension matches
   the recorded content type.
@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from conftest import skip_on_ci
+from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY
 from zotero_mcp.local_db import LocalZoteroReader
 
 
@@ -32,7 +33,7 @@ class _Reader(LocalZoteroReader):
         self.db_path = "/dev/null"
         self._connection = None
         self.pdf_max_pages = 10
-        self.pdf_timeout = 30
+        self.attachment_priority = DEFAULT_ATTACHMENT_PRIORITY
         self._attachments = attachments
         self._storage_dir = storage_dir
 
@@ -44,21 +45,22 @@ class _Reader(LocalZoteroReader):
 
 
 # ---------------------------------------------------------------------------
-# .zotero-ft-cache fast path
+# .zotero-ft-cache as the fallback path
 # ---------------------------------------------------------------------------
 
 
 @skip_on_ci
-def test_zotero_ft_cache_short_circuits_pdf_extraction(tmp_path):
-    """When Zotero has already cached the text, return it without invoking
-    pdfminer — even if the recorded PDF filename doesn't resolve on disk."""
+def test_ft_cache_covers_an_attachment_whose_file_cannot_be_resolved(tmp_path):
+    """The cache is keyed by attachment key, not filename, so it still answers
+    when the recorded filename has drifted and no file is found on disk."""
     storage = tmp_path / "storage"
     attachment_dir = storage / "ABCDEFGH"
     attachment_dir.mkdir(parents=True)
     (attachment_dir / ".zotero-ft-cache").write_text(
         "Full body text extracted by Zotero, including the conclusion."
     )
-    # Recorded sqlite path points at a filename that no longer exists.
+    # Recorded sqlite path points at a filename that no longer exists, and the
+    # storage scan finds no PDF beside it either.
     reader = _Reader(
         attachments=[
             ("ABCDEFGH", "storage:original-filename-renamed.pdf", "application/pdf")
@@ -66,17 +68,65 @@ def test_zotero_ft_cache_short_circuits_pdf_extraction(tmp_path):
         storage_dir=storage,
     )
 
-    # If pdfminer were ever invoked we'd hit the missing file; ensure not.
     def _boom(_path):
-        raise AssertionError("pdfminer must not be called when ft-cache exists")
+        raise AssertionError("nothing resolvable to extract — must not be called")
 
-    reader._extract_text_from_pdf = _boom  # type: ignore[assignment]
+    reader._extract_text_from_file = _boom  # type: ignore[assignment]
 
     result = reader._extract_fulltext_for_item(item_id=1)
     assert result is not None
     text, source = result
     assert "Full body text" in text
     assert source == "zotero-cache"
+
+
+@skip_on_ci
+def test_our_extraction_wins_over_the_ft_cache(tmp_path):
+    """The cache is flat pdftotext with no headings and usually no page
+    separators, so a file we can parse ourselves takes precedence."""
+    storage = tmp_path / "storage"
+    attachment_dir = storage / "BOTHAVAIL"
+    attachment_dir.mkdir(parents=True)
+    (attachment_dir / ".zotero-ft-cache").write_text("flat cached text")
+    pdf = attachment_dir / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 stand-in")
+
+    reader = _Reader(
+        attachments=[("BOTHAVAIL", "storage:paper.pdf", "application/pdf")],
+        storage_dir=storage,
+    )
+    reader._resolve_attachment_path = lambda _k, _p: pdf  # type: ignore[assignment]
+    reader._extract_text_from_file = (  # type: ignore[assignment]
+        lambda _path: "## Heading\n\nparsed markdown"
+    )
+
+    text, source = reader._extract_fulltext_for_item(item_id=1)
+    assert source == "pdf"
+    assert "parsed markdown" in text
+    assert "flat cached text" not in text
+
+
+@skip_on_ci
+def test_ft_cache_rescues_a_file_that_fails_to_parse(tmp_path):
+    """A resolvable but unparseable file must not shadow a usable cache."""
+    storage = tmp_path / "storage"
+    attachment_dir = storage / "CORRUPTP"
+    attachment_dir.mkdir(parents=True)
+    (attachment_dir / ".zotero-ft-cache").write_text("cached text for a corrupt PDF")
+    pdf = attachment_dir / "paper.pdf"
+    pdf.write_bytes(b"not actually a pdf")
+
+    reader = _Reader(
+        attachments=[("CORRUPTP", "storage:paper.pdf", "application/pdf")],
+        storage_dir=storage,
+    )
+    reader._resolve_attachment_path = lambda _k, _p: pdf  # type: ignore[assignment]
+    # What extract_file does for an unreadable file: log and yield nothing.
+    reader._extract_text_from_file = lambda _path: ""  # type: ignore[assignment]
+
+    text, source = reader._extract_fulltext_for_item(item_id=1)
+    assert source == "zotero-cache"
+    assert "cached text for a corrupt PDF" in text
 
 
 @skip_on_ci
@@ -123,7 +173,7 @@ def test_storage_scan_recovers_from_renamed_pdf(tmp_path):
         captured["path"] = path
         return "extracted via scan fallback"
 
-    reader._extract_text_from_pdf = _fake_extract  # type: ignore[assignment]
+    reader._extract_text_from_file = _fake_extract  # type: ignore[assignment]
 
     text, source = reader._extract_fulltext_for_item(item_id=1)
     assert text == "extracted via scan fallback"

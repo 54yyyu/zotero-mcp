@@ -12,6 +12,7 @@ the existing ``_extract_text_from_file`` fallback already handles it.
 
 from pathlib import Path
 
+from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY, is_extractable
 from zotero_mcp.local_db import LocalZoteroReader
 
 
@@ -22,7 +23,7 @@ class _Reader(LocalZoteroReader):
         self.db_path = "/dev/null"
         self._connection = None
         self.pdf_max_pages = 10
-        self.pdf_timeout = 30
+        self.attachment_priority = DEFAULT_ATTACHMENT_PRIORITY
         self._attachments = attachments
         self._fake_path_for = fake_path_for or {}
 
@@ -34,41 +35,41 @@ class _Reader(LocalZoteroReader):
 
 
 # ---------------------------------------------------------------------------
-# _is_extractable_attachment classifier
+# is_extractable classifier
 # ---------------------------------------------------------------------------
 
 
 class TestIsExtractableAttachment:
     def test_text_plain_ctype(self):
-        assert LocalZoteroReader._is_extractable_attachment(Path("a.txt"), "text/plain")
+        assert is_extractable(Path("a.txt"), "text/plain")
 
     def test_vtt_ctype(self):
-        assert LocalZoteroReader._is_extractable_attachment(Path("a.vtt"), "text/vtt")
+        assert is_extractable(Path("a.vtt"), "text/vtt")
 
     def test_srt_extension_without_ctype(self):
-        assert LocalZoteroReader._is_extractable_attachment(Path("captions.srt"), None)
+        assert is_extractable(Path("captions.srt"), None)
 
     def test_unknown_text_subtype(self):
         # Any ``text/*`` MIME is accepted (covers obscure transcript types).
-        assert LocalZoteroReader._is_extractable_attachment(Path("a.txt"), "text/x-asm")
+        assert is_extractable(Path("a.txt"), "text/x-asm")
 
     def test_docx_rejected(self):
         """Binary office formats are not accepted — read_text would return
         garbage and pollute the semantic index."""
-        assert not LocalZoteroReader._is_extractable_attachment(
+        assert not is_extractable(
             Path("paper.docx"),
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
 
     def test_video_rejected(self):
-        assert not LocalZoteroReader._is_extractable_attachment(
+        assert not is_extractable(
             Path("talk.mp4"), "video/mp4"
         )
 
     def test_pdf_returns_true_via_extension_set(self):
-        """PDFs are not in _TEXTUAL_SUFFIXES — the PDF path is handled
+        """PDFs are not on the textual allowlist — the PDF path is handled
         before this classifier ever runs. False here is correct."""
-        assert not LocalZoteroReader._is_extractable_attachment(
+        assert not is_extractable(
             Path("a.pdf"), "application/pdf"
         )
 
@@ -104,7 +105,10 @@ def test_extract_fulltext_prefers_pdf_over_textual(tmp_path):
     txt.write_text("plaintext fallback content")
 
     class _ReaderWithPdfText(_Reader):
-        def _extract_text_from_pdf(self, file_path):
+        def _extract_text_from_file(self, file_path):
+            # Asserting the suffix is the point of the test: the chooser must
+            # hand us the PDF, not the .txt sitting alongside it.
+            assert file_path.suffix == ".pdf"
             return "PDF content extracted"
 
     reader = _ReaderWithPdfText(
