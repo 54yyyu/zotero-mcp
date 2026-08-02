@@ -24,6 +24,7 @@ from conftest import DummyContext, FakeZotero
 
 from zotero_mcp import client as client_module
 from zotero_mcp import server
+from zotero_mcp.extract import ExtractedDoc
 from zotero_mcp.local_db import LocalZoteroReader
 from zotero_mcp.tools import read_pdf as read_pdf_tools
 from zotero_mcp.tools import write as write_tools
@@ -120,26 +121,21 @@ def use_local_library(monkeypatch, db_path, fake_zot):
     )
 
 
-def patch_fitz(monkeypatch, text="Page text."):
-    """Fake ``fitz`` so page extraction needs no real PDF."""
-
-    class FakePage:
-        def get_text(self):
-            return text
-
-    class FakeDocument:
-        def __len__(self):
-            return 1
-
-        def __getitem__(self, _index):
-            return FakePage()
-
-        def close(self):
-            pass
-
-    fake_fitz = types.ModuleType("fitz")
-    fake_fitz.open = lambda *_a, **_k: FakeDocument()
-    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+def patch_extract(monkeypatch, text="Page text."):
+    """Fake the extraction seam so page reads need no real PDF."""
+    monkeypatch.setattr(
+        "zotero_mcp.tools.read_pdf.pdf_page_count", lambda _path: 1
+    )
+    monkeypatch.setattr(
+        "zotero_mcp.tools.read_pdf.extract_pdf",
+        lambda _path, **_kw: ExtractedDoc(
+            text=text,
+            pages=(text,),
+            page_numbers=(0,),
+            page_count=1,
+            source="pdf",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +210,7 @@ class TestReadPdfPagesWithAttachmentKey:
         """End to end: the tool no longer answers 'No PDF attachment found'."""
         db_path, _ = make_library(tmp_path)
         use_local_library(monkeypatch, db_path, fake_zot)
-        patch_fitz(monkeypatch, text="Attachment page one.")
+        patch_extract(monkeypatch, text="Attachment page one.")
 
         result = server.read_pdf_pages(
             item_key=ATTACHMENT_KEY, start_page=1, ctx=DummyContext()

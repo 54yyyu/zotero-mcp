@@ -17,6 +17,7 @@ if sys.version_info >= (3, 14):
     )
 
 from zotero_mcp import semantic_search
+from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY
 
 DATE_MODIFIED = "2026-07-02 01:01:48"
 
@@ -44,6 +45,9 @@ class FakeReader:
     def __init__(self, *args, attachments=(), **kwargs):
         self._attachments = list(attachments)
         self.extract_calls = 0
+        # The scan stamps this onto every document so a later run can detect
+        # an attachment_priority change (#378).
+        self.attachment_priority = DEFAULT_ATTACHMENT_PRIORITY
 
     def __enter__(self):
         return self

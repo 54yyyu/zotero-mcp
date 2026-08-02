@@ -226,6 +226,34 @@ zotero-mcp db-status
 
 The semantic search provides similarity scores and finds papers based on conceptual understanding, not just keyword matching.
 
+### Text Extraction Settings
+
+PDFs are parsed with [pdf-inspector](https://github.com/firecrawl/pdf-inspector), which produces Markdown with the document's heading structure intact. These keys live under `semantic_search.extraction` in `~/.config/zotero-mcp/config.json`:
+
+```json
+{
+  "semantic_search": {
+    "extraction": {
+      "pdf_max_pages": 50,
+      "fulltext_display_max_pages": 10,
+      "attachment_priority": ["markdown", "pdf", "html", "other"]
+    }
+  }
+}
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `pdf_max_pages` | `50` | Pages extracted per PDF when indexing. Raising it does not widen what search sees on its own — that is bounded by the embedding model's token limit or `chunking.max_chunks_per_item`. |
+| `fulltext_display_max_pages` | `10` | Pages returned by `zotero_get_item_fulltext`. Separate from the above because reading a paper is bounded by your assistant's context, not by recall. |
+| `attachment_priority` | `["pdf", "html", "other"]` | Order in which attachment kinds are tried when an item has several readable files. |
+
+**`attachment_priority`** exists for the case where you have converted a paper to clean Markdown yourself and attached it next to the original PDF. By default the PDF still wins; listing `"markdown"` first makes your converted copy the one that gets read and indexed. Valid entries are `pdf`, `html`, `markdown`, `text` and `other`. `other` is a catch-all matching every kind not named elsewhere in the list, so the default sweeps Markdown and plain text into one bucket where the larger file wins. Omitting `other` means anything unlisted is never chosen.
+
+Changing this setting marks affected items for re-extraction, so a following `zotero-mcp update-db` refreshes text that came from a now-deprioritized attachment rather than leaving stale embeddings behind.
+
+To read one specific attachment regardless of priority, pass that attachment's own key to `zotero_get_item_fulltext` (find it with `zotero_get_item_children`) — an attachment key bypasses the priority order and reads exactly that file.
+
 ## 🖥️ Setup & Usage
 
 Full documentation is available at [Zotero MCP docs](https://stevenyuyy.com/zotero-mcp/).

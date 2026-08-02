@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 
+from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY
 from zotero_mcp.local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader, ZoteroItem
 
 
@@ -12,7 +13,7 @@ class FakeLocalZoteroReader(LocalZoteroReader):
         self.db_path = "/dev/null"
         self._connection = None
         self.pdf_max_pages = 10
-        self.pdf_timeout = 30
+        self.attachment_priority = DEFAULT_ATTACHMENT_PRIORITY
         self._fake_text = fake_text
         self._fake_pdf_path = fake_pdf_path
 

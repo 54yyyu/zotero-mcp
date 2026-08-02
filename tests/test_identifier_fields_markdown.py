@@ -11,7 +11,7 @@ import sys
 from unittest.mock import MagicMock
 
 for _mod_name in (
-    "markitdown", "pyzotero", "pyzotero.zotero",
+    "pyzotero", "pyzotero.zotero",
     "dotenv", "fastmcp", "mcp", "mcp.server",
     "zotero_mcp", "zotero_mcp.utils", "zotero_mcp._app",
 ):

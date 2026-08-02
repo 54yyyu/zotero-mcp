@@ -16,6 +16,27 @@ from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.config import load_config
 from zotero_mcp.tools import _helpers
 
+#: Pages of a PDF to surface when an agent reads a paper inline, if nothing
+#: is configured. Reading is token-bound where indexing is recall-bound, so
+#: this cap is deliberately separate from ``pdf_max_pages``.
+DEFAULT_FULLTEXT_DISPLAY_MAX = 10
+
+
+def _fulltext_display_max_pages() -> int:
+    """Resolve the page cap for ``zotero_get_item_fulltext``.
+
+    Only ``fulltext_display_max_pages`` governs this. It deliberately does
+    *not* fall back to ``pdf_max_pages``: that is the indexing cap, sized so
+    extraction never becomes the binding limit on recall, and inheriting it
+    here would dump dozens of pages into an agent's context. Applied to both
+    the local and Web API paths so an item reads the same length either way.
+    """
+    try:
+        configured = load_config().semantic_search.extraction.fulltext_display_max_pages
+    except Exception:
+        return DEFAULT_FULLTEXT_DISPLAY_MAX
+    return DEFAULT_FULLTEXT_DISPLAY_MAX if configured is None else configured
+
 
 @mcp.tool(
     name="zotero_get_item_metadata",
@@ -102,13 +123,17 @@ def get_item_metadata(
         "zotero_get_item_metadata. "
         "Avoid calling this on multiple papers in one conversation unless "
         "the user specifically asked to read several. "
-        "item_key: 8-character Zotero item key (parent item, not the "
-        "attachment). The tool locates the attached PDF/EPUB itself. "
+        "item_key: 8-character Zotero item key. Normally the parent item — "
+        "the tool locates the attached PDF/EPUB itself, preferring PDF "
+        "unless attachment_priority says otherwise. Passing an attachment's "
+        "own key instead reads exactly that file and skips the priority "
+        "order, which is how you read one specific attachment of an item "
+        "that has several (find keys via zotero_get_item_children). "
         "Scope: active library only. "
         "Extraction path (in order): local Zotero storage via SQLite when "
         "running in local mode (fastest, respects pdf_max_pages config); "
-        "Zotero's server-side fulltext index; direct download + PyMuPDF "
-        "parsing as a last resort. Image-only scanned PDFs without OCR "
+        "Zotero's server-side fulltext index; direct download and parsing "
+        "as a last resort. Image-only scanned PDFs without OCR "
         "may return little or no text. "
         "Example: zotero_get_item_fulltext(item_key='RTKZQI8E')."
     )
@@ -123,7 +148,12 @@ def get_item_fulltext(
     Get the full text content of a Zotero item.
 
     Args:
-        item_key: Zotero item key/ID
+        item_key: Zotero item key/ID. Normally the parent item, whose best
+            attachment is chosen by ``attachment_priority``. Passing an
+            *attachment's* own key is also supported and reads exactly that
+            file, bypassing the priority order — pair it with
+            ``zotero_get_item_children`` to read one specific attachment of
+            an item that has several (#378).
         ctx: MCP context
 
     Returns:
@@ -144,6 +174,7 @@ def get_item_fulltext(
         # In local mode, prefer direct local DB/storage extraction first.
         # This avoids pyzotero dump() failures on linked file:// attachments
         # when using remote clients over SSE/HTTP.
+        max_pages = _fulltext_display_max_pages()
         local_extract_error_msg = None
         try:
             from zotero_mcp.local_db import LocalZoteroReader
@@ -151,35 +182,22 @@ def get_item_fulltext(
             if _utils.is_local_mode():
                 config = load_config()
                 zotero_db_path = config.resolve_zotero_db_path()
-                extraction = config.semantic_search.extraction
-                pdf_max_pages = extraction.pdf_max_pages
-                # Separate display limit for when Claude reads papers
-                # (reduces token usage vs. indexing which can be higher)
-                fulltext_display_max = extraction.fulltext_display_max_pages
 
-                # Use display limit if configured, otherwise fall back to
-                # pdf_max_pages, with a default cap of 10 pages.
-                DEFAULT_FULLTEXT_DISPLAY_MAX = 10
-                if fulltext_display_max is not None:
-                    pdf_max_pages = fulltext_display_max
-                elif pdf_max_pages is None:
-                    pdf_max_pages = DEFAULT_FULLTEXT_DISPLAY_MAX
-
-                with LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
+                with LocalZoteroReader(
+                    db_path=zotero_db_path,
+                    pdf_max_pages=max_pages,
+                    attachment_priority=config.semantic_search.extraction.attachment_priority,
+                ) as reader:
                     local_item = reader.get_item_by_key(item_key)
                     if local_item:
                         extracted = reader.extract_fulltext_for_item(local_item.item_id)
                         if extracted and extracted[0]:
-                            # Skip timeout sentinel — don't show "__EXTRACTION_TIMEOUT__" as content
-                            if isinstance(extracted, tuple) and len(extracted) >= 2 and extracted[1] == "timeout":
-                                ctx.info("PDF extraction timed out — skipping local fulltext")
-                            else:
-                                source = extracted[1] if len(extracted) > 1 else "file"
-                                ctx.info(f"Retrieved full text from local storage ({source})")
-                                return _helpers._prepend_size_warning(
-                                    f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}",
-                                    "Consider using zotero_semantic_search to find specific content instead of reading full papers."
-                                )
+                            source = extracted[1] if len(extracted) > 1 else "file"
+                            ctx.info(f"Retrieved full text from local storage ({source})")
+                            return _helpers._prepend_size_warning(
+                                f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}",
+                                "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                            )
         except Exception as local_extract_error:
             local_extract_error_msg = str(local_extract_error)
             ctx.info(f"Local extraction fallback not available: {str(local_extract_error)}")
@@ -218,7 +236,7 @@ def get_item_fulltext(
 
                 if download.path and download.path.exists():
                     ctx.info(f"Downloaded file via {download.source} to {download.path}, converting to markdown")
-                    converted_text = _client.convert_to_markdown(download.path)
+                    converted_text = _client.convert_to_markdown(download.path, max_pages=max_pages)
                     return _helpers._prepend_size_warning(
                         f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}",
                         "Consider using zotero_semantic_search to find specific content instead of reading full papers."
