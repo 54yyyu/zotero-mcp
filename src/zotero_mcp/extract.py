@@ -188,13 +188,25 @@ def extract_pdf(
     )
 
 
+def _read_text(file_path: str | Path) -> str:
+    """Decode an attachment to text with uniform newlines.
+
+    Newlines are normalized to ``\\n`` so every extraction path emits the
+    same thing: pdf-inspector and markdownify already do, and without this a
+    CRLF attachment would be the odd one out — putting ``\\r\\n`` into
+    embeddings and quoted snippets on Windows but not elsewhere, for the
+    same document.
+    """
+    raw = Path(file_path).read_bytes().decode("utf-8", errors="replace")
+    return raw.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def extract_html(file_path: str | Path) -> ExtractedDoc:
     """Convert an HTML snapshot to Markdown."""
     from markdownify import markdownify
 
-    html = Path(file_path).read_bytes().decode("utf-8", errors="replace")
     return _doc_from_pages(
-        [markdownify(html, heading_style="ATX").strip()],
+        [markdownify(_read_text(file_path), heading_style="ATX").strip()],
         page_count=1,
         source="html",
     )
@@ -202,8 +214,7 @@ def extract_html(file_path: str | Path) -> ExtractedDoc:
 
 def extract_text_file(file_path: str | Path) -> ExtractedDoc:
     """Read an already-textual attachment (.txt, .md, .vtt, ...)."""
-    text = Path(file_path).read_bytes().decode("utf-8", errors="replace")
-    return _doc_from_pages([text], page_count=1, source="text")
+    return _doc_from_pages([_read_text(file_path)], page_count=1, source="text")
 
 
 def is_extractable(file_path: str | Path, ctype: str | None = None) -> bool:

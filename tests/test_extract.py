@@ -150,11 +150,22 @@ class TestExtractHtml:
 class TestExtractTextFile:
     def test_reads_content_verbatim(self, tmp_path):
         note = tmp_path / "notes.md"
-        note.write_text("# Heading\n\nsome body")
+        # write_bytes, not write_text: the latter applies the platform's
+        # newline translation, so this would assert against \r\n on Windows
+        # and stop testing what it means to.
+        note.write_bytes(b"# Heading\n\nsome body")
         doc = extract_text_file(note)
         assert doc.text == "# Heading\n\nsome body"
         assert doc.source == "text"
         assert doc.page_count == 1
+
+    @pytest.mark.parametrize("raw", [b"a\r\nb", b"a\rb"])
+    def test_newlines_are_normalized(self, raw, tmp_path):
+        """A CRLF attachment must not put \\r\\n into embeddings when the
+        same document read as a PDF would yield \\n."""
+        note = tmp_path / "crlf.txt"
+        note.write_bytes(raw)
+        assert extract_text_file(note).text == "a\nb"
 
 
 # ---------------------------------------------------------------------------

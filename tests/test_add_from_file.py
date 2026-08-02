@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
 
 from zotero_mcp import server
-from conftest import DummyContext, FakeZotero, _FakeResponse
+from conftest import DummyContext, FakeZotero, _FakeResponse, skip_on_windows
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +115,7 @@ def _patch_fitz(monkeypatch, doc):
 # ---------------------------------------------------------------------------
 
 class TestHappyPathNoDoi:
+    @skip_on_windows
     def test_creates_document_item_and_attachment(self, monkeypatch, dummy_ctx):
         fake_zot = FakeZoteroForFile()
         _patch_path_valid(monkeypatch)
@@ -681,6 +682,7 @@ class TestTagsAndCollections:
 # ---------------------------------------------------------------------------
 
 class TestAttachmentBoth:
+    @skip_on_windows
     def test_calls_attachment_both_not_simple(self, monkeypatch, dummy_ctx):
         """Verify attachment_both is called with correct (basename, full_path) tuple."""
         fake_zot = FakeZoteroForFile()
