@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`fastmcp` is pinned to `<4`, and `httpx` is now a declared dependency.** FastMCP 4 (currently `4.0.0b1`) targets the stateless `2026-07-28` MCP revision and is a breaking upgrade for this server: it removes `ctx.sample()`/`ctx.list_roots()`/`ctx.elicit()`, raises the `pydantic` floor to 2.12, and replaces `httpx` with `httpx2` throughout. That last change is the reason `httpx` moves into the dependency list — `client.py` imports it directly for the HTTP/1.1-pinned local Zotero transport, and until now relied on it arriving transitively through FastMCP. The CI test job installed `fastmcp` unpinned, so it would have picked up the 4.0 stable release on its next scheduled run and failed without a commit to this repo; it is pinned to match. The `mcp` dependency is dropped: nothing in `src/` imports it, and FastMCP already pins the SDK version it needs. The FastMCP 4 migration is tracked separately and will not ship until 4.0 leaves beta.
+
 ### Fixed
 - **OpenAI Batch API imports no longer fail on large libraries.** `ChromaClient.upsert_documents` already split upserts into chunks of `client.get_max_batch_size()` to stay under ChromaDB's batch limit, but `upsert_embeddings` — the method the batch-import path uses to write precomputed vectors — upserted the whole payload in a single call, so any import larger than ChromaDB's `max_batch_size` (~5461) failed outright (e.g. "Batch size of 6312 is greater than max batch size of 5461"). `upsert_embeddings` now chunks the same way (#410).
 
