@@ -1,22 +1,21 @@
 """Tests for the standalone CLI module (zotero-cli entry point)."""
 
-import sys
 from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
 import zotero_mcp.tools.write as write_tools
+from zotero_mcp._context import Context
 from zotero_mcp.cli_standalone import (
     CLIContext,
     build_parser,
     cmd_add,
+    cmd_annotations,
     cmd_edit,
     cmd_notes,
     cmd_search,
     main,
 )
-from zotero_mcp._context import Context
-
 
 # ---------------------------------------------------------------------------
 # CLIContext
@@ -125,6 +124,10 @@ class TestParser:
         assert args.command in ("annotations", "ann")
         assert args.subcommand == "list"
 
+    def test_annotations_list_json_format(self):
+        args = self.parser.parse_args(["annotations", "list", "--format", "json"])
+        assert args.format == "json"
+
     def test_collections_alias_coll(self):
         args = self.parser.parse_args(["coll", "search", "my collection"])
         assert args.command in ("collections", "coll")
@@ -216,6 +219,29 @@ class TestParser:
 # ---------------------------------------------------------------------------
 # main() dispatch
 # ---------------------------------------------------------------------------
+
+
+def test_cmd_annotations_passes_json_format(capsys):
+    args = MagicMock(
+        subcommand="list",
+        item_key="PAPER001",
+        pdf_extraction=False,
+        limit=100,
+        format="json",
+        verbose=False,
+    )
+    mock_annotations = MagicMock()
+    mock_annotations.get_annotations.return_value = "[]"
+
+    with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+        with patch(
+            "zotero_mcp.cli_standalone._import_tools",
+            return_value=(MagicMock(), MagicMock(), mock_annotations, MagicMock(), MagicMock()),
+        ):
+            cmd_annotations(args)
+
+    assert mock_annotations.get_annotations.call_args.kwargs["format"] == "json"
+    assert capsys.readouterr().out.strip() == "[]"
 
 class TestMain:
     def test_no_command_prints_help_and_exits_0(self, capsys):

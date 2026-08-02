@@ -1,5 +1,7 @@
 """Tests for the synthesis tool module (digest + bibliography export)."""
 
+import json
+
 from conftest import DummyContext, FakeZotero
 
 import zotero_mcp.client as zotero_client
@@ -90,12 +92,86 @@ def test_synthesize_annotations_groups_by_paper(monkeypatch):
     assert "1 notes" in out
 
 
+def test_synthesize_annotations_markdown_disambiguates_same_title(monkeypatch):
+    """Two distinct papers sharing a title get distinguishable headings."""
+    fake = _DigestZotero()
+    fake._title_map["PAPER002"] = "Attention Is All You Need"
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
+
+    out = synthesis.synthesize_annotations(ctx=DummyContext())
+
+    assert "## Attention Is All You Need (PAPER001)" in out
+    assert "## Attention Is All You Need (PAPER002)" in out
+    # Still two papers, and each keeps its own highlight.
+    assert "2 papers" in out
+    assert "Self-attention scales to long sequences" in out
+    assert "Residual connections ease optimization" in out
+
+
+def test_synthesize_annotations_json_groups_structured_records_by_paper(monkeypatch):
+    fake = _DigestZotero()
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
+
+    payload = json.loads(
+        synthesis.synthesize_annotations(format="json", ctx=DummyContext())
+    )
+
+    assert payload["summary"] == {
+        "papers": 2,
+        "highlights": 2,
+        "notes": 1,
+    }
+    papers = {paper["item_key"]: paper for paper in payload["papers"]}
+    assert papers["PAPER001"]["title"] == "Attention Is All You Need"
+    assert papers["PAPER001"]["highlights"][0] == {
+        "annotation_key": "ANN1",
+        "item_key": "PAPER001",
+        "attachment_key": "ATTACH01",
+        "parent_title": "Attention Is All You Need",
+        "attachment_title": "Full Text PDF",
+        "type": None,
+        "page": None,
+        "page_index": None,
+        "text": "Self-attention scales to long sequences",
+        "comment": "key claim",
+        "color": None,
+        "color_category": None,
+        "tags": [],
+        "created": None,
+        "modified": None,
+        "source": "zotero",
+    }
+    assert papers["PAPER001"]["notes"] == [{
+        "note_key": "NOTE1",
+        "item_key": "PAPER001",
+        "parent_title": "Attention Is All You Need",
+        "text": "Transformers remove recurrence entirely.",
+        "tags": [],
+        "created": None,
+        "modified": None,
+    }]
+
+
 def test_synthesize_annotations_empty(monkeypatch):
     fake = FakeZotero()  # items() returns [] for every itemType
     monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
 
     out = synthesis.synthesize_annotations(ctx=DummyContext())
     assert "No annotations or notes found" in out
+
+
+def test_synthesize_annotations_json_empty_result_is_structured(monkeypatch):
+    fake = FakeZotero()
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
+
+    payload = json.loads(
+        synthesis.synthesize_annotations(format="json", ctx=DummyContext())
+    )
+
+    assert payload == {
+        "summary": {"papers": 0, "highlights": 0, "notes": 0},
+        "papers": [],
+    }
 
 
 # ---------------------------------------------------------------------------

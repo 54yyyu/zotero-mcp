@@ -495,7 +495,8 @@ zotero-cli edit ABC123 --add-tags "reviewed,important" --date "2024"
 zotero-cli notes list ABC123
 zotero-cli notes create --item-key ABC123 --text "My note" --tags "idea"
 zotero-cli notes create --item-key ABC123 --text -   # read from stdin
-zotero-cli ann list ABC123                    # annotations (short alias)
+zotero-cli ann list --item-key ABC123         # annotations (short alias)
+zotero-cli ann list --item-key ABC123 --format json  # structured export
 zotero-cli ann search "highlight text"
 
 # Add items
@@ -614,7 +615,8 @@ zotero_remove_item_relation(
 - `zotero_get_item_children`: Get attachments and notes
 
 ### 📝 Annotation & Notes Tools
-- `zotero_get_annotations`: Get annotations (including direct PDF extraction)
+- `zotero_get_annotations`: Get annotations (including direct PDF extraction); use `format="json"` for normalized records suitable for scripts and other MCP tools
+- `zotero_synthesize_annotations`: Build a per-paper annotation/note digest; supports `format="json"` for structured grouped output
 - `zotero_get_notes`: Retrieve notes from your Zotero library
 - `zotero_search_notes`: Search in notes and annotations (including PDF-extracted)
 - `zotero_create_note`: Create a new note for an item (beta feature)
