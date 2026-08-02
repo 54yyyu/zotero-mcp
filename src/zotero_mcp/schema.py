@@ -38,6 +38,10 @@ from pathlib import Path
 SCHEMA_URL = "https://api.zotero.org/schema"
 DATA_FILE = Path(__file__).parent / "data" / "zotero_basefields.json"
 REFRESH_TTL_SECONDS = 7 * 24 * 3600  # weekly; renames are structurally frozen
+# Back-off after a failed refresh. Without it a machine that simply has no route
+# to api.zotero.org — the local-only, offline case this server explicitly
+# supports — retries on every single startup and prints a warning every time.
+FAILED_REFRESH_BACKOFF_SECONDS = 24 * 3600
 
 _table_cache: dict | None = None  # process memo for the active table
 
@@ -78,11 +82,50 @@ def _write_cache(table: dict) -> bool:
         return False
 
 
+def _attempt_path() -> Path:
+    """Sidecar recording the last *failed* refresh attempt.
+
+    Deliberately not the schema cache itself: that file is what
+    :func:`get_table` resolves from, and stamping a failure onto it would
+    either corrupt it or shadow a newer vendored table after an upgrade.
+    """
+    return _cache_path().with_name(_cache_path().name + ".last-attempt")
+
+
+def _read_last_attempt() -> float:
+    try:
+        return float(_attempt_path().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _write_last_attempt() -> None:
+    try:
+        path = _attempt_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass  # best-effort back-off; a read-only cache dir just retries
+
+
+def _clear_last_attempt() -> None:
+    try:
+        _attempt_path().unlink()
+    except OSError:
+        pass
+
+
 def get_table() -> dict:
     """Return the active table (on-disk cache if present, else vendored)."""
     global _table_cache
     if _table_cache is None:
-        _table_cache = _read_cache() or _load_vendored()
+        cached = _read_cache()
+        # A cache truncated by a crash or a full disk parses as JSON but has no
+        # itemTypes; fall through to the vendored floor rather than KeyError on
+        # every field resolution from then on.
+        if not isinstance(cached, dict) or not isinstance(cached.get("itemTypes"), dict):
+            cached = None
+        _table_cache = cached or _load_vendored()
     return _table_cache
 
 
@@ -153,12 +196,23 @@ def refresh(force: bool = False) -> str:
     conditional GET (``If-None-Match``), so an unchanged schema costs a bodyless
     ``304``. Never raises: on any failure resolution keeps working from the
     existing cache or the vendored floor, and the outcome is ``"offline"``.
+
+    Set ``ZOTERO_MCP_SCHEMA_REFRESH=0`` to disable the network call entirely
+    (outcome ``"disabled"``); a local-only install is otherwise the one
+    configuration that reaches api.zotero.org for nothing else.
     """
     global _table_cache
+    if not force and os.environ.get("ZOTERO_MCP_SCHEMA_REFRESH", "").strip() in {"0", "false", "no"}:
+        return "disabled"
+
     cached = _read_cache()
-    if not force and cached is not None:
-        if (time.time() - cached.get("_checked", 0)) < REFRESH_TTL_SECONDS:
+    if not force:
+        if cached is not None and (time.time() - cached.get("_checked", 0)) < REFRESH_TTL_SECONDS:
             return "unchanged"
+        # No usable cache: an offline machine would otherwise retry (and warn)
+        # on every startup forever, since a failure writes no cache at all.
+        if (time.time() - _read_last_attempt()) < FAILED_REFRESH_BACKOFF_SECONDS:
+            return "offline"
 
     headers = {}
     if cached and cached.get("_etag"):
@@ -170,6 +224,7 @@ def refresh(force: bool = False) -> str:
             cached["_checked"] = time.time()
             _write_cache(cached)
             _table_cache = cached
+            _clear_last_attempt()
             return "unchanged"
         if resp.status_code == 200:
             table = _build_table(resp.json())
@@ -181,9 +236,12 @@ def refresh(force: bool = False) -> str:
                     f"not write the cache at {_cache_path()}\n"
                 )
             _table_cache = table
+            _clear_last_attempt()
             return "refreshed"
     except Exception:
         # Connection error, non-JSON 200 (captive portal), malformed schema —
         # all keep resolution working from the cache or vendored floor.
+        _write_last_attempt()
         return "offline"
+    _write_last_attempt()
     return "offline"  # unexpected status (4xx / 5xx)

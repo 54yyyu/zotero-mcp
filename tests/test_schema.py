@@ -215,3 +215,92 @@ class TestRefresh:
         monkeypatch.setattr(schema, "_http_get", _spy)
         assert schema.refresh(force=False) == "unchanged"
         assert seen == ['"v42"']
+
+
+class TestOfflineBackoff:
+    """An offline machine must not retry (and warn) on every single startup."""
+
+    def test_failed_refresh_backs_off_on_the_next_startup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_CACHE", str(tmp_path / "schema.json"))
+        calls = []
+
+        def _boom(url, headers):
+            calls.append(url)
+            raise OSError("no network")
+
+        monkeypatch.setattr(schema, "_http_get", _boom)
+        assert schema.refresh(force=False) == "offline"
+        assert len(calls) == 1
+        # Second startup within the back-off window: no second request.
+        assert schema.refresh(force=False) == "offline"
+        assert len(calls) == 1
+        # An explicit `zotero-mcp schema-refresh` still bypasses the back-off.
+        assert schema.refresh(force=True) == "offline"
+        assert len(calls) == 2
+
+    def test_backoff_lapses(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_CACHE", str(tmp_path / "schema.json"))
+        calls = []
+
+        def _boom(url, headers):
+            calls.append(url)
+            raise OSError("no network")
+
+        monkeypatch.setattr(schema, "_http_get", _boom)
+        assert schema.refresh(force=False) == "offline"
+        schema._attempt_path().write_text(
+            str(time.time() - schema.FAILED_REFRESH_BACKOFF_SECONDS - 1), encoding="utf-8"
+        )
+        assert schema.refresh(force=False) == "offline"
+        assert len(calls) == 2
+
+    def test_success_clears_the_backoff_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_CACHE", str(tmp_path / "schema.json"))
+        monkeypatch.setattr(schema, "_http_get",
+                            lambda url, headers: _FakeHTTPResponse(500))
+        assert schema.refresh(force=False) == "offline"
+        assert schema._attempt_path().exists()
+
+        doc = {"version": 43, "itemTypes": [
+            {"itemType": "statute", "fields": [{"field": "nameOfAct", "baseField": "title"}]},
+        ]}
+        monkeypatch.setattr(schema, "_http_get",
+                            lambda url, headers: _FakeHTTPResponse(200, doc, {"ETag": '"v43"'}))
+        assert schema.refresh(force=True) == "refreshed"
+        assert not schema._attempt_path().exists()
+
+
+class TestRefreshOptOut:
+
+    def test_env_var_disables_the_network_call(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_CACHE", str(tmp_path / "schema.json"))
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_REFRESH", "0")
+
+        def _must_not_call(url, headers):
+            raise AssertionError("network called with refresh disabled")
+
+        monkeypatch.setattr(schema, "_http_get", _must_not_call)
+        assert schema.refresh(force=False) == "disabled"
+        # Resolution is unaffected — the vendored floor is always correct.
+        assert schema.resolve_field("statute", "title") == "nameOfAct"
+
+    def test_explicit_refresh_overrides_the_opt_out(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_CACHE", str(tmp_path / "schema.json"))
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_REFRESH", "0")
+        doc = {"version": 43, "itemTypes": [
+            {"itemType": "statute", "fields": [{"field": "nameOfAct", "baseField": "title"}]},
+        ]}
+        monkeypatch.setattr(schema, "_http_get",
+                            lambda url, headers: _FakeHTTPResponse(200, doc, {"ETag": '"v43"'}))
+        assert schema.refresh(force=True) == "refreshed"
+
+
+class TestCorruptCache:
+
+    def test_truncated_cache_falls_back_to_the_vendored_floor(self, tmp_path, monkeypatch):
+        cache = tmp_path / "schema.json"
+        monkeypatch.setenv("ZOTERO_MCP_SCHEMA_CACHE", str(cache))
+        # Parses as JSON, but a crash/full disk left it without itemTypes.
+        cache.write_text('{"version": 42}', encoding="utf-8")
+        schema._table_cache = None
+        assert schema.resolve_field("statute", "title") == "nameOfAct"

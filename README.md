@@ -383,6 +383,17 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
   preferences (read from the profile's `prefs.js`) is tried first, then the
   default `~/Zotero` location.
 
+**Item schema:**
+- `ZOTERO_MCP_SCHEMA_REFRESH=0`: Disable the weekly background refresh of
+  Zotero's item-type schema from `api.zotero.org`. The schema is what routes a
+  generic `title=` update to the field a type actually stores it under (a
+  statute's `nameOfAct`, a case's `caseName`). A copy ships with the package, so
+  disabling the refresh only means new item types added by Zotero after this
+  release won't be picked up until you upgrade. `zotero-mcp schema-refresh`
+  still refreshes on demand.
+- `ZOTERO_MCP_SCHEMA_CACHE`: Custom path for the refreshed schema cache
+  (default: `~/.cache/zotero-mcp/schema.json`).
+
 ### Command-Line Options
 
 ```bash
