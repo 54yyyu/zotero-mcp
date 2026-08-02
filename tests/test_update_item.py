@@ -158,6 +158,50 @@ def _make_book_section_item(key="BSEC1234", version=10,
     }
 
 
+def _make_statute_item(key="STAT1234", version=10, name_of_act="Original Act",
+                       date_enacted="2020-01-01"):
+    """Statute item — title is stored as nameOfAct, date as dateEnacted.
+
+    citationKey is intentionally omitted so the valid-but-absent write path is
+    exercised (the field is valid for the type but not on the fetched item).
+    """
+    return {
+        "key": key,
+        "version": version,
+        "data": {
+            "key": key,
+            "version": version,
+            "itemType": "statute",
+            "nameOfAct": name_of_act,
+            "dateEnacted": date_enacted,
+            "code": "", "codeNumber": "", "publicLawNumber": "",
+            "section": "", "session": "", "history": "",
+            "abstractNote": "", "language": "", "shortTitle": "",
+            "url": "", "accessDate": "", "rights": "", "extra": "",
+            "creators": [], "tags": [], "collections": [], "relations": {},
+        },
+    }
+
+
+def _make_case_item(key="CASE1234", version=10, case_name="Original Case"):
+    """Case item — title is stored as caseName, date as dateDecided."""
+    return {
+        "key": key,
+        "version": version,
+        "data": {
+            "key": key,
+            "version": version,
+            "itemType": "case",
+            "caseName": case_name,
+            "court": "", "dateDecided": "", "docketNumber": "",
+            "reporterVolume": "", "firstPage": "", "history": "",
+            "abstractNote": "", "language": "", "shortTitle": "",
+            "url": "", "accessDate": "", "rights": "", "extra": "",
+            "creators": [], "tags": [], "collections": [], "relations": {},
+        },
+    }
+
+
 class FakeZoteroForUpdate(FakeZotero):
     """Extends FakeZotero with update-specific behaviour."""
 
@@ -177,6 +221,156 @@ class FakeZoteroForUpdate(FakeZotero):
     def update_item(self, item, **kwargs):
         self.update_calls.append(item)
         return _FakeResponse(204)
+
+
+# ---------------------------------------------------------------------------
+# Base-field routing (#402): generic params -> the type's actual field key
+# ---------------------------------------------------------------------------
+
+class TestBaseFieldRouting:
+
+    def test_title_on_statute_routes_to_nameOfAct(self, monkeypatch):
+        item = _make_statute_item(name_of_act="Old Act")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="STAT1234", title="Marine Areas Act 2020",
+            ctx=DummyContext())
+
+        data = fake.update_calls[0]["data"]
+        assert data["nameOfAct"] == "Marine Areas Act 2020"
+        assert "title" not in data  # not written to the literal base key
+        assert "Skipped" not in result
+
+    def test_title_on_case_routes_to_caseName(self, monkeypatch):
+        item = _make_case_item(case_name="Old Case")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(item_key="CASE1234", title="Smith v Jones",
+                           ctx=DummyContext())
+
+        assert fake.update_calls[0]["data"]["caseName"] == "Smith v Jones"
+
+    def test_date_on_statute_routes_to_dateEnacted(self, monkeypatch):
+        item = _make_statute_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(item_key="STAT1234", date="2021-07-01",
+                           ctx=DummyContext())
+
+        assert fake.update_calls[0]["data"]["dateEnacted"] == "2021-07-01"
+
+    def test_valid_but_absent_field_is_written_not_skipped(self, monkeypatch):
+        """citationKey is valid for a statute but absent on the fetched item;
+        validating against the schema (not instance presence) adds it."""
+        item = _make_statute_item()
+        assert "citationKey" not in item["data"]
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(item_key="STAT1234",
+                                    citation_key="marineAct2020",
+                                    ctx=DummyContext())
+
+        assert fake.update_calls[0]["data"]["citationKey"] == "marineAct2020"
+        assert "Skipped" not in result
+
+    def test_field_invalid_for_type_is_skipped(self, monkeypatch):
+        """bookTitle is not a valid field for a statute -> reported skipped."""
+        item = _make_statute_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(item_key="STAT1234",
+                                    book_title="Nope", ctx=DummyContext())
+
+        assert "Skipped" in result and "book_title" in result
+        assert fake.update_calls == []  # nothing valid to change
+
+    def test_publication_title_routes_to_bookTitle_on_book_section(self, monkeypatch):
+        """Second rename family, end-to-end: publicationTitle -> bookTitle."""
+        item = _make_book_section_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        server.update_item(item_key="BSEC1234",
+                           publication_title="Collected Essays",
+                           ctx=DummyContext())
+
+        data = fake.update_calls[0]["data"]
+        assert data["bookTitle"] == "Collected Essays"
+        assert "publicationTitle" not in data
+
+    def test_routed_change_message_uses_generic_param_name(self, monkeypatch):
+        """The diff line names the generic param (title), not the resolved key."""
+        item = _make_statute_item(name_of_act="Old Act")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(item_key="STAT1234", title="New Act",
+                                    ctx=DummyContext())
+
+        assert "- **title**: 'Old Act' -> 'New Act'" in result
+
+    def test_routed_absent_field_message_shows_none(self, monkeypatch):
+        item = _make_statute_item()
+        item["data"].pop("dateEnacted")  # valid field, now absent
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(item_key="STAT1234", date="2021-07-01",
+                                    ctx=DummyContext())
+
+        assert "- **date**: (none) -> '2021-07-01'" in result
+        assert fake.update_calls[0]["data"]["dateEnacted"] == "2021-07-01"
+
+    def test_routed_and_skipped_in_one_call(self, monkeypatch):
+        """A routed field applies while an invalid one is reported skipped."""
+        item = _make_statute_item(name_of_act="Old")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(item_key="STAT1234", title="New Act",
+                                    book_title="Nope", ctx=DummyContext())
+
+        assert fake.update_calls[0]["data"]["nameOfAct"] == "New Act"
+        assert "Skipped" in result and "book_title" in result
+
+    def test_unknown_item_type_falls_back_to_presence_gate(self, monkeypatch):
+        """A type absent from the schema table falls back to instance-presence:
+        a present field updates, an absent one is skipped."""
+        item = {
+            "key": "FUT12345", "version": 1,
+            "data": {
+                "key": "FUT12345", "version": 1,
+                "itemType": "futureTypeNotInSchema",
+                "title": "Old", "extra": "",
+                "creators": [], "tags": [], "collections": [], "relations": {},
+            },
+        }
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(item_key="FUT12345", title="New",
+                                    volume="3", ctx=DummyContext())
+
+        data = fake.update_calls[0]["data"]
+        assert data["title"] == "New"      # present field updates
+        assert "volume" not in data        # absent field skipped under fallback
+        assert "volume" in result
 
 
 # ---------------------------------------------------------------------------
@@ -904,12 +1098,12 @@ class TestUpdateItemNewFields:
         assert fake.update_calls[0]["data"]["place"] == "Cambridge, MA"
         assert "Cambridge, MA" in result
 
-    def test_update_place_skipped_on_journal_article(self, monkeypatch):
-        # journalArticle has no place field, so passing place= should be
-        # reported as a skipped field rather than silently writing an
-        # invalid key, matching the existing skip-warning behaviour for
-        # issue= on a book.
+    def test_update_place_written_on_journal_article(self, monkeypatch):
+        # place IS a valid journalArticle field per the Zotero schema; it is
+        # simply absent from the fetched item here. Validating against the
+        # schema (not instance presence) writes it rather than false-skipping.
         item = _make_item()
+        assert "place" not in item["data"]
         fake = FakeZoteroForUpdate(items=[item])
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
@@ -920,9 +1114,8 @@ class TestUpdateItemNewFields:
             ctx=DummyContext(),
         )
 
-        assert len(fake.update_calls) == 0
-        assert "place" in result
-        assert "skip" in result.lower() or "not valid" in result.lower()
+        assert fake.update_calls[0]["data"]["place"] == "New York"
+        assert "Skipped" not in result
 
     def test_update_isbn_on_book(self, monkeypatch):
         item = _make_book_item()
@@ -1020,9 +1213,11 @@ class TestUpdateItemNewFields:
             "doeCorrectArticle2024"
         assert "doeCorrectArticle2024" in result
 
-    def test_access_date_skipped_on_book(self, monkeypatch):
-        """accessDate is not valid for books — should be in skip warning."""
+    def test_access_date_written_on_book(self, monkeypatch):
+        """accessDate IS valid for books per the Zotero schema; absent from the
+        fetched item, it is written rather than false-skipped."""
         item = _make_book_item()
+        assert "accessDate" not in item["data"]
         fake = FakeZoteroForUpdate(items=[item])
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
@@ -1033,10 +1228,8 @@ class TestUpdateItemNewFields:
             ctx=DummyContext(),
         )
 
-        # No update should happen (accessDate not in book schema)
-        assert len(fake.update_calls) == 0
-        assert "access_date" in result
-        assert "book" in result.lower()
+        assert fake.update_calls[0]["data"]["accessDate"] == "2026-04-21"
+        assert "Skipped" not in result
 
     def test_update_book_title_on_book_section(self, monkeypatch):
         item = _make_book_section_item()
