@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`zotero_search_by_tag` states its scope.** An empty collection-scoped search reported only "No items found with tag: X", which reads as "this tag matches nothing" and invites a retry without `collection_key` — a library-wide search whose results are indistinguishable from scoped ones in the output. The empty message now names the collection that was searched and says what dropping the scope would change, and a library-wide result header says so explicitly instead of staying silent about the absence of a scope (#418).
+
 ## [0.7.0] - 2026-08-02
 
 ### Added

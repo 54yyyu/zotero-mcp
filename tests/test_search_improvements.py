@@ -500,3 +500,76 @@ class TestCascadeTimeout:
 
         # Should return "no items found" without trying all strategies
         assert "No items found" in result
+
+
+# ---------------------------------------------------------------------------
+# search_by_tag scope legibility (#418)
+# ---------------------------------------------------------------------------
+
+def _tagged(key):
+    return {"key": key, "data": {"key": key, "itemType": "journalArticle",
+                                 "title": f"Item {key}", "creators": [], "tags": [],
+                                 "collections": ["OTHERCOL"]}}
+
+
+class _ScopeZotero:
+    """Collection is empty for the tag; the library is not."""
+
+    def __init__(self, library_hits):
+        self._library_hits = library_hits
+
+    def collection(self, key):
+        return {"key": key, "data": {"name": "Literature Review"}}
+
+    def collection_items(self, key, **kwargs):
+        return []
+
+    def add_parameters(self, **kwargs):
+        pass
+
+    def items(self, **kwargs):
+        return self._library_hits
+
+
+def test_empty_scoped_tag_search_names_the_collection(monkeypatch):
+    """The bare "no items found" read as "this tag matches nothing anywhere",
+    which invites a retry without collection_key whose library-wide results
+    look scoped."""
+    from zotero_mcp import server
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: _ScopeZotero([_tagged("KYYQ2HSY")]))
+
+    result = server.search_by_tag(tag=["didn't use"], collection_key="MSYFGVKG",
+                                  limit=6, ctx=DummyContext())
+
+    assert "MSYFGVKG" in result
+    assert "collection was searched" in result
+    assert "without collection_key searches the whole library" in result
+
+
+def test_unscoped_tag_search_says_it_is_unscoped(monkeypatch):
+    """A library-wide result must not be mistakable for a scoped one."""
+    from zotero_mcp import server
+    hits = [_tagged(k) for k in ("KYYQ2HSY", "YLVWDV8K", "JVB8MG2B")]
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: _ScopeZotero(hits))
+
+    result = server.search_by_tag(tag=["didn't use"], limit=6, ctx=DummyContext())
+
+    assert "entire library" in result
+    assert "no collection scope applied" in result
+    assert "in Collection" not in result
+
+
+def test_scoped_hits_still_name_the_collection(monkeypatch):
+    from zotero_mcp import server
+
+    class Scoped(_ScopeZotero):
+        def collection_items(self, key, **kwargs):
+            return [_tagged("INSCOPE1")]
+
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: Scoped([]))
+    result = server.search_by_tag(tag=["t"], collection_key="MSYFGVKG",
+                                  limit=6, ctx=DummyContext())
+    assert "in Collection MSYFGVKG" in result
+    assert "entire library" not in result

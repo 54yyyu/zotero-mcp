@@ -420,10 +420,25 @@ def search_by_tag(
             results = zot.items()
 
         if not results:
+            if collection_key:
+                # Name the scope that was applied. The bare message read as
+                # "this tag matches nothing", which invites a retry without
+                # collection_key — a library-wide search whose results look
+                # like scoped ones (#418).
+                return (
+                    f"No items found with tag: '{tag}' in collection {collection_key}. "
+                    f"The collection was searched and no item in it carries that tag. "
+                    f"Items elsewhere in the library may still carry it; re-running "
+                    f"without collection_key searches the whole library, not this collection."
+                )
             return f"No items found with tag: '{tag}'"
 
-        # Format results as markdown
-        scope = f" in Collection {collection_key}" if collection_key else ""
+        # Format results as markdown. State the scope in both directions, so a
+        # library-wide result is never mistaken for a collection-scoped one.
+        scope = (
+            f" in Collection {collection_key}" if collection_key
+            else " (entire library — no collection scope applied)"
+        )
         output = [f"# Search Results for Tag: '{tag}'{scope}", ""]
 
         for i, item in enumerate(results, 1):
