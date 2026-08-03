@@ -80,28 +80,19 @@ def _get_write_client(ctx):
 def _get_bibliography_client(ctx=None):
     """Return a client able to render CSL bibliographies/citations.
 
-    Zotero's local HTTP API has no citation engine — any request carrying
-    ``content=bib`` / ``citation`` / ``bibtex`` is rejected with "Local API
-    does not support Atom output" (#371). Only the web API can render, so
-    mirror the hybrid pattern in ``_get_write_client``: render through the
-    web client whenever web credentials are configured (applying the active
-    library override so a switched-to group library is targeted), and raise
-    an actionable ValueError in local-only mode instead of surfacing the raw
-    Atom error.
+    The local API *does* have a citation engine; what it lacks is Atom. The
+    original diagnosis of #371 confused the two, because the only rendering
+    request we made was ``content=bib``/``citation``/``bibtex``, and ``content``
+    implies ``format=atom`` — which the local API answers with 501 "Local API
+    does not support Atom output". That was read as "no citation engine", and
+    rendering was routed through the web API, which locked local-only users out
+    of a feature their own Zotero could serve.
+
+    Asking the JSON way instead (``include=bib``/``citation`` with ``style``,
+    or the top-level ``format=bibtex`` export) works against the local API with
+    no credentials at all, so every mode can now use its normal client.
     """
-    if not _utils.is_local_mode():
-        return _client.get_zotero_client()
-    web_zot = _client.get_web_zotero_client()
-    if web_zot is not None:
-        apply_library_override(web_zot, _client.get_active_library())
-        if ctx is not None:
-            ctx.info("Routing bibliography rendering through the Zotero web API")
-        return web_zot
-    raise ValueError(
-        "Bibliography and citation rendering requires Zotero's web API CSL "
-        "engine; the local API has no citation engine. "
-        "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
-    )
+    return _client.get_zotero_client()
 
 
 def fetch_trashed_collections(zot) -> list[dict]:

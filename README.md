@@ -176,6 +176,21 @@ When prompted by `zotero-mcp setup --semantic-config-only`, choose **Ollama** an
 zotero-mcp update-db --force-rebuild
 ```
 
+Two `semantic_search.embedding_config` keys tune the Ollama path for slower
+hardware or very large libraries:
+
+```jsonc
+"embedding_config": {
+  "model_name": "bge-m3",
+  "timeout": 600,            // HTTP timeout per /api/embed call (default 120s)
+  "request_batch_size": 64   // documents per request (default 64)
+}
+```
+
+Raise `timeout` if indexing reports `Read timed out`; lower
+`request_batch_size` to make each request cover less GPU work, which usually
+fixes timeouts more reliably than raising the timeout alone.
+
 When you choose OpenAI, setup also asks whether database updates should use
 OpenAI Batch API. Batch updates are cheaper for large libraries, but they are
 asynchronous: submit the batch, wait for completion, then import the embeddings.

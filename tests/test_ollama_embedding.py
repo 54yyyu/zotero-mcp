@@ -47,9 +47,11 @@ def test_call_uses_api_embed_and_sends_one_batched_request(monkeypatch):
     )
     result = ef(["alpha", "beta"])
 
-    # The whole batch goes out in a single request to the new endpoint, with the
-    # texts under ``input`` (not one ``prompt`` request per document).
-    assert len(calls) == 1, "the whole batch must be sent in a single request"
+    # Documents are batched under ``input`` rather than sent one ``prompt``
+    # request per document. Batches larger than ``request_batch_size`` are
+    # split across requests (see test_ollama_timeout_config.py); two texts fit
+    # in one window, so a single request is expected here.
+    assert len(calls) == 1, "a batch within request_batch_size goes out in one request"
     assert calls[0]["url"] == "http://localhost:11434/api/embed"
     assert calls[0]["json"] == {
         "model": "nomic-embed-text",
