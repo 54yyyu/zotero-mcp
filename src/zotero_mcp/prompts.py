@@ -45,7 +45,7 @@ def literature_review(topic: str, depth: str = "standard") -> str:
         steps.append(
             "4. Run `zotero_library_coverage()` (or scoped to the relevant collection) "
             "to list on-topic items missing a PDF, and offer to fetch them via "
-            "`zotero_add_by_doi`."
+            "`zotero_add_item`."
         )
     steps += [
         "",
@@ -129,7 +129,7 @@ def expand_from_paper(identifier: str) -> str:
             "2. Rank the related papers by relevance to my interests and by citation "
             "count. Highlight the ones already flagged as NOT in my library.",
             "3. For the top not-in-library papers, offer to add them with "
-            "`zotero_add_by_doi` (which also tries to attach an open-access PDF).",
+            "`zotero_add_item` (which also tries to attach an open-access PDF).",
             "4. Summarize how the seed paper sits in its citation neighborhood: what it "
             "builds on, and how later work extended or challenged it.",
         ]

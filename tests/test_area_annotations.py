@@ -8,6 +8,7 @@ import pytest
 from conftest import DummyContext
 
 from zotero_mcp import server
+from zotero_mcp.tools import annotations
 
 
 class FakePage:
@@ -204,3 +205,102 @@ def test_create_area_annotation_requires_web_api(monkeypatch):
 
     assert "Web API credentials required for creating annotations" in result
 
+
+# ---------------------------------------------------------------------------
+# Merged zotero_create_annotation surface: highlight vs area dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_create_annotation_rect_creates_area_annotation(monkeypatch, fake_zot):
+    """rect= must reach the area path with the geometry intact."""
+    fake_zot._items = [_pdf_attachment()]
+
+    monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: None)
+    monkeypatch.setattr("zotero_mcp.client.get_active_library", lambda: None)
+    _patch_fitz(monkeypatch, [FakePage(width=600, height=800, label="7")])
+
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        rect=[0.1, 0.2, 0.3, 0.4],
+        comment="Figure detail",
+        ctx=DummyContext(),
+    )
+
+    assert "Successfully created area annotation" in result
+    created = fake_zot.created[0]
+    assert created["annotationType"] == "image"
+    assert created["annotationSortIndex"] == "00000|000320|00060"
+    assert json.loads(created["annotationPosition"]) == {
+        "pageIndex": 0,
+        "rects": [[60.0, 320.0, 240.0, 640.0]],
+    }
+
+
+def test_create_annotation_text_creates_highlight(monkeypatch):
+    """text= must reach the highlight path, untouched by the area branch."""
+    calls = []
+
+    def _fake_highlight(**kwargs):
+        calls.append(kwargs)
+        return "highlighted"
+
+    monkeypatch.setattr(annotations, "_create_highlight_annotation", _fake_highlight)
+
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=4,
+        text="working memory",
+        comment="cite me",
+        color="#5fb236",
+        tags=["to-cite"],
+        ctx=DummyContext(),
+    )
+
+    assert result == "highlighted"
+    assert calls[0]["page"] == 4
+    assert calls[0]["text"] == "working memory"
+    assert calls[0]["comment"] == "cite me"
+    assert calls[0]["color"] == "#5fb236"
+    assert calls[0]["tags"] == ["to-cite"]
+
+
+def test_create_annotation_rejects_text_and_rect_together():
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        text="working memory",
+        rect=[0.1, 0.2, 0.3, 0.4],
+        ctx=DummyContext(),
+    )
+
+    assert "not both" in result
+
+
+def test_create_annotation_rejects_incomplete_rect():
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01", page=1, rect=[0.1, 0.2, 0.3], ctx=DummyContext()
+    )
+
+    assert "exactly four numbers" in result
+
+
+def test_create_annotation_requires_text_or_rect():
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01", page=1, ctx=DummyContext()
+    )
+
+    assert "nothing to annotate" in result
+
+
+def test_create_annotation_rect_still_validates_geometry(monkeypatch):
+    """Rectangle bounds checks survive the merge (no client work needed)."""
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        rect=[0.9, 0.2, 0.2, 0.1],
+        ctx=DummyContext(),
+    )
+
+    assert "Rectangle must fit within the page width" in result

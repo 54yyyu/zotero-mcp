@@ -10,120 +10,132 @@ so that tests can patch the canonical location directly.
 """
 
 # -- FastMCP app instance ---------------------------------------------------
-from zotero_mcp._app import mcp  # noqa: F401 — re-export
-
 # -- Register every tool module by importing the package --------------------
 import zotero_mcp.tools  # noqa: F401 — side-effect: registers all @mcp.tool
+from zotero_mcp._app import mcp  # noqa: F401 — re-export
 
 # -- Re-export client helpers (used by tests as server.X) -------------------
 from zotero_mcp.client import (  # noqa: F401
-    get_zotero_client,
-    get_web_zotero_client,
-    get_active_library,
-    set_active_library,
     clear_active_library,
     convert_to_markdown,
     format_item_metadata,
     generate_bibtex,
+    get_active_library,
     get_attachment_details,
-)
-from zotero_mcp.utils import (  # noqa: F401
-    format_creators,
-    format_item_result,
-    clean_html,
-    is_local_mode,
+    get_web_zotero_client,
+    get_zotero_client,
+    set_active_library,
 )
 
 # -- Re-export private helpers (used by tests) ------------------------------
 from zotero_mcp.tools._helpers import (  # noqa: F401
     CROSSREF_TYPE_MAP,
+    _attach_pdf_linked_url,
+    _download_and_attach_pdf,
+    _extra_has_citekey,
+    _format_bbt_result,
+    _format_citekey_result,
     _get_write_client,
     _handle_write_response,
+    _normalize_arxiv_id,
+    _normalize_doi,
     _normalize_limit,
     _normalize_str_list_input,
     _resolve_collection_names,
-    _normalize_doi,
-    _normalize_arxiv_id,
-    _download_and_attach_pdf,
-    _attach_pdf_linked_url,
-    _try_unpaywall,
     _try_arxiv_from_crossref,
-    _try_semantic_scholar,
-    _try_pmc,
     _try_attach_oa_pdf,
-    _extra_has_citekey,
-    _format_citekey_result,
-    _format_bbt_result,
-)
-
-# -- Re-export tool functions (used by tests as server.func_name) -----------
-from zotero_mcp.tools.search import (  # noqa: F401
-    search_items,
-    search_by_tag,
-    search_by_citation_key,
-    advanced_search,
-    semantic_search,
-    update_search_database,
-    get_search_database_status,
-)
-from zotero_mcp.tools.retrieval import (  # noqa: F401
-    get_item_metadata,
-    get_item_fulltext,
-    get_collections,
-    get_collection_items,
-    get_item_children,
-    get_items_children,
-    get_tags,
-    list_libraries,
-    switch_library,
-    validate_library_switch,
-    list_feeds,
-    get_feed_items,
-    get_recent,
-    get_item_related,
+    _try_pmc,
+    _try_semantic_scholar,
+    _try_unpaywall,
 )
 from zotero_mcp.tools.annotations import (  # noqa: F401
-    get_annotations,
-    _get_annotations,
-    get_notes,
     _batch_resolve_parent_titles,
     _format_search_results,
-    search_notes,
-    create_note,
-    update_note,
-    delete_note,
+    _get_annotations,
     create_annotation,
     create_area_annotation,
-    get_page_layout,
-    update_annotation,
+    create_note,
     delete_annotation,
-)
-from zotero_mcp.tools.write import (  # noqa: F401
-    batch_update_extra,
-    batch_update_tags,
-    create_collection,
-    delete_collection,
-    search_collections,
-    manage_collections,
-    add_by_doi,
-    add_by_url,
-    add_by_isbn,
-    update_item,
-    delete_item,
-    find_duplicates,
-    merge_duplicates,
-    get_pdf_outline,
-    add_from_file,
-    attach_file,
-    add_item_relation,
-    remove_item_relation,
-    add_by_bibtex,
-    add_by_csl_json,
-)
-from zotero_mcp.tools.read_pdf import (  # noqa: F401
-    read_pdf_pages,
+    delete_note,
+    get_annotations,
+    get_notes,
+    get_notes_tool,
+    get_page_layout,
+    manage_note,
+    search_notes,
+    update_annotation,
+    update_note,
 )
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,
     connector_fetch,
 )
+from zotero_mcp.tools.read_pdf import (  # noqa: F401
+    read_pdf_pages,
+)
+from zotero_mcp.tools.retrieval import (  # noqa: F401
+    get_collection_items,
+    get_collections,
+    get_feed_items,
+    get_item_children,
+    get_item_fulltext,
+    get_item_metadata,
+    get_item_related,
+    get_recent,
+    get_tags,
+    list_feeds,
+    list_libraries,
+    switch_library,
+    validate_library_switch,
+)
+
+# -- Re-export tool functions (used by tests as server.func_name) -----------
+from zotero_mcp.tools.search import (  # noqa: F401
+    advanced_search,
+    get_search_database_status,
+    search_by_citation_key,
+    search_by_tag,
+    search_items,
+    semantic_search,
+    update_search_database,
+)
+from zotero_mcp.tools.write import (  # noqa: F401
+    add_by_bibtex,
+    add_by_csl_json,
+    add_by_doi,
+    add_by_isbn,
+    add_by_url,
+    add_from_file,
+    add_item,
+    add_item_relation,
+    attach_file,
+    batch_update,
+    batch_update_extra,
+    batch_update_tags,
+    create_collection,
+    delete_collection,
+    delete_item,
+    find_duplicates,
+    get_pdf_outline,
+    manage_collections,
+    merge_duplicates,
+    remove_item_relation,
+    search_collections,
+    update_item,
+)
+
+from zotero_mcp.toolsets import apply_toolsets
+from zotero_mcp.utils import (  # noqa: F401
+    clean_html,
+    format_creators,
+    format_item_result,
+    is_local_mode,
+)
+
+# Apply the optional-toolset profile now that every tool module above has
+# registered its tools. This uses the stdio default; `zotero-mcp serve`
+# re-applies once the real transport is known, which is what lets the ChatGPT
+# connector tools appear only when the server is actually reachable by ChatGPT.
+# Callers that import `mcp` directly still get the configured profile rather
+# than the full surface.
+apply_toolsets(mcp)

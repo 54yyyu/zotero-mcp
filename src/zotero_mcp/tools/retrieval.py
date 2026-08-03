@@ -620,239 +620,217 @@ def get_collection_items(
         return f"Error fetching collection items: {str(e)}"
 
 
+def _format_children_detailed(zot, key: str, ctx: Context) -> str:
+    """Render one parent's children in full detail (single-key output shape)."""
+    ctx.info(f"Fetching children for item {key}")
+
+    # First get the parent item details
+    try:
+        parent = zot.item(key)
+        parent_title = parent["data"].get("title", "Untitled Item")
+    except Exception:
+        parent_title = f"Item {key}"
+
+    # Then get the children
+    children = _helpers._paginate(zot.children, key)
+    if not children:
+        return f"No child items found for: {parent_title} (Key: {key})"
+
+    # Format children as markdown
+    output = [f"# Child Items for: {parent_title}", ""]
+
+    # Group children by type
+    attachments = []
+    notes = []
+    others = []
+
+    for child in children:
+        data = child.get("data", {})
+        item_type = data.get("itemType", "unknown")
+
+        if item_type == "attachment":
+            attachments.append(child)
+        elif item_type == "note":
+            notes.append(child)
+        else:
+            others.append(child)
+
+    # Format attachments
+    if attachments:
+        output.append("## Attachments")
+        for i, att in enumerate(attachments, 1):
+            data = att.get("data", {})
+            title = data.get("title", "Untitled")
+            att_key = att.get("key", "")
+            content_type = data.get("contentType", "Unknown")
+            filename = data.get("filename", "")
+
+            output.append(f"{i}. **{title}**")
+            output.append(f"   - Key: {att_key}")
+            output.append(f"   - Type: {content_type}")
+            if filename:
+                output.append(f"   - Filename: {filename}")
+            output.append("")
+
+    # Format notes
+    if notes:
+        output.append("## Notes")
+        for i, note in enumerate(notes, 1):
+            data = note.get("data", {})
+            title = data.get("title", "Untitled Note")
+            note_key = note.get("key", "")
+            note_text = data.get("note", "")
+
+            # Clean up HTML in notes
+            note_text = note_text.replace("<p>", "").replace("</p>", "\n\n")
+            note_text = note_text.replace("<br/>", "\n").replace("<br>", "\n")
+
+            # Limit note length for display
+            if len(note_text) > 500:
+                note_text = note_text[:500] + "...\n\n(Note truncated)"
+
+            output.append(f"{i}. **{title}**")
+            output.append(f"   - Key: {note_key}")
+            output.append(f"   - Content:\n```\n{note_text}\n```")
+            output.append("")
+
+    # Format other item types
+    if others:
+        output.append("## Other Items")
+        for i, other in enumerate(others, 1):
+            data = other.get("data", {})
+            title = data.get("title", "Untitled")
+            other_key = other.get("key", "")
+            item_type = data.get("itemType", "unknown")
+
+            output.append(f"{i}. **{title}**")
+            output.append(f"   - Key: {other_key}")
+            output.append(f"   - Type: {item_type}")
+            output.append("")
+
+    return "\n".join(output)
+
+
+def _format_children_grouped(zot, keys: list[str], ctx: Context) -> str:
+    """Render several parents' children, grouped per parent (batch output shape)."""
+    ctx.info(f"Fetching children for {len(keys)} items")
+
+    # Batch-resolve parent titles (50 per API call)
+    parent_titles = {}
+    for batch_start in range(0, len(keys), 50):
+        batch = keys[batch_start:batch_start + 50]
+        try:
+            items = zot.items(itemKey=",".join(batch))
+            for item in items:
+                k = item.get("key", "")
+                parent_titles[k] = item.get("data", {}).get("title", "Untitled")
+        except Exception as e:
+            ctx.warning(f"Batch parent lookup failed: {e}")
+            for k in batch:
+                parent_titles.setdefault(k, f"(key: {k})")
+
+    output = [f"# Children for {len(keys)} items", ""]
+
+    for key in keys:
+        title = parent_titles.get(key, f"(key: {key})")
+        output.append(f"## {title} (`{key}`)")
+
+        try:
+            children = _helpers._paginate(zot.children, key)
+        except Exception as e:
+            output.append(f"  Error fetching children: {e}")
+            output.append("")
+            continue
+
+        if not children:
+            output.append("  No child items.")
+            output.append("")
+            continue
+
+        for child in children:
+            data = child.get("data", {})
+            child_type = data.get("itemType", "unknown")
+            child_key = child.get("key", "")
+
+            if child_type == "attachment":
+                ct = data.get("contentType", "")
+                fn = data.get("filename", "")
+                link = data.get("linkMode", "")
+                output.append(f"  - [{child_key}] Attachment: {fn or '(no filename)'} ({ct}) [{link}]")
+
+            elif child_type == "note":
+                note_text = _utils.clean_html(data.get("note", ""))[:150]
+                output.append(f"  - [{child_key}] Note: {note_text}...")
+
+            elif child_type == "annotation":
+                ann_text = data.get("annotationText", "")[:100]
+                ann_type = data.get("annotationType", "")
+                output.append(f"  - [{child_key}] {ann_type}: {ann_text}...")
+
+            else:
+                output.append(f"  - [{child_key}] {child_type}: {data.get('title', '')}")
+
+        output.append("")
+
+    return "\n".join(output)
+
+
 @mcp.tool(
     name="zotero_get_item_children",
     description=(
-        "List the child items (attachments, notes, and annotations that are "
-        "direct children of the attachment) of ONE parent Zotero item. "
-        "Use this to find an item's PDF/EPUB attachment key before calling "
-        "zotero_create_annotation, zotero_create_area_annotation, or "
-        "zotero_get_pdf_outline — all of which take an attachment key, NOT "
-        "the parent item key. "
-        "If you need children for several items at once, use "
-        "zotero_get_items_children (one batched API call instead of N). "
-        "item_key: the parent item's 8-character key. "
-        "Returns parent-child structure as markdown: each attachment with "
-        "its content type and filename, each note with its title. "
+        "List the child items (attachments, notes, annotations under an "
+        "attachment) of one OR MANY parent Zotero items. "
+        "Use it to find an item's PDF/EPUB attachment key before "
+        "zotero_create_annotation or "
+        "zotero_get_pdf_outline — those take an attachment key, NOT the "
+        "parent item key. "
+        "item_key: one 8-character parent key, or an ARRAY of keys (a "
+        "JSON-encoded list string also works). Pass every key you have in "
+        "ONE call: a batch is one API round trip instead of N, and a bad key "
+        "is reported in its own section instead of aborting. "
+        "Returns markdown — one key: attachments (content type, filename) "
+        "and notes in full under the parent title; several keys: one compact "
+        "line per child, grouped under each parent. "
         "Scope: active library only. "
-        "Example: zotero_get_item_children(item_key='RTKZQI8E') → its "
-        "PDF attachment key + any notes."
+        "Examples: zotero_get_item_children(item_key='RTKZQI8E'); "
+        "zotero_get_item_children(item_key=['RTKZQI8E', '9UZR8GXT'])."
     )
 )
 @with_zotero_api_lock
 def get_item_children(
-    item_key: str,
+    item_key: list[str] | str,
     *,
     ctx: Context
 ) -> str:
     """
-    Get all child items (attachments, notes) for a specific Zotero item.
+    Get all child items (attachments, notes) for one or more Zotero items.
 
     Args:
-        item_key: Zotero item key/ID
+        item_key: One item key, a list of keys, or a JSON/comma-separated
+            string of keys
         ctx: MCP context
 
     Returns:
-        Markdown-formatted list of child items
-    """
-    try:
-        ctx.info(f"Fetching children for item {item_key}")
-        zot = _client.get_zotero_client()
-
-        # First get the parent item details
-        try:
-            parent = zot.item(item_key)
-            parent_title = parent["data"].get("title", "Untitled Item")
-        except Exception:
-            parent_title = f"Item {item_key}"
-
-        # Then get the children
-        children = _helpers._paginate(zot.children, item_key)
-        if not children:
-            return f"No child items found for: {parent_title} (Key: {item_key})"
-
-        # Format children as markdown
-        output = [f"# Child Items for: {parent_title}", ""]
-
-        # Group children by type
-        attachments = []
-        notes = []
-        others = []
-
-        for child in children:
-            data = child.get("data", {})
-            item_type = data.get("itemType", "unknown")
-
-            if item_type == "attachment":
-                attachments.append(child)
-            elif item_type == "note":
-                notes.append(child)
-            else:
-                others.append(child)
-
-        # Format attachments
-        if attachments:
-            output.append("## Attachments")
-            for i, att in enumerate(attachments, 1):
-                data = att.get("data", {})
-                title = data.get("title", "Untitled")
-                key = att.get("key", "")
-                content_type = data.get("contentType", "Unknown")
-                filename = data.get("filename", "")
-
-                output.append(f"{i}. **{title}**")
-                output.append(f"   - Key: {key}")
-                output.append(f"   - Type: {content_type}")
-                if filename:
-                    output.append(f"   - Filename: {filename}")
-                output.append("")
-
-        # Format notes
-        if notes:
-            output.append("## Notes")
-            for i, note in enumerate(notes, 1):
-                data = note.get("data", {})
-                title = data.get("title", "Untitled Note")
-                key = note.get("key", "")
-                note_text = data.get("note", "")
-
-                # Clean up HTML in notes
-                note_text = note_text.replace("<p>", "").replace("</p>", "\n\n")
-                note_text = note_text.replace("<br/>", "\n").replace("<br>", "\n")
-
-                # Limit note length for display
-                if len(note_text) > 500:
-                    note_text = note_text[:500] + "...\n\n(Note truncated)"
-
-                output.append(f"{i}. **{title}**")
-                output.append(f"   - Key: {key}")
-                output.append(f"   - Content:\n```\n{note_text}\n```")
-                output.append("")
-
-        # Format other item types
-        if others:
-            output.append("## Other Items")
-            for i, other in enumerate(others, 1):
-                data = other.get("data", {})
-                title = data.get("title", "Untitled")
-                key = other.get("key", "")
-                item_type = data.get("itemType", "unknown")
-
-                output.append(f"{i}. **{title}**")
-                output.append(f"   - Key: {key}")
-                output.append(f"   - Type: {item_type}")
-                output.append("")
-
-        return "\n".join(output)
-
-    except Exception as e:
-        ctx.error(f"Error fetching item children: {str(e)}")
-        return f"Error fetching item children: {str(e)}"
-
-
-@mcp.tool(
-    name="zotero_get_items_children",
-    description=(
-        "Batch variant of zotero_get_item_children: fetch child items "
-        "(attachments, notes, annotations) for MULTIPLE parent items in a "
-        "single API round trip. "
-        "Much cheaper than calling zotero_get_item_children N times — use "
-        "this whenever you have 2+ item keys in hand. "
-        "item_keys: list of 8-character parent item keys (also accepts a "
-        "JSON-encoded list string). Pass as an ARRAY, not a single "
-        "concatenated string. "
-        "Returns a markdown section per parent with its children grouped "
-        "underneath. Missing keys are reported per-item rather than "
-        "aborting the whole call. "
-        "Scope: active library only. "
-        "Example: zotero_get_items_children("
-        "item_keys=['RTKZQI8E', '9UZR8GXT'])."
-    )
-)
-@with_zotero_api_lock
-def get_items_children(
-    item_keys: list[str] | str,
-    *,
-    ctx: Context
-) -> str:
-    """
-    Get child items for multiple Zotero items in a single call.
-
-    Args:
-        item_keys: List of item keys (or JSON string, or comma-separated string)
-        ctx: MCP context
+        Markdown-formatted list of child items. A single key renders the
+        detailed per-type breakdown; several keys render one compact
+        section per parent.
     """
     try:
         zot = _client.get_zotero_client()
-        keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+        keys = _helpers._normalize_str_list_input(item_key, "item_key")
 
         if not keys:
             return "Error: No item keys provided."
 
-        # Batch-resolve parent titles (50 per API call)
-        parent_titles = {}
-        for batch_start in range(0, len(keys), 50):
-            batch = keys[batch_start:batch_start + 50]
-            try:
-                items = zot.items(itemKey=",".join(batch))
-                for item in items:
-                    k = item.get("key", "")
-                    parent_titles[k] = item.get("data", {}).get("title", "Untitled")
-            except Exception as e:
-                ctx.warning(f"Batch parent lookup failed: {e}")
-                for k in batch:
-                    parent_titles.setdefault(k, f"(key: {k})")
-
-        output = [f"# Children for {len(keys)} items", ""]
-
-        for key in keys:
-            title = parent_titles.get(key, f"(key: {key})")
-            output.append(f"## {title} (`{key}`)")
-
-            try:
-                children = _helpers._paginate(zot.children, key)
-            except Exception as e:
-                output.append(f"  Error fetching children: {e}")
-                output.append("")
-                continue
-
-            if not children:
-                output.append("  No child items.")
-                output.append("")
-                continue
-
-            for child in children:
-                data = child.get("data", {})
-                child_type = data.get("itemType", "unknown")
-                child_key = child.get("key", "")
-
-                if child_type == "attachment":
-                    ct = data.get("contentType", "")
-                    fn = data.get("filename", "")
-                    link = data.get("linkMode", "")
-                    output.append(f"  - [{child_key}] Attachment: {fn or '(no filename)'} ({ct}) [{link}]")
-
-                elif child_type == "note":
-                    note_text = _utils.clean_html(data.get("note", ""))[:150]
-                    output.append(f"  - [{child_key}] Note: {note_text}...")
-
-                elif child_type == "annotation":
-                    ann_text = data.get("annotationText", "")[:100]
-                    ann_type = data.get("annotationType", "")
-                    output.append(f"  - [{child_key}] {ann_type}: {ann_text}...")
-
-                else:
-                    output.append(f"  - [{child_key}] {child_type}: {data.get('title', '')}")
-
-            output.append("")
-
-        return "\n".join(output)
+        if len(keys) == 1:
+            return _format_children_detailed(zot, keys[0], ctx)
+        return _format_children_grouped(zot, keys, ctx)
 
     except ValueError as e:
         return f"Input error: {e}"
     except Exception as e:
-        ctx.error(f"Error fetching items children: {str(e)}")
-        return f"Error fetching items children: {str(e)}"
+        ctx.error(f"Error fetching item children: {str(e)}")
+        return f"Error fetching item children: {str(e)}"
 
 
 @mcp.tool(
@@ -861,7 +839,7 @@ def get_items_children(
         "List all tags used in the currently active Zotero library, as a "
         "flat markdown list (one tag per line). "
         "Use this for tag discovery before filtering with "
-        "zotero_search_by_tag or batch-editing with zotero_batch_update_tags. "
+        "zotero_search_by_tag or batch-editing with zotero_batch_update. "
         "Scope is the active library only — switch with "
         "zotero_switch_library before listing. The list is flat: tags have "
         "no parent/child structure in Zotero, only a colon convention "

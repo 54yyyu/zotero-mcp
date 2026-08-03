@@ -426,6 +426,13 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
   preferences (read from the profile's `prefs.js`) is tried first, then the
   default `~/Zotero` location.
 
+**Tool surface:**
+- `ZOTERO_MCP_TOOLSETS`: Which optional tool groups to expose. Every tool the
+  server registers is sent to the model on *every* request, so the tool list is
+  a fixed cost on your context window. Groups that need an external service,
+  serve maintenance rather than research, or apply only to some users are off
+  by default. See [Tool Groups](#-tool-groups) below.
+
 **Item schema:**
 - `ZOTERO_MCP_SCHEMA_REFRESH=0`: Disable the weekly background refresh of
   Zotero's item-type schema from `api.zotero.org`. The schema is what routes a
@@ -617,7 +624,10 @@ The first time you use PDF annotation features, the necessary tools will be auto
 
 ## 🔗 Managing Related Items
 
-Zotero MCP now supports managing relationships between items in your library. This is useful for linking related papers, tracking versions, or connecting preprints to their published versions.
+Zotero MCP supports managing relationships between items in your library. This is useful for linking related papers, tracking versions, or connecting preprints to their published versions.
+
+> These tools are in the opt-in `relations` group. Enable them with
+> `ZOTERO_MCP_TOOLSETS=relations` — see [Tool Groups](#-tool-groups).
 
 ### View Related Items
 ```
@@ -647,7 +657,60 @@ zotero_remove_item_relation(
 - `dc:relation` — General related items (default)
 - `owl:sameAs` — Items that are the same work (e.g., preprint and published version)
 
+## 🧰 Tool Groups
+
+Every tool this server registers is sent to the model on **every** request, so
+the tool list is a fixed tax on your context window before you type anything.
+To keep that cost proportionate, optional capabilities are grouped into
+*toolsets* that you turn on when you need them.
+
+Set `ZOTERO_MCP_TOOLSETS` to control which groups are exposed:
+
+| Value | Effect |
+|---|---|
+| *(unset)* | Default profile — core tools plus `libraries`, `search-admin`, `pdf-geometry` |
+| `all` | Everything (the pre-0.9 behaviour) |
+| `none` | Core tools only — the smallest surface |
+| `scite,feeds` | Core plus the named groups |
+| `all,-scite` | Everything except the named groups |
+
+Values are case-insensitive and may be comma- or space-separated. An unknown
+group name is an error at startup rather than a silent no-op.
+
+| Group | Default | Contents |
+|---|---|---|
+| `scite` | off | Scite citation tallies and retraction checks (calls scite.ai; pairs with the `[scite]` extra) |
+| `duplicates` | off | Find and merge duplicate items — library maintenance |
+| `discovery` | off | `find_related_papers`, `library_coverage` — corpus-level exploration |
+| `feeds` | off | Zotero RSS feed subscriptions |
+| `relations` | off | Explicit item-to-item "related items" links |
+| `libraries` | **on** | List and switch between personal/group libraries |
+| `search-admin` | **on** | Build and inspect the semantic search index |
+| `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
+| `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |
+
+`chatgpt-connector` is scoped by transport: it turns on automatically when the
+server is served over `streamable-http` or `sse` (how ChatGPT reaches it) and
+stays off for `stdio`. Name it explicitly to override either way.
+
+Anything not listed above is **core** and always available.
+
+**Note:** a disabled tool is genuinely absent — not merely hidden — so the
+model cannot call it. If you rely on a capability, enable its group.
+
+Example (Claude Desktop / Claude Code):
+
+```json
+"env": {
+  "ZOTERO_LOCAL": "true",
+  "ZOTERO_MCP_TOOLSETS": "scite,duplicates"
+}
+```
+
 ## 📚 Available Tools
+
+> Availability depends on your `ZOTERO_MCP_TOOLSETS` setting — see
+> [Tool Groups](#-tool-groups) above.
 
 ### 🧠 Semantic Search Tools
 - `zotero_semantic_search`: AI-powered similarity search with embedding models
@@ -666,17 +729,20 @@ zotero_remove_item_relation(
 ### 📚 Content Tools
 - `zotero_get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
 - `zotero_get_item_fulltext`: Get full text content
-- `zotero_get_item_children`: Get attachments and notes
+- `zotero_get_item_children`: Get attachments and notes for one item or many (pass an array of keys)
 
 ### 📝 Annotation & Notes Tools
 - `zotero_get_annotations`: Get annotations (including direct PDF extraction); use `format="json"` for normalized records suitable for scripts and other MCP tools
 - `zotero_synthesize_annotations`: Build a per-paper annotation/note digest; supports `format="json"` for structured grouped output
-- `zotero_get_notes`: Retrieve notes from your Zotero library
-- `zotero_search_notes`: Search in notes and annotations (including PDF-extracted)
-- `zotero_create_note`: Create a new note for an item (beta feature)
-- `zotero_get_page_layout`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement
+- `zotero_get_notes`: Retrieve notes from your Zotero library; pass `query` to search note and annotation text instead of listing
+- `zotero_create_annotation`: Create a highlight (`text=`) or an area annotation (`rect=[x, y, width, height]`)
+- `zotero_manage_note`: Create, update, or delete a note via `action="create"|"update"|"delete"` (beta feature)
+- `zotero_get_page_layout`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement — its reported `bbox` can be passed straight to `zotero_create_annotation(rect=...)`
 
 ### 📊 Scite Citation Intelligence Tools
+
+> Opt-in group: enable with `ZOTERO_MCP_TOOLSETS=scite` — see [Tool Groups](#-tool-groups).
+
 - `scite_enrich_item`: Get Scite citation tallies and retraction alerts for a paper
 - `scite_enrich_search`: Search your Zotero library with Scite-enriched results (tallies + alerts inline)
 - `scite_check_retractions`: Scan items for retractions and editorial notices

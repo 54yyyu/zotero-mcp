@@ -2,7 +2,7 @@
 
 Feature 1: zotero_create_collection
 Feature 2: zotero_search_collections
-Feature 3: zotero_manage_collections
+Feature 3: zotero_set_item_collections
 
 These tests are written BEFORE implementation. They will FAIL until
 the tool functions (create_collection, search_collections, manage_collections)
@@ -320,12 +320,24 @@ class TestSearchCollections:
 
 
 # ===========================================================================
-# Feature 3: zotero_manage_collections
+# Feature 3: zotero_set_item_collections (formerly zotero_manage_collections)
 # ===========================================================================
 
 
 class TestManageCollections:
-    """Tests for the manage_collections tool function."""
+    """Tests for the manage_collections implementation, exposed as the
+    zotero_set_item_collections tool."""
+
+    def test_registered_under_the_unambiguous_tool_name(self):
+        """The old name read as 'create/delete collections'; it manages an
+        item's membership, so the tool is named for that."""
+        import asyncio
+
+        from zotero_mcp._app import mcp
+
+        names = {t.name for t in asyncio.run(mcp.list_tools())}
+        assert "zotero_set_item_collections" in names
+        assert "zotero_manage_collections" not in names
 
     def test_add_items_to_collection(self, monkeypatch, fake_zot, ctx):
         """Add items to a collection."""

@@ -1,10 +1,11 @@
-"""Integration tests for the zotero_add_by_csl_json MCP tool."""
+"""Integration tests for the CSL-JSON source of the zotero_add_item MCP tool."""
 
 import json
 
 from conftest import FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.tools import write
 
 
 class FakeZoteroWithAttach(FakeZotero):
@@ -56,7 +57,7 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        result = write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
 
         assert len(fake.created) == 1
         created = fake.created[0]
@@ -71,8 +72,10 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        result = server.add_by_csl_json(
-            csl_json=json.dumps(SAMPLE_ARTICLE), ctx=dummy_ctx,
+        result = write.add_item(
+            source=json.dumps(SAMPLE_ARTICLE),
+            source_type="csl_json",
+            ctx=dummy_ctx,
         )
 
         assert len(fake.created) == 1
@@ -85,7 +88,7 @@ class TestHappyPath:
 
         entries = [SAMPLE_ARTICLE, {"type": "book", "title": "B",
                                      "author": [{"family": "A"}]}]
-        result = server.add_by_csl_json(csl_json=entries, ctx=dummy_ctx)
+        result = write.add_item(source=entries, source_type="csl_json", ctx=dummy_ctx)
 
         assert len(fake.created) == 2
         assert fake.created[0]["itemType"] == "journalArticle"
@@ -96,8 +99,9 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        server.add_by_csl_json(
-            csl_json=json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]),
+        write.add_item(
+            source=json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]),
+            source_type="csl_json",
             ctx=dummy_ctx,
         )
 
@@ -116,8 +120,11 @@ class TestTagsAndCollections:
         csl = dict(SAMPLE_ARTICLE)
         csl["keyword"] = ["source1", "source2"]
 
-        server.add_by_csl_json(
-            csl_json=csl, tags=["caller1", "source1"], ctx=dummy_ctx,
+        write.add_item(
+            source=csl,
+            source_type="csl_json",
+            tags=["caller1", "source1"],
+            ctx=dummy_ctx,
         )
 
         tags = [t["tag"] for t in fake.created[0]["tags"]]
@@ -130,8 +137,9 @@ class TestTagsAndCollections:
         ]
         _disable_oa_pdf(monkeypatch)
 
-        server.add_by_csl_json(
-            csl_json=SAMPLE_ARTICLE,
+        write.add_item(
+            source=SAMPLE_ARTICLE,
+            source_type="csl_json",
             collections=["COL00001"],
             ctx=dummy_ctx,
         )
@@ -155,7 +163,7 @@ class TestOaPdfAttempt:
 
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
-        server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
 
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
@@ -170,9 +178,10 @@ class TestOaPdfAttempt:
 
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
-        server.add_by_csl_json(
-            csl_json={"type": "book", "title": "B",
+        write.add_item(
+            source={"type": "book", "title": "B",
                       "author": [{"family": "A"}]},
+            source_type="csl_json",
             ctx=dummy_ctx,
         )
 
@@ -191,7 +200,7 @@ class TestFilePath:
         f = tmp_path / "refs.json"
         f.write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
 
-        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        result = write.add_item(source=str(f), source_type="csl_json", ctx=dummy_ctx)
 
         assert len(fake.created) == 1
         assert fake.created[0]["title"] == "A Paper"
@@ -204,7 +213,7 @@ class TestFilePath:
         f = tmp_path / "refs.csljson"
         f.write_text(json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]), encoding="utf-8")
 
-        server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        write.add_item(source=str(f), source_type="csl_json", ctx=dummy_ctx)
         assert len(fake.created) == 2
 
     def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):
@@ -212,19 +221,21 @@ class TestFilePath:
         f = tmp_path / "refs.bib"
         f.write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
 
-        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        result = write.add_item(source=str(f), source_type="csl_json", ctx=dummy_ctx)
         assert "Unsupported file extension" in result
 
     def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_csl_json(
-            file_path="/absolutely/no/such/file.json", ctx=dummy_ctx,
+        result = write.add_item(
+            source="/absolutely/no/such/file.json",
+            source_type="csl_json",
+            ctx=dummy_ctx,
         )
         assert "not found" in result.lower()
 
     def test_rejects_relative_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_csl_json(file_path="refs.json", ctx=dummy_ctx)
+        result = write.add_item(source="refs.json", source_type="csl_json", ctx=dummy_ctx)
         assert "absolute" in result.lower()
 
     def test_rejects_symlink(self, monkeypatch, dummy_ctx, tmp_path):
@@ -234,7 +245,7 @@ class TestFilePath:
         link = tmp_path / "linked.json"
         link.symlink_to(target)
 
-        result = server.add_by_csl_json(file_path=str(link), ctx=dummy_ctx)
+        result = write.add_item(source=str(link), source_type="csl_json", ctx=dummy_ctx)
         assert "symlink" in result.lower()
 
 
@@ -245,19 +256,26 @@ class TestFilePath:
 class TestErrorPaths:
     def test_invalid_json_string(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_csl_json(csl_json="{not valid json", ctx=dummy_ctx)
+        result = write.add_item(
+            source="{not valid json",
+            source_type="csl_json",
+            ctx=dummy_ctx,
+        )
         assert "Invalid JSON" in result
 
     def test_empty_list(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_csl_json(csl_json=[], ctx=dummy_ctx)
+        result = write.add_item(source=[], source_type="csl_json", ctx=dummy_ctx)
         assert "Must provide" in result
 
     def test_empty_string(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_csl_json(csl_json="", ctx=dummy_ctx)
+        result = write.add_item(source="", source_type="csl_json", ctx=dummy_ctx)
         assert "Must provide" in result
 
+    # Called directly: add_item folds `csl_json` and `file_path` into one
+    # `source`, so neither the "neither" nor the "both" shape is reachable
+    # through the merged tool. They still guard the contract it dispatches into.
     def test_neither_csl_nor_file_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_csl_json(ctx=dummy_ctx)
@@ -277,5 +295,5 @@ class TestErrorPaths:
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client", raise_local
         )
-        result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        result = write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
         assert "local-only" in result.lower()

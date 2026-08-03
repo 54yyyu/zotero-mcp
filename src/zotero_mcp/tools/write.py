@@ -1,5 +1,6 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
+import difflib
 import json
 import os
 import re
@@ -7,11 +8,10 @@ import shutil
 import tempfile
 import time as _time
 import xml.etree.ElementTree as ET
-from typing import Annotated, Literal, NamedTuple
+from typing import Literal, NamedTuple
 from urllib.parse import unquote, urlparse
 
 import requests
-from pydantic import Field
 
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
@@ -169,29 +169,38 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
     return header + "\n".join(lines) + note
 
 
-@mcp.tool(
-    name="zotero_batch_update_tags",
-    description=(
-        "Add and/or remove tags across multiple items in one call, selecting "
-        "items by a text query, an existing tag, or both. "
-        "Must supply at least one selector (query or tag) AND at least one "
-        "action (add_tags or remove_tags) — otherwise returns an error. "
-        "query: free-text matched against item metadata (title, creators, "
-        "abstract, etc.) — same search as zotero_search_items. "
-        "tag: filter to items already bearing this tag. When both are "
-        "given, they are ANDed; pass tag as a list to OR multiple tags. "
-        "add_tags, remove_tags: list of tag strings (or a JSON-encoded list "
-        "string). Existing tags are preserved; this is not a replace-all. "
-        "limit: max items to process (default 50). Attachments are "
-        "auto-skipped. "
-        "Requires a writable library (web API key or hybrid mode) — fails "
-        "in local-only mode. Use zotero_get_tags to discover existing tag "
-        "names first. "
-        "Example: zotero_batch_update_tags(tag='to-read', "
-        "add_tags=['reviewed'], remove_tags=['to-read'], limit=100) — "
-        "mark everything tagged 'to-read' as 'reviewed'."
-    )
-)
+def _normalize_tag_selector(tag):
+    """Collapse a tag selector (str, list, or JSON string) to pyzotero's form."""
+    if tag is None:
+        return None
+    if isinstance(tag, list):
+        # Pyzotero expects ' || '-separated tags for OR filtering
+        tag = " || ".join(str(t).strip() for t in tag if str(t).strip())
+    elif isinstance(tag, str):
+        tag = tag.strip()
+        # Handle JSON string like '["test"]'
+        try:
+            parsed = json.loads(tag)
+            if isinstance(parsed, list):
+                tag = " || ".join(str(t).strip() for t in parsed if str(t).strip())
+            elif isinstance(parsed, str):
+                tag = parsed.strip()
+        except (json.JSONDecodeError, ValueError):
+            pass  # Use as-is
+    return tag or None
+
+
+def _search_item_keys(zot, query, tag, limit) -> list[str]:
+    """Item keys matching a query and/or tag selector (the batch selector)."""
+    params = {"limit": limit}
+    if query:
+        params["q"] = query
+    if tag:
+        params["tag"] = tag
+    zot.add_parameters(**params)
+    return [it.get("key") for it in (zot.items() or []) if it.get("key")]
+
+
 @with_zotero_api_lock
 def batch_update_tags(
     query: str = "",
@@ -199,6 +208,7 @@ def batch_update_tags(
     remove_tags: list[str] | str | None = None,
     tag: str | list[str] | None = None,
     limit: int | str = 50,
+    item_keys: list[str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -212,13 +222,19 @@ def batch_update_tags(
         tag: Filter by existing tag name (e.g., "test" finds items with that exact tag).
              When provided alongside query, both filters are applied (AND).
         limit: Maximum number of items to process
+        item_keys: Explicit item keys to edit; when given, query/tag are ignored
         ctx: MCP context
 
     Returns:
         Summary of the batch update
     """
     try:
-        if not query and not tag:
+        try:
+            explicit_keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+        except ValueError as validation_error:
+            return f"Error: {validation_error}"
+
+        if not query and not tag and not explicit_keys:
             return "Error: Must provide a search query and/or tag filter"
 
         if not add_tags and not remove_tags:
@@ -245,41 +261,39 @@ def batch_update_tags(
         limit = _helpers._normalize_limit(limit, default=50)
 
         # Normalize tag parameter: accept string, list, or JSON string
-        if tag is not None:
-            if isinstance(tag, list):
-                # Pyzotero expects comma-separated tags for AND filtering
-                tag = " || ".join(str(t).strip() for t in tag if str(t).strip())
-            elif isinstance(tag, str):
-                tag = tag.strip()
-                # Handle JSON string like '["test"]'
+        tag = _normalize_tag_selector(tag)
+
+        if explicit_keys:
+            # Explicit selection: fetch each key; a key that can't be fetched
+            # is reported and skipped rather than failing the whole batch.
+            items = []
+            for key in explicit_keys:
                 try:
-                    import json
-                    parsed = json.loads(tag)
-                    if isinstance(parsed, list):
-                        tag = " || ".join(str(t).strip() for t in parsed if str(t).strip())
-                    elif isinstance(parsed, str):
-                        tag = parsed.strip()
-                except (json.JSONDecodeError, ValueError):
-                    pass  # Use as-is
-            if not tag:
-                tag = None
-
-        # Search for items matching the query and/or tag filter
-        params = {"limit": limit}
-        if query:
-            params["q"] = query
-        if tag:
-            params["tag"] = tag
-        zot.add_parameters(**params)
-        items = zot.items()
-
-        if not items:
-            filter_desc = []
+                    fetched = zot.item(key)
+                except Exception as e:
+                    ctx.error(f"Failed to fetch item {key}: {e}")
+                    continue
+                if fetched:
+                    items.append(fetched)
+            if not items:
+                return f"No items found for item_keys {explicit_keys}"
+        else:
+            # Search for items matching the query and/or tag filter
+            params = {"limit": limit}
             if query:
-                filter_desc.append(f"query '{query}'")
+                params["q"] = query
             if tag:
-                filter_desc.append(f"tag '{tag}'")
-            return f"No items found matching {' and '.join(filter_desc) or 'the given filters'}"
+                params["tag"] = tag
+            zot.add_parameters(**params)
+            items = zot.items()
+
+            if not items:
+                filter_desc = []
+                if query:
+                    filter_desc.append(f"query '{query}'")
+                if tag:
+                    filter_desc.append(f"tag '{tag}'")
+                return f"No items found matching {' and '.join(filter_desc) or 'the given filters'}"
 
         # Initialize counters
         updated_count = 0
@@ -433,37 +447,15 @@ def _apply_extra_edits(
     return new_extra, new_extra != original
 
 
-@mcp.tool(
-    name="zotero_batch_update_extra",
-    description=(
-        "Upsert and/or remove `Key: value` lines in the Extra field across "
-        "multiple items in one call — the batch counterpart of "
-        "zotero_update_item for Extra-field metadata (Better BibTeX "
-        "citation keys, tex.* fields, CSL variables). "
-        "item_keys: list of item keys to edit (or a JSON-encoded list "
-        "string). set_keys: mapping of key→value lines to upsert (or a "
-        "JSON object string); an existing line with the same key is "
-        "replaced in place, otherwise the line is appended. "
-        "remove_keys: list of key names whose lines are deleted. "
-        "replace: when true, rebuild Extra from set_keys only, dropping "
-        "every other line (incompatible with remove_keys). "
-        "Keys are matched by their `key:` prefix, case-insensitively; "
-        "free-form lines without a colon are preserved. Items needing no "
-        "change, attachments/notes/annotations, and unknown keys are "
-        "skipped (counted in the summary). "
-        "Requires a writable library (web API key or hybrid mode) — fails "
-        "in local-only mode. "
-        "Example: zotero_batch_update_extra(item_keys=['ABCD1234', "
-        "'EFGH5678'], set_keys={'tex.otscore': '2'}, "
-        "remove_keys=['tex.draft'])."
-    )
-)
 @with_zotero_api_lock
 def batch_update_extra(
     item_keys: list[str] | str | None = None,
     set_keys: dict[str, str] | str | None = None,
     remove_keys: list[str] | str | None = None,
     replace: bool | str = False,
+    query: str = "",
+    tag: str | list[str] | None = None,
+    limit: int | str = 50,
     *,
     ctx: Context
 ) -> str:
@@ -475,6 +467,9 @@ def batch_update_extra(
         set_keys: Mapping of key→value lines to upsert (dict or JSON object string)
         remove_keys: Key names whose lines are deleted (list or JSON string)
         replace: When true, rebuild Extra from set_keys only
+        query: Text search selecting the items to edit (when item_keys is empty)
+        tag: Existing-tag filter selecting the items to edit
+        limit: Maximum number of items to select by query/tag
         ctx: MCP context
 
     Returns:
@@ -486,6 +481,23 @@ def batch_update_extra(
             remove_keys = _helpers._normalize_str_list_input(remove_keys, "remove_keys")
         except ValueError as validation_error:
             return f"Error: {validation_error}"
+
+        tag = _normalize_tag_selector(tag)
+        if not item_keys and (query or tag):
+            item_keys = _search_item_keys(
+                _client.get_zotero_client(), query, tag,
+                _helpers._normalize_limit(limit, default=50),
+            )
+            if not item_keys:
+                filter_desc = []
+                if query:
+                    filter_desc.append(f"query '{query}'")
+                if tag:
+                    filter_desc.append(f"tag '{tag}'")
+                return (
+                    "No items found matching "
+                    f"{' and '.join(filter_desc) or 'the given filters'}"
+                )
 
         if not item_keys:
             return "Error: Must provide item_keys to update"
@@ -589,6 +601,76 @@ def batch_update_extra(
     except Exception as e:
         ctx.error(f"Error in batch extra update: {str(e)}")
         return f"Error in batch extra update: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_batch_update",
+    description=(
+        "Edit metadata across many items in one call: add/remove tags "
+        "and upsert/remove `Key: value` lines in Extra (Better BibTeX "
+        "keys, tex.* fields). "
+        "Select items by item_keys, and/or a free-text query, and/or an "
+        "existing tag (query and tag are ANDed; tag may be a list to "
+        "OR); item_keys wins. At least one selector AND one action are "
+        "required. "
+        "add_tags/remove_tags keep the item's other tags — not a "
+        "replace-all. set_keys upserts Extra lines, matching a line "
+        "case-insensitively by its `key:` prefix and replacing it in "
+        "place, else appending; remove_keys deletes those lines; lines "
+        "without a colon are preserved. "
+        "limit: max items for query/tag selection (default 50). "
+        "Attachments and items needing no change are skipped and "
+        "counted. Requires a writable library. "
+        "Example: zotero_batch_update(tag='to-read', "
+        "add_tags=['reviewed'], remove_tags=['to-read'])."
+    )
+)
+@with_zotero_api_lock
+def batch_update(
+    item_keys: list[str] | str | None = None,
+    query: str = "",
+    tag: str | list[str] | None = None,
+    add_tags: list[str] | str | None = None,
+    remove_tags: list[str] | str | None = None,
+    set_keys: dict[str, str] | str | None = None,
+    remove_keys: list[str] | str | None = None,
+    limit: int | str = 50,
+    *,
+    ctx: Context
+) -> str:
+    """Batch tag and Extra-field edits over one item selection.
+
+    A thin facade: the selection is shared, then the tag edits and the
+    Extra-field edits run through their own (unchanged) implementations
+    and their reports are concatenated.
+    """
+    has_selector = bool(item_keys) or bool(query) or bool(tag)
+    tag_action = bool(add_tags) or bool(remove_tags)
+    extra_action = bool(set_keys) or bool(remove_keys)
+
+    if not has_selector:
+        return (
+            "Error: Must provide at least one selector — item_keys, "
+            "query, and/or tag."
+        )
+    if not tag_action and not extra_action:
+        return (
+            "Error: Must provide at least one action — add_tags, "
+            "remove_tags, set_keys, and/or remove_keys."
+        )
+
+    reports = []
+    if tag_action:
+        reports.append(batch_update_tags(
+            query=query, add_tags=add_tags, remove_tags=remove_tags,
+            tag=tag, limit=limit, item_keys=item_keys, ctx=ctx,
+        ))
+    if extra_action:
+        reports.append(batch_update_extra(
+            item_keys=item_keys, set_keys=set_keys, remove_keys=remove_keys,
+            query=query, tag=tag, limit=limit, ctx=ctx,
+        ))
+    return "\n\n".join(reports)
 
 
 @mcp.tool(
@@ -768,13 +850,18 @@ def search_collections(
 
 
 @mcp.tool(
-    name="zotero_manage_collections",
+    name="zotero_set_item_collections",
     description=(
-        "Add or remove one or more items from collections. "
+        "Change which collections existing items belong to — an "
+        "incremental add/remove of item membership, NOT collection "
+        "creation (use zotero_create_collection / "
+        "zotero_delete_collection for that). "
         "item_keys must be an ARRAY of item keys, e.g. [\"KEY1\", \"KEY2\"] — not a single string. "
         "add_to and remove_from accept arrays of collection keys, names, or "
         "'/'-separated paths (resolved and validated automatically; unknown, "
         "trashed, or ambiguous specs fail before anything is changed). "
+        "Existing memberships not named in remove_from are left alone; to "
+        "replace an item's memberships wholesale use zotero_update_item. "
         "Use zotero_search_items to find item keys and zotero_search_collections to find collection keys."
     )
 )
@@ -855,44 +942,10 @@ def manage_collections(
         return f"Error managing collections: {e}"
 
 
-@mcp.tool(
-    name="zotero_add_by_doi",
-    description=(
-        "Add an item to the active Zotero library by DOI, resolving rich "
-        "metadata (title, creators, journal, year, abstract) from "
-        "CrossRef. "
-        "Use this as the FIRST choice when the user gives you a DOI — "
-        "cleaner metadata than zotero_add_by_url. For arXiv IDs or raw "
-        "URLs use zotero_add_by_url; for a local PDF use "
-        "zotero_add_from_file. "
-        "doi: the DOI string (with or without the '10.' prefix, with or "
-        "without a leading 'https://doi.org/'). "
-        "collections: optional list of collection keys, names, or "
-        "'/'-separated paths (e.g. '_project/topic') — resolved and "
-        "validated before the item is created; unknown or ambiguous "
-        "specs fail the call with suggestions instead of producing an "
-        "unfiled item. "
-        "tags: optional list of tag strings to attach. "
-        "if_exists: 'duplicate' (default) always creates a new item; "
-        "'file' makes the call idempotent — when an item with this DOI "
-        "already exists it is reused, filed into any missing collections "
-        "and given any missing tags (nothing is ever removed); 'skip' "
-        "leaves an existing match untouched. "
-        "create_missing_collections: when True, collection specs that "
-        "don't resolve are created (including path chains) instead of "
-        "failing. "
-        "attach_mode: 'auto' (default) downloads a PDF if CrossRef links "
-        "one and storage is available; 'none' skips PDF download; "
-        "'required' fails if no PDF can be attached. PDF uploads may fail "
-        "on the Zotero cloud free-tier 300MB quota — metadata still lands "
-        "even when the upload fails. "
-        "Requires a writable library (web API key or hybrid mode); fails "
-        "in local-only mode. Remember to run zotero_update_search_database "
-        "afterwards to make the new item searchable semantically. "
-        "Example: zotero_add_by_doi(doi='10.1145/3708319', "
-        "collections=['9SU943GB'], tags=['MCP'])."
-    )
-)
+# Source-specific add implementations. These are no longer registered as
+# individual MCP tools — ``zotero_add_item`` is the single public facade that
+# detects the source shape and dispatches here. They stay importable (and
+# individually callable) for the CLI and for direct use.
 @with_zotero_api_lock
 def add_by_doi(
     doi: str,
@@ -1079,40 +1132,6 @@ def add_by_doi(
         return f"Error adding by DOI: {e}"
 
 
-@mcp.tool(
-    name="zotero_add_by_url",
-    description=(
-        "Add an item to the active Zotero library from a URL. Routes by "
-        "URL shape: doi.org/... → CrossRef metadata (same path as "
-        "zotero_add_by_doi); arxiv.org/abs/... → arXiv metadata + PDF; "
-        "anything else → webpage item (title + URL, minimal metadata). "
-        "Prefer zotero_add_by_doi when you have a clean DOI — it skips "
-        "the routing and is more robust. For a local file use "
-        "zotero_add_from_file. "
-        "url: the URL to import. "
-        "collections: optional list of collection keys, names, or "
-        "'/'-separated paths — resolved and validated before the item is "
-        "created; unknown or ambiguous specs fail the call. "
-        "tags: optional list of tag strings to attach. "
-        "if_exists: 'duplicate' (default) always creates; 'file' reuses "
-        "an existing item matching the arXiv ID / DOI / URL, filing it "
-        "into missing collections and adding missing tags; 'skip' leaves "
-        "a match untouched. create_missing_collections: create unknown "
-        "collection specs instead of failing. "
-        "attach_mode: 'auto' (default) attaches a PDF if one is "
-        "available; 'none' skips; 'required' fails if no PDF can be "
-        "attached. PDF uploads may fail on the Zotero cloud free-tier "
-        "300MB quota — metadata still lands even when the upload fails. "
-        "WARNING: for bibliography use, a general web-page URL produces "
-        "a 'webpage' itemType that often isn't acceptable as a citation; "
-        "resolve to a DOI and use zotero_add_by_doi instead when "
-        "possible. "
-        "Requires a writable library (fails in local-only mode). Run "
-        "zotero_update_search_database afterwards for semantic search. "
-        "Example: zotero_add_by_url(url='https://arxiv.org/abs/2602.14878', "
-        "collections=['9SU943GB'])."
-    )
-)
 @with_zotero_api_lock
 def add_by_url(
     url: str,
@@ -1558,20 +1577,6 @@ def _lookup_isbn_google_books(isbn, ctx):
         return None
 
 
-@mcp.tool(
-    name="zotero_add_by_isbn",
-    description=(
-        "Add a book to your Zotero library by ISBN. Resolves metadata via "
-        "Open Library (primary) and Google Books (fallback). Accepts ISBN-10, "
-        "ISBN-13, with or without hyphens, or a URL/isbn: prefix. Response "
-        "includes the resolver source so you can audit metadata quality. "
-        "collections accepts keys, names, or '/'-paths (validated before "
-        "create). if_exists: 'duplicate' (default) | 'file' (reuse an "
-        "existing item with this ISBN — add missing collections/tags) | "
-        "'skip'. create_missing_collections: create unknown collection "
-        "specs instead of failing."
-    )
-)
 def add_by_isbn(
     isbn: str,
     collections: list[str] | str | None = None,
@@ -1698,101 +1703,178 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "citationKey": "citation_key",
 }
 
+# The reverse map: the snake_case names callers may use in ``fields``.
+_UPDATE_ITEM_PARAM_TO_API = {
+    param: api for api, param in _UPDATE_ITEM_API_TO_PARAM.items()
+}
+
+
+def _known_field_names() -> set[str]:
+    """Every Zotero field key the schema knows, across all item types.
+
+    Includes both a type's actual keys (``nameOfAct``) and the base fields
+    they map to (``title``), because either is a legitimate thing to pass.
+    """
+    names: set[str] = set()
+    for fields in _schema.get_table().get("itemTypes", {}).values():
+        names.update(fields.keys())
+        names.update(fields.values())
+    return names
+
+
+def _parse_update_fields(fields):
+    """Normalize the ``fields`` argument of :func:`update_item`.
+
+    Accepts a mapping or a JSON-encoded object string (the same shape
+    tolerance the list params get from ``_normalize_str_list_input``).
+    Field names may be the snake_case aliases (``publication_title``) or
+    raw Zotero API keys (``publicationTitle``).
+
+    Returns ``(api_updates, item_type, creators, unknown_names)``.
+    ``item_type`` and ``creators`` are pulled out because they are not
+    plain typed fields — they drive type migration and the creators list.
+    Unknown names are returned rather than dropped so the caller can fail
+    the call with the valid set for the item's type.
+    """
+    if fields is None:
+        return {}, None, None, []
+    if isinstance(fields, str):
+        raw = fields.strip()
+        if not raw:
+            return {}, None, None, []
+        try:
+            fields = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "fields must be an object mapping field names to values "
+                f"(or a JSON-encoded object string): {e}"
+            ) from e
+    if not isinstance(fields, dict):
+        raise ValueError(
+            "fields must be an object mapping field names to values, "
+            f"got {type(fields).__name__}"
+        )
+
+    known = _known_field_names()
+    updates: dict = {}
+    unknown: list[str] = []
+    item_type = None
+    creators = None
+    for name, value in fields.items():
+        key = str(name).strip()
+        if not key:
+            continue
+        if key in ("item_type", "itemType"):
+            item_type = value
+            continue
+        if key == "creators":
+            creators = value
+            continue
+        api = _UPDATE_ITEM_PARAM_TO_API.get(key, key)
+        if api not in known and api not in _UPDATE_ITEM_API_TO_PARAM:
+            unknown.append(key)
+            continue
+        updates[api] = value
+    return updates, item_type, creators, unknown
+
+
+def _unknown_fields_error(unknown: list[str], item_type: str) -> str:
+    """Actionable error for unrecognized ``fields`` names."""
+    valid_for_type = sorted(_schema.valid_fields(item_type))
+    aliases = sorted(_UPDATE_ITEM_PARAM_TO_API)
+    suggestions = []
+    for name in unknown:
+        close = difflib.get_close_matches(
+            name, valid_for_type + aliases, n=2, cutoff=0.75
+        )
+        if close:
+            suggestions.append(f"{name} -> did you mean {' or '.join(close)}?")
+    msg = f"Error: unknown field name(s) in `fields`: {', '.join(unknown)}."
+    if suggestions:
+        msg += " " + " ".join(suggestions)
+    if valid_for_type:
+        msg += (
+            f" Valid fields for item type '{item_type}': "
+            f"{', '.join(valid_for_type)}."
+        )
+    msg += (
+        f" These snake_case aliases are also accepted: {', '.join(aliases)}, "
+        "item_type, creators."
+    )
+    return msg
+
 
 @mcp.tool(
     name="zotero_update_item",
     description=(
-        "Update metadata on an existing Zotero item by key. Only fields "
-        "you pass are modified; unspecified fields are left alone. "
-        "TAG SEMANTICS (easy to get wrong): `tags` REPLACES the entire "
-        "tag list. To add tags without touching existing ones, use "
-        "`add_tags`. To remove specific tags, use `remove_tags`. These "
-        "three are mutually exclusive — prefer `add_tags`/`remove_tags` "
-        "for incremental edits. "
-        "Similarly, collections/collection_names REPLACE the item's "
-        "collection memberships (pass collections=[] to clear all "
-        "memberships); for incremental moves use "
-        "zotero_manage_collections instead. "
-        "item_key: 8-character Zotero item key of the item to update. "
-        "Editable fields include: title, creators, date, publisher, place, "
-        "publication_title, volume, issue, pages, DOI, ISBN, ISSN, url, "
-        "language, abstract, short_title, edition, book_title, extra, "
-        "citation_key, item_type. "
-        "To migrate an item across types (e.g., journalArticle → book), pass item_type "
-        "with a valid Zotero item-type vocabulary value; overlapping fields are preserved "
-        "and type-specific fields that do not map to the target type are dropped. "
-        "Requires a writable library (web API key or hybrid mode); fails "
-        "in local-only mode. To edit notes use zotero_update_note, not "
-        "this. "
+        "Update metadata on an existing Zotero item by key. Only what "
+        "you pass is changed. "
+        "fields: {name: value} of metadata to set (a JSON object string "
+        "is accepted). Names may be snake_case (title, date, doi, url, "
+        "abstract, publication_title, access_date, short_title, "
+        "book_title, citation_key, item_type, place, extra, volume, "
+        "issue, pages, publisher, issn, isbn, edition, language) or any "
+        "raw Zotero API field name. An unknown name fails the call and "
+        "lists the valid ones; a name that is not valid for this item's "
+        "type is reported as skipped. item_type migrates the item "
+        "(overlapping fields kept, type-specific ones dropped). "
+        "TAG SEMANTICS (easy to get wrong): tags REPLACES the whole tag "
+        "list; add_tags/remove_tags are incremental and preferred. They "
+        "are mutually exclusive with tags. "
+        "collections (keys) and collection_names likewise REPLACE "
+        "membership — pass collections=[] to clear it; for incremental "
+        "moves use zotero_set_item_collections. "
+        "creators: full replacement list of {creatorType, firstName, "
+        "lastName} objects. "
+        "Requires a writable library (fails in local-only mode). To edit "
+        "notes use zotero_manage_note. "
         "Example: zotero_update_item(item_key='RTKZQI8E', "
-        "add_tags=['reviewed'], doi='10.1145/3708319')."
+        "fields={'doi': '10.1145/3708319'}, add_tags=['reviewed'])."
     )
 )
 @with_zotero_api_lock
 def update_item(
     item_key: str,
-    title: str | None = None,
+    fields: dict | str | None = None,
     creators: list[dict] | str | None = None,
-    date: str | None = None,
-    access_date: str | None = None,
-    publication_title: str | None = None,
-    abstract: str | None = None,
     tags: list[str] | str | None = None,
     add_tags: list[str] | str | None = None,
     remove_tags: list[str] | str | None = None,
     collections: list[str] | str | None = None,
     collection_names: list[str] | str | None = None,
-    doi: str | None = None,
-    url: str | None = None,
-    extra: str | None = None,
-    volume: str | None = None,
-    issue: str | None = None,
-    pages: str | None = None,
-    publisher: str | None = None,
-    place: Annotated[
-        str | None,
-        Field(description="Publication place (city), e.g., 'New York' or 'Cambridge, MA'."),
-    ] = None,
-    issn: str | None = None,
-    language: str | None = None,
-    short_title: str | None = None,
-    edition: str | None = None,
-    isbn: str | None = None,
-    book_title: str | None = None,
-    citation_key: Annotated[
-        str | None,
-        Field(description="BetterBibTeX / Zotero native citation key. Writes to data.citationKey. Useful when BBT auto-pinned the key from incomplete metadata and the programmatic refresh path is blocked (see https://github.com/retorquere/zotero-better-bibtex/issues/3522)."),
-    ] = None,
-    item_type: str | None = None,
     *,
     ctx: Context
 ) -> str:
     """
     Update metadata fields on an existing Zotero item.
 
-    Only fields you pass are modified; unspecified fields are left
-    untouched. Fields whose API key does not exist on the item's
-    itemType (e.g. ``place`` on a ``journalArticle``) are reported as
-    skipped rather than written.
+    Only what you pass is modified; everything else is left untouched.
+    Field names whose API key is not valid for the item's itemType (e.g.
+    ``place`` on a ``journalArticle``) are reported as skipped rather
+    than written; names that are not Zotero fields at all fail the call.
 
     Args:
         item_key: 8-character Zotero item key of the item to update.
-        title, creators, date, publication_title, abstract, doi, url,
-        extra, volume, issue, pages, publisher, place, issn, language,
-        short_title, edition, isbn, book_title, citation_key: per-field
-        overrides; ``place`` is the publication city (e.g. ``"New York"``
-        or ``"Cambridge, MA"``) and is valid on book, bookSection,
-        thesis, manuscript, report, and conferencePaper item types.
-        ``citation_key`` writes Zotero's native ``data.citationKey``
-        (the BetterBibTeX citation key); BBT auto-pins from metadata on
-        creation and provides no programmatic refresh path in 9.x, so
-        direct write here is the only programmatic remediation for
-        malformed pinned keys.
+        fields: mapping (or JSON object string) of field name -> value.
+            Names may be snake_case aliases (``publication_title``,
+            ``short_title``, ``citation_key``) or raw Zotero API keys
+            (``publicationTitle``). ``place`` is the publication city
+            (e.g. ``"New York"``) and is valid on book, bookSection,
+            thesis, manuscript, report and conferencePaper.
+            ``citation_key`` writes Zotero's native ``data.citationKey``
+            (the BetterBibTeX citation key); BBT auto-pins from metadata
+            on creation and provides no programmatic refresh path in 9.x,
+            so a direct write here is the only programmatic remediation
+            for malformed pinned keys. ``item_type`` migrates the item
+            across types: overlapping fields are preserved and
+            type-specific fields that do not map are dropped.
+        creators: full replacement creators list (also accepted as
+            ``fields['creators']``).
         tags / add_tags / remove_tags: mutually exclusive; ``tags``
         REPLACES the full tag list, ``add_tags`` / ``remove_tags`` are
         incremental. Prefer the incremental forms.
         collections / collection_names: REPLACE collection memberships;
-        for incremental moves use zotero_manage_collections instead.
+        for incremental moves use zotero_set_item_collections instead.
         ctx: MCP context.
 
     Returns:
@@ -1811,6 +1893,15 @@ def update_item(
                 "Error: Cannot use 'tags' (replace all) together with "
                 "'add_tags'/'remove_tags' (incremental). Use one approach or the other."
             )
+
+        try:
+            field_updates, item_type, fields_creators, unknown = (
+                _parse_update_fields(fields)
+            )
+        except ValueError as e:
+            return f"Error: {e}"
+        if creators is None:
+            creators = fields_creators
 
         ctx.info(f"Updating item {item_key}")
 
@@ -1848,49 +1939,6 @@ def update_item(
                     f"- **item_type**: '{old_item_type}' -> '{item_type}'"
                 )
 
-        # Apply field updates
-        field_updates = {}
-        if title is not None:
-            field_updates["title"] = title
-        if date is not None:
-            field_updates["date"] = date
-        if access_date is not None:
-            field_updates["accessDate"] = access_date
-        if publication_title is not None:
-            field_updates["publicationTitle"] = publication_title
-        if abstract is not None:
-            field_updates["abstractNote"] = abstract
-        if doi is not None:
-            field_updates["DOI"] = doi
-        if url is not None:
-            field_updates["url"] = url
-        if extra is not None:
-            field_updates["extra"] = extra
-        if volume is not None:
-            field_updates["volume"] = volume
-        if issue is not None:
-            field_updates["issue"] = issue
-        if pages is not None:
-            field_updates["pages"] = pages
-        if publisher is not None:
-            field_updates["publisher"] = publisher
-        if place is not None:
-            field_updates["place"] = place
-        if issn is not None:
-            field_updates["ISSN"] = issn
-        if language is not None:
-            field_updates["language"] = language
-        if short_title is not None:
-            field_updates["shortTitle"] = short_title
-        if edition is not None:
-            field_updates["edition"] = edition
-        if isbn is not None:
-            field_updates["ISBN"] = isbn
-        if book_title is not None:
-            field_updates["bookTitle"] = book_title
-        if citation_key is not None:
-            field_updates["citationKey"] = citation_key
-
         # Resolve each generic param to the item type's actual field key and
         # validate against the type's declared field set (from the vendored/
         # refreshed Zotero schema) rather than the field's presence on the
@@ -1900,6 +1948,13 @@ def update_item(
         # type absent from the schema table (e.g. newer than the vendored floor
         # with refresh unavailable) fall back to the legacy presence gate.
         item_type = data.get("itemType", "")
+
+        # A name that is not a Zotero field at all is a caller mistake, not a
+        # type mismatch — fail loudly with the valid set rather than dropping
+        # the value silently.
+        if unknown:
+            return _unknown_fields_error(unknown, item_type)
+
         known_fields = _schema.valid_fields(item_type)
         skipped = []
         for field, value in field_updates.items():
@@ -1943,7 +1998,7 @@ def update_item(
 
         # Collections — REPLACE membership (matches tags semantics and the
         # docstring contract). For incremental moves use
-        # zotero_manage_collections. Passing collections=[] clears all
+        # zotero_set_item_collections. Passing collections=[] clears all
         # memberships. ``collections`` and ``collection_names`` may both be
         # supplied; the union of their resolved keys is the new membership.
         if collections is not None or collection_names is not None:
@@ -2659,38 +2714,6 @@ def get_pdf_outline(
         return f"Error extracting PDF outline: {e}"
 
 
-@mcp.tool(
-    name="zotero_add_from_file",
-    description=(
-        "Add an item to the active Zotero library from a LOCAL .pdf or "
-        ".epub file. Attempts to extract the DOI from the file content; "
-        "if found, enriches metadata via CrossRef (title, creators, "
-        "journal, year, abstract). If no DOI is found, falls back to "
-        "best-effort title/author guesses from the filename or document "
-        "text. "
-        "Use this when the user has a file on disk but no DOI/URL handy. "
-        "If you have a DOI use zotero_add_by_doi; for an online URL use "
-        "zotero_add_by_url. "
-        "file_path: ABSOLUTE path to a .pdf or .epub file (relative "
-        "paths fail). Other extensions are rejected. "
-        "title: optional override if metadata extraction misses. "
-        "collections: optional list of collection keys, names, or "
-        "'/'-separated paths to file under — resolved and validated "
-        "before the item is created. "
-        "tags: optional list of tag strings. "
-        "if_exists: 'duplicate' (default) | 'file' (when the extracted "
-        "DOI matches an existing item, reuse it: file into missing "
-        "collections, attach the file to it unless an attachment with "
-        "the same filename exists) | 'skip' (no item, no attachment). "
-        "create_missing_collections: create unknown collection specs. "
-        "Requires a writable library (fails in local-only mode). PDF "
-        "uploads may hit the 300MB Zotero cloud free-tier quota — "
-        "metadata still lands. Run zotero_update_search_database "
-        "afterwards for semantic search. "
-        "Example: zotero_add_from_file(file_path='/Users/me/paper.pdf', "
-        "collections=['9SU943GB'])."
-    )
-)
 @with_zotero_api_lock
 def add_from_file(
     file_path: str,
@@ -3551,23 +3574,6 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(
-    name="zotero_add_by_bibtex",
-    description=(
-        "Add one or more items to Zotero from BibTeX. "
-        "Provide EITHER `bibtex` (inline string) OR `file_path` "
-        "(absolute path to a .bib / .bibtex file) — not both. "
-        "Supports multiple @entries per call. "
-        "The citation key from each entry is preserved in the Extra field. "
-        "If an entry has a DOI, an open-access PDF attachment is attempted. "
-        "collections accepts keys, names, or '/'-paths (validated before "
-        "create). if_exists: 'duplicate' (default) | 'file' (entries whose "
-        "DOI already exists reuse that item — add missing collections/tags "
-        "instead of duplicating) | 'skip' (leave existing matches "
-        "untouched); entries without a DOI always create. "
-        "create_missing_collections: create unknown collection specs."
-    )
-)
 def add_by_bibtex(
     bibtex: str | None = None,
     file_path: str | None = None,
@@ -3651,21 +3657,6 @@ def add_by_bibtex(
         return f"Error adding by BibTeX: {e}"
 
 
-@mcp.tool(
-    name="zotero_add_by_csl_json",
-    description=(
-        "Add one or more items to Zotero from CSL JSON. "
-        "Provide EITHER `csl_json` (inline — a JSON string, object, or array) "
-        "OR `file_path` (absolute path to a .json / .csljson file) — not both. "
-        "The `id` field is preserved in the Extra field as the Citation Key. "
-        "If an entry has a DOI, an open-access PDF attachment is attempted. "
-        "collections accepts keys, names, or '/'-paths (validated before "
-        "create). if_exists: 'duplicate' (default) | 'file' (entries whose "
-        "DOI already exists reuse that item — add missing collections/tags) "
-        "| 'skip'; entries without a DOI always create. "
-        "create_missing_collections: create unknown collection specs."
-    )
-)
 def add_by_csl_json(
     csl_json: str | list | dict | None = None,
     file_path: str | None = None,
@@ -3747,3 +3738,229 @@ def add_by_csl_json(
     except Exception as e:
         ctx.error(f"Error adding by CSL JSON: {e}")
         return f"Error adding by CSL JSON: {e}"
+
+
+# ---------------------------------------------------------------------------
+# zotero_add_item — the single public add facade
+# ---------------------------------------------------------------------------
+
+_ADD_SOURCE_TYPES = ("doi", "url", "isbn", "bibtex", "csl_json", "file")
+
+_BIBTEX_EXTS = {".bib", ".bibtex"}
+_CSL_JSON_EXTS = {".json", ".csljson"}
+
+# Extension -> source_type. Document extensions come from the attachment
+# allow-list so the two stay in sync.
+_SOURCE_TYPE_BY_EXT = {
+    **{e: "bibtex" for e in _BIBTEX_EXTS},
+    **{e: "csl_json" for e in _CSL_JSON_EXTS},
+    **{e: "file" for e in _ATTACH_ALLOWED_EXTS},
+}
+
+# A BibTeX entry header, possibly preceded by comments/whitespace.
+_BIBTEX_ENTRY_RE = re.compile(r"^[ \t]*@[A-Za-z]+[ \t]*[{(]", re.MULTILINE)
+
+# A scheme-less host: example.com, www.example.com/page, sub.host.co.uk/x
+_BARE_HOST_RE = re.compile(
+    r"^(?P<host>[\w-]+(?:\.[\w-]+)*\.(?P<tld>[A-Za-z]{2,}))(?::\d+)?(?P<rest>[/?#].*)?$"
+)
+
+# Without a scheme, "foo.bar" is only a host if the suffix reads like one.
+# Anything else (notes.txt, draft.tex) must not be silently turned into a
+# web-page item — it falls through to the "pass source_type" error instead.
+_COMMON_TLDS = {
+    "ac", "ai", "app", "au", "be", "biz", "ca", "ch", "cn", "co", "com",
+    "de", "dev", "edu", "es", "eu", "fr", "gov", "ie", "in", "info", "io",
+    "it", "jp", "kr", "me", "mil", "net", "nl", "no", "nz", "org", "press",
+    "pt", "ru", "se", "sh", "tech", "tv", "uk", "us", "xyz", "za",
+}
+
+
+def _looks_like_path(s: str) -> bool:
+    """True when *s* has the shape of a filesystem path (POSIX or Windows)."""
+    return (
+        os.path.isabs(s)
+        or bool(re.match(r"^[A-Za-z]:[\\/]", s))
+        or s.startswith(("~", "./", "../", ".\\", "..\\"))
+    )
+
+
+def _is_citation_path(source: str, exts: set[str]) -> bool:
+    """True when a bibtex/csl_json source is a file path rather than inline text.
+
+    Inline citation text is the common case, so only a single-line string
+    that is shaped like a path (or carries the matching extension) is read
+    from disk. A relative path still counts — the reader rejects it with a
+    clear "must be absolute" error, which beats parsing it as citation text.
+    """
+    s = (source or "").strip()
+    if not s or "\n" in s:
+        return False
+    return _looks_like_path(s) or os.path.splitext(s)[1].lower() in exts
+
+
+def detect_source_type(source: str) -> str:
+    """Classify an ``zotero_add_item`` source string.
+
+    Returns one of ``_ADD_SOURCE_TYPES``. Raises ValueError with an
+    actionable message when the shape is not recognizable.
+
+    Order matters, and every identifier test reuses the normalizers the
+    per-source implementations already use, so detection can never disagree
+    with the implementation it routes to:
+
+    1. inline BibTeX (``@entry{...}``) and inline CSL JSON (``[``/``{``)
+       are structural and unambiguous;
+    2. http(s) URLs are resolved to a DOI first (``https://doi.org/10.x``
+       is a DOI, not a generic web page) and are otherwise a URL;
+    3. bare DOIs (``10.x/y``, ``doi:10.x/y``) beat everything below —
+       they contain a ``/`` and would otherwise look path-ish;
+    4. arXiv IDs route through the URL implementation, which owns the
+       arXiv metadata path;
+    5. path shapes are classified by extension (``.bib`` -> bibtex,
+       ``.json`` -> csl_json, ``.pdf``/``.epub``/... -> file);
+    6. ISBNs are checksum-validated, so an arbitrary 13-digit number is
+       rejected rather than silently treated as a book.
+    """
+    s = (source or "").strip()
+    if not s:
+        raise ValueError("No source provided.")
+
+    if _BIBTEX_ENTRY_RE.search(s):
+        return "bibtex"
+    if s[0] in "[{":
+        return "csl_json"
+
+    if s.lower().startswith(("http://", "https://")):
+        return "doi" if _helpers._normalize_doi(s) else "url"
+    if _helpers._normalize_doi(s):
+        return "doi"
+    if _helpers._normalize_arxiv_id(s):
+        return "url"
+
+    if "\n" not in s:
+        by_ext = _SOURCE_TYPE_BY_EXT.get(os.path.splitext(s)[1].lower())
+        if by_ext:
+            return by_ext
+        if _looks_like_path(s):
+            return "file"
+
+    if _helpers._normalize_isbn(s):
+        return "isbn"
+    host = _BARE_HOST_RE.match(s)
+    if host and (
+        s.lower().startswith("www.")
+        or host.group("rest")
+        or host.group("tld").lower() in _COMMON_TLDS
+    ):
+        return "url"
+
+    raise ValueError(
+        f"Could not tell what kind of source '{s[:80]}' is. Pass source_type "
+        "explicitly (doi, url, isbn, bibtex, csl_json, or file); note that "
+        "file paths must be absolute and ISBNs must pass their checksum."
+    )
+
+
+@mcp.tool(
+    name="zotero_add_item",
+    description=(
+        "Add item(s) to Zotero from any source: DOI, URL, ISBN, BibTeX, "
+        "CSL JSON, or a local file. Use for every 'add this to Zotero' "
+        "request. "
+        "source: the identifier, URL, citation text, or ABSOLUTE file "
+        "path. BibTeX/CSL JSON may be inline (many entries per call) or "
+        "a path to .bib/.bibtex/.json/.csljson; documents are .pdf, "
+        ".epub, .docx and similar. "
+        "source_type: 'auto' (default) detects it; override a wrong "
+        "guess. Routing: doi → CrossRef (best metadata — prefer a DOI "
+        "when you have one); url → doi.org/arxiv.org get full metadata, "
+        "anything else becomes a bare 'webpage' item that is often not "
+        "citable, so resolve to a DOI first; isbn → Open Library then "
+        "Google Books (noisy — verify after); bibtex/csl_json → one item "
+        "per entry, citation key kept in Extra; file → extracts the "
+        "PDF's DOI and enriches via CrossRef, else guesses from "
+        "filename/text, then attaches the file. "
+        "collections: keys, names, or '/'-paths ('_project/topic'), "
+        "validated before anything is created — an unknown or ambiguous "
+        "spec fails the call rather than leaving an unfiled item; "
+        "create_missing_collections=True creates them instead. "
+        "if_exists: 'duplicate' (default) always creates; 'file' is "
+        "idempotent — reuses the item matching the DOI/ISBN/URL, adding "
+        "missing collections/tags, never removing; 'skip' leaves a match "
+        "untouched. "
+        "attach_mode: 'auto' (default) attaches an open-access PDF when "
+        "available, 'none' skips, 'required' fails without one. "
+        "title: file sources only, when extraction misses. "
+        "Requires a writable library (fails in local-only mode). Run "
+        "zotero_update_search_database afterwards for semantic search. "
+        "Example: zotero_add_item(source='10.1145/3708319', "
+        "collections=['9SU943GB'], if_exists='file')."
+    )
+)
+def add_item(
+    source: str,
+    source_type: Literal[
+        "auto", "doi", "url", "isbn", "bibtex", "csl_json", "file"
+    ] = "auto",
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    create_missing_collections: bool = False,
+    title: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    """Detect the shape of ``source`` and dispatch to the matching adder."""
+    # Tolerate structured CSL JSON arriving as a real object/array rather
+    # than a string — clients do this when the user pastes JSON. An empty
+    # container is "nothing supplied", not an empty JSON document.
+    if source is not None and not isinstance(source, str):
+        if isinstance(source, (list, dict)) and not source:
+            source = ""
+        else:
+            try:
+                source = json.dumps(source)
+            except (TypeError, ValueError):
+                return "Error: source must be a string."
+
+    resolved = (source_type or "auto").strip().lower()
+    if resolved in ("", "auto"):
+        try:
+            resolved = detect_source_type(source)
+        except ValueError as e:
+            return f"Error: {e}"
+        ctx.info(f"Detected source_type='{resolved}'")
+    elif resolved not in _ADD_SOURCE_TYPES:
+        return (
+            f"Error: source_type must be 'auto' or one of "
+            f"{_ADD_SOURCE_TYPES}."
+        )
+
+    source = source.strip() if isinstance(source, str) else source
+
+    common = {
+        "collections": collections,
+        "tags": tags,
+        "if_exists": if_exists,
+        "create_missing_collections": create_missing_collections,
+        "ctx": ctx,
+    }
+
+    if resolved == "doi":
+        return add_by_doi(doi=source, attach_mode=attach_mode, **common)
+    if resolved == "url":
+        return add_by_url(url=source, attach_mode=attach_mode, **common)
+    if resolved == "isbn":
+        return add_by_isbn(isbn=source, **common)
+    if resolved == "file":
+        return add_from_file(file_path=source, title=title, **common)
+    # BibTeX / CSL JSON arrive either inline or as a path to a citation file.
+    if resolved == "bibtex":
+        if _is_citation_path(source, _BIBTEX_EXTS):
+            return add_by_bibtex(file_path=source, attach_mode=attach_mode, **common)
+        return add_by_bibtex(bibtex=source, attach_mode=attach_mode, **common)
+    if _is_citation_path(source, _CSL_JSON_EXTS):
+        return add_by_csl_json(file_path=source, attach_mode=attach_mode, **common)
+    return add_by_csl_json(csl_json=source, attach_mode=attach_mode, **common)

@@ -1,11 +1,11 @@
-"""Tests for Feature 10: zotero_add_from_file (server.add_from_file)."""
+"""Tests for the local-file source of zotero_add_item (write.add_from_file)."""
 
 import sys
 import types
 import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
 
-from zotero_mcp import server
+from zotero_mcp.tools import write
 from conftest import DummyContext, FakeZotero, _FakeResponse, skip_on_windows
 
 
@@ -28,7 +28,7 @@ class FakeZoteroForFile(FakeZotero):
 class FakeFitzDocument:
     """Stub for a fitz (PyMuPDF) Document object.
 
-    Supports the interface used by server.add_from_file:
+    Supports the interface used by write.add_from_file:
     - doc.metadata
     - doc.page_count
     - doc[0].get_text()
@@ -125,10 +125,10 @@ class TestHappyPathNoDoi:
         fake_doc = FakeFitzDocument(metadata={"subject": "", "keywords": ""}, first_page_text="No doi here.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        result = write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="My Paper",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -154,10 +154,10 @@ class TestHappyPathNoDoi:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="Some text without DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/report.pdf",
+        result = write.add_item(
+            source="/Users/test/Documents/report.pdf",
+            source_type="file",
             title=None,
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -201,10 +201,10 @@ class TestDoiFromMetadata:
 
         monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        result = write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title=None,
-            item_type="document",
             collections=["COL00001"],
             tags=["tag1"],
             ctx=dummy_ctx,
@@ -236,10 +236,10 @@ class TestDoiFromMetadata:
 
         monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title=None,
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -277,10 +277,10 @@ class TestDoiFromFirstPageText:
 
         monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title=None,
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -310,10 +310,10 @@ class TestDoiFromFirstPageText:
 
         monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Manual Title",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -334,10 +334,10 @@ class TestInvalidFileExtension:
         _patch_path_valid(monkeypatch)
         _patch_hybrid_mode(monkeypatch, fake_zot)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/malware.exe",
+        result = write.add_item(
+            source="/Users/test/Documents/malware.exe",
+            source_type="file",
             title="Bad File",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -350,10 +350,10 @@ class TestInvalidFileExtension:
         _patch_path_valid(monkeypatch)
         _patch_hybrid_mode(monkeypatch, fake_zot)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/notes.txt",
+        result = write.add_item(
+            source="/Users/test/Documents/notes.txt",
+            source_type="file",
             title="Text File",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -370,10 +370,10 @@ class TestInvalidFileExtension:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        result = write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Good PDF",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -393,10 +393,10 @@ class TestInvalidFileExtension:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="")
         _patch_fitz(monkeypatch, fake_doc)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/book.epub",
+        result = write.add_item(
+            source="/Users/test/Documents/book.epub",
+            source_type="file",
             title="Good EPUB",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -418,10 +418,10 @@ class TestFileDoesNotExist:
         monkeypatch.setattr("os.path.isfile", lambda p: False)
         monkeypatch.setattr("os.path.islink", lambda p: False)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/nonexistent.pdf",
+        result = write.add_item(
+            source="/Users/test/Documents/nonexistent.pdf",
+            source_type="file",
             title="Ghost File",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -437,10 +437,10 @@ class TestFileDoesNotExist:
         monkeypatch.setattr("os.path.isfile", lambda p: False)
         monkeypatch.setattr("os.path.islink", lambda p: False)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/",
+        result = write.add_item(
+            source="/Users/test/Documents/",
+            source_type="file",
             title="Not a file",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -459,10 +459,10 @@ class TestNonAbsolutePath:
         _patch_hybrid_mode(monkeypatch, fake_zot)
         monkeypatch.setattr("os.path.isabs", lambda p: False)
 
-        result = server.add_from_file(
-            file_path="relative/path/paper.pdf",
+        result = write.add_item(
+            source="relative/path/paper.pdf",
+            source_type="file",
             title="Relative",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -475,10 +475,10 @@ class TestNonAbsolutePath:
         _patch_hybrid_mode(monkeypatch, fake_zot)
         monkeypatch.setattr("os.path.isabs", lambda p: not p.startswith("."))
 
-        result = server.add_from_file(
-            file_path="./Documents/paper.pdf",
+        result = write.add_item(
+            source="./Documents/paper.pdf",
+            source_type="file",
             title="Dot Relative",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -500,10 +500,10 @@ class TestSymlinkRejection:
         monkeypatch.setattr("os.path.isfile", lambda p: True)
         monkeypatch.setattr("os.path.islink", lambda p: True)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/symlink_paper.pdf",
+        result = write.add_item(
+            source="/Users/test/Documents/symlink_paper.pdf",
+            source_type="file",
             title="Symlink File",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -533,10 +533,10 @@ class TestHybridModeRejection:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        result = server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        result = write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Local Only",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -557,10 +557,10 @@ class TestHybridModeRejection:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Hybrid Test",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -587,10 +587,10 @@ class TestTagsAndCollections:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI here.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Tagged Paper",
-            item_type="document",
             collections=None,
             tags=["machine-learning", "review"],
             ctx=dummy_ctx,
@@ -614,10 +614,10 @@ class TestTagsAndCollections:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI here.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Collected Paper",
-            item_type="document",
             collections=["COLKEY01", "COLKEY02"],
             tags=None,
             ctx=dummy_ctx,
@@ -639,10 +639,10 @@ class TestTagsAndCollections:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Both",
-            item_type="document",
             collections=["COL00001"],
             tags=["tag1"],
             ctx=dummy_ctx,
@@ -661,10 +661,10 @@ class TestTagsAndCollections:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Comma Tags",
-            item_type="document",
             collections=None,
             tags="alpha, beta, gamma",
             ctx=dummy_ctx,
@@ -692,10 +692,10 @@ class TestAttachmentBoth:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/my_paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/my_paper.pdf",
+            source_type="file",
             title="Attachment Test",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -719,10 +719,10 @@ class TestAttachmentBoth:
         fake_doc = FakeFitzDocument(metadata={}, first_page_text="No DOI.")
         _patch_fitz(monkeypatch, fake_doc)
 
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="Parent Key Test",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,
@@ -746,10 +746,10 @@ class TestAttachmentBoth:
         _patch_fitz(monkeypatch, fake_doc)
 
         # Should complete without raising AssertionError
-        server.add_from_file(
-            file_path="/Users/test/Documents/paper.pdf",
+        write.add_item(
+            source="/Users/test/Documents/paper.pdf",
+            source_type="file",
             title="No Simple",
-            item_type="document",
             collections=None,
             tags=None,
             ctx=dummy_ctx,

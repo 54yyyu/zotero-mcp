@@ -1,4 +1,4 @@
-"""Tests for zotero_add_by_isbn (#226).
+"""Tests for the ISBN source of zotero_add_item (#226).
 
 Covers ISBN normalization (10→13 conversion, checksum validation), the
 Open Library → Google Books lookup cascade, and the resulting Zotero book
@@ -10,7 +10,6 @@ import json
 import pytest
 import requests
 
-from zotero_mcp import server
 from zotero_mcp.tools import write as _write
 from zotero_mcp.tools._helpers import (
     _isbn10_to_isbn13,
@@ -197,8 +196,9 @@ class TestAddByIsbnEndToEnd:
             })
         )
 
-        result = server.add_by_isbn(
-            isbn="978-0-19-973581-5",
+        result = _write.add_item(
+            source="978-0-19-973581-5",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -231,8 +231,9 @@ class TestAddByIsbnEndToEnd:
             })
         )
 
-        result = server.add_by_isbn(
-            isbn="9780135957059",
+        result = _write.add_item(
+            source="9780135957059",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -256,8 +257,9 @@ class TestAddByIsbnEndToEnd:
             })
         )
 
-        result = server.add_by_isbn(
-            isbn="9780135957059",
+        result = _write.add_item(
+            source="9780135957059",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -271,8 +273,9 @@ class TestAddByIsbnEndToEnd:
             lambda ctx: (fake, fake),
         )
 
-        result = server.add_by_isbn(
-            isbn="not-an-isbn",
+        result = _write.add_item(
+            source="not-an-isbn",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -298,8 +301,9 @@ class TestAddByIsbnEndToEnd:
             })
         )
 
-        server.add_by_isbn(
-            isbn="9780199735815",
+        _write.add_item(
+            source="9780199735815",
+            source_type="isbn",
             tags=["philosophy", "anthology"],
             collections=["COLL0001"],
             ctx=DummyContext(),
