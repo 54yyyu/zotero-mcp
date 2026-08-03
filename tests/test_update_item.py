@@ -236,8 +236,10 @@ class TestBaseFieldRouting:
                             lambda ctx: (fake, fake))
 
         result = server.update_item(
-            item_key="STAT1234", title="Marine Areas Act 2020",
-            ctx=DummyContext())
+            item_key="STAT1234",
+            fields={"title": "Marine Areas Act 2020"},
+            ctx=DummyContext(),
+        )
 
         data = fake.update_calls[0]["data"]
         assert data["nameOfAct"] == "Marine Areas Act 2020"
@@ -250,8 +252,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        server.update_item(item_key="CASE1234", title="Smith v Jones",
-                           ctx=DummyContext())
+        server.update_item(
+            item_key="CASE1234",
+            fields={"title": "Smith v Jones"},
+            ctx=DummyContext(),
+        )
 
         assert fake.update_calls[0]["data"]["caseName"] == "Smith v Jones"
 
@@ -261,8 +266,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        server.update_item(item_key="STAT1234", date="2021-07-01",
-                           ctx=DummyContext())
+        server.update_item(
+            item_key="STAT1234",
+            fields={"date": "2021-07-01"},
+            ctx=DummyContext(),
+        )
 
         assert fake.update_calls[0]["data"]["dateEnacted"] == "2021-07-01"
 
@@ -275,9 +283,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        result = server.update_item(item_key="STAT1234",
-                                    citation_key="marineAct2020",
-                                    ctx=DummyContext())
+        result = server.update_item(
+            item_key="STAT1234",
+            fields={"citation_key": "marineAct2020"},
+            ctx=DummyContext(),
+        )
 
         assert fake.update_calls[0]["data"]["citationKey"] == "marineAct2020"
         assert "Skipped" not in result
@@ -289,8 +299,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        result = server.update_item(item_key="STAT1234",
-                                    book_title="Nope", ctx=DummyContext())
+        result = server.update_item(
+            item_key="STAT1234",
+            fields={"book_title": "Nope"},
+            ctx=DummyContext(),
+        )
 
         assert "Skipped" in result and "book_title" in result
         assert fake.update_calls == []  # nothing valid to change
@@ -302,9 +315,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        server.update_item(item_key="BSEC1234",
-                           publication_title="Collected Essays",
-                           ctx=DummyContext())
+        server.update_item(
+            item_key="BSEC1234",
+            fields={"publication_title": "Collected Essays"},
+            ctx=DummyContext(),
+        )
 
         data = fake.update_calls[0]["data"]
         assert data["bookTitle"] == "Collected Essays"
@@ -317,8 +332,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        result = server.update_item(item_key="STAT1234", title="New Act",
-                                    ctx=DummyContext())
+        result = server.update_item(
+            item_key="STAT1234",
+            fields={"title": "New Act"},
+            ctx=DummyContext(),
+        )
 
         assert "- **title**: 'Old Act' -> 'New Act'" in result
 
@@ -329,8 +347,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        result = server.update_item(item_key="STAT1234", date="2021-07-01",
-                                    ctx=DummyContext())
+        result = server.update_item(
+            item_key="STAT1234",
+            fields={"date": "2021-07-01"},
+            ctx=DummyContext(),
+        )
 
         assert "- **date**: (none) -> '2021-07-01'" in result
         assert fake.update_calls[0]["data"]["dateEnacted"] == "2021-07-01"
@@ -342,8 +363,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        result = server.update_item(item_key="STAT1234", title="New Act",
-                                    book_title="Nope", ctx=DummyContext())
+        result = server.update_item(
+            item_key="STAT1234",
+            fields={"title": "New Act", "book_title": "Nope"},
+            ctx=DummyContext(),
+        )
 
         assert fake.update_calls[0]["data"]["nameOfAct"] == "New Act"
         assert "Skipped" in result and "book_title" in result
@@ -364,8 +388,11 @@ class TestBaseFieldRouting:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        result = server.update_item(item_key="FUT12345", title="New",
-                                    volume="3", ctx=DummyContext())
+        result = server.update_item(
+            item_key="FUT12345",
+            fields={"title": "New", "volume": "3"},
+            ctx=DummyContext(),
+        )
 
         data = fake.update_calls[0]["data"]
         assert data["title"] == "New"      # present field updates
@@ -388,7 +415,7 @@ class TestUpdateItemHappyPath:
 
         result = server.update_item(
             item_key="ABCD1234",
-            title="New Title",
+            fields={"title": "New Title"},
             ctx=DummyContext(),
         )
 
@@ -412,9 +439,7 @@ class TestUpdateMultipleFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            title="Brand New Title",
-            date="2025-06-15",
-            abstract="Updated abstract",
+            fields={"title": "Brand New Title", "date": "2025-06-15", "abstract": "Updated abstract"},
             ctx=DummyContext(),
         )
 
@@ -643,7 +668,7 @@ class TestUpdateItemExtra:
 
         server.update_item(
             item_key="ABCD1234",
-            extra="PMID: 12345\noriginal-date: 2020",
+            fields={"extra": "PMID: 12345\noriginal-date: 2020"},
             ctx=DummyContext(),
         )
 
@@ -669,7 +694,7 @@ class TestUpdateItemVersion:
 
         server.update_item(
             item_key="ABCD1234",
-            title="Updated",
+            fields={"title": "Updated"},
             ctx=DummyContext(),
         )
 
@@ -695,7 +720,7 @@ class TestUpdateItemDiff:
 
         result = server.update_item(
             item_key="ABCD1234",
-            title="New Title",
+            fields={"title": "New Title"},
             ctx=DummyContext(),
         )
 
@@ -722,7 +747,7 @@ class TestUpdateItemHybridMode:
 
         result = server.update_item(
             item_key="ABCD1234",
-            title="Anything",
+            fields={"title": "Anything"},
             ctx=DummyContext(),
         )
 
@@ -741,7 +766,7 @@ class TestUpdateItemHybridMode:
 
         server.update_item(
             item_key="ABCD1234",
-            title="Changed",
+            fields={"title": "Changed"},
             ctx=DummyContext(),
         )
 
@@ -765,7 +790,7 @@ class TestUpdateItemErrors:
 
         result = server.update_item(
             item_key="ZZZZZZZZ",
-            title="Anything",
+            fields={"title": "Anything"},
             ctx=DummyContext(),
         )
 
@@ -802,7 +827,7 @@ class TestUpdateItemErrors:
 
         result = server.update_item(
             item_key="ABCD1234",
-            title="Anything",
+            fields={"title": "Anything"},
             ctx=DummyContext(),
         )
 
@@ -836,7 +861,7 @@ class TestUpdateItemErrors:
 
         result = server.update_item(
             item_key="ATTACH12",
-            title="New PDF Title",
+            fields={"title": "New PDF Title"},
             ctx=DummyContext(),
         )
 
@@ -861,7 +886,7 @@ class TestUpdateItemFieldVariants:
 
         server.update_item(
             item_key="ABCD1234",
-            doi="10.5678/new",
+            fields={"doi": "10.5678/new"},
             ctx=DummyContext(),
         )
 
@@ -875,7 +900,7 @@ class TestUpdateItemFieldVariants:
 
         server.update_item(
             item_key="ABCD1234",
-            url="https://new.example.com",
+            fields={"url": "https://new.example.com"},
             ctx=DummyContext(),
         )
 
@@ -889,7 +914,7 @@ class TestUpdateItemFieldVariants:
 
         server.update_item(
             item_key="ABCD1234",
-            publication_title="Nature",
+            fields={"publication_title": "Nature"},
             ctx=DummyContext(),
         )
 
@@ -951,7 +976,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            volume="42",
+            fields={"volume": "42"},
             ctx=DummyContext(),
         )
 
@@ -966,7 +991,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            issue="3",
+            fields={"issue": "3"},
             ctx=DummyContext(),
         )
 
@@ -981,7 +1006,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            pages="27-61",
+            fields={"pages": "27-61"},
             ctx=DummyContext(),
         )
 
@@ -996,7 +1021,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            publisher="Oxford University Press",
+            fields={"publisher": "Oxford University Press"},
             ctx=DummyContext(),
         )
 
@@ -1011,7 +1036,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            issn="0028-0836",
+            fields={"issn": "0028-0836"},
             ctx=DummyContext(),
         )
 
@@ -1026,7 +1051,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            language="en",
+            fields={"language": "en"},
             ctx=DummyContext(),
         )
 
@@ -1041,7 +1066,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            short_title="Brief",
+            fields={"short_title": "Brief"},
             ctx=DummyContext(),
         )
 
@@ -1056,7 +1081,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            edition="3rd",
+            fields={"edition": "3rd"},
             ctx=DummyContext(),
         )
 
@@ -1074,7 +1099,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            place="New York",
+            fields={"place": "New York"},
             ctx=DummyContext(),
         )
 
@@ -1091,7 +1116,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BSEC1234",
-            place="Cambridge, MA",
+            fields={"place": "Cambridge, MA"},
             ctx=DummyContext(),
         )
 
@@ -1110,7 +1135,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            place="New York",
+            fields={"place": "New York"},
             ctx=DummyContext(),
         )
 
@@ -1125,7 +1150,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            isbn="978-0-123456-78-9",
+            fields={"isbn": "978-0-123456-78-9"},
             ctx=DummyContext(),
         )
 
@@ -1141,7 +1166,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="WEBP1234",
-            access_date="2026-04-21",
+            fields={"access_date": "2026-04-21"},
             ctx=DummyContext(),
         )
 
@@ -1157,7 +1182,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            place="Cambridge, MA",
+            fields={"place": "Cambridge, MA"},
             ctx=DummyContext(),
         )
 
@@ -1181,7 +1206,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            citation_key="doeCorrectArticle2024",
+            fields={"citation_key": "doeCorrectArticle2024"},
             ctx=DummyContext(),
         )
 
@@ -1205,7 +1230,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            citation_key="doeCorrectArticle2024",
+            fields={"citation_key": "doeCorrectArticle2024"},
             ctx=DummyContext(),
         )
 
@@ -1224,7 +1249,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            access_date="2026-04-21",
+            fields={"access_date": "2026-04-21"},
             ctx=DummyContext(),
         )
 
@@ -1239,7 +1264,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BSEC1234",
-            book_title="The Oxford Handbook of Philosophy",
+            fields={"book_title": "The Oxford Handbook of Philosophy"},
             ctx=DummyContext(),
         )
 
@@ -1255,10 +1280,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            volume="21",
-            issue="4",
-            pages="27-61",
-            publisher="Springer",
+            fields={"volume": "21", "issue": "4", "pages": "27-61", "publisher": "Springer"},
             ctx=DummyContext(),
         )
 
@@ -1278,10 +1300,7 @@ class TestUpdateItemNewFields:
 
         result = server.update_item(
             item_key="BSEC1234",
-            book_title="Collected Essays",
-            edition="2nd",
-            pages="100-150",
-            isbn="978-0-000000-00-0",
+            fields={"book_title": "Collected Essays", "edition": "2nd", "pages": "100-150", "isbn": "978-0-000000-00-0"},
             ctx=DummyContext(),
         )
 
@@ -1308,7 +1327,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            issue="3",
+            fields={"issue": "3"},
             ctx=DummyContext(),
         )
 
@@ -1328,8 +1347,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            short_title="Brief",
-            issue="3",
+            fields={"short_title": "Brief", "issue": "3"},
             ctx=DummyContext(),
         )
 
@@ -1349,9 +1367,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            edition="2nd",
-            issue="3",
-            pages="100-200",
+            fields={"edition": "2nd", "issue": "3", "pages": "100-200"},
             ctx=DummyContext(),
         )
 
@@ -1373,8 +1389,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            issue="3",
-            pages="100-200",
+            fields={"issue": "3", "pages": "100-200"},
             ctx=DummyContext(),
         )
 
@@ -1392,8 +1407,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            publication_title="Some Journal",
-            edition="2nd",
+            fields={"publication_title": "Some Journal", "edition": "2nd"},
             ctx=DummyContext(),
         )
 
@@ -1411,8 +1425,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="BOOK1234",
-            publisher="OUP",
-            issue="2",
+            fields={"publisher": "OUP", "issue": "2"},
             ctx=DummyContext(),
         )
 
@@ -1430,7 +1443,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            abstract="",
+            fields={"abstract": ""},
             ctx=DummyContext(),
         )
 
@@ -1447,7 +1460,7 @@ class TestUpdateItemSkippedFields:
 
         result = server.update_item(
             item_key="ABCD1234",
-            title="Same Title",
+            fields={"title": "Same Title"},
             ctx=DummyContext(),
         )
 
@@ -1481,7 +1494,7 @@ class TestUpdateItemType:
 
         result = server.update_item(
             item_key="ABCD1234",
-            item_type="book",
+            fields={"item_type": "book"},
             ctx=DummyContext(),
         )
 
@@ -1514,7 +1527,7 @@ class TestUpdateItemType:
 
         server.update_item(
             item_key="ABCD1234",
-            item_type="book",
+            fields={"item_type": "book"},
             ctx=DummyContext(),
         )
 
@@ -1532,9 +1545,7 @@ class TestUpdateItemType:
 
         result = server.update_item(
             item_key="ABCD1234",
-            item_type="book",
-            isbn="978-0-8173-2044-5",
-            edition="1st",
+            fields={"item_type": "book", "isbn": "978-0-8173-2044-5", "edition": "1st"},
             ctx=DummyContext(),
         )
 
@@ -1553,7 +1564,7 @@ class TestUpdateItemType:
 
         result = server.update_item(
             item_key="ABCD1234",
-            item_type="journalArticle",
+            fields={"item_type": "journalArticle"},
             ctx=DummyContext(),
         )
 
@@ -1575,10 +1586,142 @@ class TestUpdateItemType:
 
         result = server.update_item(
             item_key="ABCD1234",
-            item_type="notATypeAtAll",
+            fields={"item_type": "notATypeAtAll"},
             ctx=DummyContext(),
         )
 
         assert len(fake.update_calls) == 0
         assert "invalid" in result.lower() or "error" in result.lower()
         assert "notATypeAtAll" in result
+
+
+# ---------------------------------------------------------------------------
+# The `fields` mapping itself (replaced 21 flat per-field parameters)
+# ---------------------------------------------------------------------------
+
+class TestUpdateItemFieldsParam:
+
+    def _fake(self, monkeypatch, item=None):
+        fake = FakeZoteroForUpdate(items=[item or _make_item()])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+        return fake
+
+    def test_fields_accepts_a_json_object_string(self, monkeypatch):
+        fake = self._fake(monkeypatch)
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            fields='{"title": "From JSON", "volume": "9"}',
+            ctx=DummyContext(),
+        )
+
+        data = fake.update_calls[0]["data"]
+        assert data["title"] == "From JSON"
+        assert data["volume"] == "9"
+        assert "Successfully" in result
+
+    def test_fields_accepts_raw_zotero_api_names(self, monkeypatch):
+        fake = self._fake(monkeypatch)
+
+        server.update_item(
+            item_key="ABCD1234",
+            fields={"publicationTitle": "Nature", "abstractNote": "abs"},
+            ctx=DummyContext(),
+        )
+
+        data = fake.update_calls[0]["data"]
+        assert data["publicationTitle"] == "Nature"
+        assert data["abstractNote"] == "abs"
+
+    def test_fields_accepts_fields_absent_from_the_alias_list(self, monkeypatch):
+        """Any schema field is settable now, not just the 21 old params."""
+        fake = self._fake(monkeypatch)
+
+        server.update_item(
+            item_key="ABCD1234",
+            fields={"seriesTitle": "A Series"},
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["seriesTitle"] == "A Series"
+
+    def test_creators_accepted_inside_fields(self, monkeypatch):
+        fake = self._fake(monkeypatch)
+
+        server.update_item(
+            item_key="ABCD1234",
+            fields={"creators": [{"creatorType": "author",
+                                  "firstName": "Ada", "lastName": "Lovelace"}]},
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["creators"][0]["lastName"] == "Lovelace"
+
+    def test_unknown_field_name_fails_with_the_valid_set(self, monkeypatch):
+        """A typo must not be silently dropped (the old params rejected it
+        at the signature; a free-form mapping has to reject it here)."""
+        fake = self._fake(monkeypatch)
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            fields={"titel": "Typo", "title": "Real"},
+            ctx=DummyContext(),
+        )
+
+        assert result.startswith("Error")
+        assert "titel" in result
+        # names it as a suggestion and lists what is valid for the type
+        assert "title" in result
+        assert "journalArticle" in result
+        # nothing was written — the whole call fails, no partial update
+        assert len(fake.update_calls) == 0
+
+    def test_unknown_field_error_is_not_triggered_by_wrong_type_fields(
+        self, monkeypatch
+    ):
+        """`issue` is a real field, just not on a book: still a skip."""
+        fake = self._fake(monkeypatch, _make_book_item())
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            fields={"title": "New", "issue": "3"},
+            ctx=DummyContext(),
+        )
+
+        assert not result.startswith("Error")
+        assert "Skipped" in result
+        assert fake.update_calls[0]["data"]["title"] == "New"
+
+    def test_malformed_json_string_is_reported(self, monkeypatch):
+        self._fake(monkeypatch)
+
+        result = server.update_item(
+            item_key="ABCD1234", fields="{not json", ctx=DummyContext()
+        )
+
+        assert result.startswith("Error")
+        assert "fields" in result
+
+    def test_non_mapping_fields_rejected(self, monkeypatch):
+        self._fake(monkeypatch)
+
+        result = server.update_item(
+            item_key="ABCD1234", fields=["title", "New"], ctx=DummyContext()
+        )
+
+        assert result.startswith("Error")
+
+    def test_delta_params_still_compose_with_fields(self, monkeypatch):
+        fake = self._fake(monkeypatch, _make_item(tags=["keep"]))
+
+        server.update_item(
+            item_key="ABCD1234",
+            fields={"title": "New"},
+            add_tags=["added"],
+            ctx=DummyContext(),
+        )
+
+        data = fake.update_calls[0]["data"]
+        assert data["title"] == "New"
+        assert {t["tag"] for t in data["tags"]} == {"keep", "added"}

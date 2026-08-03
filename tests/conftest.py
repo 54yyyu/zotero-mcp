@@ -2,8 +2,19 @@
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
+
+# Always exercise the source tree that these tests live in, not whatever
+# `zotero_mcp` an editable install happens to resolve to. Without this, running
+# the suite from a git worktree silently imports the *main* checkout's package,
+# so edits under test are never executed and results are meaningless.
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if _SRC.is_dir():
+    sys.path.insert(0, str(_SRC))
+    for _name in [n for n in sys.modules if n == "zotero_mcp" or n.startswith("zotero_mcp.")]:
+        del sys.modules[_name]
 
 # Marker for tests that use tmp_path and fail on GitHub Actions
 skip_on_ci = pytest.mark.skipif(

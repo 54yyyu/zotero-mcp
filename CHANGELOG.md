@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Upgrading:** this release changes tool names. Fifteen tools were merged into six, so saved prompts, permission allowlists, or scripts naming the old tools need updating — see the table below. No back-compat aliases ship, deliberately: an alias re-sends its schema on every request, which is exactly the cost this change exists to remove. Some tools are also now opt-in and absent unless enabled; if you rely on Scite, duplicate detection, feeds, related-items links, or the corpus-level discovery tools, set `ZOTERO_MCP_TOOLSETS` (below).
+
+### Added
+- **`ZOTERO_MCP_TOOLSETS`: optional tool groups, so a session only carries the tools it needs.** Every registered tool is sent to the model on *every* request, so the tool list is a fixed tax on the context window before the user types anything — 62 tools cost roughly 23k tokens, most of which a reading or literature-review session never touches. Optional capabilities now live in named groups (`scite`, `duplicates`, `discovery`, `feeds`, `relations`, `libraries`, `search-admin`, `pdf-geometry`, `chatgpt-connector`) selected by environment variable: unset gives the default profile, `all` restores the previous full surface, `none` is core only, `scite,feeds` adds named groups, and `all,-scite` subtracts them. Anything not named in a group is core and always present, so merging or renaming a core tool never requires touching the registry. An unknown group name fails at startup rather than silently serving a surface nobody asked for. A disabled tool is genuinely absent — not merely hidden — so it cannot be called; groups that pair with core workflows (`libraries`, `search-admin`, `pdf-geometry`) stay on by default for that reason.
+- **The ChatGPT connector tools are scoped to the transports that can reach them.** `search` and `fetch` exist to satisfy ChatGPT's deep-research connector contract, which fixes those two generic names. ChatGPT reaches this server over HTTP, never over a stdio subprocess, so the pair now switches on automatically for `streamable-http`/`sse` and off for `stdio` — stdio users stop paying ~690 tokens for two tools they cannot use, and stop having a bare `search` competing with the Zotero search tools for the model's attention. Naming the group explicitly overrides the transport rule in either direction.
+
+### Changed
+- **Fifteen tools merged into six; the default surface drops from 62 tools / ~22.9k tokens to 37 / ~13.8k (−40%).** Beyond the token cost, near-duplicate names were a selection hazard: choosing between six `add_by_*` variants, or between `zotero_get_item_children` and `zotero_get_items_children`, is a coin flip the model pays a full round trip to get wrong.
+
+  | Was | Now |
+  |---|---|
+  | `zotero_add_by_doi`, `add_by_url`, `add_by_isbn`, `add_by_bibtex`, `add_by_csl_json`, `add_from_file` | `zotero_add_item(source=…, source_type="auto")` |
+  | `zotero_batch_update_tags`, `zotero_batch_update_extra` | `zotero_batch_update` |
+  | `zotero_get_item_children`, `zotero_get_items_children` | `zotero_get_item_children` (one key or many) |
+  | `zotero_create_annotation`, `zotero_create_area_annotation` | `zotero_create_annotation` (`rect=` selects area mode) |
+  | `zotero_create_note`, `zotero_update_note`, `zotero_delete_note` | `zotero_manage_note(action=…)` |
+  | `zotero_search_notes` | `zotero_get_notes(query=…)` |
+  | `zotero_manage_collections` | `zotero_set_item_collections` |
+
+- **`zotero_add_item` detects its own source type.** DOI, URL, ISBN, BibTeX, CSL-JSON and file paths are distinguished by inspecting `source`, reusing the existing normalizers rather than new pattern matching; `source_type` overrides when detection would guess wrong. Ordering is deliberate and documented: an `http(s)` URL containing an ISBN stays a URL (only `doi.org` URLs beat the URL branch), and a scheme-less `name.suffix` is only treated as a host when the suffix reads like a TLD, so `notes.txt` is an error rather than a silently-created webpage item.
+- **`zotero_update_item` takes a `fields` mapping instead of 28 flat parameters.** Twenty-one of them were simply Zotero field names spelled out in the signature, making it the single most expensive tool at 1,283 tokens; it is now 677. `fields` accepts any Zotero API field name plus `creators`, so it is a superset of what the flat parameters reached, and the delta-semantics parameters that a plain mapping cannot express (`add_tags`, `remove_tags`, `collections`, `collection_names`) stay explicit. An unknown field name now fails with a suggestion and the valid field list for that item type, where before it surfaced as a `TypeError` on the signature.
+- **`zotero_create_annotation` takes `rect=[x, y, width, height]` for area mode.** Four separate optional floats measured 683 tokens against 551 for one array, and the array form matches the `bbox` that `zotero_get_page_layout` already reports, so a detected figure region can be passed straight through. All geometry validation — normalized bounds, fit-within-page, finite checks, MediaBox/CropBox mapping — is unchanged.
+- **`zotero_manage_collections` is now `zotero_set_item_collections`.** Its parameters were always `item_keys`/`add_to`/`remove_from` — it manages an item's membership *in* collections, not collections themselves, which `zotero_create_collection` and `zotero_delete_collection` do. The old name sat next to those two implying it subsumed them.
+- **`zotero_get_item_children` accepts one key or many.** A single key keeps the detailed per-attachment output; several keys keep the compact grouped-by-parent output and the single batched API round trip. Per-key failures are still isolated to their own section rather than aborting the call.
+
+### Fixed
+- **Tests run from a git worktree exercised the wrong source tree.** With the package installed in editable mode against the main checkout, `import zotero_mcp` resolved there rather than to the worktree, so a suite run from a worktree silently tested unmodified code and reported green regardless of the edits under review. `tests/conftest.py` now puts its own `src/` first and evicts any already-imported `zotero_mcp` modules.
+- **`TOOL_BUDGETS` no longer rots silently.** The description-budget test skips tools it cannot find, which is right for extras-gated tools but meant a renamed or merged tool quietly lost its budget while the suite still reported green. A new check fails when the table names a tool that is no longer registered.
+
 ## [0.8.0] - 2026-08-02
 
 **Upgrading:** new and changed items pick up the improved extraction on the next `zotero-mcp update-db`, but items already in the semantic index are deliberately left alone — they are not re-extracted merely because you upgraded, since that would rebuild an entire library unprompted. To move an existing index onto the better text in one go, run `zotero-mcp update-db --force-rebuild`. Nothing breaks if you don't: those documents keep their existing text and convert as they are touched.

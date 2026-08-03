@@ -1,10 +1,13 @@
-"""Tests for zotero_batch_update_extra (issue #232).
+"""Tests for the Extra-field half of zotero_batch_update (issue #232).
 
 Batch upsert / removal of `Key: value` lines in the Extra field across
-multiple items, parallel to zotero_batch_update_tags.
+multiple items. The tool surface is the merged zotero_batch_update; the
+underlying batch_update_extra implementation is still called directly for
+the options the merged tool does not expose (replace).
 """
 
 from zotero_mcp import server
+from zotero_mcp.tools import write
 from zotero_mcp.tools.write import _apply_extra_edits
 
 
@@ -154,7 +157,7 @@ def _setup(monkeypatch, items):
 def test_batch_update_extra_updates_multiple_items(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    result = server.batch_update_extra(
+    result = write.batch_update(
         item_keys=["ITEM0001", "ITEM0002"],
         set_keys={"tex.otscore": "2"},
         ctx=DummyContext(),
@@ -173,7 +176,7 @@ def test_batch_update_extra_removes_keys(monkeypatch):
     items[0]["data"]["extra"] = "Citation Key: smith2020\ntex.otscore: 2"
     fake = _setup(monkeypatch, items)
 
-    result = server.batch_update_extra(
+    result = write.batch_update(
         item_keys=["ITEM0001"],
         remove_keys=["tex.otscore"],
         ctx=DummyContext(),
@@ -187,7 +190,7 @@ def test_batch_update_extra_removes_keys(monkeypatch):
 def test_batch_update_extra_skips_attachments(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    result = server.batch_update_extra(
+    result = write.batch_update(
         item_keys=["ITEM0001", "ATTACH01"],
         set_keys={"tex.otscore": "2"},
         ctx=DummyContext(),
@@ -200,7 +203,7 @@ def test_batch_update_extra_skips_attachments(monkeypatch):
 def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    server.batch_update_extra(
+    write.batch_update(
         item_keys='["ITEM0002"]',
         set_keys='{"tex.otscore": "2"}',
         ctx=DummyContext(),
@@ -213,7 +216,7 @@ def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch):
 def test_batch_update_extra_requires_item_keys(monkeypatch):
     _setup(monkeypatch, _make_items())
 
-    result = server.batch_update_extra(
+    result = write.batch_update(
         item_keys=[], set_keys={"tex.otscore": "2"}, ctx=DummyContext()
     )
 
@@ -223,7 +226,7 @@ def test_batch_update_extra_requires_item_keys(monkeypatch):
 def test_batch_update_extra_requires_an_action(monkeypatch):
     _setup(monkeypatch, _make_items())
 
-    result = server.batch_update_extra(
+    result = write.batch_update(
         item_keys=["ITEM0001"], ctx=DummyContext()
     )
 
@@ -247,7 +250,7 @@ def test_batch_update_extra_replace_incompatible_with_remove_keys(monkeypatch):
 def test_batch_update_extra_continues_after_missing_item(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    result = server.batch_update_extra(
+    result = write.batch_update(
         item_keys=["NOSUCHKEY", "ITEM0002"],
         set_keys={"tex.otscore": "2"},
         ctx=DummyContext(),
@@ -256,3 +259,102 @@ def test_batch_update_extra_continues_after_missing_item(monkeypatch):
     assert len(fake.updated) == 1
     assert "Items updated: 1" in result
     assert "Items skipped: 1" in result
+
+
+# ---------------------------------------------------------------------------
+# Merged zotero_batch_update facade: shared selectors, both action families
+# ---------------------------------------------------------------------------
+
+
+class FakeZoteroForBatch(FakeZoteroForExtra):
+    """FakeZoteroForExtra + the search surface the selector uses."""
+
+    def __init__(self, items):
+        super().__init__(items)
+        self.params = {}
+
+    def add_parameters(self, **kwargs):
+        self.params = kwargs
+
+    def items(self):
+        return list(self._items.values())
+
+
+def _setup_batch(monkeypatch, items):
+    fake = FakeZoteroForBatch(items)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+    return fake
+
+
+def test_batch_update_requires_a_selector(monkeypatch):
+    _setup_batch(monkeypatch, _make_items())
+
+    result = write.batch_update(add_tags=["x"], ctx=DummyContext())
+
+    assert result.startswith("Error")
+    assert "selector" in result
+
+
+def test_batch_update_requires_an_action(monkeypatch):
+    _setup_batch(monkeypatch, _make_items())
+
+    result = write.batch_update(item_keys=["ITEM0001"], ctx=DummyContext())
+
+    assert result.startswith("Error")
+    assert "action" in result
+
+
+def test_batch_update_tags_by_explicit_item_keys(monkeypatch):
+    """The tag half now accepts the item_keys selector (was query/tag only)."""
+    fake = _setup_batch(monkeypatch, _make_items())
+
+    result = write.batch_update(
+        item_keys=["ITEM0001"], add_tags=["reviewed"], ctx=DummyContext()
+    )
+
+    assert len(fake.updated) == 1
+    assert [t["tag"] for t in fake.updated[0]["data"]["tags"]] == ["reviewed"]
+    # no search was issued — the keys were used directly
+    assert fake.params == {}
+    assert "Items updated: 1" in result
+
+
+def test_batch_update_extra_by_query_selector(monkeypatch):
+    """The Extra half now accepts the query/tag selector (was item_keys only)."""
+    fake = _setup_batch(monkeypatch, _make_items())
+
+    result = write.batch_update(
+        query="climate", set_keys={"tex.otscore": "2"}, ctx=DummyContext()
+    )
+
+    assert fake.params.get("q") == "climate"
+    # both non-attachment items were selected and edited
+    assert len(fake.updated) == 2
+    assert "Items updated: 2" in result
+
+
+def test_batch_update_runs_both_action_families(monkeypatch):
+    fake = _setup_batch(monkeypatch, _make_items())
+
+    result = write.batch_update(
+        item_keys=["ITEM0002"],
+        add_tags=["reviewed"],
+        set_keys={"tex.otscore": "2"},
+        ctx=DummyContext(),
+    )
+
+    assert "# Batch Tag Update Results" in result
+    assert "# Batch Extra Update Results" in result
+    assert [t["tag"] for t in fake.updated[0]["data"]["tags"]] == ["reviewed"]
+    assert "tex.otscore: 2" in fake.updated[-1]["data"]["extra"]
+
+
+def test_batch_update_reports_no_match_for_unknown_keys(monkeypatch):
+    _setup_batch(monkeypatch, _make_items())
+
+    result = write.batch_update(
+        item_keys=["NOSUCHKEY"], add_tags=["x"], ctx=DummyContext()
+    )
+
+    assert "No items found" in result

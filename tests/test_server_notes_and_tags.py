@@ -1,4 +1,5 @@
 from zotero_mcp import server
+from zotero_mcp.tools import annotations as annotations_mod
 
 
 class DummyContext:
@@ -430,3 +431,150 @@ def test_batch_update_tags_validates_json_array(monkeypatch):
     )
 
     assert "must be a list of strings" in result
+
+
+# ---------------------------------------------------------------------------
+# Merged note surfaces: zotero_get_notes (list|search) and zotero_manage_note
+# ---------------------------------------------------------------------------
+
+
+def _record_calls(monkeypatch, name):
+    """Replace an annotations-module function with a call recorder."""
+    calls = []
+
+    def _fake(**kwargs):
+        calls.append(kwargs)
+        return f"called {name}"
+
+    monkeypatch.setattr(annotations_mod, name, _fake)
+    return calls
+
+
+def test_get_notes_tool_lists_when_no_query(monkeypatch):
+    """Without a query the read tool keeps the plain listing behaviour."""
+    calls = _record_calls(monkeypatch, "get_notes")
+
+    result = annotations_mod.get_notes_tool(
+        item_key="ITEM0001", limit=5, truncate=False, raw_html=True, ctx=DummyContext()
+    )
+
+    assert result == "called get_notes"
+    assert calls == [{
+        "item_key": "ITEM0001",
+        "limit": 5,
+        "truncate": False,
+        "raw_html": True,
+        "ctx": calls[0]["ctx"],
+    }]
+
+
+def test_get_notes_tool_searches_when_query_given(monkeypatch):
+    """A query routes to the note/annotation search path with its own args."""
+    calls = _record_calls(monkeypatch, "search_notes")
+
+    result = annotations_mod.get_notes_tool(
+        query="mindfulness", limit=7, raw_html=True, ctx=DummyContext()
+    )
+
+    assert result == "called search_notes"
+    assert calls[0]["query"] == "mindfulness"
+    assert calls[0]["limit"] == 7
+    assert calls[0]["raw_html"] is True
+
+
+def test_get_notes_tool_rejects_query_with_item_key():
+    """Note search is library-wide, so scoping it to an item is incoherent."""
+    result = annotations_mod.get_notes_tool(
+        item_key="ITEM0001", query="mindfulness", ctx=DummyContext()
+    )
+
+    assert "cannot be combined" in result
+
+
+def test_get_notes_tool_rejects_empty_query():
+    result = annotations_mod.get_notes_tool(query="   ", ctx=DummyContext())
+
+    assert "Search query cannot be empty" in result
+
+
+def test_manage_note_create_dispatches(monkeypatch):
+    calls = _record_calls(monkeypatch, "create_note")
+
+    result = annotations_mod.manage_note(
+        action="create",
+        item_key="ITEM0001",
+        note_title="Reading notes",
+        note_text="<p>body</p>",
+        tags=["to-cite"],
+        ctx=DummyContext(),
+    )
+
+    assert result == "called create_note"
+    assert calls[0]["item_key"] == "ITEM0001"
+    assert calls[0]["note_title"] == "Reading notes"
+    assert calls[0]["note_text"] == "<p>body</p>"
+    assert calls[0]["tags"] == ["to-cite"]
+
+
+def test_manage_note_create_requires_note_text():
+    result = annotations_mod.manage_note(
+        action="create", item_key="ITEM0001", ctx=DummyContext()
+    )
+
+    assert "requires note_text" in result
+
+
+def test_manage_note_update_dispatches(monkeypatch):
+    calls = _record_calls(monkeypatch, "update_note")
+
+    result = annotations_mod.manage_note(
+        action="update",
+        item_key="NOTE0001",
+        note_text="<p>new</p>",
+        append=True,
+        ctx=DummyContext(),
+    )
+
+    assert result == "called update_note"
+    assert calls[0]["item_key"] == "NOTE0001"
+    assert calls[0]["note_text"] == "<p>new</p>"
+    assert calls[0]["append"] is True
+
+
+def test_manage_note_update_requires_note_text():
+    result = annotations_mod.manage_note(
+        action="update", item_key="NOTE0001", ctx=DummyContext()
+    )
+
+    assert "requires note_text" in result
+
+
+def test_manage_note_delete_dispatches(monkeypatch):
+    calls = _record_calls(monkeypatch, "delete_note")
+
+    result = annotations_mod.manage_note(
+        action="delete", item_key="NOTE0001", ctx=DummyContext()
+    )
+
+    assert result == "called delete_note"
+    assert calls[0]["item_key"] == "NOTE0001"
+
+
+def test_manage_note_delete_rejects_note_text():
+    """Passing content to a delete is a sign the caller meant 'update'."""
+    result = annotations_mod.manage_note(
+        action="delete",
+        item_key="NOTE0001",
+        note_text="<p>oops</p>",
+        ctx=DummyContext(),
+    )
+
+    assert "not applicable" in result
+
+
+def test_manage_note_rejects_unknown_action():
+    result = annotations_mod.manage_note(
+        action="archive", item_key="NOTE0001", ctx=DummyContext()
+    )
+
+    assert "unknown action" in result

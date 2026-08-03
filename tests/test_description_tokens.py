@@ -29,18 +29,17 @@ tiktoken = pytest.importorskip("tiktoken")
 TOOL_BUDGETS = {
     # tools/annotations.py
     "zotero_get_annotations":          (110, 245),
-    "zotero_get_notes":                (100, 230),
-    "zotero_search_notes":             ( 90, 205),
-    "zotero_create_note":              (100, 225),
-    "zotero_update_note":              (100, 225),
-    "zotero_delete_note":              ( 90, 205),
-    "zotero_create_annotation":        (130, 295),
-    "zotero_create_area_annotation":   (175, 390),
+    "zotero_get_notes":                (119, 267),
+    "zotero_manage_note":              (139, 312),
+    "zotero_create_annotation":        (196, 439),
     # tools/retrieval.py
     "zotero_get_tags":                 ( 85, 195),
+    "zotero_get_item_children":        (138, 310),
     # tools/write.py
-    "zotero_batch_update_tags":        (155, 350),
-    "zotero_batch_update_extra":       (165, 370),
+    "zotero_add_item":                 (277, 450),  # max clamped to the hard cap
+    "zotero_update_item":              (190, 426),
+    "zotero_batch_update":             (131, 294),
+    "zotero_set_item_collections":     ( 98, 220),
     "zotero_attach_file":              (190, 430),
     # tools/search.py
     "zotero_search_items":             (175, 400),
@@ -131,6 +130,24 @@ class TestDescriptionTokenBudgets:
             f"Too few tokens usually means a smelly one-liner; "
             f"too many usually means bloat. Update the budget here if the "
             f"change is intentional."
+        )
+
+
+class TestBudgetsStayInSync:
+    """TOOL_BUDGETS must not accumulate entries for tools that no longer exist.
+
+    ``test_tool_within_budget`` skips a tool it cannot find, which is the right
+    call for extras-gated tools but means a renamed or merged tool silently
+    loses its budget instead of failing. Without this check the suite reports
+    green while quietly covering less than it claims.
+    """
+
+    def test_no_budget_entries_for_missing_tools(self, descriptions):
+        stale = sorted(set(TOOL_BUDGETS) - set(descriptions))
+        assert not stale, (
+            f"TOOL_BUDGETS references tools that are no longer registered: {stale}. "
+            f"Remove the entry if the tool is gone, or rename it if the tool was "
+            f"renamed — and add a budget for whatever replaced it."
         )
 
 

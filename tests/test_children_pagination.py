@@ -77,13 +77,19 @@ class TestGetItemChildrenPagination:
         assert "PDF00001" in result, "attachment past page 1 missing from listing"
 
     def test_batch_variant_lists_children_past_first_api_page(self, monkeypatch, dummy_ctx):
+        # Two keys so the grouped (batch) rendering path is the one exercised.
         zot = PagedChildrenZotero()
         pdf = _pdf("PDF00001")
-        zot._items = [_parent("PAR00001")]
-        zot._children = {"PAR00001": _children_with_pdf_last(pdf)}
+        zot._items = [_parent("PAR00001"), _parent("PAR00002")]
+        zot._children = {
+            "PAR00001": _children_with_pdf_last(pdf),
+            "PAR00002": [_note("N900")],
+        }
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: zot)
 
-        result = server.get_items_children(item_keys=["PAR00001"], ctx=dummy_ctx)
+        result = server.get_item_children(
+            item_key=["PAR00001", "PAR00002"], ctx=dummy_ctx
+        )
 
         assert "PDF00001" in result, "attachment past page 1 missing from batch listing"
 
