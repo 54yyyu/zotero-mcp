@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-03
+
 **Upgrading:** this release changes tool names. Fifteen tools were merged into six, so saved prompts, permission allowlists, or scripts naming the old tools need updating — see the table below. No back-compat aliases ship, deliberately: an alias re-sends its schema on every request, which is exactly the cost this change exists to remove. Some tools are also now opt-in and absent unless enabled; if you rely on Scite, duplicate detection, feeds, related-items links, or the corpus-level discovery tools, set `ZOTERO_MCP_TOOLSETS` (below).
 
 ### Added
