@@ -1009,7 +1009,7 @@ def semantic_search(
     description=(
         "Build or refresh the semantic search embedding database from "
         "Zotero items. Run this: (a) after first install, (b) after adding "
-        "items via zotero_add_by_doi / add_by_url / add_from_file, or "
+        "items via zotero_add_item, or "
         "(c) when the user has added items directly in Zotero desktop "
         "since the last update. "
         "By default the update is INCREMENTAL — only new or changed items "

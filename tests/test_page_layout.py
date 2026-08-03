@@ -641,9 +641,11 @@ class TestGetPageLayoutTool:
         assert "0.1012" in result
         assert "high" in result
         # Ready-to-paste call template references the same attachment and page
-        assert "zotero_create_area_annotation" in result
+        assert "zotero_create_annotation" in result
         assert "attachment_key='ATTACH01'" in result
         assert "page=7" in result
+        # ...and hands the bbox over in the merged tool's rect= form
+        assert "rect=[0.1012" in result
 
     def test_no_regions_returns_guidance(self, monkeypatch, fake_zot):
         self._setup_clients(monkeypatch, fake_zot)

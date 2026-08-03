@@ -149,10 +149,10 @@ def cmd_get(args):
             collection_key=args.collection_key, detail=args.detail, limit=args.limit, ctx=ctx,
         ))
     elif sub == "children":
-        if getattr(args, "item_keys", None):
-            print(retrieval.get_items_children(item_keys=args.item_keys, ctx=ctx))
-        else:
-            print(retrieval.get_item_children(item_key=args.item_key, ctx=ctx))
+        # One tool now handles both arities; --item-keys and --item-key are
+        # kept as distinct CLI flags for backwards compatibility.
+        keys = getattr(args, "item_keys", None) or args.item_key
+        print(retrieval.get_item_children(item_key=keys, ctx=ctx))
     elif sub == "tags":
         print(retrieval.get_tags(limit=args.limit, ctx=ctx))
     elif sub == "recent":
@@ -344,31 +344,38 @@ def cmd_edit(args):
             print(f"Error: invalid JSON in --creators: {e}", file=sys.stderr)
             sys.exit(1)
 
+    # Flat metadata flags all travel in one `fields` mapping now; only the
+    # params with delta semantics stay top-level.
+    flat_fields = {
+        "title": args.title,
+        "date": args.date,
+        "publication_title": args.publication_title,
+        "abstract": args.abstract,
+        "doi": args.doi,
+        "url": args.url,
+        "extra": args.extra,
+        "volume": args.volume,
+        "issue": args.issue,
+        "pages": args.pages,
+        "publisher": args.publisher,
+        "issn": args.issn,
+        "language": args.language,
+        "short_title": args.short_title,
+        "edition": args.edition,
+        "isbn": args.isbn,
+        "book_title": args.book_title,
+    }
+    fields = {k: v for k, v in flat_fields.items() if v is not None}
+
     print(write_mod.update_item(
         item_key=args.item_key,
-        title=args.title,
+        fields=fields or None,
         creators=creators,
-        date=args.date,
-        publication_title=args.publication_title,
-        abstract=args.abstract,
         tags=args.tags.split(",") if args.tags else None,
         add_tags=args.add_tags.split(",") if args.add_tags else None,
         remove_tags=args.remove_tags.split(",") if args.remove_tags else None,
         collections=args.collections.split(",") if args.collections else None,
         collection_names=args.collection_names.split(",") if args.collection_names else None,
-        doi=args.doi,
-        url=args.url,
-        extra=args.extra,
-        volume=args.volume,
-        issue=args.issue,
-        pages=args.pages,
-        publisher=args.publisher,
-        issn=args.issn,
-        language=args.language,
-        short_title=args.short_title,
-        edition=args.edition,
-        isbn=args.isbn,
-        book_title=args.book_title,
         ctx=ctx,
     ))
 

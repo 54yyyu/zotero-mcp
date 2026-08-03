@@ -1,8 +1,9 @@
-"""Integration tests for the zotero_add_by_bibtex MCP tool."""
+"""Integration tests for the BibTeX source of the zotero_add_item MCP tool."""
 
 from conftest import FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.tools import write
 
 
 class FakeZoteroWithAttach(FakeZotero):
@@ -53,7 +54,7 @@ class TestSingleEntry:
           doi={10.1234/x},
         }
         """
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert len(fake.created) == 1
         created = fake.created[0]
@@ -70,7 +71,7 @@ class TestSingleEntry:
         _disable_oa_pdf(monkeypatch)
         bib = "@book{MyCite2021, title={B}, author={A, B}, publisher={P}, year=2021}"
 
-        server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert "Citation Key: MyCite2021" in fake.created[0]["extra"]
 
@@ -88,7 +89,7 @@ class TestMultipleEntries:
         @article{a, title={A}, author={X, Y}, year={2020}, doi={10.1234/a}}
         @book{b, title={B}, author={P, Q}, publisher={Pub}, year={2021}}
         """
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert len(fake.created) == 2
         assert fake.created[0]["itemType"] == "journalArticle"
@@ -109,7 +110,12 @@ class TestTagsAndCollections:
         @article{x, title={T}, author={A, B}, year={2020},
           keywords={source1, source2}}
         """
-        server.add_by_bibtex(bibtex=bib, tags=["caller1", "source1"], ctx=dummy_ctx)
+        write.add_item(
+            source=bib,
+            source_type="bibtex",
+            tags=["caller1", "source1"],
+            ctx=dummy_ctx,
+        )
 
         tags = [t["tag"] for t in fake.created[0]["tags"]]
         # source1 should only appear once (case-insensitive dedup)
@@ -124,8 +130,9 @@ class TestTagsAndCollections:
         _disable_oa_pdf(monkeypatch)
 
         bib = "@article{x, title={T}, author={A, B}, year={2020}}"
-        server.add_by_bibtex(
-            bibtex=bib,
+        write.add_item(
+            source=bib,
+            source_type="bibtex",
             collections=["COL00001", "COL00002"],
             ctx=dummy_ctx,
         )
@@ -141,8 +148,9 @@ class TestTagsAndCollections:
         _disable_oa_pdf(monkeypatch)
 
         bib = "@article{x, title={T}, author={A, B}, year={2020}}"
-        server.add_by_bibtex(
-            bibtex=bib,
+        write.add_item(
+            source=bib,
+            source_type="bibtex",
             collections=["reading list"],
             ctx=dummy_ctx,
         )
@@ -169,7 +177,7 @@ class TestOaPdfAttempt:
         )
 
         bib = "@article{a, title={T}, author={A, B}, year=2020, doi={10.1234/x}}"
-        server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
@@ -187,7 +195,7 @@ class TestOaPdfAttempt:
         )
 
         bib = "@book{b, title={T}, author={A, B}, publisher={P}, year=2020}"
-        server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert called["count"] == 0
 
@@ -207,7 +215,7 @@ class TestFilePath:
             encoding="utf-8",
         )
 
-        result = server.add_by_bibtex(file_path=str(bib_file), ctx=dummy_ctx)
+        result = write.add_item(source=str(bib_file), source_type="bibtex", ctx=dummy_ctx)
 
         assert len(fake.created) == 1
         assert fake.created[0]["title"] == "T"
@@ -221,7 +229,7 @@ class TestFilePath:
         f.write_text("@book{b, title={B}, author={P, Q}, publisher={Pub}, year=2020}",
                      encoding="utf-8")
 
-        server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
+        write.add_item(source=str(f), source_type="bibtex", ctx=dummy_ctx)
         assert len(fake.created) == 1
 
     def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):
@@ -229,19 +237,21 @@ class TestFilePath:
         f = tmp_path / "refs.txt"
         f.write_text("@article{a, title={T}, year=2020}", encoding="utf-8")
 
-        result = server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
+        result = write.add_item(source=str(f), source_type="bibtex", ctx=dummy_ctx)
         assert "Unsupported file extension" in result
 
     def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(
-            file_path="/absolutely/no/such/file.bib", ctx=dummy_ctx,
+        result = write.add_item(
+            source="/absolutely/no/such/file.bib",
+            source_type="bibtex",
+            ctx=dummy_ctx,
         )
         assert "not found" in result.lower()
 
     def test_rejects_relative_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(file_path="refs.bib", ctx=dummy_ctx)
+        result = write.add_item(source="refs.bib", source_type="bibtex", ctx=dummy_ctx)
         assert "absolute" in result.lower()
 
     def test_rejects_symlink(self, monkeypatch, dummy_ctx, tmp_path):
@@ -251,7 +261,7 @@ class TestFilePath:
         link = tmp_path / "linked.bib"
         link.symlink_to(target)
 
-        result = server.add_by_bibtex(file_path=str(link), ctx=dummy_ctx)
+        result = write.add_item(source=str(link), source_type="bibtex", ctx=dummy_ctx)
         assert "symlink" in result.lower()
 
 
@@ -262,9 +272,13 @@ class TestFilePath:
 class TestErrorPaths:
     def test_empty_bibtex(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(bibtex="", ctx=dummy_ctx)
+        result = write.add_item(source="", source_type="bibtex", ctx=dummy_ctx)
         assert "Must provide" in result
 
+    # The two tests below call the implementation directly: add_item folds
+    # `bibtex` and `file_path` into one `source`, so neither the "neither"
+    # nor the "both" shape is reachable through the merged tool. They still
+    # guard the contract add_item dispatches into.
     def test_neither_bibtex_nor_file_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_bibtex(ctx=dummy_ctx)
@@ -279,7 +293,11 @@ class TestErrorPaths:
 
     def test_no_valid_entries(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(bibtex="this is not bibtex", ctx=dummy_ctx)
+        result = write.add_item(
+            source="this is not bibtex",
+            source_type="bibtex",
+            ctx=dummy_ctx,
+        )
         assert "No valid @entries" in result
 
     def test_local_only_mode_rejected(self, monkeypatch, dummy_ctx):
@@ -289,7 +307,7 @@ class TestErrorPaths:
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client", raise_local
         )
-        result = server.add_by_bibtex(bibtex="@a{x, title=T}", ctx=dummy_ctx)
+        result = write.add_item(source="@a{x, title=T}", source_type="bibtex", ctx=dummy_ctx)
         assert "local-only" in result.lower()
 
     def test_partial_failure_continues(self, monkeypatch, dummy_ctx):
@@ -314,7 +332,7 @@ class TestErrorPaths:
         @article{b, title={B}, author={P, Q}, year={2020}}
         @article{c, title={C}, author={R, S}, year={2020}}
         """
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert "Added 2/3 items" in result
         assert "simulated write failure" in result

@@ -853,6 +853,16 @@ def main():
         transport = getattr(args, "transport", "stdio")
         # Ensure environment is initialized (Claude config or standalone config)
         setup_zotero_environment()
+        # Re-apply the toolset profile now that the transport is known. The
+        # import-time call in server.py assumed stdio; an HTTP transport also
+        # needs the ChatGPT connector tools. setup_zotero_environment() runs
+        # first so a ZOTERO_MCP_TOOLSETS set via the config file is honoured.
+        from zotero_mcp.toolsets import UnknownToolsetError, apply_toolsets
+        try:
+            apply_toolsets(mcp, transport=transport)
+        except UnknownToolsetError as e:
+            print(f"❌ {e}")
+            sys.exit(1)
         # If the reranker is enabled, warm it up in the background so the first
         # semantic search doesn't pay the ~tens-of-seconds model load inside the
         # request path and time out (issue #283). Daemon thread: never blocks

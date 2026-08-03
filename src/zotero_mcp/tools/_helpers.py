@@ -130,7 +130,7 @@ def is_collection_trashed(zot, collection_key: str) -> bool | None:
     """Return True if a collection is in the trash, False if live, None on error.
 
     Reads a single collection by key and inspects ``data.deleted``. Used to
-    pre-validate ``zotero_manage_collections`` calls so the tool returns a
+    pre-validate ``zotero_set_item_collections`` calls so the tool returns a
     clear error instead of silently filing items into trashed parents.
     """
     try:
@@ -757,7 +757,7 @@ def _url_resolves_to_public_host(url: str) -> bool:
     SSRF guard for the open-access PDF download path: the candidate URL comes
     from third-party metadata APIs (Unpaywall / Semantic Scholar) and is
     therefore attacker-influenceable (a hostile paper record, or prompt
-    injection steering ``zotero_add_by_doi``). We reject non-http(s) schemes
+    injection steering ``zotero_add_item``). We reject non-http(s) schemes
     and any host that resolves to a private, loopback, link-local, reserved,
     or otherwise non-global address — including the 169.254.169.254
     cloud-metadata endpoint, which matters for HTTP/SSE-transport deployments.
@@ -881,7 +881,7 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
 def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     """Suffix to append to a user-facing 'file attached' message.
 
-    PR #279 added WebDAV-aware upload to ``zotero_add_from_file``. The same
+    PR #279 added WebDAV-aware upload to ``zotero_add_item``. The same
     treatment is needed everywhere else ``attachment_both`` is called: the
     Web API's file upload lands bytes in Zotero Storage, which a desktop
     client with File Syncing set to WebDAV never consults.
