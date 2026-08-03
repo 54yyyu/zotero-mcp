@@ -353,9 +353,10 @@ def _render_entries(rendered) -> list[str]:
         ".bib files). "
         "Output: markdown naming the style/format, then the rendered entries "
         "(a fenced block for bibtex, a numbered list otherwise). "
-        "Rendering runs on the Zotero web API's CSL engine — the local API "
-        "has no citation engine, so in local mode this routes through the "
-        "web API and needs ZOTERO_API_KEY + ZOTERO_LIBRARY_ID configured. "
+        "Rendering uses Zotero's own CSL engine and works in local mode with "
+        "no API credentials, as well as over the web API. "
+        "Capped at 100 items per call; scope with item_keys or collection_key "
+        "for anything larger. "
         "Example: zotero_export_bibliography(item_keys=['RTKZQI8E'], "
         "style='apa', export_format='bib')."
     ),
@@ -391,36 +392,61 @@ def export_bibliography(
             keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
 
         ctx.info(f"Exporting bibliography (format={export_format}, style={style})")
-        # Rendering always goes through the web API's CSL engine — the local
-        # API rejects content=bib/citation/bibtex outright (#371).
+        # Rendering asks for JSON, never Atom. `content=` implies format=atom,
+        # which the local API rejects with 501; `include=`/`format=bibtex` are
+        # served by both the local and web APIs, so one path covers every mode
+        # and local-only users no longer need web credentials (#371).
         zot = _helpers._get_bibliography_client(ctx)
 
-        content = "bibtex" if export_format == "bibtex" else export_format
-
         try:
-            if keys:
-                fetch_kwargs = {"itemKey": ",".join(keys), "content": content, "limit": 100}
-                if content != "bibtex":
-                    fetch_kwargs["style"] = style
-                rendered = zot.items(**fetch_kwargs)
-            elif collection_key:
-                page_kwargs = {"content": content}
-                if content != "bibtex":
-                    page_kwargs["style"] = style
-                rendered = _helpers._paginate(zot.collection_items, collection_key, max_items=100, **page_kwargs)
+            if export_format == "bibtex":
+                # A whole-file export, not per-item entries: the API returns the
+                # concatenated .bib as raw bytes rather than a list.
+                if keys:
+                    raw = zot.items(itemKey=",".join(keys), format="bibtex", limit=100)
+                elif collection_key:
+                    raw = zot.collection_items(collection_key, format="bibtex", limit=100)
+                else:
+                    # Top-level items only. Attachments and notes have no
+                    # bibliography entry, so including them would pad the
+                    # export with blanks and crowd out real references.
+                    raw = zot.top(format="bibtex", limit=100)
+                rendered = raw.decode("utf-8") if isinstance(raw, bytes) else raw
             else:
-                fetch_kwargs = {"content": content, "limit": 100}
-                if content != "bibtex":
-                    fetch_kwargs["style"] = style
-                rendered = zot.items(**fetch_kwargs)
+                include = "bib" if export_format == "bib" else "citation"
+                fetch_kwargs = {"include": include, "style": style}
+                if keys:
+                    rows = zot.items(itemKey=",".join(keys), limit=100, **fetch_kwargs)
+                    # The local API answers an itemKey filter on this endpoint
+                    # with the requested items *plus* others, so the response
+                    # cannot be trusted as the selection. Filter to what was
+                    # asked for and return it in the caller's order — a no-op
+                    # against the web API, which already filters correctly.
+                    by_key = {
+                        row.get("key"): row for row in rows if isinstance(row, dict)
+                    }
+                    rows = [by_key[k] for k in keys if k in by_key]
+                elif collection_key:
+                    rows = _helpers._paginate(
+                        zot.collection_items, collection_key, max_items=100, **fetch_kwargs
+                    )
+                else:
+                    rows = zot.top(limit=100, **fetch_kwargs)
+                # Items with nothing to render (attachments, notes) come back
+                # with the field empty; drop them rather than emitting blanks.
+                rendered = [
+                    row.get(include)
+                    for row in rows
+                    if isinstance(row, dict) and row.get(include)
+                ]
         except Exception as api_error:
             ctx.error(f"Bibliography rendering failed: {api_error}")
             return (
                 f"Error rendering bibliography: {api_error}\n\n"
-                "Bibliography/citation rendering relies on Zotero's web API "
-                "CSL engine. If you are running in local read-only mode, "
-                "configure web API credentials (ZOTERO_API_KEY and "
-                "ZOTERO_LIBRARY_ID) and try again."
+                "Rendering uses Zotero's CSL engine via the local or web API. "
+                "In local mode, check that Zotero is running with the local "
+                "API enabled; otherwise verify ZOTERO_API_KEY and "
+                "ZOTERO_LIBRARY_ID."
             )
 
         entries = _render_entries(rendered)

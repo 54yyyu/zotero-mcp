@@ -2270,9 +2270,14 @@ class ZoteroSemanticSearch:
             except Exception:
                 pass
 
-            # Process items in batches
-            # Keep batch size under OpenAI's 300k token-per-request limit
-            # (25 × 8000 max tokens = 200k, well within the limit)
+            # Process items in batches. This counts ITEMS, not documents: with
+            # chunking enabled one item yields up to max_chunks_per_item
+            # documents, so 25 items can be thousands of embedding inputs — the
+            # old "25 × 8000 tokens = 200k, within OpenAI's limit" arithmetic
+            # here only held when chunking was off (#423).
+            # Request size is therefore bounded one layer down, by each
+            # embedding function's own request_batch_size, which is where the
+            # provider's real per-request limit belongs.
             batch_size = 25
             seen_items = 0
             _failed_docs = []  # Collect failures for end-of-run retry

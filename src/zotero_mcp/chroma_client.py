@@ -401,8 +401,18 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
     # ChromaDB's built-in ollama EF requires a ``timeout`` key.
     DEFAULT_TIMEOUT = 120
 
+    # Documents per /api/embed request. The indexer hands us a whole item
+    # batch, which with chunking enabled is (items × max_chunks_per_item)
+    # documents — up to thousands. Sending that as one request makes a single
+    # HTTP call that has to outlast the entire GPU pass, which is what pushed
+    # runs past any sane timeout (#423). Chunking the request keeps each call
+    # short; Ollama processes sequentially either way, so on a local server
+    # the extra round trips cost approximately nothing.
+    DEFAULT_REQUEST_BATCH_SIZE = 64
+
     def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None,
-                 url: str | None = None, timeout: int | None = None):
+                 url: str | None = None, timeout: int | None = None,
+                 request_batch_size: int | None = None):
         self.model_name = model_name
         # ``url`` is ChromaDB's built-in spelling of ``base_url``; accept both
         # so a config written by either class rebuilds here (issue #382).
@@ -412,6 +422,9 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         # Mirror the attribute under the built-in's name as well.
         self.url = self.base_url
         self.timeout = int(timeout) if timeout else self.DEFAULT_TIMEOUT
+        self.request_batch_size = (
+            int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
+        )
 
     @staticmethod
     def name() -> str:
@@ -429,6 +442,9 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
             # Carrying both spellings makes the config valid for both classes.
             "url": self.base_url,
             "timeout": self.timeout,
+            # Extra keys are ignored by the built-in (it reads only
+            # url/model_name/timeout via .get()), so carrying ours is safe.
+            "request_batch_size": self.request_batch_size,
         }
 
     @staticmethod
@@ -437,6 +453,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
             model_name=config.get("model_name", "qwen3-embedding"),
             base_url=config.get("base_url") or config.get("url"),
             timeout=config.get("timeout"),
+            request_batch_size=config.get("request_batch_size"),
         )
 
     def __call__(self, input: Documents) -> Embeddings:
@@ -444,8 +461,11 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
 
         Unlike the deprecated /api/embeddings route (single ``prompt`` -> single
         ``embedding``), /api/embed accepts a batch via ``input`` and returns a
-        list under ``embeddings``, so the whole batch is sent in one request
-        instead of one request per document.
+        list under ``embeddings``, so several documents go out per request.
+
+        The caller's list is split into ``request_batch_size`` chunks so one
+        request never has to cover an unbounded amount of GPU work; see that
+        attribute for why. Vectors are concatenated back in input order.
         """
         try:
             import requests
@@ -457,18 +477,30 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
             return []
 
         endpoint = f"{self.base_url}/api/embed"
-        response = requests.post(
-            endpoint,
-            json={"model": self.model_name, "input": texts},
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        data = response.json()
-        embeddings = data.get("embeddings")
-        if embeddings is None:
-            raise ValueError(
-                f"Ollama /api/embed returned no 'embeddings' field: {data}"
+        embeddings: list = []
+        for start in range(0, len(texts), self.request_batch_size):
+            window = texts[start : start + self.request_batch_size]
+            response = requests.post(
+                endpoint,
+                json={"model": self.model_name, "input": window},
+                timeout=self.timeout,
             )
+            response.raise_for_status()
+            data = response.json()
+            vectors = data.get("embeddings")
+            if vectors is None:
+                raise ValueError(
+                    f"Ollama /api/embed returned no 'embeddings' field: {data}"
+                )
+            if len(vectors) != len(window):
+                # A short response would silently misalign every vector after
+                # it with the wrong document, poisoning the index in a way that
+                # only shows up as bad search results much later.
+                raise ValueError(
+                    f"Ollama /api/embed returned {len(vectors)} embeddings for "
+                    f"{len(window)} inputs"
+                )
+            embeddings.extend(vectors)
         return embeddings
 
     def embed_query(self, text: str) -> list[float]:
@@ -629,7 +661,12 @@ class ChromaClient:
         elif self.embedding_model == "ollama":
             model_name = self.embedding_config.get("model_name", "qwen3-embedding")
             base_url = self.embedding_config.get("base_url")
-            return OllamaEmbeddingFunction(model_name=model_name, base_url=base_url)
+            return OllamaEmbeddingFunction(
+                model_name=model_name,
+                base_url=base_url,
+                timeout=self.embedding_config.get("timeout"),
+                request_batch_size=self.embedding_config.get("request_batch_size"),
+            )
 
         elif self.embedding_model == "qwen":
             model_name = self.embedding_config.get("model_name", "Qwen/Qwen3-Embedding-0.6B")
