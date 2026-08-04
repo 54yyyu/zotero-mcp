@@ -804,7 +804,7 @@ A 45-point live integration test plan is included at `docs/integration-test-plan
 
 ## ☕ Support
 
-Zotero MCP is MIT-licensed and free, and will stay that way — no paywalled features.
+Zotero MCP is free and MIT-licensed.
 
 If it saves you or your lab time, sponsoring helps cover the unglamorous parts: Windows and WSL2 edge
 cases, Zotero schema changes, group-library support, and the embedding/search infrastructure.
