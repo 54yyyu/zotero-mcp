@@ -804,11 +804,20 @@ A 45-point live integration test plan is included at `docs/integration-test-plan
 
 ## ☕ Support
 
-If you find Zotero MCP useful, consider buying me a coffee!
+Zotero MCP is free and MIT-licensed.
 
+If it saves you or your lab time, sponsoring helps cover the unglamorous parts: Windows and WSL2 edge
+cases, Zotero schema changes, group-library support, and the embedding/search infrastructure.
+
+<a href="https://github.com/sponsors/54yyyu">
+  <img src="https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub">
+</a>
 <a href="https://buymeacoffee.com/stevenyuyy">
   <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
 </a>
+
+**Labs and institutions:** the $50 and $200 tiers are meant to be expensable, and include priority
+triage on the issues affecting your workflow.
 
 ## 📄 License
 
