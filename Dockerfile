@@ -12,9 +12,26 @@ ARG INSTALL_EXTRAS=""
 COPY . /app
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Install build dependencies and install the package
-RUN pip install --no-cache-dir build hatchling \
-    && if [ -n "$INSTALL_EXTRAS" ]; then pip install --no-cache-dir ".[${INSTALL_EXTRAS}]"; else pip install --no-cache-dir .; fi \
+# Install build dependencies and install the package.
+#
+# The semantic extra pulls sentence-transformers -> torch, and torch's default PyPI wheel
+# depends on the CUDA stack (nvidia-cudnn ~445 MB, nvidia-cusparselt ~221 MB, triton ~185 MB).
+# None of it is usable here: python:3.10-slim ships no CUDA runtime and the container is not
+# run with --gpus. It is also what breaks the build — downloading ~850 MB of wheels through
+# QEMU-emulated linux/arm64 truncates, and pip then fails its hash check.
+#
+# So install the CPU-only torch build from PyTorch's index first; the extras resolve against
+# it afterwards. Retries/timeout are belt-and-braces for the remaining large downloads.
+ARG PIP_OPTS="--no-cache-dir --retries 5 --timeout 120"
+RUN pip install $PIP_OPTS build hatchling \
+    && case ",${INSTALL_EXTRAS}," in \
+         *,all,*|*,semantic,*) \
+           pip install $PIP_OPTS \
+             --index-url https://download.pytorch.org/whl/cpu \
+             --extra-index-url https://pypi.org/simple \
+             torch ;; \
+       esac \
+    && if [ -n "$INSTALL_EXTRAS" ]; then pip install $PIP_OPTS ".[${INSTALL_EXTRAS}]"; else pip install $PIP_OPTS .; fi \
     && chmod 755 /usr/local/bin/entrypoint.sh
 
 # Run as a non-root user (defense-in-depth for multi-tenant hosts)
