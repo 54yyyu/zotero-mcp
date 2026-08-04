@@ -502,7 +502,7 @@ def test_advanced_search_sql_tag_condition(tmp_path):
     assert {r["key"] for r in result} == {"PERS0001"}
 
 
-def test_advanced_search_sql_collection_condition_includes_subcollection(tmp_path):
+def test_advanced_search_sql_collection_condition_direct_only_by_default(tmp_path):
     reader = _reader(tmp_path)
     try:
         result = reader.advanced_search_sql(
@@ -511,12 +511,13 @@ def test_advanced_search_sql_collection_condition_includes_subcollection(tmp_pat
         )
     finally:
         reader.close()
-    # Item 1 is filed in COLLB001, a child of COLLA001 — recursive resolution
-    # must include it.
-    assert {r["key"] for r in result} == {"PERS0001"}
+    # Item 1 is filed only in COLLB001, a child of COLLA001. Default
+    # behavior is direct-membership only, matching the pyzotero/API
+    # backend — it must NOT be included when querying the parent COLLA001.
+    assert {r["key"] for r in result} == set()
 
 
-def test_advanced_search_sql_collection_condition_isnot(tmp_path):
+def test_advanced_search_sql_collection_condition_isnot_direct_only(tmp_path):
     reader = _reader(tmp_path)
     try:
         result = reader.advanced_search_sql(
@@ -529,8 +530,30 @@ def test_advanced_search_sql_collection_condition_isnot(tmp_path):
     finally:
         reader.close()
     keys = {r["key"] for r in result}
-    assert "PERS0001" not in keys
+    # Item 1 is not *directly* in COLLA001 (only in its child COLLB001), so
+    # direct-only membership means isNot COLLA001 includes it.
+    assert "PERS0001" in keys
     assert "PERS0002" in keys
+
+
+def test_collection_condition_recursive_true_includes_subcollection(tmp_path):
+    reader = _reader(tmp_path)
+    try:
+        conn = reader._get_connection()
+        built = reader._collection_condition(conn, "is", "COLLA001", recursive=True)
+        assert built is not None
+        clause_sql, params = built
+        rows = conn.execute(
+            f"SELECT key FROM items WHERE itemID IN "
+            f"(SELECT itemID FROM items i WHERE {clause_sql})",
+            params,
+        ).fetchall()
+    finally:
+        reader.close()
+    # Recursive resolution is still fully implemented and reachable — Item 1
+    # (filed only in child COLLB001) must be included when explicitly
+    # requested via recursive=True.
+    assert {r[0] for r in rows} == {"PERS0001"}
 
 
 def test_advanced_search_sql_collection_unsupported_operation_returns_none(tmp_path):
