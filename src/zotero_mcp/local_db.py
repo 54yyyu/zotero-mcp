@@ -1504,6 +1504,15 @@ class LocalZoteroReader:
                 to_process.append(sub[0])
         return all_ids
 
+    def _resolve_collection_id(self, conn: sqlite3.Connection, collection_key: str) -> int | None:
+        """Direct (non-recursive) lookup: collection key -> its own
+        collectionID, or None for an unknown key. Companion to
+        `_resolve_collection_ids`, which additionally walks descendants."""
+        row = conn.execute(
+            "SELECT collectionID FROM collections WHERE key = ?", (collection_key,)
+        ).fetchone()
+        return row[0] if row else None
+
     def _resolve_scope_library_id(self, group_id: int) -> int | None:
         """Translate a codebase-wide group_id (0 = personal) to this
         database's local ``libraryID``, or None if no such library is
@@ -1516,7 +1525,7 @@ class LocalZoteroReader:
         return row[0] if row is not None else None
 
     def _collection_condition(
-        self, conn: sqlite3.Connection, operation: str, value: str
+        self, conn: sqlite3.Connection, operation: str, value: str, *, recursive: bool = False
     ) -> tuple[str, list] | None:
         """Condition SQL for the ``collection`` field.
 
@@ -1525,10 +1534,30 @@ class LocalZoteroReader:
         Only membership checks make sense here, so only ``is``/``isNot`` are
         supported — anything else (and an unknown key) returns None so the
         caller falls back to the existing path.
+
+        Defaults to DIRECT membership only (an item must be filed in this
+        exact collection) — matching both the pyzotero/API advanced_search
+        path (``_extract_values`` in tools/search.py, which only ever sees an
+        item's own "collections" list) and Zotero's own "Collection is X" UI
+        checkbox with subcollections unchecked. This keeps the two
+        advanced_search backends in agreement regardless of
+        ZOTERO_SEARCH_BACKEND.
+
+        Recursive (subcollection-inclusive) resolution is fully implemented —
+        pass ``recursive=True`` to get it, reusing the same tree walk
+        ``get_items_with_text``'s ``collection_keys`` scoping already relies
+        on (``_resolve_collection_ids``). It is not wired to any public
+        parameter yet; it's kept here, tested, and reachable so it can be
+        exposed later (e.g. an ``includeSubcollections`` option) without
+        re-deriving this SQL.
         """
         if operation not in ("is", "isNot"):
             return None
-        ids = self._resolve_collection_ids(conn, value)
+        if recursive:
+            ids = self._resolve_collection_ids(conn, value)
+        else:
+            cid = self._resolve_collection_id(conn, value)
+            ids = [cid] if cid is not None else []
         if not ids:
             return None
         placeholders = ",".join("?" * len(ids))

@@ -55,6 +55,24 @@ def _maybe_fire_presearch_sync(search) -> None:
     _threading.Thread(target=_run, daemon=True, name="zmcp-presearch-sync").start()
 
 
+def _exclude_note_content_matches(items: list[dict], qmode: str) -> list[dict]:
+    """Drop standalone notes from a `titleCreatorYear` result set.
+
+    Notes have no title/creator/year field, so Zotero's own server-side
+    quicksearch matches a note's *content* instead when it appears in
+    `titleCreatorYear` results — the note's content stands in for its
+    missing title. That contradicts the mode's own name/semantics and
+    diverges from the #167 SQL backend's `search_items_sql`, whose
+    titleCreatorYear query only ever inspects title/creator/date itemData
+    rows a note doesn't have, so it never matches note content there.
+    Filtering here brings the pyzotero path in line. `everything` mode is
+    untouched — content matching is exactly what it's for.
+    """
+    if qmode != "titleCreatorYear":
+        return items
+    return [item for item in items if item.get("data", {}).get("itemType") != "note"]
+
+
 @with_zotero_api_lock
 def _search_with_variants(zot, query: str, qmode: str, limit: int,
                           item_type: str = "-attachment",
@@ -104,7 +122,7 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
             _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
             continue  # Skip failed variant, try next
 
-    return all_items
+    return _exclude_note_content_matches(all_items, qmode)
 
 
 def _search_items_via_backend(zot, query: str, qmode: str, limit: int,
@@ -221,6 +239,7 @@ def search_items(
                 q=query, qmode=qmode, itemType=item_type,
                 max_items=limit, **({"tag": tag} if tag else {}),
             )
+            items = _exclude_note_content_matches(items, qmode)
             fallback_strategy = None
         else:
             # --- Initial search with variant generation ---
