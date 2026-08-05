@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
+- **`zotero_add_item`'s `doi`/`url`/`isbn` sources now accept a batch — a list, or a comma/newline-separated string — the same way BibTeX/CSL JSON already did.** Each identifier is added independently via the existing single-item path (one bad DOI in a batch of ten doesn't fail the other nine, and single-item output is unchanged), with results stacked under a summary header. `source_type="auto"` recognizes a comma/newline-separated list of bare DOIs without needing an explicit override. A URL batch may freely mix DOI-redirect, arXiv, and generic-webpage links in one call. `source_type='doi'`/`'url'`/`'isbn'` still needs to be set explicitly for URL/ISBN batches, since a plain list of bare ISBNs or URLs isn't structurally distinguishable from other shapes the way a DOI is.
 
 ## [0.9.1] - 2026-08-05
 

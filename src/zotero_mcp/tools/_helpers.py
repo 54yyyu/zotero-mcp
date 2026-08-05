@@ -255,10 +255,15 @@ def _normalize_str_list_input(value, field_name="value"):
             if isinstance(parsed, str):
                 s = parsed.strip()
                 return [s] if s else []
-            raise ValueError(
-                f"{field_name} must be a list of strings or a string, "
-                f"got JSON {type(parsed).__name__}"
-            )
+            if isinstance(parsed, dict):
+                raise ValueError(
+                    f"{field_name} must be a list of strings or a string, "
+                    f"got JSON {type(parsed).__name__}"
+                )
+            # A bare JSON scalar (int/float/bool/null) — e.g. an all-digit
+            # ISBN parses as a JSON number. That's plain text, not structured
+            # input; fall through to the raw-string handling below instead
+            # of rejecting it.
         except json.JSONDecodeError:
             pass
         parts = [p.strip() for p in raw.split(",") if p.strip()]

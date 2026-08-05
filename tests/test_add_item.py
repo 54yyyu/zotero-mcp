@@ -84,6 +84,35 @@ class TestDetectSourceType:
     def test_inline_csl_json(self, source):
         assert write.detect_source_type(source) == "csl_json"
 
+    @pytest.mark.parametrize("source", [
+        "10.1145/3708319, 10.1038/nature12373",
+        "10.1145/3708319,10.1038/nature12373",
+        "10.1145/3708319\n10.1038/nature12373",
+        "10.1145/3708319\n10.1038/nature12373\n10.1000/xyz123",
+        "  10.1145/3708319 , 10.1038/nature12373  ",
+        '["10.1145/3708319", "10.1038/nature12373"]',
+    ])
+    def test_multi_doi_batch(self, source):
+        assert write.detect_source_type(source) == "doi"
+
+    def test_single_doi_is_not_batch_shaped(self):
+        # A lone DOI still goes through the ordinary single-DOI branch.
+        assert write.detect_source_type("10.1145/3708319") == "doi"
+
+    def test_csl_json_list_of_objects_stays_csl_json(self):
+        # A JSON array of objects (real CSL JSON) must not be mistaken for
+        # a multi-DOI batch just because it starts with '['.
+        assert write.detect_source_type(
+            '[{"id": "smith2020"}, {"id": "jones2021"}]'
+        ) == "csl_json"
+
+    def test_mixed_doi_and_non_doi_list_is_not_a_batch(self):
+        # If any comma-separated token fails to normalize as a DOI, this
+        # isn't an unambiguous multi-DOI batch — fall through (here, to the
+        # "not a path either" ValueError) rather than guessing.
+        with pytest.raises(ValueError):
+            write.detect_source_type("10.1145/3708319, not-a-doi")
+
     @pytest.mark.parametrize("source,expected", [
         ("/Users/me/refs.bib", "bibtex"),
         ("/Users/me/refs.bibtex", "bibtex"),
