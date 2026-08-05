@@ -987,3 +987,81 @@ class TestDoiNormalizationInAddByDoi:
         assert len(captured_args) >= 1
         assert "doi%3A" not in captured_args[0].lower()
         assert "doi:10" not in captured_args[0]
+
+
+# ---------------------------------------------------------------------------
+# Multiple DOIs in one call
+# ---------------------------------------------------------------------------
+
+class TestMultipleDois:
+    def test_creates_multiple_items(self, monkeypatch, fake_zot, dummy_ctx):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        resp_a = _make_crossref_response({"DOI": "10.1111/a", "title": ["Paper A"]})
+        resp_b = _make_crossref_response({"DOI": "10.2222/b", "title": ["Paper B"]})
+
+        def fake_get(url, *args, **kwargs):
+            if "10.1111" in url:
+                return resp_a
+            if "10.2222" in url:
+                return resp_b
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.raise_for_status.side_effect = Exception("HTTP 404")
+            return resp
+
+        monkeypatch.setattr("requests.get", fake_get)
+
+        result = write.add_item(
+            source="10.1111/a, 10.2222/b", source_type="doi", ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 2
+        assert fake_zot.created[0]["title"] == "Paper A"
+        assert fake_zot.created[1]["title"] == "Paper B"
+        assert "# Added 2 DOIs" in result
+        assert "Successfully added: **Paper A**" in result
+        assert "Successfully added: **Paper B**" in result
+
+    def test_auto_detected_from_newline_separated_list(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """source_type='auto' should route a newline-separated DOI list to
+        the batch path without an explicit source_type='doi' override."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
+
+        result = write.add_item(source="10.1111/a\n10.2222/b", ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 2
+        assert "# Added 2 DOIs" in result
+
+    def test_partial_failure_reports_both(self, monkeypatch, fake_zot, dummy_ctx):
+        """One 404 alongside one success: the successful DOI is still
+        created and the failure is reported, not silently dropped."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        resp_a = _make_crossref_response({"DOI": "10.1111/a", "title": ["Paper A"]})
+        resp_404 = MagicMock()
+        resp_404.status_code = 404
+        resp_404.raise_for_status.side_effect = Exception("HTTP 404")
+
+        def fake_get(url, *args, **kwargs):
+            return resp_a if "10.1111" in url else resp_404
+
+        monkeypatch.setattr("requests.get", fake_get)
+
+        result = write.add_item(
+            source="10.1111/a, 10.9999/missing", source_type="doi", ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert fake_zot.created[0]["title"] == "Paper A"
+        assert "Successfully added: **Paper A**" in result
+        assert "DOI not found on CrossRef: 10.9999/missing" in result
