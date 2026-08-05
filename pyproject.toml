@@ -19,11 +19,13 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    # 1.13.3 fixes attachment_both() putting the full filesystem path into the
-    # stored filename, which the Zotero API rejects with 400 ("Stored-file
-    # filename cannot contain a directory path") while pyzotero swallows the
-    # error — on older versions every upload silently falls back to the
-    # two-step retry in _attach_and_verify (#403).
+    # Below 1.13.3, upload step 0 sends the caller-supplied path as the
+    # stored-file filename; 1.13.3 adds Zupload._outgoing in _upload.py to send
+    # Path(filename).name instead (upstream urschrei/pyzotero#341). The API
+    # rejects the path with 400 ("Stored-file filename cannot contain a
+    # directory path") and pyzotero returns the payload under `failure` rather
+    # than raising, so on older versions every attach pays for the two-step
+    # fallback in _attach_and_verify (#403).
     "pyzotero>=1.13.3",
     "python-dotenv>=1.0.0",
     # PDF text extraction. Rust with prebuilt abi3 wheels for every platform
