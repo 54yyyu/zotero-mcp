@@ -13,6 +13,7 @@ from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
+from zotero_mcp.local_db import get_local_zotero_reader
 from zotero_mcp.tools import _helpers
 
 _search_logger = _logging.getLogger("zotero_mcp.search")
@@ -52,6 +53,24 @@ def _maybe_fire_presearch_sync(search) -> None:
             _search_logger.debug(f"Background pre-search sync failed: {e}")
 
     _threading.Thread(target=_run, daemon=True, name="zmcp-presearch-sync").start()
+
+
+def _exclude_note_content_matches(items: list[dict], qmode: str) -> list[dict]:
+    """Drop standalone notes from a `titleCreatorYear` result set.
+
+    Notes have no title/creator/year field, so Zotero's own server-side
+    quicksearch matches a note's *content* instead when it appears in
+    `titleCreatorYear` results — the note's content stands in for its
+    missing title. That contradicts the mode's own name/semantics and
+    diverges from the #167 SQL backend's `search_items_sql`, whose
+    titleCreatorYear query only ever inspects title/creator/date itemData
+    rows a note doesn't have, so it never matches note content there.
+    Filtering here brings the pyzotero path in line. `everything` mode is
+    untouched — content matching is exactly what it's for.
+    """
+    if qmode != "titleCreatorYear":
+        return items
+    return [item for item in items if item.get("data", {}).get("itemType") != "note"]
 
 
 @with_zotero_api_lock
@@ -103,7 +122,36 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
             _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
             continue  # Skip failed variant, try next
 
-    return all_items
+    return _exclude_note_content_matches(all_items, qmode)
+
+
+def _search_items_via_backend(zot, query: str, qmode: str, limit: int,
+                              item_type: str = "-attachment",
+                              tag: list[str] | None = None,
+                              cascade_start: float | None = None,
+                              cascade_timeout: float | None = None) -> list:
+    """Try the #167 SQLite metadata backend first; fall back to the
+    pyzotero-based `_search_with_variants` on any unsupported condition or
+    error. Mirrors `_search_with_variants`'s signature and return shape so
+    every call site in the fallback cascade can swap it in unchanged.
+    """
+    if _utils.get_search_backend() == "sqlite":
+        try:
+            reader = get_local_zotero_reader()
+            if reader is not None:
+                try:
+                    result = reader.search_items_sql(
+                        query, qmode=qmode, item_type=item_type, tag=tag,
+                        limit=limit, group_id=_client.get_active_group_id(),
+                    )
+                finally:
+                    reader.close()
+                if result is not None:
+                    return result
+        except Exception as e:
+            _search_logger.debug(f"[SEARCH] sqlite backend failed, falling back: {e}")
+    return _search_with_variants(zot, query, qmode, limit, item_type=item_type, tag=tag,
+                                 cascade_start=cascade_start, cascade_timeout=cascade_timeout)
 
 
 @mcp.tool(
@@ -191,14 +239,15 @@ def search_items(
                 q=query, qmode=qmode, itemType=item_type,
                 max_items=limit, **({"tag": tag} if tag else {}),
             )
+            items = _exclude_note_content_matches(items, qmode)
             fallback_strategy = None
         else:
             # --- Initial search with variant generation ---
             _cascade_start = _time.monotonic()
-            items = _search_with_variants(zot, query, qmode, limit,
-                                          item_type=item_type, tag=tag,
-                                          cascade_start=_cascade_start,
-                                          cascade_timeout=CASCADE_TIMEOUT)
+            items = _search_items_via_backend(zot, query, qmode, limit,
+                                              item_type=item_type, tag=tag,
+                                              cascade_start=_cascade_start,
+                                              cascade_timeout=CASCADE_TIMEOUT)
             _search_logger.debug(f"[CASCADE] initial: {len(items)} results in {_time.monotonic() - _cascade_start:.2f}s")
 
             # --- Fallback cascade (only if initial search returned nothing) ---
@@ -233,10 +282,10 @@ def search_items(
 
                     t0 = _time.monotonic()
                     ctx.info(f"Retry with simplified query: '{simple_query}'")
-                    items = _search_with_variants(zot, simple_query, qmode, limit,
-                                                  item_type=item_type, tag=tag,
-                                                  cascade_start=_cascade_start,
-                                                  cascade_timeout=CASCADE_TIMEOUT)
+                    items = _search_items_via_backend(zot, simple_query, qmode, limit,
+                                                      item_type=item_type, tag=tag,
+                                                      cascade_start=_cascade_start,
+                                                      cascade_timeout=CASCADE_TIMEOUT)
                     _search_logger.debug(f"[CASCADE] strategy 1 (author+year): {len(items)} results in {_time.monotonic() - t0:.2f}s")
                     if items:
                         fallback_strategy = f"simplified to '{simple_query}'"
@@ -246,10 +295,10 @@ def search_items(
                     author_only = next((w for w in words if not re.match(r'^\d+$', w)), words[0])
                     t0 = _time.monotonic()
                     ctx.info(f"Retry with author only: '{author_only}'")
-                    items = _search_with_variants(zot, author_only, qmode, limit,
-                                                  item_type=item_type, tag=tag,
-                                                  cascade_start=_cascade_start,
-                                                  cascade_timeout=CASCADE_TIMEOUT)
+                    items = _search_items_via_backend(zot, author_only, qmode, limit,
+                                                      item_type=item_type, tag=tag,
+                                                      cascade_start=_cascade_start,
+                                                      cascade_timeout=CASCADE_TIMEOUT)
                     _search_logger.debug(f"[CASCADE] strategy 2 (author only): {len(items)} results in {_time.monotonic() - t0:.2f}s")
                     if items:
                         fallback_strategy = f"author only '{author_only}'"
@@ -259,10 +308,10 @@ def search_items(
                 if not _check_cascade_timeout() and not items and qmode != "everything":
                     t0 = _time.monotonic()
                     ctx.info(f"Retry with qmode='everything': '{query}'")
-                    items = _search_with_variants(zot, query, "everything", limit,
-                                                  item_type=item_type, tag=tag,
-                                                  cascade_start=_cascade_start,
-                                                  cascade_timeout=CASCADE_TIMEOUT)
+                    items = _search_items_via_backend(zot, query, "everything", limit,
+                                                      item_type=item_type, tag=tag,
+                                                      cascade_start=_cascade_start,
+                                                      cascade_timeout=CASCADE_TIMEOUT)
                     _search_logger.debug(f"[CASCADE] strategy 3 (everything): {len(items)} results in {_time.monotonic() - t0:.2f}s")
                     if items:
                         fallback_strategy = "full-text search"
@@ -743,28 +792,48 @@ def advanced_search(
                 return all(comparisons)
             return any(comparisons)
 
-        # Execute advanced search by iterating items and filtering client-side.
-        results = []
-        batch_size = 100
-        start = 0
-        while True:
-            batch = zot.items(start=start, limit=batch_size)
-            if not batch:
-                break
+        # #167: try the SQLite metadata backend first — it replaces the
+        # client-side paging loop below entirely when it can serve the
+        # query. None means "unsupported/unavailable"; fall back.
+        results = None
+        if _utils.get_search_backend() == "sqlite":
+            try:
+                reader = get_local_zotero_reader()
+                if reader is not None:
+                    try:
+                        results = reader.advanced_search_sql(
+                            parsed_conditions, join_mode=join_mode,
+                            group_id=_client.get_active_group_id(),
+                        )
+                    finally:
+                        reader.close()
+            except Exception as e:
+                _search_logger.debug(f"[ADVANCED SEARCH] sqlite backend failed, falling back: {e}")
+                results = None
 
-            for item in batch:
-                data = item.get("data", {})
-                if data.get("itemType") in {"attachment", "note", "annotation"}:
-                    continue
+        if results is None:
+            # Execute advanced search by iterating items and filtering client-side.
+            results = []
+            batch_size = 100
+            start = 0
+            while True:
+                batch = zot.items(start=start, limit=batch_size)
+                if not batch:
+                    break
 
-                checks = [_matches_condition(data, c) for c in parsed_conditions]
-                matched = all(checks) if join_mode == "all" else any(checks)
-                if matched:
-                    results.append(item)
+                for item in batch:
+                    data = item.get("data", {})
+                    if data.get("itemType") in {"attachment", "note", "annotation"}:
+                        continue
 
-            if len(batch) < batch_size:
-                break
-            start += batch_size
+                    checks = [_matches_condition(data, c) for c in parsed_conditions]
+                    matched = all(checks) if join_mode == "all" else any(checks)
+                    if matched:
+                        results.append(item)
+
+                if len(batch) < batch_size:
+                    break
+                start += batch_size
 
         sort_warning: str | None = None
         if sort_by:

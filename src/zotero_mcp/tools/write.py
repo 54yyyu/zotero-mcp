@@ -53,6 +53,46 @@ def _resolve_collections_arg(
     )
 
 
+def _split_multi_value(raw, field_name: str) -> list[str]:
+    """Split a batch-identifier argument (DOI/URL/ISBN) into tokens.
+
+    Accepts the same shapes ``_normalize_str_list_input`` already handles
+    (a list, a JSON array string, or a comma-separated string) plus
+    newline-separated plain text, so pasting one identifier per line works
+    the same as comma-separating them.
+    """
+    if isinstance(raw, str):
+        raw = raw.replace("\n", ",")
+    return _helpers._normalize_str_list_input(raw, field_name)
+
+
+def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> str:
+    """Concatenate per-token single-item results for a DOI/URL/ISBN batch.
+
+    Each element of ``results`` is the normal, unmodified single-item
+    return value for that adder — this just labels and stacks them, so
+    batch output is a plain superset of what a single call already prints.
+
+    Deliberately a second, simpler batch strategy alongside
+    ``_format_batch_result`` (used by add_by_bibtex/add_by_csl_json), which
+    aggregates structured per-item dicts instead of pre-rendered strings.
+    Chosen here to keep the diff small and single-item output byte-for-byte
+    unchanged. If a third source ever needs batching, or the two formats
+    need to converge, the natural refactor is to make add_by_doi/url/isbn
+    return the same per-item dict shape (like a hypothetical
+    ``_add_one_by_doi`` helper) and render everything through
+    ``_format_batch_result`` — see the recursive per-token loops below for
+    the redundant-work cost that refactor would also remove.
+    """
+    lines = [f"# Added {len(tokens)} {kind}s", ""]
+    for i, (tok, res) in enumerate(zip(tokens, results), 1):
+        lines.append(f"## {i}. {tok}")
+        lines.append("")
+        lines.append(res)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _collections_status(coll_keys: list[str], missing: list[str]) -> str:
     """Render the post-create collection-membership state for tool output."""
     if not coll_keys:
@@ -948,7 +988,7 @@ def manage_collections(
 # individually callable) for the CLI and for direct use.
 @with_zotero_api_lock
 def add_by_doi(
-    doi: str,
+    doi: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
@@ -957,6 +997,32 @@ def add_by_doi(
     *,
     ctx: Context
 ) -> str:
+    # ``doi`` may name several DOIs at once (a list, or a comma/newline-
+    # separated string) — add each independently and stack the results, so
+    # one bad DOI in a batch doesn't fail the others. A single DOI takes the
+    # normal, unmodified path below.
+    #
+    # Recursing here re-runs _get_write_client and _resolve_collections_arg
+    # once per token, so a name/path-based ``collections`` spec (which hits
+    # the Zotero API to resolve) is re-resolved N times in an N-DOI batch —
+    # key-based specs skip that call and cost nothing extra. If that ever
+    # matters in practice, the fix is to resolve collections once above this
+    # loop and pass the resolved keys into a shared single-item worker,
+    # mirroring add_by_bibtex/add_by_csl_json's pattern (see
+    # _format_multi_result's docstring for the fuller refactor sketch).
+    tokens = _split_multi_value(doi, "doi")
+    if len(tokens) > 1:
+        results = [
+            add_by_doi(doi=tok, collections=collections, tags=tags,
+                      attach_mode=attach_mode, if_exists=if_exists,
+                      create_missing_collections=create_missing_collections,
+                      ctx=ctx)
+            for tok in tokens
+        ]
+        return _format_multi_result("DOI", tokens, results)
+    if tokens:
+        doi = tokens[0]
+
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -1134,7 +1200,7 @@ def add_by_doi(
 
 @with_zotero_api_lock
 def add_by_url(
-    url: str,
+    url: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
@@ -1143,6 +1209,23 @@ def add_by_url(
     *,
     ctx: Context
 ) -> str:
+    # ``url`` may name several URLs at once — see add_by_doi's batch comment
+    # above; the same pattern applies here, and a batch may freely mix DOI-
+    # redirect, arXiv, and generic-webpage URLs since each token is
+    # classified independently below.
+    tokens = _split_multi_value(url, "url")
+    if len(tokens) > 1:
+        results = [
+            add_by_url(url=tok, collections=collections, tags=tags,
+                      attach_mode=attach_mode, if_exists=if_exists,
+                      create_missing_collections=create_missing_collections,
+                      ctx=ctx)
+            for tok in tokens
+        ]
+        return _format_multi_result("URL", tokens, results)
+    if tokens:
+        url = tokens[0]
+
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -1308,6 +1391,14 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             result = None
             ctx.info(f"CrossRef fallback errored: {e}")
         # add_by_doi returns a human string; treat "not found"/"Error" as a miss.
+        #
+        # Pre-existing fragility, unrelated to arxiv_doi always being a
+        # single DOI (so add_by_doi's batch path above never triggers here):
+        # this sniffs the *rendered* message rather than a structured
+        # result, so it silently breaks if either prefix's wording ever
+        # changes. The robust fix is the same one noted in add_by_doi's
+        # batch comment — a single-item worker that returns a dict with an
+        # explicit ok/error field, checked here instead of string-matching.
         if result and not result.startswith(("DOI not found", "Error")):
             return result
         return (
@@ -1578,7 +1669,7 @@ def _lookup_isbn_google_books(isbn, ctx):
 
 
 def add_by_isbn(
-    isbn: str,
+    isbn: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
@@ -1586,6 +1677,21 @@ def add_by_isbn(
     *,
     ctx: Context
 ) -> str:
+    # ``isbn`` may name several ISBNs at once — see add_by_doi's batch
+    # comment above; the same pattern applies here.
+    tokens = _split_multi_value(isbn, "isbn")
+    if len(tokens) > 1:
+        results = [
+            add_by_isbn(isbn=tok, collections=collections, tags=tags,
+                       if_exists=if_exists,
+                       create_missing_collections=create_missing_collections,
+                       ctx=ctx)
+            for tok in tokens
+        ]
+        return _format_multi_result("ISBN", tokens, results)
+    if tokens:
+        isbn = tokens[0]
+
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -3810,11 +3916,15 @@ def detect_source_type(source: str) -> str:
     with the implementation it routes to:
 
     1. inline BibTeX (``@entry{...}``) and inline CSL JSON (``[``/``{``)
-       are structural and unambiguous;
+       are structural and unambiguous — except a JSON array of bare strings
+       that are *all* DOIs, which is a multi-DOI batch, not CSL JSON (CSL
+       JSON entries are objects, never bare strings);
     2. http(s) URLs are resolved to a DOI first (``https://doi.org/10.x``
        is a DOI, not a generic web page) and are otherwise a URL;
     3. bare DOIs (``10.x/y``, ``doi:10.x/y``) beat everything below —
-       they contain a ``/`` and would otherwise look path-ish;
+       they contain a ``/`` and would otherwise look path-ish; a
+       comma/newline-separated list where *every* token is independently a
+       valid DOI is a multi-DOI batch;
     4. arXiv IDs route through the URL implementation, which owns the
        arXiv metadata path;
     5. path shapes are classified by extension (``.bib`` -> bibtex,
@@ -3829,12 +3939,27 @@ def detect_source_type(source: str) -> str:
     if _BIBTEX_ENTRY_RE.search(s):
         return "bibtex"
     if s[0] in "[{":
+        if s[0] == "[":
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError:
+                parsed = None
+            if (
+                isinstance(parsed, list) and len(parsed) >= 2
+                and all(isinstance(v, str) for v in parsed)
+                and all(_helpers._normalize_doi(v) for v in parsed)
+            ):
+                return "doi"
         return "csl_json"
 
     if s.lower().startswith(("http://", "https://")):
         return "doi" if _helpers._normalize_doi(s) else "url"
     if _helpers._normalize_doi(s):
         return "doi"
+    if "," in s or "\n" in s:
+        tokens = [t.strip() for t in re.split(r"[,\n]", s) if t.strip()]
+        if len(tokens) >= 2 and all(_helpers._normalize_doi(t) for t in tokens):
+            return "doi"
     if _helpers._normalize_arxiv_id(s):
         return "url"
 
@@ -3869,18 +3994,20 @@ def detect_source_type(source: str) -> str:
         "CSL JSON, or a local file. Use for every 'add this to Zotero' "
         "request. "
         "source: the identifier, URL, citation text, or ABSOLUTE file "
-        "path. BibTeX/CSL JSON may be inline (many entries per call) or "
-        "a path to .bib/.bibtex/.json/.csljson; documents are .pdf, "
-        ".epub, .docx and similar. "
-        "source_type: 'auto' (default) detects it; override a wrong "
-        "guess. Routing: doi → CrossRef (best metadata — prefer a DOI "
-        "when you have one); url → doi.org/arxiv.org get full metadata, "
-        "anything else becomes a bare 'webpage' item that is often not "
-        "citable, so resolve to a DOI first; isbn → Open Library then "
-        "Google Books (noisy — verify after); bibtex/csl_json → one item "
-        "per entry, citation key kept in Extra; file → extracts the "
-        "PDF's DOI and enriches via CrossRef, else guesses from "
-        "filename/text, then attaches the file. "
+        "path. DOI/URL/ISBN also take many at once (list or "
+        "comma/newline-separated), each resolved independently. "
+        "BibTeX/CSL JSON may be inline (many entries per call) or a path "
+        "to .bib/.bibtex/.json/.csljson; documents are .pdf, .epub, .docx "
+        "and similar. "
+        "source_type: 'auto' (default) detects it, incl. comma/newline "
+        "DOI lists; override for URL/ISBN batches. Routing: doi → CrossRef "
+        "(best metadata — prefer a DOI when you have one); url → "
+        "doi.org/arxiv.org get full metadata, anything else becomes a bare "
+        "'webpage' item that is often not citable, so resolve to a DOI "
+        "first; isbn → Open Library then Google Books (noisy — verify "
+        "after); bibtex/csl_json → one item per entry, citation key kept "
+        "in Extra; file → extracts the PDF's DOI and enriches via "
+        "CrossRef, else guesses from filename/text, then attaches the file. "
         "collections: keys, names, or '/'-paths ('_project/topic'), "
         "validated before anything is created — an unknown or ambiguous "
         "spec fails the call rather than leaving an unfiled item; "

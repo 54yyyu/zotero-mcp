@@ -152,6 +152,58 @@ class TestSearchWithVariants:
         assert captured["itemType"] == "-note"
         assert captured["tag"] == ["research"]
 
+    def test_titlecreatoryear_excludes_note_content_matches(self):
+        # Zotero's own server-side quicksearch matches a standalone note's
+        # *content* in titleCreatorYear mode (notes have no title/creator/
+        # year field) — that contradicts the #167 SQL backend, which never
+        # matches note content there. _search_with_variants must filter
+        # these out so both backends agree (see _exclude_note_content_matches).
+        paper = {"key": "P1", "data": {"itemType": "journalArticle", "title": "Paper"}}
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        zot = self._make_zot({"Paper": [paper, note]})
+
+        result = search_module._search_with_variants(
+            zot, "Paper", "titleCreatorYear", 10
+        )
+
+        keys = {item["key"] for item in result}
+        assert keys == {"P1"}
+
+    def test_everything_mode_still_includes_notes(self):
+        # 'everything' mode is content search by design — must stay untouched.
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        zot = self._make_zot({"Paper": [note]})
+
+        result = search_module._search_with_variants(
+            zot, "Paper", "everything", 10
+        )
+
+        assert {item["key"] for item in result} == {"N1"}
+
+
+class TestSearchItemsCollectionKeyExcludesNotes:
+    """search_items's collection_key path bypasses _search_with_variants
+    entirely (queries zot.collection_items directly) — same
+    _exclude_note_content_matches fix must be wired in there too."""
+
+    def test_titlecreatoryear_excludes_note_content_matches(self, monkeypatch):
+        from zotero_mcp import server
+
+        paper = {"key": "P1", "data": {"itemType": "journalArticle", "title": "Paper"}}
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        fake_zot = MagicMock()
+        fake_zot.collection = MagicMock(return_value={"key": "COLL0001"})
+        fake_zot.collection_items = MagicMock(return_value=[paper, note])
+        monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
+
+        result = server.search_items(
+            query="Paper", qmode="titleCreatorYear", collection_key="COLL0001",
+            ctx=DummyContext(),
+        )
+
+        assert "P1" in result
+        assert "N1" not in result
+
 
 # ---------------------------------------------------------------------------
 # TestFallbackCascade

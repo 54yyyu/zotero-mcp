@@ -776,3 +776,25 @@ class TestArxivAttachMode:
         mock_linked.assert_not_called()
         # Binary upload path is invoked
         assert fake_zot.attachment_both.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Multiple URLs in one call
+# ---------------------------------------------------------------------------
+
+class TestMultipleUrls:
+    def test_creates_multiple_webpage_items(self, dummy_ctx, patch_write_client):
+        """A batch can mix ordinary webpage URLs; each is added independently
+        via the normal single-URL path, then the results are stacked."""
+        fake_zot = patch_write_client
+
+        result = write.add_item(
+            source="https://example.com/a, https://example.com/b",
+            source_type="url",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 2
+        assert fake_zot.created[0]["url"] == "https://example.com/a"
+        assert fake_zot.created[1]["url"] == "https://example.com/b"
+        assert "# Added 2 URLs" in result

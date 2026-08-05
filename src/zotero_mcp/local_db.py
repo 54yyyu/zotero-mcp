@@ -22,7 +22,7 @@ from .extract import (
     normalize_attachment_priority,
     pick_by_priority,
 )
-from .utils import _normalize_for_search, is_local_mode
+from .utils import _generate_search_variants, _normalize_for_search, is_local_mode
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +172,222 @@ class ZoteroItem:
             parts.append(f"Content: {truncated_fulltext}")
 
         return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# #167 SQLite metadata search backend
+#
+# Direct-SQL equivalents of the pyzotero-based filtering in
+# tools/search.py's search_items / advanced_search, active only when
+# ZOTERO_SEARCH_BACKEND=sqlite (see utils.get_search_backend()). Each entry
+# point returns None when it hits a condition/operator/itemType expression it
+# doesn't support, so the caller can fall back to the existing pyzotero path
+# — that path remains the correctness safety net.
+# ---------------------------------------------------------------------------
+
+# Operators supported by zotero_advanced_search's conditions today (must stay
+# in sync with tools/search.py's own `valid_operations` set).
+_VALID_CONDITION_OPERATIONS = frozenset({
+    "is", "isNot", "contains", "doesNotContain", "beginsWith", "endsWith",
+    "isGreaterThan", "isLessThan", "isBefore", "isAfter",
+})
+
+# field.lower() -> canonical field name, mirroring tools/search.py's
+# advanced_search field_aliases (author/authors/creators/tags handled
+# separately since they're multi-valued).
+_CONDITION_FIELD_ALIASES = {
+    "itemtype": "itemType",
+    "dateadded": "dateAdded",
+    "datemodified": "dateModified",
+    "doi": "DOI",
+}
+
+# Single-valued fields resolvable to one scalar SQL expression correlated on
+# the outer query's `i` (items) / `it` (itemTypes) aliases.
+_SIMPLE_FIELD_SQL = {
+    "title": (
+        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
+        "WHERE d.itemID = i.itemID AND d.fieldID = 1)"
+    ),
+    "abstractNote": (
+        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
+        "WHERE d.itemID = i.itemID AND d.fieldID = 2)"
+    ),
+    # "date" is handled separately below (_DATE_DISPLAY_SQL / _DATE_RANGE_SQL)
+    # — it needs an operator-aware expression, unlike every other field here.
+    "DOI": (
+        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
+        "JOIN fields f ON d.fieldID = f.fieldID "
+        "WHERE d.itemID = i.itemID AND f.fieldName = 'DOI')"
+    ),
+    "publicationTitle": (
+        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
+        "JOIN fields f ON d.fieldID = f.fieldID "
+        "WHERE d.itemID = i.itemID AND f.fieldName = 'publicationTitle')"
+    ),
+    "dateAdded": "i.dateAdded",
+    "dateModified": "i.dateModified",
+    "itemType": "it.typeName",
+}
+
+# Zotero stores the "date" field as a multipart string in itemDataValues.value:
+# "<ISO YYYY-MM-DD, 00 for missing parts> <original user-typed text>" (e.g.
+# "2016-10-01 October 1, 2016", "2021-07-00 07/2021", "0000-00-00 <unparseable
+# text>"), confirmed against Zotero's own source (Zotero.Date.strToMultipart /
+# item.js's setField). The pyzotero/web-API "date" field returns ONLY the
+# display half (Zotero.Date.multipartToStr strips the ISO prefix before
+# returning it) — so a condition needs a DIFFERENT substring depending on the
+# operator, to match what each one is really comparing:
+#   - is/isNot/contains/doesNotContain/beginsWith/endsWith: the display text
+#     only (_DATE_DISPLAY_SQL) — matching what the API's "date" field is.
+#   - isGreaterThan/isLessThan/isBefore/isAfter: the first 10 chars, i.e. the
+#     ISO portion (_DATE_RANGE_SQL) — Zotero's own search.js does exactly this
+#     (`SUBSTR(value, 1, 10)`) for date range queries, since lexicographic
+#     comparison of "YYYY-MM-DD" strings is chronologically correct but
+#     comparing arbitrary display text ("October 1, 2016" vs "2020") is not.
+# "year" similarly mirrors Zotero's own item.js (`getField('date', true,
+# true).substr(0, 4)`) and searchConditions.js (`SUBSTR(value, 1, 4)`): the
+# first 4 characters of the RAW multipart value, which is always the ISO
+# year regardless of display format. Note this deliberately diverges from
+# tools/search.py's `_extract_values`, which takes `date[:4]` off the
+# *display* string and is wrong whenever that doesn't start with a year
+# (i.e. most non-ISO-typed dates) — a pre-existing bug, not something to
+# replicate; see the plan's Phase D bug list.
+_RANGE_OPERATIONS = frozenset({"isGreaterThan", "isLessThan", "isBefore", "isAfter"})
+
+_DATE_DISPLAY_SQL = (
+    "(SELECT SUBSTR(v.value, INSTR(v.value, ' ') + 1) FROM itemData d "
+    "JOIN itemDataValues v ON d.valueID = v.valueID JOIN fields f ON d.fieldID = f.fieldID "
+    "WHERE d.itemID = i.itemID AND f.fieldName = 'date')"
+)
+_DATE_RANGE_SQL = (
+    "(SELECT SUBSTR(v.value, 1, 10) FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
+    "JOIN fields f ON d.fieldID = f.fieldID WHERE d.itemID = i.itemID AND f.fieldName = 'date')"
+)
+_YEAR_FIELD_SQL = (
+    "(SELECT SUBSTR(v.value, 1, 4) FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
+    "JOIN fields f ON d.fieldID = f.fieldID "
+    "WHERE d.itemID = i.itemID AND f.fieldName = 'date' AND LENGTH(v.value) >= 4)"
+)
+
+_CREATOR_NAME_EXPR = "TRIM(COALESCE(c.firstName, '') || ' ' || COALESCE(c.lastName, ''))"
+
+# The shared item-metadata projection used by both search_items_sql and
+# advanced_search_sql — everything row_to_api_item() needs to build a
+# pyzotero-shaped item dict, correlated on `i` (items) via a leading
+# `WHERE i.libraryID = ?`.
+_ITEM_HYDRATION_SELECT = """
+    SELECT i.itemID, i.key, it.typeName as itemType, i.dateAdded, i.dateModified,
+           title_val.value as title, abstract_val.value as abstractNote,
+           date_val.value as date, doi_val.value as DOI, pub_val.value as publicationTitle
+    FROM items i
+    JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+    LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
+    LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
+    LEFT JOIN itemData abstract_data ON i.itemID = abstract_data.itemID AND abstract_data.fieldID = 2
+    LEFT JOIN itemDataValues abstract_val ON abstract_data.valueID = abstract_val.valueID
+    LEFT JOIN fields date_f ON date_f.fieldName = 'date'
+    LEFT JOIN itemData date_data ON i.itemID = date_data.itemID AND date_data.fieldID = date_f.fieldID
+    LEFT JOIN itemDataValues date_val ON date_data.valueID = date_val.valueID
+    LEFT JOIN fields doi_f ON doi_f.fieldName = 'DOI'
+    LEFT JOIN itemData doi_data ON i.itemID = doi_data.itemID AND doi_data.fieldID = doi_f.fieldID
+    LEFT JOIN itemDataValues doi_val ON doi_data.valueID = doi_val.valueID
+    LEFT JOIN fields pub_f ON pub_f.fieldName = 'publicationTitle'
+    LEFT JOIN itemData pub_data ON i.itemID = pub_data.itemID AND pub_data.fieldID = pub_f.fieldID
+    LEFT JOIN itemDataValues pub_val ON pub_data.valueID = pub_val.valueID
+    WHERE i.libraryID = ?
+    AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+"""
+
+
+def _like_or_eq(expr: str, operation: str, value: str) -> tuple[str, list]:
+    """Build a single-value SQL comparison for one condition operator.
+
+    ``isNot``/``doesNotContain`` are translated to their positive counterpart
+    here (``is``/``contains``) — callers needing the true negated semantics
+    (a value must be present AND not match) wrap the result themselves; see
+    ``_scalar_condition`` and the creator/tag EXISTS builders below, which
+    both replicate tools/search.py's ``_matches_condition`` rule that a
+    missing/empty value never satisfies *any* operator, negated or not.
+    """
+    positive = {"isNot": "is", "doesNotContain": "contains"}.get(operation, operation)
+    if positive == "is":
+        return f"{expr} = ?", [value]
+    if positive == "contains":
+        return f"{expr} LIKE ?", [f"%{value}%"]
+    if positive == "beginsWith":
+        return f"{expr} LIKE ?", [f"{value}%"]
+    if positive == "endsWith":
+        return f"{expr} LIKE ?", [f"%{value}"]
+    if positive in ("isGreaterThan", "isAfter"):
+        return f"{expr} > ?", [value]
+    if positive in ("isLessThan", "isBefore"):
+        return f"{expr} < ?", [value]
+    raise AssertionError(f"unreachable: unvalidated operation {operation!r}")
+
+
+def _scalar_condition(expr: str, operation: str, value: str) -> tuple[str, list]:
+    """Condition SQL for a single-valued field (title, date, itemType, ...)."""
+    if operation in ("isNot", "doesNotContain"):
+        positive_sql, params = _like_or_eq(expr, operation, value)
+        return f"({expr} IS NOT NULL AND NOT ({positive_sql}))", params
+    return _like_or_eq(expr, operation, value)
+
+
+def _creator_condition(operation: str, value: str) -> tuple[str, list]:
+    """Condition SQL for the multi-valued ``creator`` field.
+
+    ``is``/``contains``/etc. match if ANY creator satisfies the comparison;
+    ``isNot``/``doesNotContain`` match only if the item HAS creators and NONE
+    of them satisfy the positive form — mirroring `_matches_condition`'s
+    ``all(comparisons)`` rule for negated operators.
+    """
+    cmp_sql, params = _like_or_eq(_CREATOR_NAME_EXPR, operation, value)
+    positive_exists = (
+        "EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
+        f"WHERE ic.itemID = i.itemID AND {cmp_sql})"
+    )
+    if operation in ("isNot", "doesNotContain"):
+        any_exists = "EXISTS (SELECT 1 FROM itemCreators ic2 WHERE ic2.itemID = i.itemID)"
+        return f"({any_exists} AND NOT {positive_exists})", params
+    return positive_exists, params
+
+
+def _tag_condition(operation: str, value: str) -> tuple[str, list]:
+    """Condition SQL for the multi-valued ``tag`` field (see _creator_condition)."""
+    cmp_sql, params = _like_or_eq("t.name", operation, value)
+    positive_exists = (
+        "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
+        f"WHERE itg.itemID = i.itemID AND {cmp_sql})"
+    )
+    if operation in ("isNot", "doesNotContain"):
+        any_exists = "EXISTS (SELECT 1 FROM itemTags itg2 WHERE itg2.itemID = i.itemID)"
+        return f"({any_exists} AND NOT {positive_exists})", params
+    return positive_exists, params
+
+
+def row_to_api_item(row: sqlite3.Row, creators: list[dict], tags: list[dict]) -> dict:
+    """Build a pyzotero-shaped item dict from a search-backend result row.
+
+    Covers exactly the fields the two search tools consume downstream
+    (``format_item_result``, the advanced-search sort keys, and — on the
+    fallback path — ``_extract_values``) rather than a full item
+    representation: no ``version``, ``collections``, ``relations``, etc.
+    """
+    data = {
+        "key": row["key"],
+        "itemType": row["itemType"],
+        "title": row["title"] or "",
+        "date": row["date"] or "",
+        "dateAdded": row["dateAdded"] or "",
+        "dateModified": row["dateModified"] or "",
+        "abstractNote": row["abstractNote"] or "",
+        "DOI": row["DOI"] or "",
+        "publicationTitle": row["publicationTitle"] or "",
+        "creators": creators,
+        "tags": tags,
+    }
+    return {"key": row["key"], "data": data}
 
 
 class LocalZoteroReader:
@@ -787,14 +1003,7 @@ class LocalZoteroReader:
             # all of their subcollections (resolved recursively).
             all_collection_ids = []
             for ckey in collection_keys:
-                root = conn.execute("SELECT collectionID FROM collections WHERE key = ?", (ckey,)).fetchone()
-                if root:
-                    to_process = [root[0]]
-                    while to_process:
-                        cid = to_process.pop()
-                        all_collection_ids.append(cid)
-                        for sub in conn.execute("SELECT collectionID FROM collections WHERE parentCollectionID = ?", (cid,)).fetchall():
-                            to_process.append(sub[0])
+                all_collection_ids.extend(self._resolve_collection_ids(conn, ckey))
             if all_collection_ids:
                 placeholders = ','.join('?' * len(all_collection_ids))
                 query += f" AND i.itemID IN (SELECT DISTINCT itemID FROM collectionItems WHERE collectionID IN ({placeholders}))"
@@ -1029,6 +1238,304 @@ class LocalZoteroReader:
                 "parent_title": row[8] or ("Unknown" if row[7] else None),
             })
         return results
+
+    # -----------------------------------------------------------------
+    # #167 SQLite metadata search backend
+    # -----------------------------------------------------------------
+
+    def _resolve_collection_ids(self, conn: sqlite3.Connection, collection_key: str) -> list[int]:
+        """Expand one collection key to its own collectionID plus every
+        descendant subcollection's, recursively. Returns [] for an unknown key."""
+        root = conn.execute(
+            "SELECT collectionID FROM collections WHERE key = ?", (collection_key,)
+        ).fetchone()
+        if not root:
+            return []
+        all_ids: list[int] = []
+        to_process = [root[0]]
+        while to_process:
+            cid = to_process.pop()
+            all_ids.append(cid)
+            for sub in conn.execute(
+                "SELECT collectionID FROM collections WHERE parentCollectionID = ?", (cid,)
+            ).fetchall():
+                to_process.append(sub[0])
+        return all_ids
+
+    def _resolve_collection_id(self, conn: sqlite3.Connection, collection_key: str) -> int | None:
+        """Direct (non-recursive) lookup: collection key -> its own
+        collectionID, or None for an unknown key. Companion to
+        `_resolve_collection_ids`, which additionally walks descendants."""
+        row = conn.execute(
+            "SELECT collectionID FROM collections WHERE key = ?", (collection_key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def _resolve_scope_library_id(self, group_id: int) -> int | None:
+        """Translate a codebase-wide group_id (0 = personal) to this
+        database's local ``libraryID``, or None if no such library is
+        present (e.g. a group that hasn't synced to this machine)."""
+        conn = self._get_connection()
+        if group_id == PERSONAL_LIBRARY_GROUP_ID:
+            row = conn.execute("SELECT libraryID FROM libraries WHERE type = 'user'").fetchone()
+        else:
+            row = conn.execute("SELECT libraryID FROM groups WHERE groupID = ?", (group_id,)).fetchone()
+        return row[0] if row is not None else None
+
+    def _collection_condition(
+        self, conn: sqlite3.Connection, operation: str, value: str, *, recursive: bool = False
+    ) -> tuple[str, list] | None:
+        """Condition SQL for the ``collection`` field.
+
+        ``value`` is a collection key (8-char), matching the convention
+        ``get_items_with_text``'s own ``collection_keys`` param already uses.
+        Only membership checks make sense here, so only ``is``/``isNot`` are
+        supported — anything else (and an unknown key) returns None so the
+        caller falls back to the existing path.
+
+        Defaults to DIRECT membership only (an item must be filed in this
+        exact collection) — matching both the pyzotero/API advanced_search
+        path (``_extract_values`` in tools/search.py, which only ever sees an
+        item's own "collections" list) and Zotero's own "Collection is X" UI
+        checkbox with subcollections unchecked. This keeps the two
+        advanced_search backends in agreement regardless of
+        ZOTERO_SEARCH_BACKEND.
+
+        Recursive (subcollection-inclusive) resolution is fully implemented —
+        pass ``recursive=True`` to get it, reusing the same tree walk
+        ``get_items_with_text``'s ``collection_keys`` scoping already relies
+        on (``_resolve_collection_ids``). It is not wired to any public
+        parameter yet; it's kept here, tested, and reachable so it can be
+        exposed later (e.g. an ``includeSubcollections`` option) without
+        re-deriving this SQL.
+        """
+        if operation not in ("is", "isNot"):
+            return None
+        if recursive:
+            ids = self._resolve_collection_ids(conn, value)
+        else:
+            cid = self._resolve_collection_id(conn, value)
+            ids = [cid] if cid is not None else []
+        if not ids:
+            return None
+        placeholders = ",".join("?" * len(ids))
+        membership = (
+            f"i.itemID IN (SELECT DISTINCT itemID FROM collectionItems "
+            f"WHERE collectionID IN ({placeholders}))"
+        )
+        if operation == "isNot":
+            return f"NOT {membership}", list(ids)
+        return membership, list(ids)
+
+    def _condition_sql(self, field: str, operation: str, value: str) -> tuple[str, list] | None:
+        """Translate one advanced-search condition to a SQL fragment + params.
+
+        Mirrors tools/search.py's ``_extract_values``/``_matches_condition``
+        field-by-field; returns None for any field/operator this v1 backend
+        doesn't cover, so ``advanced_search_sql`` can bail out to the
+        existing pyzotero-based path.
+        """
+        if operation not in _VALID_CONDITION_OPERATIONS:
+            return None
+        field_lower = field.lower()
+        if field_lower in ("author", "authors", "creator", "creators"):
+            return _creator_condition(operation, value)
+        if field_lower in ("tag", "tags"):
+            return _tag_condition(operation, value)
+        if field_lower == "year":
+            return _scalar_condition(_YEAR_FIELD_SQL, operation, value)
+        if field_lower == "date":
+            date_expr = _DATE_RANGE_SQL if operation in _RANGE_OPERATIONS else _DATE_DISPLAY_SQL
+            return _scalar_condition(date_expr, operation, value)
+        if field_lower == "collection":
+            return self._collection_condition(self._get_connection(), operation, value)
+        resolved = _CONDITION_FIELD_ALIASES.get(field_lower, field)
+        if resolved in _SIMPLE_FIELD_SQL:
+            return _scalar_condition(_SIMPLE_FIELD_SQL[resolved], operation, value)
+        return None
+
+    def _fetch_creators(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict]]:
+        if not item_ids:
+            return {}
+        placeholders = ",".join("?" * len(item_ids))
+        rows = conn.execute(
+            f"""
+            SELECT ic.itemID, c.firstName, c.lastName, ct.creatorType
+            FROM itemCreators ic
+            JOIN creators c ON ic.creatorID = c.creatorID
+            LEFT JOIN creatorTypes ct ON ic.creatorTypeID = ct.creatorTypeID
+            WHERE ic.itemID IN ({placeholders})
+            ORDER BY ic.itemID, ic.orderIndex
+            """,
+            item_ids,
+        ).fetchall()
+        result: dict[int, list[dict]] = {}
+        for row in rows:
+            creator: dict[str, str] = {"creatorType": row["creatorType"] or "author"}
+            if row["firstName"]:
+                creator["firstName"] = row["firstName"]
+                creator["lastName"] = row["lastName"] or ""
+            else:
+                creator["name"] = row["lastName"] or ""
+            result.setdefault(row["itemID"], []).append(creator)
+        return result
+
+    def _fetch_tags(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict]]:
+        if not item_ids:
+            return {}
+        placeholders = ",".join("?" * len(item_ids))
+        rows = conn.execute(
+            f"""
+            SELECT itg.itemID, t.name
+            FROM itemTags itg
+            JOIN tags t ON itg.tagID = t.tagID
+            WHERE itg.itemID IN ({placeholders})
+            """,
+            item_ids,
+        ).fetchall()
+        result: dict[int, list[dict]] = {}
+        for row in rows:
+            result.setdefault(row["itemID"], []).append({"tag": row["name"]})
+        return result
+
+    def _hydrate_rows(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
+        item_ids = [row["itemID"] for row in rows]
+        creators_by_item = self._fetch_creators(conn, item_ids)
+        tags_by_item = self._fetch_tags(conn, item_ids)
+        return [
+            row_to_api_item(
+                row, creators_by_item.get(row["itemID"], []), tags_by_item.get(row["itemID"], [])
+            )
+            for row in rows
+        ]
+
+    def search_items_sql(
+        self,
+        query: str,
+        qmode: str = "titleCreatorYear",
+        item_type: str = "-attachment",
+        tag: list[str] | None = None,
+        limit: int = 10,
+        group_id: int = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> list[dict] | None:
+        """#167 SQLite metadata search backend for zotero_search_items.
+
+        Substring-matches every variant `_generate_search_variants(query)`
+        produces against title/creator/year (plus abstract/tags/notes in
+        'everything' mode), OR'd together in one query, scoped to the
+        library identified by `group_id`. Returns None — signalling "fall
+        back to the pyzotero path" — when a `tag` filter is given (the
+        boolean OR/exclusion tag DSL stays pyzotero's job) or `item_type`
+        is anything other than a bare type name or a single "-type"
+        exclusion, or when `group_id` has no matching library in this
+        database.
+        """
+        if tag:
+            return None
+        if qmode not in ("titleCreatorYear", "everything"):
+            return None
+
+        conn = self._get_connection()
+        lib_id = self._resolve_scope_library_id(group_id)
+        if lib_id is None:
+            return None
+
+        type_filter_sql = ""
+        type_params: list = []
+        if item_type:
+            if item_type.startswith("-") and item_type.count("-") == 1 and "||" not in item_type:
+                type_filter_sql = "AND it.typeName != ?"
+                type_params = [item_type[1:]]
+            elif re.fullmatch(r"[A-Za-z]+", item_type):
+                type_filter_sql = "AND it.typeName = ?"
+                type_params = [item_type]
+            else:
+                return None  # boolean itemType expressions ("a || b") unsupported
+
+        variants = _generate_search_variants(query)
+        if not variants:
+            return None
+        like_clauses: list[str] = []
+        like_params: list = []
+        for variant in variants:
+            pattern = f"%{variant}%"
+            like_clauses.append("title_val.value LIKE ?")
+            like_params.append(pattern)
+            like_clauses.append("date_val.value LIKE ?")
+            like_params.append(pattern)
+            like_clauses.append(
+                f"EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
+                f"WHERE ic.itemID = i.itemID AND {_CREATOR_NAME_EXPR} LIKE ?)"
+            )
+            like_params.append(pattern)
+            if qmode == "everything":
+                like_clauses.append("abstract_val.value LIKE ?")
+                like_params.append(pattern)
+                like_clauses.append(
+                    "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
+                    "WHERE itg.itemID = i.itemID AND t.name LIKE ?)"
+                )
+                like_params.append(pattern)
+                like_clauses.append(
+                    "EXISTS (SELECT 1 FROM itemNotes n WHERE "
+                    "(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND n.note LIKE ?)"
+                )
+                like_params.append(pattern)
+
+        query_sql = (
+            _ITEM_HYDRATION_SELECT
+            + f" {type_filter_sql} AND ({' OR '.join(like_clauses)})"
+            + " ORDER BY i.dateModified DESC LIMIT ?"
+        )
+        params = [lib_id] + type_params + like_params + [limit]
+        rows = conn.execute(query_sql, params).fetchall()
+        return self._hydrate_rows(conn, rows)
+
+    def advanced_search_sql(
+        self,
+        conditions: list[dict[str, str]],
+        join_mode: str = "all",
+        group_id: int = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> list[dict] | None:
+        """#167 SQLite metadata search backend for zotero_advanced_search.
+
+        Always excludes attachments/notes/annotations and trashed items,
+        matching the existing pyzotero-based paging loop it replaces.
+        Returns None when any single condition uses a field/operator this
+        v1 backend doesn't cover, or when `group_id` has no matching
+        library in this database — the caller falls back to the existing
+        client-side path. Sorting and the result limit are left to the
+        caller, exactly as with that existing path.
+        """
+        conn = self._get_connection()
+        lib_id = self._resolve_scope_library_id(group_id)
+        if lib_id is None:
+            return None
+
+        clauses: list[str] = []
+        params: list = []
+        for condition in conditions:
+            built = self._condition_sql(condition["field"], condition["operation"], condition["value"])
+            if built is None:
+                return None
+            clause_sql, clause_params = built
+            clauses.append(clause_sql)
+            params.extend(clause_params)
+
+        if not clauses:
+            return None
+
+        joiner = " AND " if join_mode == "all" else " OR "
+        where_sql = joiner.join(f"({c})" for c in clauses)
+
+        query_sql = (
+            _ITEM_HYDRATION_SELECT
+            + " AND it.typeName NOT IN ('attachment', 'note', 'annotation')"
+            + f" AND ({where_sql})"
+        )
+        all_params = [lib_id] + params
+        rows = conn.execute(query_sql, all_params).fetchall()
+        return self._hydrate_rows(conn, rows)
 
 
 def get_local_zotero_reader() -> LocalZoteroReader | None:
