@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`zotero_add_item`'s `doi`/`url`/`isbn` sources now accept a batch — a list, or a comma/newline-separated string — the same way BibTeX/CSL JSON already did.** Each identifier is added independently via the existing single-item path (one bad DOI in a batch of ten doesn't fail the other nine, and single-item output is unchanged), with results stacked under a summary header. `source_type="auto"` recognizes a comma/newline-separated list of bare DOIs without needing an explicit override. A URL batch may freely mix DOI-redirect, arXiv, and generic-webpage links in one call. `source_type='doi'`/`'url'`/`'isbn'` still needs to be set explicitly for URL/ISBN batches, since a plain list of bare ISBNs or URLs isn't structurally distinguishable from other shapes the way a DOI is.
+
 ## [0.9.0] - 2026-08-03
 
 **Upgrading:** this release changes tool names. Fifteen tools were merged into six, so saved prompts, permission allowlists, or scripts naming the old tools need updating — see the table below. No back-compat aliases ship, deliberately: an alias re-sends its schema on every request, which is exactly the cost this change exists to remove. Some tools are also now opt-in and absent unless enabled; if you rely on Scite, duplicate detection, feeds, related-items links, or the corpus-level discovery tools, set `ZOTERO_MCP_TOOLSETS` (below).
