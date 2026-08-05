@@ -437,6 +437,111 @@ def test_get_key_group_map_includes_trashed_items_with_their_library(tmp_path):
     assert "DELETEDKEY1" not in result.excluded_keys
 
 
+# ---------------------------------------------------------------------------
+# _iter_parent_attachments: trashed attachments excluded, PDFs first
+# ---------------------------------------------------------------------------
+
+
+def _create_attachment_db(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE items (
+            itemID INTEGER PRIMARY KEY,
+            key TEXT,
+            libraryID INT
+        );
+        CREATE TABLE itemAttachments (
+            itemID INTEGER PRIMARY KEY,
+            parentItemID INT,
+            path TEXT,
+            contentType TEXT
+        );
+        CREATE TABLE deletedItems (
+            itemID INTEGER PRIMARY KEY
+        );
+        """
+    )
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (1, 'PARENT1', 1)")
+    conn.commit()
+    conn.close()
+
+
+def _add_attachment(db_path, item_id, key, parent_id, path, content_type, trashed=False):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO items (itemID, key, libraryID) VALUES (?, ?, 1)", (item_id, key)
+    )
+    conn.execute(
+        "INSERT INTO itemAttachments (itemID, parentItemID, path, contentType) "
+        "VALUES (?, ?, ?, ?)",
+        (item_id, parent_id, path, content_type),
+    )
+    if trashed:
+        conn.execute("INSERT INTO deletedItems (itemID) VALUES (?)", (item_id,))
+    conn.commit()
+    conn.close()
+
+
+class TestIterParentAttachments:
+    def _iter(self, db_path):
+        reader = LocalZoteroReader(db_path=str(db_path))
+        try:
+            return list(reader._iter_parent_attachments(1))
+        finally:
+            reader.close()
+
+    def test_trashed_attachment_excluded(self, tmp_path):
+        """A trashed HTML snapshot must not shadow the live PDF (its stale
+        .zotero-ft-cache would otherwise win the fulltext fallback)."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "HTMLKEY", 1, "storage:page.html", "text/html", trashed=True)
+        _add_attachment(db_path, 11, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY"]
+
+    def test_pdf_yielded_before_other_types(self, tmp_path):
+        """PDFs come first regardless of insertion order, so the ft-cache
+        fallback in _extract_fulltext_for_item prefers the PDF's cache."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "HTMLKEY", 1, "storage:page.html", "text/html")
+        _add_attachment(db_path, 11, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY", "HTMLKEY"]
+
+    def test_only_trashed_attachments_yields_nothing(self, tmp_path):
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "GONE1", 1, "storage:a.pdf", "application/pdf", trashed=True)
+        _add_attachment(db_path, 11, "GONE2", 1, "storage:b.html", "text/html", trashed=True)
+        assert self._iter(db_path) == []
+
+    def test_null_content_type_sorts_after_pdf(self, tmp_path):
+        """NULL contentType must neither crash the ORDER BY nor outrank a PDF."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "NOCTYPE", 1, "storage:mystery.bin", None)
+        _add_attachment(db_path, 11, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY", "NOCTYPE"]
+
+    def test_trashed_parent_does_not_hide_live_attachment(self, tmp_path):
+        """Only the attachment's own deletedItems row is checked; parent-trash
+        inheritance is deliberately out of scope (callers resolve the parent
+        through live-item paths that already exclude trashed parents)."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO deletedItems (itemID) VALUES (1)")
+        conn.commit()
+        conn.close()
+        _add_attachment(db_path, 10, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY"]
+
+
 def test_get_key_group_map_full_key_set_partition(tmp_path):
     """Every key — trashed included — ends up in exactly one of
     groups/excluded_keys."""

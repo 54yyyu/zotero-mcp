@@ -302,7 +302,14 @@ class LocalZoteroReader:
         return None
 
     def _iter_parent_attachments(self, parent_item_id: int):
-        """Yield tuples (attachment_key, path, content_type) for a parent item."""
+        """Yield tuples (attachment_key, path, content_type) for a parent item.
+
+        Explicitly trashed attachment rows (the attachment itself is in
+        deletedItems; parent-trash inheritance is not checked) are excluded,
+        and PDFs are yielded before other content types — otherwise a leftover
+        HTML snapshot's .zotero-ft-cache would win over the PDF's in
+        _extract_fulltext_for_item.
+        """
         conn = self._get_connection()
         query = (
             """
@@ -313,7 +320,9 @@ class LocalZoteroReader:
                    att.key as attachmentKey
             FROM itemAttachments ia
             JOIN items att ON att.itemID = ia.itemID
-            WHERE ia.parentItemID = ?
+            LEFT JOIN deletedItems d ON d.itemID = ia.itemID
+            WHERE ia.parentItemID = ? AND d.itemID IS NULL
+            ORDER BY (ia.contentType = 'application/pdf') DESC, ia.itemID
             """
         )
         for row in conn.execute(query, (parent_item_id,)):
