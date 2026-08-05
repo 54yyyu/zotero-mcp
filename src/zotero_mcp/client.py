@@ -6,6 +6,7 @@ import functools
 import os
 import shutil
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,38 @@ class ZoteroApiBusyError(RuntimeError):
     """
 
 
+@contextmanager
+def zotero_api_lock():
+    """Hold the shared Zotero API lock for a block of code.
+
+    The context-manager form of :func:`with_zotero_api_lock`, with identical
+    semantics (bounded acquire, ZoteroApiBusyError for waiters, RLock
+    reentrancy, ZOTERO_MCP_LOCK_TIMEOUT honoured). Use it when only part of a
+    tool touches the Zotero API and the rest is long local work — parsing a
+    downloaded PDF, running a subprocess — that no other tool needs to be
+    blocked behind (#431).
+    """
+    timeout = _lock_timeout()
+    if timeout <= 0:
+        # Opt-out: original unbounded behaviour.
+        with _zotero_api_lock:
+            yield
+        return
+    acquired = _zotero_api_lock.acquire(timeout=timeout)
+    if not acquired:
+        raise ZoteroApiBusyError(
+            f"Another Zotero API operation is still in progress and did not "
+            f"release within {timeout:.0f}s. This usually means a previous "
+            f"call is slow or stuck (e.g. a large PDF upload or an "
+            f"unreachable Zotero cloud). Please retry shortly; if it "
+            f"persists, restart the Zotero MCP server."
+        )
+    try:
+        yield
+    finally:
+        _zotero_api_lock.release()
+
+
 def with_zotero_api_lock(func):
     """Serialize Zotero API access across concurrent MCP tool threads.
 
@@ -76,24 +109,8 @@ def with_zotero_api_lock(func):
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        timeout = _lock_timeout()
-        if timeout <= 0:
-            # Opt-out: original unbounded behaviour.
-            with _zotero_api_lock:
-                return func(*args, **kwargs)
-        acquired = _zotero_api_lock.acquire(timeout=timeout)
-        if not acquired:
-            raise ZoteroApiBusyError(
-                f"Another Zotero API operation is still in progress and did not "
-                f"release within {timeout:.0f}s. This usually means a previous "
-                f"call is slow or stuck (e.g. a large PDF upload or an "
-                f"unreachable Zotero cloud). Please retry shortly; if it "
-                f"persists, restart the Zotero MCP server."
-            )
-        try:
+        with zotero_api_lock():
             return func(*args, **kwargs)
-        finally:
-            _zotero_api_lock.release()
     return wrapper
 
 
