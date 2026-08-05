@@ -453,7 +453,9 @@ def setup_semantic_search(
     #             precision (needs sentence-transformers; adds a model load).
     #   chunking: index each item as overlapping passages so search returns
     #             grounded quotes and long PDFs stay searchable. Enabling it
-    #             requires a one-time `update-db --force-rebuild`.
+    #             requires a one-time `update-db --force-rebuild`. It has no
+    #             effect while `openai_batch.enabled` is true: that path
+    #             indexes item-level and update-db warns about it (#416).
     if existing_semantic_config and existing_semantic_config.get("reranker"):
         config["reranker"] = existing_semantic_config["reranker"]
     else:

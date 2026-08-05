@@ -22,6 +22,7 @@ import sys
 
 # Reuse environment setup from the original CLI module
 from zotero_mcp.cli import (
+    _format_chunking_status,
     _print_batch_import,
     _print_batch_status,
     _print_update_stats,
@@ -467,6 +468,7 @@ def cmd_db(args):
         print(f"- Last update: {uc.get('last_update', 'Never')}")
         print(f"- Should update: {status.get('should_update', False)}")
         print(f"- OpenAI Batch API: {'active' if bc.get('active') else 'inactive'}")
+        print(f"- Passage chunking: {_format_chunking_status(status)}")
         if ci.get("error"):
             print(f"\nError: {ci['error']}")
 
