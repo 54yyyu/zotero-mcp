@@ -19,7 +19,11 @@ from zotero_mcp import schema as _schema
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
-from zotero_mcp.client import with_zotero_api_lock
+from zotero_mcp.client import (
+    ZoteroApiBusyError,
+    with_zotero_api_lock,
+    zotero_api_lock,
+)
 from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
@@ -2503,10 +2507,28 @@ _TOC_EXIT_NO_PYMUPDF = 3
 # can't cascade into "Zotero API busy" errors on every other tool.
 _TOC_TIMEOUT = 30
 
+# Seconds to wait for a killed child to be reaped. Bounded on purpose: if the
+# child (or a Windows Error Reporting process holding its handles) cannot be
+# reaped right now, returning to the caller matters more than reaping.
+_TOC_KILL_GRACE = 5
+
 # Child script. It imports ONLY fitz — never zotero_mcp — so the subprocess
 # cannot trigger FastMCP server initialization (macOS 'spawn' deadlock, #178).
+#
+# SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX) is set first on
+# Windows: without it an access violation in fitz pops up Windows Error
+# Reporting, and WerFault.exe inherits the child's stdout/stderr handles and
+# keeps them open while it writes a crash dump. The parent then sees a child
+# that never closes its pipes rather than a crash it can report (#431). With
+# the error mode set, the crash comes back as a plain NTSTATUS exit code.
 _TOC_CHILD_SCRIPT = (
     "import json, sys\n"
+    "if sys.platform == 'win32':\n"
+    "    try:\n"
+    "        import ctypes\n"
+    "        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)\n"
+    "    except Exception:\n"
+    "        pass\n"
     "try:\n"
     "    import fitz\n"
     "except ImportError:\n"
@@ -2531,15 +2553,50 @@ class TocOutcome(NamedTuple):
     detail: str = ""
 
 
+def _reap_toc_child(proc, grace: float = _TOC_KILL_GRACE) -> None:
+    """Kill an overdue child and stop waiting on it within a bounded time.
+
+    Deliberately does NOT re-enter ``communicate()`` after the kill. That is
+    what ``subprocess.run``'s timeout path does, and on Windows it can block
+    forever: a crashed child's stdout/stderr handles may still be held by
+    WerFault.exe, so the pipes never reach EOF and the read never returns
+    (#431). Closing our own ends of the pipes and giving the child a short
+    window to be reaped is enough; anything still lingering is left to the OS
+    rather than allowed to hang the server.
+    """
+    import subprocess
+
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        pass
+
+
 def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
     """Read a PDF's table of contents in a throwaway child process.
 
     ``fitz.Document.get_toc()`` segfaults on some born-digital journal PDFs
     (#372). A segfault cannot be caught in-process: it takes the whole MCP
     server down ("Server disconnected"), so the call has to run somewhere
-    that is allowed to die. ``subprocess.run`` waits on the child on every
-    exit path — success, crash, and timeout-kill — so no zombies are left
-    behind.
+    that is allowed to die.
+
+    Every exit path — success, crash, timeout, spawn failure — returns within
+    a bounded time. The caller is an MCP tool on a single-channel stdio
+    transport, so a call that never returns takes the whole server with it
+    (#431).
     """
     import subprocess
     import sys
@@ -2560,23 +2617,35 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
     child_env.setdefault("PYTHONUTF8", "1")
 
     try:
-        proc = subprocess.run(
+        # stdin is DEVNULL, never inherited: under the stdio transport the
+        # server's stdin IS the MCP pipe from the client, and a child that
+        # outlives its parent would hold that pipe open, so the client never
+        # sees the connection close (#431).
+        proc = subprocess.Popen(
             [sys.executable, "-c", _TOC_CHILD_SCRIPT, str(pdf_path)],
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=child_env,
         )
+    except Exception as exc:
+        return TocOutcome("error", [], str(exc))
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        _reap_toc_child(proc)
         return TocOutcome("timeout", [], f"no response after {timeout}s")
     except Exception as exc:
+        _reap_toc_child(proc)
         return TocOutcome("error", [], str(exc))
 
     if proc.returncode == 0:
         try:
-            return TocOutcome("ok", json.loads(proc.stdout or "[]"))
+            return TocOutcome("ok", json.loads(stdout or "[]"))
         except ValueError as exc:
             return TocOutcome("error", [], f"unreadable outline data: {exc}")
 
@@ -2596,7 +2665,7 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
     if proc.returncode >= 0xC0000000:
         return TocOutcome("crashed", [], f"exit code 0x{proc.returncode:08X}")
 
-    stderr = (proc.stderr or "").strip()
+    stderr = (stderr or "").strip()
     return TocOutcome("error", [], stderr[:300] or f"exit code {proc.returncode}")
 
 
@@ -2620,59 +2689,78 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
         "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
     )
 )
-@with_zotero_api_lock
 def get_pdf_outline(
     item_key: str,
     *,
     ctx: Context
 ) -> str:
+    # NOT decorated with @with_zotero_api_lock: the lock exists only to
+    # serialize Zotero API access, and holding it across the outline
+    # extraction meant one slow or hung PDF blocked every other tool in the
+    # server until the client gave up (#431). It is taken below around the
+    # API work alone and released before the extraction subprocess runs.
     try:
-        zot = _client.get_zotero_client()
         ctx.info(f"Getting PDF outline for item {item_key}")
 
-        attachment_key = None
-        filename = "document.pdf"
-
-        # The key may name the PDF attachment itself — attachments have no
-        # children, so the parent scan below would find nothing (#372).
-        try:
-            item = zot.item(item_key)
-        except Exception:
-            item = None
-        data = item.get("data", {}) if isinstance(item, dict) else {}
-        if (
-            data.get("itemType") == "attachment"
-            and data.get("contentType") == "application/pdf"
-        ):
-            attachment_key = item.get("key") or data.get("key") or item_key
-            filename = data.get("filename") or f"{attachment_key}.pdf"
-        else:
-            for child in _helpers._paginate(zot.children, item_key):
-                child_data = child.get("data", {})
-                if child_data.get("contentType") == "application/pdf":
-                    attachment_key = child["key"]
-                    filename = child_data.get("filename") or "document.pdf"
-                    break
-
-        if not attachment_key:
-            return f"No PDF attachment found for item `{item_key}`."
-
-        # Download via the multi-source downloader so WebDAV- and
-        # local-storage-backed attachments work, not just Zotero cloud.
-        local_mode = _utils.is_local_mode()
         with tempfile.TemporaryDirectory() as tmpdir:
-            download = _client.download_attachment_file(
-                attachment_key,
-                tmpdir,
-                os.path.basename(filename),
-                local_client=zot if local_mode else _client.get_local_zotero_client(),
-                web_client=None if local_mode else zot,
-            )
-            pdf_path = download.path
-            if not pdf_path or not pdf_path.exists() or pdf_path.stat().st_size == 0:
-                detail = f" ({'; '.join(download.errors)})" if download.errors else ""
-                return f"Could not download PDF for attachment `{attachment_key}`.{detail}"
+            with zotero_api_lock():
+                zot = _client.get_zotero_client()
 
+                attachment_key = None
+                filename = "document.pdf"
+
+                # The key may name the PDF attachment itself — attachments have
+                # no children, so the parent scan below would find nothing (#372).
+                try:
+                    item = zot.item(item_key)
+                except Exception:
+                    item = None
+                data = item.get("data", {}) if isinstance(item, dict) else {}
+                if (
+                    data.get("itemType") == "attachment"
+                    and data.get("contentType") == "application/pdf"
+                ):
+                    attachment_key = item.get("key") or data.get("key") or item_key
+                    filename = data.get("filename") or f"{attachment_key}.pdf"
+                else:
+                    for child in _helpers._paginate(zot.children, item_key):
+                        child_data = child.get("data", {})
+                        if child_data.get("contentType") == "application/pdf":
+                            attachment_key = child["key"]
+                            filename = child_data.get("filename") or "document.pdf"
+                            break
+
+                if not attachment_key:
+                    return f"No PDF attachment found for item `{item_key}`."
+
+                # Download via the multi-source downloader so WebDAV- and
+                # local-storage-backed attachments work, not just Zotero cloud.
+                local_mode = _utils.is_local_mode()
+                download = _client.download_attachment_file(
+                    attachment_key,
+                    tmpdir,
+                    os.path.basename(filename),
+                    local_client=(
+                        zot if local_mode else _client.get_local_zotero_client()
+                    ),
+                    web_client=None if local_mode else zot,
+                )
+                pdf_path = download.path
+                if (
+                    not pdf_path
+                    or not pdf_path.exists()
+                    or pdf_path.stat().st_size == 0
+                ):
+                    detail = (
+                        f" ({'; '.join(download.errors)})" if download.errors else ""
+                    )
+                    return (
+                        f"Could not download PDF for attachment "
+                        f"`{attachment_key}`.{detail}"
+                    )
+
+            # Lock released: parsing a file we already have on disk needs no
+            # Zotero API access, and it is the slow part.
             outcome = _extract_pdf_toc(str(pdf_path))
 
         if outcome.status == "no_pymupdf":
@@ -2709,6 +2797,10 @@ def get_pdf_outline(
 
         return "\n".join(lines)
 
+    except ZoteroApiBusyError:
+        # Same as every lock-decorated tool: surface "busy" to the caller
+        # rather than reporting it as a PDF failure.
+        raise
     except Exception as e:
         ctx.error(f"Error extracting PDF outline: {e}")
         return f"Error extracting PDF outline: {e}"

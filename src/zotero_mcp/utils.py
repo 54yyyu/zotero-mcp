@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import threading
 from contextlib import contextmanager
 
 from unidecode import unidecode
@@ -65,16 +66,50 @@ def install_hint(extra: str | None = None) -> str:
     )
 
 
+# State for suppress_stdout. It swaps the process-global sys.stdout, so
+# concurrent users have to be counted rather than each saving and restoring
+# their own idea of "the real stdout" (#431).
+_stdout_lock = threading.Lock()
+_stdout_depth = 0
+_stdout_devnull = None
+_stdout_original = None
+
+
 @contextmanager
 def suppress_stdout():
-    """Context manager to suppress stdout temporarily."""
-    with open(os.devnull, 'w') as devnull:
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
+    """Context manager to suppress stdout temporarily.
+
+    Reference-counted under a lock. Two MCP tool threads running a semantic
+    search at the same time used to interleave their save/restore of the
+    global ``sys.stdout``: the one that exited last restored a value it had
+    captured while stdout was already redirected, leaving the global pointing
+    at a closed devnull. Every later write to stdout then failed, which on the
+    stdio transport reads as the server dropping the connection (#431). Only
+    the first entrant redirects and only the last one restores; the lock is
+    held for the bookkeeping alone, never for the body.
+    """
+    global _stdout_depth, _stdout_devnull, _stdout_original
+
+    with _stdout_lock:
+        if _stdout_depth == 0:
+            _stdout_original = sys.stdout
+            _stdout_devnull = open(os.devnull, "w")
+            sys.stdout = _stdout_devnull
+        _stdout_depth += 1
+    try:
+        yield
+    finally:
+        with _stdout_lock:
+            _stdout_depth -= 1
+            if _stdout_depth == 0:
+                sys.stdout = _stdout_original
+                devnull, _stdout_devnull = _stdout_devnull, None
+                _stdout_original = None
+                if devnull is not None:
+                    try:
+                        devnull.close()
+                    except Exception:
+                        pass
 
 def format_creators(creators: list[dict[str, str] | str]) -> str:
     """
