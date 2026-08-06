@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-05
+
 ### Changed
 - **The pyzotero floor moves from 1.8.0 to 1.13.3, so file attachments upload on the first attempt.** Before 1.13.3, step 0 of the upload handshake sent the caller-supplied path as the stored-file `filename`; 1.13.3 adds `Zupload._outgoing` in `_upload.py` to send `Path(filename).name` instead (upstream urschrei/pyzotero#341). The Zotero API answers a path with 400 "Stored-file filename cannot contain a directory path", and pyzotero returns that payload under `failure` rather than raising, so nothing surfaced as an error: `_attach_and_verify` read the failure and quietly re-ran the whole attach through its two-step create-then-upload fallback (#403). The fallback stays, since an upload can fail for other reasons, but on a current pyzotero it is no longer the path every attach takes. Raised by @feima3333, who traced the swallowed 400 to the pyzotero version in play.
 

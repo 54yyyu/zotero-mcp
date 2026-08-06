@@ -3,7 +3,7 @@
   "name": "io.github.54yyyu/zotero-mcp",
   "title": "Zotero MCP",
   "description": "Search, read, annotate, and add to your Zotero research library, local or web.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "websiteUrl": "https://stevenyuyy.com/zotero-mcp/",
   "repository": {
     "url": "https://github.com/54yyyu/zotero-mcp",
@@ -15,7 +15,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "zotero-mcp-server",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
