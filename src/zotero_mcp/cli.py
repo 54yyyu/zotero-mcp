@@ -173,6 +173,21 @@ def _warmup_reranker_in_background() -> None:
     threading.Thread(target=_run, daemon=True, name="zmcp-reranker-warmup").start()
 
 
+def _format_chunking_status(status: dict) -> str:
+    """Describe what the next indexing run will actually do about chunking.
+
+    Reports the effective behaviour, not the requested setting: the OpenAI
+    Batch API path has no chunking step, so `chunking.enabled: true` there
+    still yields one truncated vector per item (#416).
+    """
+    chunking = status.get("chunking", {})
+    if not chunking.get("enabled"):
+        return "disabled (item-level indexing)"
+    if chunking.get("effective"):
+        return "enabled"
+    return "requested but NOT applied (OpenAI Batch API path indexes item-level)"
+
+
 def _print_update_stats(stats: dict) -> None:
     is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
     label = "OpenAI batch submission" if is_batch else "Database update"
@@ -523,6 +538,7 @@ def main():
                 print(f"  Last update: {update_config.get('last_update', 'Never')}")
                 print(f"  Should update: {status.get('should_update', False)}")
                 print(f"  OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
+                print(f"  Passage chunking: {_format_chunking_status(status)}")
 
                 if collection_info.get('error'):
                     print(f"  Error: {collection_info['error']}")
@@ -659,6 +675,7 @@ def main():
             print(f"- Last update: {update_config.get('last_update', 'Never')}")
             print(f"- Should update: {status.get('should_update', False)}")
             print(f"- OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
+            print(f"- Passage chunking: {_format_chunking_status(status)}")
 
             if collection_info.get('error'):
                 print(f"\nError: {collection_info['error']}")

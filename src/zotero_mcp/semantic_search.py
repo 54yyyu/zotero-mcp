@@ -498,6 +498,27 @@ class ZoteroSemanticSearch:
     def _chunking_enabled(self) -> bool:
         return bool(self._chunking_config.get("enabled", False))
 
+    # Message shown when the requested chunking setting cannot take effect.
+    # Kept as a constant so the CLI, the logs and the tests all quote the
+    # same wording (#416).
+    CHUNKING_IGNORED_ON_BATCH_PATH = (
+        "Passage chunking is NOT applied on the OpenAI Batch API path. "
+        "semantic_search.chunking.enabled is true, but this run indexes one "
+        "vector per item, truncated at the embedding model's input limit, so "
+        "text past that limit will not be searchable. To index with chunking, "
+        "set semantic_search.openai_batch.enabled to false or pass "
+        "--no-openai-batch. Otherwise this run proceeds item-level."
+    )
+
+    def _warn_chunking_ignored_on_batch_path(self) -> None:
+        """Surface the batch-path chunking limitation on stderr and in logs."""
+        logger.warning(self.CHUNKING_IGNORED_ON_BATCH_PATH)
+        try:
+            sys.stderr.write(f"\nWarning: {self.CHUNKING_IGNORED_ON_BATCH_PATH}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
     def _load_reranker_config(self) -> dict[str, Any]:
         """Load reranker configuration from file or use defaults."""
         return load_reranker_config(self.config_path)
@@ -2035,6 +2056,16 @@ class ZoteroSemanticSearch:
             include_fulltext_via_api = include_fulltext and not extract_fulltext
             use_openai_batch = self._resolve_openai_batch_enabled(use_openai_batch)
 
+            # The Batch API path builds one item-level record per item
+            # (_prepare_index_records) and has no chunking step, so a config
+            # asking for passage chunking silently produced a truncated,
+            # item-level index instead. Say so once, before the run does any
+            # work, rather than leaving it visible only by reading the
+            # generated JSONL by hand (#416).
+            if use_openai_batch and self._chunking_enabled:
+                stats["chunking_ignored"] = True
+                self._warn_chunking_ignored_on_batch_path()
+
             # In batch mode, defer destructive rebuilds until import so the
             # existing search index remains usable while the batch runs.
             if force_full_rebuild and not use_openai_batch:
@@ -2843,13 +2874,21 @@ class ZoteroSemanticSearch:
     def get_database_status(self) -> dict[str, Any]:
         """Get status information about the semantic search database."""
         collection_info = self.chroma_client.get_collection_info()
+        batch_active = self._resolve_openai_batch_enabled(None)
 
         return {
             "collection_info": collection_info,
             "update_config": self.update_config,
             "openai_batch": {
                 "enabled": self._load_openai_batch_enabled(),
-                "active": self._resolve_openai_batch_enabled(None),
+                "active": batch_active,
+            },
+            # `enabled` is what the config asks for; `effective` is what the
+            # next indexing run will actually do. They diverge on the Batch
+            # API path, which has no chunking step (#416).
+            "chunking": {
+                "enabled": self._chunking_enabled,
+                "effective": self._chunking_enabled and not batch_active,
             },
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
