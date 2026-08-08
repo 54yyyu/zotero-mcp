@@ -38,6 +38,20 @@ def test_restrict_file_permissions_swallows_errors():
     _restrict_file_permissions("/nonexistent/path/to/config.json")
 
 
+def test_restrict_chroma_directory_permissions_sets_owner_only(tmp_path):
+    """Default semantic-search storage is inaccessible to other local users."""
+    if os.name != "posix":
+        pytest.skip("POSIX directory permissions only")
+    from zotero_mcp.chroma_client import _restrict_directory_permissions
+
+    config_dir = tmp_path / "zotero-mcp"
+    config_dir.mkdir(mode=0o755)
+
+    _restrict_directory_permissions(config_dir)
+
+    assert stat.S_IMODE(config_dir.stat().st_mode) == 0o700
+
+
 def test_pdfannots_timeout_returns_empty(monkeypatch):
     """A pdfannots2json timeout is handled gracefully (returns [])."""
     import zotero_mcp.pdfannots_helper as ph
