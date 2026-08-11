@@ -2,6 +2,8 @@
 
 # Zotero MCP: Chat with your Research Library—Local or Web—in Claude, ChatGPT, and more.
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2F54yyyu%2Fzotero-mcp.svg)](https://mcptoplist.com/server/glama%2F54yyyu%2Fzotero-mcp)
+
 <p align="center">
   <a href="https://www.zotero.org/">
     <img src="https://img.shields.io/badge/Zotero-CC2936?style=for-the-badge&logo=zotero&logoColor=white" alt="Zotero">
