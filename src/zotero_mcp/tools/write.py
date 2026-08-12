@@ -389,11 +389,14 @@ def batch_update_tags(
                     # If writing via web API, re-fetch the item from web to get
                     # the correct version number for the update
                     if write_zot is not zot:
+                        def _set_tags(it):
+                            it["data"]["tags"] = current_tags
+
                         try:
-                            web_item = write_zot.item(item_key)
-                            web_item["data"]["tags"] = current_tags
                             ctx.info(f"Updating item {item_key} via web API with tags: {current_tags}")
-                            result = write_zot.update_item(web_item)
+                            result = _helpers._update_item_with_version_retry(
+                                write_zot, item_key, _set_tags, ctx=ctx,
+                            )
                         except Exception as e:
                             ctx.error(f"Failed to fetch/update item {item_key} via web API: {str(e)}")
                             skipped_count += 1
@@ -608,9 +611,12 @@ def batch_update_extra(
                 # If writing via web API, re-fetch the item from web to get
                 # the correct version number for the update
                 if write_zot is not zot:
-                    web_item = write_zot.item(item_key)
-                    web_item["data"]["extra"] = new_extra
-                    result = write_zot.update_item(web_item)
+                    def _set_extra(it):
+                        it["data"]["extra"] = new_extra
+
+                    result = _helpers._update_item_with_version_retry(
+                        write_zot, item_key, _set_extra, ctx=ctx,
+                    )
                 else:
                     item["data"]["extra"] = new_extra
                     result = write_zot.update_item(item)
