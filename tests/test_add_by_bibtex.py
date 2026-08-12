@@ -311,19 +311,22 @@ class TestErrorPaths:
         assert "local-only" in result.lower()
 
     def test_partial_failure_continues(self, monkeypatch, dummy_ctx):
-        """If one entry fails conversion, others should still be created."""
+        """If one entry fails to create, others in the same batch should
+        still be created (#A4: all three entries go through a single
+        create_items() POST, so the failure has to be reported via that
+        POST's per-index "failed" map, not by raising on a later call)."""
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        # Monkeypatch create_items to fail on the second call
-        call_count = {"n": 0}
-        original_create = fake.create_items
-
         def flaky_create(items, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 2:
-                raise RuntimeError("simulated write failure")
-            return original_create(items, **kwargs)
+            fake.created.extend(items)
+            success, failed = {}, {}
+            for i, _item in enumerate(items):
+                if i == 1:
+                    failed[str(i)] = "simulated write failure"
+                else:
+                    success[str(i)] = f"KEY{i:04d}"
+            return {"success": success, "successful": {}, "failed": failed}
 
         fake.create_items = flaky_create
 
