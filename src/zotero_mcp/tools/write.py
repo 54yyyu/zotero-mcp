@@ -1096,21 +1096,74 @@ def _memoized_item_template_fn(write_zot):
     return template_fn
 
 
-def _resolve_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists,
-                     ctx, template_fn) -> tuple[str, str | dict]:
-    """Resolve a single DOI to either a final result or a pending create.
+_CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 
-    Handles the part of add_by_doi that can't be batched — the dedup check
-    and the per-DOI CrossRef fetch (CrossRef has no batch endpoint, #A5) —
-    and stops short of creating the Zotero item, so the caller can create
-    every pending DOI in one batched pass instead of one POST per DOI
-    (#A4). ``coll_keys`` is pre-resolved and ``template_fn`` pre-memoized
-    by the caller (#A2/#A3).
+# CrossRef "polite pool": identifying via mailto gives higher rate limits and
+# priority routing, so it is sent unconditionally rather than only when the
+# operator configured an address — the same project-generic noreply identity
+# discovery.py already sends to OpenAlex. ZOTERO_MCP_CONTACT_EMAIL overrides it.
+_CROSSREF_DEFAULT_MAILTO = "zotero-mcp@users.noreply.github.com"
 
-    Returns ``("final", result_str)`` when nothing more needs to happen
-    (dedup match, invalid DOI, CrossRef 404/timeout/error), or
-    ``("pending", {"item_data": dict, "zot_type": str, "doi": str})`` when
-    the item is ready for ``_create_and_attach_batch``.
+# DOIs per batched /works?filter=doi:... request. 60 was measured working, but
+# CrossRef documents no URL-length or filter-count ceiling, so don't sit next to
+# an unmeasured cliff; 50 also matches _CREATE_BATCH_SIZE.
+_CROSSREF_FILTER_CHUNK = 50
+
+_CROSSREF_MAX_ATTEMPTS = 3
+
+_CROSSREF_HEADERS = {
+    "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
+    "Accept": "application/json",
+}
+
+
+def _crossref_mailto() -> str:
+    """The address to identify this client to CrossRef with (never empty)."""
+    return (
+        os.environ.get("ZOTERO_MCP_CONTACT_EMAIL", "").strip()
+        or _CROSSREF_DEFAULT_MAILTO
+    )
+
+
+def _crossref_get(url, params, ctx, timeout):
+    """GET a CrossRef endpoint with a bounded retry on 429 / 5xx.
+
+    Returns ``(response, None)`` or ``(None, error_str)``. The retry is a
+    backstop, not the rate-limiting strategy: the batch path issues one
+    request per 50 DOIs, so a normal import should never throttle at all.
+    """
+    last_error = None
+    for attempt in range(_CROSSREF_MAX_ATTEMPTS):
+        try:
+            resp = requests.get(url, params=params, headers=_CROSSREF_HEADERS,
+                                timeout=timeout)
+        except requests.Timeout:
+            return None, "Error: CrossRef API request timed out. Please try again."
+        except requests.RequestException as e:
+            return None, f"Error fetching from CrossRef: {e}"
+
+        if resp.status_code == 429 or resp.status_code >= 500:
+            last_error = f"HTTP {resp.status_code}"
+            if attempt < _CROSSREF_MAX_ATTEMPTS - 1:
+                wait = 5 * (2 ** attempt)  # 5s, 10s
+                ctx.info(
+                    f"CrossRef returned {resp.status_code}; retrying in {wait}s "
+                    f"({attempt + 1}/{_CROSSREF_MAX_ATTEMPTS})..."
+                )
+                _time.sleep(wait)
+                continue
+            break
+        return resp, None
+
+    return None, f"Error fetching from CrossRef: {last_error}"
+
+
+def _dedup_check_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists, ctx):
+    """Normalize and dedup-check one DOI.
+
+    Returns ``("final", result_str)`` when the token is already fully
+    resolved (invalid DOI or dedup match), or ``("needs_fetch",
+    normalized_doi)`` when CrossRef metadata is still needed.
     """
     try:
         normalized = _helpers._normalize_doi(doi)
@@ -1126,42 +1179,114 @@ def _resolve_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists,
                         matched_by=f"DOI {normalized}", ctx=ctx,
                     ))
 
-        ctx.info(f"Fetching metadata for DOI: {normalized}")
+        return ("needs_fetch", normalized)
 
-        # CrossRef "polite pool": identifying via mailto gives higher rate limits
-        # and priority routing. See https://api.crossref.org/swagger-ui/index.html
-        crossref_url = f"https://api.crossref.org/works/{normalized}"
-        contact_email = os.environ.get("ZOTERO_MCP_CONTACT_EMAIL", "").strip()
-        if contact_email:
-            crossref_url += f"?mailto={contact_email}"
+    except Exception as e:
+        ctx.error(f"Error adding by DOI: {e}")
+        return ("final", f"Error adding by DOI: {e}")
 
-        resp = requests.get(
-            crossref_url,
-            headers={
-                "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
-                "Accept": "application/json",
-            },
-            timeout=15,
+
+def _fetch_one_doi_metadata(normalized: str, ctx) -> tuple[str, dict | str]:
+    """Fetch the CrossRef ``/works/{doi}`` message for a single DOI.
+
+    Kept for the one-DOI case: it is the documented exact-resolution
+    endpoint, so a lone DOI never depends on the ``doi`` filter's
+    undocumented multi-value semantics for no gain (one DOI costs one
+    request either way).
+
+    Returns ``("final", error_str)`` or ``("fetched", cr_message_dict)``.
+    """
+    try:
+        resp, error = _crossref_get(
+            f"{_CROSSREF_WORKS_URL}/{normalized}",
+            {"mailto": _crossref_mailto()}, ctx, timeout=15,
         )
+        if error is not None:
+            return ("final", error)
 
         if resp.status_code == 404:
             return ("final", f"DOI not found on CrossRef: {normalized}")
         resp.raise_for_status()
 
-        cr = resp.json().get("message", {})
+        return ("fetched", resp.json().get("message", {}))
 
-        item_data, zot_type = _crossref_to_item_data(cr, normalized, template_fn)
-        _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-
-        return ("pending", {"item_data": item_data, "zot_type": zot_type, "doi": normalized})
-
-    except requests.Timeout:
-        return ("final", "Error: CrossRef API request timed out. Please try again.")
     except requests.RequestException as e:
         return ("final", f"Error fetching from CrossRef: {e}")
     except Exception as e:
-        ctx.error(f"Error adding by DOI: {e}")
         return ("final", f"Error adding by DOI: {e}")
+
+
+def _fetch_doi_metadata_batch(normalized_dois: list[str], ctx) -> dict[str, tuple[str, dict | str]]:
+    """Fetch CrossRef metadata for many DOIs in one request per 50 (#A5).
+
+    ``/works`` OR-filters on repeated ``doi:`` values, so an N-DOI import
+    costs ceil(N/50) requests instead of N. That is both faster and
+    *gentler* than the per-DOI fetch it replaces: concurrent per-DOI GETs
+    got HTTP 429 on most of a 25-DOI batch, while one batched request for
+    the same DOIs never throttles.
+
+    Returns ``{normalized_doi: ("fetched", cr_message) | ("final", error_str)}``
+    covering every requested DOI.
+    """
+    fetched: dict[str, tuple[str, dict | str]] = {}
+
+    for start in range(0, len(normalized_dois), _CROSSREF_FILTER_CHUNK):
+        chunk = normalized_dois[start:start + _CROSSREF_FILTER_CHUNK]
+        params = {
+            "filter": ",".join(f"doi:{d}" for d in chunk),
+            # `rows` MUST be sent: CrossRef's default page size is 20, so a
+            # 50-DOI filter would silently return the first 20 and the other
+            # 30 would look like they simply aren't in CrossRef.
+            "rows": len(chunk),
+            "mailto": _crossref_mailto(),
+        }
+
+        resp, error = _crossref_get(_CROSSREF_WORKS_URL, params, ctx, timeout=60)
+        if error is None:
+            try:
+                items = resp.json().get("message", {}).get("items") or []
+            except ValueError as e:
+                error = f"Error fetching from CrossRef: malformed response ({e})"
+
+        if error is not None:
+            # One request covers the whole chunk, so its failure is every
+            # member's failure — reported per DOI so the batch still returns
+            # one line per requested DOI.
+            for doi in chunk:
+                fetched[doi] = ("final", error)
+            continue
+
+        by_doi = {}
+        for entry in items:
+            entry_doi = (entry.get("DOI") or "").strip().lower()
+            if entry_doi:
+                by_doi[entry_doi] = entry
+
+        for doi in chunk:
+            # Compare case-insensitively: CrossRef echoes DOIs in canonical
+            # case, which need not match what the caller typed. Diffing what
+            # came back against what we asked for is also what guards the
+            # undocumented multi-value OR semantics — anything absent is
+            # reported as not-found rather than silently dropped.
+            entry = by_doi.get(doi.lower())
+            if entry is None:
+                fetched[doi] = ("final", f"DOI not found on CrossRef: {doi}")
+            else:
+                fetched[doi] = ("fetched", entry)
+
+    return fetched
+
+
+def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_keys) -> dict:
+    """Map fetched CrossRef metadata to an item_data dict ready for
+    batched creation.
+
+    Calling-thread only: ``template_fn`` may fetch (and cache) an item
+    template under the Zotero API lock on a cache miss (#A3).
+    """
+    item_data, zot_type = _crossref_to_item_data(cr, normalized, template_fn)
+    _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+    return {"item_data": item_data, "zot_type": zot_type, "doi": normalized}
 
 
 def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
@@ -1207,13 +1332,18 @@ def add_by_doi(
     # download+upload at a time).
     #
     # ``doi`` may name several DOIs at once (a list, or a comma/newline-
-    # separated string) — client/collections resolution and item-template
-    # fetches happen once for the whole call (not once per token as the old
-    # recursive version did, #A2), each token is resolved to metadata
-    # independently via _resolve_one_doi (CrossRef has no batch endpoint,
-    # #A5), and every DOI ready for creation is then created in one
-    # batched pass instead of one POST per DOI (#A4). A single DOI takes
-    # the same path with a one-token list, unwrapped at the end.
+    # separated string). Client/collections resolution and item-template
+    # fetches happen once for the whole call, not once per token (#A2).
+    # Each token then goes through three phases:
+    #   1. dedup-check
+    #   2. CrossRef fetch, batched via /works?filter=doi:... (#A5)
+    #   3. item_data build + batched create (#A4)
+    # so an N-DOI batch costs ceil(N/50) CrossRef GETs and one
+    # create_items() POST per <=50 DOIs rather than N of each, and one bad
+    # DOI never fails its neighbours. Everything runs on the calling
+    # thread: batching the fetch is both faster and gentler than issuing
+    # the same requests concurrently, which drew HTTP 429s. A single DOI
+    # takes the same path with a one-token list, unwrapped at the end.
     tokens = _split_multi_value(doi, "doi")
     is_batch = len(tokens) > 1
     doi_list = tokens if tokens else [doi]
@@ -1240,14 +1370,42 @@ def add_by_doi(
 
         template_fn = _memoized_item_template_fn(write_zot)  # #A3
 
-        resolved = [
-            _resolve_one_doi(read_zot, write_zot, tok, coll_keys, tags,
-                             if_exists, ctx, template_fn)
+        # Phase 1: dedup-check every token on the calling thread.
+        dedup = [
+            _dedup_check_one_doi(read_zot, write_zot, tok, coll_keys, tags, if_exists, ctx)
             for tok in doi_list
         ]
+        needs_fetch = [(i, normalized) for i, (kind, normalized) in enumerate(dedup)
+                       if kind == "needs_fetch"]
 
-        pending = [(i, payload) for i, (kind, payload) in enumerate(resolved)
-                   if kind == "pending"]
+        # Phase 2: fetch CrossRef metadata in as few requests as possible —
+        # one batched /works?filter=doi:... per 50 DOIs (#A5). Repeats
+        # collapse to a single lookup.
+        fetched: dict[str, tuple[str, dict | str]] = {}
+        unique = list(dict.fromkeys(normalized for _, normalized in needs_fetch))
+        if len(unique) > 1:
+            ctx.info(f"Fetching CrossRef metadata for {len(unique)} DOIs")
+            fetched = _fetch_doi_metadata_batch(unique, ctx)
+        elif unique:
+            ctx.info(f"Fetching metadata for DOI: {unique[0]}")
+            fetched = {unique[0]: _fetch_one_doi_metadata(unique[0], ctx)}
+
+        # Phase 3: build item_data for every successfully fetched DOI, then
+        # create them all in one batched pass (#A4).
+        results: list[str] = [None] * len(doi_list)
+        pending: list[tuple[int, dict]] = []
+        for i, (kind, payload) in enumerate(dedup):
+            if kind == "final":
+                results[i] = payload
+                continue
+            normalized = payload
+            fetch_kind, fetch_payload = fetched[normalized]
+            if fetch_kind == "final":
+                results[i] = fetch_payload
+                continue
+            built = _build_one_doi_item_data(fetch_payload, normalized, template_fn, tags, coll_keys)
+            pending.append((i, built))
+
         created = (
             _create_and_attach_batch(
                 write_zot, [payload["item_data"] for _, payload in pending],
@@ -1255,12 +1413,6 @@ def add_by_doi(
             )
             if pending else []
         )
-
-        results: list[str] = [None] * len(resolved)
-        for i, (kind, payload) in enumerate(resolved):
-            if kind == "final":
-                results[i] = payload
-
         for (i, payload), cr_result in zip(pending, created):
             results[i] = _render_doi_create_result(
                 cr_result, payload["zot_type"], payload["doi"], coll_keys

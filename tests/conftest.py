@@ -187,6 +187,58 @@ class _FakeResponse:
         return 200 <= self.status_code < 300
 
 
+class _FakeCrossrefResponse:
+    """Minimal requests.Response stub for the CrossRef API."""
+
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(f"HTTP {self.status_code}")
+
+
+# CrossRef's real default page size. The fake honors it so that dropping the
+# explicit `rows` param from a batched request fails the suite the same way it
+# failed in production: the first 20 DOIs resolve and the rest look absent.
+CROSSREF_DEFAULT_ROWS = 20
+
+
+def fake_crossref_get(message_for):
+    """Build a ``requests.get`` replacement serving both CrossRef shapes.
+
+    ``message_for(doi)`` returns the ``/works`` message dict for a DOI, or
+    None if CrossRef doesn't have it. Dispatches on the URL: ``/works/<doi>``
+    is the single-DOI endpoint, bare ``/works`` is the batched
+    ``filter=doi:...`` query, whose response is paged by ``rows`` exactly as
+    the real API pages it.
+    """
+    def _get(url, params=None, **_kwargs):
+        params = params or {}
+
+        if "/works/" in url:
+            doi = url.split("/works/", 1)[1]
+            msg = message_for(doi)
+            if msg is None:
+                return _FakeCrossrefResponse(404)
+            return _FakeCrossrefResponse(200, {"status": "ok", "message": msg})
+
+        dois = [tok[4:] for tok in (params.get("filter") or "").split(",")
+                if tok.startswith("doi:")]
+        found = [msg for msg in (message_for(d) for d in dois) if msg is not None]
+        rows = int(params.get("rows", CROSSREF_DEFAULT_ROWS))
+        return _FakeCrossrefResponse(200, {
+            "status": "ok",
+            "message": {"total-results": len(found), "items": found[:rows]},
+        })
+
+    return _get
+
+
 @pytest.fixture
 def dummy_ctx():
     return DummyContext()
