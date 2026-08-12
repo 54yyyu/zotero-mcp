@@ -256,6 +256,65 @@ class TestAddByDoiHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# attach_mode semantics — 'none' skips, 'required' fails the entry
+# ---------------------------------------------------------------------------
+
+class TestAddByDoiAttachMode:
+    """The DOI adder must honor attach_mode via _try_attach_oa_pdf.
+
+    Regression tests for the bug where 'none' was silently ignored by
+    add_by_doi (it always tried to download+upload a PDF) and 'required'
+    was unimplemented (it silently behaved like 'auto').
+    """
+
+    def test_none_mode_creates_item_without_pdf_attempt(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response()
+        )
+
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            attach_mode="none",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert "skipped (attach_mode=none)" in result
+
+    def test_required_mode_fails_entry_when_no_pdf_found(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        # requests.get always returns the CrossRef shape, so every OA-source
+        # lookup inside _try_attach_oa_pdf finds nothing — no PDF available.
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response()
+        )
+
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            attach_mode="required",
+            ctx=dummy_ctx,
+        )
+
+        # The item is still created (it existed before the PDF lookup ran);
+        # only the reported outcome for this entry is a failure.
+        assert len(fake_zot.created) == 1
+        assert result.startswith("Error:")
+        assert "attach_mode='required'" in result
+        assert "KEY0000" in result
+
+
+# ---------------------------------------------------------------------------
 # Field Mapping: container-title array, ISSN array, date extraction
 # ---------------------------------------------------------------------------
 

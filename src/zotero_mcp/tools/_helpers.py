@@ -1339,9 +1339,28 @@ def _try_pmc(doi, ctx):
         return None
 
 
+class OaPdfRequiredError(Exception):
+    """Raised by _try_attach_oa_pdf when attach_mode='required' finds no PDF.
+
+    Signals that the caller should fail (or flag) the entry rather than
+    report silent success — the item may already be created in Zotero, but
+    without the PDF the caller promised.
+    """
+
+
 def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                        attach_mode="auto"):
-    """Attempt to find and attach an open-access PDF for a DOI."""
+    """Attempt to find and attach an open-access PDF for a DOI.
+
+    attach_mode: 'auto' downloads and uploads the first working OA PDF;
+    'linked_url' bookmarks the PDF URL instead of uploading the binary;
+    'none' skips the OA lookup entirely; 'required' behaves like 'auto' but
+    raises OaPdfRequiredError instead of returning a status string when no
+    OA PDF could be attached.
+    """
+    if attach_mode == "none":
+        return "skipped (attach_mode=none)"
+
     sources = [
         ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
         ("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)),
@@ -1361,7 +1380,7 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                 if attach_mode == "linked_url":
                     if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
                         return f"PDF linked (source: {source_name})"
-                else:  # "auto" or "import_file" — try download only
+                else:  # "auto" or "required" — try download only
                     webdav_suffix = _download_and_attach_pdf(
                         write_zot, item_key, pdf_url, doi, ctx
                     )
@@ -1376,12 +1395,16 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
         # URLs were found but couldn't be downloaded — report them so the user
         # can access the paper through their university library
         url_info = found_urls[0][1]  # Best URL found
-        return (
+        message = (
             f"no open-access PDF could be downloaded, but a URL was found: {url_info} — "
             "you may be able to access it through your university library or VPN"
         )
+    else:
+        message = "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
 
-    return "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
+    if attach_mode == "required":
+        raise OaPdfRequiredError(message)
+    return message
 
 
 # ---------------------------------------------------------------------------

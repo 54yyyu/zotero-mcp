@@ -1111,9 +1111,15 @@ def add_by_doi(
             collections_status = _collections_status(coll_keys, missing)
 
             # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
-            pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
-                                            crossref_metadata=cr,
-                                            attach_mode=attach_mode)
+            try:
+                pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
+                                                crossref_metadata=cr,
+                                                attach_mode=attach_mode)
+            except _helpers.OaPdfRequiredError as e:
+                return (
+                    f"Error: item created (key: `{item_key}`) but attach_mode='required' "
+                    f"found no open-access PDF: {e}"
+                )
 
             return (
                 f"Successfully added: **{title}**\n\n"
@@ -1405,6 +1411,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                 ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
                 pdf_status = f"no PDF attached ({e})"
         else:
+            attach_ok = False
             try:
                 pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
                 pdf_resp.raise_for_status()
@@ -1440,6 +1447,12 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             except Exception as e:
                 ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
                 pdf_status = f"no PDF attached ({e})"
+
+            if attach_mode == "required" and not attach_ok:
+                return (
+                    f"Error: item created (key: `{item_key}`) but attach_mode='required' "
+                    f"found no open-access PDF: {pdf_status}"
+                )
 
         return (
             f"Successfully added arXiv paper: **{title}**\n\n"
@@ -3560,6 +3573,13 @@ def _create_and_attach(
             pdf_status = _helpers._try_attach_oa_pdf(
                 write_zot, item_key, doi, ctx, attach_mode=attach_mode
             )
+        except _helpers.OaPdfRequiredError as e:
+            return {
+                "ok": False, "key": item_key, "doi": doi, "pdf_status": None,
+                "error": f"item created (key: {item_key}) but attach_mode='required' "
+                         f"found no open-access PDF: {e}",
+                "title": title, "collections_failed": collections_failed,
+            }
         except Exception as e:
             pdf_status = f"OA PDF attach failed: {e}"
 
@@ -3981,8 +4001,8 @@ def detect_source_type(source: str) -> str:
         "idempotent — reuses the item matching the DOI/ISBN/URL, adding "
         "missing collections/tags, never removing; 'skip' leaves a match "
         "untouched. "
-        "attach_mode: 'auto' (default) attaches an open-access PDF when "
-        "available, 'none' skips, 'required' fails without one. "
+        "attach_mode: 'auto' (default) attaches an OA PDF, 'linked_url' "
+        "bookmarks it, 'none' skips, 'required' fails without one. "
         "title: file sources only, when extraction misses. "
         "Requires a writable library (fails in local-only mode). Run "
         "zotero_update_search_database afterwards for semantic search. "
