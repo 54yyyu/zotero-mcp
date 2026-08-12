@@ -1001,7 +1001,6 @@ def manage_collections(
 # individual MCP tools — ``zotero_add_item`` is the single public facade that
 # detects the source shape and dispatches here. They stay importable (and
 # individually callable) for the CLI and for direct use.
-@with_zotero_api_lock
 def add_by_doi(
     doi: str | list[str],
     collections: list[str] | str | None = None,
@@ -1025,6 +1024,14 @@ def add_by_doi(
     item, worse than not consulting CrossRef at all.
     """
 
+
+    # NOT decorated with @with_zotero_api_lock: the lock only needs to
+    # cover the Zotero API calls, taken below in short scoped blocks, so a
+    # slow CrossRef lookup or OA-PDF download+upload doesn't hold it and
+    # starve every other MCP request (#A5b — the fix for the 244-DOI-batch
+    # crash: previously the decorator held the lock across the ENTIRE
+    # recursive multi-DOI loop below, one PDF download+upload at a time).
+    #
     # ``doi`` may name several DOIs at once (a list, or a comma/newline-
     # separated string) — add each independently and stack the results, so
     # one bad DOI in a batch doesn't fail the others. A single DOI takes the
@@ -1065,21 +1072,22 @@ def add_by_doi(
 
         # Resolve collection specs (keys/names/paths) BEFORE any network or
         # write work — a bad spec must not produce an unfiled item.
-        try:
-            coll_keys = _resolve_collections_arg(
-                read_zot, collections, ctx,
-                create_missing=create_missing_collections, write_zot=write_zot,
-            )
-        except ValueError as e:
-            return f"Error: {e}"
-
-        if if_exists != "duplicate":
-            existing = _helpers.find_existing_items(read_zot, doi=normalized, ctx=ctx)
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"DOI {normalized}", ctx=ctx,
+        with zotero_api_lock():
+            try:
+                coll_keys = _resolve_collections_arg(
+                    read_zot, collections, ctx,
+                    create_missing=create_missing_collections, write_zot=write_zot,
                 )
+            except ValueError as e:
+                return f"Error: {e}"
+
+            if if_exists != "duplicate":
+                existing = _helpers.find_existing_items(read_zot, doi=normalized, ctx=ctx)
+                if existing:
+                    return _handle_existing_item(
+                        write_zot, existing, coll_keys, tags, if_exists,
+                        matched_by=f"DOI {normalized}", ctx=ctx,
+                    )
 
         ctx.info(f"Fetching metadata for DOI: {normalized}")
 
@@ -1127,110 +1135,113 @@ def add_by_doi(
             supplemental, _ = _fetch_embedded_metadata(landing, ctx)
 
         # Get valid fields from item template
-        template = write_zot.item_template(zot_type)
-        item_data = dict(template)
+        with zotero_api_lock():
+            template = write_zot.item_template(zot_type)
+            item_data = dict(template)
 
-        # Map fields
-        title_list = cr.get("title", [])
-        if title_list and "title" in item_data:
-            item_data["title"] = title_list[0]
+            # Map fields
+            title_list = cr.get("title", [])
+            if title_list and "title" in item_data:
+                item_data["title"] = title_list[0]
 
-        # Creators
-        creators = []
-        for author in cr.get("author", []):
-            if "family" in author:
-                creators.append({
-                    "creatorType": "author",
-                    "firstName": author.get("given", ""),
-                    "lastName": author["family"],
-                })
-            elif "name" in author:
-                creators.append({
-                    "creatorType": "author",
-                    "name": author["name"],
-                })
-        for editor in cr.get("editor", []):
-            if "family" in editor:
-                creators.append({
-                    "creatorType": "editor",
-                    "firstName": editor.get("given", ""),
-                    "lastName": editor["family"],
-                })
-            elif "name" in editor:
-                creators.append({
-                    "creatorType": "editor",
-                    "name": editor["name"],
-                })
-        if creators:
-            item_data["creators"] = creators
+            # Creators
+            creators = []
+            for author in cr.get("author", []):
+                if "family" in author:
+                    creators.append({
+                        "creatorType": "author",
+                        "firstName": author.get("given", ""),
+                        "lastName": author["family"],
+                    })
+                elif "name" in author:
+                    creators.append({
+                        "creatorType": "author",
+                        "name": author["name"],
+                    })
+            for editor in cr.get("editor", []):
+                if "family" in editor:
+                    creators.append({
+                        "creatorType": "editor",
+                        "firstName": editor.get("given", ""),
+                        "lastName": editor["family"],
+                    })
+                elif "name" in editor:
+                    creators.append({
+                        "creatorType": "editor",
+                        "name": editor["name"],
+                    })
+            if creators:
+                item_data["creators"] = creators
 
-        # Date
-        date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
-        if date_parts and date_parts[0]:
-            parts = date_parts[0]
-            item_data["date"] = "-".join(str(p) for p in parts)
+            # Date
+            date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
+            if date_parts and date_parts[0]:
+                parts = date_parts[0]
+                item_data["date"] = "-".join(str(p) for p in parts)
 
-        # Simple string fields
-        field_map = {
-            "DOI": normalized,
-            "url": cr.get("URL", ""),
-            "volume": cr.get("volume", ""),
-            "issue": cr.get("issue", ""),
-            "pages": cr.get("page", ""),
-            "publisher": cr.get("publisher", ""),
-            "ISSN": (cr.get("ISSN") or [""])[0],
-        }
-
-        container = (cr.get("container-title") or [""])[0]
-        if container:
-            field_map["publicationTitle"] = container
-
-        abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
-        if abstract:
-            field_map["abstractNote"] = abstract
-
-        for field, value in field_map.items():
-            if field in item_data and value:
-                item_data[field] = value
-
-        # Fill the gaps CrossRef left, from the page the DOI came from.
-        # Never overwrite: a value CrossRef supplied wins.
-        if supplemental is not None:
-            page_fields = {
-                "title": supplemental.title,
-                "publicationTitle": supplemental.publication,
-                "bookTitle": supplemental.book_title,
-                "volume": supplemental.volume,
-                "issue": supplemental.issue,
-                "pages": supplemental.pages,
-                "date": supplemental.date,
-                "ISSN": supplemental.issn,
-                "ISBN": supplemental.isbn,
-                "language": supplemental.language,
-                "publisher": supplemental.publisher,
+            # Simple string fields
+            field_map = {
+                "DOI": normalized,
+                "url": cr.get("URL", ""),
+                "volume": cr.get("volume", ""),
+                "issue": cr.get("issue", ""),
+                "pages": cr.get("page", ""),
+                "publisher": cr.get("publisher", ""),
+                "ISSN": (cr.get("ISSN") or [""])[0],
             }
-            for field, value in page_fields.items():
-                if value and field in item_data and not item_data[field]:
+
+            container = (cr.get("container-title") or [""])[0]
+            if container:
+                field_map["publicationTitle"] = container
+
+            abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
+            if abstract:
+                field_map["abstractNote"] = abstract
+
+            for field, value in field_map.items():
+                if field in item_data and value:
                     item_data[field] = value
-            if supplemental.authors and not item_data.get("creators"):
-                item_data["creators"] = [
-                    {"creatorType": "author", "firstName": first, "lastName": last}
-                    for first, last in supplemental.authors
-                ]
 
-        # Tags
-        tag_list = _helpers._normalize_str_list_input(tags, "tags")
-        if tag_list:
-            item_data["tags"] = [{"tag": t} for t in tag_list]
+            # Fill the gaps CrossRef left, from the page the DOI came from.
+            # Never overwrite: a value CrossRef supplied wins.
+            if supplemental is not None:
+                page_fields = {
+                    "title": supplemental.title,
+                    "publicationTitle": supplemental.publication,
+                    "bookTitle": supplemental.book_title,
+                    "volume": supplemental.volume,
+                    "issue": supplemental.issue,
+                    "pages": supplemental.pages,
+                    "date": supplemental.date,
+                    "ISSN": supplemental.issn,
+                    "ISBN": supplemental.isbn,
+                    "language": supplemental.language,
+                    "publisher": supplemental.publisher,
+                }
+                for field, value in page_fields.items():
+                    if value and field in item_data and not item_data[field]:
+                        item_data[field] = value
+                if supplemental.authors and not item_data.get("creators"):
+                    item_data["creators"] = [
+                        {"creatorType": "author", "firstName": first, "lastName": last}
+                        for first, last in supplemental.authors
+                    ]
 
-        # Collections (resolved to live keys above, before the CrossRef fetch)
-        if coll_keys:
-            item_data["collections"] = coll_keys
+            # Tags
+            tag_list = _helpers._normalize_str_list_input(tags, "tags")
+            if tag_list:
+                item_data["tags"] = [{"tag": t} for t in tag_list]
 
-        # Create item
-        result = write_zot.create_items([item_data])
+            # Collections (resolved to live keys above, before the CrossRef fetch)
+            if coll_keys:
+                item_data["collections"] = coll_keys
 
-        if isinstance(result, dict) and result.get("success"):
+            # Create item
+            result = write_zot.create_items([item_data])
+
+            if not (isinstance(result, dict) and result.get("success")):
+                return f"Failed to create item: {result}"
+
             item_key = next(iter(result["success"].values()))
             title = item_data.get("title", normalized)
 
@@ -1242,29 +1253,30 @@ def add_by_doi(
             )
             collections_status = _collections_status(coll_keys, missing)
 
-            # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
-            try:
-                pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
-                                                crossref_metadata=cr,
-                                                attach_mode=attach_mode)
-            except _helpers.OaPdfRequiredError as e:
-                return (
-                    f"Error: item created (key: `{item_key}`) but attach_mode='required' "
-                    f"found no open-access PDF: {e}"
-                )
-
+        # Attempt open-access PDF attachment (pass CrossRef metadata for
+        # arXiv fallback) — outside the lock; see _try_attach_oa_pdf's own
+        # docstring and add_by_doi's module-level note above (#A5b).
+        try:
+            pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
+                                            crossref_metadata=cr,
+                                            attach_mode=attach_mode)
+        except _helpers.OaPdfRequiredError as e:
             return (
-                f"Successfully added: **{title}**\n\n"
-                f"Item key: `{item_key}`\n"
-                f"Type: {zot_type}\n"
-                f"DOI: {normalized}\n"
-                f"Collections: {collections_status}\n"
-                f"PDF: {pdf_status}\n"
-                f"{type_note}\n"
-                "_Note: To include this item in semantic search, run "
-                "zotero_update_search_database._"
+                f"Error: item created (key: `{item_key}`) but attach_mode='required' "
+                f"found no open-access PDF: {e}"
             )
-        return f"Failed to create item: {result}"
+
+        return (
+            f"Successfully added: **{title}**\n\n"
+            f"Item key: `{item_key}`\n"
+            f"Type: {zot_type}\n"
+            f"DOI: {normalized}\n"
+            f"Collections: {collections_status}\n"
+            f"PDF: {pdf_status}\n"
+            f"{type_note}\n"
+            "_Note: To include this item in semantic search, run "
+            "zotero_update_search_database._"
+        )
 
     except requests.Timeout:
         return "Error: CrossRef API request timed out. Please try again."
@@ -1371,6 +1383,10 @@ def _fetch_embedded_metadata(
         return None, f"the page could not be fetched ({type(e).__name__})"
 
 
+# Decorated, unlike its caller: every call in here is a Zotero API call,
+# with no third-party fetch to keep out of the lock. add_by_url used to
+# cover it by being decorated itself (#A5b).
+@with_zotero_api_lock
 def _add_from_embedded_metadata(
     url: str,
     meta: EmbeddedMetadata,
@@ -1440,7 +1456,6 @@ def _add_from_embedded_metadata(
     return f"Failed to create item: {result}"
 
 
-@with_zotero_api_lock
 def add_by_url(
     url: str | list[str],
     collections: list[str] | str | None = None,
@@ -1451,6 +1466,11 @@ def add_by_url(
     *,
     ctx: Context
 ) -> str:
+    # NOT decorated with @with_zotero_api_lock: the DOI/arXiv branches
+    # below delegate to add_by_doi/_add_by_arxiv, which manage their own
+    # scoped locking; the generic-webpage branch takes the lock itself,
+    # narrowly, around its own Zotero API calls (#A5b).
+    #
     # ``url`` may name several URLs at once — see add_by_doi's batch comment
     # above; the same pattern applies here, and a batch may freely mix DOI-
     # redirect, arXiv, and generic-webpage URLs since each token is
@@ -1496,22 +1516,26 @@ def add_by_url(
                                  if_exists=if_exists,
                                  create_missing_collections=create_missing_collections)
 
-        # Generic webpage
-        try:
-            coll_keys = _resolve_collections_arg(
-                read_zot, collections, ctx,
-                create_missing=create_missing_collections, write_zot=write_zot,
-            )
-        except ValueError as e:
-            return f"Error: {e}"
-
-        if if_exists != "duplicate":
-            existing = _helpers.find_existing_items(read_zot, url=url, ctx=ctx)
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"URL {url}", ctx=ctx,
+        # Generic webpage. The lock covers only the Zotero API calls: reading
+        # the page below, and the add_by_doi delegation it can lead to, are
+        # third-party network work — exactly what this narrowing exists to
+        # keep out of the lock (#A5b).
+        with zotero_api_lock():
+            try:
+                coll_keys = _resolve_collections_arg(
+                    read_zot, collections, ctx,
+                    create_missing=create_missing_collections, write_zot=write_zot,
                 )
+            except ValueError as e:
+                return f"Error: {e}"
+
+            if if_exists != "duplicate":
+                existing = _helpers.find_existing_items(read_zot, url=url, ctx=ctx)
+                if existing:
+                    return _handle_existing_item(
+                        write_zot, existing, coll_keys, tags, if_exists,
+                        matched_by=f"URL {url}", ctx=ctx,
+                    )
 
         # Publisher landing pages carry the article's citation in their own
         # <head> (Highwire citation_* / Dublin Core). Zotero's browser
@@ -1548,48 +1572,48 @@ def add_by_url(
         if embedded is not None and not embedded.is_usable():
             embed_problem = "the page carries no citation metadata"
 
-        ctx.info(f"Creating webpage item for: {url}")
-        template = write_zot.item_template("webpage")
-        template["url"] = url
-        template["title"] = url
-        template["accessDate"] = ""
+        with zotero_api_lock():
+            ctx.info(f"Creating webpage item for: {url}")
+            template = write_zot.item_template("webpage")
+            template["url"] = url
+            template["title"] = url
+            template["accessDate"] = ""
 
-        tag_list = _helpers._normalize_str_list_input(tags, "tags")
-        if tag_list:
-            template["tags"] = [{"tag": t} for t in tag_list]
-        if coll_keys:
-            template["collections"] = coll_keys
+            tag_list = _helpers._normalize_str_list_input(tags, "tags")
+            if tag_list:
+                template["tags"] = [{"tag": t} for t in tag_list]
+            if coll_keys:
+                template["collections"] = coll_keys
 
-        result = write_zot.create_items([template])
-        if isinstance(result, dict) and result.get("success"):
-            item_key = next(iter(result["success"].values()))
-            missing = _helpers.ensure_collection_membership(
-                write_zot, item_key, coll_keys, ctx=ctx
-            )
-            # This item has a URL and nothing else. Say why, so the caller
-            # can decide whether to fix it rather than discovering a blank
-            # record later.
-            reason = (
-                f"\nOnly the URL could be recorded: {embed_problem}. "
-                "Add the item by DOI if you have one, or set the fields with "
-                "zotero_update_item."
-                if embed_problem else ""
-            )
-            return (
-                f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n"
-                f"Collections: {_collections_status(coll_keys, missing)}\n"
-                f"{reason}\n"
-                "_Note: To include this item in semantic search, run "
-                "zotero_update_search_database._"
-            )
-        return f"Failed to create item: {result}"
+            result = write_zot.create_items([template])
+            if isinstance(result, dict) and result.get("success"):
+                item_key = next(iter(result["success"].values()))
+                missing = _helpers.ensure_collection_membership(
+                    write_zot, item_key, coll_keys, ctx=ctx
+                )
+                # This item has a URL and nothing else. Say why, so the caller
+                # can decide whether to fix it rather than discovering a blank
+                # record later.
+                reason = (
+                    f"\nOnly the URL could be recorded: {embed_problem}. "
+                    "Add the item by DOI if you have one, or set the fields with "
+                    "zotero_update_item."
+                    if embed_problem else ""
+                )
+                return (
+                    f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n"
+                    f"Collections: {_collections_status(coll_keys, missing)}\n"
+                    f"{reason}\n"
+                    "_Note: To include this item in semantic search, run "
+                    "zotero_update_search_database._"
+                )
+            return f"Failed to create item: {result}"
 
     except Exception as e:
         ctx.error(f"Error adding by URL: {e}")
         return f"Error adding by URL: {e}"
 
 
-@with_zotero_api_lock
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
                   read_zot=None, if_exists="duplicate",
                   create_missing_collections=False):
@@ -1603,24 +1627,30 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     infrastructure. The fallback is best-effort — CrossRef may also lack a
     very recent preprint — so a clear, actionable message is returned when
     both routes fail, never a bare timeout.
-    """
-    try:
-        coll_keys = _resolve_collections_arg(
-            read_zot or write_zot, collections, ctx,
-            create_missing=create_missing_collections, write_zot=write_zot,
-        )
-    except ValueError as e:
-        return f"Error: {e}"
 
-    if if_exists != "duplicate":
-        existing = _helpers.find_existing_items(
-            read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
-        )
-        if existing:
-            return _handle_existing_item(
-                write_zot, existing, coll_keys, tags, if_exists,
-                matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
+    NOT decorated with @with_zotero_api_lock: the lock only needs to cover
+    the Zotero API calls, taken below in short scoped blocks, so a slow
+    arXiv API round trip or PDF download doesn't hold it and starve every
+    other MCP request (#A5b — mirrors add_by_doi's narrowing).
+    """
+    with zotero_api_lock():
+        try:
+            coll_keys = _resolve_collections_arg(
+                read_zot or write_zot, collections, ctx,
+                create_missing=create_missing_collections, write_zot=write_zot,
             )
+        except ValueError as e:
+            return f"Error: {e}"
+
+        if if_exists != "duplicate":
+            existing = _helpers.find_existing_items(
+                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
+            )
+            if existing:
+                return _handle_existing_item(
+                    write_zot, existing, coll_keys, tags, if_exists,
+                    matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
+                )
 
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
@@ -1731,65 +1761,83 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             else:
                 authors.append({"creatorType": "author", "name": name})
 
-    template = write_zot.item_template("preprint")
-    template["title"] = title
-    if authors:
-        template["creators"] = authors
-    if abstract and "abstractNote" in template:
-        template["abstractNote"] = abstract
-    if published and "date" in template:
-        template["date"] = published
-    template["url"] = f"https://arxiv.org/abs/{arxiv_id}"
-    if "extra" in template:
-        template["extra"] = f"arXiv:{arxiv_id}"
+    with zotero_api_lock():
+        template = write_zot.item_template("preprint")
+        template["title"] = title
+        if authors:
+            template["creators"] = authors
+        if abstract and "abstractNote" in template:
+            template["abstractNote"] = abstract
+        if published and "date" in template:
+            template["date"] = published
+        template["url"] = f"https://arxiv.org/abs/{arxiv_id}"
+        if "extra" in template:
+            template["extra"] = f"arXiv:{arxiv_id}"
 
-    tag_list = _helpers._normalize_str_list_input(tags, "tags")
-    if tag_list:
-        template["tags"] = [{"tag": t} for t in tag_list]
-    if coll_keys:
-        template["collections"] = coll_keys
+        tag_list = _helpers._normalize_str_list_input(tags, "tags")
+        if tag_list:
+            template["tags"] = [{"tag": t} for t in tag_list]
+        if coll_keys:
+            template["collections"] = coll_keys
 
-    result = write_zot.create_items([template])
-    if isinstance(result, dict) and result.get("success"):
+        result = write_zot.create_items([template])
+        if not (isinstance(result, dict) and result.get("success")):
+            return f"Failed to create arXiv item: {result}"
+
         item_key = next(iter(result["success"].values()))
         missing = _helpers.ensure_collection_membership(
             write_zot, item_key, coll_keys, ctx=ctx
         )
 
-        # arXiv always has a free PDF — try to attach it
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-        pdf_status = "no PDF attached"
-        if attach_mode == "none":
-            # Honour the caller's explicit opt-out: skip the PDF download/upload
-            # entirely. Without this, the arXiv path always fetched + uploaded
-            # the PDF regardless of attach_mode (only "linked_url" was special-
-            # cased), so attach_mode="none" did far more network/cloud work than
-            # asked — a slow upload here is a prime candidate for wedging the
-            # process under the global API lock.
-            pdf_status = "skipped (attach_mode=none)"
-        elif attach_mode == "linked_url":
-            # Bookmark the PDF URL only — no binary upload. Useful for users who
-            # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
-            try:
-                if _helpers._attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
-                    pdf_status = "PDF linked (URL only, no upload)"
-                else:
-                    pdf_status = "linked URL attachment failed"
-            except Exception as e:
-                ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
-                pdf_status = f"no PDF attached ({e})"
-        else:
-            attach_ok = False
-            try:
-                pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
-                pdf_resp.raise_for_status()
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
-                    filepath = os.path.join(tmpdir, filename)
-                    with open(filepath, "wb") as f:
-                        for chunk in pdf_resp.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    webdav_suffix = _helpers._webdav_first_attach(
+    # arXiv always has a free PDF — try to attach it. Outside the lock: the
+    # download and upload are outbound network work that has nothing to do
+    # with Zotero API serialization — write_zot is always the cloud Web API
+    # client (never the single-threaded local server the lock exists to
+    # protect), and A6's version-checked retry is what guards concurrent
+    # writes, not this lock (#A5b — mirrors add_by_doi's narrowing).
+    pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+    pdf_status = "no PDF attached"
+    if attach_mode == "none":
+        # Honour the caller's explicit opt-out: skip the PDF download/upload
+        # entirely. Without this, the arXiv path always fetched + uploaded
+        # the PDF regardless of attach_mode (only "linked_url" was special-
+        # cased), so attach_mode="none" did far more network/cloud work than
+        # asked — a slow upload here is a prime candidate for wedging the
+        # process under the global API lock.
+        pdf_status = "skipped (attach_mode=none)"
+    elif attach_mode == "linked_url":
+        # Bookmark the PDF URL only — no binary upload. Useful for users who
+        # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
+        try:
+            if _helpers._attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                pdf_status = "PDF linked (URL only, no upload)"
+            else:
+                pdf_status = "linked URL attachment failed"
+        except Exception as e:
+            ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
+            pdf_status = f"no PDF attached ({e})"
+    else:
+        attach_ok = False
+        try:
+            pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+            pdf_resp.raise_for_status()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
+                filepath = os.path.join(tmpdir, filename)
+                with open(filepath, "wb") as f:
+                    for chunk in pdf_resp.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                webdav_suffix = _helpers._webdav_first_attach(
+                    write_zot,
+                    filename,
+                    filepath,
+                    item_key,
+                    ctx,
+                    content_type="application/pdf",
+                )
+                attach_ok = True
+                if webdav_suffix is None:
+                    attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
                         write_zot,
                         filename,
                         filepath,
@@ -1797,41 +1845,30 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                         ctx,
                         content_type="application/pdf",
                     )
-                    attach_ok = True
-                    if webdav_suffix is None:
-                        attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
-                            write_zot,
-                            filename,
-                            filepath,
-                            item_key,
-                            ctx,
-                            content_type="application/pdf",
-                        )
-                pdf_status = (
-                    "PDF attached" + webdav_suffix
-                    if attach_ok
-                    else f"no PDF attached ({webdav_suffix})"
-                )
-            except Exception as e:
-                ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
-                pdf_status = f"no PDF attached ({e})"
+            pdf_status = (
+                "PDF attached" + webdav_suffix
+                if attach_ok
+                else f"no PDF attached ({webdav_suffix})"
+            )
+        except Exception as e:
+            ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
+            pdf_status = f"no PDF attached ({e})"
 
-            if attach_mode == "required" and not attach_ok:
-                return (
-                    f"Error: item created (key: `{item_key}`) but attach_mode='required' "
-                    f"found no open-access PDF: {pdf_status}"
-                )
+        if attach_mode == "required" and not attach_ok:
+            return (
+                f"Error: item created (key: `{item_key}`) but attach_mode='required' "
+                f"found no open-access PDF: {pdf_status}"
+            )
 
-        return (
-            f"Successfully added arXiv paper: **{title}**\n\n"
-            f"Item key: `{item_key}`\n"
-            f"arXiv ID: {arxiv_id}\n"
-            f"Collections: {_collections_status(coll_keys, missing)}\n"
-            f"PDF: {pdf_status}\n\n"
-            "_Note: To include this item in semantic search, run "
-            "zotero_update_search_database._"
-        )
-    return f"Failed to create arXiv item: {result}"
+    return (
+        f"Successfully added arXiv paper: **{title}**\n\n"
+        f"Item key: `{item_key}`\n"
+        f"arXiv ID: {arxiv_id}\n"
+        f"Collections: {_collections_status(coll_keys, missing)}\n"
+        f"PDF: {pdf_status}\n\n"
+        "_Note: To include this item in semantic search, run "
+        "zotero_update_search_database._"
+    )
 
 
 # ---------------------------------------------------------------------------
