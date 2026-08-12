@@ -1161,25 +1161,35 @@ def _resolve_thin_crossref_record(cr: dict, normalized: str, ctx: Context):
     return supplemental
 
 
-def _add_one_doi(read_zot, write_zot, doi, coll_keys, tags, attach_mode,
-                 if_exists, ctx, template_fn, supplemental=None) -> str:
-    """Add a single DOI — the worker shared by add_by_doi's single- and
-    multi-DOI paths. ``coll_keys`` is pre-resolved and ``template_fn``
-    pre-memoized by the caller, so neither is redone per token (#A2/#A3).
+def _resolve_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists,
+                     ctx, template_fn, supplemental=None) -> tuple[str, str | dict]:
+    """Resolve a single DOI to either a final result or a pending create.
+
+    Handles the part of add_by_doi that can't be batched — the dedup check
+    and the per-DOI CrossRef fetch (CrossRef has no batch endpoint, #A5) —
+    and stops short of creating the Zotero item, so the caller can create
+    every pending DOI in one batched pass instead of one POST per DOI
+    (#A4). ``coll_keys`` is pre-resolved and ``template_fn`` pre-memoized
+    by the caller (#A2/#A3).
+
+    Returns ``("final", result_str)`` when nothing more needs to happen
+    (dedup match, invalid DOI, CrossRef 404/timeout/error), or
+    ``("pending", {"item_data": dict, "zot_type": str, "doi": str})`` when
+    the item is ready for ``_create_and_attach_batch``.
     """
     try:
         normalized = _helpers._normalize_doi(doi)
         if not normalized:
-            return f"Error: '{doi}' does not appear to be a valid DOI."
+            return ("final", f"Error: '{doi}' does not appear to be a valid DOI.")
 
         with zotero_api_lock():
             if if_exists != "duplicate":
                 existing = _helpers.find_existing_items(read_zot, doi=normalized, ctx=ctx)
                 if existing:
-                    return _handle_existing_item(
+                    return ("final", _handle_existing_item(
                         write_zot, existing, coll_keys, tags, if_exists,
                         matched_by=f"DOI {normalized}", ctx=ctx,
-                    )
+                    ))
 
         ctx.info(f"Fetching metadata for DOI: {normalized}")
 
@@ -1200,7 +1210,7 @@ def _add_one_doi(read_zot, write_zot, doi, coll_keys, tags, attach_mode,
         )
 
         if resp.status_code == 404:
-            return f"DOI not found on CrossRef: {normalized}"
+            return ("final", f"DOI not found on CrossRef: {normalized}")
         resp.raise_for_status()
 
         cr = resp.json().get("message", {})
@@ -1209,61 +1219,46 @@ def _add_one_doi(read_zot, write_zot, doi, coll_keys, tags, attach_mode,
         if supplemental is None:
             supplemental = _resolve_thin_crossref_record(cr, normalized, ctx)
 
-        with zotero_api_lock():
-            item_data, zot_type, type_note = _crossref_to_item_data(
-                cr, normalized, template_fn, supplemental
-            )
-            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-
-            # Create item
-            result = write_zot.create_items([item_data])
-
-            if not (isinstance(result, dict) and result.get("success")):
-                return f"Failed to create item: {result}"
-
-            item_key = next(iter(result["success"].values()))
-            title = item_data.get("title", normalized)
-
-            # Defensive: pyzotero's atomic ``item["collections"]`` filing is
-            # intermittent (#235) — reconcile membership before reporting success
-            # so the caller sees the real routing state.
-            missing = _helpers.ensure_collection_membership(
-                write_zot, item_key, coll_keys, ctx=ctx
-            )
-            collections_status = _collections_status(coll_keys, missing)
-
-        # Attempt open-access PDF attachment (pass CrossRef metadata for
-        # arXiv fallback) — outside the lock; see _try_attach_oa_pdf's own
-        # docstring and add_by_doi's module-level note above (#A5b).
-        try:
-            pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
-                                            crossref_metadata=cr,
-                                            attach_mode=attach_mode)
-        except _helpers.OaPdfRequiredError as e:
-            return (
-                f"Error: item created (key: `{item_key}`) but attach_mode='required' "
-                f"found no open-access PDF: {e}"
-            )
-
-        return (
-            f"Successfully added: **{title}**\n\n"
-            f"Item key: `{item_key}`\n"
-            f"Type: {zot_type}\n"
-            f"DOI: {normalized}\n"
-            f"Collections: {collections_status}\n"
-            f"PDF: {pdf_status}\n"
-            f"{type_note}\n"
-            "_Note: To include this item in semantic search, run "
-            "zotero_update_search_database._"
+        item_data, zot_type, type_note = _crossref_to_item_data(
+            cr, normalized, template_fn, supplemental
         )
+        _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+
+        return ("pending", {"item_data": item_data, "zot_type": zot_type,
+                            "doi": normalized, "type_note": type_note})
 
     except requests.Timeout:
-        return "Error: CrossRef API request timed out. Please try again."
+        return ("final", "Error: CrossRef API request timed out. Please try again.")
     except requests.RequestException as e:
-        return f"Error fetching from CrossRef: {e}"
+        return ("final", f"Error fetching from CrossRef: {e}")
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
-        return f"Error adding by DOI: {e}"
+        return ("final", f"Error adding by DOI: {e}")
+
+
+def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
+                              coll_keys: list[str], type_note: str = "") -> str:
+    """Render one _create_and_attach_batch result as add_by_doi's per-item
+    text block — the same shape the old single-item worker produced before
+    the metadata-resolution/creation split (#A4)."""
+    if not cr_result["ok"]:
+        if cr_result["key"] is not None:
+            # Item was created; only the PDF requirement failed.
+            return f"Error: {cr_result['error']}"
+        return f"Failed to create item: {cr_result['error']}"
+
+    collections_status = _collections_status(coll_keys, cr_result["collections_failed"])
+    return (
+        f"Successfully added: **{cr_result['title']}**\n\n"
+        f"Item key: `{cr_result['key']}`\n"
+        f"Type: {zot_type}\n"
+        f"DOI: {normalized}\n"
+        f"Collections: {collections_status}\n"
+        f"PDF: {cr_result['pdf_status']}\n"
+        f"{type_note}\n"
+        "_Note: To include this item in semantic search, run "
+        "zotero_update_search_database._"
+    )
 
 
 def add_by_doi(
@@ -1284,18 +1279,20 @@ def add_by_doi(
     ``_crossref_to_item_data``).
     """
     # NOT decorated with @with_zotero_api_lock: the lock only needs to
-    # cover the Zotero API calls, taken by _add_one_doi in short scoped
-    # blocks, so a slow CrossRef lookup or OA-PDF download+upload doesn't
-    # hold it and starve every other MCP request (#A5b — the fix for the
-    # 244-DOI-batch crash: previously the decorator held the lock across the
-    # ENTIRE recursive multi-DOI loop, one PDF download+upload at a time).
+    # cover the Zotero API calls, taken in short scoped blocks below and by
+    # _create_and_attach_batch, so a slow CrossRef lookup or OA-PDF
+    # download+upload doesn't hold it and starve every other MCP request
+    # (#A5b — the fix for the 244-DOI-batch crash: previously the decorator
+    # held the lock across the ENTIRE recursive multi-DOI loop, one PDF
+    # download+upload at a time).
     #
     # ``doi`` may name several DOIs at once (a list, or a comma/newline-
     # separated string) — client/collections resolution and item-template
     # fetches happen once for the whole call (not once per token as the old
-    # recursive version did), then each token is added independently via
-    # the shared _add_one_doi worker and the results are stacked, so one
-    # bad DOI in a batch doesn't fail the others (#A2). A single DOI takes
+    # recursive version did, #A2), each token is resolved to metadata
+    # independently via _resolve_one_doi (CrossRef has no batch endpoint,
+    # #A5), and every DOI ready for creation is then created in one
+    # batched pass instead of one POST per DOI (#A4). A single DOI takes
     # the same path with a one-token list, unwrapped at the end.
     tokens = _split_multi_value(doi, "doi")
     is_batch = len(tokens) > 1
@@ -1325,13 +1322,34 @@ def add_by_doi(
 
         # ``supplemental`` describes one specific page, so it cannot be
         # handed to a batch. A thin CrossRef record in a batch still gets
-        # its own landing page read, per DOI, inside the worker.
-        results = [
-            _add_one_doi(read_zot, write_zot, tok, coll_keys, tags, attach_mode,
-                        if_exists, ctx, template_fn,
-                        supplemental=None if is_batch else supplemental)
+        # its own landing page read, per DOI, inside the resolver.
+        resolved = [
+            _resolve_one_doi(read_zot, write_zot, tok, coll_keys, tags,
+                             if_exists, ctx, template_fn,
+                             supplemental=None if is_batch else supplemental)
             for tok in doi_list
         ]
+
+        pending = [(i, payload) for i, (kind, payload) in enumerate(resolved)
+                   if kind == "pending"]
+        created = (
+            _create_and_attach_batch(
+                write_zot, [payload["item_data"] for _, payload in pending],
+                attach_mode, ctx,
+            )
+            if pending else []
+        )
+
+        results: list[str] = [None] * len(resolved)
+        for i, (kind, payload) in enumerate(resolved):
+            if kind == "final":
+                results[i] = payload
+
+        for (i, payload), cr_result in zip(pending, created):
+            results[i] = _render_doi_create_result(
+                cr_result, payload["zot_type"], payload["doi"], coll_keys,
+                payload["type_note"],
+            )
 
         if is_batch:
             return _format_multi_result("DOI", doi_list, results)
@@ -4522,59 +4540,126 @@ def _apply_caller_tags_and_collections(
         item_data["collections"] = existing
 
 
-def _create_and_attach(
+_CREATE_BATCH_SIZE = 50
+
+
+def _create_and_attach_batch(
     write_zot,
-    item_data: dict,
+    item_datas: list[dict],
     attach_mode: str,
     ctx: Context,
-) -> dict:
-    """Create one Zotero item and, if it has a DOI, try to attach an OA PDF.
+) -> list[dict]:
+    """Create many Zotero items in POSTs of up to 50 and, for each with a
+    DOI, try to attach an OA PDF (#A4).
 
-    Returns a dict ``{"ok": bool, "key": str|None, "doi": str|None,
-    "pdf_status": str|None, "error": str|None, "title": str,
-    "collections_failed": list[str]}``.
+    One ``create_items()`` POST and one ``items(itemKey=...)`` collection-
+    membership read per 50-item chunk, instead of one POST and one
+    ``item()`` GET per item — the 50-key idiom already used for read paths
+    at annotations.py/retrieval.py. ``ensure_collection_membership`` (the
+    per-item #235 backstop, which does its own re-fetch) is only called for
+    entries the bulk read shows are actually missing a requested collection.
+
+    Returns per-entry result dicts — ``{"ok": bool, "key": str|None, "doi":
+    str|None, "pdf_status": str|None, "error": str|None, "title": str,
+    "collections_failed": list[str]}`` — in the same order as item_datas.
     """
-    title = item_data.get("title") or "(untitled)"
-    try:
-        result = write_zot.create_items([item_data])
-    except Exception as e:
-        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
-                "error": str(e), "title": title, "collections_failed": []}
+    results: list[dict] = [None] * len(item_datas)
 
-    if not (isinstance(result, dict) and result.get("success")):
-        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
-                "error": f"create_items failed: {result}", "title": title,
-                "collections_failed": []}
+    for chunk_start in range(0, len(item_datas), _CREATE_BATCH_SIZE):
+        chunk = item_datas[chunk_start:chunk_start + _CREATE_BATCH_SIZE]
+        titles = [d.get("title") or "(untitled)" for d in chunk]
+        created_keys: dict[int, str] = {}
+        collections_failed_by_index: dict[int, list[str]] = {}
 
-    item_key = next(iter(result["success"].values()))
+        with zotero_api_lock():
+            try:
+                result = write_zot.create_items(chunk)
+            except Exception as e:
+                for i, title in enumerate(titles):
+                    results[chunk_start + i] = {
+                        "ok": False, "key": None, "doi": None, "pdf_status": None,
+                        "error": str(e), "title": title, "collections_failed": []}
+                continue
 
-    # #235 backstop: atomic filing via item["collections"] is intermittent.
-    collections_failed = _helpers.ensure_collection_membership(
-        write_zot, item_key, item_data.get("collections") or [], ctx=ctx
-    )
+            if not isinstance(result, dict):
+                for i, title in enumerate(titles):
+                    results[chunk_start + i] = {
+                        "ok": False, "key": None, "doi": None, "pdf_status": None,
+                        "error": f"create_items failed: {result}", "title": title,
+                        "collections_failed": []}
+                continue
 
-    doi_raw = item_data.get("DOI") or ""
-    doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
+            success = result.get("success") or {}
+            failed = result.get("failed") or {}
+            created_keys = {int(idx): key for idx, key in success.items()}
 
-    pdf_status = None
-    if doi:
-        try:
-            pdf_status = _helpers._try_attach_oa_pdf(
-                write_zot, item_key, doi, ctx, attach_mode=attach_mode
-            )
-        except _helpers.OaPdfRequiredError as e:
-            return {
-                "ok": False, "key": item_key, "doi": doi, "pdf_status": None,
-                "error": f"item created (key: {item_key}) but attach_mode='required' "
-                         f"found no open-access PDF: {e}",
-                "title": title, "collections_failed": collections_failed,
-            }
-        except Exception as e:
-            pdf_status = f"OA PDF attach failed: {e}"
+            for i, title in enumerate(titles):
+                if i in created_keys:
+                    continue
+                err = failed.get(str(i), "create_items did not report this entry as created")
+                results[chunk_start + i] = {
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"create_items failed: {err}", "title": title,
+                    "collections_failed": []}
 
-    return {"ok": True, "key": item_key, "doi": doi, "pdf_status": pdf_status,
-            "error": None, "title": title,
-            "collections_failed": collections_failed}
+            if created_keys:
+                # #235 backstop: atomic filing via item["collections"] is
+                # intermittent. One bulk read for the whole chunk instead of
+                # one item() GET per created item.
+                keys_in_order = [created_keys[i] for i in sorted(created_keys)]
+                actual_collections: dict[str, set] = {}
+                try:
+                    fetched = write_zot.items(itemKey=",".join(keys_in_order))
+                    for fetched_item in fetched:
+                        k = fetched_item.get("key", "")
+                        actual_collections[k] = set(
+                            fetched_item.get("data", {}).get("collections") or []
+                        )
+                except Exception as e:
+                    if ctx is not None:
+                        ctx.warning(f"Batch collection-membership read failed: {e}")
+
+                for i, item_key in created_keys.items():
+                    requested = chunk[i].get("collections") or []
+                    actual = actual_collections.get(item_key, set())
+                    missing = [k for k in requested if k not in actual]
+                    collections_failed_by_index[i] = (
+                        _helpers.ensure_collection_membership(
+                            write_zot, item_key, requested, ctx=ctx
+                        ) if missing else []
+                    )
+
+        # Attempt open-access PDF attachment — outside the lock, one DOI
+        # download+upload at a time (#A5b: the lock only needs to cover the
+        # Zotero API calls above, not third-party network work).
+        for i, item_key in created_keys.items():
+            item_data = chunk[i]
+            title = titles[i]
+            doi_raw = item_data.get("DOI") or ""
+            doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
+
+            pdf_status = None
+            error = None
+            if doi:
+                try:
+                    pdf_status = _helpers._try_attach_oa_pdf(
+                        write_zot, item_key, doi, ctx, attach_mode=attach_mode
+                    )
+                except _helpers.OaPdfRequiredError as e:
+                    error = (
+                        f"item created (key: {item_key}) but attach_mode='required' "
+                        f"found no open-access PDF: {e}"
+                    )
+                except Exception as e:
+                    pdf_status = f"OA PDF attach failed: {e}"
+
+            results[chunk_start + i] = {
+                "ok": error is None, "key": item_key, "doi": doi,
+                "pdf_status": None if error else pdf_status, "error": error,
+                "title": title,
+                "collections_failed": collections_failed_by_index.get(i, [])}
+
+    return results
 
 
 def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
@@ -4727,7 +4812,12 @@ def add_by_bibtex(
 
         ctx.info(f"Parsed {len(entries)} BibTeX entries")
 
-        results = []
+        # Two passes (#A4): resolve each entry to either a final result
+        # (conversion error or reused-existing) or a ready-to-create
+        # item_data, then create all pending item_datas via one batched
+        # call instead of one create_items() POST per entry.
+        results: list[dict] = []
+        pending: list[tuple[int, dict]] = []
         for entry in entries:
             try:
                 item_data = _citation_import.bibtex_entry_to_zotero(
@@ -4749,7 +4839,15 @@ def add_by_bibtex(
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+            pending.append((len(results), item_data))
+            results.append(None)
+
+        if pending:
+            created = _create_and_attach_batch(
+                write_zot, [d for _, d in pending], attach_mode, ctx
+            )
+            for (idx, _), cr_result in zip(pending, created):
+                results[idx] = cr_result
 
         return _format_batch_result("# zotero_add_by_bibtex", results)
 
@@ -4810,7 +4908,12 @@ def add_by_csl_json(
 
         ctx.info(f"Processing {len(entries)} CSL JSON entries")
 
-        results = []
+        # Two passes (#A4): resolve each entry to either a final result
+        # (conversion error or reused-existing) or a ready-to-create
+        # item_data, then create all pending item_datas via one batched
+        # call instead of one create_items() POST per entry.
+        results: list[dict] = []
+        pending: list[tuple[int, dict]] = []
         for entry in entries:
             try:
                 item_data = _citation_import.csl_json_to_zotero(
@@ -4832,7 +4935,15 @@ def add_by_csl_json(
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+            pending.append((len(results), item_data))
+            results.append(None)
+
+        if pending:
+            created = _create_and_attach_batch(
+                write_zot, [d for _, d in pending], attach_mode, ctx
+            )
+            for (idx, _), cr_result in zip(pending, created):
+                results[idx] = cr_result
 
         return _format_batch_result("# zotero_add_by_csl_json", results)
 
