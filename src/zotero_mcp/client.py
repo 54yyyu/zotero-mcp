@@ -58,6 +58,77 @@ def _lock_timeout() -> float:
         return _DEFAULT_LOCK_TIMEOUT
 
 
+# How many times to reissue a read that Zotero answered with HTTP 429. Each
+# retry waits out the server's own backoff, so this is a small number by design.
+_MAX_RATE_LIMIT_RETRIES = 3
+
+
+class ZoteroRateLimitedError(RuntimeError):
+    """Raised when Zotero keeps rate-limiting a read after its backoff elapsed.
+
+    Distinct from a failed search: callers must not read this as "no results",
+    because for dedup checks that would silently create duplicates.
+    """
+
+
+class _ZoteroClient(zotero.Zotero):
+    """pyzotero client that never hands a rate-limit body back as data.
+
+    pyzotero (1.13.4) special-cases HTTP 429 in ``errors.error_handler``: it
+    records the server-supplied backoff and returns *instead of raising*,
+    documented as "leaving the caller to retry". No caller does — ``_post_check``
+    simply returns, so the 429 response reaches ``retrieve``'s format dispatch.
+    That dispatch keys off the response Content-Type, and Zotero sends
+    ``text/plain`` for error bodies, which matches none of the JSON/Atom/BibTeX
+    branches and falls through to ``return retrieved.content``.
+
+    Every read method therefore returns the raw error body as *bytes* when
+    throttled. Iterating bytes yields ints, so callers get a list of integers
+    where item dicts should be, and ``len()`` reports the byte count as a
+    plausible-looking result count:
+
+        AttributeError: 'int' object has no attribute 'get'
+
+    Retrying here is what that docstring already assumes: error_handler has
+    recorded the backoff, and ``_check_backoff`` sleeps for exactly that
+    duration at the start of the next request.
+
+    TODO: reported upstream as urschrei/pyzotero#352. This class is a
+    workaround, but *how* it can be removed depends on the shape of the
+    upstream fix, so check before deleting it:
+
+    - If pyzotero retries internally, this whole class is redundant. Delete
+      it, point the three factories below back at ``zotero.Zotero``, and
+      drop ``ZoteroRateLimitedError`` plus the name-based branch of
+      ``_helpers._is_rate_limited``.
+    - If pyzotero instead *raises* on a rate-limited read (e.g. by refusing
+      format dispatch on a non-2xx response), do NOT simply delete this.
+      ``super()._retrieve_data`` would raise before the status check below
+      ever runs, so the retry is silently lost, and ``_is_rate_limited``
+      would not recognise pyzotero's own exception class — which drops it
+      into ``find_existing_items``' "treat as no match" path and silently
+      creates the duplicates this exists to prevent. Re-point
+      ``_is_rate_limited`` at the upstream exception first, then decide
+      where the retry should live.
+
+    Either way, ``tests/test_rate_limit_guard.py`` is the tripwire: it pins
+    unguarded pyzotero's current behaviour directly, so it starts failing as
+    soon as the installed version changes it. Whoever raises the floor in
+    pyproject.toml will see it.
+    """
+
+    def _retrieve_data(self, request=None, params=None):
+        for _ in range(_MAX_RATE_LIMIT_RETRIES):
+            response = super()._retrieve_data(request, params)
+            if response.status_code != 429:
+                return response
+        raise ZoteroRateLimitedError(
+            "Zotero rate-limited this request and kept returning HTTP 429 after "
+            f"{_MAX_RATE_LIMIT_RETRIES} attempts, each waiting out the backoff it "
+            "asked for. Please retry shortly."
+        )
+
+
 class ZoteroApiBusyError(RuntimeError):
     """Raised when the per-process Zotero API lock can't be acquired in time.
 
@@ -139,7 +210,7 @@ def get_active_library() -> dict[str, str]:
 def get_active_group_id() -> int:
     """group_id (0 = personal, else Zotero groupID) of the library
     ``get_zotero_client()`` is currently scoped to."""
-    
+
     override = _active_library_override
     library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID") or "0"
     library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
@@ -216,7 +287,7 @@ def get_zotero_client() -> zotero.Zotero:
             "or use ZOTERO_LOCAL=true for local Zotero instance."
         )
 
-    return zotero.Zotero(
+    return _ZoteroClient(
         library_id=library_id,
         library_type=library_type,
         api_key=api_key,
@@ -240,7 +311,7 @@ def get_local_zotero_client() -> zotero.Zotero | None:
         # Create a local client - library_id 0 is the default for local.
         # HTTP/1.1-only transport for compatibility with Zotero 8's local
         # server (#160) — httpx default HTTP/2 negotiation returns 502.
-        client = zotero.Zotero(
+        client = _ZoteroClient(
             library_id="0",
             library_type="user",
             api_key=None,
@@ -271,7 +342,7 @@ def get_web_zotero_client() -> zotero.Zotero | None:
     if not library_id or not api_key:
         return None
 
-    return zotero.Zotero(
+    return _ZoteroClient(
         library_id=library_id,
         library_type=library_type,
         api_key=api_key,

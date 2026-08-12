@@ -26,6 +26,13 @@ dependencies = [
     # directory path") and pyzotero returns the payload under `failure` rather
     # than raising, so on older versions every attach pays for the two-step
     # fallback in _attach_and_verify (#403).
+    #
+    # No upper bound, but note before raising the floor: as of 1.13.4 every
+    # read method returns the HTTP 429 error body as bytes instead of raising
+    # or retrying (upstream urschrei/pyzotero#352), which client._ZoteroClient
+    # works around. When a release fixes that, tests/test_rate_limit_guard.py
+    # will start failing — read the TODO on _ZoteroClient before removing it,
+    # since one plausible upstream fix makes deleting it reintroduce the bug.
     "pyzotero>=1.13.3",
     "python-dotenv>=1.0.0",
     # PDF text extraction. Rust with prebuilt abi3 wheels for every platform
