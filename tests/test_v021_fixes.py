@@ -435,3 +435,125 @@ class TestLinkedUrlRemoval:
         )
 
         assert "no open-access PDF found" in result
+
+
+# -------------------------------------------------------------------------
+# attach_mode semantics — 'none' actually skips, 'required' actually fails
+# -------------------------------------------------------------------------
+
+
+class TestAttachModeSemantics:
+    """Unit tests for _try_attach_oa_pdf's attach_mode='none'/'required' handling.
+
+    Regression tests for the bug where the tool description advertised
+    'none' and 'required' but the implementation only ever compared against
+    'linked_url': 'none' silently still downloaded+uploaded a PDF, and
+    'required' silently behaved like 'auto'.
+    """
+
+    def _make_write_zot(self):
+        write_zot = MagicMock()
+        write_zot.create_items.return_value = {"success": {"0": "NEW_ATT"}}
+        write_zot.item_template.return_value = {
+            "itemType": "attachment",
+            "linkMode": "linked_url",
+            "url": "",
+            "title": "",
+            "contentType": "",
+            "parentItem": "",
+        }
+        return write_zot
+
+    @patch("zotero_mcp.tools._helpers._try_unpaywall")
+    @patch("zotero_mcp.tools._helpers._try_arxiv_from_crossref")
+    @patch("zotero_mcp.tools._helpers._try_semantic_scholar")
+    @patch("zotero_mcp.tools._helpers._try_pmc")
+    @patch("zotero_mcp.tools._helpers._download_and_attach_pdf")
+    def test_none_mode_skips_lookup_entirely(
+        self, mock_download, mock_pmc, mock_ss, mock_arxiv, mock_unpaywall
+    ):
+        """attach_mode='none' must not query any OA source or attempt a download."""
+        write_zot = self._make_write_zot()
+        ctx = DummyContext()
+
+        result = _helpers._try_attach_oa_pdf(
+            write_zot, "ITEM1", "10.1234/test", ctx,
+            crossref_metadata=None, attach_mode="none"
+        )
+
+        mock_unpaywall.assert_not_called()
+        mock_arxiv.assert_not_called()
+        mock_ss.assert_not_called()
+        mock_pmc.assert_not_called()
+        mock_download.assert_not_called()
+        assert result == "skipped (attach_mode=none)"
+
+    @patch("zotero_mcp.tools._helpers._try_unpaywall")
+    @patch("zotero_mcp.tools._helpers._try_arxiv_from_crossref")
+    @patch("zotero_mcp.tools._helpers._try_semantic_scholar")
+    @patch("zotero_mcp.tools._helpers._try_pmc")
+    def test_required_mode_raises_when_no_pdf_found(
+        self, mock_pmc, mock_ss, mock_arxiv, mock_unpaywall
+    ):
+        """attach_mode='required' must raise, not return, when nothing is found."""
+        mock_unpaywall.return_value = None
+        mock_arxiv.return_value = None
+        mock_ss.return_value = None
+        mock_pmc.return_value = None
+
+        write_zot = self._make_write_zot()
+        ctx = DummyContext()
+
+        with pytest.raises(_helpers.OaPdfRequiredError, match="no open-access PDF found"):
+            _helpers._try_attach_oa_pdf(
+                write_zot, "ITEM1", "10.1234/test", ctx,
+                crossref_metadata=None, attach_mode="required"
+            )
+
+    @patch("zotero_mcp.tools._helpers._try_unpaywall")
+    @patch("zotero_mcp.tools._helpers._try_arxiv_from_crossref")
+    @patch("zotero_mcp.tools._helpers._try_semantic_scholar")
+    @patch("zotero_mcp.tools._helpers._try_pmc")
+    def test_required_mode_raises_when_url_found_but_undownloadable(
+        self, mock_pmc, mock_ss, mock_arxiv, mock_unpaywall
+    ):
+        """A found-but-undownloadable URL still counts as 'no PDF attached' for required."""
+        mock_unpaywall.return_value = "https://example.com/paper.pdf"
+        mock_arxiv.return_value = None
+        mock_ss.return_value = None
+        mock_pmc.return_value = None
+
+        write_zot = self._make_write_zot()
+        ctx = DummyContext()
+
+        with patch("zotero_mcp.tools._helpers._download_and_attach_pdf", return_value=None):
+            with pytest.raises(_helpers.OaPdfRequiredError, match="example.com/paper.pdf"):
+                _helpers._try_attach_oa_pdf(
+                    write_zot, "ITEM1", "10.1234/test", ctx,
+                    crossref_metadata=None, attach_mode="required"
+                )
+
+    @patch("zotero_mcp.tools._helpers._try_unpaywall")
+    @patch("zotero_mcp.tools._helpers._try_arxiv_from_crossref")
+    @patch("zotero_mcp.tools._helpers._try_semantic_scholar")
+    @patch("zotero_mcp.tools._helpers._try_pmc")
+    @patch("zotero_mcp.tools._helpers._download_and_attach_pdf")
+    def test_required_mode_succeeds_normally_when_pdf_found(
+        self, mock_download, mock_pmc, mock_ss, mock_arxiv, mock_unpaywall
+    ):
+        """attach_mode='required' behaves exactly like 'auto' when a PDF is found."""
+        mock_unpaywall.return_value = "https://example.com/paper.pdf"
+        mock_arxiv.return_value = None
+        mock_ss.return_value = None
+        mock_pmc.return_value = None
+        mock_download.return_value = ""
+
+        write_zot = self._make_write_zot()
+        ctx = DummyContext()
+
+        result = _helpers._try_attach_oa_pdf(
+            write_zot, "ITEM1", "10.1234/test", ctx,
+            crossref_metadata=None, attach_mode="required"
+        )
+
+        assert result == "PDF attached (source: Unpaywall)"
