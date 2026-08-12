@@ -1,8 +1,14 @@
 """
 ChromaDB client for semantic search functionality.
 
-This module provides persistent vector database storage and embedding functions
-for semantic search over Zotero libraries.
+This module provides persistent vector database storage for semantic search
+over Zotero libraries.
+
+The embedding functions themselves now live in :mod:`zotero_mcp.embeddings`.
+They are re-exported below because ``zotero_mcp.chroma_client`` is where every
+caller — and every existing test — imports them from, and because ChromaDB's
+registry maps a persisted collection's embedding-function name to a specific
+class object, so the re-exported name has to *be* the registered class.
 """
 
 import json
@@ -12,533 +18,28 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+# Re-exported for backward compatibility; see the module docstring.
+from zotero_mcp.embeddings.providers import (  # noqa: F401
+    CUSTOM_EMBEDDING_FUNCTIONS,
+    GeminiEmbeddingFunction,
+    HuggingFaceEmbeddingFunction,
+    OllamaEmbeddingFunction,
+    OpenAIEmbeddingFunction,
+    ensure_embedding_functions_registered,
+)
+from zotero_mcp.embeddings.registry import create_embedding_function, merge_env_config
 from zotero_mcp.utils import install_hint, suppress_stdout
 
 try:
     import chromadb
     from chromadb import Documents, EmbeddingFunction, Embeddings
     from chromadb.config import Settings
-    from chromadb.utils.embedding_functions import register_embedding_function
 except ImportError as e:
     raise ImportError(
         f"chromadb is required for semantic search. {install_hint('semantic')}"
     ) from e
 
 logger = logging.getLogger(__name__)
-
-
-@register_embedding_function
-class OpenAIEmbeddingFunction(EmbeddingFunction):
-    """Custom OpenAI embedding function for ChromaDB.
-
-    Registered under the name "openai" so ChromaDB rebuilds it (rather than its
-    own incompatible built-in of the same name) when reloading a persisted
-    collection's config. ChromaDB >=1.x reconstructs the embedding function by
-    name from the stored config during upsert; without registration the name
-    collides with the built-in, whose build_from_config rejects our
-    {model_name, base_url} config.
-    """
-
-    max_input_tokens = 8000  # text-embedding-3-* limit is 8191
-
-    # Per-request input-list cap. OpenAI allows up to 2048 items but many
-    # OpenAI-compatible providers are stricter (SiliconFlow is 64 for
-    # /v1/embeddings, Mistral is 512, etc.). Defaulting to 64 keeps the code
-    # portable; real OpenAI users can raise embedding_config.request_batch_size.
-    DEFAULT_REQUEST_BATCH_SIZE = 64
-
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
-                 base_url: str | None = None, request_batch_size: int | None = None,
-                 rate_limit_rps: float | None = None):
-        import threading
-        self.model_name = model_name
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
-        self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
-        self.rate_limit_rps: float | None = float(rate_limit_rps) if rate_limit_rps else None
-        self._rate_lock = threading.Lock()
-        self._last_request_ts: float = 0.0
-        if not self.api_key:
-            raise ValueError("OpenAI API key is required")
-
-        try:
-            import openai
-            client_kwargs = {"api_key": self.api_key}
-            if self.base_url:
-                client_kwargs["base_url"] = self.base_url
-            self.client = openai.OpenAI(**client_kwargs)
-        except ImportError:
-            raise ImportError("openai package is required for OpenAI embeddings")
-
-    @staticmethod
-    def name() -> str:
-        return "openai"
-
-    def get_config(self) -> dict[str, Any]:
-        return {
-            "model_name": self.model_name,
-            "base_url": self.base_url,
-            "request_batch_size": self.request_batch_size,
-            "rate_limit_rps": self.rate_limit_rps,
-            # ChromaDB's built-in EF of the same registered name rebuilds from
-            # {api_key_env_var, model_name, api_base, ...} and asserts ("This
-            # code should not be reached") when those are missing. Persisting
-            # its spellings too keeps the stored config buildable by whichever
-            # class wins the registry lookup (issue #382).
-            "api_key_env_var": "OPENAI_API_KEY",
-            "api_base": self.base_url,
-        }
-
-    @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "OpenAIEmbeddingFunction":
-        # Accept either key spelling so a config written by ChromaDB's built-in
-        # (api_base / api_key_env_var) rebuilds here too.
-        api_key = config.get("api_key")
-        if not api_key and config.get("api_key_env_var"):
-            api_key = os.getenv(config["api_key_env_var"])
-        return OpenAIEmbeddingFunction(
-            model_name=config.get("model_name", "text-embedding-3-small"),
-            api_key=api_key,
-            base_url=config.get("base_url") or config.get("api_base"),
-            request_batch_size=config.get("request_batch_size"),
-            rate_limit_rps=config.get("rate_limit_rps"),
-        )
-
-    def _wait_for_rate_limit(self) -> None:
-        """Sleep as needed so successive embedding requests stay under
-        ``rate_limit_rps``. Applied per HTTP request (including each sub-batch)
-        so rate-limited providers see a steady cadence regardless of how many
-        inputs the caller passed. The lock keeps parallel threads honest.
-        """
-        rps = self.rate_limit_rps
-        if not rps or rps <= 0:
-            return
-        import time
-        with self._rate_lock:
-            min_interval = 1.0 / rps
-            wait = min_interval - (time.monotonic() - self._last_request_ts)
-            if wait > 0:
-                time.sleep(wait)
-            self._last_request_ts = time.monotonic()
-
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using the OpenAI-compatible API.
-
-        ``encoding_format="float"`` is set explicitly. The OpenAI SDK otherwise
-        negotiates base64 by default, which OpenRouter's Gemini embedding
-        providers (e.g. ``google/gemini-embedding-001``) do not return reliably —
-        the SDK then raises "No embedding data received" intermittently. Forcing
-        float makes every OpenAI-compatible backend, native OpenAI included,
-        respond deterministically.
-        """
-        batch_size = self.request_batch_size or self.DEFAULT_REQUEST_BATCH_SIZE
-        vecs: Embeddings = []
-        for i in range(0, len(input), batch_size):
-            sub = input[i:i + batch_size]
-            self._wait_for_rate_limit()
-            response = self.client.embeddings.create(
-                model=self.model_name,
-                input=sub,
-                encoding_format="float",
-            )
-            vecs.extend(data.embedding for data in response.data)
-        return vecs
-
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string. No special handling needed for OpenAI."""
-        return self.__call__([text])[0]
-
-    def truncate(self, text: str, max_tokens: int) -> str:
-        """Truncate using tiktoken cl100k_base (correct for OpenAI models)."""
-        try:
-            import tiktoken
-            if not hasattr(self, '_tokenizer'):
-                self._tokenizer = tiktoken.get_encoding("cl100k_base")
-            tokens = self._tokenizer.encode(text, disallowed_special=())
-            if len(tokens) > max_tokens:
-                tokens = tokens[:max_tokens]
-                text = self._tokenizer.decode(tokens)
-        except ImportError:
-            max_chars = max_tokens * 3
-            if len(text) > max_chars:
-                text = text[:max_chars]
-        return text
-
-
-@register_embedding_function
-class GeminiEmbeddingFunction(EmbeddingFunction):
-    """Custom Gemini embedding function for ChromaDB using google-genai.
-
-    Registered under the name "gemini" so ChromaDB can rebuild it from a
-    persisted collection's config (see OpenAIEmbeddingFunction for details).
-    """
-
-    # gemini-embedding-2-* models ignore the task_type config field (the API
-    # silently drops it). Google's recommended alternative is to embed the
-    # task instruction in the prompt text itself, which empirically shifts
-    # the embedding space (cos ~0.84 vs raw baseline) and preserves asymmetric
-    # doc/query tuning (cos ~0.94 between doc-prefix and query-prefix).
-    # These are the canonical prefixes; __call__ and embed_query prepend them
-    # to every v2 input. They MUST stay in sync with V2_PREFIX_TOKEN_BUDGET
-    # below: if you lengthen a prefix, bump the budget so truncation still
-    # leaves room for it under the model's hard cap.
-    V2_DOC_PREFIX = "Represent this document for retrieval:\n\n"
-    V2_QUERY_PREFIX = "Represent this query for retrieval:\n\n"
-
-    # Token reservation for the v2 prefix above. The longest prefix is
-    # V2_DOC_PREFIX at 42 chars ~= 11 tokens with typical English tokenization.
-    # We reserve 20 tokens (11 actual + 9 slack) so that truncate() leaves
-    # room for the prefix without ever producing a post-prefix payload that
-    # exceeds the model's 8192 hard cap even on dense text.
-    V2_PREFIX_TOKEN_BUDGET = 20
-
-    # Default for gemini-embedding-001 (hard cap 2048 tokens). Per-instance
-    # override in __init__ for models with larger context windows. NOTE: for
-    # v2 models this value means "effective budget for the TEXT BODY" —
-    # prefix tokens are reserved separately (see V2_PREFIX_TOKEN_BUDGET).
-    max_input_tokens = 2000
-
-    def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None, base_url: str | None = None):
-        self.model_name = model_name
-        # Model-aware token limit. For v2 models, derive from:
-        #   hard_cap (8192) - safety_margin (192, for char-based truncation
-        #   imprecision) - V2_PREFIX_TOKEN_BUDGET (20, reserved for the
-        #   in-prompt task instruction prepended in __call__/embed_query).
-        # Net effective budget for text body: 8192 - 192 - 20 = 7980 tokens.
-        # This guarantees post-prefix payload <= hard cap even at the
-        # truncation limit, formally closing the cap-enforcement gap.
-        if "gemini-embedding-2" in model_name:
-            self.max_input_tokens = 8000 - self.V2_PREFIX_TOKEN_BUDGET
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        self.base_url = base_url or os.getenv("GEMINI_BASE_URL")
-        if not self.api_key:
-            raise ValueError("Gemini API key is required")
-
-        try:
-            from google import genai
-            from google.genai import types
-            client_kwargs = {"api_key": self.api_key}
-            if self.base_url:
-                http_options = types.HttpOptions(baseUrl=self.base_url)
-                client_kwargs["http_options"] = http_options
-            self.client = genai.Client(**client_kwargs)
-            self.types = types
-        except ImportError:
-            raise ImportError("google-genai package is required for Gemini embeddings")
-
-    @staticmethod
-    def name() -> str:
-        return "gemini"
-
-    def get_config(self) -> dict[str, Any]:
-        return {"model_name": self.model_name, "base_url": self.base_url}
-
-    @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "GeminiEmbeddingFunction":
-        return GeminiEmbeddingFunction(
-            model_name=config.get("model_name", "gemini-embedding-001"),
-            api_key=config.get("api_key"),
-            base_url=config.get("base_url"),
-        )
-
-    # Gemini's embed_content API caps at 100 items per batch (verified
-    # empirically: batch=100 OK, batch=250 → 400 INVALID_ARGUMENT with
-    # "at most 100 requests can be in one batch").
-    GEMINI_MAX_BATCH = 100
-
-    def _is_v2(self) -> bool:
-        # gemini-embedding-2-* does not support the task_type config field
-        # (it is silently ignored by the API). Google's guidance is to put
-        # the task hint in the prompt text instead.
-        return "gemini-embedding-2" in self.model_name
-
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using Gemini API, batching up to 100 per call."""
-        is_v2 = self._is_v2()
-        # Materialize once so we can slice regardless of input iterable type.
-        texts = list(input)
-        if is_v2:
-            # v2 models: task instruction goes in the prompt, no config.
-            # V2_PREFIX_TOKEN_BUDGET is already reserved from max_input_tokens
-            # in __init__, so upstream truncation guarantees the combined
-            # payload stays under the model's hard cap.
-            prepared = [f"{self.V2_DOC_PREFIX}{t}" for t in texts]
-        else:
-            prepared = texts
-
-        embeddings: list = []
-        for start in range(0, len(prepared), self.GEMINI_MAX_BATCH):
-            batch = prepared[start:start + self.GEMINI_MAX_BATCH]
-            if is_v2:
-                response = self.client.models.embed_content(
-                    model=self.model_name,
-                    contents=batch,
-                )
-            else:
-                response = self.client.models.embed_content(
-                    model=self.model_name,
-                    contents=batch,
-                    config=self.types.EmbedContentConfig(
-                        task_type="retrieval_document",
-                        title="Zotero library document",
-                    ),
-                )
-            embeddings.extend(e.values for e in response.embeddings)
-        return embeddings
-
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string using retrieval_query task type."""
-        # Truncate before any prefix prepending. For v2 models max_input_tokens
-        # already excludes V2_PREFIX_TOKEN_BUDGET (reserved in __init__), so
-        # the post-prefix payload stays under the model's hard cap. For v1
-        # models truncation prevents API errors on pathological queries that
-        # the upstream pipeline does not pre-truncate (queries bypass the
-        # _process_item_batch truncate_text path that documents go through).
-        text = self.truncate(text, self.max_input_tokens)
-        if self._is_v2():
-            prompt_text = f"{self.V2_QUERY_PREFIX}{text}"
-            response = self.client.models.embed_content(
-                model=self.model_name,
-                contents=[prompt_text],
-            )
-        else:
-            response = self.client.models.embed_content(
-                model=self.model_name,
-                contents=[text],
-                config=self.types.EmbedContentConfig(
-                    task_type="retrieval_query",
-                ),
-            )
-        return response.embeddings[0].values
-
-    def truncate(self, text: str, max_tokens: int) -> str:
-        """Truncate using character-based estimation for Gemini (~4 chars/token)."""
-        max_chars = max_tokens * 4
-        if len(text) > max_chars:
-            text = text[:max_chars]
-        return text
-
-
-@register_embedding_function
-class HuggingFaceEmbeddingFunction(EmbeddingFunction):
-    """Custom HuggingFace embedding function for ChromaDB using sentence-transformers.
-
-    Registered under the name "huggingface" so ChromaDB rebuilds it (rather than
-    its own incompatible built-in of the same name) when reloading a persisted
-    collection's config (see OpenAIEmbeddingFunction for details).
-    """
-
-    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B"):
-        self.model_name = model_name
-
-        try:
-            from sentence_transformers import SentenceTransformer
-            logger.info(f"Loading embedding model: {model_name}")
-            self.model = SentenceTransformer(model_name, trust_remote_code=True)
-        except ImportError:
-            raise ImportError("sentence-transformers package is required for HuggingFace embeddings. Install with: pip install sentence-transformers")
-
-        # Read limit from model metadata; conservative fallback
-        self.max_input_tokens = getattr(self.model, "max_seq_length", 500)
-
-    @staticmethod
-    def name() -> str:
-        return "huggingface"
-
-    def get_config(self) -> dict[str, Any]:
-        return {
-            "model_name": self.model_name,
-            # ChromaDB's built-in "huggingface" EF requires api_key_env_var in
-            # addition to model_name and asserts without it. Persisting the key
-            # keeps the config buildable by either class (issue #382); our own
-            # build_from_config ignores it (we embed locally, no API key).
-            "api_key_env_var": "HUGGINGFACE_API_KEY",
-        }
-
-    @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "HuggingFaceEmbeddingFunction":
-        return HuggingFaceEmbeddingFunction(
-            model_name=config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"),
-        )
-
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using HuggingFace model."""
-        embeddings = self.model.encode(input, convert_to_numpy=True)
-        return embeddings.tolist()
-
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string. No special handling needed for HuggingFace."""
-        return self.__call__([text])[0]
-
-    def truncate(self, text: str, max_tokens: int) -> str:
-        """Truncate using the model's own tokenizer."""
-        tokenizer = getattr(self.model, 'tokenizer', None)
-        if tokenizer is not None:
-            encoded = tokenizer.encode(text, add_special_tokens=False)
-            if len(encoded) > max_tokens:
-                encoded = encoded[:max_tokens]
-                text = tokenizer.decode(encoded)
-        else:
-            max_chars = max_tokens * 2
-            if len(text) > max_chars:
-                text = text[:max_chars]
-        return text
-
-
-@register_embedding_function
-class OllamaEmbeddingFunction(EmbeddingFunction):
-    """Custom Ollama embedding function for ChromaDB.
-
-    Uses Ollama's local HTTP API. Registered under the name ``ollama`` so
-    ChromaDB can rebuild persisted collections that were created with this
-    embedding function.
-    """
-
-    # Ollama models vary; use a conservative, char-based fallback budget.
-    max_input_tokens = 8000
-
-    # HTTP timeout (seconds) for /api/embed. Persisted in get_config() because
-    # ChromaDB's built-in ollama EF requires a ``timeout`` key.
-    DEFAULT_TIMEOUT = 120
-
-    # Documents per /api/embed request. The indexer hands us a whole item
-    # batch, which with chunking enabled is (items × max_chunks_per_item)
-    # documents — up to thousands. Sending that as one request makes a single
-    # HTTP call that has to outlast the entire GPU pass, which is what pushed
-    # runs past any sane timeout (#423). Chunking the request keeps each call
-    # short; Ollama processes sequentially either way, so on a local server
-    # the extra round trips cost approximately nothing.
-    DEFAULT_REQUEST_BATCH_SIZE = 64
-
-    def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None,
-                 url: str | None = None, timeout: int | None = None,
-                 request_batch_size: int | None = None):
-        self.model_name = model_name
-        # ``url`` is ChromaDB's built-in spelling of ``base_url``; accept both
-        # so a config written by either class rebuilds here (issue #382).
-        self.base_url = (
-            base_url or url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434"
-        ).rstrip("/")
-        # Mirror the attribute under the built-in's name as well.
-        self.url = self.base_url
-        self.timeout = int(timeout) if timeout else self.DEFAULT_TIMEOUT
-        self.request_batch_size = (
-            int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
-        )
-
-    @staticmethod
-    def name() -> str:
-        return "ollama"
-
-    def get_config(self) -> dict[str, Any]:
-        return {
-            "model_name": self.model_name,
-            "base_url": self.base_url,
-            # ChromaDB ships its own OllamaEmbeddingFunction registered under
-            # the same name "ollama". Whichever class wins the registry lookup
-            # gets this dict when the persisted collection config is rebuilt at
-            # query time; the built-in reads url/model_name/timeout and asserts
-            # "This code should not be reached" when any is missing (#382).
-            # Carrying both spellings makes the config valid for both classes.
-            "url": self.base_url,
-            "timeout": self.timeout,
-            # Extra keys are ignored by the built-in (it reads only
-            # url/model_name/timeout via .get()), so carrying ours is safe.
-            "request_batch_size": self.request_batch_size,
-        }
-
-    @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "OllamaEmbeddingFunction":
-        return OllamaEmbeddingFunction(
-            model_name=config.get("model_name", "qwen3-embedding"),
-            base_url=config.get("base_url") or config.get("url"),
-            timeout=config.get("timeout"),
-            request_batch_size=config.get("request_batch_size"),
-        )
-
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using Ollama's /api/embed endpoint.
-
-        Unlike the deprecated /api/embeddings route (single ``prompt`` -> single
-        ``embedding``), /api/embed accepts a batch via ``input`` and returns a
-        list under ``embeddings``, so several documents go out per request.
-
-        The caller's list is split into ``request_batch_size`` chunks so one
-        request never has to cover an unbounded amount of GPU work; see that
-        attribute for why. Vectors are concatenated back in input order.
-        """
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("requests package is required for Ollama embeddings")
-
-        texts = list(input)
-        if not texts:
-            return []
-
-        endpoint = f"{self.base_url}/api/embed"
-        embeddings: list = []
-        for start in range(0, len(texts), self.request_batch_size):
-            window = texts[start : start + self.request_batch_size]
-            response = requests.post(
-                endpoint,
-                json={"model": self.model_name, "input": window},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-            vectors = data.get("embeddings")
-            if vectors is None:
-                raise ValueError(
-                    f"Ollama /api/embed returned no 'embeddings' field: {data}"
-                )
-            if len(vectors) != len(window):
-                # A short response would silently misalign every vector after
-                # it with the wrong document, poisoning the index in a way that
-                # only shows up as bad search results much later.
-                raise ValueError(
-                    f"Ollama /api/embed returned {len(vectors)} embeddings for "
-                    f"{len(window)} inputs"
-                )
-            embeddings.extend(vectors)
-        return embeddings
-
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string. No special handling needed for Ollama."""
-        return self.__call__([text])[0]
-
-    def truncate(self, text: str, max_tokens: int) -> str:
-        """Truncate using character-based estimation for local Ollama models."""
-        max_chars = max_tokens * 4
-        if len(text) > max_chars:
-            text = text[:max_chars]
-        return text
-
-
-#: Our embedding functions, in registration order. Three of the four names
-#: ("openai", "huggingface", "ollama") collide with ChromaDB built-ins.
-CUSTOM_EMBEDDING_FUNCTIONS = (
-    OpenAIEmbeddingFunction,
-    GeminiEmbeddingFunction,
-    HuggingFaceEmbeddingFunction,
-    OllamaEmbeddingFunction,
-)
-
-
-def ensure_embedding_functions_registered() -> None:
-    """(Re-)claim our embedding-function names in ChromaDB's registry.
-
-    ``known_embedding_functions`` is a plain last-write-wins dict, so import
-    order decides whether a colliding name resolves to our class or to
-    ChromaDB's built-in. Re-registering immediately before a collection is
-    opened means a built-in that got imported after this module still cannot
-    shadow us and mis-handle our persisted config (issue #382).
-    """
-    for cls in CUSTOM_EMBEDDING_FUNCTIONS:
-        try:
-            register_embedding_function(cls)
-        except Exception as e:  # pragma: no cover - registry API change
-            logger.debug(f"Could not re-register {cls.__name__}: {e}")
 
 
 class ChromaClient:
@@ -641,50 +142,13 @@ class ChromaClient:
                     raise
 
     def _create_embedding_function(self) -> EmbeddingFunction:
-        """Create the appropriate embedding function based on configuration."""
-        if self.embedding_model == "openai":
-            model_name = self.embedding_config.get("model_name", "text-embedding-3-small")
-            api_key = self.embedding_config.get("api_key")
-            base_url = self.embedding_config.get("base_url")
-            return OpenAIEmbeddingFunction(
-                model_name=model_name, api_key=api_key, base_url=base_url,
-                request_batch_size=self.embedding_config.get("request_batch_size"),
-                rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
-            )
+        """Create the appropriate embedding function based on configuration.
 
-        elif self.embedding_model == "gemini":
-            model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
-            api_key = self.embedding_config.get("api_key")
-            base_url = self.embedding_config.get("base_url")
-            return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
-
-        elif self.embedding_model == "ollama":
-            model_name = self.embedding_config.get("model_name", "qwen3-embedding")
-            base_url = self.embedding_config.get("base_url")
-            return OllamaEmbeddingFunction(
-                model_name=model_name,
-                base_url=base_url,
-                timeout=self.embedding_config.get("timeout"),
-                request_batch_size=self.embedding_config.get("request_batch_size"),
-            )
-
-        elif self.embedding_model == "qwen":
-            model_name = self.embedding_config.get("model_name", "Qwen/Qwen3-Embedding-0.6B")
-            return HuggingFaceEmbeddingFunction(model_name=model_name)
-
-        elif self.embedding_model == "embeddinggemma":
-            model_name = self.embedding_config.get("model_name", "google/embeddinggemma-300m")
-            return HuggingFaceEmbeddingFunction(model_name=model_name)
-
-        elif self.embedding_model not in ["default", "openai", "gemini", "ollama"]:
-            # Treat any other value as a HuggingFace model name
-            return HuggingFaceEmbeddingFunction(model_name=self.embedding_model)
-
-        else:
-            # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
-            ef = chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
-            ef.max_input_tokens = 256  # all-MiniLM-L6-v2 max_seq_length
-            return ef
+        The provider registry owns the model-string -> embedding-function
+        mapping; see :func:`zotero_mcp.embeddings.registry.resolve_provider`
+        for the resolution rules.
+        """
+        return create_embedding_function(self.embedding_model, self.embedding_config)
 
     @property
     def embedding_max_tokens(self) -> int:
@@ -1096,49 +560,11 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
     # Previous code unconditionally REPLACED config["embedding_config"] with env
     # values, silently dropping model_name from config.json whenever any
     # provider env var (e.g. GOOGLE_API_KEY leaked from another tool) was set.
-    if config["embedding_model"] == "openai":
-        ec = dict(config.get("embedding_config") or {})
-        if not ec.get("api_key"):
-            env_key = os.getenv("OPENAI_API_KEY")
-            if env_key:
-                ec["api_key"] = env_key
-        if not ec.get("model_name"):
-            ec["model_name"] = os.getenv(
-                "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
-            )
-        if not ec.get("base_url"):
-            env_base = os.getenv("OPENAI_BASE_URL")
-            if env_base:
-                ec["base_url"] = env_base
-        if ec.get("api_key"):
-            config["embedding_config"] = ec
-
-    elif config["embedding_model"] == "gemini":
-        ec = dict(config.get("embedding_config") or {})
-        if not ec.get("api_key"):
-            env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-            if env_key:
-                ec["api_key"] = env_key
-        if not ec.get("model_name"):
-            ec["model_name"] = os.getenv(
-                "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"
-            )
-        if not ec.get("base_url"):
-            env_base = os.getenv("GEMINI_BASE_URL")
-            if env_base:
-                ec["base_url"] = env_base
-        if ec.get("api_key"):
-            config["embedding_config"] = ec
-
-    elif config["embedding_model"] == "ollama":
-        ec = dict(config.get("embedding_config") or {})
-        if not ec.get("model_name"):
-            ec["model_name"] = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding")
-        if not ec.get("base_url"):
-            env_base = os.getenv("OLLAMA_BASE_URL")
-            if env_base:
-                ec["base_url"] = env_base
-        config["embedding_config"] = ec
+    # Which variables each provider reads, and whether the merged result is
+    # kept, is declared by its EnvSpec in the provider registry.
+    config["embedding_config"] = merge_env_config(
+        config["embedding_model"], config.get("embedding_config")
+    )
 
     return ChromaClient(
         collection_name=config["collection_name"],
