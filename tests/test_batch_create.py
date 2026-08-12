@@ -11,7 +11,7 @@ cover.
 
 from unittest.mock import MagicMock
 
-from conftest import DummyContext, FakeZotero, _FakeResponse
+from conftest import DummyContext, FakeZotero, _FakeResponse, fake_crossref_get
 
 from zotero_mcp.tools import write
 
@@ -27,8 +27,13 @@ class _BatchRecordingZotero(FakeZotero):
         self.create_calls: list[int] = []
         self.bulk_items_calls: list[list[str]] = []
         self.single_item_calls: list[str] = []
+        self.item_template_calls: list[str] = []
         self._created_items: dict[str, dict] = {}
         self._next_key = 0
+
+    def item_template(self, item_type):
+        self.item_template_calls.append(item_type)
+        return super().item_template(item_type)
 
     def create_items(self, items, **kwargs):
         self.created.extend(items)
@@ -94,7 +99,7 @@ def _patch_write_client(monkeypatch, zot, *, pdf_status="skipped (test)"):
     )
     monkeypatch.setattr(
         "requests.get",
-        lambda url, *a, **kw: _make_crossref_response(doi=url.split("/works/", 1)[-1]),
+        fake_crossref_get(lambda doi: _make_crossref_response(doi=doi).json()["message"]),
     )
     monkeypatch.setattr(
         "zotero_mcp.tools._helpers._try_attach_oa_pdf",
@@ -130,6 +135,18 @@ class TestAddByDoiBatching:
         assert z.create_calls == [50, 5]
         assert len(z.created) == 55
         assert "# Added 55 DOIs" in result
+
+    def test_item_template_memoized_across_the_batch(self, monkeypatch):
+        """#A3: CROSSREF_TYPE_MAP maps every DOI here onto the same
+        Zotero item type, so a 10-DOI batch should fetch the template
+        once, not once per DOI."""
+        z = _BatchRecordingZotero()
+        _patch_write_client(monkeypatch, z)
+
+        dois = [f"10.1234/d{i}" for i in range(10)]
+        write.add_by_doi(doi=",".join(dois), ctx=DummyContext())
+
+        assert z.item_template_calls == ["journalArticle"]
 
     def test_collection_membership_one_bulk_read_no_per_item_gets_when_atomic_works(
         self, monkeypatch

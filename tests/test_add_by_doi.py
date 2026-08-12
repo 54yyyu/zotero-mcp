@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from zotero_mcp import server
 from zotero_mcp.tools import write
-from conftest import DummyContext, FakeZotero
+from conftest import DummyContext, FakeZotero, fake_crossref_get
 
 
 # ---------------------------------------------------------------------------
@@ -999,20 +999,11 @@ class TestMultipleDois:
             "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
-        resp_a = _make_crossref_response({"DOI": "10.1111/a", "title": ["Paper A"]})
-        resp_b = _make_crossref_response({"DOI": "10.2222/b", "title": ["Paper B"]})
-
-        def fake_get(url, *args, **kwargs):
-            if "10.1111" in url:
-                return resp_a
-            if "10.2222" in url:
-                return resp_b
-            resp = MagicMock()
-            resp.status_code = 404
-            resp.raise_for_status.side_effect = Exception("HTTP 404")
-            return resp
-
-        monkeypatch.setattr("requests.get", fake_get)
+        messages = {
+            "10.1111/a": _make_crossref_message(DOI="10.1111/a", title=["Paper A"]),
+            "10.2222/b": _make_crossref_message(DOI="10.2222/b", title=["Paper B"]),
+        }
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
 
         result = write.add_item(
             source="10.1111/a, 10.2222/b", source_type="doi", ctx=dummy_ctx,
@@ -1033,7 +1024,10 @@ class TestMultipleDois:
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
-        monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
 
         result = write.add_item(source="10.1111/a\n10.2222/b", ctx=dummy_ctx)
 
@@ -1047,15 +1041,9 @@ class TestMultipleDois:
             "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
 
-        resp_a = _make_crossref_response({"DOI": "10.1111/a", "title": ["Paper A"]})
-        resp_404 = MagicMock()
-        resp_404.status_code = 404
-        resp_404.raise_for_status.side_effect = Exception("HTTP 404")
-
-        def fake_get(url, *args, **kwargs):
-            return resp_a if "10.1111" in url else resp_404
-
-        monkeypatch.setattr("requests.get", fake_get)
+        messages = {"10.1111/a": _make_crossref_message(DOI="10.1111/a",
+                                                        title=["Paper A"])}
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
 
         result = write.add_item(
             source="10.1111/a, 10.9999/missing", source_type="doi", ctx=dummy_ctx,
