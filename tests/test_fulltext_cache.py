@@ -1,6 +1,7 @@
 """Tests for the transient extracted-fulltext cache."""
 
 import json
+import os
 
 import pytest
 
@@ -117,7 +118,16 @@ def test_corrupt_index_is_survivable(cfg):
 
 
 def test_cache_root_is_private(cfg):
-    """Cached text is library content and must not be world-readable."""
+    """Cached text is library content and must not be world-readable.
+
+    POSIX-only: Windows implements no mode bits beyond the read-only flag, so
+    ``os.chmod(path, 0o700)`` succeeds there but ``st_mode`` still reports
+    0o777 for the directory. The hardening itself is best-effort on every
+    platform (``_private_chmod`` swallows OSError); only the assertion is
+    POSIX-specific.
+    """
+    if os.name != "posix":
+        pytest.skip("POSIX file permissions only")
     root = fulltext_cache.get_fulltext_cache_root(cfg)
     assert (root.stat().st_mode & 0o077) == 0
 
