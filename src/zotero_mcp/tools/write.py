@@ -996,72 +996,118 @@ def manage_collections(
 # individual MCP tools — ``zotero_add_item`` is the single public facade that
 # detects the source shape and dispatches here. They stay importable (and
 # individually callable) for the CLI and for direct use.
-def add_by_doi(
-    doi: str | list[str],
-    collections: list[str] | str | None = None,
-    tags: list[str] | str | None = None,
-    attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
-    create_missing_collections: bool = False,
-    *,
-    ctx: Context
-) -> str:
-    # NOT decorated with @with_zotero_api_lock: the lock only needs to
-    # cover the Zotero API calls, taken below in short scoped blocks, so a
-    # slow CrossRef lookup or OA-PDF download+upload doesn't hold it and
-    # starve every other MCP request (#A5b — the fix for the 244-DOI-batch
-    # crash: previously the decorator held the lock across the ENTIRE
-    # recursive multi-DOI loop below, one PDF download+upload at a time).
-    #
-    # ``doi`` may name several DOIs at once (a list, or a comma/newline-
-    # separated string) — add each independently and stack the results, so
-    # one bad DOI in a batch doesn't fail the others. A single DOI takes the
-    # normal, unmodified path below.
-    #
-    # Recursing here re-runs _get_write_client and _resolve_collections_arg
-    # once per token, so a name/path-based ``collections`` spec (which hits
-    # the Zotero API to resolve) is re-resolved N times in an N-DOI batch —
-    # key-based specs skip that call and cost nothing extra. If that ever
-    # matters in practice, the fix is to resolve collections once above this
-    # loop and pass the resolved keys into a shared single-item worker,
-    # mirroring add_by_bibtex/add_by_csl_json's pattern (see
-    # _format_multi_result's docstring for the fuller refactor sketch).
-    tokens = _split_multi_value(doi, "doi")
-    if len(tokens) > 1:
-        results = [
-            add_by_doi(doi=tok, collections=collections, tags=tags,
-                      attach_mode=attach_mode, if_exists=if_exists,
-                      create_missing_collections=create_missing_collections,
-                      ctx=ctx)
-            for tok in tokens
-        ]
-        return _format_multi_result("DOI", tokens, results)
-    if tokens:
-        doi = tokens[0]
+def _crossref_to_item_data(cr: dict, normalized: str, template_fn) -> tuple[dict, str]:
+    """Map a CrossRef ``/works`` message to a Zotero item dict.
 
-    try:
-        read_zot, write_zot = _helpers._get_write_client(ctx)
-    except ValueError as e:
-        return str(e)
+    Pure aside from ``template_fn(zot_type)`` (see
+    ``_memoized_item_template_fn``), so add_by_doi's single- and multi-DOI
+    paths can share one implementation (#A2). Returns ``(item_data,
+    zot_type)`` — callers need ``zot_type`` for display.
+    """
+    cr_type = cr.get("type", "")
+    zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
 
+    template = template_fn(zot_type)
+    item_data = dict(template)
+
+    # Map fields
+    title_list = cr.get("title", [])
+    if title_list and "title" in item_data:
+        item_data["title"] = title_list[0]
+
+    # Creators
+    creators = []
+    for author in cr.get("author", []):
+        if "family" in author:
+            creators.append({
+                "creatorType": "author",
+                "firstName": author.get("given", ""),
+                "lastName": author["family"],
+            })
+        elif "name" in author:
+            creators.append({
+                "creatorType": "author",
+                "name": author["name"],
+            })
+    for editor in cr.get("editor", []):
+        if "family" in editor:
+            creators.append({
+                "creatorType": "editor",
+                "firstName": editor.get("given", ""),
+                "lastName": editor["family"],
+            })
+        elif "name" in editor:
+            creators.append({
+                "creatorType": "editor",
+                "name": editor["name"],
+            })
+    if creators:
+        item_data["creators"] = creators
+
+    # Date
+    date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
+    if date_parts and date_parts[0]:
+        parts = date_parts[0]
+        item_data["date"] = "-".join(str(p) for p in parts)
+
+    # Simple string fields
+    field_map = {
+        "DOI": normalized,
+        "url": cr.get("URL", ""),
+        "volume": cr.get("volume", ""),
+        "issue": cr.get("issue", ""),
+        "pages": cr.get("page", ""),
+        "publisher": cr.get("publisher", ""),
+        "ISSN": (cr.get("ISSN") or [""])[0],
+    }
+
+    container = (cr.get("container-title") or [""])[0]
+    if container:
+        field_map["publicationTitle"] = container
+
+    abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
+    if abstract:
+        field_map["abstractNote"] = abstract
+
+    for field, value in field_map.items():
+        if field in item_data and value:
+            item_data[field] = value
+
+    return item_data, zot_type
+
+
+def _memoized_item_template_fn(write_zot):
+    """Wrap ``write_zot.item_template`` with a per-call cache (#A3).
+
+    CROSSREF_TYPE_MAP maps onto at most ~13 distinct Zotero item types, so
+    caching collapses up to one template GET per DOI in an N-DOI batch down
+    to at most one per distinct type actually seen. Self-locking so it is
+    correct regardless of whether the caller already holds
+    ``zotero_api_lock`` (the RLock is reentrant).
+    """
+    cache: dict[str, dict] = {}
+
+    def template_fn(zot_type: str) -> dict:
+        if zot_type not in cache:
+            with zotero_api_lock():
+                cache[zot_type] = write_zot.item_template(zot_type)
+        return cache[zot_type]
+
+    return template_fn
+
+
+def _add_one_doi(read_zot, write_zot, doi, coll_keys, tags, attach_mode,
+                 if_exists, ctx, template_fn) -> str:
+    """Add a single DOI — the worker shared by add_by_doi's single- and
+    multi-DOI paths. ``coll_keys`` is pre-resolved and ``template_fn``
+    pre-memoized by the caller, so neither is redone per token (#A2/#A3).
+    """
     try:
-        if if_exists not in _IF_EXISTS_VALUES:
-            return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
         normalized = _helpers._normalize_doi(doi)
         if not normalized:
             return f"Error: '{doi}' does not appear to be a valid DOI."
 
-        # Resolve collection specs (keys/names/paths) BEFORE any network or
-        # write work — a bad spec must not produce an unfiled item.
         with zotero_api_lock():
-            try:
-                coll_keys = _resolve_collections_arg(
-                    read_zot, collections, ctx,
-                    create_missing=create_missing_collections, write_zot=write_zot,
-                )
-            except ValueError as e:
-                return f"Error: {e}"
-
             if if_exists != "duplicate":
                 existing = _helpers.find_existing_items(read_zot, doi=normalized, ctx=ctx)
                 if existing:
@@ -1094,86 +1140,9 @@ def add_by_doi(
 
         cr = resp.json().get("message", {})
 
-        # Determine Zotero item type
-        cr_type = cr.get("type", "")
-        zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
-
-        # Get valid fields from item template
         with zotero_api_lock():
-            template = write_zot.item_template(zot_type)
-            item_data = dict(template)
-
-            # Map fields
-            title_list = cr.get("title", [])
-            if title_list and "title" in item_data:
-                item_data["title"] = title_list[0]
-
-            # Creators
-            creators = []
-            for author in cr.get("author", []):
-                if "family" in author:
-                    creators.append({
-                        "creatorType": "author",
-                        "firstName": author.get("given", ""),
-                        "lastName": author["family"],
-                    })
-                elif "name" in author:
-                    creators.append({
-                        "creatorType": "author",
-                        "name": author["name"],
-                    })
-            for editor in cr.get("editor", []):
-                if "family" in editor:
-                    creators.append({
-                        "creatorType": "editor",
-                        "firstName": editor.get("given", ""),
-                        "lastName": editor["family"],
-                    })
-                elif "name" in editor:
-                    creators.append({
-                        "creatorType": "editor",
-                        "name": editor["name"],
-                    })
-            if creators:
-                item_data["creators"] = creators
-
-            # Date
-            date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
-            if date_parts and date_parts[0]:
-                parts = date_parts[0]
-                item_data["date"] = "-".join(str(p) for p in parts)
-
-            # Simple string fields
-            field_map = {
-                "DOI": normalized,
-                "url": cr.get("URL", ""),
-                "volume": cr.get("volume", ""),
-                "issue": cr.get("issue", ""),
-                "pages": cr.get("page", ""),
-                "publisher": cr.get("publisher", ""),
-                "ISSN": (cr.get("ISSN") or [""])[0],
-            }
-
-            container = (cr.get("container-title") or [""])[0]
-            if container:
-                field_map["publicationTitle"] = container
-
-            abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
-            if abstract:
-                field_map["abstractNote"] = abstract
-
-            for field, value in field_map.items():
-                if field in item_data and value:
-                    item_data[field] = value
-
-            # Tags
-            tag_list = _helpers._normalize_str_list_input(tags, "tags")
-            if tag_list:
-                item_data["tags"] = [{"tag": t} for t in tag_list]
-
-            # Collections (resolved to live keys above, before the CrossRef fetch)
-            if coll_keys:
-                item_data["collections"] = coll_keys
+            item_data, zot_type = _crossref_to_item_data(cr, normalized, template_fn)
+            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
 
             # Create item
             result = write_zot.create_items([item_data])
@@ -1220,6 +1189,71 @@ def add_by_doi(
         return "Error: CrossRef API request timed out. Please try again."
     except requests.RequestException as e:
         return f"Error fetching from CrossRef: {e}"
+    except Exception as e:
+        ctx.error(f"Error adding by DOI: {e}")
+        return f"Error adding by DOI: {e}"
+
+
+def add_by_doi(
+    doi: str | list[str],
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    create_missing_collections: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    # NOT decorated with @with_zotero_api_lock: the lock only needs to
+    # cover the Zotero API calls, taken by _add_one_doi in short scoped
+    # blocks, so a slow CrossRef lookup or OA-PDF download+upload doesn't
+    # hold it and starve every other MCP request (#A5b — the fix for the
+    # 244-DOI-batch crash: previously the decorator held the lock across the
+    # ENTIRE recursive multi-DOI loop, one PDF download+upload at a time).
+    #
+    # ``doi`` may name several DOIs at once (a list, or a comma/newline-
+    # separated string) — client/collections resolution and item-template
+    # fetches happen once for the whole call (not once per token as the old
+    # recursive version did), then each token is added independently via
+    # the shared _add_one_doi worker and the results are stacked, so one
+    # bad DOI in a batch doesn't fail the others (#A2). A single DOI takes
+    # the same path with a one-token list, unwrapped at the end.
+    tokens = _split_multi_value(doi, "doi")
+    is_batch = len(tokens) > 1
+    doi_list = tokens if tokens else [doi]
+
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if if_exists not in _IF_EXISTS_VALUES:
+            return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
+
+        # Resolve collection specs (keys/names/paths) BEFORE any network or
+        # write work — a bad spec must not produce an unfiled item.
+        with zotero_api_lock():
+            try:
+                coll_keys = _resolve_collections_arg(
+                    read_zot, collections, ctx,
+                    create_missing=create_missing_collections, write_zot=write_zot,
+                )
+            except ValueError as e:
+                return f"Error: {e}"
+
+        template_fn = _memoized_item_template_fn(write_zot)  # #A3
+
+        results = [
+            _add_one_doi(read_zot, write_zot, tok, coll_keys, tags, attach_mode,
+                        if_exists, ctx, template_fn)
+            for tok in doi_list
+        ]
+
+        if is_batch:
+            return _format_multi_result("DOI", doi_list, results)
+        return results[0]
+
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
         return f"Error adding by DOI: {e}"
