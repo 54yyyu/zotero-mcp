@@ -13,6 +13,7 @@ import requests
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+from zotero_mcp.identifiers import normalize_doi
 from zotero_mcp.utils import _paginate
 
 # ---------------------------------------------------------------------------
@@ -635,22 +636,10 @@ def _collection_not_found_message(zot, spec, paths) -> str:
     return msg
 
 
-def _normalize_doi(raw):
-    """Normalize a DOI string from various input formats."""
-    if not raw:
-        return None
-    s = raw.strip()
-    if s.lower().startswith("doi:"):
-        s = s[4:].strip()
-    if s.lower().startswith("http://") or s.lower().startswith("https://"):
-        m = re.search(r"doi\.org/(10\.\d{4,9}/[^\s?#]+)", s, flags=re.IGNORECASE)
-        if not m:
-            return None
-        s = m.group(1)
-    s = s.rstrip(".,);]")
-    if re.match(r"^10\.\d{4,9}/\S+$", s):
-        return s
-    return None
+#: Compatibility alias. The implementation moved to the public,
+#: stdlib-only :mod:`zotero_mcp.identifiers` so consumers can import it
+#: without pulling in the tool layer. Existing callers keep working.
+_normalize_doi = normalize_doi
 
 
 def _normalize_isbn(raw):
