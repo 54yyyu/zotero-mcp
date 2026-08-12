@@ -409,6 +409,27 @@ def setup_semantic_search(
         except ValueError:
             print("Please enter a valid number")
 
+    print("\nAttachment parsing can run across several CPU cores.")
+    print("1 keeps the classic sequential behaviour; higher values speed up")
+    print("the extraction phase of 'update-db --fulltext' on large libraries.")
+    default_workers = (
+        existing_semantic_config.get("extraction", {}).get("workers", 1)
+        if existing_semantic_config
+        else 1
+    )
+    while True:
+        raw = input(f"Parallel extraction workers [{default_workers}]: ").strip()
+        if raw == "":
+            extraction_workers = default_workers
+            break
+        try:
+            extraction_workers = int(raw)
+            if extraction_workers > 0:
+                break
+            print("Please enter a positive integer")
+        except ValueError:
+            print("Please enter a valid number")
+
     # Configure Zotero database path
     print("\n=== Zotero Database Path ===")
     print("By default, zotero-mcp auto-detects the Zotero database location.")
@@ -441,6 +462,7 @@ def setup_semantic_search(
         (existing_semantic_config or {}).get("extraction") or {}
     )
     extraction_config["pdf_max_pages"] = pdf_max_pages
+    extraction_config["workers"] = extraction_workers
     config["extraction"] = extraction_config
     # Web-API users: index fulltext from Zotero's server-side extraction by
     # default. Users can set this to false to keep the old metadata-only

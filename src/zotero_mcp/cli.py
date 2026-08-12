@@ -358,6 +358,13 @@ def main():
                                  help="Path to semantic search configuration file")
     update_db_parser.add_argument("--db-path",
                                  help="Path to Zotero database file (zotero.sqlite), overrides config")
+    update_db_parser.add_argument("--extraction-workers", type=int, metavar="N",
+                                 help="Parse N attachments in parallel during --fulltext "
+                                      "(default: semantic_search.extraction.workers, or 1 for "
+                                      "sequential). Capped at the CPU count")
+    update_db_parser.add_argument("--clear-fulltext-cache", action="store_true",
+                                 help="Discard the transient extracted-fulltext cache before "
+                                      "running, forcing every attachment to be re-parsed")
     openai_batch_group = update_db_parser.add_mutually_exclusive_group()
     openai_batch_group.add_argument("--openai-batch", dest="openai_batch", action="store_true",
                                    help="Submit OpenAI embeddings through the asynchronous Batch API")
@@ -574,9 +581,19 @@ def main():
             # Save the db_path to config file for future use
             _save_zotero_db_path_to_config(config_path, db_path)
 
+        if getattr(args, "clear_fulltext_cache", False):
+            from zotero_mcp import fulltext_cache
+
+            removed = fulltext_cache.clear_all(config_path=str(config_path))
+            print(f"Cleared transient fulltext cache ({removed} entries)")
+
         try:
             # Create semantic search instance with optional db_path override
-            search = create_semantic_search(str(config_path), db_path=db_path)
+            search = create_semantic_search(
+                str(config_path),
+                db_path=db_path,
+                extraction_workers=getattr(args, "extraction_workers", None),
+            )
             if args.openai_batch is True and search.chroma_client.embedding_model != "openai":
                 print("Error: --openai-batch requires ZOTERO_EMBEDDING_MODEL=openai", file=sys.stderr)
                 sys.exit(1)

@@ -26,7 +26,7 @@ except Exception:
     _tokenizer = None
 
 
-from . import openai_batch
+from . import fulltext_cache, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_active_group_id, get_zotero_client
 from .extract import PAGE_SEPARATOR
@@ -166,6 +166,23 @@ _INDEX_SCHEMA_VERSION = 3
 # the next re-embed.
 _MASS_DELETION_MIN_DOCS = 25
 _MASS_DELETION_MIN_FRACTION = 0.25
+
+
+def _extract_fulltext_batch(reader, items):
+    """Yield ``(item_id, (text, source) | None)`` for every item in ``items``.
+
+    Prefers the reader's batch API, which parallelises across a process pool
+    when configured. Falls back to one call per item for readers that do not
+    provide it — the minimal doubles used in tests implement only
+    ``extract_fulltext_for_item(item_id)``, and they should not have to grow
+    a new method just because the real reader gained a faster path.
+    """
+    batch = getattr(reader, "extract_fulltext_for_items", None)
+    if batch is not None:
+        yield from batch(items)
+        return
+    for item_id, _item_key in items:
+        yield item_id, reader.extract_fulltext_for_item(item_id)
 
 
 def load_update_config(config_path: str | None) -> dict[str, Any]:
@@ -441,8 +458,16 @@ def get_cached_reranker(model_name: str) -> CrossEncoderReranker:
 class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
+    # Class-level fallback so instances built without __init__ (test doubles
+    # do this) still resolve the attribute — None means "use the config".
+    extraction_workers: int | None = None
+
     def __init__(
-        self, chroma_client: ChromaClient | None = None, config_path: str | None = None, db_path: str | None = None
+        self,
+        chroma_client: ChromaClient | None = None,
+        config_path: str | None = None,
+        db_path: str | None = None,
+        extraction_workers: int | None = None,
     ):
         """
         Initialize semantic search.
@@ -451,11 +476,14 @@ class ZoteroSemanticSearch:
             chroma_client: Optional ChromaClient instance
             config_path: Path to configuration file
             db_path: Optional path to Zotero database (overrides config file)
+            extraction_workers: Optional parallel-extraction worker count
+                (overrides ``semantic_search.extraction.workers`` in config)
         """
         self.chroma_client = chroma_client or create_chroma_client(config_path)
         self.zotero_client = get_zotero_client()
         self.config_path = config_path
         self.db_path = db_path  # CLI override for Zotero database path
+        self.extraction_workers = extraction_workers  # CLI override, None = use config
         # Item keys seen by the most recent local sqlite scan (set by
         # _get_items_from_local_db); used to verify watermark promotion.
         self._last_scan_snapshot_keys: set[str] | None = None
@@ -1146,6 +1174,7 @@ class ZoteroSemanticSearch:
             attachment_priority = None
             zotero_db_path = self.db_path  # CLI override takes precedence
             collection_keys = None
+            config_workers = None
             # If semantic_search config file exists, prefer its setting
             try:
                 if self.config_path and os.path.exists(self.config_path):
@@ -1155,6 +1184,7 @@ class ZoteroSemanticSearch:
                         extraction_cfg = semantic_cfg.get("extraction", {})
                         pdf_max_pages = extraction_cfg.get("pdf_max_pages")
                         attachment_priority = extraction_cfg.get("attachment_priority")
+                        config_workers = extraction_cfg.get("workers")
                         collection_keys = semantic_cfg.get("collection_keys")
                         # Use config db_path only if no CLI override
                         if not zotero_db_path:
@@ -1162,12 +1192,24 @@ class ZoteroSemanticSearch:
             except Exception:
                 pass
 
+            # CLI flag beats config; 1 (fully sequential) when neither is set.
+            # Never exceed the core count — extraction is CPU-bound, so extra
+            # workers only add process-spawn and scheduling overhead.
+            workers = self.extraction_workers or config_workers or 1
+            workers = max(1, min(int(workers), os.cpu_count() or 1))
+
             with (
                 suppress_stdout(),
                 LocalZoteroReader(
                     db_path=zotero_db_path,
                     pdf_max_pages=pdf_max_pages,
                     attachment_priority=attachment_priority,
+                    extraction_workers=workers,
+                    # The indexing path is the one place the transient cache
+                    # is safe to write: it extracts under the *indexing* page
+                    # cap, which is what a later run will want to reuse.
+                    fulltext_cache_enabled=True,
+                    config_path=self.config_path,
                 ) as reader,
             ):
                 # Stamped on every document so a later run can tell that the
@@ -1268,6 +1310,10 @@ class ZoteroSemanticSearch:
                     skipped_existing = 0
                     updated_existing = 0
                     items_to_process = []
+                    # Items whose attachment still needs parsing. Collected
+                    # here rather than parsed inline so the expensive half can
+                    # run as one batch — see the phase 2b loop below.
+                    pending_extraction = []
 
                     total_local = len(local_items)
                     _skipped_failed = []  # Items skipped because extraction previously failed
@@ -1394,19 +1440,41 @@ class ZoteroSemanticSearch:
                                     skipped_existing += 1
 
                         if should_extract:
-                            # Extract fulltext if item doesn't have it yet
+                            # Defer the parse itself — see phase 2b.
                             if not getattr(it, "fulltext", None):
-                                text = reader.extract_fulltext_for_item(it.item_id)
-                                if text:
-                                    it.fulltext, it.fulltext_source = text
-                                else:
-                                    # Nothing readable — mark so the metadata
-                                    # records that we did try.
-                                    it._fulltext_attempted = True
+                                pending_extraction.append(it)
                             extracted += 1
                             items_to_process.append(it)
 
                             # (progress shown inline above via \r)
+
+                    # Phase 2b: parse the chosen attachments. With
+                    # extraction_workers == 1 this is the same sequential walk
+                    # as before; above 1 it fans out over a process pool, and
+                    # results arrive out of order — hence the lookup by id.
+                    if pending_extraction:
+                        by_id = {it.item_id: it for it in pending_extraction}
+                        done = 0
+                        for item_id, result in _extract_fulltext_batch(
+                            reader, [(it.item_id, it.key) for it in pending_extraction]
+                        ):
+                            target = by_id.get(item_id)
+                            if target is None:
+                                continue
+                            if result:
+                                target.fulltext, target.fulltext_source = result
+                            else:
+                                # Nothing readable — mark so the metadata
+                                # records that we did try.
+                                target._fulltext_attempted = True
+                            done += 1
+                            if done % 10 == 0 or done == len(pending_extraction):
+                                try:
+                                    line = f"  Extracting text: {done}/{len(pending_extraction)}"
+                                    sys.stderr.write(f"\r{line}{' ' * 40}")
+                                    sys.stderr.flush()
+                                except Exception:
+                                    pass
 
                     _extract_logger.setLevel(_prev_level)
 
@@ -2533,6 +2601,15 @@ class ZoteroSemanticSearch:
                         stats["updated"] += 1
                     else:
                         stats["added"] += 1
+                # These items are embedded and persisted, so the transient
+                # copy of their extracted text has done its job. Evicting per
+                # batch rather than at the end of the run keeps the cache
+                # roughly proportional to what is still un-embedded, instead
+                # of growing to the size of the whole library.
+                try:
+                    fulltext_cache.evict_many(item_keys_order, config_path=self.config_path)
+                except Exception as e:
+                    logger.debug(f"Fulltext cache eviction failed: {e}")
             except Exception as e:
                 # Batch failed — collect failures for end-of-run retry.
                 # ChromaDB's ONNX tokenizer can fail intermittently in bursts;
@@ -2904,15 +2981,23 @@ class ZoteroSemanticSearch:
             return False
 
 
-def create_semantic_search(config_path: str | None = None, db_path: str | None = None) -> ZoteroSemanticSearch:
+def create_semantic_search(
+    config_path: str | None = None,
+    db_path: str | None = None,
+    extraction_workers: int | None = None,
+) -> ZoteroSemanticSearch:
     """
     Create a ZoteroSemanticSearch instance.
 
     Args:
         config_path: Path to configuration file
         db_path: Optional path to Zotero database (overrides config file)
+        extraction_workers: Optional parallel-extraction worker count
+            (overrides the value in the config file)
 
     Returns:
         Configured ZoteroSemanticSearch instance
     """
-    return ZoteroSemanticSearch(config_path=config_path, db_path=db_path)
+    return ZoteroSemanticSearch(
+        config_path=config_path, db_path=db_path, extraction_workers=extraction_workers
+    )
