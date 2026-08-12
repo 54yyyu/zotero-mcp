@@ -10,6 +10,7 @@ from ipaddress import ip_address
 from urllib.parse import urljoin, urlparse
 
 import requests
+from pyzotero.zotero_errors import PreConditionFailedError
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
@@ -163,6 +164,42 @@ def _handle_write_response(response, ctx=None):
     if isinstance(response, dict):
         return bool(response.get("success"))
     return bool(response)
+
+
+_MAX_VERSION_CONFLICT_RETRIES = 3
+
+
+def _update_item_with_version_retry(write_zot, item_key, mutate_fn, ctx=None):
+    """Fetch *item_key*, apply *mutate_fn* to it, and write it back —
+    retrying on HTTP 412 (stale version) by re-fetching and re-applying.
+
+    Callers already re-fetch the item once before writing, to pick up the
+    web API's version number before mutating. That closes the common case
+    but not the race: another writer (a concurrent MCP call, Zotero
+    Desktop, or sync) can update the item again between that re-fetch and
+    this write, and pyzotero raises PreConditionFailedError for exactly
+    that window. A bounded retry — re-fetch, re-apply, re-send — closes it;
+    any other exception propagates immediately, unretried.
+
+    *mutate_fn* receives the freshly-fetched item dict and mutates it (or
+    its ``data``) in place. Returns the raw pyzotero response from
+    ``update_item``.
+    """
+    last_error = None
+    for attempt in range(_MAX_VERSION_CONFLICT_RETRIES):
+        item = write_zot.item(item_key)
+        mutate_fn(item)
+        try:
+            return write_zot.update_item(item)
+        except PreConditionFailedError as e:
+            last_error = e
+            if ctx is not None:
+                ctx.info(
+                    f"Version conflict updating item {item_key} (attempt "
+                    f"{attempt + 1}/{_MAX_VERSION_CONFLICT_RETRIES}); "
+                    "re-fetching and retrying."
+                )
+    raise last_error
 
 
 def ensure_collection_membership(write_zot, item_key: str, coll_keys: list[str], ctx=None) -> list[str]:
