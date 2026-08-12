@@ -574,6 +574,23 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
+def _is_rate_limited(exc: BaseException) -> bool:
+    """True if ``exc`` is a Zotero rate-limit error.
+
+    Checks the class first, then falls back to the type name. ``zotero_mcp
+    .client`` can legitimately exist as more than one module object in a
+    process — anything that loads it under a fresh spec gets its own copy of
+    the exception class, and ``isinstance`` against the other copy is then
+    False. That would drop a rate-limit error into the generic "treat as no
+    match" path, which is precisely the silent-duplicate outcome the caller
+    exists to prevent, so the invariant is worth more than the tidier check.
+    """
+    return (
+        isinstance(exc, _client.ZoteroRateLimitedError)
+        or type(exc).__name__ == "ZoteroRateLimitedError"
+    )
+
+
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
                         ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
@@ -623,13 +640,30 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             q=query, qmode="everything", itemType="-attachment", limit=50
         )
     except Exception as e:
+        # A rate-limited search is deliberately not swallowed. Every other
+        # failure here degrades to "no match" and the caller creates the item,
+        # which is the right trade for a genuinely failed search — but a
+        # throttled search hasn't answered the question, and reading it as "not
+        # present" silently creates duplicates of items that are.
+        if _is_rate_limited(e):
+            raise
         if ctx is not None:
             ctx.warning(f"Existing-item search failed (treating as no match): {e}")
         return []
 
     matches = []
     for item in candidates or []:
-        data = item.get("data", {})
+        # Skip anything that isn't a well-formed item dict. The try above only
+        # wraps the call, not this iteration, so a malformed entry would raise
+        # here and abort the whole import instead of costing one dedup match.
+        # The known cause of that is handled upstream now (see _ZoteroClient),
+        # but this stays as a backstop: nothing about the contract of a search
+        # result guarantees every entry is a dict.
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
         if data.get("itemType") in ("attachment", "note", "annotation"):
             continue
         if _matches(data):
