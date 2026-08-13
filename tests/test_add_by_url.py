@@ -798,3 +798,49 @@ class TestMultipleUrls:
         assert fake_zot.created[0]["url"] == "https://example.com/a"
         assert fake_zot.created[1]["url"] == "https://example.com/b"
         assert "# Added 2 URLs" in result
+
+    def test_comma_in_a_query_string_does_not_split_the_url(
+        self, dummy_ctx, patch_write_client
+    ):
+        """Commas are ordinary characters in a query string. Splitting on one
+        unconditionally created a truncated page plus a junk item with
+        url="2" — one bad item and one wrong one, from a URL that worked
+        before batching existed."""
+        fake_zot = patch_write_client
+        url = "https://example.com/page?ids=1,2"
+
+        result = write.add_item(source=url, source_type="url", ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 1
+        assert fake_zot.created[0]["url"] == url
+        assert "# Added" not in result  # single item, not a batch
+
+    def test_comma_inside_one_url_of_a_newline_batch(
+        self, dummy_ctx, patch_write_client
+    ):
+        fake_zot = patch_write_client
+
+        write.add_item(
+            source="https://example.com/a?ids=1,2\nhttps://example.com/b",
+            source_type="url",
+            ctx=dummy_ctx,
+        )
+
+        assert [c["url"] for c in fake_zot.created] == [
+            "https://example.com/a?ids=1,2",
+            "https://example.com/b",
+        ]
+
+    def test_json_object_source_returns_an_error_string(
+        self, dummy_ctx, patch_write_client
+    ):
+        """Malformed structured input is a user error like any other, and
+        should come back as text rather than a traceback out of the tool."""
+        result = write.add_item(
+            source='{"url": "https://example.com/a"}',
+            source_type="url",
+            ctx=dummy_ctx,
+        )
+
+        assert result.startswith("Error")
+        assert "list of strings" in result

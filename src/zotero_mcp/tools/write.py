@@ -57,17 +57,62 @@ def _resolve_collections_arg(
     )
 
 
-def _split_multi_value(raw, field_name: str) -> list[str]:
+def _split_multi_value(raw, field_name: str, validator) -> list[str]:
     """Split a batch-identifier argument (DOI/URL/ISBN) into tokens.
 
-    Accepts the same shapes ``_normalize_str_list_input`` already handles
-    (a list, a JSON array string, or a comma-separated string) plus
-    newline-separated plain text, so pasting one identifier per line works
-    the same as comma-separating them.
+    Structured input — a list, or a string that opens with ``[``/``{`` —
+    goes to ``_normalize_str_list_input`` unchanged: the caller shaped it
+    deliberately, so a JSON array is a batch and a JSON object is the error
+    that helper already reports.
+
+    A plain string splits on newlines unconditionally, since no identifier
+    can contain one. Commas are the ambiguous case — they are ordinary
+    characters inside these identifiers, as query strings routinely show
+    and as ``_normalize_doi``'s own ``10.\\d{4,9}/\\S+`` allows — so a line
+    splits on commas unless doing so would break an identifier that works
+    as it stands. Concretely, it splits when either:
+
+    * every comma-token is independently valid, so the reading is
+      unambiguous (``10.1/a,10.2/b``, or two ISBNs — a comma can never
+      occur inside a valid ISBN, so those always split); or
+    * the whole line is *not* a valid identifier, so there is nothing to
+      protect and splitting is the only reading that can produce anything
+      (``9780199735815, 9781234567890`` where the second fails its
+      checksum — one bad token must not cost its neighbours).
+
+    It keeps the line whole only when the tokens don't all validate *and*
+    the line itself does — ``https://example.com/p?ids=1,2``, which
+    unconditional splitting turned into a truncated page plus a junk
+    sibling item titled ``2``.
+
+    Applying this per line rather than to the whole string keeps the mixed
+    case right: in ``"https://a.com/x?ids=1,2\\nhttps://b.com"`` the newline
+    separates and the comma does not.
+
+    ``validator`` is the same normalizer ``detect_source_type`` uses for
+    this identifier type, so detection and splitting agree by construction
+    rather than by keeping two copies of the rule in step.
     """
-    if isinstance(raw, str):
-        raw = raw.replace("\n", ",")
-    return _helpers._normalize_str_list_input(raw, field_name)
+    if not isinstance(raw, str):
+        return _helpers._normalize_str_list_input(raw, field_name)
+
+    stripped = raw.strip()
+    if stripped[:1] in ("[", "{"):
+        return _helpers._normalize_str_list_input(stripped, field_name)
+
+    tokens: list[str] = []
+    for line in stripped.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) > 1 and (
+            all(validator(p) for p in parts) or not validator(line)
+        ):
+            tokens.extend(parts)
+        else:
+            tokens.append(line)
+    return tokens
 
 
 def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> str:
@@ -1344,16 +1389,19 @@ def add_by_doi(
     # thread: batching the fetch is both faster and gentler than issuing
     # the same requests concurrently, which drew HTTP 429s. A single DOI
     # takes the same path with a one-token list, unwrapped at the end.
-    tokens = _split_multi_value(doi, "doi")
-    is_batch = len(tokens) > 1
-    doi_list = tokens if tokens else [doi]
-
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
         return str(e)
 
     try:
+        # Inside the try: malformed structured input (a JSON object, say)
+        # raises from here, and is a user error like any other — it belongs
+        # in the returned text, not as a traceback out of the tool.
+        tokens = _split_multi_value(doi, "doi", _helpers._normalize_doi)
+        is_batch = len(tokens) > 1
+        doi_list = tokens if tokens else [doi]
+
         if if_exists not in _IF_EXISTS_VALUES:
             return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
 
@@ -1446,7 +1494,12 @@ def add_by_url(
     # above; the same pattern applies here, and a batch may freely mix DOI-
     # redirect, arXiv, and generic-webpage URLs since each token is
     # classified independently below.
-    tokens = _split_multi_value(url, "url")
+    try:
+        # See add_by_doi: splitting inside the try keeps malformed structured
+        # input a returned error string rather than a traceback.
+        tokens = _split_multi_value(url, "url", _looks_like_url)
+    except ValueError as e:
+        return f"Error adding by URL: {e}"
     if len(tokens) > 1:
         results = [
             add_by_url(url=tok, collections=collections, tags=tags,
@@ -1933,7 +1986,12 @@ def add_by_isbn(
 ) -> str:
     # ``isbn`` may name several ISBNs at once — see add_by_doi's batch
     # comment above; the same pattern applies here.
-    tokens = _split_multi_value(isbn, "isbn")
+    try:
+        # See add_by_doi: splitting inside the try keeps malformed structured
+        # input a returned error string rather than a traceback.
+        tokens = _split_multi_value(isbn, "isbn", _helpers._normalize_isbn)
+    except ValueError as e:
+        return f"Error adding by ISBN: {e}"
     if len(tokens) > 1:
         results = [
             add_by_isbn(isbn=tok, collections=collections, tags=tags,
@@ -4324,6 +4382,31 @@ _COMMON_TLDS = {
 }
 
 
+def _looks_like_url(s: str) -> bool:
+    """True when *s* has the shape of a web URL.
+
+    Shared by ``detect_source_type`` and the batch-split gate in
+    ``_split_multi_value``. DOI and ISBN have real normalizers to validate
+    against; a URL has only this heuristic, so it lives in one place rather
+    than being re-spelled at each call site.
+    """
+    s = (s or "").strip()
+    if not s or re.search(r"\s", s):
+        # A raw space can't occur in a URL (it must be percent-encoded), and
+        # rejecting it is what lets the batch-split gate tell
+        # "https://a.com, not a url" — two tokens, one bad — apart from a
+        # single URL that merely contains a comma.
+        return False
+    if s.lower().startswith(("http://", "https://")):
+        return True
+    host = _BARE_HOST_RE.match(s)
+    return bool(host and (
+        s.lower().startswith("www.")
+        or host.group("rest")
+        or host.group("tld").lower() in _COMMON_TLDS
+    ))
+
+
 def _looks_like_path(s: str) -> bool:
     """True when *s* has the shape of a filesystem path (POSIX or Windows)."""
     return (
@@ -4399,7 +4482,12 @@ def detect_source_type(source: str) -> str:
     if _helpers._normalize_doi(s):
         return "doi"
     if "," in s or "\n" in s:
-        tokens = [t.strip() for t in re.split(r"[,\n]", s) if t.strip()]
+        # Split exactly the way the adder will, so detection can't classify a
+        # string as a batch that add_by_doi then treats as one DOI (or vice
+        # versa). _split_multi_value's comma gate already requires every
+        # comma-token to be a DOI; the check below extends that to newline
+        # tokens, which it separates unconditionally.
+        tokens = _split_multi_value(s, "source", _helpers._normalize_doi)
         if len(tokens) >= 2 and all(_helpers._normalize_doi(t) for t in tokens):
             return "doi"
     if _helpers._normalize_arxiv_id(s):
@@ -4414,12 +4502,7 @@ def detect_source_type(source: str) -> str:
 
     if _helpers._normalize_isbn(s):
         return "isbn"
-    host = _BARE_HOST_RE.match(s)
-    if host and (
-        s.lower().startswith("www.")
-        or host.group("rest")
-        or host.group("tld").lower() in _COMMON_TLDS
-    ):
+    if _looks_like_url(s):
         return "url"
 
     raise ValueError(
