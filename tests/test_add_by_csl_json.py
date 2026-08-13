@@ -6,6 +6,7 @@ from conftest import FakeZotero
 
 from zotero_mcp import server
 from zotero_mcp.tools import write
+from zotero_mcp.tools._helpers import OaPdfRequiredError
 
 
 class FakeZoteroWithAttach(FakeZotero):
@@ -186,6 +187,39 @@ class TestOaPdfAttempt:
         )
 
         assert called["count"] == 0
+
+    def test_none_mode_passed_through_without_download(self, monkeypatch, dummy_ctx):
+        """attach_mode='none' must reach _try_attach_oa_pdf, which skips the lookup."""
+        fake = _patch_hybrid(monkeypatch)
+
+        write.add_item(
+            source=SAMPLE_ARTICLE, source_type="csl_json",
+            attach_mode="none", ctx=dummy_ctx,
+        )
+
+        assert len(fake.created) == 1
+        assert not fake.attachments
+
+    def test_required_mode_fails_entry_when_no_pdf_found(self, monkeypatch, dummy_ctx):
+        """_create_and_attach must report the entry as failed, not silently succeed."""
+        fake = _patch_hybrid(monkeypatch)
+
+        def stub_raises(*args, **kwargs):
+            raise OaPdfRequiredError("no open-access PDF found (stubbed)")
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf", stub_raises
+        )
+
+        result = write.add_item(
+            source=SAMPLE_ARTICLE, source_type="csl_json",
+            attach_mode="required", ctx=dummy_ctx,
+        )
+
+        # The item was still created — only the reported entry outcome fails.
+        assert len(fake.created) == 1
+        assert "Failed to add" in result
+        assert "attach_mode='required'" in result
 
 
 # ---------------------------------------------------------------------------

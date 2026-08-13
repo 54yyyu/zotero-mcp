@@ -10,6 +10,11 @@ from ipaddress import ip_address
 from urllib.parse import urljoin, urlparse
 
 import requests
+from pyzotero.zotero_errors import (
+    PreConditionFailedError,
+    TooManyRequestsError,
+    TooManyRetriesError,
+)
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
@@ -164,6 +169,42 @@ def _handle_write_response(response, ctx=None):
     if isinstance(response, dict):
         return bool(response.get("success"))
     return bool(response)
+
+
+_MAX_VERSION_CONFLICT_RETRIES = 3
+
+
+def _update_item_with_version_retry(write_zot, item_key, mutate_fn, ctx=None):
+    """Fetch *item_key*, apply *mutate_fn* to it, and write it back —
+    retrying on HTTP 412 (stale version) by re-fetching and re-applying.
+
+    Callers already re-fetch the item once before writing, to pick up the
+    web API's version number before mutating. That closes the common case
+    but not the race: another writer (a concurrent MCP call, Zotero
+    Desktop, or sync) can update the item again between that re-fetch and
+    this write, and pyzotero raises PreConditionFailedError for exactly
+    that window. A bounded retry — re-fetch, re-apply, re-send — closes it;
+    any other exception propagates immediately, unretried.
+
+    *mutate_fn* receives the freshly-fetched item dict and mutates it (or
+    its ``data``) in place. Returns the raw pyzotero response from
+    ``update_item``.
+    """
+    last_error = None
+    for attempt in range(_MAX_VERSION_CONFLICT_RETRIES):
+        item = write_zot.item(item_key)
+        mutate_fn(item)
+        try:
+            return write_zot.update_item(item)
+        except PreConditionFailedError as e:
+            last_error = e
+            if ctx is not None:
+                ctx.info(
+                    f"Version conflict updating item {item_key} (attempt "
+                    f"{attempt + 1}/{_MAX_VERSION_CONFLICT_RETRIES}); "
+                    "re-fetching and retrying."
+                )
+    raise last_error
 
 
 def ensure_collection_membership(write_zot, item_key: str, coll_keys: list[str], ctx=None) -> list[str]:
@@ -553,7 +594,9 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
-    callers treat that as "nothing found" and proceed to create.
+    callers treat that as "nothing found" and proceed to create — except when
+    Zotero rate-limited the search, which propagates rather than masquerading
+    as "nothing found" and duplicating an item that exists.
     """
     if doi:
         query = doi
@@ -586,6 +629,15 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
         candidates = zot.items(
             q=query, qmode="everything", itemType="-attachment", limit=50
         )
+    except (TooManyRetriesError, TooManyRequestsError):
+        # A rate-limited search is deliberately not swallowed. Every other
+        # failure here degrades to "no match" and the caller creates the item,
+        # which is the right trade for a genuinely failed search — but a
+        # throttled search hasn't answered the question, and reading it as "not
+        # present" silently creates duplicates of items that are. pyzotero
+        # >=1.13.5 has already retried and waited out the server's backoff by
+        # the time it raises, so there is nothing left to do but propagate.
+        raise
     except Exception as e:
         if ctx is not None:
             ctx.warning(f"Existing-item search failed (treating as no match): {e}")
@@ -593,7 +645,17 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
 
     matches = []
     for item in candidates or []:
-        data = item.get("data", {})
+        # Skip anything that isn't a well-formed item dict. The try above only
+        # wraps the call, not this iteration, so a malformed entry would raise
+        # here and abort the whole import instead of costing one dedup match.
+        # The known cause of that is fixed in pyzotero >=1.13.5, which this
+        # package now requires, but this stays as a backstop: nothing about the
+        # contract of a search result guarantees every entry is a dict.
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
         if data.get("itemType") in ("attachment", "note", "annotation"):
             continue
         if _matches(data):
@@ -1328,9 +1390,28 @@ def _try_pmc(doi, ctx):
         return None
 
 
+class OaPdfRequiredError(Exception):
+    """Raised by _try_attach_oa_pdf when attach_mode='required' finds no PDF.
+
+    Signals that the caller should fail (or flag) the entry rather than
+    report silent success — the item may already be created in Zotero, but
+    without the PDF the caller promised.
+    """
+
+
 def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                        attach_mode="auto"):
-    """Attempt to find and attach an open-access PDF for a DOI."""
+    """Attempt to find and attach an open-access PDF for a DOI.
+
+    attach_mode: 'auto' downloads and uploads the first working OA PDF;
+    'linked_url' bookmarks the PDF URL instead of uploading the binary;
+    'none' skips the OA lookup entirely; 'required' behaves like 'auto' but
+    raises OaPdfRequiredError instead of returning a status string when no
+    OA PDF could be attached.
+    """
+    if attach_mode == "none":
+        return "skipped (attach_mode=none)"
+
     sources = [
         ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
         ("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)),
@@ -1350,7 +1431,7 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                 if attach_mode == "linked_url":
                     if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
                         return f"PDF linked (source: {source_name})"
-                else:  # "auto" or "import_file" — try download only
+                else:  # "auto" or "required" — try download only
                     webdav_suffix = _download_and_attach_pdf(
                         write_zot, item_key, pdf_url, doi, ctx
                     )
@@ -1365,12 +1446,16 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
         # URLs were found but couldn't be downloaded — report them so the user
         # can access the paper through their university library
         url_info = found_urls[0][1]  # Best URL found
-        return (
+        message = (
             f"no open-access PDF could be downloaded, but a URL was found: {url_info} — "
             "you may be able to access it through your university library or VPN"
         )
+    else:
+        message = "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
 
-    return "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
+    if attach_mode == "required":
+        raise OaPdfRequiredError(message)
+    return message
 
 
 # ---------------------------------------------------------------------------
