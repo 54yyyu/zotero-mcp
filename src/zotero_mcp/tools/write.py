@@ -1352,11 +1352,29 @@ def _fetch_doi_metadata_batch(normalized_dois: list[str], ctx) -> dict[str, tupl
         }
 
         resp, error = _crossref_get(_CROSSREF_WORKS_URL, params, ctx, timeout=60)
+        if error is None and resp.status_code >= 400:
+            # _crossref_get only retries 429/5xx; every other 4xx comes back
+            # as a plain success, so the status has to be checked here — the
+            # single-DOI path does the same before parsing.
+            error = (f"Error fetching from CrossRef: HTTP {resp.status_code} "
+                     f"for a batch of {len(chunk)} DOIs")
         if error is None:
             try:
-                items = resp.json().get("message", {}).get("items") or []
+                message = resp.json().get("message")
             except ValueError as e:
+                message = None
                 error = f"Error fetching from CrossRef: malformed response ({e})"
+            if error is None and not isinstance(message, dict):
+                # A rejected query answers with `message` as a *list* of
+                # validation errors. Reaching straight for .get("items")
+                # raised AttributeError past the ValueError guard and took
+                # the whole call down. Treat it as a failure rather than
+                # falling through to an empty item list, which would report
+                # every DOI in the chunk as "not found on CrossRef" — a
+                # wrong answer rather than a reported one.
+                error = ("Error fetching from CrossRef: unexpected response "
+                         f"shape (message was {type(message).__name__})")
+            items = message.get("items") or [] if error is None else []
 
         if error is not None:
             # One request covers the whole chunk, so its failure is every
