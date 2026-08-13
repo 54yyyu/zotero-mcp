@@ -126,7 +126,8 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
         "pass 'journalArticle', 'book', etc. to filter. tag: optional list "
         "of tag conditions (ANDed). limit: max results (default 10). "
         "collection_key: 8-char key to restrict to a collection (bypasses "
-        "the fallback cascade). "
+        "the fallback cascade). include_subcollections: also search "
+        "collections nested beneath it (default False). "
         "Example: zotero_search_items(query='Cladder-Micus') or "
         "zotero_search_items(query='Brewer 2011', limit=5)."
     )
@@ -139,6 +140,7 @@ def search_items(
     limit: int | str | None = 10,
     tag: list[str] | list[dict] | str | None = None,
     collection_key: str | None = None,
+    include_subcollections: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -157,6 +159,9 @@ def search_items(
             internally to the list[str] form pyzotero expects.
         collection_key: Optional collection key to scope the search to a specific collection.
             When provided, bypasses the fallback cascade and searches the collection directly.
+        include_subcollections: Also search collections nested beneath
+            collection_key. Ignored when collection_key is not given. Defaults
+            to False, matching Zotero's own "Search subcollections" checkbox.
         ctx: MCP context
 
     Returns:
@@ -186,11 +191,26 @@ def search_items(
                 _col = None
             if not _col or _col.get("key") != collection_key:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            items = _helpers._paginate(
-                zot.collection_items, collection_key,
-                q=query, qmode=qmode, itemType=item_type,
-                max_items=limit, **({"tag": tag} if tag else {}),
+            scope_keys = _helpers.expand_collection_scope(
+                zot, collection_key, include_subcollections
             )
+            items = []
+            _seen: set[str] = set()
+            for _scope_key in scope_keys:
+                # limit applies to the merged result, so each subcollection may
+                # still contribute up to it before deduplication.
+                for _item in _helpers._paginate(
+                    zot.collection_items, _scope_key,
+                    q=query, qmode=qmode, itemType=item_type,
+                    max_items=limit, **({"tag": tag} if tag else {}),
+                ):
+                    _key = _item.get("key")
+                    if _key and _key in _seen:
+                        continue
+                    if _key:
+                        _seen.add(_key)
+                    items.append(_item)
+            items = items[:limit]
             fallback_strategy = None
         else:
             # --- Initial search with variant generation ---
@@ -355,6 +375,8 @@ def search_items(
         "'journalArticle', 'book', etc. to filter. "
         "limit: max results (default 10). "
         "collection_key: optional 8-char key to scope to a collection. "
+        "include_subcollections: also search collections nested beneath it "
+        "(default False). "
         "Use zotero_get_tags to discover available tag names first. For "
         "free-text content search, use zotero_search_items or "
         "zotero_semantic_search instead. "
@@ -367,6 +389,7 @@ def search_by_tag(
     item_type: str = "-attachment",
     limit: int | str | None = 10,
     collection_key: str | None = None,
+    include_subcollections: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -387,6 +410,8 @@ def search_by_tag(
         item_type: Type of items to search for. Use "-attachment" to exclude attachments.
         limit: Maximum number of results to return
         collection_key: Optional collection key to scope the search to a specific collection
+        include_subcollections: Also search collections nested beneath
+            collection_key. Ignored when collection_key is not given.
         ctx: MCP context
 
     Returns:
@@ -411,10 +436,23 @@ def search_by_tag(
                 _col = None
             if not _col or _col.get("key") != collection_key:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            results = _helpers._paginate(
-                zot.collection_items, collection_key,
-                tag=tag, itemType=item_type, max_items=limit,
+            scope_keys = _helpers.expand_collection_scope(
+                zot, collection_key, include_subcollections
             )
+            results = []
+            _seen: set[str] = set()
+            for _scope_key in scope_keys:
+                for _item in _helpers._paginate(
+                    zot.collection_items, _scope_key,
+                    tag=tag, itemType=item_type, max_items=limit,
+                ):
+                    _key = _item.get("key")
+                    if _key and _key in _seen:
+                        continue
+                    if _key:
+                        _seen.add(_key)
+                    results.append(_item)
+            results = results[:limit]
         else:
             zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
             results = zot.items()
@@ -539,6 +577,9 @@ def search_by_citation_key(
         "sort_by: dateAdded, dateModified, title, creator, etc. "
         "sort_direction: 'asc' (default) or 'desc'. "
         "limit: max results (default 50, max 500). "
+        "include_subcollections: make a 'collection' condition match items "
+        "anywhere in that collection's subtree, for the is/isNot operations "
+        "(default False). "
         "Example: zotero_advanced_search(conditions=[{'field': 'itemType', "
         "'operation': 'is', 'value': 'preprint'}, {'field': 'dateAdded', "
         "'operation': 'isAfter', 'value': '2026-03-22'}], "
@@ -552,6 +593,7 @@ def advanced_search(
     sort_by: str | None = None,
     sort_direction: Literal["asc", "desc"] = "asc",
     limit: int | str = 50,
+    include_subcollections: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -567,6 +609,12 @@ def advanced_search(
         sort_by: Field to sort by (dateAdded, dateModified, title, creator, etc.)
         sort_direction: Direction to sort (asc or desc)
         limit: Maximum number of results to return
+        include_subcollections: Make a `collection` condition match items filed
+            anywhere in that collection's subtree rather than in it directly.
+            Applies to the `is` and `isNot` operations, which are the
+            membership questions; other operators keep comparing keys as
+            before. Defaults to False, matching Zotero's own "Search
+            subcollections" checkbox.
         ctx: MCP context
 
     Returns:
@@ -631,6 +679,26 @@ def advanced_search(
             parsed_conditions.append(
                 {"field": field, "operation": operation, "value": value}
             )
+
+        # With subcollections requested, a `collection` condition stops being a
+        # per-value comparison and becomes set membership: the item matches if
+        # any collection it is filed in lies anywhere in the requested subtree.
+        # Expanding the *condition value* once here costs one API round-trip
+        # for the whole search, where expanding per item would cost one each.
+        collection_scopes: dict[str, set[str]] = {}
+        if include_subcollections:
+            _coll_values = {
+                c["value"] for c in parsed_conditions
+                if c["field"].lower() in {"collection", "collections"}
+            }
+            if _coll_values:
+                # One fetch for the whole search, however many collection
+                # conditions it carries.
+                _all_collections = _utils._paginate(zot.collections)
+                for _value in _coll_values:
+                    collection_scopes[_value] = set(
+                        _helpers.collection_descendants(_all_collections, _value)
+                    )
 
         def _extract_values(data: dict[str, object], field: str) -> list[str]:
             field_lower = field.lower()
@@ -737,6 +805,16 @@ def advanced_search(
 
             operation = condition["operation"]
             target = condition["value"]
+
+            # Subtree membership, when asked for. Only is/isNot are membership
+            # questions; the string operators keep comparing raw keys, which is
+            # what they did before and is unaffected by nesting.
+            is_collection_field = condition["field"].lower() in {"collection", "collections"}
+            scope = collection_scopes.get(target) if is_collection_field else None
+            if scope is not None and operation in {"is", "isNot"}:
+                in_subtree = bool(set(values) & scope)
+                return in_subtree if operation == "is" else not in_subtree
+
             comparisons = [_compare(value, target, operation) for value in values]
 
             if operation in {"isNot", "doesNotContain"}:

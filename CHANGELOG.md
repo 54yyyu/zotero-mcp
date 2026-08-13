@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
+- **`include_subcollections` on every collection-scoped search.** `zotero_search_items`, `zotero_search_by_tag`, `zotero_get_collection_items` and `zotero_advanced_search` all treated a collection scope as direct membership only, with no way to ask for the collections nested beneath it — so scoping a search to a project collection missed everything filed in its subcollections, silently and with no indication that a subtree existed. Passing `include_subcollections=True` covers the whole subtree; the default stays `False`, which is both the previous behaviour and what Zotero's own "Search subcollections" checkbox does when unchecked. In `zotero_advanced_search` this applies to a `collection` condition's `is` and `isNot` operations, which are the membership questions — `isNot` excludes the entire subtree rather than just the named collection, and the other operators keep comparing keys as before. The expansion costs one extra API call for the whole search and nothing at all when the flag is off. This also closes an inconsistency: `get_items_with_text`, which scopes the semantic index to collections, has always expanded subcollections, so the same collection meant two different things depending on which part of the server you asked.
 
 ## [0.9.1] - 2026-08-05
 
