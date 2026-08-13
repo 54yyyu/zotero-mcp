@@ -1397,13 +1397,18 @@ def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_
 
     ``supplemental`` fills only the fields CrossRef left empty; see
     ``_crossref_to_item_data``.
+
+    ``cr`` is carried through in the payload as well as consumed here: the
+    OA-PDF cascade's "arXiv (via CrossRef)" source reads the has-preprint
+    relation straight out of this message, so dropping it after the field
+    mapping silently disables that source.
     """
     item_data, zot_type, type_note = _crossref_to_item_data(
         cr, normalized, template_fn, supplemental
     )
     _apply_caller_tags_and_collections(item_data, tags, coll_keys)
     return {"item_data": item_data, "zot_type": zot_type, "doi": normalized,
-            "type_note": type_note}
+            "type_note": type_note, "cr": cr}
 
 
 def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
@@ -1545,6 +1550,8 @@ def add_by_doi(
             _create_and_attach_batch(
                 write_zot, [payload["item_data"] for _, payload in pending],
                 attach_mode, ctx,
+                crossref_by_doi={payload["doi"]: payload["cr"]
+                                 for _, payload in pending},
             )
             if pending else []
         )
@@ -4761,6 +4768,7 @@ def _create_and_attach_batch(
     item_datas: list[dict],
     attach_mode: str,
     ctx: Context,
+    crossref_by_doi: dict[str, dict] | None = None,
 ) -> list[dict]:
     """Create many Zotero items in POSTs of up to 50 and, for each with a
     DOI, try to attach an OA PDF (#A4).
@@ -4771,6 +4779,14 @@ def _create_and_attach_batch(
     at annotations.py/retrieval.py. ``ensure_collection_membership`` (the
     per-item #235 backstop, which does its own re-fetch) is only called for
     entries the bulk read shows are actually missing a requested collection.
+
+    ``crossref_by_doi`` maps normalized DOI to the CrossRef message that
+    entry was built from, for the cascade's "arXiv (via CrossRef)" source.
+    Keyed by DOI rather than passed as a list parallel to ``item_datas``
+    because the DOI is re-derived below anyway, and a parallel list is one
+    more thing that has to stay aligned across chunking. Optional: the
+    bibtex and CSL-JSON importers share this function and have no CrossRef
+    message, in which case that source simply finds nothing.
 
     Returns per-entry result dicts — ``{"ok": bool, "key": str|None, "doi":
     str|None, "pdf_status": str|None, "error": str|None, "title": str,
@@ -4856,7 +4872,9 @@ def _create_and_attach_batch(
             if doi:
                 try:
                     pdf_status = _helpers._try_attach_oa_pdf(
-                        write_zot, item_key, doi, ctx, attach_mode=attach_mode
+                        write_zot, item_key, doi, ctx,
+                        crossref_metadata=(crossref_by_doi or {}).get(doi),
+                        attach_mode=attach_mode,
                     )
                 except _helpers.OaPdfRequiredError as e:
                     error = (
