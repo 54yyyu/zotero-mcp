@@ -10,9 +10,11 @@ import contextlib
 import json
 import logging
 import os
+import queue
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -183,6 +185,60 @@ def _extract_fulltext_batch(reader, items):
         return
     for item_id, _item_key in items:
         yield item_id, reader.extract_fulltext_for_item(item_id)
+
+
+#: End-of-stream marker for the streaming index pipeline's queues. A unique
+#: object so it can never collide with a real payload.
+_STREAM_SENTINEL = object()
+
+#: Vectors buffered before the streaming committer writes to ChromaDB. Large
+#: enough that commits are not the bottleneck, small enough that a crash loses
+#: little work and the fulltext cache is evicted steadily rather than at the end.
+_STREAM_COMMIT_THRESHOLD = 200
+
+
+def _split_prepared_into_requests(prepared: dict[str, Any], request_batch_size: int):
+    """Yield ``(documents, metadatas, ids, item_keys)`` request-sized payloads.
+
+    ``item_keys`` is a list of ``(item_key, already_existed)`` pairs, so the
+    committer can keep added-vs-updated accounting item-granular no matter how
+    many chunks an item produced.
+
+    Splits only on item boundaries. A payload may therefore exceed
+    ``request_batch_size`` when a single item contributed more chunks than
+    that, which is deliberate: an item whose chunks were spread across two
+    independently committed requests could end up half-indexed if one of them
+    failed, and ``delete_item_chunks`` runs once per item at preparation time.
+    """
+    documents = prepared["documents"]
+    metadatas = prepared["metadatas"]
+    ids = prepared["ids"]
+    existing = prepared["existing_item_keys"]
+
+    buffer_docs: list[str] = []
+    buffer_metas: list[dict[str, Any]] = []
+    buffer_ids: list[str] = []
+    buffer_keys: list[tuple[str, bool]] = []
+    offset = 0
+
+    for item_key, doc_count in zip(
+        prepared["item_keys_order"], prepared["item_doc_counts"]
+    ):
+        if doc_count <= 0:
+            continue
+        end = offset + doc_count
+        buffer_docs.extend(documents[offset:end])
+        buffer_metas.extend(metadatas[offset:end])
+        buffer_ids.extend(ids[offset:end])
+        buffer_keys.append((item_key, item_key in existing))
+        offset = end
+
+        if len(buffer_docs) >= request_batch_size:
+            yield buffer_docs, buffer_metas, buffer_ids, buffer_keys
+            buffer_docs, buffer_metas, buffer_ids, buffer_keys = [], [], [], []
+
+    if buffer_docs:
+        yield buffer_docs, buffer_metas, buffer_ids, buffer_keys
 
 
 def load_update_config(config_path: str | None) -> dict[str, Any]:
@@ -462,6 +518,16 @@ class ZoteroSemanticSearch:
     # do this) still resolve the attribute — None means "use the config".
     extraction_workers: int | None = None
 
+    # Serializes every ChromaDB call made from the streaming index path, where
+    # a producer thread classifies one slice while the main thread commits the
+    # previous one. ChromaDB gives no concurrency guarantee for a single
+    # PersistentClient, and the calls it guards are short local I/O — the
+    # embedding round-trips this pipeline exists to overlap all happen outside
+    # it. Class-level for the same reason as extraction_workers above; real
+    # instances get their own in __init__, and sharing this one would only
+    # over-serialize, never corrupt.
+    _chroma_call_lock = threading.Lock()
+
     def __init__(
         self,
         chroma_client: ChromaClient | None = None,
@@ -481,6 +547,7 @@ class ZoteroSemanticSearch:
         """
         self.chroma_client = chroma_client or create_chroma_client(config_path)
         self.zotero_client = get_zotero_client()
+        self._chroma_call_lock = threading.Lock()
         self.config_path = config_path
         self.db_path = db_path  # CLI override for Zotero database path
         self.extraction_workers = extraction_workers  # CLI override, None = use config
@@ -2380,33 +2447,72 @@ class ZoteroSemanticSearch:
             batch_size = 25
             seen_items = 0
             _failed_docs = []  # Collect failures for end-of-run retry
-            for i in range(0, len(all_items), batch_size):
-                batch = all_items[i : i + batch_size]
 
-                # Show per-item progress within this batch
-                for item in batch:
-                    seen_items += 1
-                    title = item.get("data", {}).get("title", "")
-                    if title and len(title) > 60:
-                        title = title[:57] + "..."
-                    pct = int(seen_items / total * 100) if total else 0
-                    try:
-                        sys.stderr.write(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
-                        sys.stderr.flush()
-                    except Exception:
-                        pass
+            def _report_item_progress(item: dict[str, Any]) -> None:
+                """Advance the single-line progress display by one item.
 
-                batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
+                Called from exactly one thread on both paths — the loop below,
+                or the streaming producer — so the `\\r` line never interleaves
+                and items are still announced in input order.
+                """
+                nonlocal seen_items
+                seen_items += 1
+                title = item.get("data", {}).get("title", "")
+                if title and len(title) > 60:
+                    title = title[:57] + "..."
+                pct = int(seen_items / total * 100) if total else 0
+                try:
+                    sys.stderr.write(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
+                    sys.stderr.flush()
+                except Exception:
+                    pass
 
-                stats["processed_items"] += batch_stats["processed"]
-                stats["added_items"] += batch_stats["added"]
-                stats["updated_items"] += batch_stats["updated"]
-                stats["skipped_items"] += batch_stats["skipped"]
-                stats["errors"] += batch_stats["errors"]
+            # Overlap preparation, embedding and commits when the embedding
+            # function is configured for concurrent requests. Off unless
+            # embedding_config.max_parallel_requests says otherwise, so the
+            # default run is byte-for-byte the historical sequential path. The
+            # upsert_embeddings check also keeps the minimal ChromaDB doubles
+            # used in tests — which implement only upsert_documents — on it.
+            embedding_function = getattr(self.chroma_client, "embedding_function", None)
+            max_parallel = getattr(embedding_function, "max_parallel_requests", 1) or 1
+            use_streaming = (
+                embedding_function is not None
+                and max_parallel > 1
+                and hasattr(self.chroma_client, "upsert_embeddings")
+            )
 
+            if use_streaming:
                 logger.info(
-                    f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
+                    f"Streaming index: {max_parallel} parallel embedding requests"
                 )
+                self._stream_index_items(
+                    all_items,
+                    force_full_rebuild,
+                    stats,
+                    _failed_docs,
+                    embedding_function,
+                    max_parallel,
+                    _report_item_progress,
+                )
+            else:
+                for i in range(0, len(all_items), batch_size):
+                    batch = all_items[i : i + batch_size]
+
+                    # Show per-item progress within this batch
+                    for item in batch:
+                        _report_item_progress(item)
+
+                    batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
+
+                    stats["processed_items"] += batch_stats["processed"]
+                    stats["added_items"] += batch_stats["added"]
+                    stats["updated_items"] += batch_stats["updated"]
+                    stats["skipped_items"] += batch_stats["skipped"]
+                    stats["errors"] += batch_stats["errors"]
+
+                    logger.info(
+                        f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
+                    )
 
             # Retry any documents that failed during the main run
             if _failed_docs:
@@ -2490,21 +2596,30 @@ class ZoteroSemanticSearch:
             # for the path where we actually hold the lock.
             lock_cm.__exit__(None, None, None)
 
-    def _process_item_batch(
+    def _prepare_and_classify_slice(
         self,
         items: list[dict[str, Any]],
         force_rebuild: bool = False,
-        _failed_docs: list | None = None,
-    ) -> dict[str, int]:
-        """Process a batch of items.
+    ) -> dict[str, Any]:
+        """Build the documents for ``items`` and classify them existing-vs-new.
 
-        _failed_docs: optional list (passed by reference from update_database)
-        that collects (doc_text, metadata, doc_id) tuples for batches that fail
-        mid-run. Without this, the retry path at update_database:839-865 is
-        dead code — a NameError raised here would crash the whole reindex,
-        making every transient ChromaDB error fatal instead of recoverable.
+        Everything :meth:`_process_item_batch` does up to, but not including,
+        handing documents to ChromaDB: assembling each item's text and
+        metadata, splitting it into passages when chunking is on, truncating to
+        the embedding model's limit, probing which items are already indexed,
+        and clearing an item's stale passages before its new ones are written.
+
+        Safe to call from a worker thread. The assembly loop touches no shared
+        state; the two ChromaDB calls at the end are guarded by
+        ``_chroma_call_lock`` so they can never interleave with a commit
+        running on another thread.
+
+        Returns the prepared parallel lists plus ``item_doc_counts`` — how many
+        documents each entry in ``item_keys_order`` contributed — so a caller
+        can split the batch on item boundaries without re-deriving them from
+        the ids.
         """
-        stats = {"processed": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0}
+        stats = {"processed": 0, "skipped": 0, "errors": 0}
 
         chunking = self._chunking_enabled
         chunk_size = int(self._chunking_config.get("chunk_size", 1500))
@@ -2517,6 +2632,9 @@ class ZoteroSemanticSearch:
         # One entry per *item* successfully prepared (not per chunk) so add/
         # update accounting stays item-granular regardless of chunking.
         item_keys_order: list[str] = []
+        # Documents contributed by each entry of item_keys_order, so callers
+        # can slice the flat lists back into whole items.
+        item_doc_counts: list[int] = []
 
         for item in items:
             try:
@@ -2524,6 +2642,7 @@ class ZoteroSemanticSearch:
                 if not item_key:
                     stats["skipped"] += 1
                     continue
+                docs_before = len(documents)
 
                 # Create document text and metadata
                 # Always include structured fields; append fulltext when available
@@ -2568,19 +2687,19 @@ class ZoteroSemanticSearch:
                     ids.append(item_key)
 
                 item_keys_order.append(item_key)
+                item_doc_counts.append(len(documents) - docs_before)
                 stats["processed"] += 1
 
             except Exception as e:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
                 stats["errors"] += 1
 
-        # Add documents to ChromaDB if any
-        if documents:
-            # Which items already existed (drives added-vs-updated). When
-            # chunking, also clear an item's stale passages before re-adding so
-            # a shrinking document never leaves orphaned chunks behind.
-            existing_item_keys: set[str] = set()
-            if not force_rebuild:
+        # Which items already existed (drives added-vs-updated). When chunking,
+        # also clear an item's stale passages before re-adding so a shrinking
+        # document never leaves orphaned chunks behind.
+        existing_item_keys: set[str] = set()
+        if documents and not force_rebuild:
+            with self._chroma_call_lock:
                 if chunking:
                     probe_ids = [f"{k}#0" for k in item_keys_order]
                     existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
@@ -2594,8 +2713,294 @@ class ZoteroSemanticSearch:
                 else:
                     existing_item_keys = self.chroma_client.get_existing_ids(ids)
 
+        return {
+            "documents": documents,
+            "metadatas": metadatas,
+            "ids": ids,
+            "item_keys_order": item_keys_order,
+            "item_doc_counts": item_doc_counts,
+            "existing_item_keys": existing_item_keys,
+            "prep_stats": stats,
+        }
+
+    def _stream_index_items(
+        self,
+        all_items: list[dict[str, Any]],
+        force_rebuild: bool,
+        stats: dict[str, Any],
+        failed_docs: list,
+        embedding_function: Any,
+        max_parallel: int,
+        report_progress: Any,
+    ) -> None:
+        """Index ``all_items`` with preparation, embedding and commits overlapped.
+
+        One producer thread prepares slices and splits them into request-sized
+        payloads; ``max_parallel`` worker threads embed those payloads; the
+        calling thread is the sole committer, buffering vectors and writing
+        them with ``upsert_embeddings``. Only the workers block on the network,
+        so several embedding requests are in flight while the next slice is
+        being prepared and the previous one committed.
+
+        Mutates ``stats`` and ``failed_docs`` in place, exactly as the
+        synchronous path does, so the caller's end-of-run retry pass is shared
+        between both paths.
+        """
+        # Slices scale with parallelism so one preparation pass yields enough
+        # payloads to keep every worker busy, and are capped so the classify
+        # step — which holds _chroma_call_lock — stays short.
+        slice_size = min(25 * max(1, max_parallel), 200)
+        request_batch_size = (
+            getattr(embedding_function, "request_batch_size", None) or 64
+        )
+
+        # Bounded in payloads, not items: the producer must never materialize
+        # the whole library's prepared documents or computed vectors at once.
+        queue_size = max(2 * max_parallel, 4)
+        chunk_queue: queue.Queue = queue.Queue(maxsize=queue_size)
+        vector_queue: queue.Queue = queue.Queue(maxsize=queue_size)
+
+        stop_event = threading.Event()
+        stats_lock = threading.Lock()
+        failed_lock = threading.Lock()
+        errors_lock = threading.Lock()
+        thread_errors: list[BaseException] = []
+
+        def bump(key: str, amount: int = 1) -> None:
+            # The producer and the committer both write to `stats`, and
+            # `stats[key] += n` is several bytecodes with a GIL release
+            # possible in between, so every update goes through this lock.
+            if not amount:
+                return
+            with stats_lock:
+                stats[key] += amount
+
+        def record_failures(documents, metadatas, ids) -> None:
+            with failed_lock:
+                failed_docs.extend(zip(documents, metadatas, ids))
+
+        def record_thread_error(exc: BaseException) -> None:
+            with errors_lock:
+                thread_errors.append(exc)
+
+        def producer() -> None:
             try:
-                self.chroma_client.upsert_documents(documents, metadatas, ids)
+                for start in range(0, len(all_items), slice_size):
+                    if stop_event.is_set():
+                        break
+                    slice_items = all_items[start : start + slice_size]
+                    for item in slice_items:
+                        report_progress(item)
+
+                    prepared = self._prepare_and_classify_slice(
+                        slice_items, force_rebuild
+                    )
+                    prep = prepared["prep_stats"]
+                    bump("processed_items", prep["processed"])
+                    bump("skipped_items", prep["skipped"])
+                    bump("errors", prep["errors"])
+
+                    for payload in _split_prepared_into_requests(
+                        prepared, request_batch_size
+                    ):
+                        if stop_event.is_set():
+                            break
+                        chunk_queue.put(payload)
+            except BaseException as exc:  # noqa: BLE001 - re-raised by the caller
+                record_thread_error(exc)
+            finally:
+                # Unconditional. A producer that died early must still release
+                # every worker, or they block on get() forever and the commit
+                # loop never sees the sentinels that end it.
+                for _ in range(max_parallel):
+                    chunk_queue.put(_STREAM_SENTINEL)
+
+        def worker() -> None:
+            try:
+                while True:
+                    payload = chunk_queue.get()
+                    if payload is _STREAM_SENTINEL:
+                        break
+                    documents, metadatas, ids, item_keys = payload
+                    try:
+                        vectors = embedding_function(documents)
+                    except Exception as exc:
+                        # One sub-batch failing is not fatal: hand it to the
+                        # end-of-run retry pass and keep the worker alive, so a
+                        # single bad request cannot end the whole run.
+                        logger.warning(
+                            f"Embedding request failed ({exc}), saving for retry"
+                        )
+                        record_failures(documents, metadatas, ids)
+                        bump("errors", len(documents))
+                        continue
+                    vector_queue.put((documents, metadatas, ids, item_keys, vectors))
+            except BaseException as exc:  # noqa: BLE001 - re-raised by the caller
+                record_thread_error(exc)
+            finally:
+                # Also unconditional, and exactly one per worker, so the commit
+                # loop's countdown always reaches zero.
+                vector_queue.put(_STREAM_SENTINEL)
+
+        write_docs: list[str] = []
+        write_metas: list[dict[str, Any]] = []
+        write_ids: list[str] = []
+        write_vectors: list[Any] = []
+        write_keys: dict[str, bool] = {}
+        accounted_keys: set[str] = set()
+
+        def flush() -> None:
+            nonlocal write_docs, write_metas, write_ids, write_vectors, write_keys
+            if not write_vectors:
+                return
+            try:
+                with self._chroma_call_lock:
+                    self.chroma_client.upsert_embeddings(
+                        write_docs, write_metas, write_ids, write_vectors
+                    )
+            except Exception as exc:
+                logger.warning(f"Batch upsert failed ({exc}), saving for retry")
+                record_failures(write_docs, write_metas, write_ids)
+                bump("errors", len(write_docs))
+            else:
+                for item_key, already_existed in write_keys.items():
+                    if item_key in accounted_keys:
+                        continue
+                    accounted_keys.add(item_key)
+                    bump("updated_items" if already_existed else "added_items")
+                # Same contract as the synchronous path: the transient copy of
+                # an item's extracted text has done its job once its embedding
+                # is persisted, so evict per commit rather than at the end.
+                try:
+                    fulltext_cache.evict_many(
+                        list(write_keys), config_path=self.config_path
+                    )
+                except Exception as exc:
+                    logger.debug(f"Fulltext cache eviction failed: {exc}")
+            finally:
+                write_docs, write_metas, write_ids, write_vectors = [], [], [], []
+                write_keys = {}
+
+        producer_thread = threading.Thread(
+            target=producer, name="zmcp-index-producer", daemon=True
+        )
+        worker_threads = [
+            threading.Thread(target=worker, name=f"zmcp-index-worker-{i}", daemon=True)
+            for i in range(max_parallel)
+        ]
+        producer_thread.start()
+        for thread in worker_threads:
+            thread.start()
+
+        active_workers = max_parallel
+        try:
+            while active_workers > 0:
+                try:
+                    payload = vector_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if payload is _STREAM_SENTINEL:
+                    # Each worker emits its sentinel only after its last
+                    # result, so once all of them have arrived the queue is
+                    # drained by construction.
+                    active_workers -= 1
+                    continue
+                documents, metadatas, ids, item_keys, vectors = payload
+                write_docs.extend(documents)
+                write_metas.extend(metadatas)
+                write_ids.extend(ids)
+                write_vectors.extend(vectors)
+                for item_key, already_existed in item_keys:
+                    write_keys[item_key] = already_existed
+                if len(write_vectors) >= _STREAM_COMMIT_THRESHOLD:
+                    flush()
+            flush()
+        except BaseException:
+            # Ctrl-C lands here: it is delivered to the main thread, which is
+            # this commit loop. Commit what has already been paid for, then
+            # unblock any thread stalled on a full queue so it can reach its
+            # sentinel-pushing finally block.
+            stop_event.set()
+            try:
+                flush()
+            except Exception:
+                pass
+            self._drain_stream_queues(
+                (chunk_queue, vector_queue), [producer_thread, *worker_threads]
+            )
+            raise
+        finally:
+            producer_thread.join(timeout=5)
+            for thread in worker_threads:
+                thread.join(timeout=5)
+
+        if thread_errors:
+            raise thread_errors[0]
+
+    @staticmethod
+    def _drain_stream_queues(queues, threads, timeout: float = 5.0) -> None:
+        """Discard queued work until every thread has exited, or ``timeout``.
+
+        A thread blocked in ``put()`` on a full queue cannot reach its
+        ``finally`` block, so on the abort path the queues have to be emptied
+        for the pipeline to unwind. Whatever is discarded is safe to lose:
+        indexing is idempotent per item key and Zotero remains the source of
+        truth, so the next run picks those items up again.
+
+        Thread cancellation is cooperative — a worker inside an HTTP request
+        cannot be interrupted — so this bounds how long the caller waits, not
+        how long the thread runs.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and any(t.is_alive() for t in threads):
+            for q in queues:
+                try:
+                    while True:
+                        q.get_nowait()
+                except queue.Empty:
+                    pass
+            time.sleep(0.05)
+
+    def _process_item_batch(
+        self,
+        items: list[dict[str, Any]],
+        force_rebuild: bool = False,
+        _failed_docs: list | None = None,
+    ) -> dict[str, int]:
+        """Prepare a batch of items and hand it to ChromaDB for embedding.
+
+        The synchronous index path: preparation and classification happen in
+        :meth:`_prepare_and_classify_slice`, then ``upsert_documents`` blocks
+        while ChromaDB embeds the batch. The streaming path in
+        ``update_database`` replaces only this second half.
+
+        _failed_docs: optional list (passed by reference from update_database)
+        that collects (doc_text, metadata, doc_id) tuples for batches that fail
+        mid-run. Without this, the retry path at update_database:839-865 is
+        dead code — a NameError raised here would crash the whole reindex,
+        making every transient ChromaDB error fatal instead of recoverable.
+        """
+        prepared = self._prepare_and_classify_slice(items, force_rebuild)
+        prep_stats = prepared["prep_stats"]
+        stats = {
+            "processed": prep_stats["processed"],
+            "added": 0,
+            "updated": 0,
+            "skipped": prep_stats["skipped"],
+            "errors": prep_stats["errors"],
+        }
+
+        documents = prepared["documents"]
+        metadatas = prepared["metadatas"]
+        ids = prepared["ids"]
+        item_keys_order = prepared["item_keys_order"]
+        existing_item_keys = prepared["existing_item_keys"]
+
+        # Add documents to ChromaDB if any
+        if documents:
+            try:
+                with self._chroma_call_lock:
+                    self.chroma_client.upsert_documents(documents, metadatas, ids)
                 for k in item_keys_order:
                     if k in existing_item_keys:
                         stats["updated"] += 1
