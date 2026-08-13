@@ -13,6 +13,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -1054,6 +1055,8 @@ class LocalZoteroReader:
         # Resolve targets and serve cache hits up front — both are cheap, and
         # doing them here keeps the pool busy with parsing alone.
         deferred: list[tuple[int, str | None, tuple[Path, str] | None]] = []
+        # Outstanding work at the moment the pool died, to redo in-process.
+        stranded: list[tuple[int, str | None]] = []
         with ProcessPoolExecutor(
             max_workers=self.extraction_workers, initializer=_init_extraction_worker
         ) as pool:
@@ -1070,19 +1073,50 @@ class LocalZoteroReader:
                 future = pool.submit(_extract_worker, str(target), max_pages)
                 pending[future] = (item_id, item_key, target, attachment_key)
 
+            settled: set[Any] = set()
             for future in as_completed(pending):
                 item_id, item_key, target, attachment_key = pending[future]
                 try:
                     text = future.result()
-                except Exception as e:  # worker died; fall back below
+                except BrokenProcessPool as e:
+                    # A worker *process* died — an OOM on a pathological PDF,
+                    # not the ordinary corrupt-file case ``_extract_worker``
+                    # already absorbs. Every future still outstanding raises
+                    # this same error, so letting the blanket handler below
+                    # turn each one into empty text would mark the whole
+                    # remainder of the batch has_fulltext="failed" — a sticky
+                    # marker the skip logic then refuses to retry until the
+                    # item changes or the collection is rebuilt. One transient
+                    # death would poison a large run. Stop reaping futures and
+                    # redo the outstanding work in this process instead.
+                    logger.warning(
+                        f"Extraction worker pool died ({e}); re-extracting the "
+                        f"remaining {len(pending) - len(settled)} item(s) in-process"
+                    )
+                    stranded = [
+                        (i, k)
+                        for f, (i, k, _target, _att) in pending.items()
+                        if f not in settled
+                    ]
+                    break
+                except Exception as e:  # this item failed; fall back below
                     logger.debug(f"Extraction worker failed for item {item_id}: {e}")
                     text = ""
+                settled.add(future)
                 if text:
                     source = _source_for_path(target)
                     self._cache_store(target, attachment_key, item_key, text, source)
                     yield item_id, (text, source)
                 else:
                     deferred.append((item_id, item_key, (target, attachment_key)))
+
+        # Work the dead pool never finished, redone here. This is the exact
+        # path ``extraction_workers <= 1`` takes, so target resolution, the
+        # transient cache and the .zotero-ft-cache fallback all behave
+        # identically — the blast radius of a dead worker is whichever single
+        # file killed it, matching what the sequential path would have lost.
+        for item_id, item_key in stranded:
+            yield item_id, self._extract_fulltext_for_item(item_id, item_key)
 
         # Whatever the parser could not read falls back to Zotero's own
         # .zotero-ft-cache, exactly as the sequential path does. Cheap file
