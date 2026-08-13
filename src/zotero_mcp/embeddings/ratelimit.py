@@ -243,12 +243,17 @@ class AdaptiveRateLimiter:
     def _locked_apply_header_headroom(self, headers: Any | None) -> None:
         """Refill the token bucket early when headers report ample headroom.
 
-        Best-effort and entirely optional. OpenAI's embeddings endpoint does
-        not return ``x-ratelimit-*-tokens`` at all — a direct probe came back
-        with only ``x-ratelimit-limit-requests`` — which is precisely why the
-        bucket is seeded from configuration instead. This path exists so that
-        providers which *do* send the headers are not paced more conservatively
-        than they need to be; nothing depends on it.
+        Best-effort. OpenAI does send ``x-ratelimit-remaining-tokens`` and
+        ``x-ratelimit-limit-tokens`` on embeddings responses (measured against
+        text-embedding-3-small: a limit of exactly 1,000,000), so on that
+        provider this keeps the local bucket from pacing more conservatively
+        than the server itself would.
+
+        It is still only an optimization, and the bucket is still seeded from
+        configuration rather than from these headers, because they arrive with
+        a *response*: the first request of a run has to be paced before any
+        header has been seen, and a provider that omits them would leave the
+        limiter with no target at all.
         """
         if not headers or not hasattr(headers, "get"):
             return

@@ -31,9 +31,10 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
 
     # Tokens per minute the limiter paces against when nothing else supplies a
     # ceiling. text-embedding-3-small is 1,000,000 TPM on Tier 1 and higher on
-    # later tiers, so this leaves 5% headroom against the *lowest* tier — the
-    # safe default, since the tier is not discoverable at runtime (the
-    # embeddings endpoint returns no x-ratelimit-*-tokens headers). Users above
+    # later tiers, so this leaves 5% headroom against the *lowest* tier, which
+    # is the safe default to start a run at: the provider does report its
+    # ceiling in x-ratelimit-limit-tokens, but only on a response, so the first
+    # requests have to be paced against something already known. Users above
     # Tier 1 raise it via embedding_config.tokens_per_minute.
     DEFAULT_TOKENS_PER_MINUTE = 950_000.0
     default_tokens_per_minute = DEFAULT_TOKENS_PER_MINUTE

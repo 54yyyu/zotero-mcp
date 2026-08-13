@@ -10,10 +10,13 @@ Mainly, this is how you find the value for
 token budget rather than a request rate, because tokens are what bind: at a
 64 x ~500-token payload each request costs ~32K tokens, so a 1,000,000 TPM
 ceiling caps throughput near 31 requests/minute against a 3,000 RPM
-allowance. The budget has to be configured rather than discovered, since the
-embeddings endpoint has not been observed to return x-ratelimit-*-tokens at
-all — run this and read ``x-ratelimit-limit-tokens`` if it is present, or look
-your tier's published ceiling up, then set the config key a little under it.
+allowance. Read ``x-ratelimit-limit-tokens`` from the output and set the
+config key a little under it.
+
+The limiter is seeded from that config value rather than from the headers
+themselves, even though OpenAI does send them: headers arrive with a
+response, so the first requests of a run would be unpaced, and a provider
+that omits them would leave the limiter with no target at all.
 """
 
 import argparse
