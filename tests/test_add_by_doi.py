@@ -1012,7 +1012,7 @@ class TestMultipleDois:
         assert len(fake_zot.created) == 2
         assert fake_zot.created[0]["title"] == "Paper A"
         assert fake_zot.created[1]["title"] == "Paper B"
-        assert "# Added 2 DOIs" in result
+        assert "# Added 2 of 2 DOIs" in result
         assert "Successfully added: **Paper A**" in result
         assert "Successfully added: **Paper B**" in result
 
@@ -1032,7 +1032,7 @@ class TestMultipleDois:
         result = write.add_item(source="10.1111/a\n10.2222/b", ctx=dummy_ctx)
 
         assert len(fake_zot.created) == 2
-        assert "# Added 2 DOIs" in result
+        assert "# Added 2 of 2 DOIs" in result
 
     def test_partial_failure_reports_both(self, monkeypatch, fake_zot, dummy_ctx):
         """One 404 alongside one success: the successful DOI is still
@@ -1168,3 +1168,153 @@ class TestCrossrefMetadataReachesTheCascade:
 
         assert len(spy_attach) == 1
         assert spy_attach[0]["crossref_metadata"] is None
+
+
+# ---------------------------------------------------------------------------
+# Repeated identifiers within one call
+# ---------------------------------------------------------------------------
+
+class TestRepeatedIdentifiers:
+    """Dedup against the library runs in phase 1, before anything has been
+    created, so it cannot see an item this same call is about to add. Without
+    collapsing repeats up front, the same DOI listed twice was created twice
+    even under if_exists='skip'."""
+
+    def test_same_doi_three_times_creates_one_item(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        result = write.add_by_doi(
+            doi=["10.1111/a", "10.1111/a", "10.1111/a"], ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        # Still one line per requested token, so the caller can see what
+        # happened to each thing they asked for.
+        assert result.count("## ") == 3
+        assert result.count("Same DOI as entry 1 in this request") == 2
+        assert "# Added 1 of 3 DOIs" in result
+        assert "2 repeated in this request" in result
+
+    def test_repeats_are_matched_case_insensitively(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """DOIs are case-insensitive, and CrossRef echoes canonical case."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        write.add_by_doi(doi=["10.1111/aBc", "10.1111/ABC"], ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 1
+
+    def test_only_one_crossref_fetch_for_a_repeat(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        seen = []
+        inner = fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi))
+
+        def _get(url, params=None, **kwargs):
+            if "crossref.org" in url:
+                seen.append(url)
+            return inner(url, params=params, **kwargs)
+
+        monkeypatch.setattr("requests.get", _get)
+
+        write.add_by_doi(doi=["10.1111/a", "10.1111/a"], ctx=dummy_ctx)
+
+        # One DOI of real work, so the single-DOI endpoint is used rather
+        # than a batch filter — the repeat costs no CrossRef round-trip.
+        assert seen == ["https://api.crossref.org/works/10.1111/a"]
+
+    def test_distinct_dois_are_untouched(self, monkeypatch, fake_zot, dummy_ctx):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        result = write.add_by_doi(doi=["10.1111/a", "10.2222/b"], ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 2
+        assert "repeated in this request" not in result
+
+    def test_invalid_tokens_each_get_their_own_error(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """Two unnormalizable tokens are not "the same identifier" — there is
+        no identifier to compare. Each keeps its own line."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        result = write.add_by_doi(doi=["nope", "nope"], ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 0
+        assert result.count("does not appear to be a valid DOI") == 2
+        assert "# Added 0 of 2 DOIs" in result
+
+
+class TestHonestBatchCount:
+    def test_header_counts_successes_not_inputs(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """The header said "Added N" from len(tokens) — the number asked for,
+        not the number added — so a batch where everything failed still
+        claimed to have added them all."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        messages = {"10.1111/a": _make_crossref_message(DOI="10.1111/a")}
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
+
+        result = write.add_by_doi(
+            doi=["10.1111/a", "10.9999/missing"], ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert "# Added 1 of 2 DOIs" in result
+        assert "1 failed" in result
+
+    def test_existing_items_count_as_reused_not_added(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers.find_existing_items",
+            lambda zot, **kw: (
+                [{"key": "OLD1", "version": 1,
+                  "data": {"itemType": "journalArticle", "DOI": "10.1111/a",
+                           "title": "Old", "collections": []}}]
+                if kw.get("doi") == "10.1111/a" else []
+            ),
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        result = write.add_by_doi(
+            doi=["10.1111/a", "10.2222/b"], if_exists="skip", ctx=dummy_ctx,
+        )
+
+        assert "# Added 1 of 2 DOIs" in result
+        assert "1 already in library" in result

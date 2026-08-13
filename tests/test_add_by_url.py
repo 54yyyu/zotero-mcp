@@ -797,7 +797,7 @@ class TestMultipleUrls:
         assert len(fake_zot.created) == 2
         assert fake_zot.created[0]["url"] == "https://example.com/a"
         assert fake_zot.created[1]["url"] == "https://example.com/b"
-        assert "# Added 2 URLs" in result
+        assert "# Added 2 of 2 URLs" in result
 
     def test_comma_in_a_query_string_does_not_split_the_url(
         self, dummy_ctx, patch_write_client
@@ -844,3 +844,49 @@ class TestMultipleUrls:
 
         assert result.startswith("Error")
         assert "list of strings" in result
+
+
+class TestRepeatedUrls:
+    def test_same_url_twice_creates_one_item(self, dummy_ctx, patch_write_client):
+        fake_zot = patch_write_client
+
+        result = write.add_by_url(
+            url=["https://example.com/a", "https://example.com/a"],
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert "# Added 1 of 2 URLs" in result
+        assert "Same URL as entry 1 in this request" in result
+
+    def test_urls_differing_only_in_case_are_kept_apart(
+        self, dummy_ctx, patch_write_client
+    ):
+        """URL paths are case-sensitive, and there is no URL normalizer to
+        appeal to — so exact match is the only safe comparison."""
+        fake_zot = patch_write_client
+
+        write.add_by_url(
+            url=["https://example.com/Paper", "https://example.com/paper"],
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 2
+
+    def test_arxiv_batch_counts_as_added(self, dummy_ctx, patch_write_client):
+        """The arXiv branch opens its result block with its own wording, so
+        the batch summary has to recognize it as a success too."""
+        fake_zot = patch_write_client
+        mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
+
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
+            result = write.add_by_url(
+                url=["https://arxiv.org/abs/2401.00001",
+                     "https://arxiv.org/abs/2401.00002"],
+                attach_mode="none",
+                ctx=dummy_ctx,
+            )
+
+        assert len(fake_zot.created) == 2
+        assert "# Added 2 of 2 URLs" in result
+        assert "failed" not in result
