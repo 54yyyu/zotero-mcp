@@ -538,7 +538,33 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
+def _quick_search_confirm(zot, query, qmode, matches, ctx) -> list[dict]:
+    """Server-side quick search narrowed by a client-side confirming match.
+
+    Returns [] on search failure — callers treat that as "nothing found"
+    and proceed to create.
+    """
+    try:
+        candidates = zot.items(
+            q=query, qmode=qmode, itemType="-attachment", limit=50
+        )
+    except Exception as e:
+        if ctx is not None:
+            ctx.warning(f"Existing-item search failed (treating as no match): {e}")
+        return []
+
+    confirmed = []
+    for item in candidates or []:
+        data = item.get("data", {})
+        if data.get("itemType") in ("attachment", "note", "annotation"):
+            continue
+        if matches(data):
+            confirmed.append(item)
+    return confirmed
+
+
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
+                        title_hint=None, identifier_search=True,
                         ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
 
@@ -550,6 +576,15 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     identifier means the substring quick-search also catches values stored
     with prefixes ('https://doi.org/10...', 'arXiv:...'). The items endpoint
     excludes the Trash, so a trashed copy never blocks a re-add.
+
+    The identifier quick search only works where ``qmode=everything``
+    reaches metadata fields — the local API does, the web API indexes only
+    title/creator/year plus full text (#441). ``title_hint`` adds a second
+    quick search by title (``qmode='titleCreatorYear'``, which both
+    transports index), still confirmed by the same normalized identifier
+    comparison, so a web-API dedup can match once the caller knows the
+    item's title. ``identifier_search=False`` skips the identifier pass for
+    callers that already ran it and only want the title fallback.
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
@@ -582,23 +617,15 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     else:
         return []
 
-    try:
-        candidates = zot.items(
-            q=query, qmode="everything", itemType="-attachment", limit=50
+    if identifier_search:
+        matches = _quick_search_confirm(zot, query, "everything", _matches, ctx)
+        if matches:
+            return matches
+    if title_hint:
+        return _quick_search_confirm(
+            zot, title_hint, "titleCreatorYear", _matches, ctx
         )
-    except Exception as e:
-        if ctx is not None:
-            ctx.warning(f"Existing-item search failed (treating as no match): {e}")
-        return []
-
-    matches = []
-    for item in candidates or []:
-        data = item.get("data", {})
-        if data.get("itemType") in ("attachment", "note", "annotation"):
-            continue
-        if _matches(data):
-            matches.append(item)
-    return matches
+    return []
 
 
 def _collection_not_found_message(zot, spec, paths) -> str:

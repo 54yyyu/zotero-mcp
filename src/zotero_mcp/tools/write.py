@@ -1095,6 +1095,21 @@ def add_by_doi(
         if coll_keys:
             item_data["collections"] = coll_keys
 
+        # Second-chance dedup now that CrossRef gave us a title. The web
+        # API's quick search doesn't index the DOI field, so the pre-fetch
+        # identifier search above finds nothing there (#441); a title search
+        # confirmed by normalized DOI works on every transport.
+        if if_exists != "duplicate" and item_data.get("title"):
+            existing = _helpers.find_existing_items(
+                read_zot, doi=normalized, title_hint=item_data["title"],
+                identifier_search=False, ctx=ctx,
+            )
+            if existing:
+                return _handle_existing_item(
+                    write_zot, existing, coll_keys, tags, if_exists,
+                    matched_by=f"DOI {normalized}", ctx=ctx,
+                )
+
         # Create item
         result = write_zot.create_items([item_data])
 
@@ -1374,6 +1389,19 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
         template["tags"] = [{"tag": t} for t in tag_list]
     if coll_keys:
         template["collections"] = coll_keys
+
+    # Second-chance dedup now that arXiv gave us a title — the web API's
+    # quick search reaches neither the url nor the extra field (#441).
+    if if_exists != "duplicate" and title:
+        existing = _helpers.find_existing_items(
+            read_zot or write_zot, arxiv_id=arxiv_id, title_hint=title,
+            identifier_search=False, ctx=ctx,
+        )
+        if existing:
+            return _handle_existing_item(
+                write_zot, existing, coll_keys, tags, if_exists,
+                matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
+            )
 
     result = write_zot.create_items([template])
     if isinstance(result, dict) and result.get("success"):
@@ -1656,6 +1684,19 @@ def add_by_isbn(
             item_data["tags"] = [{"tag": t} for t in tag_list]
         if coll_keys:
             item_data["collections"] = coll_keys
+
+        # Second-chance dedup now that the ISBN lookup gave us a title —
+        # the web API's quick search doesn't index the ISBN field (#441).
+        if if_exists != "duplicate" and item_data.get("title"):
+            existing = _helpers.find_existing_items(
+                read_zot, isbn=normalized, title_hint=item_data["title"],
+                identifier_search=False, ctx=ctx,
+            )
+            if existing:
+                return _handle_existing_item(
+                    write_zot, existing, coll_keys, tags, if_exists,
+                    matched_by=f"ISBN {normalized}", ctx=ctx,
+                )
 
         result = write_zot.create_items([item_data])
         if isinstance(result, dict) and result.get("success"):
@@ -3583,7 +3624,11 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
     doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
     if not doi:
         return None
-    existing = _helpers.find_existing_items(read_zot, doi=doi, ctx=ctx)
+    # Batch entries carry their own title, so the title-hint fallback covers
+    # the web API, whose quick search doesn't index the DOI field (#441).
+    existing = _helpers.find_existing_items(
+        read_zot, doi=doi, title_hint=item_data.get("title") or None, ctx=ctx
+    )
     if not existing:
         return None
 
