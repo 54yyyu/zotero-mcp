@@ -10,7 +10,11 @@ from ipaddress import ip_address
 from urllib.parse import urljoin, urlparse
 
 import requests
-from pyzotero.zotero_errors import PreConditionFailedError
+from pyzotero.zotero_errors import (
+    PreConditionFailedError,
+    TooManyRequestsError,
+    TooManyRetriesError,
+)
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
@@ -580,23 +584,6 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
-def _is_rate_limited(exc: BaseException) -> bool:
-    """True if ``exc`` is a Zotero rate-limit error.
-
-    Checks the class first, then falls back to the type name. ``zotero_mcp
-    .client`` can legitimately exist as more than one module object in a
-    process — anything that loads it under a fresh spec gets its own copy of
-    the exception class, and ``isinstance`` against the other copy is then
-    False. That would drop a rate-limit error into the generic "treat as no
-    match" path, which is precisely the silent-duplicate outcome the caller
-    exists to prevent, so the invariant is worth more than the tidier check.
-    """
-    return (
-        isinstance(exc, _client.ZoteroRateLimitedError)
-        or type(exc).__name__ == "ZoteroRateLimitedError"
-    )
-
-
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
                         ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
@@ -612,7 +599,9 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
-    callers treat that as "nothing found" and proceed to create.
+    callers treat that as "nothing found" and proceed to create — except when
+    Zotero rate-limited the search, which propagates rather than masquerading
+    as "nothing found" and duplicating an item that exists.
     """
     if doi:
         query = doi
@@ -645,14 +634,16 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
         candidates = zot.items(
             q=query, qmode="everything", itemType="-attachment", limit=50
         )
-    except Exception as e:
+    except (TooManyRetriesError, TooManyRequestsError):
         # A rate-limited search is deliberately not swallowed. Every other
         # failure here degrades to "no match" and the caller creates the item,
         # which is the right trade for a genuinely failed search — but a
         # throttled search hasn't answered the question, and reading it as "not
-        # present" silently creates duplicates of items that are.
-        if _is_rate_limited(e):
-            raise
+        # present" silently creates duplicates of items that are. pyzotero
+        # >=1.13.5 has already retried and waited out the server's backoff by
+        # the time it raises, so there is nothing left to do but propagate.
+        raise
+    except Exception as e:
         if ctx is not None:
             ctx.warning(f"Existing-item search failed (treating as no match): {e}")
         return []
@@ -662,9 +653,9 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
         # Skip anything that isn't a well-formed item dict. The try above only
         # wraps the call, not this iteration, so a malformed entry would raise
         # here and abort the whole import instead of costing one dedup match.
-        # The known cause of that is handled upstream now (see _ZoteroClient),
-        # but this stays as a backstop: nothing about the contract of a search
-        # result guarantees every entry is a dict.
+        # The known cause of that is fixed in pyzotero >=1.13.5, which this
+        # package now requires, but this stays as a backstop: nothing about the
+        # contract of a search result guarantees every entry is a dict.
         if not isinstance(item, dict):
             continue
         data = item.get("data")
