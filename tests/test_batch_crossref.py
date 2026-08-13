@@ -165,7 +165,12 @@ class TestNotFoundHandling:
 
     def test_batch_request_failure_reported_per_doi(self, monkeypatch, zot):
         """One request covers the whole chunk, so when it fails outright the
-        batch must still return one line per requested DOI."""
+        batch must still return one line per requested DOI — reported as the
+        request failure it was. The /works collection endpoint answers "no
+        matches" with 200 and an empty items list, so a 404 here means the
+        request broke, not that CrossRef lacks these DOIs; saying "not found
+        on CrossRef" would be a wrong answer rather than a reported failure.
+        """
         def _boom(url, params=None, **kwargs):
             resp = MagicMock()
             resp.status_code = 404  # a hard 404 on the collection endpoint
@@ -178,8 +183,9 @@ class TestNotFoundHandling:
                                   ctx=DummyContext())
 
         assert len(zot.created) == 0
-        assert "DOI not found on CrossRef: 10.1234/a" in result
-        assert "DOI not found on CrossRef: 10.1234/b" in result
+        assert result.count("HTTP 404") == 2
+        assert "not found on CrossRef" not in result
+        assert "10.1234/a" in result and "10.1234/b" in result
 
 
 class TestRateLimitBackstop:
@@ -223,3 +229,82 @@ class TestRateLimitBackstop:
         assert len(seen) == write._CROSSREF_MAX_ATTEMPTS
         assert len(zot.created) == 0
         assert "HTTP 429" in result
+
+
+class TestMalformedBatchResponse:
+    """CrossRef answers a rejected query with HTTP 400 and a `message` that
+    is a *list* of validation errors, not the usual dict. Reaching for
+    `.get("items")` on that raises AttributeError, which `except ValueError`
+    around the JSON parse doesn't catch — so it escaped to add_by_doi's outer
+    handler and collapsed the whole call into one opaque error string, with
+    nothing created and no per-DOI reporting. That is the exact failure mode
+    the batch path exists to avoid."""
+
+    @staticmethod
+    def _validation_failure(url, params=None, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.json.return_value = {
+            "status": "failed",
+            "message-type": "validation-failure",
+            "message": [{"type": "parameter-not-allowed",
+                         "value": "doi", "message": "This route does not "
+                         "support the parameter"}],
+        }
+        return resp
+
+    def test_400_is_reported_per_doi_not_raised(self, monkeypatch, zot):
+        monkeypatch.setattr("requests.get", self._validation_failure)
+
+        result = write.add_by_doi(doi=["10.1234/a", "10.1234/b"],
+                                  ctx=DummyContext())
+
+        assert len(zot.created) == 0
+        assert "'list' object has no attribute 'get'" not in result
+        # One line per requested DOI, as for any other whole-chunk failure.
+        assert result.count("## ") == 2
+        assert "10.1234/a" in result and "10.1234/b" in result
+
+    def test_list_shaped_message_on_a_200_is_also_survived(self, monkeypatch, zot):
+        """Belt and braces: the shape guard shouldn't depend on the status
+        code being the thing that flagged it."""
+        def _weird(url, params=None, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"status": "ok", "message": []}
+            return resp
+
+        monkeypatch.setattr("requests.get", _weird)
+
+        result = write.add_by_doi(doi=["10.1234/a", "10.1234/b"],
+                                  ctx=DummyContext())
+
+        assert len(zot.created) == 0
+        assert "AttributeError" not in result
+        assert result.count("## ") == 2
+
+    def test_a_failed_chunk_does_not_take_its_neighbours_down(
+        self, monkeypatch, zot
+    ):
+        """Chunk isolation is the promise being protected: the first chunk
+        400s, the second must still import."""
+        monkeypatch.setattr(write, "_CROSSREF_FILTER_CHUNK", 2)
+        ok = fake_crossref_get(_message)
+        seen = []
+
+        def _get(url, params=None, **kwargs):
+            seen.append(url)
+            if len(seen) == 1:
+                return self._validation_failure(url, params=params, **kwargs)
+            return ok(url, params=params, **kwargs)
+
+        monkeypatch.setattr("requests.get", _get)
+
+        result = write.add_by_doi(
+            doi=["10.1234/a", "10.1234/b", "10.1234/c", "10.1234/d"],
+            ctx=DummyContext(),
+        )
+
+        assert len(seen) == 2
+        assert sorted(c["DOI"] for c in zot.created) == ["10.1234/c", "10.1234/d"]
+        assert result.count("## ") == 4
