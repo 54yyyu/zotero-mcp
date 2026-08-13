@@ -442,3 +442,95 @@ def test_import_openai_batch_reports_records_missing_from_output(tmp_path, monke
         "custom_id": "B",
         "error": "No embedding or error row returned for batch record",
     } in stats["errors"]
+
+
+def test_import_openai_batch_evicts_fulltext_cache(tmp_path, monkeypatch):
+    """The batch path must evict embedded items like the realtime path does.
+
+    Without this, --openai-batch runs never evict and the "transient"
+    fulltext cache grows to the size of the whole library.
+    """
+    records_path = tmp_path / "batch-001-records.jsonl"
+    openai_batch.write_jsonl(
+        records_path,
+        [
+            {"id": "KEYA#0", "document": "doc A0", "metadata": {"title": "A"}},
+            {"id": "KEYA#1", "document": "doc A1", "metadata": {"title": "A"}},
+            {"id": "KEYB#0", "document": "doc B0", "metadata": {"title": "B"}},
+        ],
+    )
+    output_rows = [
+        {"custom_id": doc_id,
+         "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1]}]}}}
+        for doc_id in ("KEYA#0", "KEYA#1", "KEYB#0")
+    ]
+    output_path = tmp_path / "batch-001-records-output.jsonl"
+    output_path.write_text(
+        "\n".join(json.dumps(row) for row in output_rows) + "\n", encoding="utf-8"
+    )
+    manifest = {
+        "run_id": "run-1",
+        "manifest_path": str(tmp_path / "manifest.json"),
+        "force_full_rebuild": False,
+        "batches": [
+            {
+                "batch_id": "batch-1",
+                "status": "completed",
+                "output_file_id": "file-1",
+                "records_path": str(records_path),
+                "imported_at": None,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    monkeypatch.setattr(semantic_search.openai_batch, "find_manifest", lambda **kwargs: manifest)
+    monkeypatch.setattr(
+        semantic_search.openai_batch,
+        "refresh_manifest_status",
+        lambda manifest, **kwargs: manifest,
+    )
+    monkeypatch.setattr(semantic_search.openai_batch, "create_openai_client", lambda config: object())
+
+    evictions = []
+    monkeypatch.setattr(
+        semantic_search.fulltext_cache,
+        "evict_many",
+        lambda keys, config_path=None: evictions.append(list(keys)) or 0,
+    )
+
+    class ImportChromaClient(FakeChromaClient):
+        def upsert_embeddings(self, documents, metadatas, ids, embeddings):
+            pass
+
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=ImportChromaClient())
+    stats = search.import_openai_batch()
+
+    assert stats["imported_items"] == 3
+    assert evictions == [["KEYA", "KEYB"]]
+
+
+def test_update_database_purges_stale_cache_entries(monkeypatch):
+    """update_database sweeps abandoned-run residue before doing anything else."""
+    purges = []
+    monkeypatch.setattr(
+        semantic_search.fulltext_cache,
+        "purge_stale",
+        lambda config_path=None: purges.append(config_path) or 0,
+    )
+
+    class Sentinel(Exception):
+        pass
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
+    # Abort the run right after the purge; only the purge wiring is under test.
+    monkeypatch.setattr(
+        search, "_client_group_id", lambda: (_ for _ in ()).throw(Sentinel())
+    )
+    try:
+        search.update_database()
+    except Sentinel:
+        pass
+
+    assert len(purges) == 1

@@ -2035,6 +2035,19 @@ class ZoteroSemanticSearch:
             return stats
 
         try:
+            # Sweep cache residue no later run will reuse: entries from
+            # abandoned runs, entries whose backing file is gone, and
+            # orphaned .txt files left by a crash between a worker's write
+            # and the parent's record_entries(). The per-batch eviction
+            # below keeps the cache proportional to un-embedded work only
+            # while a run completes normally; this is the backstop.
+            try:
+                purged = fulltext_cache.purge_stale(config_path=self.config_path)
+                if purged:
+                    logger.info(f"Purged {purged} stale fulltext-cache entries")
+            except Exception as e:
+                logger.debug(f"Fulltext cache purge failed: {e}")
+
             # Pin this run's library identity once, from the client the run
             # will read items/versions from. Everything scope-sensitive in
             # the run (tagging, watermark key, backfill attribution, the
@@ -2788,6 +2801,17 @@ class ZoteroSemanticSearch:
                     stats["imported_items"] += len(ids)
                     stats["updated_items"] += len(existing_ids)
                     stats["added_items"] += len(ids) - len(existing_ids)
+                    # These items are embedded and persisted, so their
+                    # transient extracted-text copies have done their job —
+                    # the batch path otherwise never evicts, and the
+                    # "transient" cache would grow to the whole library.
+                    try:
+                        item_keys = list(dict.fromkeys(
+                            doc_id.split("#", 1)[0] for doc_id in ids
+                        ))
+                        fulltext_cache.evict_many(item_keys, config_path=self.config_path)
+                    except Exception as e:
+                        logger.debug(f"Fulltext cache eviction failed: {e}")
 
                 batch["imported_at"] = datetime.now().isoformat()
                 batch["imported_count"] = len(ids)
