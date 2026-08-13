@@ -13,6 +13,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -1054,6 +1055,14 @@ class LocalZoteroReader:
         # Resolve targets and serve cache hits up front — both are cheap, and
         # doing them here keeps the pool busy with parsing alone.
         deferred: list[tuple[int, str | None, tuple[Path, str] | None]] = []
+        # A single dying worker (OOM on a pathological PDF, a segfaulting
+        # parser) breaks the WHOLE pool: every pending future raises
+        # BrokenProcessPool, and treating those like ordinary parse failures
+        # would record thousands of innocent items as "failed" — which the
+        # skip logic then never retries — from one transient crash. Collect
+        # the casualties instead and re-run each in its own fresh
+        # single-worker pool below, so only the true culprit fails.
+        broken: list[tuple[int, str | None, Path, str]] = []
         with ProcessPoolExecutor(
             max_workers=self.extraction_workers, initializer=_init_extraction_worker
         ) as pool:
@@ -1067,16 +1076,37 @@ class LocalZoteroReader:
                 if hit:
                     yield item_id, hit
                     continue
-                future = pool.submit(_extract_worker, str(target), max_pages)
+                try:
+                    future = pool.submit(_extract_worker, str(target), max_pages)
+                except BrokenProcessPool:
+                    broken.append((item_id, item_key, target, attachment_key))
+                    continue
                 pending[future] = (item_id, item_key, target, attachment_key)
 
             for future in as_completed(pending):
                 item_id, item_key, target, attachment_key = pending[future]
                 try:
                     text = future.result()
+                except BrokenProcessPool:
+                    broken.append((item_id, item_key, target, attachment_key))
+                    continue
                 except Exception as e:  # worker died; fall back below
                     logger.debug(f"Extraction worker failed for item {item_id}: {e}")
                     text = ""
+                if text:
+                    source = _source_for_path(target)
+                    self._cache_store(target, attachment_key, item_key, text, source)
+                    yield item_id, (text, source)
+                else:
+                    deferred.append((item_id, item_key, (target, attachment_key)))
+
+        if broken:
+            logger.warning(
+                "Extraction process pool broke; re-running %d affected item(s) "
+                "in isolated single-worker pools", len(broken),
+            )
+            for item_id, item_key, target, attachment_key in broken:
+                text = self._extract_isolated(target, max_pages)
                 if text:
                     source = _source_for_path(target)
                     self._cache_store(target, attachment_key, item_key, text, source)
@@ -1089,6 +1119,23 @@ class LocalZoteroReader:
         # reads, so there is nothing to gain from parallelising them.
         for item_id, item_key, chosen in deferred:
             yield item_id, self._zotero_ft_cache_fallback(item_id, chosen, item_key)
+
+    def _extract_isolated(self, target: Path, max_pages) -> str:
+        """Extract one file in a fresh single-worker pool.
+
+        Used to retry items whose shared pool was broken by another item's
+        crashing worker: process isolation is preserved (a genuinely
+        crash-inducing file still cannot take down this process), but the
+        blast radius of a broken pool shrinks to the file that caused it.
+        """
+        try:
+            with ProcessPoolExecutor(
+                max_workers=1, initializer=_init_extraction_worker
+            ) as pool:
+                return pool.submit(_extract_worker, str(target), max_pages).result()
+        except Exception as e:
+            logger.debug(f"Isolated extraction failed for {target}: {e}")
+            return ""
 
     def get_attachment_paths(self, parent_key: str) -> list[dict]:
         """Return resolved filesystem paths for a parent item's attachments.

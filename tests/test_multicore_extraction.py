@@ -193,3 +193,97 @@ def test_worker_count_is_clamped_to_at_least_one():
     reader = LocalZoteroReader.__new__(LocalZoteroReader)
     assert LocalZoteroReader.extraction_workers == 1
     assert reader.fulltext_cache_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Broken-pool containment
+# ---------------------------------------------------------------------------
+
+class _BrokenPool:
+    """A pool whose every future fails with BrokenProcessPool.
+
+    Models one worker dying (OOM, segfault): concurrent.futures then fails
+    ALL pending futures with BrokenProcessPool, not just the culprit's.
+    """
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args):
+        from concurrent.futures import Future
+        from concurrent.futures.process import BrokenProcessPool
+
+        f = Future()
+        f.set_exception(BrokenProcessPool("a process in the pool died"))
+        return f
+
+
+def test_broken_pool_retries_items_in_isolation(files, monkeypatch):
+    """One dying worker must not record every in-flight item as failed.
+
+    Before the containment, a BrokenProcessPool was swallowed like an
+    ordinary parse failure: every pending item fell through to the
+    ft-cache fallback, and callers recorded them all as
+    has_fulltext="failed" — which the incremental-sync skip logic then
+    never retries. The retry path re-runs each affected item in a fresh
+    single-worker pool, so innocents extract normally.
+    """
+    from zotero_mcp import local_db
+
+    monkeypatch.setattr(local_db, "ProcessPoolExecutor", _BrokenPool)
+
+    reader = FakeReader(files, workers=3)
+    isolated_calls = []
+    real_worker = _extract_worker
+
+    def fake_isolated(target, max_pages):
+        isolated_calls.append(target)
+        return real_worker(str(target), max_pages)
+
+    monkeypatch.setattr(reader, "_extract_isolated", fake_isolated)
+
+    items = [(i, f"KEY{i}") for i in range(1, len(files) + 1)]
+    got = dict(reader.extract_fulltext_for_items(items))
+
+    assert len(isolated_calls) == len(files)
+    assert set(got) == {i for i, _ in items}
+    assert all(v is not None for v in got.values())
+    for i in range(1, len(files) + 1):
+        assert f"contents of document {i - 1}" in got[i][0]
+
+
+def test_broken_pool_culprit_still_fails_alone(files, monkeypatch):
+    """The file that keeps killing workers fails; it takes nobody with it."""
+    from zotero_mcp import local_db
+
+    monkeypatch.setattr(local_db, "ProcessPoolExecutor", _BrokenPool)
+
+    reader = FakeReader(files[:3], workers=3)
+    real_worker = _extract_worker
+
+    def fake_isolated(target, max_pages):
+        if target == reader._files[2]:
+            return ""  # its private retry pool broke again
+        return real_worker(str(target), max_pages)
+
+    monkeypatch.setattr(reader, "_extract_isolated", fake_isolated)
+
+    got = dict(reader.extract_fulltext_for_items([(1, "K1"), (2, "K2"), (3, "K3")]))
+
+    assert got[1] is not None and got[3] is not None
+    assert got[2] is None  # no ft-cache entry either -> genuinely failed
+
+
+def test_extract_isolated_survives_repeated_pool_breakage(files, monkeypatch):
+    """_extract_isolated itself returns '' when its own pool breaks."""
+    from zotero_mcp import local_db
+
+    monkeypatch.setattr(local_db, "ProcessPoolExecutor", _BrokenPool)
+    reader = FakeReader(files, workers=2)
+    assert reader._extract_isolated(files[0], 50) == ""
