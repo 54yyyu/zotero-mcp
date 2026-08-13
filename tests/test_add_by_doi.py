@@ -1053,3 +1053,118 @@ class TestMultipleDois:
         assert fake_zot.created[0]["title"] == "Paper A"
         assert "Successfully added: **Paper A**" in result
         assert "DOI not found on CrossRef: 10.9999/missing" in result
+
+
+# ---------------------------------------------------------------------------
+# CrossRef metadata reaches the OA-PDF cascade
+# ---------------------------------------------------------------------------
+
+_ARXIV_PREPRINT_RELATION = {
+    "relation": {"has-preprint": [{"id-type": "arxiv", "id": "2307.02743"}]}
+}
+
+
+class TestCrossrefMetadataReachesTheCascade:
+    """_try_attach_oa_pdf's four-source cascade includes "arXiv (via
+    CrossRef)", which reads the has-preprint relation out of the CrossRef
+    message the DOI was just fetched with. If that message isn't forwarded,
+    the source is not merely unused — it can never fire, and DOIs whose only
+    open copy is the referenced preprint stop attaching.
+    """
+
+    @pytest.fixture
+    def spy_attach(self, monkeypatch):
+        calls = []
+
+        def _spy(write_zot, item_key, doi, ctx, crossref_metadata=None,
+                 attach_mode="auto"):
+            calls.append({"doi": doi, "crossref_metadata": crossref_metadata})
+            return "no OA PDF found"
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf", _spy
+        )
+        return calls
+
+    def test_single_doi_forwards_the_fetched_message(
+        self, monkeypatch, fake_zot, dummy_ctx, spy_attach
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        msg = _make_crossref_message(DOI="10.1111/a", **_ARXIV_PREPRINT_RELATION)
+        monkeypatch.setattr("requests.get", fake_crossref_get(lambda d: msg))
+
+        write.add_item(source="10.1111/a", source_type="doi", ctx=dummy_ctx)
+
+        assert len(spy_attach) == 1
+        assert spy_attach[0]["crossref_metadata"] == msg
+
+    def test_batch_forwards_each_entrys_own_message(
+        self, monkeypatch, fake_zot, dummy_ctx, spy_attach
+    ):
+        """The batched create pass must pair each created item with its own
+        CrossRef message, not the first one or none at all."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        messages = {
+            "10.1111/a": _make_crossref_message(
+                DOI="10.1111/a", title=["Paper A"], **_ARXIV_PREPRINT_RELATION),
+            "10.2222/b": _make_crossref_message(DOI="10.2222/b", title=["Paper B"]),
+        }
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
+
+        write.add_item(
+            source="10.1111/a, 10.2222/b", source_type="doi", ctx=dummy_ctx,
+        )
+
+        by_doi = {c["doi"]: c["crossref_metadata"] for c in spy_attach}
+        assert by_doi["10.1111/a"] == messages["10.1111/a"]
+        assert by_doi["10.2222/b"] == messages["10.2222/b"]
+
+    def test_arxiv_preprint_is_actually_attached(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """End to end: Unpaywall/S2/PMC find nothing, so the arXiv leg is the
+        only source that can produce a PDF."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        msg = _make_crossref_message(DOI="10.1111/a", **_ARXIV_PREPRINT_RELATION)
+        monkeypatch.setattr("requests.get", fake_crossref_get(lambda d: msg))
+        for source in ("_try_unpaywall", "_try_semantic_scholar", "_try_pmc"):
+            monkeypatch.setattr(
+                f"zotero_mcp.tools._helpers.{source}", lambda *a, **kw: None
+            )
+        downloaded = []
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._download_and_attach_pdf",
+            lambda zot, key, url, doi, ctx: downloaded.append(url) or "",
+        )
+
+        result = write.add_item(
+            source="10.1111/a", source_type="doi", attach_mode="required",
+            ctx=dummy_ctx,
+        )
+
+        assert downloaded == ["https://arxiv.org/pdf/2307.02743.pdf"]
+        assert "attach_mode='required'" not in result
+
+    def test_bibtex_still_attaches_without_any_crossref_message(
+        self, monkeypatch, fake_zot, dummy_ctx, spy_attach
+    ):
+        """_create_and_attach_batch is shared with the bibtex/CSL-JSON
+        importers, which have no CrossRef message to forward."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        write.add_item(
+            source="@article{k, title={T}, doi={10.1111/a}, year={2024}}",
+            source_type="bibtex",
+            ctx=dummy_ctx,
+        )
+
+        assert len(spy_attach) == 1
+        assert spy_attach[0]["crossref_metadata"] is None
