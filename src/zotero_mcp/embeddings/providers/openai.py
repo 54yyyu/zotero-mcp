@@ -77,20 +77,16 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         )
 
         try:
-            import httpx
             import openai
-            client_kwargs: dict[str, Any] = {"api_key": self.api_key}
+            client_kwargs = {"api_key": self.api_key}
             if self.base_url:
                 client_kwargs["base_url"] = self.base_url
-            # The SDK's default pool allows far fewer connections than we now
-            # ask of it: with max_parallel_requests workers per embedding
-            # function, requests would otherwise queue on the pool rather than
-            # on the rate limiter, making pacing unobservable and concurrency
-            # ineffective.
-            client_kwargs["http_client"] = httpx.Client(
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
-                timeout=httpx.Timeout(60.0, connect=10.0),
-            )
+            # Deliberately no custom http_client. The SDK already pools at
+            # 1000 connections / 100 keepalive with a 600s read timeout, which
+            # comfortably covers any max_parallel_requests worth setting;
+            # supplying an httpx.Client here would *narrow* both, and a
+            # shorter read timeout would fail large embedding requests the
+            # default would have completed.
             self.client = openai.OpenAI(**client_kwargs)
         except ImportError:
             raise ImportError("openai package is required for OpenAI embeddings")
