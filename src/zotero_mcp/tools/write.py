@@ -115,6 +115,94 @@ def _split_multi_value(raw, field_name: str, validator) -> list[str]:
     return tokens
 
 
+def _dedupe_multi_tokens(tokens: list[str], key_fn):
+    """Collapse tokens naming the same identifier into one unit of work.
+
+    Returns ``(canonical_indices, duplicate_of)``: the positions to actually
+    process, in first-occurrence order, and a map from each remaining
+    position to the position it repeats.
+
+    Dedup against the *library* runs in phase 1, before anything has been
+    created, so it cannot see items this same call is about to add — a DOI
+    listed twice was created twice even under ``if_exists='skip'``. Removing
+    the repeat before any work starts is cheaper than teaching every later
+    phase about items created mid-call, and it also saves the redundant
+    CrossRef and Zotero round-trips.
+
+    ``key_fn`` returns the identity to compare on, or None for a token it
+    can't normalize — those stay separate so each still gets its own error.
+    """
+    canonical: list[int] = []
+    duplicate_of: dict[int, int] = {}
+    seen: dict[object, int] = {}
+    for i, tok in enumerate(tokens):
+        key = key_fn(tok)
+        if key is None:
+            canonical.append(i)
+            continue
+        if key in seen:
+            duplicate_of[i] = seen[key]
+        else:
+            seen[key] = i
+            canonical.append(i)
+    return canonical, duplicate_of
+
+
+def _doi_dedup_key(tok: str):
+    """DOIs are case-insensitive, and CrossRef echoes canonical case."""
+    normalized = _helpers._normalize_doi(tok)
+    return normalized.lower() if normalized else None
+
+
+def _isbn_dedup_key(tok: str):
+    """_normalize_isbn returns ISBN-13, so both spellings of one book
+    collapse to the same key."""
+    return _helpers._normalize_isbn(tok)
+
+
+def _url_dedup_key(tok: str):
+    """Exact match after stripping. There is no URL normalizer, and
+    inventing equivalence rules (trailing slash, case, query order) here
+    would silently drop URLs a user meant to add separately."""
+    return (tok or "").strip() or None
+
+
+def _duplicate_of_message(kind: str, position: int) -> str:
+    """Rendered in place of a result for a token repeated within one call."""
+    return (f"Same {kind} as entry {position} in this request — "
+            "added once, not duplicated.")
+
+
+# Prefixes the per-source adders open a successful result block with. Sniffing
+# rendered text is a stopgap: add_by_doi/url/isbn hand back pre-rendered
+# strings, so this is the only success signal the recursive URL/ISBN paths
+# expose. The real fix is the convergence _format_multi_result's docstring
+# describes — structured per-item dicts rendered through
+# _format_batch_result — at which point these go away.
+_CREATED_MARKERS = (
+    "Successfully added",       # add_by_doi, add_by_isbn
+    "Successfully added arXiv",  # _add_by_arxiv
+    "Created webpage item for:",  # add_by_url's generic-webpage branch
+)
+_REUSED_MARKERS = ("Already in library:",)
+
+
+def _summarize_multi_results(results: list[str]) -> dict[str, int]:
+    """Count outcomes across a batch's per-token rendered results."""
+    counts = {"created": 0, "reused": 0, "duplicate": 0, "failed": 0}
+    for res in results:
+        text = res or ""
+        if "in this request — added once" in text:
+            counts["duplicate"] += 1
+        elif any(m in text for m in _CREATED_MARKERS):
+            counts["created"] += 1
+        elif any(m in text for m in _REUSED_MARKERS):
+            counts["reused"] += 1
+        else:
+            counts["failed"] += 1
+    return counts
+
+
 def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> str:
     """Concatenate per-token single-item results for a DOI/URL/ISBN batch.
 
@@ -133,7 +221,20 @@ def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> st
     ``_format_batch_result`` — see the recursive per-token loops below for
     the redundant-work cost that refactor would also remove.
     """
-    lines = [f"# Added {len(tokens)} {kind}s", ""]
+    counts = _summarize_multi_results(results)
+    total = len(tokens)
+    lines = [f"# Added {counts['created']} of {total} {kind}"
+             f"{'s' if total != 1 else ''}"]
+    detail = []
+    if counts["reused"]:
+        detail.append(f"{counts['reused']} already in library")
+    if counts["duplicate"]:
+        detail.append(f"{counts['duplicate']} repeated in this request")
+    if counts["failed"]:
+        detail.append(f"{counts['failed']} failed")
+    if detail:
+        lines.append(", ".join(detail).capitalize() + ".")
+    lines.append("")
     for i, (tok, res) in enumerate(zip(tokens, results), 1):
         lines.append(f"## {i}. {tok}")
         lines.append("")
@@ -1442,10 +1543,16 @@ def add_by_doi(
 
         template_fn = _memoized_item_template_fn(write_zot)  # #A3
 
+        # Collapse repeats before any work: phase 1's library dedup runs
+        # before anything is created, so it can't see the item this same
+        # call is about to add.
+        canonical, duplicate_of = _dedupe_multi_tokens(doi_list, _doi_dedup_key)
+        work_list = [doi_list[i] for i in canonical]
+
         # Phase 1: dedup-check every token on the calling thread.
         dedup = [
             _dedup_check_one_doi(read_zot, write_zot, tok, coll_keys, tags, if_exists, ctx)
-            for tok in doi_list
+            for tok in work_list
         ]
         needs_fetch = [(i, normalized) for i, (kind, normalized) in enumerate(dedup)
                        if kind == "needs_fetch"]
@@ -1464,16 +1571,16 @@ def add_by_doi(
 
         # Phase 3: build item_data for every successfully fetched DOI, then
         # create them all in one batched pass (#A4).
-        results: list[str] = [None] * len(doi_list)
+        work_results: list[str] = [None] * len(work_list)
         pending: list[tuple[int, dict]] = []
         for i, (kind, payload) in enumerate(dedup):
             if kind == "final":
-                results[i] = payload
+                work_results[i] = payload
                 continue
             normalized = payload
             fetch_kind, fetch_payload = fetched[normalized]
             if fetch_kind == "final":
-                results[i] = fetch_payload
+                work_results[i] = fetch_payload
                 continue
             built = _build_one_doi_item_data(fetch_payload, normalized, template_fn, tags, coll_keys)
             pending.append((i, built))
@@ -1488,9 +1595,16 @@ def add_by_doi(
             if pending else []
         )
         for (i, payload), cr_result in zip(pending, created):
-            results[i] = _render_doi_create_result(
+            work_results[i] = _render_doi_create_result(
                 cr_result, payload["zot_type"], payload["doi"], coll_keys
             )
+
+        # Expand back to one result per requested token.
+        results: list[str] = [None] * len(doi_list)
+        for slot, i in enumerate(canonical):
+            results[i] = work_results[slot]
+        for i, canon_i in duplicate_of.items():
+            results[i] = _duplicate_of_message("DOI", canon_i + 1)
 
         if is_batch:
             return _format_multi_result("DOI", doi_list, results)
@@ -1527,13 +1641,16 @@ def add_by_url(
     except ValueError as e:
         return f"Error adding by URL: {e}"
     if len(tokens) > 1:
-        results = [
-            add_by_url(url=tok, collections=collections, tags=tags,
-                      attach_mode=attach_mode, if_exists=if_exists,
-                      create_missing_collections=create_missing_collections,
-                      ctx=ctx)
-            for tok in tokens
-        ]
+        canonical, duplicate_of = _dedupe_multi_tokens(tokens, _url_dedup_key)
+        results: list[str] = [None] * len(tokens)
+        for i in canonical:
+            results[i] = add_by_url(
+                url=tokens[i], collections=collections, tags=tags,
+                attach_mode=attach_mode, if_exists=if_exists,
+                create_missing_collections=create_missing_collections,
+                ctx=ctx)
+        for i, canon_i in duplicate_of.items():
+            results[i] = _duplicate_of_message("URL", canon_i + 1)
         return _format_multi_result("URL", tokens, results)
     if tokens:
         url = tokens[0]
@@ -2019,13 +2136,16 @@ def add_by_isbn(
     except ValueError as e:
         return f"Error adding by ISBN: {e}"
     if len(tokens) > 1:
-        results = [
-            add_by_isbn(isbn=tok, collections=collections, tags=tags,
-                       if_exists=if_exists,
-                       create_missing_collections=create_missing_collections,
-                       ctx=ctx)
-            for tok in tokens
-        ]
+        canonical, duplicate_of = _dedupe_multi_tokens(tokens, _isbn_dedup_key)
+        results: list[str] = [None] * len(tokens)
+        for i in canonical:
+            results[i] = add_by_isbn(
+                isbn=tokens[i], collections=collections, tags=tags,
+                if_exists=if_exists,
+                create_missing_collections=create_missing_collections,
+                ctx=ctx)
+        for i, canon_i in duplicate_of.items():
+            results[i] = _duplicate_of_message("ISBN", canon_i + 1)
         return _format_multi_result("ISBN", tokens, results)
     if tokens:
         isbn = tokens[0]

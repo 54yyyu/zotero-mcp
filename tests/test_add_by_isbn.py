@@ -355,7 +355,7 @@ class TestMultipleIsbns:
         assert len(fake.created) == 2
         assert fake.created[0]["title"] == "The Oxford Handbook of Philosophy of Mind"
         assert fake.created[1]["title"] == "The Pragmatic Programmer"
-        assert "# Added 2 ISBNs" in result
+        assert "# Added 2 of 2 ISBNs" in result
 
     def test_partial_failure_reports_both(self, monkeypatch):
         """One bad-checksum ISBN alongside one good one: the good one is
@@ -386,3 +386,32 @@ class TestMultipleIsbns:
         assert "Successfully added" in result
         assert "not appear to be a valid ISBN" in result
         assert "9780132350885" in result
+
+
+class TestRepeatedIsbns:
+    def test_isbn10_and_isbn13_of_one_book_collapse(self, monkeypatch):
+        """_normalize_isbn canonicalizes to ISBN-13, so both spellings of the
+        same book are one identifier and must not be added twice."""
+        fake = FakeZotero()
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake, fake),
+        )
+        monkeypatch.setattr(
+            _write, "requests",
+            type("R", (), {
+                "get": _fake_get_factory({
+                    "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
+                }),
+                "RequestException": requests.RequestException,
+            })
+        )
+
+        # 0199735816 is the ISBN-10 for 9780199735815.
+        result = _write.add_by_isbn(
+            isbn=["9780199735815", "0199735816"], ctx=DummyContext(),
+        )
+
+        assert len(fake.created) == 1
+        assert "# Added 1 of 2 ISBNs" in result
+        assert "Same ISBN as entry 1 in this request" in result

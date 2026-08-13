@@ -121,7 +121,7 @@ class TestAddByDoiBatching:
 
         assert z.create_calls == [10]
         assert len(z.created) == 10
-        assert "# Added 10 DOIs" in result
+        assert "# Added 10 of 10 DOIs" in result
         for i in range(10):
             assert f"Successfully added: **Paper 10.1234/d{i}**" in result
 
@@ -134,7 +134,7 @@ class TestAddByDoiBatching:
 
         assert z.create_calls == [50, 5]
         assert len(z.created) == 55
-        assert "# Added 55 DOIs" in result
+        assert "# Added 55 of 55 DOIs" in result
 
     def test_item_template_memoized_across_the_batch(self, monkeypatch):
         """#A3: CROSSREF_TYPE_MAP maps every DOI here onto the same

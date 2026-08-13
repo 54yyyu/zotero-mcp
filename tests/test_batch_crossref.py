@@ -69,7 +69,7 @@ class TestBatchedFetch:
         assert calls[0]["url"] == "https://api.crossref.org/works"
         assert _filtered_dois(calls[0]) == dois
         assert len(zot.created) == 25
-        assert "# Added 25 DOIs" in result
+        assert "# Added 25 of 25 DOIs" in result
 
     def test_rows_is_set_to_the_chunk_size(self, monkeypatch, zot):
         """CrossRef pages at 20 by default, so a 25-DOI filter without an
@@ -209,7 +209,7 @@ class TestRateLimitBackstop:
 
         assert len(seen) == 2
         assert len(zot.created) == 2
-        assert "# Added 2 DOIs" in result
+        assert "# Added 2 of 2 DOIs" in result
 
     def test_429_retry_is_bounded(self, monkeypatch, zot):
         monkeypatch.setattr(write._time, "sleep", lambda _s: None)
