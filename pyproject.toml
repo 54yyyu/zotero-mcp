@@ -19,21 +19,16 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    # Below 1.13.3, upload step 0 sends the caller-supplied path as the
-    # stored-file filename; 1.13.3 adds Zupload._outgoing in _upload.py to send
-    # Path(filename).name instead (upstream urschrei/pyzotero#341). The API
-    # rejects the path with 400 ("Stored-file filename cannot contain a
-    # directory path") and pyzotero returns the payload under `failure` rather
-    # than raising, so on older versions every attach pays for the two-step
-    # fallback in _attach_and_verify (#403).
-    #
-    # No upper bound, but note before raising the floor: as of 1.13.4 every
-    # read method returns the HTTP 429 error body as bytes instead of raising
-    # or retrying (upstream urschrei/pyzotero#352), which client._ZoteroClient
-    # works around. When a release fixes that, tests/test_rate_limit_guard.py
-    # will start failing — read the TODO on _ZoteroClient before removing it,
-    # since one plausible upstream fix makes deleting it reintroduce the bug.
-    "pyzotero>=1.13.3",
+    # 1.13.5 retries a rate-limited read internally and raises
+    # TooManyRetriesError once the backoff is exhausted (upstream
+    # urschrei/pyzotero#352). Below it, every read method hands the HTTP 429
+    # error body back as bytes, which callers read as data — dedup searches
+    # most damagingly, where it looks like "no match" and duplicates the item.
+    # _helpers.find_existing_items relies on that exception, so this floor is
+    # load-bearing, not just preferred. (1.13.3 is also required, for sending
+    # Path(filename).name as the stored-file filename — upstream #341, without
+    # which every attach pays for the two-step fallback in _attach_and_verify.)
+    "pyzotero>=1.13.5",
     "python-dotenv>=1.0.0",
     # PDF text extraction. Rust with prebuilt abi3 wheels for every platform
     # we support and no Python dependencies of its own. Pinned exactly while
