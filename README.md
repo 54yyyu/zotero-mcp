@@ -321,7 +321,7 @@ After installation, either:
    For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely.
 
    The local API is fast but read-only, so the MCP server uses the Zotero web API for write operations.
-   
+
    To enable **write mode**:
    - Keep `ZOTERO_LOCAL: "true"` — with API credentials set, the server runs in hybrid mode (fast local reads, web API writes)
    - Click [here](https://www.zotero.org/settings/security#applications) to generate a Zotero API key and replace `YOUR_API_KEY` with it
@@ -757,6 +757,7 @@ Example (Claude Desktop / Claude Code):
 
 All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item. They also take `if_exists` (`"duplicate"` — default — always creates; `"file"` reuses an existing item matching the DOI/arXiv ID/ISBN/URL, filing it into missing collections and adding missing tags; `"skip"` leaves a match untouched) and `create_missing_collections` (create unknown collection specs, including path chains, instead of failing). The `zotero-cli add` commands default to `--if-exists file`.
 - `zotero_attach_file`: Attach a local file or a PDF URL to an existing item by key (no new item created; returns the attachment key; idempotent per filename and content hash)
+- `zotero_set_item_parent`: Set, change, or clear an item's parent (`parent_key=null` makes it top-level)
 - `zotero_create_collection`: Create a new collection (folder/project) in your library
 - `zotero_search_collections`: Search for collections by name to find their keys
 - `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)

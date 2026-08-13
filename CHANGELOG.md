@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
+
 ## [0.9.1] - 2026-08-05
 
 ### Changed
