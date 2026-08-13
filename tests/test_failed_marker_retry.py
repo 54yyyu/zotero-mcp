@@ -212,3 +212,106 @@ def test_legacy_failed_record_without_attachment_keys_retries_once(monkeypatch):
     items, reader = _run_scan(monkeypatch, stored, attachments=attachments)
     assert len(items) == 1
     assert reader.extract_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# #446: "failed" must mean an extraction actually failed
+# ---------------------------------------------------------------------------
+
+class NoTextReader(FakeReader):
+    """Reader whose extraction never yields text."""
+
+    def extract_fulltext_for_item(self, item_id):
+        self.extract_calls += 1
+        return None
+
+
+def _run_scan_no_text(monkeypatch, stored_metadata, attachments):
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    reader = NoTextReader(attachments=attachments)
+    monkeypatch.setattr(
+        semantic_search, "LocalZoteroReader", lambda *a, **kw: reader
+    )
+    chroma = FakeChromaClient(stored_metadata)
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=chroma)
+    monkeypatch.setattr(
+        search,
+        "_get_items_from_api",
+        lambda *a, **kw: pytest.fail("unexpected fallback to API path"),
+    )
+    items = search._get_items_from_source(
+        extract_fulltext=True, chroma_client=chroma, force_rebuild=False
+    )
+    return items, reader, search
+
+
+def test_item_without_attachments_is_not_marked_failed(monkeypatch):
+    """No attachments -> nothing was tried -> no 'failed' marker (#446).
+
+    Marking these "failed" put every attachment-less item (notes-only
+    entries, webpage stubs, books without files) into the scary
+    "PDF extraction previously failed" report, where a force-rebuild
+    could never fix them because there was never anything to extract.
+    """
+    items, reader, search = _run_scan_no_text(monkeypatch, None, attachments=[])
+    assert len(items) == 1
+    data = items[0]["data"]
+    assert data["fulltext_attempted"] is False
+    metadata = search._create_metadata(items[0])
+    assert "has_fulltext" not in metadata
+
+
+def test_item_with_unreadable_attachment_is_marked_failed(monkeypatch):
+    """An attachment that produced no text is a real failure -> marker stays."""
+    attachments = [("ATTKEY1", "storage:paper.pdf", "application/pdf")]
+    items, reader, search = _run_scan_no_text(monkeypatch, None, attachments=attachments)
+    assert len(items) == 1
+    data = items[0]["data"]
+    assert data["fulltext_attempted"] is True
+    metadata = search._create_metadata(items[0])
+    assert metadata["has_fulltext"] == "failed"
+
+
+def test_attachmentless_item_never_reported_as_failed_extraction(
+    monkeypatch, capsys
+):
+    """Legacy 'failed' markers on attachment-less items leave the report.
+
+    Records written before #446 carry has_fulltext="failed" with an empty
+    attachment_keys set; they are still skipped (nothing to do), but the
+    summary must not present them as PDF extraction failures.
+    """
+    stored = {
+        "has_fulltext": "failed",
+        "date_modified": DATE_MODIFIED,
+        "attachment_keys": "",
+    }
+    items, reader, _search = _run_scan_no_text(monkeypatch, stored, attachments=[])
+    assert items == []
+    assert reader.extract_calls == 0
+    err = capsys.readouterr().err
+    assert "PDF extraction previously failed" not in err
+    assert "remain metadata-only" in err
+
+
+def test_real_failed_extraction_still_reported(monkeypatch, capsys):
+    """Items whose attachments failed to parse still show in the report."""
+    stored = {
+        "has_fulltext": "failed",
+        "date_modified": DATE_MODIFIED,
+        "attachment_keys": "ATTKEY1",
+    }
+    attachments = [("ATTKEY1", "storage:paper.pdf", "application/pdf")]
+    items, reader, _search = _run_scan_no_text(monkeypatch, stored, attachments=attachments)
+    assert items == []
+    err = capsys.readouterr().err
+    assert "PDF extraction previously failed" in err
+
+
+def test_extraction_summary_counts_failures_in_the_same_run(monkeypatch, capsys):
+    """The run that fails an extraction says so itself, not just the next one."""
+    attachments = [("ATTKEY1", "storage:paper.pdf", "application/pdf")]
+    _run_scan_no_text(monkeypatch, None, attachments=attachments)
+    err = capsys.readouterr().err
+    assert "1 item(s) had attachments that produced no text" in err

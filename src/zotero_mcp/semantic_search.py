@@ -1317,6 +1317,10 @@ class ZoteroSemanticSearch:
 
                     total_local = len(local_items)
                     _skipped_failed = []  # Items skipped because extraction previously failed
+                    # Items skipped that never had anything to extract — kept
+                    # out of the "extraction previously failed" report, which
+                    # alarmed users into force-rebuilds that cannot help (#446).
+                    _skipped_no_source = 0
 
                     # Temporarily suppress the extractor's logger: a warning
                     # about one unreadable attachment would otherwise land in
@@ -1418,7 +1422,14 @@ class ZoteroSemanticSearch:
                                         # Nothing changed since the failure — don't retry
                                         should_extract = False
                                         skipped_existing += 1
-                                        _skipped_failed.append(display or f"item {it.key}")
+                                        if att_keys:
+                                            _skipped_failed.append(display or f"item {it.key}")
+                                        else:
+                                            # Legacy "failed" marker on an item
+                                            # with no text-bearing attachments:
+                                            # nothing ever failed, there was
+                                            # nothing to try (#446).
+                                            _skipped_no_source += 1
                                     else:
                                         # Item or its attachments changed since last
                                         # failure (legacy records without attachment_keys
@@ -1463,10 +1474,16 @@ class ZoteroSemanticSearch:
                                 continue
                             if result:
                                 target.fulltext, target.fulltext_source = result
-                            else:
-                                # Nothing readable — mark so the metadata
-                                # records that we did try.
+                            elif getattr(target, "_attachment_keys", ""):
+                                # An attachment existed but produced no text —
+                                # record the attempt so incremental runs don't
+                                # re-parse it until something changes.
                                 target._fulltext_attempted = True
+                            # Items with no text-bearing attachments get no
+                            # marker at all (#446): there was nothing to try,
+                            # "failed" would mislead the skip report, and the
+                            # has_fulltext-absent path already re-indexes them
+                            # the moment a first attachment appears.
                             done += 1
                             if done % 10 == 0 or done == len(pending_extraction):
                                 try:
@@ -1487,6 +1504,33 @@ class ZoteroSemanticSearch:
                         sys.stderr.write(", ".join(parts) + "\n")
                         if updated_existing > 0:
                             sys.stderr.write(f"  ({updated_existing} items updated with new fulltext)\n")
+                        # Honest accounting for the run's own extraction pass
+                        # (#446): "N indexed" used to cover items whose
+                        # attachments produced no text, so a --force-rebuild
+                        # reported "0 errors" and only the NEXT run's skip
+                        # report revealed how many extractions failed.
+                        _attempt_failed = sum(
+                            1 for _it in pending_extraction
+                            if getattr(_it, "_fulltext_attempted", False)
+                        )
+                        _no_source = sum(
+                            1 for _it in pending_extraction
+                            if not getattr(_it, "fulltext", None)
+                            and not getattr(_it, "_fulltext_attempted", False)
+                        )
+                        if _attempt_failed:
+                            sys.stderr.write(
+                                f"  {_attempt_failed} item(s) had attachments that produced no text "
+                                "(indexed metadata-only; not retried until the item or its attachments change)\n"
+                            )
+                        if _no_source:
+                            sys.stderr.write(
+                                f"  {_no_source} item(s) have no text-bearing attachments (indexed metadata-only)\n"
+                            )
+                        if _skipped_no_source:
+                            sys.stderr.write(
+                                f"  {_skipped_no_source} item(s) remain metadata-only (no text-bearing attachments)\n"
+                            )
                         if _skipped_failed:
                             sys.stderr.write(
                                 f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n"
