@@ -23,6 +23,11 @@ env/
 .coverage
 htmlcov/
 
+# Private, machine-local tests that exercise a real zotero.sqlite / local
+# Zotero API / web API — not part of the shared suite (personal library
+# content, real credentials, not portable to CI or other contributors).
+/private_tests/
+
 # IDE specific files
 .idea/
 .vscode/

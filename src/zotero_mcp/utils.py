@@ -172,6 +172,19 @@ def _paginate(zot_method, *args, max_items=None, **kwargs):
     return items
 
 
+def get_search_backend() -> str:
+    """Return the configured metadata search backend: ``"sqlite"`` or ``"api"``.
+
+    Controlled by ``ZOTERO_SEARCH_BACKEND`` (#167); any value other than
+    ``"sqlite"`` — including unset — falls back to ``"api"``, the pyzotero-based
+    path every deployment already uses. The ``sqlite`` backend additionally
+    requires local mode and a readable ``zotero.sqlite``; callers fall back to
+    ``"api"`` at the query site when that's not the case.
+    """
+    value = os.getenv("ZOTERO_SEARCH_BACKEND", "").strip().lower()
+    return "sqlite" if value == "sqlite" else "api"
+
+
 def format_item_result(
     item: dict,
     index: int | None = None,
