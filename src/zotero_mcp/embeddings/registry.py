@@ -88,13 +88,26 @@ def register_provider(spec: ProviderSpec) -> ProviderSpec:
     return spec
 
 
+# The three remote providers share the pacing/concurrency keys owned by
+# RemoteEmbeddingFunction. All are read with .get(), so a config written
+# before they existed still resolves — they simply fall back to each
+# provider's own class-level defaults.
+def _remote_pacing_kwargs(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rate_limit_rps": config.get("rate_limit_rps"),
+        "max_parallel_requests": config.get("max_parallel_requests"),
+        "max_retries": config.get("max_retries"),
+        "tokens_per_minute": config.get("tokens_per_minute"),
+    }
+
+
 def _openai_ef_factory(config: dict[str, Any]) -> Any:
     return OpenAIEmbeddingFunction(
         model_name=config.get("model_name", "text-embedding-3-small"),
         api_key=config.get("api_key"),
         base_url=config.get("base_url"),
         request_batch_size=config.get("request_batch_size"),
-        rate_limit_rps=config.get("rate_limit_rps"),
+        **_remote_pacing_kwargs(config),
     )
 
 
@@ -103,6 +116,8 @@ def _gemini_ef_factory(config: dict[str, Any]) -> Any:
         model_name=config.get("model_name", "gemini-embedding-001"),
         api_key=config.get("api_key"),
         base_url=config.get("base_url"),
+        request_batch_size=config.get("request_batch_size"),
+        **_remote_pacing_kwargs(config),
     )
 
 
@@ -112,6 +127,7 @@ def _ollama_ef_factory(config: dict[str, Any]) -> Any:
         base_url=config.get("base_url"),
         timeout=config.get("timeout"),
         request_batch_size=config.get("request_batch_size"),
+        **_remote_pacing_kwargs(config),
     )
 
 
