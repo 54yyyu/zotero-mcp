@@ -9,6 +9,7 @@ between the SQL backend and the existing pyzotero-based path.
 import sqlite3
 from pathlib import Path
 
+import _search_corpus
 from zotero_mcp.local_db import LocalZoteroReader
 
 GROUP_ID = 6015547
@@ -17,42 +18,7 @@ GROUP_ID = 6015547
 def _build_db(db_path: Path) -> dict[str, int]:
     """Build a fixture DB; returns a name -> itemID map for convenience."""
     conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE libraries (
-            libraryID INTEGER PRIMARY KEY, type TEXT NOT NULL,
-            editable INT NOT NULL, filesEditable INT NOT NULL
-        );
-        CREATE TABLE groups (
-            groupID INTEGER PRIMARY KEY, libraryID INT NOT NULL UNIQUE,
-            name TEXT NOT NULL, description TEXT NOT NULL, version INT NOT NULL
-        );
-        CREATE TABLE items (
-            itemID INTEGER PRIMARY KEY, key TEXT, itemTypeID INTEGER,
-            libraryID INT, dateAdded TEXT, dateModified TEXT
-        );
-        CREATE TABLE itemTypes (itemTypeID INTEGER PRIMARY KEY, typeName TEXT);
-        CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT);
-        CREATE TABLE itemData (itemID INTEGER, fieldID INTEGER, valueID INTEGER);
-        CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT);
-        CREATE TABLE itemCreators (
-            itemID INTEGER, creatorID INTEGER, creatorTypeID INTEGER, orderIndex INTEGER
-        );
-        CREATE TABLE creators (
-            creatorID INTEGER PRIMARY KEY, firstName TEXT, lastName TEXT
-        );
-        CREATE TABLE creatorTypes (creatorTypeID INTEGER PRIMARY KEY, creatorType TEXT);
-        CREATE TABLE itemTags (itemID INTEGER, tagID INTEGER, type INTEGER);
-        CREATE TABLE tags (tagID INTEGER PRIMARY KEY, name TEXT);
-        CREATE TABLE itemNotes (itemID INTEGER, parentItemID INTEGER, note TEXT);
-        CREATE TABLE deletedItems (itemID INTEGER PRIMARY KEY);
-        CREATE TABLE collections (
-            collectionID INTEGER PRIMARY KEY, collectionName TEXT,
-            parentCollectionID INTEGER, libraryID INTEGER, key TEXT
-        );
-        CREATE TABLE collectionItems (collectionID INTEGER, itemID INTEGER);
-        """
-    )
+    conn.executescript(_search_corpus.SCHEMA)
 
     conn.execute("INSERT INTO libraries VALUES (1, 'user', 1, 1)")
     conn.execute("INSERT INTO libraries VALUES (5, 'group', 1, 1)")

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from zotero_mcp import client as _client
+from zotero_mcp import search_semantics as _semantics
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
@@ -728,69 +729,21 @@ def advanced_search(
                 date_value = str(data.get("date", "")).strip()
                 return [date_value[:4]] if len(date_value) >= 4 else []
 
-            field_aliases = {
-                "itemtype": "itemType",
-                "dateadded": "dateAdded",
-                "datemodified": "dateModified",
-                "doi": "DOI",
-            }
-            source_field = field_aliases.get(field_lower, field)
+            source_field = _semantics.FIELD_ALIASES.get(field_lower, field)
             raw_value = data.get(source_field, "")
             if raw_value is None:
                 return []
             return [str(raw_value).strip()]
 
-        def _as_float(text: str) -> float | None:
-            try:
-                return float(text)
-            except ValueError:
-                return None
-
-        def _compare(candidate: str, expected: str, operation: str) -> bool:
-            # Normalize both sides for diacritics/dashes before comparison
-            left = _utils._normalize_for_search(candidate).lower()
-            right = _utils._normalize_for_search(expected).lower()
-
-            if operation == "is":
-                return left == right
-            if operation == "isNot":
-                return left != right
-            if operation == "contains":
-                return right in left
-            if operation == "doesNotContain":
-                return right not in left
-            if operation == "beginsWith":
-                return left.startswith(right)
-            if operation == "endsWith":
-                return left.endswith(right)
-
-            left_num = _as_float(left)
-            right_num = _as_float(right)
-            if (
-                operation in {"isGreaterThan", "isLessThan", "isBefore", "isAfter"}
-                and left_num is not None
-                and right_num is not None
-            ):
-                if operation in {"isGreaterThan", "isAfter"}:
-                    return left_num > right_num
-                return left_num < right_num
-
-            if operation in {"isGreaterThan", "isAfter"}:
-                return left > right
-            return left < right
-
         def _matches_condition(data: dict[str, object], condition: dict[str, str]) -> bool:
-            values = _extract_values(data, condition["field"])
-            if not values:
-                return False
-
-            operation = condition["operation"]
-            target = condition["value"]
-            comparisons = [_compare(value, target, operation) for value in values]
-
-            if operation in {"isNot", "doesNotContain"}:
-                return all(comparisons)
-            return any(comparisons)
+            # The comparison itself lives in search_semantics so the SQLite
+            # backend evaluates the identical rules — see that module's
+            # docstring for what went wrong when they were stated twice.
+            return _semantics.matches(
+                _extract_values(data, condition["field"]),
+                condition["value"],
+                condition["operation"],
+            )
 
         # #167: try the SQLite metadata backend first — it replaces the
         # client-side paging loop below entirely when it can serve the

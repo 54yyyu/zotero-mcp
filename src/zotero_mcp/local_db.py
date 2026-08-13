@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import fulltext_cache
+from . import search_semantics as _semantics
 from .config import load_config
 from .extract import (
     categorize_attachment,
@@ -347,30 +348,51 @@ def _like_or_eq(expr: str, operation: str, value: str) -> tuple[str, list]:
     here (``is``/``contains``) — callers needing the true negated semantics
     (a value must be present AND not match) wrap the result themselves; see
     ``_scalar_condition`` and the creator/tag EXISTS builders below, which
-    both replicate tools/search.py's ``_matches_condition`` rule that a
-    missing/empty value never satisfies *any* operator, negated or not.
+    both replicate search_semantics.matches()'s rule that a missing/empty
+    value never satisfies *any* operator, negated or not.
+
+    Equality and pattern comparisons run against ``zsearch_norm(expr)`` rather
+    than the raw column, so SQL folds the stored value exactly as
+    ``search_semantics.compare`` folds it in Python. Without that the two
+    backends disagree on every accented spelling. Range comparisons stay
+    unwrapped — see ``search_semantics.sql_expression``.
     """
-    positive = {"isNot": "is", "doesNotContain": "contains"}.get(operation, operation)
+    positive = _semantics.POSITIVE_OF.get(operation, operation)
+    target = _semantics.sql_expression(expr, positive)
+
     if positive == "is":
-        return f"{expr} = ?", [value]
-    if positive == "contains":
-        return f"{expr} LIKE ?", [f"%{value}%"]
-    if positive == "beginsWith":
-        return f"{expr} LIKE ?", [f"{value}%"]
-    if positive == "endsWith":
-        return f"{expr} LIKE ?", [f"%{value}"]
+        return f"{target} = ?", [_semantics.normalize(value)]
+    if positive in _semantics.PATTERN_OPS:
+        pattern = _semantics.like_pattern(
+            positive, _semantics.escape_like(_semantics.normalize(value))
+        )
+        return f"{target} LIKE ? ESCAPE '{_semantics.LIKE_ESCAPE}'", [pattern]
     if positive in ("isGreaterThan", "isAfter"):
-        return f"{expr} > ?", [value]
+        return f"{target} > ?", [value]
     if positive in ("isLessThan", "isBefore"):
-        return f"{expr} < ?", [value]
+        return f"{target} < ?", [value]
     raise AssertionError(f"unreachable: unvalidated operation {operation!r}")
 
 
 def _scalar_condition(expr: str, operation: str, value: str) -> tuple[str, list]:
-    """Condition SQL for a single-valued field (title, date, itemType, ...)."""
+    """Condition SQL for a single-valued field (title, date, itemType, ...).
+
+    A negated operator matches an item that simply *has no value* for the
+    field: an item with no ``publicationTitle`` does not contain "Nature", so
+    ``publicationTitle doesNotContain "Nature"`` returns it. That mirrors
+    tools/search.py's ``_extract_values``, which yields ``[""]`` rather than
+    ``[]`` for an absent scalar — the same choice it documents explicitly for
+    ``collection``.
+
+    The "empty satisfies nothing" rule applies only to the genuinely
+    multi-valued fields, where ``_extract_values`` really does return an empty
+    list; see ``_creator_condition`` and ``_tag_condition``, which keep their
+    ``EXISTS`` guards for exactly that reason. Applying it here as well made
+    the two backends disagree on every optional field.
+    """
     if operation in ("isNot", "doesNotContain"):
         positive_sql, params = _like_or_eq(expr, operation, value)
-        return f"({expr} IS NOT NULL AND NOT ({positive_sql}))", params
+        return f"(NOT ({positive_sql}))", params
     return _like_or_eq(expr, operation, value)
 
 
@@ -555,6 +577,9 @@ class LocalZoteroReader:
             uri = f"file:{self.db_path}?immutable=1"
             self._connection = sqlite3.connect(uri, uri=True)
             self._connection.row_factory = sqlite3.Row
+            # Lets the search backend compare the same folded form of a string
+            # that search_semantics.compare() produces in Python.
+            _semantics.register_sqlite_functions(self._connection)
         return self._connection
 
     def _get_storage_dir(self) -> Path:
@@ -1700,27 +1725,32 @@ class LocalZoteroReader:
         like_clauses: list[str] = []
         like_params: list = []
         for variant in variants:
-            pattern = f"%{variant}%"
-            like_clauses.append("title_val.value LIKE ?")
+            # Escaped, but deliberately not zsearch_norm-folded: this free-text
+            # path matches by OR-ing _generate_search_variants, which also
+            # covers dash/space and umlaut *expansion* (Müller -> Mueller) that
+            # normalize() does not do. Folding here as well would over-match
+            # relative to the pyzotero path.
+            pattern = f"%{_semantics.escape_like(variant)}%"
+            like_clauses.append("title_val.value LIKE ? ESCAPE '\\'")
             like_params.append(pattern)
-            like_clauses.append("date_val.value LIKE ?")
+            like_clauses.append("date_val.value LIKE ? ESCAPE '\\'")
             like_params.append(pattern)
             like_clauses.append(
                 f"EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
-                f"WHERE ic.itemID = i.itemID AND {_CREATOR_NAME_EXPR} LIKE ?)"
+                f"WHERE ic.itemID = i.itemID AND {_CREATOR_NAME_EXPR} LIKE ? ESCAPE '\\')"
             )
             like_params.append(pattern)
             if qmode == "everything":
-                like_clauses.append("abstract_val.value LIKE ?")
+                like_clauses.append("abstract_val.value LIKE ? ESCAPE '\\'")
                 like_params.append(pattern)
                 like_clauses.append(
                     "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
-                    "WHERE itg.itemID = i.itemID AND t.name LIKE ?)"
+                    "WHERE itg.itemID = i.itemID AND t.name LIKE ? ESCAPE '\\')"
                 )
                 like_params.append(pattern)
                 like_clauses.append(
                     "EXISTS (SELECT 1 FROM itemNotes n WHERE "
-                    "(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND n.note LIKE ?)"
+                    "(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND n.note LIKE ? ESCAPE '\\')"
                 )
                 like_params.append(pattern)
 
