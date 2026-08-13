@@ -12,7 +12,7 @@ import json
 import pytest
 from conftest import DummyContext
 
-from zotero_mcp.tools import write
+from zotero_mcp.tools import _helpers, write
 
 # ---------------------------------------------------------------------------
 # detect_source_type
@@ -112,6 +112,107 @@ class TestDetectSourceType:
         # "not a path either" ValueError) rather than guessing.
         with pytest.raises(ValueError):
             write.detect_source_type("10.1145/3708319, not-a-doi")
+
+
+# ---------------------------------------------------------------------------
+# Splitting a batch argument into tokens
+# ---------------------------------------------------------------------------
+
+
+class TestSplitMultiValue:
+    """Commas are legal inside URLs (query strings routinely carry them) and
+    inside DOIs, so splitting on one unconditionally turns a single working
+    identifier into a truncated one plus a junk sibling. A line is therefore
+    kept whole only when its comma-tokens don't all validate *and* the line
+    itself does — splitting a line that isn't a valid identifier anyway can
+    only help, and is what keeps one bad token from costing its neighbours."""
+
+    def test_url_with_comma_in_query_string_stays_one_token(self):
+        url = "https://example.com/page?ids=1,2"
+        assert write._split_multi_value(url, "url", write._looks_like_url) == [url]
+
+    def test_doi_containing_a_comma_stays_one_token(self):
+        # _normalize_doi's own `10.\d{4,9}/\S+` accepts a comma in the suffix.
+        doi = "10.1000/foo,bar"
+        assert write._split_multi_value(
+            doi, "doi", _helpers._normalize_doi
+        ) == [doi]
+
+    def test_comma_separated_dois_still_split(self):
+        assert write._split_multi_value(
+            "10.1145/3708319,10.1038/nature12373", "doi", _helpers._normalize_doi
+        ) == ["10.1145/3708319", "10.1038/nature12373"]
+
+    def test_newline_always_separates_even_when_a_line_is_invalid(self):
+        # No identifier can contain a raw newline, so that split is never
+        # ambiguous — unlike the comma, it needs no all-valid gate.
+        assert write._split_multi_value(
+            "https://example.com/a\nnot a url at all", "url", write._looks_like_url
+        ) == ["https://example.com/a", "not a url at all"]
+
+    def test_comma_inside_one_line_of_a_newline_batch(self):
+        """The mixed case: newlines separate, but the comma inside the first
+        line belongs to that URL's query string."""
+        assert write._split_multi_value(
+            "https://a.com/x?ids=1,2\nhttps://b.com", "url", write._looks_like_url
+        ) == ["https://a.com/x?ids=1,2", "https://b.com"]
+
+    def test_explicit_json_array_is_taken_verbatim(self):
+        # The caller structured this deliberately; no gate applies.
+        assert write._split_multi_value(
+            '["https://example.com/a?x=1,2", "https://example.com/b"]',
+            "url", write._looks_like_url,
+        ) == ["https://example.com/a?x=1,2", "https://example.com/b"]
+
+    def test_explicit_list_is_taken_verbatim(self):
+        assert write._split_multi_value(
+            ["https://example.com/a?x=1,2"], "url", write._looks_like_url
+        ) == ["https://example.com/a?x=1,2"]
+
+    def test_isbn_list_splits_on_validated_tokens(self):
+        assert write._split_multi_value(
+            "978-0-19-973581-5, 9780135957059", "isbn", _helpers._normalize_isbn
+        ) == ["978-0-19-973581-5", "9780135957059"]
+
+    def test_one_invalid_token_still_splits_when_the_line_is_not_an_identifier(self):
+        """The batch promise is that one bad token never fails its
+        neighbours. Two ISBNs where the second fails its checksum is not a
+        valid ISBN as a whole either, so splitting is the only reading that
+        can add the good one."""
+        assert write._split_multi_value(
+            "9780199735815, 9780132350885", "isbn", _helpers._normalize_isbn
+        ) == ["9780199735815", "9780132350885"]
+
+    def test_one_bad_url_still_splits(self):
+        assert write._split_multi_value(
+            "https://a.com, not a url", "url", write._looks_like_url
+        ) == ["https://a.com", "not a url"]
+
+    def test_one_bad_doi_still_splits(self):
+        assert write._split_multi_value(
+            "10.1145/3708319, not-a-doi", "doi", _helpers._normalize_doi
+        ) == ["10.1145/3708319", "not-a-doi"]
+
+
+class TestLooksLikeUrl:
+    """detect_source_type's URL heuristic, extracted so the batch-split gate
+    and detection can't drift apart."""
+
+    @pytest.mark.parametrize("s", [
+        "https://example.com/page",
+        "http://example.com",
+        "example.com/page",
+        "www.example.com",
+        "sub.host.co.uk/x",
+    ])
+    def test_accepts(self, s):
+        assert write._looks_like_url(s)
+
+    @pytest.mark.parametrize("s", [
+        "2", "not a url at all", "notes.txt", "draft.tex", "",
+    ])
+    def test_rejects(self, s):
+        assert not write._looks_like_url(s)
 
     @pytest.mark.parametrize("source,expected", [
         ("/Users/me/refs.bib", "bibtex"),
