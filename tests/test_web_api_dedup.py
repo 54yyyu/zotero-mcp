@@ -19,8 +19,8 @@ regression to identifier-only quick search fails loudly.
 from unittest.mock import MagicMock
 
 import pytest
-
 from conftest import DummyContext, FakeZotero
+
 from zotero_mcp import server  # noqa: F401 — registers tools/monkeypatch targets
 from zotero_mcp.tools import _helpers, write
 
