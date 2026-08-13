@@ -442,3 +442,85 @@ def test_import_openai_batch_reports_records_missing_from_output(tmp_path, monke
         "custom_id": "B",
         "error": "No embedding or error row returned for batch record",
     } in stats["errors"]
+
+
+def test_import_openai_batch_evicts_cached_fulltext(tmp_path, monkeypatch):
+    """Batch apply is where the transient cache becomes collectable.
+
+    The realtime path evicts right after ``upsert_documents``; until this the
+    batch path evicted nothing at all, so ``--openai-batch`` grew the cache to
+    hold the whole library's extracted plaintext. Chunked ids arrive as
+    ``<key>#<n>`` and have to collapse back to ``<key>`` to match the cache,
+    which is keyed by item.
+    """
+    from zotero_mcp import fulltext_cache
+
+    class ImportChromaClient(FakeChromaClient):
+        def upsert_embeddings(self, documents, metadatas, ids, embeddings):
+            pass
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"semantic_search": {}}), encoding="utf-8")
+    cfg = str(config_path)
+
+    for attachment, item in (("ATT_A", "A"), ("ATT_B", "B"), ("ATT_C", "C")):
+        fulltext_cache.put_cached_text(
+            attachment, 111, 22, source="pdf", item_key=item,
+            text=f"text for {item}", config_path=cfg,
+        )
+
+    # "A" is unchunked, "B" arrives as two passages, "C" is not in this batch.
+    records_path = tmp_path / "batch-001-records.jsonl"
+    openai_batch.write_jsonl(
+        records_path,
+        [
+            {"id": "A", "document": "doc A", "metadata": {"title": "A"}},
+            {"id": "B#0", "document": "doc B0", "metadata": {"title": "B"}},
+            {"id": "B#1", "document": "doc B1", "metadata": {"title": "B"}},
+        ],
+    )
+    output_path = tmp_path / "batch-001-records-output.jsonl"
+    output_path.write_text(
+        "".join(
+            json.dumps({
+                "custom_id": doc_id,
+                "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1]}]}},
+            }) + "\n"
+            for doc_id in ("A", "B#0", "B#1")
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "run_id": "run-1",
+        "manifest_path": str(tmp_path / "manifest.json"),
+        "force_full_rebuild": False,
+        "batches": [
+            {
+                "batch_id": "batch-1",
+                "status": "completed",
+                "output_file_id": "file-1",
+                "records_path": str(records_path),
+                "imported_at": None,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    monkeypatch.setattr(semantic_search.openai_batch, "find_manifest", lambda **kwargs: manifest)
+    monkeypatch.setattr(
+        semantic_search.openai_batch,
+        "refresh_manifest_status",
+        lambda manifest, **kwargs: manifest,
+    )
+    monkeypatch.setattr(semantic_search.openai_batch, "create_openai_client", lambda config: object())
+
+    search = semantic_search.ZoteroSemanticSearch(
+        chroma_client=ImportChromaClient(), config_path=cfg
+    )
+    stats = search.import_openai_batch()
+
+    assert stats["imported_items"] == 3
+    assert fulltext_cache.get_cached_text("ATT_A", 111, 22, config_path=cfg) is None
+    assert fulltext_cache.get_cached_text("ATT_B", 111, 22, config_path=cfg) is None
+    # Untouched by this batch, so still needed by whatever embeds it later.
+    assert fulltext_cache.get_cached_text("ATT_C", 111, 22, config_path=cfg) is not None

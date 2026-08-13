@@ -220,8 +220,9 @@ def purge_stale(max_age_days: int = 30, config_path: str | None = None) -> int:
 
     Removes entries older than ``max_age_days`` (an abandoned run) and entries
     whose backing attachment file is gone. Also sweeps orphaned ``.txt`` files
-    that no index entry references — the residue of a run that died between a
-    worker's write and the parent's :func:`record_entries`.
+    that no index entry references — the residue of a run that died inside
+    :func:`put_cached_text`, after it wrote the text file but before it saved
+    the index that points at it.
     """
     root = get_fulltext_cache_root(config_path)
     removed = 0
