@@ -112,6 +112,22 @@ class TestFindExistingItems:
     def test_doi_no_match(self, fake_zot):
         assert _helpers.find_existing_items(fake_zot, doi="10.9999/other") == []
 
+    def test_malformed_entries_are_skipped(self, fake_zot, monkeypatch):
+        """A live batch import got an int back inside the items() list. The
+        try/except upstream only wraps the call, not this iteration, so the
+        AttributeError escaped and aborted the whole import — a junk entry
+        must cost at most its own match."""
+        real_items = fake_zot.items
+
+        def _items_with_junk(**kwargs):
+            return [0, None, "junk", {"no_data_key": True},
+                    {"data": 7}, *real_items(**kwargs)]
+
+        monkeypatch.setattr(fake_zot, "items", _items_with_junk)
+
+        out = _helpers.find_existing_items(fake_zot, doi=DOI, ctx=DummyContext())
+        assert [i["key"] for i in out] == ["EXIST001"]
+
     def test_attachments_excluded(self, fake_zot):
         fake_zot._items.append({
             "key": "ATTACH01",

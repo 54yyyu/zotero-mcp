@@ -708,11 +708,11 @@ def build_parser() -> argparse.ArgumentParser:
     adoi = add_sub.add_parser("doi", help="Add item by DOI")
     adoi.add_argument("doi")
     _add_common_flags(adoi)
-    adoi.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
+    adoi.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"], default="auto")
     aurl = add_sub.add_parser("url", help="Add item by URL")
     aurl.add_argument("url")
     _add_common_flags(aurl)
-    aurl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
+    aurl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"], default="auto")
     afil = add_sub.add_parser("file", help="Add item from local file (.pdf/.epub)")
     afil.add_argument("--filepath", required=True)
     afil.add_argument("--title", help="Override title if metadata extraction misses")
@@ -727,14 +727,14 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Inline BibTeX (use - to read from stdin)")
     abib.add_argument("--file", help="Path to a .bib/.bibtex file")
     _add_common_flags(abib)
-    abib.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
+    abib.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"],
                       default="auto")
     acsl = add_sub.add_parser("csl-json", help="Add items from CSL JSON")
     acsl.add_argument("--json", dest="json",
                       help="Inline CSL JSON (use - to read from stdin)")
     acsl.add_argument("--file", help="Path to a .json/.csljson file")
     _add_common_flags(acsl)
-    acsl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
+    acsl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"],
                       default="auto")
 
     # collections

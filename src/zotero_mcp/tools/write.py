@@ -57,6 +57,192 @@ def _resolve_collections_arg(
     )
 
 
+def _split_multi_value(raw, field_name: str, validator) -> list[str]:
+    """Split a batch-identifier argument (DOI/URL/ISBN) into tokens.
+
+    Structured input — a list, or a string that opens with ``[``/``{`` —
+    goes to ``_normalize_str_list_input`` unchanged: the caller shaped it
+    deliberately, so a JSON array is a batch and a JSON object is the error
+    that helper already reports.
+
+    A plain string splits on newlines unconditionally, since no identifier
+    can contain one. Commas are the ambiguous case — they are ordinary
+    characters inside these identifiers, as query strings routinely show
+    and as ``_normalize_doi``'s own ``10.\\d{4,9}/\\S+`` allows — so a line
+    splits on commas unless doing so would break an identifier that works
+    as it stands. Concretely, it splits when either:
+
+    * every comma-token is independently valid, so the reading is
+      unambiguous (``10.1/a,10.2/b``, or two ISBNs — a comma can never
+      occur inside a valid ISBN, so those always split); or
+    * the whole line is *not* a valid identifier, so there is nothing to
+      protect and splitting is the only reading that can produce anything
+      (``9780199735815, 9781234567890`` where the second fails its
+      checksum — one bad token must not cost its neighbours).
+
+    It keeps the line whole only when the tokens don't all validate *and*
+    the line itself does — ``https://example.com/p?ids=1,2``, which
+    unconditional splitting turned into a truncated page plus a junk
+    sibling item titled ``2``.
+
+    Applying this per line rather than to the whole string keeps the mixed
+    case right: in ``"https://a.com/x?ids=1,2\\nhttps://b.com"`` the newline
+    separates and the comma does not.
+
+    ``validator`` is the same normalizer ``detect_source_type`` uses for
+    this identifier type, so detection and splitting agree by construction
+    rather than by keeping two copies of the rule in step.
+    """
+    if not isinstance(raw, str):
+        return _helpers._normalize_str_list_input(raw, field_name)
+
+    stripped = raw.strip()
+    if stripped[:1] in ("[", "{"):
+        return _helpers._normalize_str_list_input(stripped, field_name)
+
+    tokens: list[str] = []
+    for line in stripped.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) > 1 and (
+            all(validator(p) for p in parts) or not validator(line)
+        ):
+            tokens.extend(parts)
+        else:
+            tokens.append(line)
+    return tokens
+
+
+def _dedupe_multi_tokens(tokens: list[str], key_fn):
+    """Collapse tokens naming the same identifier into one unit of work.
+
+    Returns ``(canonical_indices, duplicate_of)``: the positions to actually
+    process, in first-occurrence order, and a map from each remaining
+    position to the position it repeats.
+
+    Dedup against the *library* runs in phase 1, before anything has been
+    created, so it cannot see items this same call is about to add — a DOI
+    listed twice was created twice even under ``if_exists='skip'``. Removing
+    the repeat before any work starts is cheaper than teaching every later
+    phase about items created mid-call, and it also saves the redundant
+    CrossRef and Zotero round-trips.
+
+    ``key_fn`` returns the identity to compare on, or None for a token it
+    can't normalize — those stay separate so each still gets its own error.
+    """
+    canonical: list[int] = []
+    duplicate_of: dict[int, int] = {}
+    seen: dict[object, int] = {}
+    for i, tok in enumerate(tokens):
+        key = key_fn(tok)
+        if key is None:
+            canonical.append(i)
+            continue
+        if key in seen:
+            duplicate_of[i] = seen[key]
+        else:
+            seen[key] = i
+            canonical.append(i)
+    return canonical, duplicate_of
+
+
+def _doi_dedup_key(tok: str):
+    """DOIs are case-insensitive, and CrossRef echoes canonical case."""
+    normalized = _helpers._normalize_doi(tok)
+    return normalized.lower() if normalized else None
+
+
+def _isbn_dedup_key(tok: str):
+    """_normalize_isbn returns ISBN-13, so both spellings of one book
+    collapse to the same key."""
+    return _helpers._normalize_isbn(tok)
+
+
+def _url_dedup_key(tok: str):
+    """Exact match after stripping. There is no URL normalizer, and
+    inventing equivalence rules (trailing slash, case, query order) here
+    would silently drop URLs a user meant to add separately."""
+    return (tok or "").strip() or None
+
+
+def _duplicate_of_message(kind: str, position: int) -> str:
+    """Rendered in place of a result for a token repeated within one call."""
+    return (f"Same {kind} as entry {position} in this request — "
+            "added once, not duplicated.")
+
+
+# Prefixes the per-source adders open a successful result block with. Sniffing
+# rendered text is a stopgap: add_by_doi/url/isbn hand back pre-rendered
+# strings, so this is the only success signal the recursive URL/ISBN paths
+# expose. The real fix is the convergence _format_multi_result's docstring
+# describes — structured per-item dicts rendered through
+# _format_batch_result — at which point these go away.
+_CREATED_MARKERS = (
+    "Successfully added",       # add_by_doi, add_by_isbn
+    "Successfully added arXiv",  # _add_by_arxiv
+    "Created webpage item for:",  # add_by_url's generic-webpage branch
+)
+_REUSED_MARKERS = ("Already in library:",)
+
+
+def _summarize_multi_results(results: list[str]) -> dict[str, int]:
+    """Count outcomes across a batch's per-token rendered results."""
+    counts = {"created": 0, "reused": 0, "duplicate": 0, "failed": 0}
+    for res in results:
+        text = res or ""
+        if "in this request — added once" in text:
+            counts["duplicate"] += 1
+        elif any(m in text for m in _CREATED_MARKERS):
+            counts["created"] += 1
+        elif any(m in text for m in _REUSED_MARKERS):
+            counts["reused"] += 1
+        else:
+            counts["failed"] += 1
+    return counts
+
+
+def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> str:
+    """Concatenate per-token single-item results for a DOI/URL/ISBN batch.
+
+    Each element of ``results`` is the normal, unmodified single-item
+    return value for that adder — this just labels and stacks them, so
+    batch output is a plain superset of what a single call already prints.
+
+    Deliberately a second, simpler batch strategy alongside
+    ``_format_batch_result`` (used by add_by_bibtex/add_by_csl_json), which
+    aggregates structured per-item dicts instead of pre-rendered strings.
+    Chosen here to keep the diff small and single-item output byte-for-byte
+    unchanged. If a third source ever needs batching, or the two formats
+    need to converge, the natural refactor is to make add_by_doi/url/isbn
+    return the same per-item dict shape (like a hypothetical
+    ``_add_one_by_doi`` helper) and render everything through
+    ``_format_batch_result`` — see the recursive per-token loops below for
+    the redundant-work cost that refactor would also remove.
+    """
+    counts = _summarize_multi_results(results)
+    total = len(tokens)
+    lines = [f"# Added {counts['created']} of {total} {kind}"
+             f"{'s' if total != 1 else ''}"]
+    detail = []
+    if counts["reused"]:
+        detail.append(f"{counts['reused']} already in library")
+    if counts["duplicate"]:
+        detail.append(f"{counts['duplicate']} repeated in this request")
+    if counts["failed"]:
+        detail.append(f"{counts['failed']} failed")
+    if detail:
+        lines.append(", ".join(detail).capitalize() + ".")
+    lines.append("")
+    for i, (tok, res) in enumerate(zip(tokens, results), 1):
+        lines.append(f"## {i}. {tok}")
+        lines.append("")
+        lines.append(res)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _collections_status(coll_keys: list[str], missing: list[str]) -> str:
     """Render the post-create collection-membership state for tool output."""
     if not coll_keys:
@@ -349,11 +535,14 @@ def batch_update_tags(
                     # If writing via web API, re-fetch the item from web to get
                     # the correct version number for the update
                     if write_zot is not zot:
+                        def _set_tags(it):
+                            it["data"]["tags"] = current_tags
+
                         try:
-                            web_item = write_zot.item(item_key)
-                            web_item["data"]["tags"] = current_tags
                             ctx.info(f"Updating item {item_key} via web API with tags: {current_tags}")
-                            result = write_zot.update_item(web_item)
+                            result = _helpers._update_item_with_version_retry(
+                                write_zot, item_key, _set_tags, ctx=ctx,
+                            )
                         except Exception as e:
                             ctx.error(f"Failed to fetch/update item {item_key} via web API: {str(e)}")
                             skipped_count += 1
@@ -568,9 +757,12 @@ def batch_update_extra(
                 # If writing via web API, re-fetch the item from web to get
                 # the correct version number for the update
                 if write_zot is not zot:
-                    web_item = write_zot.item(item_key)
-                    web_item["data"]["extra"] = new_extra
-                    result = write_zot.update_item(web_item)
+                    def _set_extra(it):
+                        it["data"]["extra"] = new_extra
+
+                    result = _helpers._update_item_with_version_retry(
+                        write_zot, item_key, _set_extra, ctx=ctx,
+                    )
                 else:
                     item["data"]["extra"] = new_extra
                     result = write_zot.update_item(item)
@@ -950,9 +1142,349 @@ def manage_collections(
 # individual MCP tools — ``zotero_add_item`` is the single public facade that
 # detects the source shape and dispatches here. They stay importable (and
 # individually callable) for the CLI and for direct use.
-@with_zotero_api_lock
+def _crossref_to_item_data(cr: dict, normalized: str, template_fn) -> tuple[dict, str]:
+    """Map a CrossRef ``/works`` message to a Zotero item dict.
+
+    Pure aside from ``template_fn(zot_type)`` (see
+    ``_memoized_item_template_fn``), so add_by_doi's single- and multi-DOI
+    paths can share one implementation (#A2). Returns ``(item_data,
+    zot_type)`` — callers need ``zot_type`` for display.
+    """
+    cr_type = cr.get("type", "")
+    zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
+
+    template = template_fn(zot_type)
+    item_data = dict(template)
+
+    # Map fields
+    title_list = cr.get("title", [])
+    if title_list and "title" in item_data:
+        item_data["title"] = title_list[0]
+
+    # Creators
+    creators = []
+    for author in cr.get("author", []):
+        if "family" in author:
+            creators.append({
+                "creatorType": "author",
+                "firstName": author.get("given", ""),
+                "lastName": author["family"],
+            })
+        elif "name" in author:
+            creators.append({
+                "creatorType": "author",
+                "name": author["name"],
+            })
+    for editor in cr.get("editor", []):
+        if "family" in editor:
+            creators.append({
+                "creatorType": "editor",
+                "firstName": editor.get("given", ""),
+                "lastName": editor["family"],
+            })
+        elif "name" in editor:
+            creators.append({
+                "creatorType": "editor",
+                "name": editor["name"],
+            })
+    if creators:
+        item_data["creators"] = creators
+
+    # Date
+    date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
+    if date_parts and date_parts[0]:
+        parts = date_parts[0]
+        item_data["date"] = "-".join(str(p) for p in parts)
+
+    # Simple string fields
+    field_map = {
+        "DOI": normalized,
+        "url": cr.get("URL", ""),
+        "volume": cr.get("volume", ""),
+        "issue": cr.get("issue", ""),
+        "pages": cr.get("page", ""),
+        "publisher": cr.get("publisher", ""),
+        "ISSN": (cr.get("ISSN") or [""])[0],
+    }
+
+    container = (cr.get("container-title") or [""])[0]
+    if container:
+        field_map["publicationTitle"] = container
+
+    abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
+    if abstract:
+        field_map["abstractNote"] = abstract
+
+    for field, value in field_map.items():
+        if field in item_data and value:
+            item_data[field] = value
+
+    return item_data, zot_type
+
+
+def _memoized_item_template_fn(write_zot):
+    """Wrap ``write_zot.item_template`` with a per-call cache (#A3).
+
+    CROSSREF_TYPE_MAP maps onto at most ~13 distinct Zotero item types, so
+    caching collapses up to one template GET per DOI in an N-DOI batch down
+    to at most one per distinct type actually seen. Self-locking so it is
+    correct regardless of whether the caller already holds
+    ``zotero_api_lock`` (the RLock is reentrant).
+    """
+    cache: dict[str, dict] = {}
+
+    def template_fn(zot_type: str) -> dict:
+        if zot_type not in cache:
+            with zotero_api_lock():
+                cache[zot_type] = write_zot.item_template(zot_type)
+        return cache[zot_type]
+
+    return template_fn
+
+
+_CROSSREF_WORKS_URL = "https://api.crossref.org/works"
+
+# CrossRef "polite pool": identifying via mailto gives higher rate limits and
+# priority routing, so it is sent unconditionally rather than only when the
+# operator configured an address — the same project-generic noreply identity
+# discovery.py already sends to OpenAlex. ZOTERO_MCP_CONTACT_EMAIL overrides it.
+_CROSSREF_DEFAULT_MAILTO = "zotero-mcp@users.noreply.github.com"
+
+# DOIs per batched /works?filter=doi:... request. 60 was measured working, but
+# CrossRef documents no URL-length or filter-count ceiling, so don't sit next to
+# an unmeasured cliff; 50 also matches _CREATE_BATCH_SIZE.
+_CROSSREF_FILTER_CHUNK = 50
+
+_CROSSREF_MAX_ATTEMPTS = 3
+
+_CROSSREF_HEADERS = {
+    "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
+    "Accept": "application/json",
+}
+
+
+def _crossref_mailto() -> str:
+    """The address to identify this client to CrossRef with (never empty)."""
+    return (
+        os.environ.get("ZOTERO_MCP_CONTACT_EMAIL", "").strip()
+        or _CROSSREF_DEFAULT_MAILTO
+    )
+
+
+def _crossref_get(url, params, ctx, timeout):
+    """GET a CrossRef endpoint with a bounded retry on 429 / 5xx.
+
+    Returns ``(response, None)`` or ``(None, error_str)``. The retry is a
+    backstop, not the rate-limiting strategy: the batch path issues one
+    request per 50 DOIs, so a normal import should never throttle at all.
+    """
+    last_error = None
+    for attempt in range(_CROSSREF_MAX_ATTEMPTS):
+        try:
+            resp = requests.get(url, params=params, headers=_CROSSREF_HEADERS,
+                                timeout=timeout)
+        except requests.Timeout:
+            return None, "Error: CrossRef API request timed out. Please try again."
+        except requests.RequestException as e:
+            return None, f"Error fetching from CrossRef: {e}"
+
+        if resp.status_code == 429 or resp.status_code >= 500:
+            last_error = f"HTTP {resp.status_code}"
+            if attempt < _CROSSREF_MAX_ATTEMPTS - 1:
+                wait = 5 * (2 ** attempt)  # 5s, 10s
+                ctx.info(
+                    f"CrossRef returned {resp.status_code}; retrying in {wait}s "
+                    f"({attempt + 1}/{_CROSSREF_MAX_ATTEMPTS})..."
+                )
+                _time.sleep(wait)
+                continue
+            break
+        return resp, None
+
+    return None, f"Error fetching from CrossRef: {last_error}"
+
+
+def _dedup_check_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists, ctx):
+    """Normalize and dedup-check one DOI.
+
+    Returns ``("final", result_str)`` when the token is already fully
+    resolved (invalid DOI or dedup match), or ``("needs_fetch",
+    normalized_doi)`` when CrossRef metadata is still needed.
+    """
+    try:
+        normalized = _helpers._normalize_doi(doi)
+        if not normalized:
+            return ("final", f"Error: '{doi}' does not appear to be a valid DOI.")
+
+        with zotero_api_lock():
+            if if_exists != "duplicate":
+                existing = _helpers.find_existing_items(read_zot, doi=normalized, ctx=ctx)
+                if existing:
+                    return ("final", _handle_existing_item(
+                        write_zot, existing, coll_keys, tags, if_exists,
+                        matched_by=f"DOI {normalized}", ctx=ctx,
+                    ))
+
+        return ("needs_fetch", normalized)
+
+    except Exception as e:
+        ctx.error(f"Error adding by DOI: {e}")
+        return ("final", f"Error adding by DOI: {e}")
+
+
+def _fetch_one_doi_metadata(normalized: str, ctx) -> tuple[str, dict | str]:
+    """Fetch the CrossRef ``/works/{doi}`` message for a single DOI.
+
+    Kept for the one-DOI case: it is the documented exact-resolution
+    endpoint, so a lone DOI never depends on the ``doi`` filter's
+    undocumented multi-value semantics for no gain (one DOI costs one
+    request either way).
+
+    Returns ``("final", error_str)`` or ``("fetched", cr_message_dict)``.
+    """
+    try:
+        resp, error = _crossref_get(
+            f"{_CROSSREF_WORKS_URL}/{normalized}",
+            {"mailto": _crossref_mailto()}, ctx, timeout=15,
+        )
+        if error is not None:
+            return ("final", error)
+
+        if resp.status_code == 404:
+            return ("final", f"DOI not found on CrossRef: {normalized}")
+        resp.raise_for_status()
+
+        return ("fetched", resp.json().get("message", {}))
+
+    except requests.RequestException as e:
+        return ("final", f"Error fetching from CrossRef: {e}")
+    except Exception as e:
+        return ("final", f"Error adding by DOI: {e}")
+
+
+def _fetch_doi_metadata_batch(normalized_dois: list[str], ctx) -> dict[str, tuple[str, dict | str]]:
+    """Fetch CrossRef metadata for many DOIs in one request per 50 (#A5).
+
+    ``/works`` OR-filters on repeated ``doi:`` values, so an N-DOI import
+    costs ceil(N/50) requests instead of N. That is both faster and
+    *gentler* than the per-DOI fetch it replaces: concurrent per-DOI GETs
+    got HTTP 429 on most of a 25-DOI batch, while one batched request for
+    the same DOIs never throttles.
+
+    Returns ``{normalized_doi: ("fetched", cr_message) | ("final", error_str)}``
+    covering every requested DOI.
+    """
+    fetched: dict[str, tuple[str, dict | str]] = {}
+
+    for start in range(0, len(normalized_dois), _CROSSREF_FILTER_CHUNK):
+        chunk = normalized_dois[start:start + _CROSSREF_FILTER_CHUNK]
+        params = {
+            "filter": ",".join(f"doi:{d}" for d in chunk),
+            # `rows` MUST be sent: CrossRef's default page size is 20, so a
+            # 50-DOI filter would silently return the first 20 and the other
+            # 30 would look like they simply aren't in CrossRef.
+            "rows": len(chunk),
+            "mailto": _crossref_mailto(),
+        }
+
+        resp, error = _crossref_get(_CROSSREF_WORKS_URL, params, ctx, timeout=60)
+        if error is None and resp.status_code >= 400:
+            # _crossref_get only retries 429/5xx; every other 4xx comes back
+            # as a plain success, so the status has to be checked here — the
+            # single-DOI path does the same before parsing.
+            error = (f"Error fetching from CrossRef: HTTP {resp.status_code} "
+                     f"for a batch of {len(chunk)} DOIs")
+        if error is None:
+            try:
+                message = resp.json().get("message")
+            except ValueError as e:
+                message = None
+                error = f"Error fetching from CrossRef: malformed response ({e})"
+            if error is None and not isinstance(message, dict):
+                # A rejected query answers with `message` as a *list* of
+                # validation errors. Reaching straight for .get("items")
+                # raised AttributeError past the ValueError guard and took
+                # the whole call down. Treat it as a failure rather than
+                # falling through to an empty item list, which would report
+                # every DOI in the chunk as "not found on CrossRef" — a
+                # wrong answer rather than a reported one.
+                error = ("Error fetching from CrossRef: unexpected response "
+                         f"shape (message was {type(message).__name__})")
+            items = message.get("items") or [] if error is None else []
+
+        if error is not None:
+            # One request covers the whole chunk, so its failure is every
+            # member's failure — reported per DOI so the batch still returns
+            # one line per requested DOI.
+            for doi in chunk:
+                fetched[doi] = ("final", error)
+            continue
+
+        by_doi = {}
+        for entry in items:
+            entry_doi = (entry.get("DOI") or "").strip().lower()
+            if entry_doi:
+                by_doi[entry_doi] = entry
+
+        for doi in chunk:
+            # Compare case-insensitively: CrossRef echoes DOIs in canonical
+            # case, which need not match what the caller typed. Diffing what
+            # came back against what we asked for is also what guards the
+            # undocumented multi-value OR semantics — anything absent is
+            # reported as not-found rather than silently dropped.
+            entry = by_doi.get(doi.lower())
+            if entry is None:
+                fetched[doi] = ("final", f"DOI not found on CrossRef: {doi}")
+            else:
+                fetched[doi] = ("fetched", entry)
+
+    return fetched
+
+
+def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_keys) -> dict:
+    """Map fetched CrossRef metadata to an item_data dict ready for
+    batched creation.
+
+    Calling-thread only: ``template_fn`` may fetch (and cache) an item
+    template under the Zotero API lock on a cache miss (#A3).
+
+    ``cr`` is carried through in the payload as well as consumed here: the
+    OA-PDF cascade's "arXiv (via CrossRef)" source reads the has-preprint
+    relation straight out of this message, so dropping it after the field
+    mapping silently disables that source.
+    """
+    item_data, zot_type = _crossref_to_item_data(cr, normalized, template_fn)
+    _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+    return {"item_data": item_data, "zot_type": zot_type, "doi": normalized,
+            "cr": cr}
+
+
+def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
+                              coll_keys: list[str]) -> str:
+    """Render one _create_and_attach_batch result as add_by_doi's per-item
+    text block — the same shape the old single-item worker produced before
+    the metadata-resolution/creation split (#A4)."""
+    if not cr_result["ok"]:
+        if cr_result["key"] is not None:
+            # Item was created; only the PDF requirement failed.
+            return f"Error: {cr_result['error']}"
+        return f"Failed to create item: {cr_result['error']}"
+
+    collections_status = _collections_status(coll_keys, cr_result["collections_failed"])
+    return (
+        f"Successfully added: **{cr_result['title']}**\n\n"
+        f"Item key: `{cr_result['key']}`\n"
+        f"Type: {zot_type}\n"
+        f"DOI: {normalized}\n"
+        f"Collections: {collections_status}\n"
+        f"PDF: {cr_result['pdf_status']}\n\n"
+        "_Note: To include this item in semantic search, run "
+        "zotero_update_search_database._"
+    )
+
+
 def add_by_doi(
-    doi: str,
+    doi: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
@@ -961,184 +1493,130 @@ def add_by_doi(
     *,
     ctx: Context
 ) -> str:
+    # NOT decorated with @with_zotero_api_lock: the lock only needs to
+    # cover the Zotero API calls, taken in short scoped blocks below and by
+    # _create_and_attach_batch, so a slow CrossRef lookup or OA-PDF
+    # download+upload doesn't hold it and starve every other MCP request
+    # (#A5b — the fix for the 244-DOI-batch crash: previously the decorator
+    # held the lock across the ENTIRE recursive multi-DOI loop, one PDF
+    # download+upload at a time).
+    #
+    # ``doi`` may name several DOIs at once (a list, or a comma/newline-
+    # separated string). Client/collections resolution and item-template
+    # fetches happen once for the whole call, not once per token (#A2).
+    # Each token then goes through three phases:
+    #   1. dedup-check
+    #   2. CrossRef fetch, batched via /works?filter=doi:... (#A5)
+    #   3. item_data build + batched create (#A4)
+    # so an N-DOI batch costs ceil(N/50) CrossRef GETs and one
+    # create_items() POST per <=50 DOIs rather than N of each, and one bad
+    # DOI never fails its neighbours. Everything runs on the calling
+    # thread: batching the fetch is both faster and gentler than issuing
+    # the same requests concurrently, which drew HTTP 429s. A single DOI
+    # takes the same path with a one-token list, unwrapped at the end.
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
         return str(e)
 
     try:
+        # Inside the try: malformed structured input (a JSON object, say)
+        # raises from here, and is a user error like any other — it belongs
+        # in the returned text, not as a traceback out of the tool.
+        tokens = _split_multi_value(doi, "doi", _helpers._normalize_doi)
+        is_batch = len(tokens) > 1
+        doi_list = tokens if tokens else [doi]
+
         if if_exists not in _IF_EXISTS_VALUES:
             return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
-        normalized = _helpers._normalize_doi(doi)
-        if not normalized:
-            return f"Error: '{doi}' does not appear to be a valid DOI."
 
         # Resolve collection specs (keys/names/paths) BEFORE any network or
         # write work — a bad spec must not produce an unfiled item.
-        try:
-            coll_keys = _resolve_collections_arg(
-                read_zot, collections, ctx,
-                create_missing=create_missing_collections, write_zot=write_zot,
-            )
-        except ValueError as e:
-            return f"Error: {e}"
-
-        if if_exists != "duplicate":
-            existing = _helpers.find_existing_items(read_zot, doi=normalized, ctx=ctx)
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"DOI {normalized}", ctx=ctx,
+        with zotero_api_lock():
+            try:
+                coll_keys = _resolve_collections_arg(
+                    read_zot, collections, ctx,
+                    create_missing=create_missing_collections, write_zot=write_zot,
                 )
+            except ValueError as e:
+                return f"Error: {e}"
 
-        ctx.info(f"Fetching metadata for DOI: {normalized}")
+        template_fn = _memoized_item_template_fn(write_zot)  # #A3
 
-        # CrossRef "polite pool": identifying via mailto gives higher rate limits
-        # and priority routing. See https://api.crossref.org/swagger-ui/index.html
-        crossref_url = f"https://api.crossref.org/works/{normalized}"
-        contact_email = os.environ.get("ZOTERO_MCP_CONTACT_EMAIL", "").strip()
-        if contact_email:
-            crossref_url += f"?mailto={contact_email}"
+        # Collapse repeats before any work: phase 1's library dedup runs
+        # before anything is created, so it can't see the item this same
+        # call is about to add.
+        canonical, duplicate_of = _dedupe_multi_tokens(doi_list, _doi_dedup_key)
+        work_list = [doi_list[i] for i in canonical]
 
-        resp = requests.get(
-            crossref_url,
-            headers={
-                "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
-                "Accept": "application/json",
-            },
-            timeout=15,
+        # Phase 1: dedup-check every token on the calling thread.
+        dedup = [
+            _dedup_check_one_doi(read_zot, write_zot, tok, coll_keys, tags, if_exists, ctx)
+            for tok in work_list
+        ]
+        needs_fetch = [(i, normalized) for i, (kind, normalized) in enumerate(dedup)
+                       if kind == "needs_fetch"]
+
+        # Phase 2: fetch CrossRef metadata in as few requests as possible —
+        # one batched /works?filter=doi:... per 50 DOIs (#A5). Repeats
+        # collapse to a single lookup.
+        fetched: dict[str, tuple[str, dict | str]] = {}
+        unique = list(dict.fromkeys(normalized for _, normalized in needs_fetch))
+        if len(unique) > 1:
+            ctx.info(f"Fetching CrossRef metadata for {len(unique)} DOIs")
+            fetched = _fetch_doi_metadata_batch(unique, ctx)
+        elif unique:
+            ctx.info(f"Fetching metadata for DOI: {unique[0]}")
+            fetched = {unique[0]: _fetch_one_doi_metadata(unique[0], ctx)}
+
+        # Phase 3: build item_data for every successfully fetched DOI, then
+        # create them all in one batched pass (#A4).
+        work_results: list[str] = [None] * len(work_list)
+        pending: list[tuple[int, dict]] = []
+        for i, (kind, payload) in enumerate(dedup):
+            if kind == "final":
+                work_results[i] = payload
+                continue
+            normalized = payload
+            fetch_kind, fetch_payload = fetched[normalized]
+            if fetch_kind == "final":
+                work_results[i] = fetch_payload
+                continue
+            built = _build_one_doi_item_data(fetch_payload, normalized, template_fn, tags, coll_keys)
+            pending.append((i, built))
+
+        created = (
+            _create_and_attach_batch(
+                write_zot, [payload["item_data"] for _, payload in pending],
+                attach_mode, ctx,
+                crossref_by_doi={payload["doi"]: payload["cr"]
+                                 for _, payload in pending},
+            )
+            if pending else []
         )
-
-        if resp.status_code == 404:
-            return f"DOI not found on CrossRef: {normalized}"
-        resp.raise_for_status()
-
-        cr = resp.json().get("message", {})
-
-        # Determine Zotero item type
-        cr_type = cr.get("type", "")
-        zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
-
-        # Get valid fields from item template
-        template = write_zot.item_template(zot_type)
-        item_data = dict(template)
-
-        # Map fields
-        title_list = cr.get("title", [])
-        if title_list and "title" in item_data:
-            item_data["title"] = title_list[0]
-
-        # Creators
-        creators = []
-        for author in cr.get("author", []):
-            if "family" in author:
-                creators.append({
-                    "creatorType": "author",
-                    "firstName": author.get("given", ""),
-                    "lastName": author["family"],
-                })
-            elif "name" in author:
-                creators.append({
-                    "creatorType": "author",
-                    "name": author["name"],
-                })
-        for editor in cr.get("editor", []):
-            if "family" in editor:
-                creators.append({
-                    "creatorType": "editor",
-                    "firstName": editor.get("given", ""),
-                    "lastName": editor["family"],
-                })
-            elif "name" in editor:
-                creators.append({
-                    "creatorType": "editor",
-                    "name": editor["name"],
-                })
-        if creators:
-            item_data["creators"] = creators
-
-        # Date
-        date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
-        if date_parts and date_parts[0]:
-            parts = date_parts[0]
-            item_data["date"] = "-".join(str(p) for p in parts)
-
-        # Simple string fields
-        field_map = {
-            "DOI": normalized,
-            "url": cr.get("URL", ""),
-            "volume": cr.get("volume", ""),
-            "issue": cr.get("issue", ""),
-            "pages": cr.get("page", ""),
-            "publisher": cr.get("publisher", ""),
-            "ISSN": (cr.get("ISSN") or [""])[0],
-        }
-
-        container = (cr.get("container-title") or [""])[0]
-        if container:
-            field_map["publicationTitle"] = container
-
-        abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
-        if abstract:
-            field_map["abstractNote"] = abstract
-
-        for field, value in field_map.items():
-            if field in item_data and value:
-                item_data[field] = value
-
-        # Tags
-        tag_list = _helpers._normalize_str_list_input(tags, "tags")
-        if tag_list:
-            item_data["tags"] = [{"tag": t} for t in tag_list]
-
-        # Collections (resolved to live keys above, before the CrossRef fetch)
-        if coll_keys:
-            item_data["collections"] = coll_keys
-
-        # Create item
-        result = write_zot.create_items([item_data])
-
-        if isinstance(result, dict) and result.get("success"):
-            item_key = next(iter(result["success"].values()))
-            title = item_data.get("title", normalized)
-
-            # Defensive: pyzotero's atomic ``item["collections"]`` filing is
-            # intermittent (#235) — reconcile membership before reporting success
-            # so the caller sees the real routing state.
-            missing = _helpers.ensure_collection_membership(
-                write_zot, item_key, coll_keys, ctx=ctx
+        for (i, payload), cr_result in zip(pending, created):
+            work_results[i] = _render_doi_create_result(
+                cr_result, payload["zot_type"], payload["doi"], coll_keys
             )
-            collections_status = _collections_status(coll_keys, missing)
 
-            # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
-            pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, normalized, ctx,
-                                            crossref_metadata=cr,
-                                            attach_mode=attach_mode)
+        # Expand back to one result per requested token.
+        results: list[str] = [None] * len(doi_list)
+        for slot, i in enumerate(canonical):
+            results[i] = work_results[slot]
+        for i, canon_i in duplicate_of.items():
+            results[i] = _duplicate_of_message("DOI", canon_i + 1)
 
-            return (
-                f"Successfully added: **{title}**\n\n"
-                f"Item key: `{item_key}`\n"
-                f"Type: {zot_type}\n"
-                f"DOI: {normalized}\n"
-                f"Collections: {collections_status}\n"
-                f"PDF: {pdf_status}\n\n"
-                "_Note: To include this item in semantic search, run "
-                "zotero_update_search_database._"
-            )
-        return f"Failed to create item: {result}"
+        if is_batch:
+            return _format_multi_result("DOI", doi_list, results)
+        return results[0]
 
-    except requests.Timeout:
-        return "Error: CrossRef API request timed out. Please try again."
-    except requests.RequestException as e:
-        return f"Error fetching from CrossRef: {e}"
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
         return f"Error adding by DOI: {e}"
 
 
-@with_zotero_api_lock
 def add_by_url(
-    url: str,
+    url: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
@@ -1147,6 +1625,36 @@ def add_by_url(
     *,
     ctx: Context
 ) -> str:
+    # NOT decorated with @with_zotero_api_lock: the DOI/arXiv branches
+    # below delegate to add_by_doi/_add_by_arxiv, which manage their own
+    # scoped locking; the generic-webpage branch takes the lock itself,
+    # narrowly, around its own Zotero API calls (#A5b).
+    #
+    # ``url`` may name several URLs at once — see add_by_doi's batch comment
+    # above; the same pattern applies here, and a batch may freely mix DOI-
+    # redirect, arXiv, and generic-webpage URLs since each token is
+    # classified independently below.
+    try:
+        # See add_by_doi: splitting inside the try keeps malformed structured
+        # input a returned error string rather than a traceback.
+        tokens = _split_multi_value(url, "url", _looks_like_url)
+    except ValueError as e:
+        return f"Error adding by URL: {e}"
+    if len(tokens) > 1:
+        canonical, duplicate_of = _dedupe_multi_tokens(tokens, _url_dedup_key)
+        results: list[str] = [None] * len(tokens)
+        for i in canonical:
+            results[i] = add_by_url(
+                url=tokens[i], collections=collections, tags=tags,
+                attach_mode=attach_mode, if_exists=if_exists,
+                create_missing_collections=create_missing_collections,
+                ctx=ctx)
+        for i, canon_i in duplicate_of.items():
+            results[i] = _duplicate_of_message("URL", canon_i + 1)
+        return _format_multi_result("URL", tokens, results)
+    if tokens:
+        url = tokens[0]
+
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -1175,55 +1683,56 @@ def add_by_url(
                                  if_exists=if_exists,
                                  create_missing_collections=create_missing_collections)
 
-        # Generic webpage
-        try:
-            coll_keys = _resolve_collections_arg(
-                read_zot, collections, ctx,
-                create_missing=create_missing_collections, write_zot=write_zot,
-            )
-        except ValueError as e:
-            return f"Error: {e}"
-
-        if if_exists != "duplicate":
-            existing = _helpers.find_existing_items(read_zot, url=url, ctx=ctx)
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"URL {url}", ctx=ctx,
+        # Generic webpage — no third-party network work, so the lock covers
+        # the whole branch (#A5b).
+        with zotero_api_lock():
+            try:
+                coll_keys = _resolve_collections_arg(
+                    read_zot, collections, ctx,
+                    create_missing=create_missing_collections, write_zot=write_zot,
                 )
+            except ValueError as e:
+                return f"Error: {e}"
 
-        ctx.info(f"Creating webpage item for: {url}")
-        template = write_zot.item_template("webpage")
-        template["url"] = url
-        template["title"] = url
-        template["accessDate"] = ""
+            if if_exists != "duplicate":
+                existing = _helpers.find_existing_items(read_zot, url=url, ctx=ctx)
+                if existing:
+                    return _handle_existing_item(
+                        write_zot, existing, coll_keys, tags, if_exists,
+                        matched_by=f"URL {url}", ctx=ctx,
+                    )
 
-        tag_list = _helpers._normalize_str_list_input(tags, "tags")
-        if tag_list:
-            template["tags"] = [{"tag": t} for t in tag_list]
-        if coll_keys:
-            template["collections"] = coll_keys
+            ctx.info(f"Creating webpage item for: {url}")
+            template = write_zot.item_template("webpage")
+            template["url"] = url
+            template["title"] = url
+            template["accessDate"] = ""
 
-        result = write_zot.create_items([template])
-        if isinstance(result, dict) and result.get("success"):
-            item_key = next(iter(result["success"].values()))
-            missing = _helpers.ensure_collection_membership(
-                write_zot, item_key, coll_keys, ctx=ctx
-            )
-            return (
-                f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n"
-                f"Collections: {_collections_status(coll_keys, missing)}\n\n"
-                "_Note: To include this item in semantic search, run "
-                "zotero_update_search_database._"
-            )
-        return f"Failed to create item: {result}"
+            tag_list = _helpers._normalize_str_list_input(tags, "tags")
+            if tag_list:
+                template["tags"] = [{"tag": t} for t in tag_list]
+            if coll_keys:
+                template["collections"] = coll_keys
+
+            result = write_zot.create_items([template])
+            if isinstance(result, dict) and result.get("success"):
+                item_key = next(iter(result["success"].values()))
+                missing = _helpers.ensure_collection_membership(
+                    write_zot, item_key, coll_keys, ctx=ctx
+                )
+                return (
+                    f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n"
+                    f"Collections: {_collections_status(coll_keys, missing)}\n\n"
+                    "_Note: To include this item in semantic search, run "
+                    "zotero_update_search_database._"
+                )
+            return f"Failed to create item: {result}"
 
     except Exception as e:
         ctx.error(f"Error adding by URL: {e}")
         return f"Error adding by URL: {e}"
 
 
-@with_zotero_api_lock
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
                   read_zot=None, if_exists="duplicate",
                   create_missing_collections=False):
@@ -1237,24 +1746,30 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     infrastructure. The fallback is best-effort — CrossRef may also lack a
     very recent preprint — so a clear, actionable message is returned when
     both routes fail, never a bare timeout.
-    """
-    try:
-        coll_keys = _resolve_collections_arg(
-            read_zot or write_zot, collections, ctx,
-            create_missing=create_missing_collections, write_zot=write_zot,
-        )
-    except ValueError as e:
-        return f"Error: {e}"
 
-    if if_exists != "duplicate":
-        existing = _helpers.find_existing_items(
-            read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
-        )
-        if existing:
-            return _handle_existing_item(
-                write_zot, existing, coll_keys, tags, if_exists,
-                matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
+    NOT decorated with @with_zotero_api_lock: the lock only needs to cover
+    the Zotero API calls, taken below in short scoped blocks, so a slow
+    arXiv API round trip or PDF download doesn't hold it and starve every
+    other MCP request (#A5b — mirrors add_by_doi's narrowing).
+    """
+    with zotero_api_lock():
+        try:
+            coll_keys = _resolve_collections_arg(
+                read_zot or write_zot, collections, ctx,
+                create_missing=create_missing_collections, write_zot=write_zot,
             )
+        except ValueError as e:
+            return f"Error: {e}"
+
+        if if_exists != "duplicate":
+            existing = _helpers.find_existing_items(
+                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
+            )
+            if existing:
+                return _handle_existing_item(
+                    write_zot, existing, coll_keys, tags, if_exists,
+                    matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
+                )
 
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
@@ -1312,6 +1827,14 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             result = None
             ctx.info(f"CrossRef fallback errored: {e}")
         # add_by_doi returns a human string; treat "not found"/"Error" as a miss.
+        #
+        # Pre-existing fragility, unrelated to arxiv_doi always being a
+        # single DOI (so add_by_doi's batch path above never triggers here):
+        # this sniffs the *rendered* message rather than a structured
+        # result, so it silently breaks if either prefix's wording ever
+        # changes. The robust fix is the same one noted in add_by_doi's
+        # batch comment — a single-item worker that returns a dict with an
+        # explicit ok/error field, checked here instead of string-matching.
         if result and not result.startswith(("DOI not found", "Error")):
             return result
         return (
@@ -1357,64 +1880,83 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             else:
                 authors.append({"creatorType": "author", "name": name})
 
-    template = write_zot.item_template("preprint")
-    template["title"] = title
-    if authors:
-        template["creators"] = authors
-    if abstract and "abstractNote" in template:
-        template["abstractNote"] = abstract
-    if published and "date" in template:
-        template["date"] = published
-    template["url"] = f"https://arxiv.org/abs/{arxiv_id}"
-    if "extra" in template:
-        template["extra"] = f"arXiv:{arxiv_id}"
+    with zotero_api_lock():
+        template = write_zot.item_template("preprint")
+        template["title"] = title
+        if authors:
+            template["creators"] = authors
+        if abstract and "abstractNote" in template:
+            template["abstractNote"] = abstract
+        if published and "date" in template:
+            template["date"] = published
+        template["url"] = f"https://arxiv.org/abs/{arxiv_id}"
+        if "extra" in template:
+            template["extra"] = f"arXiv:{arxiv_id}"
 
-    tag_list = _helpers._normalize_str_list_input(tags, "tags")
-    if tag_list:
-        template["tags"] = [{"tag": t} for t in tag_list]
-    if coll_keys:
-        template["collections"] = coll_keys
+        tag_list = _helpers._normalize_str_list_input(tags, "tags")
+        if tag_list:
+            template["tags"] = [{"tag": t} for t in tag_list]
+        if coll_keys:
+            template["collections"] = coll_keys
 
-    result = write_zot.create_items([template])
-    if isinstance(result, dict) and result.get("success"):
+        result = write_zot.create_items([template])
+        if not (isinstance(result, dict) and result.get("success")):
+            return f"Failed to create arXiv item: {result}"
+
         item_key = next(iter(result["success"].values()))
         missing = _helpers.ensure_collection_membership(
             write_zot, item_key, coll_keys, ctx=ctx
         )
 
-        # arXiv always has a free PDF — try to attach it
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-        pdf_status = "no PDF attached"
-        if attach_mode == "none":
-            # Honour the caller's explicit opt-out: skip the PDF download/upload
-            # entirely. Without this, the arXiv path always fetched + uploaded
-            # the PDF regardless of attach_mode (only "linked_url" was special-
-            # cased), so attach_mode="none" did far more network/cloud work than
-            # asked — a slow upload here is a prime candidate for wedging the
-            # process under the global API lock.
-            pdf_status = "skipped (attach_mode=none)"
-        elif attach_mode == "linked_url":
-            # Bookmark the PDF URL only — no binary upload. Useful for users who
-            # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
-            try:
-                if _helpers._attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
-                    pdf_status = "PDF linked (URL only, no upload)"
-                else:
-                    pdf_status = "linked URL attachment failed"
-            except Exception as e:
-                ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
-                pdf_status = f"no PDF attached ({e})"
-        else:
-            try:
-                pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
-                pdf_resp.raise_for_status()
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
-                    filepath = os.path.join(tmpdir, filename)
-                    with open(filepath, "wb") as f:
-                        for chunk in pdf_resp.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    webdav_suffix = _helpers._webdav_first_attach(
+    # arXiv always has a free PDF — try to attach it. Outside the lock: the
+    # download and upload are outbound network work that has nothing to do
+    # with Zotero API serialization — write_zot is always the cloud Web API
+    # client (never the single-threaded local server the lock exists to
+    # protect), and A6's version-checked retry is what guards concurrent
+    # writes, not this lock (#A5b — mirrors add_by_doi's narrowing).
+    pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+    pdf_status = "no PDF attached"
+    if attach_mode == "none":
+        # Honour the caller's explicit opt-out: skip the PDF download/upload
+        # entirely. Without this, the arXiv path always fetched + uploaded
+        # the PDF regardless of attach_mode (only "linked_url" was special-
+        # cased), so attach_mode="none" did far more network/cloud work than
+        # asked — a slow upload here is a prime candidate for wedging the
+        # process under the global API lock.
+        pdf_status = "skipped (attach_mode=none)"
+    elif attach_mode == "linked_url":
+        # Bookmark the PDF URL only — no binary upload. Useful for users who
+        # sync attachment files outside of Zotero's official storage (e.g. WebDAV).
+        try:
+            if _helpers._attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
+                pdf_status = "PDF linked (URL only, no upload)"
+            else:
+                pdf_status = "linked URL attachment failed"
+        except Exception as e:
+            ctx.info(f"arXiv linked URL attachment failed (non-fatal): {e}")
+            pdf_status = f"no PDF attached ({e})"
+    else:
+        attach_ok = False
+        try:
+            pdf_resp = requests.get(pdf_url, timeout=30, stream=True)
+            pdf_resp.raise_for_status()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
+                filepath = os.path.join(tmpdir, filename)
+                with open(filepath, "wb") as f:
+                    for chunk in pdf_resp.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                webdav_suffix = _helpers._webdav_first_attach(
+                    write_zot,
+                    filename,
+                    filepath,
+                    item_key,
+                    ctx,
+                    content_type="application/pdf",
+                )
+                attach_ok = True
+                if webdav_suffix is None:
+                    attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
                         write_zot,
                         filename,
                         filepath,
@@ -1422,35 +1964,30 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                         ctx,
                         content_type="application/pdf",
                     )
-                    attach_ok = True
-                    if webdav_suffix is None:
-                        attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
-                            write_zot,
-                            filename,
-                            filepath,
-                            item_key,
-                            ctx,
-                            content_type="application/pdf",
-                        )
-                pdf_status = (
-                    "PDF attached" + webdav_suffix
-                    if attach_ok
-                    else f"no PDF attached ({webdav_suffix})"
-                )
-            except Exception as e:
-                ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
-                pdf_status = f"no PDF attached ({e})"
+            pdf_status = (
+                "PDF attached" + webdav_suffix
+                if attach_ok
+                else f"no PDF attached ({webdav_suffix})"
+            )
+        except Exception as e:
+            ctx.info(f"arXiv PDF attachment failed (non-fatal): {e}")
+            pdf_status = f"no PDF attached ({e})"
 
-        return (
-            f"Successfully added arXiv paper: **{title}**\n\n"
-            f"Item key: `{item_key}`\n"
-            f"arXiv ID: {arxiv_id}\n"
-            f"Collections: {_collections_status(coll_keys, missing)}\n"
-            f"PDF: {pdf_status}\n\n"
-            "_Note: To include this item in semantic search, run "
-            "zotero_update_search_database._"
-        )
-    return f"Failed to create arXiv item: {result}"
+        if attach_mode == "required" and not attach_ok:
+            return (
+                f"Error: item created (key: `{item_key}`) but attach_mode='required' "
+                f"found no open-access PDF: {pdf_status}"
+            )
+
+    return (
+        f"Successfully added arXiv paper: **{title}**\n\n"
+        f"Item key: `{item_key}`\n"
+        f"arXiv ID: {arxiv_id}\n"
+        f"Collections: {_collections_status(coll_keys, missing)}\n"
+        f"PDF: {pdf_status}\n\n"
+        "_Note: To include this item in semantic search, run "
+        "zotero_update_search_database._"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1582,7 +2119,7 @@ def _lookup_isbn_google_books(isbn, ctx):
 
 
 def add_by_isbn(
-    isbn: str,
+    isbn: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
@@ -1590,6 +2127,29 @@ def add_by_isbn(
     *,
     ctx: Context
 ) -> str:
+    # ``isbn`` may name several ISBNs at once — see add_by_doi's batch
+    # comment above; the same pattern applies here.
+    try:
+        # See add_by_doi: splitting inside the try keeps malformed structured
+        # input a returned error string rather than a traceback.
+        tokens = _split_multi_value(isbn, "isbn", _helpers._normalize_isbn)
+    except ValueError as e:
+        return f"Error adding by ISBN: {e}"
+    if len(tokens) > 1:
+        canonical, duplicate_of = _dedupe_multi_tokens(tokens, _isbn_dedup_key)
+        results: list[str] = [None] * len(tokens)
+        for i in canonical:
+            results[i] = add_by_isbn(
+                isbn=tokens[i], collections=collections, tags=tags,
+                if_exists=if_exists,
+                create_missing_collections=create_missing_collections,
+                ctx=ctx)
+        for i, canon_i in duplicate_of.items():
+            results[i] = _duplicate_of_message("ISBN", canon_i + 1)
+        return _format_multi_result("ISBN", tokens, results)
+    if tokens:
+        isbn = tokens[0]
+
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -3520,52 +4080,137 @@ def _apply_caller_tags_and_collections(
         item_data["collections"] = existing
 
 
-def _create_and_attach(
+_CREATE_BATCH_SIZE = 50
+
+
+def _create_and_attach_batch(
     write_zot,
-    item_data: dict,
+    item_datas: list[dict],
     attach_mode: str,
     ctx: Context,
-) -> dict:
-    """Create one Zotero item and, if it has a DOI, try to attach an OA PDF.
+    crossref_by_doi: dict[str, dict] | None = None,
+) -> list[dict]:
+    """Create many Zotero items in POSTs of up to 50 and, for each with a
+    DOI, try to attach an OA PDF (#A4).
 
-    Returns a dict ``{"ok": bool, "key": str|None, "doi": str|None,
-    "pdf_status": str|None, "error": str|None, "title": str,
-    "collections_failed": list[str]}``.
+    One ``create_items()`` POST and one ``items(itemKey=...)`` collection-
+    membership read per 50-item chunk, instead of one POST and one
+    ``item()`` GET per item — the 50-key idiom already used for read paths
+    at annotations.py/retrieval.py. ``ensure_collection_membership`` (the
+    per-item #235 backstop, which does its own re-fetch) is only called for
+    entries the bulk read shows are actually missing a requested collection.
+
+    ``crossref_by_doi`` maps normalized DOI to the CrossRef message that
+    entry was built from, for the cascade's "arXiv (via CrossRef)" source.
+    Keyed by DOI rather than passed as a list parallel to ``item_datas``
+    because the DOI is re-derived below anyway, and a parallel list is one
+    more thing that has to stay aligned across chunking. Optional: the
+    bibtex and CSL-JSON importers share this function and have no CrossRef
+    message, in which case that source simply finds nothing.
+
+    Returns per-entry result dicts — ``{"ok": bool, "key": str|None, "doi":
+    str|None, "pdf_status": str|None, "error": str|None, "title": str,
+    "collections_failed": list[str]}`` — in the same order as item_datas.
     """
-    title = item_data.get("title") or "(untitled)"
-    try:
-        result = write_zot.create_items([item_data])
-    except Exception as e:
-        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
-                "error": str(e), "title": title, "collections_failed": []}
+    results: list[dict] = [None] * len(item_datas)
 
-    if not (isinstance(result, dict) and result.get("success")):
-        return {"ok": False, "key": None, "doi": None, "pdf_status": None,
-                "error": f"create_items failed: {result}", "title": title,
-                "collections_failed": []}
+    for chunk_start in range(0, len(item_datas), _CREATE_BATCH_SIZE):
+        chunk = item_datas[chunk_start:chunk_start + _CREATE_BATCH_SIZE]
+        titles = [d.get("title") or "(untitled)" for d in chunk]
+        created_keys: dict[int, str] = {}
+        collections_failed_by_index: dict[int, list[str]] = {}
 
-    item_key = next(iter(result["success"].values()))
+        with zotero_api_lock():
+            try:
+                result = write_zot.create_items(chunk)
+            except Exception as e:
+                for i, title in enumerate(titles):
+                    results[chunk_start + i] = {
+                        "ok": False, "key": None, "doi": None, "pdf_status": None,
+                        "error": str(e), "title": title, "collections_failed": []}
+                continue
 
-    # #235 backstop: atomic filing via item["collections"] is intermittent.
-    collections_failed = _helpers.ensure_collection_membership(
-        write_zot, item_key, item_data.get("collections") or [], ctx=ctx
-    )
+            if not isinstance(result, dict):
+                for i, title in enumerate(titles):
+                    results[chunk_start + i] = {
+                        "ok": False, "key": None, "doi": None, "pdf_status": None,
+                        "error": f"create_items failed: {result}", "title": title,
+                        "collections_failed": []}
+                continue
 
-    doi_raw = item_data.get("DOI") or ""
-    doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
+            success = result.get("success") or {}
+            failed = result.get("failed") or {}
+            created_keys = {int(idx): key for idx, key in success.items()}
 
-    pdf_status = None
-    if doi:
-        try:
-            pdf_status = _helpers._try_attach_oa_pdf(
-                write_zot, item_key, doi, ctx, attach_mode=attach_mode
-            )
-        except Exception as e:
-            pdf_status = f"OA PDF attach failed: {e}"
+            for i, title in enumerate(titles):
+                if i in created_keys:
+                    continue
+                err = failed.get(str(i), "create_items did not report this entry as created")
+                results[chunk_start + i] = {
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"create_items failed: {err}", "title": title,
+                    "collections_failed": []}
 
-    return {"ok": True, "key": item_key, "doi": doi, "pdf_status": pdf_status,
-            "error": None, "title": title,
-            "collections_failed": collections_failed}
+            if created_keys:
+                # #235 backstop: atomic filing via item["collections"] is
+                # intermittent. One bulk read for the whole chunk instead of
+                # one item() GET per created item.
+                keys_in_order = [created_keys[i] for i in sorted(created_keys)]
+                actual_collections: dict[str, set] = {}
+                try:
+                    fetched = write_zot.items(itemKey=",".join(keys_in_order))
+                    for fetched_item in fetched:
+                        k = fetched_item.get("key", "")
+                        actual_collections[k] = set(
+                            fetched_item.get("data", {}).get("collections") or []
+                        )
+                except Exception as e:
+                    if ctx is not None:
+                        ctx.warning(f"Batch collection-membership read failed: {e}")
+
+                for i, item_key in created_keys.items():
+                    requested = chunk[i].get("collections") or []
+                    actual = actual_collections.get(item_key, set())
+                    missing = [k for k in requested if k not in actual]
+                    collections_failed_by_index[i] = (
+                        _helpers.ensure_collection_membership(
+                            write_zot, item_key, requested, ctx=ctx
+                        ) if missing else []
+                    )
+
+        # Attempt open-access PDF attachment — outside the lock, one DOI
+        # download+upload at a time (#A5b: the lock only needs to cover the
+        # Zotero API calls above, not third-party network work).
+        for i, item_key in created_keys.items():
+            item_data = chunk[i]
+            title = titles[i]
+            doi_raw = item_data.get("DOI") or ""
+            doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
+
+            pdf_status = None
+            error = None
+            if doi:
+                try:
+                    pdf_status = _helpers._try_attach_oa_pdf(
+                        write_zot, item_key, doi, ctx,
+                        crossref_metadata=(crossref_by_doi or {}).get(doi),
+                        attach_mode=attach_mode,
+                    )
+                except _helpers.OaPdfRequiredError as e:
+                    error = (
+                        f"item created (key: {item_key}) but attach_mode='required' "
+                        f"found no open-access PDF: {e}"
+                    )
+                except Exception as e:
+                    pdf_status = f"OA PDF attach failed: {e}"
+
+            results[chunk_start + i] = {
+                "ok": error is None, "key": item_key, "doi": doi,
+                "pdf_status": None if error else pdf_status, "error": error,
+                "title": title,
+                "collections_failed": collections_failed_by_index.get(i, [])}
+
+    return results
 
 
 def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
@@ -3718,7 +4363,12 @@ def add_by_bibtex(
 
         ctx.info(f"Parsed {len(entries)} BibTeX entries")
 
-        results = []
+        # Two passes (#A4): resolve each entry to either a final result
+        # (conversion error or reused-existing) or a ready-to-create
+        # item_data, then create all pending item_datas via one batched
+        # call instead of one create_items() POST per entry.
+        results: list[dict] = []
+        pending: list[tuple[int, dict]] = []
         for entry in entries:
             try:
                 item_data = _citation_import.bibtex_entry_to_zotero(
@@ -3740,7 +4390,15 @@ def add_by_bibtex(
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+            pending.append((len(results), item_data))
+            results.append(None)
+
+        if pending:
+            created = _create_and_attach_batch(
+                write_zot, [d for _, d in pending], attach_mode, ctx
+            )
+            for (idx, _), cr_result in zip(pending, created):
+                results[idx] = cr_result
 
         return _format_batch_result("# zotero_add_by_bibtex", results)
 
@@ -3801,7 +4459,12 @@ def add_by_csl_json(
 
         ctx.info(f"Processing {len(entries)} CSL JSON entries")
 
-        results = []
+        # Two passes (#A4): resolve each entry to either a final result
+        # (conversion error or reused-existing) or a ready-to-create
+        # item_data, then create all pending item_datas via one batched
+        # call instead of one create_items() POST per entry.
+        results: list[dict] = []
+        pending: list[tuple[int, dict]] = []
         for entry in entries:
             try:
                 item_data = _citation_import.csl_json_to_zotero(
@@ -3823,7 +4486,15 @@ def add_by_csl_json(
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+            pending.append((len(results), item_data))
+            results.append(None)
+
+        if pending:
+            created = _create_and_attach_batch(
+                write_zot, [d for _, d in pending], attach_mode, ctx
+            )
+            for (idx, _), cr_result in zip(pending, created):
+                results[idx] = cr_result
 
         return _format_batch_result("# zotero_add_by_csl_json", results)
 
@@ -3868,6 +4539,31 @@ _COMMON_TLDS = {
 }
 
 
+def _looks_like_url(s: str) -> bool:
+    """True when *s* has the shape of a web URL.
+
+    Shared by ``detect_source_type`` and the batch-split gate in
+    ``_split_multi_value``. DOI and ISBN have real normalizers to validate
+    against; a URL has only this heuristic, so it lives in one place rather
+    than being re-spelled at each call site.
+    """
+    s = (s or "").strip()
+    if not s or re.search(r"\s", s):
+        # A raw space can't occur in a URL (it must be percent-encoded), and
+        # rejecting it is what lets the batch-split gate tell
+        # "https://a.com, not a url" — two tokens, one bad — apart from a
+        # single URL that merely contains a comma.
+        return False
+    if s.lower().startswith(("http://", "https://")):
+        return True
+    host = _BARE_HOST_RE.match(s)
+    return bool(host and (
+        s.lower().startswith("www.")
+        or host.group("rest")
+        or host.group("tld").lower() in _COMMON_TLDS
+    ))
+
+
 def _looks_like_path(s: str) -> bool:
     """True when *s* has the shape of a filesystem path (POSIX or Windows)."""
     return (
@@ -3902,11 +4598,15 @@ def detect_source_type(source: str) -> str:
     with the implementation it routes to:
 
     1. inline BibTeX (``@entry{...}``) and inline CSL JSON (``[``/``{``)
-       are structural and unambiguous;
+       are structural and unambiguous — except a JSON array of bare strings
+       that are *all* DOIs, which is a multi-DOI batch, not CSL JSON (CSL
+       JSON entries are objects, never bare strings);
     2. http(s) URLs are resolved to a DOI first (``https://doi.org/10.x``
        is a DOI, not a generic web page) and are otherwise a URL;
     3. bare DOIs (``10.x/y``, ``doi:10.x/y``) beat everything below —
-       they contain a ``/`` and would otherwise look path-ish;
+       they contain a ``/`` and would otherwise look path-ish; a
+       comma/newline-separated list where *every* token is independently a
+       valid DOI is a multi-DOI batch;
     4. arXiv IDs route through the URL implementation, which owns the
        arXiv metadata path;
     5. path shapes are classified by extension (``.bib`` -> bibtex,
@@ -3921,12 +4621,32 @@ def detect_source_type(source: str) -> str:
     if _BIBTEX_ENTRY_RE.search(s):
         return "bibtex"
     if s[0] in "[{":
+        if s[0] == "[":
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError:
+                parsed = None
+            if (
+                isinstance(parsed, list) and len(parsed) >= 2
+                and all(isinstance(v, str) for v in parsed)
+                and all(_helpers._normalize_doi(v) for v in parsed)
+            ):
+                return "doi"
         return "csl_json"
 
     if s.lower().startswith(("http://", "https://")):
         return "doi" if _helpers._normalize_doi(s) else "url"
     if _helpers._normalize_doi(s):
         return "doi"
+    if "," in s or "\n" in s:
+        # Split exactly the way the adder will, so detection can't classify a
+        # string as a batch that add_by_doi then treats as one DOI (or vice
+        # versa). _split_multi_value's comma gate already requires every
+        # comma-token to be a DOI; the check below extends that to newline
+        # tokens, which it separates unconditionally.
+        tokens = _split_multi_value(s, "source", _helpers._normalize_doi)
+        if len(tokens) >= 2 and all(_helpers._normalize_doi(t) for t in tokens):
+            return "doi"
     if _helpers._normalize_arxiv_id(s):
         return "url"
 
@@ -3939,12 +4659,7 @@ def detect_source_type(source: str) -> str:
 
     if _helpers._normalize_isbn(s):
         return "isbn"
-    host = _BARE_HOST_RE.match(s)
-    if host and (
-        s.lower().startswith("www.")
-        or host.group("rest")
-        or host.group("tld").lower() in _COMMON_TLDS
-    ):
+    if _looks_like_url(s):
         return "url"
 
     raise ValueError(
@@ -3961,18 +4676,20 @@ def detect_source_type(source: str) -> str:
         "CSL JSON, or a local file. Use for every 'add this to Zotero' "
         "request. "
         "source: the identifier, URL, citation text, or ABSOLUTE file "
-        "path. BibTeX/CSL JSON may be inline (many entries per call) or "
-        "a path to .bib/.bibtex/.json/.csljson; documents are .pdf, "
-        ".epub, .docx and similar. "
-        "source_type: 'auto' (default) detects it; override a wrong "
-        "guess. Routing: doi → CrossRef (best metadata — prefer a DOI "
-        "when you have one); url → doi.org/arxiv.org get full metadata, "
-        "anything else becomes a bare 'webpage' item that is often not "
-        "citable, so resolve to a DOI first; isbn → Open Library then "
-        "Google Books (noisy — verify after); bibtex/csl_json → one item "
-        "per entry, citation key kept in Extra; file → extracts the "
-        "PDF's DOI and enriches via CrossRef, else guesses from "
-        "filename/text, then attaches the file. "
+        "path. DOI/URL/ISBN also take many at once (list or "
+        "comma/newline-separated), each resolved independently. "
+        "BibTeX/CSL JSON may be inline (many entries per call) or a path "
+        "to .bib/.bibtex/.json/.csljson; documents are .pdf, .epub, .docx "
+        "and similar. "
+        "source_type: 'auto' (default) detects it, incl. comma/newline "
+        "DOI lists; override for URL/ISBN batches. Routing: doi → CrossRef "
+        "(best metadata — prefer a DOI when you have one); url → "
+        "doi.org/arxiv.org get full metadata, anything else becomes a bare "
+        "'webpage' item that is often not citable, so resolve to a DOI "
+        "first; isbn → Open Library then Google Books (noisy — verify "
+        "after); bibtex/csl_json → one item per entry, citation key kept "
+        "in Extra; file → extracts the PDF's DOI and enriches via "
+        "CrossRef, else guesses from filename/text, then attaches the file. "
         "collections: keys, names, or '/'-paths ('_project/topic'), "
         "validated before anything is created — an unknown or ambiguous "
         "spec fails the call rather than leaving an unfiled item; "
@@ -3981,8 +4698,8 @@ def detect_source_type(source: str) -> str:
         "idempotent — reuses the item matching the DOI/ISBN/URL, adding "
         "missing collections/tags, never removing; 'skip' leaves a match "
         "untouched. "
-        "attach_mode: 'auto' (default) attaches an open-access PDF when "
-        "available, 'none' skips, 'required' fails without one. "
+        "attach_mode: 'auto' (default) attaches an OA PDF, 'linked_url' "
+        "bookmarks it, 'none' skips, 'required' fails without one. "
         "title: file sources only, when extraction misses. "
         "Requires a writable library (fails in local-only mode). Run "
         "zotero_update_search_database afterwards for semantic search. "
