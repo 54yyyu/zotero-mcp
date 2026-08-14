@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
 
+### Fixed
+- **A cycle among collections could hang `update-db` instead of indexing.** With `semantic_search.collection_keys` set, the local-database path expands each configured collection to include its subcollections by walking `parentCollectionID` downward. The walk kept no record of where it had been, so if a collection was ever its own ancestor it followed the loop forever, appending a collection id on every pass until the process ran out of memory — a hang partway through indexing, with nothing in the output pointing at collections. This should not be reachable through normal use: Zotero's own client will not let you nest a collection inside itself, so it takes a corrupted, partially synced or hand-edited `zotero.sqlite`. The guard is cheap enough to be worth having anyway. The walk now skips collections it has already visited, which also means that configuring both a collection and one of its ancestors no longer binds the same collection several times over into the query's parameter list — results are unchanged either way, since that query already selects distinct items. The expansion had no test coverage at all, so it arrives with tests for nesting depth, sibling exclusion, unknown keys and both cycle shapes.
+
 ## [0.9.1] - 2026-08-05
 
 ### Changed
