@@ -956,13 +956,28 @@ class LocalZoteroReader:
         if collection_keys:
             # Restrict the corpus to the configured collections, including
             # all of their subcollections (resolved recursively).
+            #
+            # `seen` spans every configured key, not just one walk, so it does
+            # two things. It terminates a parentCollection cycle, which the
+            # walk would otherwise follow forever, appending as it went;
+            # Zotero's own client cannot create one, but a corrupted,
+            # partially synced or hand-edited database can. And it collapses
+            # the overlap when the configured keys include both a collection
+            # and one of its ancestors, which would otherwise bind the same
+            # collectionID as several SQL parameters. Results are unchanged
+            # either way — the generated query already selects DISTINCT
+            # itemID — so this only bounds the walk and the parameter list.
             all_collection_ids = []
+            seen_collection_ids: set[int] = set()
             for ckey in collection_keys:
                 root = conn.execute("SELECT collectionID FROM collections WHERE key = ?", (ckey,)).fetchone()
                 if root:
                     to_process = [root[0]]
                     while to_process:
                         cid = to_process.pop()
+                        if cid in seen_collection_ids:
+                            continue
+                        seen_collection_ids.add(cid)
                         all_collection_ids.append(cid)
                         for sub in conn.execute("SELECT collectionID FROM collections WHERE parentCollectionID = ?", (cid,)).fetchall():
                             to_process.append(sub[0])
