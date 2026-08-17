@@ -62,10 +62,25 @@ def _format_editorial_notices(notices: list[dict]) -> list[str]:
     """Format editorial notices as warning lines."""
     lines = []
     for notice in notices:
-        ntype = notice.get("type", notice.get("editorialNoticeType", "notice"))
+        # Scite's /papers endpoint returns notices shaped
+        # {status, date, noticeDoi, doi}; older {type, sourceDoi} shapes are
+        # kept as fallbacks.
+        ntype = (
+            notice.get("status")
+            or notice.get("type")
+            or notice.get("editorialNoticeType")
+            or "notice"
+        )
         ntype = ntype.replace("_", " ").title()
-        source_doi = notice.get("sourceDoi", notice.get("source", ""))
-        lines.append(f"**{ntype}**: https://doi.org/{source_doi}")
+        ndate = notice.get("date", "")
+        source_doi = (
+            notice.get("noticeDoi")
+            or notice.get("sourceDoi")
+            or notice.get("source")
+            or ""
+        )
+        link = f"https://doi.org/{source_doi}" if source_doi else "(no notice DOI)"
+        lines.append(f"**{ntype}**{f' ({ndate})' if ndate else ''}: {link}")
     return lines
 
 
@@ -196,10 +211,24 @@ def enrich_item(
         if notices:
             output.append("## Editorial Notices")
             for notice in notices:
-                ntype = notice.get("type", notice.get("editorialNoticeType", "notice"))
+                # Scite's /papers notices are {status, date, noticeDoi, doi};
+                # older {type, sourceDoi} shapes kept as fallbacks.
+                ntype = (
+                    notice.get("status")
+                    or notice.get("type")
+                    or notice.get("editorialNoticeType")
+                    or "notice"
+                )
                 ntype = ntype.replace("_", " ").title()
-                source = notice.get("sourceDoi", notice.get("source", ""))
-                output.append(f"- **{ntype}**: https://doi.org/{source}")
+                ndate = notice.get("date", "")
+                source = (
+                    notice.get("noticeDoi")
+                    or notice.get("sourceDoi")
+                    or notice.get("source")
+                    or ""
+                )
+                link = f"https://doi.org/{source}" if source else "(no notice DOI)"
+                output.append(f"- **{ntype}**{f' ({ndate})' if ndate else ''}: {link}")
             output.append("")
 
         output.append(
@@ -408,10 +437,24 @@ def check_retractions(
             output.append(f"## {i}. {title}")
             output.append(f"**DOI:** {item_doi}")
             for notice in notices:
-                ntype = notice.get("type", notice.get("editorialNoticeType", "notice"))
+                # Scite's /papers notices are {status, date, noticeDoi, doi};
+                # older {type, sourceDoi} shapes kept as fallbacks.
+                ntype = (
+                    notice.get("status")
+                    or notice.get("type")
+                    or notice.get("editorialNoticeType")
+                    or "notice"
+                )
                 ntype = ntype.replace("_", " ").title()
-                source = notice.get("sourceDoi", notice.get("source", ""))
-                output.append(f"- **{ntype}**: https://doi.org/{source}")
+                ndate = notice.get("date", "")
+                source = (
+                    notice.get("noticeDoi")
+                    or notice.get("sourceDoi")
+                    or notice.get("source")
+                    or ""
+                )
+                link = f"https://doi.org/{source}" if source else "(no notice DOI)"
+                output.append(f"- **{ntype}**{f' ({ndate})' if ndate else ''}: {link}")
             output.append("")
 
         output.append(
