@@ -1,8 +1,12 @@
 """Unit tests for zotero_mcp.citation_import (parse + converters)."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from zotero_mcp.citation_import import (
+    _csl_text,
     _format_bibtex_date,
     _format_csl_date,
     _parse_bibtex_author_list,
@@ -12,6 +16,33 @@ from zotero_mcp.citation_import import (
     merge_tags,
     parse_bibtex,
 )
+from zotero_mcp.schema import valid_fields
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def load_fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def schema_template(item_type: str) -> dict:
+    """A template with every field Zotero says the type has.
+
+    ``make_template`` below is hand-written and covers only the fields its
+    own tests assert on, which is exactly how a dropped field can pass
+    unnoticed: ``_set_if_in_template`` writes a field only when the template
+    already carries it. The fixture tests build from the bundled Zotero
+    schema instead, so a value the converter maps to a real field cannot go
+    missing just because this file forgot to list it.
+    """
+    return {
+        "itemType": item_type,
+        **{f: "" for f in valid_fields(item_type)},
+        "creators": [],
+        "tags": [],
+        "collections": [],
+        "relations": {},
+    }
 
 # ---------------------------------------------------------------------------
 # Template fixture — mirrors the subset of Zotero's item_template() we need
@@ -383,6 +414,157 @@ class TestCslJsonToZotero:
         csl = {"type": "report", "title": "t", "number": "R-42"}
         item = csl_json_to_zotero(csl, make_template)
         assert item["reportNumber"] == "R-42"
+
+
+# ---------------------------------------------------------------------------
+# Crossref CSL JSON — recorded provider responses
+#
+# Crossref's transform endpoint is the most common source of CSL JSON in
+# practice, and it differs from the spec in two ways that used to break the
+# converter outright: it keeps Crossref's own `type` vocabulary, and it sends
+# ISSN/ISBN as arrays. Every CSL fixture above is hand-written in spec form,
+# so none of them ever exercised either shape. See tests/fixtures/README.md.
+# ---------------------------------------------------------------------------
+
+class TestCrossrefCslTransform:
+    def test_journal_article_keeps_every_mapped_field(self):
+        csl = load_fixture("crossref_csl_journal_article.json")
+        # The two shapes under test, asserted so a refreshed fixture that lost
+        # them fails here rather than silently making the test vacuous.
+        assert csl["type"] == "journal-article"
+        assert csl["ISSN"] == ["0883-9026"]
+
+        item = csl_json_to_zotero(csl, schema_template)
+
+        assert item["itemType"] == "journalArticle"
+        assert item["publicationTitle"] == "Journal of Business Venturing"
+        assert item["volume"] == "35"
+        assert item["issue"] == "1"
+        assert item["pages"] == "105970"
+        assert item["ISSN"] == "0883-9026"
+        assert item["DOI"] == "10.1016/j.jbusvent.2019.105970"
+        assert item["date"] == "2020-01"
+        assert item["creators"][0] == {
+            "creatorType": "author",
+            "firstName": "Evan J.",
+            "lastName": "Douglas",
+        }
+
+    def test_book_chapter_keeps_every_mapped_field(self):
+        csl = load_fixture("crossref_csl_book_chapter.json")
+        assert csl["type"] == "book-chapter"
+        assert csl["ISBN"] == ["9781607320395"]
+
+        item = csl_json_to_zotero(csl, schema_template)
+
+        assert item["itemType"] == "bookSection"
+        assert item["bookTitle"] == "The Archaeology of Class War"
+        assert item["pages"] == "161-185"
+        assert item["ISBN"] == "9781607320395"
+        assert item["publisher"] == "University of Colorado Press"
+        assert item["DOI"] == "10.5876/9781607320395.c008"
+        assert [(c["creatorType"], c["lastName"]) for c in item["creators"]] == [
+            ("author", "Chicone"), ("editor", "Larkin"), ("editor", "McGuire"),
+        ]
+
+    @pytest.mark.parametrize("fixture", [
+        "crossref_csl_journal_article.json",
+        "crossref_csl_book_chapter.json",
+    ])
+    def test_converts_without_raising(self, fixture):
+        # Before the array coercion this raised AttributeError on .strip(),
+        # so no field assertion above was reachable at all.
+        assert csl_json_to_zotero(load_fixture(fixture), schema_template)
+
+
+class TestCrossrefTypeVocabulary:
+    """Crossref spells its types differently from the CSL spec.
+
+    An unmapped type is not merely mislabelled: it resolves to `document`,
+    whose template has no publicationTitle/volume/issue/pages, and
+    `_set_if_in_template` then drops those values without a word.
+    """
+
+    @pytest.mark.parametrize("csl_type,expected", [
+        ("journal-article", "journalArticle"),
+        ("proceedings-article", "conferencePaper"),
+        ("book-chapter", "bookSection"),
+        ("book-part", "bookSection"),
+        ("book-section", "bookSection"),
+        ("reference-entry", "dictionaryEntry"),
+        ("monograph", "book"),
+        ("edited-book", "book"),
+        ("reference-book", "book"),
+        ("report-component", "report"),
+        ("dissertation", "thesis"),
+        ("posted-content", "preprint"),
+        # Spelled the same in both vocabularies.
+        ("book", "book"),
+        ("report", "report"),
+    ])
+    def test_crossref_type_maps(self, csl_type, expected):
+        item = csl_json_to_zotero({"type": csl_type, "title": "t"}, schema_template)
+        assert item["itemType"] == expected
+
+    def test_spec_types_still_win_their_own_spelling(self):
+        # The aliases are additions, not replacements.
+        assert csl_json_to_zotero(
+            {"type": "article-journal", "title": "t"}, schema_template
+        )["itemType"] == "journalArticle"
+        assert csl_json_to_zotero(
+            {"type": "chapter", "title": "t"}, schema_template
+        )["itemType"] == "bookSection"
+
+    def test_journal_article_container_reaches_publication_title(self):
+        item = csl_json_to_zotero({
+            "type": "journal-article", "title": "t",
+            "container-title": "Nature", "volume": "42",
+            "issue": "7", "page": "1-10",
+        }, schema_template)
+        assert item["publicationTitle"] == "Nature"
+        assert (item["volume"], item["issue"], item["pages"]) == ("42", "7", "1-10")
+
+
+class TestCslTextCoercion:
+    def test_array_takes_first_element(self):
+        assert _csl_text(["0883-9026", "1873-2003"]) == "0883-9026"
+
+    def test_array_skips_empty_entries(self):
+        assert _csl_text(["", "   ", "real"]) == "real"
+
+    def test_empty_array_is_empty_string(self):
+        assert _csl_text([]) == ""
+
+    def test_none_is_empty_string(self):
+        assert _csl_text(None) == ""
+
+    def test_string_is_trimmed(self):
+        assert _csl_text("  padded  ") == "padded"
+
+    def test_number_becomes_string(self):
+        assert _csl_text(42) == "42"
+
+    def test_array_of_numbers(self):
+        assert _csl_text([42]) == "42"
+
+    def test_title_array_from_plain_works_endpoint(self):
+        # /works/{doi} — as opposed to its CSL transform — arrays title and
+        # container-title too.
+        item = csl_json_to_zotero({
+            "type": "journal-article",
+            "title": ["A Paper"],
+            "container-title": ["Journal of Things"],
+        }, schema_template)
+        assert item["title"] == "A Paper"
+        assert item["publicationTitle"] == "Journal of Things"
+
+    def test_numeric_volume_and_issue(self):
+        item = csl_json_to_zotero(
+            {"type": "article-journal", "title": "t", "volume": 35, "issue": 1},
+            schema_template,
+        )
+        assert item["volume"] == "35"
+        assert item["issue"] == "1"
 
 
 # ---------------------------------------------------------------------------
