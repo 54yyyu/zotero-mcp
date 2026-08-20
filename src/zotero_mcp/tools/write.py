@@ -1,6 +1,7 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -2137,13 +2138,98 @@ def delete_item(
         return f"Error trashing item: {str(e)}"
 
 
+# ---------------------------------------------------------------------------
+# Duplicate detection — shared by find_duplicates and merge_duplicates
+# ---------------------------------------------------------------------------
+
+# Whole-library scan ceiling. Past this a caller wants collection_key instead.
+_DUP_SCAN_MAX_ITEMS = 5000
+
+# find_duplicates renders one compact line per item of already-grouped
+# duplicates, so it does not have the token-budget problem that the shared
+# _normalize_limit ceiling of 100 exists to solve (#394). Groups beyond this
+# stay reachable through `offset`.
+_DUP_GROUP_MAX_LIMIT = 500
+
+
+def _normalize_dup_title(title: str | None) -> str:
+    """Lowercase, strip punctuation and a leading article, collapse spaces."""
+    t = (title or "").lower().strip()
+    t = re.sub(r'[^\w\s]', '', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    for article in ("a ", "an ", "the "):
+        if t.startswith(article):
+            t = t[len(article):]
+    return t
+
+
+def _collect_duplicate_groups(zot, method, collection_key=None):
+    """Group the active library's items into duplicate candidates.
+
+    Returns ``(groups, error)``. ``groups`` maps ``"doi:<doi>"`` /
+    ``"title:<normalized>"`` to the items sharing that key, keeping only keys
+    with two or more items, in sorted key order so that paging over it is
+    stable across calls. ``error`` is a message to hand straight back to the
+    caller (library too large), in which case ``groups`` is empty.
+
+    Both zotero_find_duplicates and zotero_merge_duplicates(auto=True) go
+    through here, so "merge everything that qualifies" and "show me what
+    qualifies" can never disagree about what a group is.
+    """
+    items = []
+    start = 0
+    page_size = 100
+    while True:
+        if collection_key:
+            batch = zot.collection_items(collection_key, start=start, limit=page_size)
+        else:
+            batch = zot.items(start=start, limit=page_size)
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+        if len(items) > _DUP_SCAN_MAX_ITEMS:
+            break
+
+    if len(items) > _DUP_SCAN_MAX_ITEMS:
+        return {}, (
+            f"Library has {len(items)} items — too large for duplicate scan. "
+            "Please scope by collection_key to reduce the search."
+        )
+
+    groups: dict[str, list] = {}
+    for item in items:
+        data = item.get("data", {})
+        if data.get("itemType") in ("attachment", "note", "annotation"):
+            continue
+
+        keys_to_check = []
+        if method in ("title", "both"):
+            nt = _normalize_dup_title(data.get("title", ""))
+            if nt:
+                keys_to_check.append(("title", nt))
+        if method in ("doi", "both"):
+            doi_val = (data.get("DOI") or "").strip().lower()
+            if doi_val:
+                keys_to_check.append(("doi", doi_val))
+
+        for group_type, group_key in keys_to_check:
+            groups.setdefault(f"{group_type}:{group_key}", []).append(item)
+
+    return {k: v for k, v in sorted(groups.items()) if len(v) >= 2}, None
+
+
 @mcp.tool(
     name="zotero_find_duplicates",
     description=(
         "Scan the active library (or a single collection) for duplicate "
         "items and return candidate groups for review. This tool only "
         "IDENTIFIES duplicates — it doesn't merge them. Call "
-        "zotero_merge_duplicates to actually merge a group. "
+        "zotero_merge_duplicates to merge one group, or "
+        "zotero_merge_duplicates(auto=True) to merge every high-confidence "
+        "group in one pass. "
         "method: 'both' (default) — match on title OR DOI; 'title' — "
         "normalized-title match only (lowercase, punctuation-stripped); "
         "'doi' — exact DOI match only (safest for automation). Prefer "
@@ -2154,13 +2240,18 @@ def delete_item(
         "LIBRARY SIZE CAP: refuses to scan a library with > 5,000 items "
         "(the whole-library scan is O(n²) on titles) — on larger "
         "libraries you MUST pass collection_key to narrow the scope. "
-        "limit: max groups to return (default 50). "
-        "Returns a markdown block per group with keys, titles, DOIs, "
-        "and dateAdded — use this to decide which item to KEEP before "
-        "calling zotero_merge_duplicates(keeper_key=..., "
-        "duplicate_keys=[...]). "
+        "limit: max groups per call (default 50, max 500). "
+        "offset: 0-based index of the first group returned (default 0). "
+        "Group order is stable, so page a library with more groups than "
+        "`limit` by re-calling with offset=offset+limit. The output always "
+        "states which groups it shows out of how many were found, so a "
+        "partial page is never mistaken for the complete set. "
+        "Returns a markdown block per group with keys, titles, DOIs and "
+        "dateAdded — use it to pick the item to KEEP before calling "
+        "zotero_merge_duplicates. "
         "Read-only; works in local or web mode. "
-        "Example: zotero_find_duplicates(method='doi', limit=20)."
+        "Example: zotero_find_duplicates(method='doi', limit=20). "
+        "Paging: zotero_find_duplicates(limit=100, offset=100)."
     )
 )
 @with_zotero_api_lock
@@ -2168,136 +2259,509 @@ def find_duplicates(
     method: Literal["title", "doi", "both"] = "both",
     collection_key: str | None = None,
     limit: int | str | None = 50,
+    offset: int | str | None = 0,
     *,
     ctx: Context
 ) -> str:
     try:
         zot = _client.get_zotero_client()
-        limit = _helpers._normalize_limit(limit, default=50)
+        limit = _helpers._normalize_limit(limit, default=50, max_val=_DUP_GROUP_MAX_LIMIT)
+        offset = _helpers._normalize_offset(offset)
         ctx.info(f"Searching for duplicates (method={method})")
 
-        # Paginate manually instead of using zot.everything() which can
-        # cause "cannot pickle '_thread.RLock' object" in MCP contexts.
-        items = []
-        start = 0
-        page_size = 100
-        while True:
-            if collection_key:
-                batch = zot.collection_items(collection_key, start=start, limit=page_size)
-            else:
-                batch = zot.items(start=start, limit=page_size)
-            if not batch:
-                break
-            items.extend(batch)
-            if len(batch) < page_size:
-                break
-            start += page_size
-            if len(items) > 5000:
-                break
-
-        if len(items) > 5000:
-            return (
-                f"Library has {len(items)} items — too large for duplicate scan. "
-                "Please scope by collection_key to reduce the search."
-            )
-
-        # Normalize and group
-        def normalize_title(t):
-            t = (t or "").lower().strip()
-            t = re.sub(r'[^\w\s]', '', t)
-            t = re.sub(r'\s+', ' ', t).strip()
-            for article in ("a ", "an ", "the "):
-                if t.startswith(article):
-                    t = t[len(article):]
-            return t
-
-        groups = {}
-        for item in items:
-            data = item.get("data", {})
-            if data.get("itemType") in ("attachment", "note", "annotation"):
-                continue
-
-            keys_to_check = []
-            if method in ("title", "both"):
-                nt = normalize_title(data.get("title", ""))
-                if nt:
-                    keys_to_check.append(("title", nt))
-            if method in ("doi", "both"):
-                doi_val = (data.get("DOI") or "").strip().lower()
-                if doi_val:
-                    keys_to_check.append(("doi", doi_val))
-
-            for group_type, group_key in keys_to_check:
-                full_key = f"{group_type}:{group_key}"
-                if full_key not in groups:
-                    groups[full_key] = []
-                groups[full_key].append(item)
-
-        # Filter to groups with duplicates
-        dups = {k: v for k, v in groups.items() if len(v) >= 2}
+        dups, error = _collect_duplicate_groups(zot, method, collection_key)
+        if error:
+            return error
 
         if not dups:
             return "No duplicates found."
 
-        lines = [f"# Found {len(dups)} duplicate groups", ""]
-        shown = 0
-        for group_key, group_items in sorted(dups.items()):
-            if shown >= limit:
-                lines.append(f"\n... and {len(dups) - shown} more groups")
-                break
-            shown += 1
+        total = len(dups)
+        group_keys = list(dups.keys())
+        doi_total = sum(1 for k in group_keys if k.startswith("doi:"))
+        title_total = total - doi_total
+        header = (
+            f"# Found {total} duplicate groups "
+            f"({doi_total} by DOI, {title_total} by title)"
+        )
+
+        page_keys = group_keys[offset:offset + limit]
+        if not page_keys:
+            last_page_offset = ((total - 1) // limit) * limit
+            return (
+                f"{header}\n\n"
+                f"No groups at offset {offset}; the library has {total}. "
+                f"The last page starts at offset {last_page_offset}."
+            )
+
+        first_shown = offset + 1
+        last_shown = offset + len(page_keys)
+        lines = [
+            header,
+            "",
+            f"Showing groups {first_shown}-{last_shown} of {total}.",
+            "",
+        ]
+        for group_key in page_keys:
             lines.append(f"## Group: {group_key}")
-            for item in group_items:
+            for item in dups[group_key]:
                 d = item.get("data", {})
                 key = item.get("key", "?")
                 t = d.get("title", "Untitled")
                 dt = d.get("date", "")
+                added = d.get("dateAdded", "")
                 doi_val = d.get("DOI", "")
-                lines.append(f"- `{key}` — {t} ({dt}) {f'DOI:{doi_val}' if doi_val else ''}")
+                suffix = " ".join(
+                    part for part in (
+                        f"DOI:{doi_val}" if doi_val else "",
+                        f"added:{added[:10]}" if added else "",
+                    ) if part
+                )
+                lines.append(f"- `{key}` — {t} ({dt}) {suffix}".rstrip())
+            lines.append("")
+
+        remaining = total - last_shown
+        if remaining:
+            lines.append(
+                f"**{remaining} more group(s) not shown.** Call again with "
+                f"offset={last_shown} to continue."
+            )
             lines.append("")
 
         lines.append(
-            "\nTo merge, call `zotero_merge_duplicates` with the key you want to keep "
-            "and the keys to merge into it."
+            "To merge, call `zotero_merge_duplicates` with the key you want to keep "
+            "and the keys to merge into it, or `zotero_merge_duplicates(auto=True)` "
+            "to merge every high-confidence group in one pass."
         )
         return "\n".join(lines)
 
+    except ValueError as e:
+        return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error finding duplicates: {e}")
         return f"Error finding duplicates: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Merging — one code path for child re-parenting and trashing, shared by the
+# single-group merge and the auto/batch mode (#395)
+# ---------------------------------------------------------------------------
+
+# Ceiling on how many groups a single auto-merge call will act on. Auto mode
+# trashes items, so the blast radius of one call stays bounded even if the
+# scan finds more; the summary says when it clipped and paging is by re-running
+# after the merged groups are gone.
+_AUTO_MERGE_MAX_GROUPS = 200
+
+# How many declined groups to name before summarising the rest. The skip list
+# is informational, unlike the plan itself, and a library with hundreds of
+# them would otherwise bury the groups the caller has to review.
+_AUTO_MERGE_MAX_SKIP_LINES = 20
+
+
+def _render_skipped(skipped: list[tuple], heading: str) -> list[str]:
+    """Render the declined groups, naming at most _AUTO_MERGE_MAX_SKIP_LINES."""
+    lines = [heading, ""]
+    for group_key, keys, reason in skipped[:_AUTO_MERGE_MAX_SKIP_LINES]:
+        lines.append(f"- `{group_key}` ({', '.join(keys)}) — {reason}")
+    hidden = len(skipped) - _AUTO_MERGE_MAX_SKIP_LINES
+    if hidden > 0:
+        lines.append(f"- ... and {hidden} more skipped group(s)")
+    lines.append("")
+    return lines
+
+
+def _attachment_sig(data: dict) -> tuple:
+    """Identity of an attachment for "the keeper already has this one" checks."""
+    return (
+        data.get("contentType", ""),
+        data.get("filename", ""),
+        data.get("md5", ""),
+        data.get("url", ""),
+    )
+
+
+def _keeper_rank(entry: dict) -> tuple:
+    """Sort key for keeper selection — the lowest-sorting member is the keeper.
+
+    The documented heuristic, in order: most child items (attachments and
+    notes are the part of an item that is expensive to recreate), then an
+    item that carries an abstract over one that doesn't, then the oldest
+    dateAdded (the original save, which is likelier to be the one cited
+    elsewhere). Item key breaks any remaining tie so the choice is
+    deterministic — the plan token depends on it.
+    """
+    data = entry["item"].get("data", {})
+    return (
+        -entry["child_count"],
+        0 if (data.get("abstractNote") or "").strip() else 1,
+        data.get("dateAdded") or "9999-99-99",
+        entry["item"].get("key", ""),
+    )
+
+
+def _describe_keeper(entry: dict) -> str:
+    """One-line why-this-keeper, for the plan output."""
+    data = entry["item"].get("data", {})
+    bits = [f"{entry['child_count']} child item(s)"]
+    bits.append("has abstract" if (data.get("abstractNote") or "").strip() else "no abstract")
+    added = (data.get("dateAdded") or "")[:10]
+    if added:
+        bits.append(f"added {added}")
+    return ", ".join(bits)
+
+
+def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
+    """Fetch a keeper and its duplicates and work out what merging would do.
+
+    Children are fetched through _paginate: pyzotero's children() returns only
+    the first API page, which used to silently drop every child past the 25th
+    into the Trash along with the duplicate (#387).
+    """
+    keeper = write_zot.item(keeper_key)
+    keeper_children = _helpers._paginate(write_zot.children, keeper_key)
+    duplicates = [
+        {
+            "item": write_zot.item(dk),
+            "children": _helpers._paginate(write_zot.children, dk),
+        }
+        for dk in dup_keys
+    ]
+
+    keeper_data = keeper.get("data", {})
+    keeper_tags = {t.get("tag", "") for t in keeper_data.get("tags", [])}
+    all_tags = set(keeper_tags)
+    all_collections = set(keeper_data.get("collections", []))
+    total_children_to_move = 0
+
+    for dup in duplicates:
+        dup_data = dup["item"].get("data", {})
+        all_tags.update(t.get("tag", "") for t in dup_data.get("tags", []))
+        all_collections.update(dup_data.get("collections", []))
+        total_children_to_move += len(dup["children"])
+
+    all_tags.discard("")
+
+    keeper_attachment_sigs = {
+        _attachment_sig(kc.get("data", {}))
+        for kc in keeper_children
+        if kc.get("data", {}).get("itemType") == "attachment"
+    }
+    skipped_attachment_count = sum(
+        1
+        for dup in duplicates
+        for child in dup["children"]
+        if child.get("data", {}).get("itemType") == "attachment"
+        and _attachment_sig(child.get("data", {})) in keeper_attachment_sigs
+    )
+
+    return {
+        "keeper_key": keeper_key,
+        "keeper": keeper,
+        "keeper_children": keeper_children,
+        "duplicates": duplicates,
+        "dup_keys": list(dup_keys),
+        "all_tags": all_tags,
+        "new_tags": all_tags - keeper_tags,
+        "new_collections": all_collections - set(keeper_data.get("collections", [])),
+        "children_to_move": total_children_to_move - skipped_attachment_count,
+        "skipped_attachment_count": skipped_attachment_count,
+        "keeper_attachment_sigs": keeper_attachment_sigs,
+    }
+
+
+def _trash_item(write_zot, item_key: str) -> tuple[bool, str]:
+    """Move one item to Zotero's Trash (recoverable), not a permanent delete.
+
+    pyzotero's update_item() strips "deleted" and delete_item() destroys the
+    item, so this is a direct version-conditioned PATCH of {"deleted": 1}.
+    """
+    try:
+        item = write_zot.item(item_key)
+        from pyzotero.zotero import build_url
+        url = build_url(
+            write_zot.endpoint,
+            f"/{write_zot.library_type}/{write_zot.library_id}/items/{item_key}",
+        )
+        resp = write_zot.client.patch(
+            url=url,
+            headers={"If-Unmodified-Since-Version": str(item["version"])},
+            content=json.dumps({"deleted": 1}),
+        )
+        if resp.status_code in (200, 204):
+            return True, ""
+        return False, f"HTTP {resp.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+
+def _execute_merge(write_zot, plan: dict, ctx) -> dict:
+    """Apply a plan from _merge_plan. Returns a result dict; never raises.
+
+    Order matters: tags, then collections, then children, and the duplicates
+    are trashed only if every child moved. A child left behind on an item
+    that is about to be trashed is the data-loss shape from #387, so a partial
+    re-parent aborts before anything reaches the Trash.
+    """
+    keeper_key = plan["keeper_key"]
+    keeper = plan["keeper"]
+    result = {
+        "keeper_key": keeper_key,
+        "new_tags": plan["new_tags"],
+        "new_collections": plan["new_collections"],
+        "moved": [],
+        "failed": [],
+        "skipped_dupes": [],
+        "trashed": [],
+        "trash_failures": [],
+        "error": None,
+    }
+
+    if plan["new_tags"]:
+        keeper_data = keeper.get("data", {})
+        existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
+        keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | plan["all_tags"])]
+        _helpers._strip_unwritable_fields(keeper)
+        resp = write_zot.update_item(keeper)
+        if not _helpers._handle_write_response(resp, ctx):
+            result["error"] = f"Failed to merge tags into keeper {keeper_key}."
+            return result
+        keeper = write_zot.item(keeper_key)  # re-fetch for version
+
+    for coll_key in plan["new_collections"]:
+        resp = write_zot.addto_collection(coll_key, keeper)
+        if not _helpers._handle_write_response(resp, ctx):
+            ctx.warning(f"Failed to add keeper to collection {coll_key}")
+        keeper = write_zot.item(keeper_key)  # re-fetch for version
+
+    for dup in plan["duplicates"]:
+        for child in dup["children"]:
+            child_key = child.get("key", "?")
+            try:
+                fresh_child = write_zot.item(child_key)
+                child_data = fresh_child.get("data", {})
+                if (
+                    child_data.get("itemType") == "attachment"
+                    and _attachment_sig(child_data) in plan["keeper_attachment_sigs"]
+                ):
+                    result["skipped_dupes"].append(child_key)
+                    continue
+                child_data["parentItem"] = keeper_key
+                _helpers._strip_unwritable_fields(fresh_child)
+                resp = write_zot.update_item(fresh_child)
+                if _helpers._handle_write_response(resp, ctx):
+                    result["moved"].append(child_key)
+                else:
+                    result["failed"].append(child_key)
+            except Exception as e:
+                result["failed"].append(f"{child_key} ({e})")
+
+    if result["failed"]:
+        result["error"] = (
+            f"Moved {len(result['moved'])} children, but {len(result['failed'])} "
+            f"failed: {result['failed']}. Duplicates were NOT trashed."
+        )
+        return result
+
+    for dup in plan["duplicates"]:
+        dup_key = dup["item"]["key"]
+        ok, why = _trash_item(write_zot, dup_key)
+        if ok:
+            result["trashed"].append(dup_key)
+        else:
+            result["trash_failures"].append(f"{dup_key} ({why})")
+            ctx.warning(f"Failed to trash {dup_key}: {why}")
+
+    return result
+
+
+def _auto_merge_groups(read_zot, write_zot, method, collection_key, max_groups):
+    """Decide what auto mode would merge.
+
+    Returns ``(qualifying, skipped, clipped, error)``. ``qualifying`` is a list
+    of per-group dicts carrying the chosen keeper and the keys to trash;
+    ``skipped`` is ``(group_key, keys, reason)`` for every group auto mode
+    declines to touch.
+
+    A group is declined rather than merged whenever anything about it is not
+    obviously safe: members of different item types (a book and a book section
+    sharing a title are not the same record), members carrying different DOIs
+    (the shape that makes title matching dangerous — two edited volumes each
+    with a "List of Contributors"), or a group overlapping one already merged
+    in this pass, whose items may already be in the Trash.
+    """
+    dups, error = _collect_duplicate_groups(read_zot, method, collection_key)
+    if error:
+        return [], [], False, error
+
+    qualifying: list[dict] = []
+    skipped: list[tuple] = []
+    consumed: set[str] = set()
+    clipped = False
+
+    for group_key, group_items in dups.items():
+        keys = [i.get("key", "?") for i in group_items]
+
+        item_types = {i.get("data", {}).get("itemType") for i in group_items}
+        if len(item_types) > 1:
+            types = ", ".join(sorted(t or "?" for t in item_types))
+            skipped.append((group_key, keys, f"mixed item types ({types})"))
+            continue
+
+        dois = {(i.get("data", {}).get("DOI") or "").strip().lower() for i in group_items}
+        dois.discard("")
+        if len(dois) > 1:
+            skipped.append((group_key, keys, "members carry different DOIs"))
+            continue
+
+        overlap = [k for k in keys if k in consumed]
+        if overlap:
+            skipped.append((
+                group_key, keys,
+                f"overlaps a group already merged in this pass ({', '.join(overlap)})",
+            ))
+            continue
+
+        if len(qualifying) >= max_groups:
+            clipped = True
+            skipped.append((group_key, keys, f"beyond this call's {max_groups}-group ceiling"))
+            continue
+
+        entries = []
+        for it in group_items:
+            children = _helpers._paginate(write_zot.children, it.get("key"))
+            entries.append({"item": it, "children": children, "child_count": len(children)})
+        entries.sort(key=_keeper_rank)
+
+        keeper_entry = entries[0]
+        qualifying.append({
+            "group_key": group_key,
+            "keeper_key": keeper_entry["item"].get("key", "?"),
+            "keeper_title": keeper_entry["item"].get("data", {}).get("title", "Untitled"),
+            "keeper_why": _describe_keeper(keeper_entry),
+            "duplicate_keys": [e["item"].get("key", "?") for e in entries[1:]],
+            "trash_titles": [
+                (e["item"].get("key", "?"), e["item"].get("data", {}).get("title", "Untitled"))
+                for e in entries[1:]
+            ],
+        })
+        consumed.update(keys)
+
+    return qualifying, skipped, clipped, None
+
+
+def _plan_token(qualifying: list[dict]) -> str:
+    """Short digest of an auto-merge plan.
+
+    Executing auto mode requires echoing this back, which does two things:
+    confirm=True on its own cannot trash anything without the caller having
+    been shown the plan first, and a library that changed between the plan and
+    the confirmation produces a different token, so the call is refused rather
+    than applied to a plan nobody reviewed.
+    """
+    canonical = json.dumps(
+        [[g["group_key"], g["keeper_key"], g["duplicate_keys"]] for g in qualifying],
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def _render_auto_plan(qualifying, skipped, clipped, token, method, max_groups) -> str:
+    """The plan output — every group, its keeper, and what would be trashed."""
+    to_trash = sum(len(g["duplicate_keys"]) for g in qualifying)
+    lines = [
+        "# Auto-merge plan (nothing has been changed)",
+        "",
+        f"**Method:** `{method}` — {len(qualifying)} group(s) qualify, "
+        f"{len(skipped)} skipped.",
+        f"**Would trash {to_trash} item(s)**, keeping {len(qualifying)}.",
+        "",
+        "Keeper per group is chosen by: most child items, then has-an-abstract, "
+        "then oldest dateAdded, then item key.",
+        "",
+    ]
+
+    if qualifying:
+        lines.append("## Groups to merge")
+        lines.append("")
+        for g in qualifying:
+            lines.append(f"### {g['group_key']}")
+            lines.append(f"- **KEEP** `{g['keeper_key']}` — {g['keeper_title']}  ({g['keeper_why']})")
+            for key, title in g["trash_titles"]:
+                lines.append(f"- trash `{key}` — {title}")
+            lines.append("")
+
+    if skipped:
+        lines += _render_skipped(skipped, "## Skipped")
+
+    if clipped:
+        lines.append(
+            f"This call is capped at {max_groups} groups. Re-run auto mode "
+            "after this batch to continue with the rest."
+        )
+        lines.append("")
+
+    if not qualifying:
+        lines.append("Nothing qualifies, so there is nothing to confirm.")
+        return "\n".join(lines)
+
+    lines.extend([
+        "---",
+        "",
+        "**To execute, call again with `confirm=True` and "
+        f"`plan_token='{token}'`.**",
+        "",
+        "The token is a digest of the plan above. It exists so that a merge "
+        "cannot run without this plan having been produced and reviewed, and "
+        "so that a library which changed in the meantime is refused rather "
+        "than merged against a stale plan.",
+    ])
+    return "\n".join(lines)
+
+
 @mcp.tool(
     name="zotero_merge_duplicates",
     description=(
-        "Merge one or more duplicate items INTO a keeper: consolidates "
-        "tags, collections, notes, annotations, and all child items onto "
-        "the keeper, then moves the duplicates to Trash (recoverable "
-        "from Zotero desktop's Trash view). "
-        "SAFETY: dry-run by DEFAULT — prints what would happen without "
-        "changing anything. Pass confirm=True to actually execute. Always "
-        "run dry-first at least once to verify the keeper choice. "
-        "Discover groups first with zotero_find_duplicates. "
-        "keeper_key: 8-character key of the item to KEEP. All metadata "
-        "gaps on the keeper are filled from duplicates where possible; "
-        "conflicting fields keep the keeper's value. "
-        "duplicate_keys: ARRAY of 8-character item keys to merge into "
-        "the keeper and trash (also accepts a JSON-encoded list "
-        "string) — pass as an array, not a single concatenated string. "
-        "The keeper itself must NOT appear in this list. "
-        "confirm: False (default) runs dry; True executes the merge. "
-        "Requires a writable library (web API key or hybrid mode); fails "
-        "in local-only mode. "
-        "Example dry-run: zotero_merge_duplicates("
-        "keeper_key='ABC12345', duplicate_keys=['XYZ98765']). "
-        "Example execute: same, plus confirm=True."
+        "Merge duplicate items INTO a keeper: consolidates tags, "
+        "collections, notes, annotations and children onto it, then "
+        "trashes the duplicates (recoverable in Zotero). "
+        "SINGLE GROUP (default): pass keeper_key + duplicate_keys. Dry-run "
+        "by DEFAULT — confirm=True executes. Find groups with "
+        "zotero_find_duplicates. keeper_key: 8-char key to KEEP; its gaps "
+        "are filled from the duplicates, conflicts keep its own value. "
+        "duplicate_keys: ARRAY of 8-char keys to merge in and trash (or a "
+        "JSON list string); must not contain the keeper. "
+        "AUTO/BATCH: auto=True finds and merges every high-confidence "
+        "group in one pass, picking each keeper itself — do NOT pass "
+        "keeper_key or duplicate_keys. method: 'doi' (default, safest — "
+        "exact DOI); 'title'/'both' also match "
+        "normalized titles, which false-positives on edited volumes, so opt "
+        "in only when asked. collection_key scopes the "
+        f"scan; max_groups caps one call (default/max "
+        f"{_AUTO_MERGE_MAX_GROUPS}). KEEPER = most child items, then "
+        "has-an-abstract, then oldest dateAdded, then key. Groups with "
+        "mixed item types, differing DOIs, or overlapping an earlier merge "
+        "are SKIPPED and reported. "
+        "AUTO NEEDS TWO CALLS: auto=True alone returns a plan plus a "
+        "plan_token; executing needs confirm=True AND that token. "
+        "confirm=True alone is refused, as is a stale token. "
+        "Needs a writable library (web API key/hybrid); fails local-only. "
+        "Example: zotero_merge_duplicates(keeper_key='ABC12345', "
+        "duplicate_keys=['XYZ98765']), then again with confirm=True. "
+        "Auto: zotero_merge_duplicates(auto=True), then the same plus "
+        "confirm=True and plan_token."
     )
 )
 @with_zotero_api_lock
 def merge_duplicates(
-    keeper_key: str,
-    duplicate_keys: list[str] | str,
+    keeper_key: str | None = None,
+    duplicate_keys: list[str] | str | None = None,
     confirm: bool = False,
+    auto: bool = False,
+    method: Literal["title", "doi", "both"] = "doi",
+    collection_key: str | None = None,
+    max_groups: int | str | None = None,
+    plan_token: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -2307,6 +2771,25 @@ def merge_duplicates(
         return str(e)
 
     try:
+        if auto:
+            if keeper_key or duplicate_keys:
+                return (
+                    "Error: auto=True finds and picks its own groups — do not "
+                    "pass keeper_key or duplicate_keys with it. Drop auto=True "
+                    "to merge one specific group."
+                )
+            return _merge_duplicates_auto(
+                read_zot, write_zot, method, collection_key,
+                max_groups, confirm, plan_token, ctx,
+            )
+
+        if not keeper_key:
+            return (
+                "Error: keeper_key is required. Pass keeper_key + "
+                "duplicate_keys to merge one group, or auto=True to merge "
+                "every high-confidence group."
+            )
+
         dup_keys = _helpers._normalize_str_list_input(duplicate_keys, "duplicate_keys")
 
         # Safety: remove keeper from duplicates
@@ -2317,73 +2800,21 @@ def merge_duplicates(
         if not dup_keys:
             return "Error: No duplicate keys to merge (after removing keeper if present)."
 
-        # Fetch all items and children (children() returns only the first
-        # API page without explicit pagination — see _paginate)
-        keeper = write_zot.item(keeper_key)
-        keeper_children = _helpers._paginate(write_zot.children, keeper_key)
-        duplicates = []
-        for dk in dup_keys:
-            dup_item = write_zot.item(dk)
-            dup_children = _helpers._paginate(write_zot.children, dk)
-            duplicates.append({"item": dup_item, "children": dup_children})
+        plan = _merge_plan(write_zot, keeper_key, dup_keys)
 
-        # Compute what will be merged
-        all_tags = set()
-        for t in keeper.get("data", {}).get("tags", []):
-            all_tags.add(t.get("tag", ""))
-        all_collections = set(keeper.get("data", {}).get("collections", []))
-        total_children_to_move = 0
-
-        for dup in duplicates:
-            for t in dup["item"].get("data", {}).get("tags", []):
-                all_tags.add(t.get("tag", ""))
-            all_collections.update(dup["item"].get("data", {}).get("collections", []))
-            total_children_to_move += len(dup["children"])
-
-        all_tags.discard("")
-        new_tags = all_tags - {t.get("tag", "") for t in keeper.get("data", {}).get("tags", [])}
-        new_collections = all_collections - set(keeper.get("data", {}).get("collections", []))
-
-        # Build keeper's attachment signatures for deduplication
-        keeper_attachment_sigs = set()
-        for kc in keeper_children:
-            kd = kc.get("data", {})
-            if kd.get("itemType") == "attachment":
-                sig = (
-                    kd.get("contentType", ""),
-                    kd.get("filename", ""),
-                    kd.get("md5", ""),
-                    kd.get("url", ""),
-                )
-                keeper_attachment_sigs.add(sig)
-
-        # Count duplicate attachments that would be skipped
-        skipped_attachment_count = 0
-        for dup in duplicates:
-            for child in dup["children"]:
-                cd = child.get("data", {})
-                if cd.get("itemType") == "attachment":
-                    sig = (
-                        cd.get("contentType", ""),
-                        cd.get("filename", ""),
-                        cd.get("md5", ""),
-                        cd.get("url", ""),
-                    )
-                    if sig in keeper_attachment_sigs:
-                        skipped_attachment_count += 1
-
-        # DRY RUN
         if not confirm:
+            skipped = plan["skipped_attachment_count"]
             lines = [
                 "# Merge Preview (dry run)",
                 "",
-                f"**Keeper:** `{keeper_key}` — {keeper.get('data', {}).get('title', 'Untitled')}",
+                f"**Keeper:** `{keeper_key}` — {plan['keeper'].get('data', {}).get('title', 'Untitled')}",
                 f"**Duplicates to merge:** {', '.join(f'`{k}`' for k in dup_keys)}",
                 "",
-                f"**Tags to add:** {sorted(new_tags) if new_tags else 'none'}",
-                f"**Collections to add:** {sorted(new_collections) if new_collections else 'none'}",
-                f"**Child items to re-parent:** {total_children_to_move - skipped_attachment_count}",
-                f"  ({skipped_attachment_count} duplicate attachment(s) will be skipped)" if skipped_attachment_count else "  (notes, PDFs, annotations, highlights, etc.)",
+                f"**Tags to add:** {sorted(plan['new_tags']) if plan['new_tags'] else 'none'}",
+                f"**Collections to add:** {sorted(plan['new_collections']) if plan['new_collections'] else 'none'}",
+                f"**Child items to re-parent:** {plan['children_to_move']}",
+                f"  ({skipped} duplicate attachment(s) will be skipped)" if skipped
+                else "  (notes, PDFs, annotations, highlights, etc.)",
                 "",
                 "Duplicates will be moved to **Trash** (recoverable in Zotero).",
                 "",
@@ -2391,100 +2822,21 @@ def merge_duplicates(
             ]
             return "\n".join(lines)
 
-        # EXECUTE MERGE
         ctx.info(f"Merging {len(dup_keys)} duplicates into {keeper_key}")
+        result = _execute_merge(write_zot, plan, ctx)
+        if result["error"]:
+            return f"Merge partially completed. {result['error']}\n\nFix the failures and retry."
 
-        # Step 3: Consolidate tags
-        if new_tags:
-            keeper_data = keeper.get("data", {})
-            existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
-            keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | all_tags)]
-            _helpers._strip_unwritable_fields(keeper)
-            resp = write_zot.update_item(keeper)
-            if not _helpers._handle_write_response(resp, ctx):
-                return "Error: Failed to merge tags into keeper."
-            keeper = write_zot.item(keeper_key)  # re-fetch for version
-
-        # Step 4: Consolidate collections
-        for coll_key in new_collections:
-            resp = write_zot.addto_collection(coll_key, keeper)
-            if not _helpers._handle_write_response(resp, ctx):
-                ctx.warning(f"Failed to add keeper to collection {coll_key}")
-            keeper = write_zot.item(keeper_key)  # re-fetch for version
-
-        # Step 5: Re-parent children (skip duplicate attachments)
-        moved = []
-        failed = []
-        skipped_dupes = []
-        for dup in duplicates:
-            for child in dup["children"]:
-                child_key = child.get("key", "?")
-                try:
-                    fresh_child = write_zot.item(child_key)
-                    # Skip duplicate attachments — keeper already has this one
-                    child_data = fresh_child.get("data", {})
-                    if child_data.get("itemType") == "attachment":
-                        child_sig = (
-                            child_data.get("contentType", ""),
-                            child_data.get("filename", ""),
-                            child_data.get("md5", ""),
-                            child_data.get("url", ""),
-                        )
-                        if child_sig in keeper_attachment_sigs:
-                            skipped_dupes.append(child_key)
-                            continue  # Skip — keeper already has this attachment
-                    fresh_child.get("data", {})["parentItem"] = keeper_key
-                    _helpers._strip_unwritable_fields(fresh_child)
-                    resp = write_zot.update_item(fresh_child)
-                    if _helpers._handle_write_response(resp, ctx):
-                        moved.append(child_key)
-                    else:
-                        failed.append(child_key)
-                except Exception as e:
-                    failed.append(f"{child_key} ({e})")
-
-        if failed:
-            return (
-                f"Merge partially completed. Moved {len(moved)} children, "
-                f"but {len(failed)} failed: {failed}\n\n"
-                "Duplicates were NOT trashed. Fix the failures and retry."
-            )
-
-        # Step 6: Trash duplicates (move to Zotero Trash, NOT permanent delete)
-        # pyzotero's update_item() strips "deleted" and delete_item() permanently
-        # destroys items. We send a direct PATCH with {"deleted": 1} which moves
-        # items to Zotero's Trash — recoverable by the user.
-        trashed = []
-        for dup in duplicates:
-            dup_key = dup["item"]["key"]
-            try:
-                dup_item = write_zot.item(dup_key)
-                version = dup_item["version"]
-                from pyzotero.zotero import build_url
-                url = build_url(
-                    write_zot.endpoint,
-                    f"/{write_zot.library_type}/{write_zot.library_id}/items/{dup_key}",
-                )
-                headers = {"If-Unmodified-Since-Version": str(version)}
-                resp = write_zot.client.patch(
-                    url=url,
-                    headers=headers,
-                    content=json.dumps({"deleted": 1}),
-                )
-                if resp.status_code in (200, 204):
-                    trashed.append(dup_key)
-                else:
-                    ctx.warning(f"Failed to trash {dup_key}: HTTP {resp.status_code}")
-            except Exception as e:
-                ctx.warning(f"Failed to trash {dup_key}: {e}")
-
-        skip_info = f" ({len(skipped_dupes)} duplicate attachments skipped)" if skipped_dupes else ""
+        skip_info = (
+            f" ({len(result['skipped_dupes'])} duplicate attachments skipped)"
+            if result["skipped_dupes"] else ""
+        )
         return (
             f"Merge complete.\n\n"
-            f"- Tags merged: {len(new_tags)} new\n"
-            f"- Collections added: {len(new_collections)} new\n"
-            f"- Children re-parented: {len(moved)}{skip_info}\n"
-            f"- Duplicates trashed: {', '.join(f'`{k}`' for k in trashed)}\n\n"
+            f"- Tags merged: {len(result['new_tags'])} new\n"
+            f"- Collections added: {len(result['new_collections'])} new\n"
+            f"- Children re-parented: {len(result['moved'])}{skip_info}\n"
+            f"- Duplicates trashed: {', '.join(f'`{k}`' for k in result['trashed'])}\n\n"
             "Trashed items can be restored from Zotero's Trash."
         )
 
@@ -2493,6 +2845,104 @@ def merge_duplicates(
     except Exception as e:
         ctx.error(f"Error merging duplicates: {e}")
         return f"Error merging duplicates: {e}"
+
+
+def _merge_duplicates_auto(
+    read_zot, write_zot, method, collection_key, max_groups, confirm, plan_token, ctx,
+):
+    """The auto/batch path of zotero_merge_duplicates (#395)."""
+    max_groups = _helpers._normalize_limit(
+        max_groups,
+        default=_AUTO_MERGE_MAX_GROUPS,
+        max_val=_AUTO_MERGE_MAX_GROUPS,
+    )
+
+    if confirm and not plan_token:
+        return (
+            "Error: auto mode will not execute on confirm=True alone. Call "
+            "zotero_merge_duplicates(auto=True) first to get the plan and its "
+            "plan_token, then call again with confirm=True and that token. "
+            "This is deliberate: a batch merge trashes items across the whole "
+            "library, so the plan has to be produced and reviewed first."
+        )
+
+    ctx.info(f"Building auto-merge plan (method={method})")
+    qualifying, skipped, clipped, error = _auto_merge_groups(
+        read_zot, write_zot, method, collection_key, max_groups
+    )
+    if error:
+        return error
+
+    token = _plan_token(qualifying)
+
+    if not confirm:
+        if not qualifying and not skipped:
+            return "No duplicates found."
+        return _render_auto_plan(qualifying, skipped, clipped, token, method, max_groups)
+
+    if plan_token != token:
+        return (
+            f"Error: plan_token mismatch — refusing to merge.\n\n"
+            f"Token supplied: `{plan_token}`\n"
+            f"Token for the library's current state: `{token}`\n\n"
+            "The set of duplicate groups, or the keeper chosen for one of "
+            "them, is not what it was when the plan you are confirming was "
+            "produced. Re-run zotero_merge_duplicates(auto=True), review the "
+            "new plan, and confirm that one."
+        )
+
+    if not qualifying:
+        return "Nothing to merge — no groups qualify."
+
+    ctx.info(f"Auto-merging {len(qualifying)} group(s)")
+    merged, failures = [], []
+    total_trashed, total_children = 0, 0
+
+    for group in qualifying:
+        try:
+            plan = _merge_plan(write_zot, group["keeper_key"], group["duplicate_keys"])
+            result = _execute_merge(write_zot, plan, ctx)
+        except Exception as e:
+            failures.append((group["group_key"], str(e)))
+            continue
+        if result["error"]:
+            failures.append((group["group_key"], result["error"]))
+            continue
+        merged.append(group)
+        total_trashed += len(result["trashed"])
+        total_children += len(result["moved"])
+        if result["trash_failures"]:
+            failures.append((
+                group["group_key"],
+                f"merged, but failed to trash {', '.join(result['trash_failures'])}",
+            ))
+
+    lines = [
+        "# Auto-merge complete",
+        "",
+        f"- Groups merged: **{len(merged)}** of {len(qualifying)} planned",
+        f"- Items trashed: **{total_trashed}**",
+        f"- Child items re-parented: {total_children}",
+        f"- Groups skipped as ambiguous: {len(skipped)}",
+        f"- Groups that failed: {len(failures)}",
+        "",
+    ]
+    if failures:
+        lines.append("## Failures")
+        lines.append("")
+        for group_key, why in failures:
+            lines.append(f"- `{group_key}` — {why}")
+        lines.append("")
+    if skipped:
+        lines += _render_skipped(skipped, "## Skipped (not merged)")
+    if clipped:
+        lines.append(
+            f"Capped at {max_groups} groups this call — re-run auto mode to "
+            "continue with the rest."
+        )
+        lines.append("")
+    lines.append("Trashed items can be restored from Zotero's Trash.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

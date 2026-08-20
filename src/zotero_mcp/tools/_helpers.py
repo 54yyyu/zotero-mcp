@@ -211,6 +211,24 @@ def _normalize_limit(limit: int | str | None, default: int = 10, max_val: int = 
     return max(1, min(limit, max_val))
 
 
+def _normalize_offset(offset: int | str | None, default: int = 0) -> int:
+    """Coerce *offset* to a non-negative int.
+
+    Companion to :func:`_normalize_limit` for tools that page through a
+    result set. Unlike the limit there is no ceiling: an offset past the end
+    is not an error, it just yields an empty page, and the caller is expected
+    to report the total so it can tell the difference.
+    """
+    if offset is None:
+        return default
+    if isinstance(offset, str):
+        offset = offset.strip()
+        if not offset:
+            return default
+        offset = int(offset)
+    return max(0, int(offset))
+
+
 def _parse_library_id_param(value: int | str | None) -> int | None:
     """Parse a `library_id` filter param into a group_id (0=personal library).
 
