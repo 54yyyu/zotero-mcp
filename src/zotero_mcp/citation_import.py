@@ -97,6 +97,26 @@ CSL_TYPE_MAP = {
     "review": "journalArticle",
     "review-book": "journalArticle",
     "treaty": "document",
+    # Crossref's /transform/application/vnd.citationstyles.csl+json endpoint
+    # is the most common source of CSL JSON in practice, but it keeps
+    # Crossref's own type vocabulary rather than the CSL spec's:
+    # "journal-article" for "article-journal", "book-chapter" for "chapter".
+    # Without these aliases every one of them falls through to "document",
+    # whose template has no publicationTitle/volume/issue/pages — so the
+    # journal name, volume, issue and page range are dropped silently.
+    # Only "book" and "report" spell the same in both vocabularies.
+    "journal-article": "journalArticle",
+    "proceedings-article": "conferencePaper",
+    "book-chapter": "bookSection",
+    "book-part": "bookSection",
+    "book-section": "bookSection",
+    "reference-entry": "dictionaryEntry",
+    "monograph": "book",
+    "edited-book": "book",
+    "reference-book": "book",
+    "report-component": "report",
+    "dissertation": "thesis",
+    "posted-content": "preprint",
 }
 
 
@@ -522,6 +542,25 @@ def _split_keywords(raw: str) -> list[str]:
 # CSL JSON -> Zotero
 # ---------------------------------------------------------------------------
 
+def _csl_text(value: Any) -> str:
+    """One trimmed string out of a CSL field that may arrive as an array.
+
+    The CSL spec types these fields as strings, but real producers disagree.
+    Crossref's transform endpoint sends ``ISSN`` and ``ISBN`` as arrays, and
+    its plain ``/works/{doi}`` payload does the same for ``title`` and
+    ``container-title``; other exporters wrap ``container-title`` too. Take
+    the first non-empty element in that case — the further ISSNs are the same
+    journal's other media forms — so a provider response converts instead of
+    raising ``AttributeError`` on ``.strip()``.
+
+    Numbers pass through ``str`` as well: ``volume`` and ``issue`` arrive as
+    integers often enough to matter.
+    """
+    if isinstance(value, list):
+        value = next((v for v in value if v is not None and str(v).strip()), "")
+    return "" if value is None else str(value).strip()
+
+
 def csl_json_to_zotero(
     csl: dict,
     template_fn: Callable[[str], dict],
@@ -532,8 +571,8 @@ def csl_json_to_zotero(
     template = dict(template_fn(zot_type))
 
     # Title
-    _set_if_in_template(template, "title", (csl.get("title") or "").strip())
-    _set_if_in_template(template, "shortTitle", (csl.get("title-short") or "").strip())
+    _set_if_in_template(template, "title", _csl_text(csl.get("title")))
+    _set_if_in_template(template, "shortTitle", _csl_text(csl.get("title-short")))
 
     # Creators
     creators = []
@@ -549,31 +588,31 @@ def csl_json_to_zotero(
 
     # Container title
     container_field = _pick_container_field(zot_type, template)
-    container_value = (csl.get("container-title") or "").strip()
+    container_value = _csl_text(csl.get("container-title"))
     if container_field and container_value:
         template[container_field] = container_value
 
     # Series
-    _set_if_in_template(template, "series", (csl.get("collection-title") or "").strip())
-    _set_if_in_template(template, "seriesNumber", str(csl.get("collection-number") or "").strip())
+    _set_if_in_template(template, "series", _csl_text(csl.get("collection-title")))
+    _set_if_in_template(template, "seriesNumber", _csl_text(csl.get("collection-number")))
 
     # Common fields
-    _set_if_in_template(template, "volume", str(csl.get("volume") or "").strip())
-    _set_if_in_template(template, "issue", str(csl.get("issue") or "").strip())
-    _set_if_in_template(template, "pages", str(csl.get("page") or "").strip())
-    _set_if_in_template(template, "publisher", (csl.get("publisher") or "").strip())
-    _set_if_in_template(template, "place", (csl.get("publisher-place") or "").strip())
-    _set_if_in_template(template, "edition", str(csl.get("edition") or "").strip())
-    _set_if_in_template(template, "ISBN", (csl.get("ISBN") or "").strip())
-    _set_if_in_template(template, "ISSN", (csl.get("ISSN") or "").strip())
-    _set_if_in_template(template, "DOI", (csl.get("DOI") or "").strip())
-    _set_if_in_template(template, "url", (csl.get("URL") or "").strip())
-    _set_if_in_template(template, "language", (csl.get("language") or "").strip())
-    _set_if_in_template(template, "abstractNote", (csl.get("abstract") or "").strip())
-    _set_if_in_template(template, "numPages", str(csl.get("number-of-pages") or "").strip())
+    _set_if_in_template(template, "volume", _csl_text(csl.get("volume")))
+    _set_if_in_template(template, "issue", _csl_text(csl.get("issue")))
+    _set_if_in_template(template, "pages", _csl_text(csl.get("page")))
+    _set_if_in_template(template, "publisher", _csl_text(csl.get("publisher")))
+    _set_if_in_template(template, "place", _csl_text(csl.get("publisher-place")))
+    _set_if_in_template(template, "edition", _csl_text(csl.get("edition")))
+    _set_if_in_template(template, "ISBN", _csl_text(csl.get("ISBN")))
+    _set_if_in_template(template, "ISSN", _csl_text(csl.get("ISSN")))
+    _set_if_in_template(template, "DOI", _csl_text(csl.get("DOI")))
+    _set_if_in_template(template, "url", _csl_text(csl.get("URL")))
+    _set_if_in_template(template, "language", _csl_text(csl.get("language")))
+    _set_if_in_template(template, "abstractNote", _csl_text(csl.get("abstract")))
+    _set_if_in_template(template, "numPages", _csl_text(csl.get("number-of-pages")))
 
     # Type-specific number fields
-    number = str(csl.get("number") or "").strip()
+    number = _csl_text(csl.get("number"))
     if number:
         if zot_type == "report":
             _set_if_in_template(template, "reportNumber", number)
@@ -588,7 +627,7 @@ def csl_json_to_zotero(
 
     # Thesis genre
     if zot_type == "thesis" and "thesisType" in template:
-        genre = (csl.get("genre") or "").strip()
+        genre = _csl_text(csl.get("genre"))
         if genre:
             template["thesisType"] = genre
 
@@ -604,12 +643,12 @@ def csl_json_to_zotero(
         template["tags"] = [{"tag": t} for t in source_tags]
 
     # Citation key from `id`
-    citekey = str(csl.get("id") or "").strip()
+    citekey = _csl_text(csl.get("id"))
     if citekey:
         _append_extra(template, f"Citation Key: {citekey}")
 
     # Note
-    note = (csl.get("note") or "").strip()
+    note = _csl_text(csl.get("note"))
     if note:
         _append_extra(template, note)
 
