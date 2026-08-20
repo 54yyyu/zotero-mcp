@@ -762,8 +762,8 @@ All add tools take a `collections` parameter accepting collection keys, names, o
 - `zotero_search_collections`: Search for collections by name to find their keys
 - `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
 - `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
-- `zotero_find_duplicates`: Find duplicate items by title and/or DOI
-- `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items
+- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`
+- `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items. `auto=True` merges every high-confidence (same-DOI) group in one pass behind a two-call plan/confirm gate
 - `zotero_get_pdf_outline`: Extract the table of contents / outline from a PDF attachment
 - `zotero_search_by_citation_key`: Look up items by BetterBibTeX citation key (with Extra field fallback)
 
@@ -776,7 +776,7 @@ All add tools take a `collections` parameter accepting collection keys, names, o
 
 ### Unit Tests
 ```bash
-uv run pytest tests/     # 294 tests, ~2 seconds
+uv run pytest tests/     # 1596 tests, ~7 seconds
 ```
 
 ### Integration Test Plan
