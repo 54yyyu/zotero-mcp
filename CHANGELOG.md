@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
 
+### Fixed
+- **`normalize_doi` no longer truncates DOIs that legitimately end in a bracket (#469).** The trailing-punctuation strip was `rstrip(".,);]")`, which cannot tell prose punctuation from a bracket the DOI itself opened. TAO (Terrestrial, Atmospheric and Oceanic Sciences) puts a parenthesised topical suffix on its DOIs, so `10.3319/TAO.2009.05.25.02(IWNOP)` was normalised to `…02(IWNOP` and every path that resolves a DOI — `zotero_add_item(source_type="doi")` among them — reported "DOI not found on CrossRef" for a record CrossRef holds and resolves. The strip now walks the end of the string and stops at a closer whose opener is present in the DOI, so `10.1038/nphys1170)` copied out of "(see 10.1038/nphys1170)" still loses its stray bracket while a balanced pair survives. Bracketed suffixes are rare enough that the failure reads as a missing record rather than a client bug, which is how it went unnoticed.
+
 ## [0.9.1] - 2026-08-05
 
 ### Changed

@@ -33,14 +33,34 @@ _DOI_IN_URL_RE = re.compile(
 #: Punctuation that trails a DOI copied out of prose or a reference list.
 _TRAILING_PUNCT = ".,);]"
 
+#: Closing brackets and the opener each one belongs to. A closer is prose
+#: punctuation only when the DOI holds no matching opener.
+_CLOSERS = {")": "(", "]": "["}
+
+
+def _strip_trailing_punct(s):
+    """Strip prose punctuation from the end of a DOI, keeping brackets that
+    the DOI itself opened.
+
+    ``rstrip(_TRAILING_PUNCT)`` cannot tell "(see 10.1234/foo)" from TAO's
+    ``10.3319/TAO.2009.05.25.02(IWNOP)``, where the parentheses are part of
+    the suffix and CrossRef 404s without the closer.
+    """
+    while s and s[-1] in _TRAILING_PUNCT:
+        opener = _CLOSERS.get(s[-1])
+        if opener is not None and s.count(opener) >= s.count(s[-1]):
+            break
+        s = s[:-1]
+    return s
+
 
 def normalize_doi(raw):
     """Normalize a DOI string from various input formats.
 
     Accepts a bare DOI, a ``doi:`` prefixed form, or a ``doi.org`` /
     ``dx.doi.org`` URL, and strips trailing punctuation picked up from
-    surrounding prose. Returns the canonical bare DOI, or ``None`` when the
-    input is not a DOI.
+    surrounding prose (brackets the DOI itself opened are kept). Returns
+    the canonical bare DOI, or ``None`` when the input is not a DOI.
 
     Case is preserved: DOIs are case-insensitive for resolution, but some
     consumers (Scite among them) echo back what they were given.
@@ -55,7 +75,7 @@ def normalize_doi(raw):
         if not m:
             return None
         s = m.group(1)
-    s = s.rstrip(_TRAILING_PUNCT)
+    s = _strip_trailing_punct(s)
     if DOI_RE.match(s):
         return s
     return None
