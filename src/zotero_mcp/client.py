@@ -15,6 +15,7 @@ import httpx
 from dotenv import load_dotenv
 from pyzotero import zotero
 
+from zotero_mcp import schema
 from zotero_mcp.extract import (
     categorize_attachment,
     extract_file,
@@ -299,9 +300,14 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     data = item.get("data", {})
     item_type = data.get("itemType", "unknown")
 
+    # Some item types keep the title under a type-specific key (a statute's
+    # is "nameOfAct"); resolve_field maps "title" to whichever key this
+    # item type actually uses.
+    title_field = schema.resolve_field(item_type, "title")
+
     # Basic information
     lines = [
-        f"# {data.get('title', 'Untitled')}",
+        f"# {data.get(title_field, 'Untitled')}",
         f"**Type:** {item_type}",
         f"**Item Key:** {data.get('key')}",
     ]
