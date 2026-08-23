@@ -672,3 +672,62 @@ class TestCrossrefContainerTypes:
         assert item["volume"] == "19"
         assert item["issue"] == "2"
         assert item["pages"] == "205-218"
+
+
+# ---------------------------------------------------------------------------
+# Callers who pre-flattened ISSN to work around Defect 1
+# ---------------------------------------------------------------------------
+
+class TestPreFlattenedIssnCaller:
+    """A downstream caller hit Defect 1 independently and shipped a transform
+    that flattens ``ISSN`` from Crossref's array to a plain string before
+    calling. Their workaround must become a no-op here, not a conflict — and
+    it must not be able to hide a regression in the array handling.
+
+    The reason this needs pinning: on the unfixed code, flattening ISSN alone
+    made the *call* succeed while the item came out as a ``document`` with
+    publicationTitle, volume, issue and pages silently dropped, because
+    Defect 2 typed it. A caller's workaround turned a loud crash into quiet
+    data loss. Both spellings must now produce the identical, correct item.
+    """
+
+    def _entry(self, issn):
+        return {
+            "type": "journal-article",
+            "title": "Eight Simple Guidelines",
+            "container-title": "Organizational Research Methods",
+            "DOI": "10.1177/1094428121991907",
+            "volume": "25",
+            "issue": "1",
+            "page": "48-87",
+            "ISSN": issn,
+            "issued": {"date-parts": [[2022, 1]]},
+        }
+
+    def test_array_and_flattened_issn_agree(self):
+        as_sent = csl_json_to_zotero(self._entry(["1094-4281", "1552-7425"]),
+                                     make_template)
+        pre_flattened = csl_json_to_zotero(self._entry("1094-4281"),
+                                           make_template)
+        assert as_sent == pre_flattened
+
+    def test_both_keep_the_article_type_and_fields(self):
+        """The regression the caller's workaround was masking."""
+        for issn in (["1094-4281", "1552-7425"], "1094-4281"):
+            item = csl_json_to_zotero(self._entry(issn), make_template)
+            assert item["itemType"] == "journalArticle", (
+                "a flattened ISSN must not route the entry to 'document'"
+            )
+            assert item["publicationTitle"] == "Organizational Research Methods"
+            assert item["volume"] == "25"
+            assert item["pages"] == "48-87"
+            assert item["ISSN"] == "1094-4281"
+
+    def test_absent_id_is_not_required(self):
+        """Crossref's transform endpoint emits no ``id`` at all. Conversion
+        must not depend on one being injected."""
+        entry = self._entry(["1094-4281"])
+        assert "id" not in entry
+        item = csl_json_to_zotero(entry, make_template)
+        assert item["itemType"] == "journalArticle"
+        assert item["title"] == "Eight Simple Guidelines"
