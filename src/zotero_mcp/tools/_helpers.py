@@ -20,21 +20,79 @@ from zotero_mcp.utils import _paginate
 # Constants
 # ---------------------------------------------------------------------------
 
+# Crossref's own type vocabulary -> Zotero item types.
+#
+# An unmapped type does not merely get a wrong label: the caller writes
+# fields into an item template, and ``document`` has no publicationTitle,
+# volume, issue or pages, so everything type-specific is dropped on the
+# floor. Seventeen of Crossref's thirty types used to be missing here — a
+# journal article registered by its publisher as ``journal-issue`` arrived
+# as a ``document`` with the journal name, volume, issue and page range gone
+# and nothing said. So the table covers the whole vocabulary, and anything
+# genuinely outside it is reported rather than quietly defaulted (see
+# ``crossref_type_note``).
 CROSSREF_TYPE_MAP = {
     "journal-article": "journalArticle",
+    # Container types. Zotero has no record for "a whole issue" or "a whole
+    # volume", and publishers do mis-register ordinary articles as these —
+    # journalArticle keeps the journal, volume, issue and pages that the
+    # metadata actually carries, where document would discard all four.
+    "journal-issue": "journalArticle",
+    "journal-volume": "journalArticle",
+    "journal": "journalArticle",
     "book": "book",
+    "monograph": "book",
+    "edited-book": "book",
+    "reference-book": "book",
+    "book-set": "book",
+    "book-series": "book",
     "book-chapter": "bookSection",
+    "book-part": "bookSection",
+    "book-section": "bookSection",
+    "book-track": "bookSection",
     "proceedings-article": "conferencePaper",
+    # A proceedings volume is a book; the paper inside it is the
+    # conferencePaper above.
+    "proceedings": "book",
+    "proceedings-series": "book",
     "report": "report",
+    "report-series": "report",
+    "report-component": "report",
     "dissertation": "thesis",
     "posted-content": "preprint",
-    "monograph": "book",
     "reference-entry": "encyclopediaArticle",
-    "dataset": "document",
+    # Zotero grew native dataset and standard types; both used to land on
+    # document and lose their type-specific fields.
+    "dataset": "dataset",
+    "database": "dataset",
+    "standard": "standard",
+    # No Zotero equivalent, and document is the honest answer rather than a
+    # lossy guess: a component is a figure or supplement, not a work; a
+    # grant is funding; peer-review is a review of something else; "other"
+    # is Crossref saying it does not know either.
+    "component": "document",
+    "grant": "document",
     "peer-review": "document",
-    "edited-book": "book",
-    "standard": "document",
+    "other": "document",
 }
+
+
+def crossref_type_note(cr_type: str) -> str:
+    """A one-line warning when *cr_type* is outside the mapped vocabulary.
+
+    Returns "" for a mapped type. Crossref adds types over time, and the
+    failure mode of a lookup miss here is silent data loss — the item is
+    created as a ``document`` and every type-specific field is dropped — so
+    a miss is surfaced to the caller instead of being absorbed.
+    """
+    if not cr_type or cr_type in CROSSREF_TYPE_MAP:
+        return ""
+    return (
+        f"\nNote: CrossRef type '{cr_type}' is not one this version maps to a "
+        "Zotero type, so the item was created as 'document' and any journal, "
+        "volume, issue or page values were dropped. Set the right type with "
+        "zotero_update_item(item_type=...)."
+    )
 
 
 # ---------------------------------------------------------------------------

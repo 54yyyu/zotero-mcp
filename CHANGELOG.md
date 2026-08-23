@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
 
+### Fixed
+- **`zotero_add_by_doi` maps CrossRef's whole type vocabulary, instead of dropping fields for seventeen of its thirty types.** An unmapped type is not a labelling problem: the item is built from a Zotero template, and the `document` template has no `publicationTitle`, `volume`, `issue` or `pages`, so everything type-specific was discarded on the way in and nothing said so. `journal-issue`, `journal-volume`, `book-part`, `book-section`, `book-track`, `proceedings`, `reference-book`, `report-series` and nine others were all missing. The case that surfaced it was an ordinary journal article whose publisher registered it with CrossRef as `journal-issue`, sitting in a real library as a `document` with no journal, volume, issue or pages. `dataset` and `standard` now use Zotero's native types rather than `document`. Types with no Zotero equivalent (`component`, `grant`, `peer-review`, `other`) still become `document`, but by decision rather than by fallthrough — and a type outside the table entirely is now named in the result, with the `zotero_update_item(item_type=...)` remedy, so the next vocabulary addition cannot repeat the silent loss. Reported by the systematic-review agent, which found the mistyped items by cross-checking its library against CrossRef.
+
 ## [0.9.1] - 2026-08-05
 
 ### Changed
