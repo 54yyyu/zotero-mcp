@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from zotero_mcp.citation_import import (
+    CSL_TYPE_MAP,
     _csl_text,
     _format_bibtex_date,
     _format_csl_date,
@@ -618,3 +619,56 @@ class TestMergeTags:
     def test_empty_inputs(self):
         assert merge_tags([], []) == []
         assert merge_tags(None, None) == []
+
+
+# ---------------------------------------------------------------------------
+# Container types (#465 follow-up)
+# ---------------------------------------------------------------------------
+
+class TestCrossrefContainerTypes:
+    """Publishers register ordinary articles under CrossRef's container
+    types. A "journal-issue" that carries a title, volume, issue and page
+    range is an article, and the "document" fallthrough has nowhere to put
+    any of those fields.
+
+    Found in a real library: DOI 10.13165/vpa-20-19-2-04 is an article its
+    publisher registered as `journal-issue`, filed as a `document` with the
+    journal name, volume, issue and pages all missing.
+    """
+
+    def test_journal_issue_is_an_article(self):
+        assert CSL_TYPE_MAP["journal-issue"] == "journalArticle"
+
+    def test_journal_volume_is_an_article(self):
+        assert CSL_TYPE_MAP["journal-volume"] == "journalArticle"
+
+    def test_native_zotero_types_are_used(self):
+        assert CSL_TYPE_MAP["dataset"] == "dataset"
+        assert CSL_TYPE_MAP["standard"] == "standard"
+
+    def test_book_container_spellings_agree(self):
+        for name in ("book-set", "book-series", "proceedings",
+                     "proceedings-series"):
+            assert CSL_TYPE_MAP[name] == "book"
+
+    def test_book_track_is_a_section(self):
+        assert CSL_TYPE_MAP["book-track"] == "bookSection"
+
+    def test_journal_issue_conversion_keeps_the_article_fields(self):
+        """The end-to-end point: the fields survive the conversion."""
+        csl = {
+            "type": "journal-issue",
+            "title": ["Determinants of Public Trust"],
+            "container-title": ["Public Policy and Administration"],
+            "volume": "19",
+            "issue": "2",
+            "page": "205-218",
+            "ISSN": ["2029-2872"],
+            "DOI": "10.13165/vpa-20-19-2-04",
+        }
+        item = csl_json_to_zotero(csl, make_template)
+        assert item["itemType"] == "journalArticle"
+        assert item["publicationTitle"] == "Public Policy and Administration"
+        assert item["volume"] == "19"
+        assert item["issue"] == "2"
+        assert item["pages"] == "205-218"

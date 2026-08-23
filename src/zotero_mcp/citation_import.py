@@ -77,7 +77,7 @@ CSL_TYPE_MAP = {
     "post": "forumPost",
     "patent": "patent",
     "manuscript": "manuscript",
-    "dataset": "document",
+    "dataset": "dataset",
     "entry-encyclopedia": "encyclopediaArticle",
     "entry-dictionary": "dictionaryEntry",
     "speech": "presentation",
@@ -114,9 +114,28 @@ CSL_TYPE_MAP = {
     "monograph": "book",
     "edited-book": "book",
     "reference-book": "book",
+    "book-set": "book",
+    "book-series": "book",
+    "book-track": "bookSection",
+    "proceedings": "book",
+    "proceedings-series": "book",
     "report-component": "report",
+    "report-series": "report",
     "dissertation": "thesis",
     "posted-content": "preprint",
+    # Container types. Publishers do register ordinary articles as these — a
+    # "journal-issue" carrying a title, volume, issue and page range is an
+    # article — and journalArticle has somewhere to put those fields where
+    # "document", the fallthrough, does not.
+    "journal-issue": "journalArticle",
+    "journal-volume": "journalArticle",
+    "journal": "journalArticle",
+    "database": "dataset",
+    "standard": "standard",
+    "component": "document",
+    "grant": "document",
+    "peer-review": "document",
+    "other": "document",
 }
 
 
