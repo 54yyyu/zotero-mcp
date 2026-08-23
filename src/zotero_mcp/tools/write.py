@@ -24,6 +24,10 @@ from zotero_mcp.client import (
     with_zotero_api_lock,
     zotero_api_lock,
 )
+from zotero_mcp.html_metadata import (
+    EmbeddedMetadata,
+    extract_embedded_metadata,
+)
 from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
@@ -965,8 +969,20 @@ def add_by_doi(
     if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
     create_missing_collections: bool = False,
     *,
+    supplemental: EmbeddedMetadata | None = None,
     ctx: Context
 ) -> str:
+    """Add an item by DOI, from CrossRef.
+
+    ``supplemental`` carries metadata read from the page the DOI was found
+    on, and fills *only* fields CrossRef left empty. CrossRef stays
+    authoritative where it says anything at all. This matters because a
+    publisher can register an article's DOI as a ``journal-issue``, whose
+    CrossRef record legitimately carries no title, authors, volume, issue or
+    pages — while the article's own landing page advertises all of them.
+    Without this, routing such a page through the DOI produced a titleless
+    item, worse than not consulting CrossRef at all.
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -1027,6 +1043,20 @@ def add_by_doi(
         cr_type = cr.get("type", "")
         zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
         type_note = _helpers.crossref_type_note(cr_type)
+
+        # A DOI reached directly still deserves the page's metadata. The
+        # url route hands its tags down as ``supplemental``; a caller passing
+        # a bare DOI has no page to hand over, so when CrossRef's answer
+        # cannot stand on its own we resolve the DOI ourselves and read the
+        # landing page. Registry silence is not evidence of absence, and this
+        # is the second of the two routes it applies to.
+        if supplemental is None and _crossref_record_is_thin(cr, cr_type):
+            landing = cr.get("URL") or f"https://doi.org/{normalized}"
+            ctx.info(
+                f"CrossRef record for {normalized} is {cr_type or 'untitled'} "
+                f"and carries no usable title; reading {landing}"
+            )
+            supplemental, _ = _fetch_embedded_metadata(landing, ctx)
 
         # Get valid fields from item template
         template = write_zot.item_template(zot_type)
@@ -1095,6 +1125,31 @@ def add_by_doi(
             if field in item_data and value:
                 item_data[field] = value
 
+        # Fill the gaps CrossRef left, from the page the DOI came from.
+        # Never overwrite: a value CrossRef supplied wins.
+        if supplemental is not None:
+            page_fields = {
+                "title": supplemental.title,
+                "publicationTitle": supplemental.publication,
+                "bookTitle": supplemental.book_title,
+                "volume": supplemental.volume,
+                "issue": supplemental.issue,
+                "pages": supplemental.pages,
+                "date": supplemental.date,
+                "ISSN": supplemental.issn,
+                "ISBN": supplemental.isbn,
+                "language": supplemental.language,
+                "publisher": supplemental.publisher,
+            }
+            for field, value in page_fields.items():
+                if value and field in item_data and not item_data[field]:
+                    item_data[field] = value
+            if supplemental.authors and not item_data.get("creators"):
+                item_data["creators"] = [
+                    {"creatorType": "author", "firstName": first, "lastName": last}
+                    for first, last in supplemental.authors
+                ]
+
         # Tags
         tag_list = _helpers._normalize_str_list_input(tags, "tags")
         if tag_list:
@@ -1150,6 +1205,171 @@ def add_by_doi(
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
         return f"Error adding by DOI: {e}"
+
+
+# CrossRef types that describe a *container* rather than a work. A DOI
+# registered under one of these routinely carries no title, no authors and no
+# volume/issue/page — the article's own landing page is then the only source
+# for them.
+_THIN_CROSSREF_TYPES = frozenset({"journal-issue", "journal-volume", "journal"})
+
+
+def _crossref_record_is_thin(cr: dict, cr_type: str) -> bool:
+    """True when CrossRef's answer cannot stand on its own.
+
+    Deliberately narrow: an untitled record is useless whatever else it has,
+    and a container type is the shape that produces one. Both are rare, so
+    the landing-page fetch this gates stays rare too.
+    """
+    title = cr.get("title")
+    if isinstance(title, list):
+        title = next((t for t in title if t), "")
+    if not (title or "").strip():
+        return True
+    return cr_type in _THIN_CROSSREF_TYPES
+
+
+# Publisher pages are arbitrary third-party HTML. Read a bounded prefix of
+# one: the citation block lives in <head>, so a couple of hundred KB always
+# covers it, and a pathological page must not be able to hold a write open.
+_EMBEDDED_METADATA_MAX_BYTES = 512 * 1024
+_EMBEDDED_METADATA_TIMEOUT = 15
+
+
+def _fetch_embedded_metadata(
+    url: str, ctx: Context
+) -> tuple[EmbeddedMetadata | None, str]:
+    """Fetch *url* and read the bibliographic meta tags out of its head.
+
+    Returns ``(metadata, reason)``. ``metadata`` is ``None`` when the page
+    could not be read, and ``reason`` then says why in one line, for the
+    caller to put in front of the user. Every failure here is non-fatal by
+    design — embedded metadata is an enrichment, and a publisher being slow
+    or hostile must degrade the item, never fail the call — but a degraded
+    item that does not say it was degraded is how a library fills up with
+    URL-titled stubs nobody notices.
+    """
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; zotero-mcp/1.0; "
+                    "+https://github.com/54yyyu/zotero-mcp)"
+                ),
+                "Accept": "text/html,application/xhtml+xml",
+            },
+            timeout=_EMBEDDED_METADATA_TIMEOUT,
+            stream=True,
+        )
+        resp.raise_for_status()
+
+        content_type = resp.headers.get("Content-Type", "").lower()
+        if content_type and "html" not in content_type:
+            ctx.info(f"Not an HTML page ({content_type}); skipping metadata read")
+            return None, f"the URL is not an HTML page ({content_type})"
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=16384):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= _EMBEDDED_METADATA_MAX_BYTES:
+                break
+        resp.close()
+
+        raw = b"".join(chunks)
+        encoding = resp.encoding or "utf-8"
+        try:
+            html = raw.decode(encoding, errors="replace")
+        except LookupError:
+            html = raw.decode("utf-8", errors="replace")
+
+        return extract_embedded_metadata(html), ""
+
+    except requests.exceptions.SSLError as e:
+        # Seen in the wild on a university OJS host whose chain validates in
+        # browsers and curl but not under OpenSSL. Name it: silently filing a
+        # blank item invites the user to blame the importer.
+        ctx.info(f"TLS verification failed for {url}: {e}")
+        return None, "the site's HTTPS certificate could not be verified"
+    except requests.Timeout:
+        ctx.info(f"Timed out fetching {url}")
+        return None, "the page did not respond in time"
+    except Exception as e:
+        ctx.info(f"Could not read embedded metadata from {url}: {e}")
+        return None, f"the page could not be fetched ({type(e).__name__})"
+
+
+def _add_from_embedded_metadata(
+    url: str,
+    meta: EmbeddedMetadata,
+    coll_keys: list[str],
+    tags,
+    write_zot,
+    ctx: Context,
+) -> str:
+    """Create an item from a page's own citation meta tags."""
+    if meta.looks_like_article():
+        zot_type = "journalArticle"
+    elif meta.looks_like_chapter():
+        zot_type = "bookSection"
+    else:
+        zot_type = "webpage"
+
+    template = dict(write_zot.item_template(zot_type))
+    _set = _citation_import._set_if_in_template
+
+    _set(template, "title", meta.title or url)
+    _set(template, "publicationTitle", meta.publication)
+    _set(template, "bookTitle", meta.book_title)
+    _set(template, "publisher", meta.publisher)
+    _set(template, "volume", meta.volume)
+    _set(template, "issue", meta.issue)
+    _set(template, "pages", meta.pages)
+    _set(template, "date", meta.date)
+    _set(template, "DOI", meta.doi)
+    _set(template, "ISSN", meta.issn)
+    _set(template, "ISBN", meta.isbn)
+    _set(template, "language", meta.language)
+    _set(template, "url", url)
+    if meta.abstract:
+        _set(template, "abstractNote",
+             _utils.clean_html(meta.abstract, collapse_whitespace=True))
+    if meta.institution and "publisher" in template and not template["publisher"]:
+        template["publisher"] = meta.institution
+
+    if meta.authors and "creators" in template:
+        template["creators"] = [
+            {"creatorType": "author", "firstName": first, "lastName": last}
+            for first, last in meta.authors
+        ]
+
+    tag_list = _helpers._normalize_str_list_input(tags, "tags")
+    if tag_list:
+        template["tags"] = [{"tag": t} for t in tag_list]
+    if coll_keys:
+        template["collections"] = coll_keys
+
+    ctx.info(f"Creating {zot_type} from embedded metadata for: {url}")
+    result = write_zot.create_items([template])
+    if isinstance(result, dict) and result.get("success"):
+        item_key = next(iter(result["success"].values()))
+        missing = _helpers.ensure_collection_membership(
+            write_zot, item_key, coll_keys, ctx=ctx
+        )
+        return (
+            f"Successfully added: **{template.get('title', url)}**\n\n"
+            f"Item key: `{item_key}`\n"
+            f"Type: {zot_type}\n"
+            f"Source: metadata embedded in the page\n"
+            f"Collections: {_collections_status(coll_keys, missing)}\n\n"
+            "_Note: To include this item in semantic search, run "
+            "zotero_update_search_database._"
+        )
+    return f"Failed to create item: {result}"
 
 
 @with_zotero_api_lock
@@ -1208,6 +1428,41 @@ def add_by_url(
                     matched_by=f"URL {url}", ctx=ctx,
                 )
 
+        # Publisher landing pages carry the article's citation in their own
+        # <head> (Highwire citation_* / Dublin Core). Zotero's browser
+        # connector reads exactly those tags, which is why saving a paper
+        # from the browser yields a full record while this path used to
+        # produce a webpage whose only populated field was the URL.
+        embedded, embed_problem = _fetch_embedded_metadata(url, ctx)
+
+        if embedded is not None and embedded.doi:
+            # A declared DOI is the better route: add_by_doi already handles
+            # DOI de-duplication, CrossRef enrichment and open-access PDF
+            # attachment. Fall back to the page's own tags if CrossRef does
+            # not know the DOI.
+            ctx.info(f"Page declares DOI {embedded.doi}; adding by DOI")
+            doi_result = add_by_doi(
+                doi=embedded.doi, collections=collections, tags=tags,
+                attach_mode=attach_mode, if_exists=if_exists,
+                create_missing_collections=create_missing_collections,
+                supplemental=embedded,
+                ctx=ctx,
+            )
+            if not doi_result.startswith(("DOI not found", "Error", "Failed")):
+                return doi_result
+            ctx.info(
+                f"DOI route failed ({doi_result.splitlines()[0]}); "
+                "falling back to the page's embedded metadata"
+            )
+
+        if embedded is not None and embedded.is_usable():
+            return _add_from_embedded_metadata(
+                url, embedded, coll_keys, tags, write_zot, ctx,
+            )
+
+        if embedded is not None and not embedded.is_usable():
+            embed_problem = "the page carries no citation metadata"
+
         ctx.info(f"Creating webpage item for: {url}")
         template = write_zot.item_template("webpage")
         template["url"] = url
@@ -1226,9 +1481,19 @@ def add_by_url(
             missing = _helpers.ensure_collection_membership(
                 write_zot, item_key, coll_keys, ctx=ctx
             )
+            # This item has a URL and nothing else. Say why, so the caller
+            # can decide whether to fix it rather than discovering a blank
+            # record later.
+            reason = (
+                f"\nOnly the URL could be recorded: {embed_problem}. "
+                "Add the item by DOI if you have one, or set the fields with "
+                "zotero_update_item."
+                if embed_problem else ""
+            )
             return (
                 f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n"
-                f"Collections: {_collections_status(coll_keys, missing)}\n\n"
+                f"Collections: {_collections_status(coll_keys, missing)}\n"
+                f"{reason}\n"
                 "_Note: To include this item in semantic search, run "
                 "zotero_update_search_database._"
             )
