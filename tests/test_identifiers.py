@@ -40,6 +40,38 @@ class TestNormalizeDoi:
         assert normalize_doi(raw) == expected
 
     @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # TAO (Terrestrial, Atmospheric and Oceanic Sciences) puts a
+            # parenthesised topical suffix on its DOIs, and it is part of the
+            # DOI: CrossRef resolves the closing bracket and 404s without it.
+            (
+                "10.3319/TAO.2009.05.25.02(IWNOP)",
+                "10.3319/TAO.2009.05.25.02(IWNOP)",
+            ),
+            (
+                "doi:10.3319/TAO.2009.05.25.02(IWNOP)",
+                "10.3319/TAO.2009.05.25.02(IWNOP)",
+            ),
+            (
+                "https://doi.org/10.3319/TAO.2009.05.25.02(IWNOP)",
+                "10.3319/TAO.2009.05.25.02(IWNOP)",
+            ),
+            # Prose punctuation still goes, and only the punctuation.
+            (
+                "10.3319/TAO.2009.05.25.02(IWNOP).",
+                "10.3319/TAO.2009.05.25.02(IWNOP)",
+            ),
+            ("10.1234/a[b]", "10.1234/a[b]"),
+        ],
+    )
+    def test_balanced_brackets_are_part_of_the_doi(self, raw, expected):
+        """A closing bracket that has an opener inside the DOI is not prose
+        punctuation. Stripping it unconditionally turns a resolvable DOI into
+        a 404 (upstream #469)."""
+        assert normalize_doi(raw) == expected
+
+    @pytest.mark.parametrize(
         "raw",
         [
             None,
