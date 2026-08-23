@@ -142,7 +142,7 @@ def get_active_library() -> dict[str, str]:
 def get_active_group_id() -> int:
     """group_id (0 = personal, else Zotero groupID) of the library
     ``get_zotero_client()`` is currently scoped to."""
-    
+
     override = _active_library_override
     library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID") or "0"
     library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
