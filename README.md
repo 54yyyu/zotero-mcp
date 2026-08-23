@@ -543,6 +543,50 @@ Use `zotero-mcp` when your AI client supports MCP (Claude Desktop, ChatGPT). Use
 
 Both share the same configuration set up by `zotero-mcp setup`.
 
+### How much context each route costs
+
+The MCP server sends every enabled tool's name, description and JSON parameter schema to the model on **every request**, before you type anything. The CLI route puts only a skill description in context until the model decides it is relevant. Measured on this repo with `python scripts/measure_context_cost.py`:
+
+| Route | Tokens in context | When it is paid |
+|---|---:|---|
+| MCP, default profile (38 tools) | 13,448 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=none` (32 tools) | 11,761 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=all` (50 tools) | 17,414 | every request |
+| CLI skill, frontmatter only | 98 | always |
+| CLI skill, body loaded | 1,368 | once the skill fires |
+| CLI skill + full command reference | 4,389 | worst case |
+
+That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the relationship stops holding.
+
+### Agent skill
+
+If you drive Zotero from an agent with shell access, install the packaged skill so it knows how to use the CLI:
+
+```bash
+zotero-mcp install-skill                 # -> ~/.claude/skills/zotero-cli
+zotero-mcp install-skill --scope project # -> ./.claude/skills/zotero-cli
+```
+
+It teaches the find-keys-then-act loop, `--json`, how to pick a search mode, paging, and when an empty result means "not indexed" rather than "not there". Installing over a skill you have edited is refused unless you pass `--force`.
+
+### Machine-readable output (`--json`)
+
+Every command accepts `--json`, before or after the command name. Output is one object per invocation:
+
+```bash
+zotero-cli --json search "attention" --limit 5 --detail keys_only
+# {"ok": true, "command": "search", "schema": 1, "data": {"count": 5, "items": [...]}}
+```
+
+Success carries `data`; failure carries `error.message` and a stable `error.code`, also on stdout, so one stream carries both outcomes. Read commands (search, get, annotations list, notes list, config) return real structure; commands whose answer is a status line return `{"text": ...}`. Run `zotero-cli --json-schema` for the full contract.
+
+```bash
+# Item keys are the currency of every command — pipe them onward
+zotero-cli --json search "diffusion models" --limit 5 --detail keys_only \
+  | jq -r '.data.items[].key' \
+  | while read -r key; do zotero-cli --json get metadata "$key"; done
+```
+
 ### Quick reference
 
 ```bash
@@ -608,6 +652,32 @@ zotero-cli db status
 # Library and duplicates
 zotero-cli library info
 zotero-cli duplicates find
+
+# Reading PDFs — find the section first, then read only those pages
+zotero-cli outline ABC123
+zotero-cli read ABC123 --start-page 42 --end-page 55
+zotero-cli path ABC123                        # where the file lives on disk
+
+# Attachments, deletion, bibliographies
+zotero-cli attach ABC123 --file /path/to/paper.pdf
+zotero-cli delete item ABC123
+zotero-cli export --item-keys ABC123,DEF456 --style apa
+zotero-cli export --collection COLL01 --format bibtex
+
+# Discovery and synthesis
+zotero-cli related 10.1038/s41586-021-03819-2 --direction citations
+zotero-cli coverage --collection COLL01
+zotero-cli synthesize --tag "to-read" --format json
+
+# Bulk edits across many items
+zotero-cli batch --item-keys ABC123,DEF456 --add-tags screened
+zotero-cli batch --query "machine learning" --add-tags survey --limit 100
+```
+
+Paging: listings cap at `--limit` and the response names the next offset.
+
+```bash
+zotero-cli --json get collection-items QS7TQPPA --limit 100 --offset 100
 ```
 
 ### Verbose mode
