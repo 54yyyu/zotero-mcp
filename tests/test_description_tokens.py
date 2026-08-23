@@ -40,6 +40,12 @@ TOOL_BUDGETS = {
     "zotero_update_item":              (190, 426),
     "zotero_batch_update":             (131, 294),
     "zotero_set_item_collections":     ( 98, 220),
+    # Both rewritten for the paging/auto-merge work (#394, #395): the auto
+    # mode's two-call confirmation and keeper heuristic are things a model has
+    # to know before it calls, so they belong in the description. merge's max
+    # is clamped to the hard cap.
+    "zotero_find_duplicates":          (234, 450),
+    "zotero_merge_duplicates":         (295, 450),
     "zotero_attach_file":              (190, 430),
     # tools/search.py
     "zotero_search_items":             (175, 400),

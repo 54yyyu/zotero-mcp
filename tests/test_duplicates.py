@@ -1,5 +1,8 @@
 """Tests for Features 7-8: find_duplicates and merge_duplicates."""
 
+import json
+import re
+
 import pytest
 
 from conftest import DummyContext, FakeZotero, _FakeResponse
@@ -10,12 +13,17 @@ from zotero_mcp import server
 # Helpers: item factory and extended FakeZotero for duplicates
 # ---------------------------------------------------------------------------
 
-def _make_item(key, title, doi=None, collections=None, tags=None, version=1):
-    """Build a minimal Zotero item dict."""
+def _make_item(key, title, doi=None, collections=None, tags=None, version=1,
+               item_type="journalArticle", abstract=None, date_added=None):
+    """Build a minimal Zotero item dict.
+
+    item_type/abstract/date_added exist for the auto-merge keeper heuristic,
+    which ranks on child count, then has-an-abstract, then oldest dateAdded.
+    """
     data = {
         "key": key,
         "title": title,
-        "itemType": "journalArticle",
+        "itemType": item_type,
         "creators": [{"firstName": "A", "lastName": "Author", "creatorType": "author"}],
         "date": "2024",
         "DOI": doi or "",
@@ -23,6 +31,10 @@ def _make_item(key, title, doi=None, collections=None, tags=None, version=1):
         "collections": collections or [],
         "deleted": False,
     }
+    if abstract is not None:
+        data["abstractNote"] = abstract
+    if date_added is not None:
+        data["dateAdded"] = date_added
     return {"key": key, "version": version, "data": data}
 
 
@@ -73,6 +85,26 @@ class FakeZoteroForDuplicates(FakeZotero):
         if callable(method):
             return method(*args, **kwargs)
         return method
+
+    @staticmethod
+    def _page(rows, kwargs):
+        start = kwargs.get("start") or 0
+        limit = kwargs.get("limit")
+        rows = rows[start:]
+        return rows[:limit] if limit else rows
+
+    def items(self, **kwargs):
+        """Honour start/limit, so the scan pages the way the real API does.
+
+        The base fake ignores them and returns everything on every call, which
+        makes it impossible to test paging past one page (#394).
+        """
+        return self._page(self._items, kwargs)
+
+    def collection_items(self, key, **kwargs):
+        rows = [it for it in self._items
+                if key in it.get("data", {}).get("collections", [])]
+        return self._page(rows, kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +372,6 @@ class TestMergeDuplicatesConfirm:
         # delete_item should never be called
         assert delete_calls == []
         # Direct PATCH calls should have been made for each duplicate
-        import json
         patch_calls = fake.client.patch_calls
         trashed_contents = [json.loads(c["content"]) for c in patch_calls]
         assert len(trashed_contents) == 2
@@ -377,7 +408,6 @@ class TestMergeDuplicatesConfirm:
         )
 
         # Keeper should NOT be trashed — check the direct PATCH calls
-        import json
         trashed_urls = [c["url"] for c in fake.client.patch_calls]
         assert not any("KEEP" in url for url in trashed_urls)
         # DUP1 should be trashed
@@ -593,3 +623,459 @@ class TestMergeDuplicatesPagination:
             "duplicate attachment should be skipped, not re-parented onto keeper"
         )
         assert "1 duplicate attachments skipped" in result
+
+
+# ---------------------------------------------------------------------------
+# #394: paging past the 100-group ceiling, and honest counts
+# ---------------------------------------------------------------------------
+
+def _doi_groups(n, per_group=2, prefix="G"):
+    """n duplicate groups, each `per_group` items sharing one DOI."""
+    items = []
+    for g in range(n):
+        for m in range(per_group):
+            items.append(_make_item(
+                f"{prefix}{g:03d}{m}", f"Paper {g}", doi=f"10.1000/paper{g:03d}"
+            ))
+    return items
+
+
+def _dup_fake(monkeypatch, items):
+    fake = FakeZoteroForDuplicates()
+    fake._items = items
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    return fake
+
+
+class TestFindDuplicatesPaging:
+    """zotero_find_duplicates must be able to reach every group it counted."""
+
+    def test_limit_above_100_is_not_clamped(self, monkeypatch, dummy_ctx):
+        """The #394 bug: limit>100 was clamped, so groups 101+ were unreachable."""
+        _dup_fake(monkeypatch, _doi_groups(120))
+
+        result = server.find_duplicates(method="doi", limit=150, ctx=dummy_ctx)
+
+        assert result.count("## Group:") == 120
+        assert "Found 120 duplicate groups" in result
+        # Nothing was withheld, so nothing should advertise a next page.
+        assert "more group(s) not shown" not in result
+
+    def test_offset_pages_through_every_group(self, monkeypatch, dummy_ctx):
+        """Walking offset by limit yields each group exactly once."""
+        _dup_fake(monkeypatch, _doi_groups(7))
+
+        seen = []
+        for offset in range(0, 7, 3):
+            page = server.find_duplicates(
+                method="doi", limit=3, offset=offset, ctx=dummy_ctx
+            )
+            seen += re.findall(r"## Group: (doi:\S+)", page)
+
+        assert len(seen) == 7
+        assert len(set(seen)) == 7
+
+    def test_pages_are_stable_across_calls(self, monkeypatch, dummy_ctx):
+        """The same offset returns the same groups, or paging would skip some."""
+        _dup_fake(monkeypatch, _doi_groups(9))
+
+        first = server.find_duplicates(method="doi", limit=4, offset=4, ctx=dummy_ctx)
+        second = server.find_duplicates(method="doi", limit=4, offset=4, ctx=dummy_ctx)
+
+        assert re.findall(r"## Group: (doi:\S+)", first) == \
+               re.findall(r"## Group: (doi:\S+)", second)
+
+    def test_reports_shown_out_of_total(self, monkeypatch, dummy_ctx):
+        """A truncated page says which groups it is showing out of how many."""
+        _dup_fake(monkeypatch, _doi_groups(10))
+
+        result = server.find_duplicates(method="doi", limit=4, ctx=dummy_ctx)
+
+        assert "Found 10 duplicate groups" in result
+        assert "Showing groups 1-4 of 10" in result
+        assert result.count("## Group:") == 4
+
+    def test_truncated_page_names_the_next_offset(self, monkeypatch, dummy_ctx):
+        """The footer is actionable: it says how to reach the withheld groups."""
+        _dup_fake(monkeypatch, _doi_groups(10))
+
+        result = server.find_duplicates(method="doi", limit=4, ctx=dummy_ctx)
+
+        assert "6 more group(s) not shown" in result
+        assert "offset=4" in result
+
+    def test_offset_past_the_end_reports_the_total(self, monkeypatch, dummy_ctx):
+        """An empty page is distinguishable from an empty library."""
+        _dup_fake(monkeypatch, _doi_groups(3))
+
+        result = server.find_duplicates(
+            method="doi", limit=5, offset=99, ctx=dummy_ctx
+        )
+
+        assert "Found 3 duplicate groups" in result
+        assert "No groups at offset 99" in result
+        assert "## Group:" not in result
+
+    def test_header_breaks_down_doi_versus_title_groups(self, monkeypatch, dummy_ctx):
+        """Sorted order puts doi: before title:, so say how many of each exist.
+
+        Otherwise a default-limit call on a library whose DOI groups fill the
+        page looks like it has no title duplicates at all (#394).
+        """
+        # Distinct titles inside each DOI pair, so the DOI groups do not also
+        # register as title groups and muddy the count.
+        items = [
+            _make_item("D1A", "Alpha One", doi="10.1000/alpha"),
+            _make_item("D1B", "Alpha Two", doi="10.1000/alpha"),
+            _make_item("D2A", "Beta One", doi="10.1000/beta"),
+            _make_item("D2B", "Beta Two", doi="10.1000/beta"),
+            _make_item("T1", "Shared Title No Doi"),
+            _make_item("T2", "Shared Title No Doi"),
+        ]
+        _dup_fake(monkeypatch, items)
+
+        result = server.find_duplicates(method="both", limit=1, ctx=dummy_ctx)
+
+        assert "Found 3 duplicate groups (2 by DOI, 1 by title)" in result
+
+    def test_string_offset_accepted(self, monkeypatch, dummy_ctx):
+        """MCP clients hand numbers over as strings."""
+        _dup_fake(monkeypatch, _doi_groups(5))
+
+        result = server.find_duplicates(
+            method="doi", limit="2", offset="2", ctx=dummy_ctx
+        )
+
+        assert "Showing groups 3-4 of 5" in result
+
+    def test_negative_offset_clamps_to_zero(self, monkeypatch, dummy_ctx):
+        _dup_fake(monkeypatch, _doi_groups(4))
+
+        result = server.find_duplicates(
+            method="doi", limit=2, offset=-5, ctx=dummy_ctx
+        )
+
+        assert "Showing groups 1-2 of 4" in result
+
+
+# ---------------------------------------------------------------------------
+# #395: auto / batch merge
+# ---------------------------------------------------------------------------
+
+def _auto_fake(monkeypatch, items, children=None):
+    """A fake wired for both read and write, as the auto path needs both."""
+    fake = FakeZoteroForDuplicates()
+    fake._items = list(items)
+    fake._children = children or {}
+    # _execute_merge re-fetches each child by key, so children have to be
+    # findable as items too.
+    for kids in fake._children.values():
+        for kid in kids:
+            if kid not in fake._items:
+                fake._items.append(kid)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+    return fake
+
+
+def _child(key, parent, item_type="note", version=10):
+    return {"key": key, "version": version,
+            "data": {"itemType": item_type, "parentItem": parent}}
+
+
+def _token_from_plan(plan_text):
+    m = re.search(r"plan_token='([0-9a-f]+)'", plan_text)
+    assert m, f"no plan_token in plan output:\n{plan_text}"
+    return m.group(1)
+
+
+class TestAutoMergeGating:
+    """Auto mode is a two-call operation on purpose."""
+
+    def _pair(self, monkeypatch):
+        return _auto_fake(monkeypatch, [
+            _make_item("K1", "Same Paper", doi="10.1/x", date_added="2020-01-01"),
+            _make_item("K2", "Same Paper", doi="10.1/x", date_added="2024-01-01"),
+        ])
+
+    def test_plan_writes_nothing(self, monkeypatch, dummy_ctx):
+        fake = self._pair(monkeypatch)
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "Auto-merge plan" in result
+        assert "nothing has been changed" in result.lower()
+        assert fake.update_calls == []
+        assert fake.addto_calls == []
+        assert fake.client.patch_calls == []
+
+    def test_plan_names_keeper_and_what_would_be_trashed(self, monkeypatch, dummy_ctx):
+        self._pair(monkeypatch)
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "**KEEP** `K1`" in result
+        assert "trash `K2`" in result
+        assert "Would trash 1 item(s)" in result
+
+    def test_confirm_without_plan_token_is_refused(self, monkeypatch, dummy_ctx):
+        """The whole point: confirm=True alone must not be able to trash."""
+        fake = self._pair(monkeypatch)
+
+        result = server.merge_duplicates(auto=True, confirm=True, ctx=dummy_ctx)
+
+        assert "will not execute on confirm=True alone" in result
+        assert fake.update_calls == []
+        assert fake.client.patch_calls == []
+
+    def test_stale_plan_token_is_refused(self, monkeypatch, dummy_ctx):
+        fake = self._pair(monkeypatch)
+
+        result = server.merge_duplicates(
+            auto=True, confirm=True, plan_token="deadbeef1234", ctx=dummy_ctx
+        )
+
+        assert "plan_token mismatch" in result
+        assert fake.update_calls == []
+        assert fake.client.patch_calls == []
+
+    def test_token_from_a_changed_library_is_refused(self, monkeypatch, dummy_ctx):
+        """A plan confirmed after the library moved on must not be applied."""
+        fake = self._pair(monkeypatch)
+        token = _token_from_plan(server.merge_duplicates(auto=True, ctx=dummy_ctx))
+
+        # A third copy arrives before the confirmation lands.
+        fake._items.append(
+            _make_item("K3", "Same Paper", doi="10.1/x", date_added="2025-01-01")
+        )
+
+        result = server.merge_duplicates(
+            auto=True, confirm=True, plan_token=token, ctx=dummy_ctx
+        )
+
+        assert "plan_token mismatch" in result
+        assert fake.client.patch_calls == []
+
+    def test_plan_then_confirm_executes(self, monkeypatch, dummy_ctx):
+        fake = self._pair(monkeypatch)
+        token = _token_from_plan(server.merge_duplicates(auto=True, ctx=dummy_ctx))
+
+        result = server.merge_duplicates(
+            auto=True, confirm=True, plan_token=token, ctx=dummy_ctx
+        )
+
+        assert "Auto-merge complete" in result
+        assert "Groups merged: **1**" in result
+        trashed = [json.loads(c["content"]) for c in fake.client.patch_calls]
+        assert trashed == [{"deleted": 1}]
+        assert any("K2" in c["url"] for c in fake.client.patch_calls)
+        assert not any("K1" in c["url"] for c in fake.client.patch_calls)
+
+    def test_auto_rejects_explicit_keys(self, monkeypatch, dummy_ctx):
+        fake = self._pair(monkeypatch)
+
+        result = server.merge_duplicates(
+            auto=True, keeper_key="K1", duplicate_keys=["K2"], ctx=dummy_ctx
+        )
+
+        assert "do not" in result.lower()
+        assert fake.update_calls == []
+
+    def test_manual_path_still_requires_a_keeper(self, monkeypatch, dummy_ctx):
+        fake = self._pair(monkeypatch)
+
+        result = server.merge_duplicates(duplicate_keys=["K2"], ctx=dummy_ctx)
+
+        assert "keeper_key is required" in result
+        assert fake.update_calls == []
+
+
+class TestAutoMergeKeeperHeuristic:
+    """most children -> has-an-abstract -> oldest dateAdded -> key."""
+
+    def test_most_children_wins(self, monkeypatch, dummy_ctx):
+        _auto_fake(
+            monkeypatch,
+            [
+                # The one with children is NEWER and has no abstract, so only
+                # the child count can be what picks it.
+                _make_item("FEW", "Paper", doi="10.1/a", abstract="has one",
+                           date_added="2019-01-01"),
+                _make_item("MANY", "Paper", doi="10.1/a", date_added="2025-01-01"),
+            ],
+            children={"MANY": [_child("N1", "MANY"), _child("N2", "MANY")]},
+        )
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "**KEEP** `MANY`" in result
+        assert "2 child item(s)" in result
+
+    def test_abstract_breaks_a_child_count_tie(self, monkeypatch, dummy_ctx):
+        _auto_fake(monkeypatch, [
+            _make_item("NOABS", "Paper", doi="10.1/b", date_added="2019-01-01"),
+            _make_item("ABS", "Paper", doi="10.1/b", abstract="An abstract",
+                       date_added="2025-01-01"),
+        ])
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "**KEEP** `ABS`" in result
+        assert "has abstract" in result
+
+    def test_oldest_date_added_breaks_the_remaining_tie(self, monkeypatch, dummy_ctx):
+        _auto_fake(monkeypatch, [
+            _make_item("NEW", "Paper", doi="10.1/c", abstract="a",
+                       date_added="2025-06-01"),
+            _make_item("OLD", "Paper", doi="10.1/c", abstract="a",
+                       date_added="2018-02-03"),
+        ])
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "**KEEP** `OLD`" in result
+        assert "added 2018-02-03" in result
+
+    def test_choice_is_deterministic_when_nothing_discriminates(self, monkeypatch, dummy_ctx):
+        """Identical members still have to produce a stable plan token."""
+        _auto_fake(monkeypatch, [
+            _make_item("BBB", "Paper", doi="10.1/d"),
+            _make_item("AAA", "Paper", doi="10.1/d"),
+        ])
+
+        first = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        second = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "**KEEP** `AAA`" in first
+        assert _token_from_plan(first) == _token_from_plan(second)
+
+
+class TestAutoMergeSafety:
+    """What auto mode declines to touch matters more than what it merges."""
+
+    def test_default_method_is_doi_only(self, monkeypatch, dummy_ctx):
+        """Title-only duplicates must not be merged unless title is asked for."""
+        fake = _auto_fake(monkeypatch, [
+            _make_item("S1", "Identical Title"),
+            _make_item("S2", "Identical Title"),
+        ])
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "No duplicates found" in result
+        assert fake.client.patch_calls == []
+
+    def test_title_method_is_available_on_request(self, monkeypatch, dummy_ctx):
+        _auto_fake(monkeypatch, [
+            _make_item("S1", "Identical Title"),
+            _make_item("S2", "Identical Title"),
+        ])
+
+        result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in result
+
+    def test_mixed_item_types_are_skipped(self, monkeypatch, dummy_ctx):
+        """A book and a journal article sharing a DOI are not one record."""
+        _auto_fake(monkeypatch, [
+            _make_item("M1", "Thing", doi="10.1/m", item_type="journalArticle"),
+            _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
+        ])
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in result
+        assert "mixed item types" in result
+        assert "book" in result
+
+    def test_conflicting_dois_are_skipped(self, monkeypatch, dummy_ctx):
+        """The title false-positive class from #395: two different books each
+        with a 'List of Contributors'."""
+        _auto_fake(monkeypatch, [
+            _make_item("C1", "List of Contributors", doi="10.1/book-one"),
+            _make_item("C2", "List of Contributors", doi="10.1/book-two"),
+        ])
+
+        result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in result
+        assert "carry different DOIs" in result
+
+    def test_overlapping_groups_are_skipped_not_double_merged(self, monkeypatch, dummy_ctx):
+        """With method='both' one pair matches on DOI and on title.
+
+        The second group's items are already trashed by the time it comes up,
+        so merging it again would operate on items in the Trash.
+        """
+        _auto_fake(monkeypatch, [
+            _make_item("O1", "Same Title", doi="10.1/o"),
+            _make_item("O2", "Same Title", doi="10.1/o"),
+        ])
+
+        result = server.merge_duplicates(auto=True, method="both", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in result
+        assert "overlaps a group already merged" in result
+
+    def test_nothing_qualifies_means_nothing_to_confirm(self, monkeypatch, dummy_ctx):
+        _auto_fake(monkeypatch, [
+            _make_item("M1", "Thing", doi="10.1/m", item_type="journalArticle"),
+            _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
+        ])
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "nothing to confirm" in result.lower()
+        assert "plan_token" not in result
+
+    def test_children_are_reparented_before_trashing(self, monkeypatch, dummy_ctx):
+        """The #387 shape: a child left on an item that then gets trashed."""
+        fake = _auto_fake(
+            monkeypatch,
+            [
+                _make_item("KEEP", "Paper", doi="10.1/p", date_added="2019-01-01"),
+                _make_item("GONE", "Paper", doi="10.1/p", date_added="2024-01-01"),
+            ],
+            children={"GONE": [_child("KID", "GONE")]},
+        )
+        # KEEP is older; GONE has the child, so give KEEP two to keep it winning.
+        fake._children["KEEP"] = [_child("K1", "KEEP"), _child("K2", "KEEP")]
+        for kid in fake._children["KEEP"]:
+            fake._items.append(kid)
+
+        token = _token_from_plan(server.merge_duplicates(auto=True, ctx=dummy_ctx))
+        result = server.merge_duplicates(
+            auto=True, confirm=True, plan_token=token, ctx=dummy_ctx
+        )
+
+        assert "Auto-merge complete" in result
+        reparented = [u for u in fake.update_calls if u.get("key") == "KID"]
+        assert len(reparented) == 1
+        assert reparented[0]["data"]["parentItem"] == "KEEP"
+        assert any("GONE" in c["url"] for c in fake.client.patch_calls)
+
+    def test_max_groups_caps_one_call(self, monkeypatch, dummy_ctx):
+        _auto_fake(monkeypatch, _doi_groups(5, prefix="Q"))
+
+        result = server.merge_duplicates(auto=True, max_groups=2, ctx=dummy_ctx)
+
+        assert "2 group(s) qualify" in result
+        assert "beyond this call's 2-group ceiling" in result
+        assert "capped at 2 groups" in result.lower()
+
+    def test_long_skip_list_is_summarised(self, monkeypatch, dummy_ctx):
+        """A library with many declined groups must not bury the plan."""
+        items = []
+        for g in range(30):
+            # Same DOI but different item types — declined, 30 times over.
+            items.append(_make_item(f"X{g:02d}A", f"Thing {g}", doi=f"10.1/x{g:02d}",
+                                    item_type="journalArticle"))
+            items.append(_make_item(f"X{g:02d}B", f"Thing {g}", doi=f"10.1/x{g:02d}",
+                                    item_type="book"))
+        _auto_fake(monkeypatch, items)
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "30 skipped" in result
+        assert result.count("mixed item types") == 20
+        assert "... and 10 more skipped group(s)" in result
