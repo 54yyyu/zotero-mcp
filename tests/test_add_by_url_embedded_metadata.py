@@ -274,3 +274,139 @@ class TestSupplementalMetadata:
         supplied = mock_doi.call_args.kwargs["supplemental"]
         assert supplied.title == "DETERMINANTS OF PUBLIC TRUST"
         assert supplied.volume == "19"
+
+
+# ---------------------------------------------------------------------------
+# The DOI route resolves its own landing page when CrossRef is thin
+# ---------------------------------------------------------------------------
+
+class TestDoiRouteSelfSupplements:
+    """The url route hands its tags down as ``supplemental``. A caller who
+    passes a bare DOI has no page to hand over — and got a titleless item for
+    exactly the DOIs where CrossRef says least.
+
+    Reported by the reviewing agent, who put it better than the fix did:
+    registry silence is not evidence of absence, and that had been applied to
+    one of the two routes.
+    """
+
+    THIN = {
+        "type": "journal-issue",
+        "title": [],
+        "container-title": ["Public Policy and Administration"],
+        "DOI": "10.13165/vpa-20-19-2-04",
+        "URL": "https://doi.org/10.13165/vpa-20-19-2-04",
+        "ISSN": ["1648-2603"],
+        "published": {"date-parts": [[2020]]},
+    }
+    FULL = {
+        "type": "journal-article",
+        "title": ["A Complete CrossRef Record"],
+        "container-title": ["Some Journal"],
+        "DOI": "10.1234/full",
+        "volume": "9", "issue": "2", "page": "1-20",
+        "author": [{"given": "Ada", "family": "Lovelace"}],
+        "published": {"date-parts": [[2024]]},
+    }
+
+    def _dispatch(self, crossref_msg, page_html=OJS_PAGE):
+        """requests.get stub: CrossRef for api.crossref.org, HTML otherwise."""
+        def _get(url, **kwargs):
+            if "api.crossref.org" in url:
+                r = MagicMock()
+                r.status_code = 200
+                r.json.return_value = {"status": "ok", "message": crossref_msg}
+                r.raise_for_status = MagicMock()
+                return r
+            return _html_response(page_html)
+        return _get
+
+    def test_thin_record_reads_the_landing_page(self, patched):
+        with patch("zotero_mcp.tools.write.requests.get",
+                   side_effect=self._dispatch(self.THIN)), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            write.add_by_doi(doi="10.13165/vpa-20-19-2-04", ctx=DummyContext())
+
+        item = patched.created[0]
+        assert item["title"] == "DETERMINANTS OF PUBLIC TRUST"
+        assert [c["lastName"] for c in item["creators"]] == ["Haning", "Hamzah"]
+
+    def test_complete_record_does_not_fetch_a_page(self, patched):
+        """The fetch is gated, not routine. A DOI whose CrossRef record
+        stands on its own must not pay for a page load."""
+        calls = []
+        def _get(url, **kwargs):
+            calls.append(url)
+            return self._dispatch(self.FULL)(url, **kwargs)
+
+        with patch("zotero_mcp.tools.write.requests.get", side_effect=_get), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            write.add_by_doi(doi="10.1234/full", ctx=DummyContext())
+
+        assert all("api.crossref.org" in u for u in calls), (
+            f"expected only the CrossRef call, got {calls}"
+        )
+        assert patched.created[0]["title"] == "A Complete CrossRef Record"
+
+    def test_unreachable_landing_page_degrades(self, patched):
+        """The page is best-effort. A publisher whose host will not answer
+        must not fail the import — this is the reported DOI's real situation,
+        whose landing page serves a chain OpenSSL will not verify."""
+        import requests as _requests
+        def _get(url, **kwargs):
+            if "api.crossref.org" in url:
+                return self._dispatch(self.THIN)(url, **kwargs)
+            raise _requests.exceptions.SSLError("bad chain")
+
+        with patch("zotero_mcp.tools.write.requests.get", side_effect=_get), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            out = write.add_by_doi(doi="10.13165/vpa-20-19-2-04",
+                                   ctx=DummyContext())
+
+        assert patched.created  # item still created
+        assert "Successfully added" in out
+
+    def test_supplied_metadata_is_not_refetched(self, patched):
+        """The url route already has the page; the DOI route must not go
+        back for it."""
+        calls = []
+        def _get(url, **kwargs):
+            calls.append(url)
+            return self._dispatch(self.THIN)(url, **kwargs)
+
+        from zotero_mcp.html_metadata import extract_embedded_metadata
+        with patch("zotero_mcp.tools.write.requests.get", side_effect=_get), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            write.add_by_doi(doi="10.13165/vpa-20-19-2-04",
+                             supplemental=extract_embedded_metadata(OJS_PAGE),
+                             ctx=DummyContext())
+
+        assert all("api.crossref.org" in u for u in calls), (
+            f"page was re-fetched despite being supplied: {calls}"
+        )
+        assert patched.created[0]["title"] == "DETERMINANTS OF PUBLIC TRUST"
+
+
+class TestThinRecordDetection:
+    def test_empty_title_list_is_thin(self):
+        assert write._crossref_record_is_thin({"title": []}, "journal-article")
+
+    def test_absent_title_is_thin(self):
+        assert write._crossref_record_is_thin({}, "journal-article")
+
+    def test_blank_title_string_is_thin(self):
+        assert write._crossref_record_is_thin({"title": "  "}, "journal-article")
+
+    def test_container_type_is_thin_even_with_a_title(self):
+        assert write._crossref_record_is_thin(
+            {"title": ["An Issue"]}, "journal-issue"
+        )
+
+    def test_ordinary_titled_article_is_not_thin(self):
+        assert not write._crossref_record_is_thin(
+            {"title": ["A Paper"]}, "journal-article"
+        )

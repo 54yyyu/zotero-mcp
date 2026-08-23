@@ -1035,6 +1035,20 @@ def add_by_doi(
         cr_type = cr.get("type", "")
         zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
 
+        # A DOI reached directly still deserves the page's metadata. The
+        # url route hands its tags down as ``supplemental``; a caller passing
+        # a bare DOI has no page to hand over, so when CrossRef's answer
+        # cannot stand on its own we resolve the DOI ourselves and read the
+        # landing page. Registry silence is not evidence of absence, and this
+        # is the second of the two routes it applies to.
+        if supplemental is None and _crossref_record_is_thin(cr, cr_type):
+            landing = cr.get("URL") or f"https://doi.org/{normalized}"
+            ctx.info(
+                f"CrossRef record for {normalized} is {cr_type or 'untitled'} "
+                f"and carries no usable title; reading {landing}"
+            )
+            supplemental, _ = _fetch_embedded_metadata(landing, ctx)
+
         # Get valid fields from item template
         template = write_zot.item_template(zot_type)
         item_data = dict(template)
@@ -1175,6 +1189,28 @@ def add_by_doi(
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
         return f"Error adding by DOI: {e}"
+
+
+# CrossRef types that describe a *container* rather than a work. A DOI
+# registered under one of these routinely carries no title, no authors and no
+# volume/issue/page — the article's own landing page is then the only source
+# for them.
+_THIN_CROSSREF_TYPES = frozenset({"journal-issue", "journal-volume", "journal"})
+
+
+def _crossref_record_is_thin(cr: dict, cr_type: str) -> bool:
+    """True when CrossRef's answer cannot stand on its own.
+
+    Deliberately narrow: an untitled record is useless whatever else it has,
+    and a container type is the shape that produces one. Both are rare, so
+    the landing-page fetch this gates stays rare too.
+    """
+    title = cr.get("title")
+    if isinstance(title, list):
+        title = next((t for t in title if t), "")
+    if not (title or "").strip():
+        return True
+    return cr_type in _THIN_CROSSREF_TYPES
 
 
 # Publisher pages are arbitrary third-party HTML. Read a bounded prefix of
