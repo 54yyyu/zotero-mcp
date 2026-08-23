@@ -118,3 +118,70 @@ def test_check_retractions_flags_uppercase_doi(monkeypatch, dummy_ctx, fake_zot)
     assert "Editorial Notice Alerts" in result
     assert "Retraction" in result
     assert "All clear" not in result
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 — /papers editorialNotices carry {status, date, noticeDoi, doi},
+# not {type, sourceDoi}
+# ---------------------------------------------------------------------------
+
+
+def test_editorial_notices_render_real_api_field_names():
+    """Live /papers notices are shaped {status, date, noticeDoi, doi}.
+
+    The formatter used to read ``type``/``sourceDoi`` only, so every real
+    notice rendered as an empty ``**Notice**: https://doi.org/``.
+    """
+    lines = scite_tools._format_editorial_notices(
+        [
+            {
+                "status": "Has correction",
+                "date": "2021-2-3",
+                "noticeDoi": "10.1038/s43586-021-00017-2",
+                "doi": "10.1038/s43586-020-00001-2",
+            }
+        ]
+    )
+    assert lines == [
+        "**Has Correction** (2021-2-3): https://doi.org/10.1038/s43586-021-00017-2"
+    ]
+
+
+def test_editorial_notices_legacy_shape_still_renders():
+    """The pre-existing {type, sourceDoi} shape keeps working as a fallback."""
+    lines = scite_tools._format_editorial_notices(
+        [{"type": "retraction", "sourceDoi": "10.1016/x"}]
+    )
+    assert lines == ["**Retraction**: https://doi.org/10.1016/x"]
+
+
+def test_check_retractions_renders_real_api_notice_fields(
+    monkeypatch, dummy_ctx, fake_zot
+):
+    """check_retractions output must include the notice type and notice DOI."""
+    fake_zot._items = [
+        {"key": "ITEM0001", "data": {"DOI": UPPER_DOI, "title": "Wakefield 1998"}}
+    ]
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr(
+        scite_tools._scite,
+        "get_papers_batch",
+        lambda dois: {
+            LOWER_DOI: {
+                "editorialNotices": [
+                    {
+                        "status": "Retracted",
+                        "date": "2010-2-2",
+                        "noticeDoi": "10.1016/S0140-6736(10)60175-4",
+                        "doi": LOWER_DOI,
+                    }
+                ]
+            }
+        },
+    )
+
+    result = scite_tools.check_retractions(ctx=dummy_ctx)
+
+    assert "Editorial Notice Alerts" in result
+    assert "**Retracted** (2010-2-2)" in result
+    assert "https://doi.org/10.1016/S0140-6736(10)60175-4" in result
