@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from zotero_mcp.better_bibtex_client import (
+    BetterBibTexError,
     ZoteroBetterBibTexAPI,
     _inject_citekey,
 )
@@ -138,13 +139,51 @@ class TestExportBibtex:
         captured: list[dict] = []
         results = iter([{"result": {}}])  # no mapping for our key
         client = ZoteroBetterBibTexAPI()
-        with patch("requests.post", side_effect=_capture_post(captured, results)):
-            out = client.export_bibtex("UNKNOWN")
-        # Existing contract: the function prints the error and returns "".
-        assert out == ""
+        with pytest.raises(BetterBibTexError):
+            with patch("requests.post", side_effect=_capture_post(captured, results)):
+                client.export_bibtex("UNKNOWN")
         # And we did NOT proceed to item.export.
         assert len(captured) == 1
         assert captured[0]["method"] == "item.citationkey"
+
+    def test_null_citekey_raises_rather_than_returning_empty(self):
+        """BBT answers ``{"KEY": null}`` — a *successful* RPC carrying no key —
+        for items it does not index; trashed items are the common case.
+
+        The old code turned that into ``""``, which a caller cannot tell apart
+        from "this item has no BibTeX" or "this item does not exist". The item
+        that surfaced this was a deduplicated duplicate sitting in the trash:
+        ``format="markdown"`` rendered it fine while ``format="bibtex"``
+        returned an empty string.
+        """
+        captured: list[dict] = []
+        results = iter([{"result": {"KGBSSZ3W": None}}])
+        client = ZoteroBetterBibTexAPI()
+        with pytest.raises(BetterBibTexError, match="no citation key"):
+            with patch("requests.post", side_effect=_capture_post(captured, results)):
+                client.export_bibtex("KGBSSZ3W")
+        # A null citekey must not be sent on to item.export.
+        assert len(captured) == 1
+
+    def test_blank_export_raises(self):
+        """An export that comes back empty is a failure, not an empty result."""
+        captured: list[dict] = []
+        results = iter([
+            {"result": {"KEY1": "myCite2024"}},
+            {"result": "   "},
+        ])
+        client = ZoteroBetterBibTexAPI()
+        with pytest.raises(BetterBibTexError, match="empty export"):
+            with patch("requests.post", side_effect=_capture_post(captured, results)):
+                client.export_bibtex("KEY1")
+
+    def test_transport_failure_raises_typed_error(self):
+        captured: list[dict] = []
+        results = iter([RuntimeError("connection reset")])
+        client = ZoteroBetterBibTexAPI()
+        with pytest.raises(BetterBibTexError):
+            with patch("requests.post", side_effect=_capture_post(captured, results)):
+                client.export_bibtex("KEY1")
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ Zotero client wrapper for MCP server.
 """
 
 import functools
+import logging
 import os
 import shutil
 import threading
@@ -26,6 +27,8 @@ from zotero_mcp.webdav import (
     WebDAVNotConfiguredError,
     download_attachment_from_webdav,
 )
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -411,19 +414,49 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         BibTeX formatted string
     """
     data = item.get("data", {})
-    item_key = data.get("key")
+    # The key lives at ``data.key`` in Zotero API responses but only at the
+    # top level in some locally-assembled items; accept either.
+    item_key = data.get("key") or item.get("key")
 
-    # Try Better BibTeX first
+    # A trashed item exports a perfectly plausible entry, and BibTeX has no
+    # field that would say otherwise — markdown shows a trash status and JSON
+    # carries data.deleted, but a BibTeX consumer sees nothing. That gap is
+    # what made a trashed duplicate look like a healthy record to a caller
+    # reading only this format. A comment line is inert to every BibTeX
+    # parser and visible to every human.
+    trash_marker = "% Status: in trash\n" if data.get("deleted") else ""
+
+    # Try Better BibTeX first — it produces better entries and the user's
+    # real pinned citekeys. Any failure falls through to the local generator
+    # below; BBT is an enhancement, never a prerequisite.
     try:
         from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
-        bibtex = ZoteroBetterBibTexAPI()
 
-        if bibtex.is_zotero_running():
-            return bibtex.export_bibtex(item_key)
+        if item_key:
+            bibtex = ZoteroBetterBibTexAPI()
 
-    except Exception:
-        # Continue to fallback method if Better BibTeX fails
-        pass
+            if bibtex.is_zotero_running():
+                exported = bibtex.export_bibtex(item_key)
+                # Guard the result even though export_bibtex now raises on a
+                # blank export: returning "" here is indistinguishable from
+                # "no BibTeX" and from "no such item", which is the whole
+                # defect being fixed.
+                if exported and exported.strip():
+                    return trash_marker + exported
+                logger.warning(
+                    "Better BibTeX returned no entry for %s; "
+                    "falling back to local BibTeX generation", item_key
+                )
+
+    except Exception as e:
+        # BBT does not index trashed items and returns a null citekey for
+        # them, so a perfectly readable item can fail here. Fall back rather
+        # than fail: the local generator below works from the item data we
+        # already hold.
+        logger.warning(
+            "Better BibTeX export failed for %s (%s); "
+            "falling back to local BibTeX generation", item_key, e
+        )
 
     # Fallback to basic BibTeX generation
     item_type = data.get("itemType", "misc")
@@ -451,7 +484,11 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         author = first.get("lastName", first.get("name", "").split()[-1] if first.get("name") else "").replace(" ", "")
 
     year = data.get("date", "")[:4] if data.get("date") else "nodate"
-    cite_key = f"{author}{year}_{item_key}"
+    # ``item_key`` can be absent on items assembled locally; never render the
+    # literal string "None" into a citekey.
+    cite_key = f"{author}{year}_{item_key}" if item_key else f"{author}{year}"
+    if not cite_key:
+        cite_key = "untitled"
 
     # Build BibTeX entry
     bib_type = type_map.get(item_type, "misc")
@@ -501,7 +538,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         lines[-1] = lines[-1][:-1]
     lines.append("}")
 
-    return "\n".join(lines)
+    return trash_marker + "\n".join(lines)
 
 
 def configured_attachment_priority() -> tuple[str, ...]:
