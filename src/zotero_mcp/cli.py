@@ -418,6 +418,20 @@ def main():
         "schema-refresh",
         help="Refresh the cached Zotero base-field schema from the server now")
 
+    # Agent skill installation
+    skill_parser = subparsers.add_parser(
+        "install-skill",
+        help="Install the packaged zotero-cli agent skill into ~/.claude/skills")
+    skill_parser.add_argument(
+        "--scope", choices=["user", "project"], default="user",
+        help="user: ~/.claude/skills (every project). "
+             "project: ./.claude/skills (this repo only). Default: user")
+    skill_parser.add_argument(
+        "--path", help="Install into this skills directory instead")
+    skill_parser.add_argument(
+        "--force", action="store_true",
+        help="Overwrite an existing skill directory. No backup is kept.")
+
     args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
 
     # If no command is provided, default to 'serve'
@@ -430,6 +444,20 @@ def main():
         from zotero_mcp._version import __version__
         print(f"Zotero MCP v{__version__}")
         sys.exit(0)
+
+    elif args.command == "install-skill":
+        from zotero_mcp.skill_install import install_skill
+
+        installed, message = install_skill(
+            skills_root=args.path, scope=args.scope, force=args.force,
+        )
+        print(message, file=sys.stdout if installed else sys.stderr)
+        if installed:
+            print(
+                "\nRestart your agent session to pick it up. It fires when you "
+                "ask about your Zotero library.",
+            )
+        sys.exit(0 if installed else 1)
 
     elif args.command == "schema-refresh":
         from zotero_mcp import schema

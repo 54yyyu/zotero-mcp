@@ -167,8 +167,14 @@ def _paginate(zot_method, *args, max_items=None, **kwargs):
             break
         start += page_size
         if max_items and len(items) >= max_items:
-            items = items[:max_items]
             break
+    # Trimmed on the way out rather than only on the early-exit path. The cap
+    # used to be applied inside the loop, which the last page skips: a run
+    # that ended on a short batch returned everything it had fetched, however
+    # small max_items was. Callers that pass it to bound a *response* — not
+    # just the fetching — then over-reported (#453).
+    if max_items:
+        return items[:max_items]
     return items
 
 
@@ -183,6 +189,39 @@ def get_search_backend() -> str:
     """
     value = os.getenv("ZOTERO_SEARCH_BACKEND", "").strip().lower()
     return "sqlite" if value == "sqlite" else "api"
+
+
+def item_display_title(data: dict) -> str:
+    """The title to show for an item, whatever field it actually lives in.
+
+    Three item shapes do not keep their title under ``title`` and each used to
+    render as "Untitled" here:
+
+    * Type-specific base fields — a statute's title is ``nameOfAct``, a case's
+      is ``caseName``, an email's is ``subject``. ``schema.resolve_field``
+      maps ``title`` onto whichever key the type uses (#452).
+    * Standalone attachments, which have a ``filename`` and no title.
+    * Notes, whose title is the first line of their body (#447).
+
+    Shared with :func:`zotero_mcp.client.format_item_metadata` so a search
+    result and an item lookup never disagree about what a paper is called.
+    """
+    item_type = data.get("itemType", "")
+
+    if item_type == "note":
+        return note_title(data.get("note", ""))
+
+    if item_type:
+        try:
+            from zotero_mcp import schema as _schema
+
+            resolved = _schema.resolve_field(item_type, "title")
+        except Exception:  # schema unavailable — fall back to the plain field
+            resolved = "title"
+        if title := data.get(resolved):
+            return title
+
+    return data.get("title") or data.get("filename") or "Untitled"
 
 
 def format_item_result(
@@ -207,8 +246,7 @@ def format_item_result(
         List of markdown lines (caller joins with ``"\\n"``).
     """
     data = item.get("data", {})
-    # Standalone attachments carry no title — fall back to their filename.
-    title = data.get("title") or data.get("filename") or "Untitled"
+    title = item_display_title(data)
     heading = f"## {index}. {title}" if index is not None else f"## {title}"
     lines: list[str] = [
         heading,
@@ -264,6 +302,69 @@ def clean_html(raw_html: str, collapse_whitespace: bool = False) -> str:
     if collapse_whitespace:
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()
     return clean_text
+
+
+#: Closing tags of line-level blocks. Dropped rather than turned into a
+#: newline: the *opening* tag of the next item already supplies one, and
+#: emitting both would put a blank line between every pair of list items.
+_LINE_BREAK_CLOSE_RE = re.compile(r"</(?:li|tr|dt|dd)\s*>", re.IGNORECASE)
+
+#: Tags that end a line but not a paragraph — a list item, a table row, an
+#: explicit break. These get a single newline.
+_LINE_BREAK_RE = re.compile(r"<(?:br|li|tr|dt|dd)\b[^>]*>", re.IGNORECASE)
+
+#: Tags that end a paragraph-level block. These get a blank line, so prose
+#: stays readable as markdown rather than becoming one wall of text.
+_PARA_BREAK_RE = re.compile(
+    r"</?(?:p|div|ul|ol|table|h[1-6]|blockquote|pre|section|article)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def html_to_text(raw_html: str) -> str:
+    """Strip HTML to plain text, preserving block structure as line breaks.
+
+    :func:`clean_html` removes tags without putting anything in their place,
+    which is right for an inline fragment and wrong for a document. Zotero
+    stores notes as HTML with no newlines between blocks, so
+    ``<p>Title</p><p>Body</p>`` came back as ``TitleBody`` — which, among
+    other things, made the note's "first line" the whole note (#447).
+    """
+    if not raw_html:
+        return ""
+    text = _PARA_BREAK_RE.sub("\n\n", raw_html)
+    text = _LINE_BREAK_CLOSE_RE.sub("", text)
+    text = _LINE_BREAK_RE.sub("\n", text)
+    text = clean_html(text)
+    # Substitution leaves runs of blank lines behind (a `</p><p>` pair emits
+    # four newlines). Normalise to at most one blank line, and drop the
+    # trailing spaces each line may have picked up.
+    lines = [line.strip() for line in text.splitlines()]
+    out: list[str] = []
+    for line in lines:
+        if not line and (not out or not out[-1]):
+            continue  # leading, or a second consecutive blank
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def note_title(note_html: str, max_chars: int = 80) -> str:
+    """Derive a display title for a note from its content.
+
+    Notes are the one item type with no `title` field: Zotero's own client
+    shows the note's first line instead, and the API has nothing to offer in
+    its place. Formatting a note through the generic item path therefore
+    rendered every one of them as "Untitled" (#447).
+    """
+    text = html_to_text(note_html or "")
+    if not text:
+        return "Untitled Note"
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not first_line:
+        return "Untitled Note"
+    if len(first_line) > max_chars:
+        return first_line[:max_chars].rstrip() + "…"
+    return first_line
 
 
 # ---------------------------------------------------------------------------

@@ -302,12 +302,23 @@ def ensure_collection_membership(write_zot, item_key: str, coll_keys: list[str],
 # ---------------------------------------------------------------------------
 
 def _normalize_limit(limit: int | str | None, default: int = 10, max_val: int = 100) -> int:
-    """Coerce *limit* to a bounded int."""
+    """Coerce *limit* to a bounded int.
+
+    A limit of zero or below is meaningless rather than minimal, so it falls
+    back to *default*. Clamping it to 1 (the previous behaviour) answered
+    `limit=0` with a single item and no indication why, which reads as a
+    one-item collection (#453).
+    """
     if limit is None:
         return default
     if isinstance(limit, str):
+        limit = limit.strip()
+        if not limit:
+            return default
         limit = int(limit)
-    return max(1, min(limit, max_val))
+    if limit <= 0:
+        return default
+    return min(limit, max_val)
 
 
 def _normalize_offset(offset: int | str | None, default: int = 0) -> int:

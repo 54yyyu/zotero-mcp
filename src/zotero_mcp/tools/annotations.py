@@ -648,6 +648,18 @@ def get_notes(
         else:
             notes = _helpers._paginate(zot.items, max_items=limit, **params)
 
+        if not notes and item_key:
+            # `item_key` may name a note itself rather than its parent. A note
+            # has no children, so the query above finds nothing and the tool
+            # reported "No notes found" for a note that plainly exists —
+            # leaving no way to read one whose key you already hold (#447).
+            try:
+                candidate = zot.item(item_key)
+            except Exception:
+                candidate = None
+            if candidate and candidate.get("data", {}).get("itemType") == "note":
+                notes = [candidate]
+
         if not notes:
             return f"No notes found{f' for item {item_key}' if item_key else ''}."
 

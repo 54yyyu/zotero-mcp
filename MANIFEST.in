@@ -5,3 +5,4 @@ include pyproject.toml
 recursive-include docs *.md
 recursive-include tests *.py
 recursive-include tests/fixtures *.json *.md
+recursive-include src/zotero_mcp/skills *.md

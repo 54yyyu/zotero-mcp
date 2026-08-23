@@ -56,6 +56,77 @@ def _maybe_fire_presearch_sync(search) -> None:
     _threading.Thread(target=_run, daemon=True, name="zmcp-presearch-sync").start()
 
 
+#: How long the client-side advanced-search walk may run before it returns a
+#: partial answer. Kept well under the Zotero API lock's 45s wait bound so a
+#: broad search cannot cascade into "Zotero API busy" on every other tool
+#: (#456), and far under the 300s MCP idle timeout it used to hit.
+_ADVANCED_SCAN_BUDGET_SECONDS = 20
+
+
+def _server_side_filters(
+    parsed_conditions: list[dict[str, str]], join_mode: str
+) -> dict[str, str]:
+    """Conditions the Zotero API can apply itself, as ``zot.items()`` kwargs.
+
+    The client-side walk re-checks every condition regardless, so this is a
+    pure narrowing of what has to be fetched — never a change of meaning. Two
+    rules keep it that way, and both matter:
+
+    Only ``join_mode="all"`` qualifies. Under ``any`` a server-side filter
+    would drop items that another condition would have matched, turning an OR
+    into an AND.
+
+    Only ``itemType is <known type>`` and ``tag is <value>`` are pushed. The
+    API compares these exactly while :mod:`search_semantics` compares
+    case- and diacritic-insensitively, so ``itemType`` is canonicalised
+    against the schema first and skipped when it does not resolve — a user
+    who typed ``blogpost`` still gets the client-side match rather than an
+    empty result. ``tag`` is passed through as typed, which is what Zotero's
+    own tag filter does.
+    """
+    if join_mode != "all":
+        return {}
+
+    filters: dict[str, str] = {}
+    for condition in parsed_conditions:
+        if condition["operation"] != "is":
+            continue
+        field = condition["field"].lower()
+        value = condition["value"]
+        if field == "itemtype" and "itemType" not in filters:
+            canonical = _canonical_item_type(value)
+            if canonical:
+                filters["itemType"] = canonical
+        elif field in {"tag", "tags"} and "tag" not in filters:
+            if value:
+                filters["tag"] = value
+    return filters
+
+
+def _canonical_item_type(value: str) -> str | None:
+    """Map a user-supplied item type to the schema's exact spelling.
+
+    Returns None for anything the schema doesn't know, which is the signal not
+    to filter server-side — the API would answer an unknown type with nothing
+    at all, and a typo should not silently become "no results".
+    """
+    if not value:
+        return None
+    try:
+        from zotero_mcp import schema as _schema
+
+        known = _schema.get_table().get("itemTypes", {})
+    except Exception:  # schema unavailable — decline to filter
+        return None
+    if value in known:
+        return value
+    lowered = value.lower()
+    for name in known:
+        if name.lower() == lowered:
+            return name
+    return None
+
+
 def _exclude_note_content_matches(items: list[dict], qmode: str) -> list[dict]:
     """Drop standalone notes from a `titleCreatorYear` result set.
 
@@ -850,13 +921,35 @@ def advanced_search(
                 _search_logger.debug(f"[ADVANCED SEARCH] sqlite backend failed, falling back: {e}")
                 results = None
 
+        scan_warning: str | None = None
         if results is None:
-            # Execute advanced search by iterating items and filtering client-side.
+            # Execute advanced search by iterating items and filtering
+            # client-side. Three things bound that walk (#456). Without them a
+            # single condition over a large library paged the *entire* library
+            # 100 items at a time, holding the process-global Zotero API lock
+            # the whole way: the call hit the client's 300s idle timeout and
+            # every other tool queued behind it reported "Zotero API busy".
+            #
+            #  1. Conditions the Zotero API can evaluate itself are sent to it
+            #     instead of being re-checked here, so the walk starts from a
+            #     filtered set rather than from everything.
+            #  2. With no sort requested, the walk stops as soon as it has
+            #     `limit` matches -- the results are in library order either
+            #     way, so nothing later in the library can displace them. A
+            #     sort has to see every match before it can order them, so it
+            #     does not get the early exit.
+            #  3. Whatever is left is bounded by a deadline. Returning a
+            #     partial answer that says it is partial beats returning
+            #     nothing after five minutes.
+            server_filters = _server_side_filters(parsed_conditions, join_mode)
+            deadline = _time.monotonic() + _ADVANCED_SCAN_BUDGET_SECONDS
+            can_stop_early = not sort_by
+
             results = []
             batch_size = 100
             start = 0
             while True:
-                batch = zot.items(start=start, limit=batch_size)
+                batch = zot.items(start=start, limit=batch_size, **server_filters)
                 if not batch:
                     break
 
@@ -870,9 +963,22 @@ def advanced_search(
                     if matched:
                         results.append(item)
 
+                if can_stop_early and len(results) >= limit:
+                    break
                 if len(batch) < batch_size:
                     break
                 start += batch_size
+
+                if _time.monotonic() > deadline:
+                    scan_warning = (
+                        f"Search stopped after {_ADVANCED_SCAN_BUDGET_SECONDS}s having "
+                        f"examined {start} items; results below are partial. This "
+                        f"backend filters client-side, so a broad condition over a "
+                        f"large library has to read the library. Narrow the "
+                        f"conditions, or set ZOTERO_SEARCH_BACKEND=sqlite (local "
+                        f"mode) to evaluate the search in SQL instead."
+                    )
+                    break
 
         sort_warning: str | None = None
         if sort_by:
@@ -913,6 +1019,15 @@ def advanced_search(
                 results.sort(key=_sort_key, reverse=reverse)
 
         if not results:
+            if scan_warning:
+                # An empty result after a truncated scan is not the same claim
+                # as an empty result after a complete one, and a caller that
+                # cannot tell them apart will conclude the library has no such
+                # items (#456).
+                return (
+                    "No items found matching the search criteria *in the portion "
+                    f"of the library that was searched*.\n\n> **Note:** {scan_warning}"
+                )
             return "No items found matching the search criteria."
 
         results = results[:limit]
@@ -929,6 +1044,9 @@ def advanced_search(
         if sort_warning:
             output.append("")
             output.append(f"> **Note:** {sort_warning}")
+        if scan_warning:
+            output.append("")
+            output.append(f"> **Note:** {scan_warning}")
         output.append("")
         output.append("## Results")
 

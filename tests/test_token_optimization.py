@@ -375,12 +375,15 @@ class TestCollectionItemsEdgeCases:
             assert "No items found" in result
 
     def test_truncation_message(self, monkeypatch, coll_zot, dummy_ctx):
-        """When limit < total items, truncation message appears."""
+        """When limit < total items, the response says what it showed and how
+        to get the rest. It used to say "increase the limit", which could not
+        work past 100 and never worked at all without an offset (#453)."""
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: coll_zot)
         from zotero_mcp.tools.retrieval import get_collection_items
 
         result = get_collection_items(collection_key="COL1", detail="summary", limit=1, ctx=dummy_ctx)
-        assert "Showing 1 of 2 items" in result
+        assert "Showing items 1-1 of 2" in result
+        assert "offset=1" in result
 
 
 class TestBatchChildrenEdgeCases:

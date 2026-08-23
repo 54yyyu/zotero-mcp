@@ -250,7 +250,11 @@ class TestExtractPdfTocIsBounded:
 
         monkeypatch.setattr(subprocess, "Popen", recording_popen)
         monkeypatch.setattr(
-            write_tools, "_TOC_CHILD_SCRIPT", "import sys; sys.stdout.write('[]')"
+            write_tools,
+            "_TOC_CHILD_SCRIPT",
+            "import sys; sys.stdout.write("
+            + repr(write_tools._TOC_SENTINEL)
+            + " + '[]')",
         )
 
         outcome = write_tools._extract_pdf_toc(str(tmp_path / "paper.pdf"))
