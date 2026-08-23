@@ -426,6 +426,16 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
   preferences (read from the profile's `prefs.js`) is tried first, then the
   default `~/Zotero` location.
 
+**Search backend:**
+- `ZOTERO_SEARCH_BACKEND=sqlite`: Route `zotero_search_items` and
+  `zotero_advanced_search` through direct SQL against `zotero.sqlite` instead of
+  fetching over the API and filtering in Python (default: `api`). Requires
+  `ZOTERO_LOCAL=true`, since it reads the database off disk. Substantially
+  faster on large libraries — an `advanced_search` that pages the whole library
+  over the API drops from minutes to well under a second. Any query the backend
+  doesn't cover falls back to the API path automatically, so the results are
+  either the same or better, never worse.
+
 **Tool surface:**
 - `ZOTERO_MCP_TOOLSETS`: Which optional tool groups to expose. Every tool the
   server registers is sent to the model on *every* request, so the tool list is
