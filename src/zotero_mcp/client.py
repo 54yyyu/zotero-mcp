@@ -16,14 +16,18 @@ import httpx
 from dotenv import load_dotenv
 from pyzotero import zotero
 
-from zotero_mcp import schema
 from zotero_mcp.extract import (
     categorize_attachment,
     extract_file,
     normalize_attachment_priority,
     pick_by_priority,
 )
-from zotero_mcp.utils import _paginate, format_creators
+from zotero_mcp.utils import (
+    _paginate,
+    format_creators,
+    html_to_text,
+    item_display_title,
+)
 from zotero_mcp.webdav import (
     WebDAVNotConfiguredError,
     download_attachment_from_webdav,
@@ -303,14 +307,15 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     data = item.get("data", {})
     item_type = data.get("itemType", "unknown")
 
-    # Some item types keep the title under a type-specific key (a statute's
-    # is "nameOfAct"); resolve_field maps "title" to whichever key this
-    # item type actually uses.
-    title_field = schema.resolve_field(item_type, "title")
+    # Type-specific base fields (a statute's title is "nameOfAct"), notes
+    # (whose title is their first line) and standalone attachments (which have
+    # only a filename) all resolve here, so a search result and an item lookup
+    # can never disagree about what something is called (#452, #447).
+    heading = item_display_title(data)
 
     # Basic information
     lines = [
-        f"# {data.get(title_field, 'Untitled')}",
+        f"# {heading}",
         f"**Type:** {item_type}",
         f"**Item Key:** {data.get('key')}",
     ]
@@ -385,6 +390,12 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     # Abstract
     if include_abstract and (abstract := data.get("abstractNote")):
         lines.extend(["", "## Abstract", abstract])
+
+    # A note's body IS its content -- there is nothing else to show, and
+    # returning the metadata alone told a caller the note existed while
+    # withholding the only thing they asked for (#447).
+    if item_type == "note" and (note_body := data.get("note")):
+        lines.extend(["", "## Note", html_to_text(note_body)])
 
     # Related Items (dc:relation URIs → item keys)
     dc_relations = data.get("relations", {}).get("dc:relation", [])

@@ -948,11 +948,9 @@ def advanced_search(
             results = []
             batch_size = 100
             start = 0
-            exhausted = False
             while True:
                 batch = zot.items(start=start, limit=batch_size, **server_filters)
                 if not batch:
-                    exhausted = True
                     break
 
                 for item in batch:
@@ -966,10 +964,8 @@ def advanced_search(
                         results.append(item)
 
                 if can_stop_early and len(results) >= limit:
-                    exhausted = True
                     break
                 if len(batch) < batch_size:
-                    exhausted = True
                     break
                 start += batch_size
 

@@ -171,6 +171,14 @@ def get_item_fulltext(
         # Get item metadata in markdown format
         metadata = _client.format_item_metadata(item, include_abstract=True)
 
+        # A note carries its text in data.note, not in an attachment. Without
+        # this the attachment search below finds nothing and answers "No
+        # suitable attachment found", which reads as "this note has no
+        # content" (#447). format_item_metadata already renders the body, so
+        # returning the metadata here returns the note in full.
+        if item.get("data", {}).get("itemType") == "note":
+            return metadata
+
         # In local mode, prefer direct local DB/storage extraction first.
         # This avoids pyzotero dump() failures on linked file:// attachments
         # when using remote clients over SSE/HTTP.
