@@ -1005,6 +1005,10 @@ def build_parser() -> argparse.ArgumentParser:
     s_p.add_argument("--sort-by")
     s_p.add_argument("--sort-direction", choices=["asc", "desc"], default="asc")
     s_p.add_argument("--filters", help='JSON filters for semantic mode')
+    s_p.add_argument("--detail", choices=["keys_only", "summary", "full"],
+                     default="summary",
+                     help="How much of each item --json returns (no effect on "
+                          "markdown output)")
 
     # get
     g_p = sub.add_parser("get", help="Get items, collections, tags, etc.", aliases=["g"])
