@@ -1021,9 +1021,12 @@ def add_by_doi(
 
         cr = resp.json().get("message", {})
 
-        # Determine Zotero item type
+        # Determine Zotero item type. An unmapped type still becomes a
+        # document, but the caller is told so — the fields a document has no
+        # room for are dropped silently otherwise.
         cr_type = cr.get("type", "")
         zot_type = CROSSREF_TYPE_MAP.get(cr_type, "document")
+        type_note = _helpers.crossref_type_note(cr_type)
 
         # Get valid fields from item template
         template = write_zot.item_template(zot_type)
@@ -1133,7 +1136,8 @@ def add_by_doi(
                 f"Type: {zot_type}\n"
                 f"DOI: {normalized}\n"
                 f"Collections: {collections_status}\n"
-                f"PDF: {pdf_status}\n\n"
+                f"PDF: {pdf_status}\n"
+                f"{type_note}\n"
                 "_Note: To include this item in semantic search, run "
                 "zotero_update_search_database._"
             )
