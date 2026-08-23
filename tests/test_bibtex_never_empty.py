@@ -45,6 +45,18 @@ TRASHED_ITEM = {
 }
 
 
+def _entry(bibtex: str) -> str:
+    """The BibTeX entry with any leading status comment removed.
+
+    ``TRASHED_ITEM`` is deliberately trashed, so its export carries a
+    ``% Status: in trash`` line. Tests about entry *shape* strip it; the
+    tests that assert the marker itself live in TestTrashIsVisibleInBibtex.
+    """
+    return "\n".join(
+        line for line in bibtex.splitlines() if not line.startswith("%")
+    ).lstrip("\n")
+
+
 def _bbt(*, running=True, export=None, error=None):
     """Patch the BBT client: is_zotero_running -> *running*, export_bibtex
     either returns *export* or raises *error*."""
@@ -70,7 +82,7 @@ class TestNeverEmpty:
             out = generate_bibtex(TRASHED_ITEM)
 
         assert out.strip(), "bibtex format returned an empty string"
-        assert out.startswith("@article{")
+        assert _entry(out).startswith("@article{")
         # The fallback must carry the metadata, not just an empty shell.
         assert "Organizational Research Methods" in out
         assert "10.1177/1094428121991907" in out
@@ -97,14 +109,14 @@ class TestNeverEmpty:
         running, export = _bbt(export="@article{ronkkoEight2022,\n  title = {T}\n}")
         with running, export:
             out = generate_bibtex(TRASHED_ITEM)
-        assert out.startswith("@article{ronkkoEight2022,")
+        assert _entry(out).startswith("@article{ronkkoEight2022,")
 
     def test_zotero_not_running_uses_local_generation(self):
         running, export = _bbt(running=False, export="unused")
         with running, export:
             out = generate_bibtex(TRASHED_ITEM)
         assert out.strip()
-        assert out.startswith("@article{")
+        assert _entry(out).startswith("@article{")
 
     def test_item_without_key_still_generates(self):
         """A locally-assembled item may carry no key at all; the citekey must
@@ -115,7 +127,7 @@ class TestNeverEmpty:
         with running, export:
             out = generate_bibtex(item)
         assert out.strip()
-        assert "None" not in out.splitlines()[0]
+        assert "None" not in _entry(out).splitlines()[0]
 
     def test_attachment_still_raises(self):
         """Types that genuinely have no BibTeX must keep raising — the point is
@@ -124,3 +136,61 @@ class TestNeverEmpty:
         running, export = _bbt(running=False, export="unused")
         with running, export, pytest.raises(ValueError):
             generate_bibtex(item)
+
+
+# ---------------------------------------------------------------------------
+# A trashed item must say so in every format
+# ---------------------------------------------------------------------------
+
+class TestTrashIsVisibleInBibtex:
+    """The residual half of the same defect.
+
+    Once BibTeX stopped returning "" it returned a perfectly plausible entry
+    for a trashed item — and BibTeX has no field that would say otherwise.
+    ``format="markdown"`` shows a trash status and ``format="json"`` carries
+    ``data.deleted``, so only this format left a consumer unable to tell a
+    live record from a deleted one.
+
+    That is not hypothetical: it is how the original bug was misreported. A
+    caller exported this very item as BibTeX, saw a healthy-looking entry,
+    and concluded the item "exists and is fine" — while it was a
+    deduplicated duplicate sitting in the trash.
+
+    A comment line is inert to every BibTeX parser and visible to a human.
+    """
+
+    def test_trashed_item_is_marked(self):
+        running, export = _bbt(running=False, export="unused")
+        with running, export:
+            out = generate_bibtex(TRASHED_ITEM)
+        assert out.startswith("% Status: in trash\n")
+        # ...and the entry itself is still intact below the marker.
+        assert "@article{" in out
+        assert "Organizational Research Methods" in out
+
+    def test_live_item_is_not_marked(self):
+        item = {"key": "LIVE1234", "data": dict(TRASHED_ITEM["data"])}
+        del item["data"]["deleted"]
+        running, export = _bbt(running=False, export="unused")
+        with running, export:
+            out = generate_bibtex(item)
+        assert not out.startswith("%")
+        assert out.startswith("@article{")
+
+    def test_marker_applies_to_the_better_bibtex_path_too(self):
+        """A trashed item can still export through BBT when BBT happens to
+        know it; the marker must not depend on which generator ran."""
+        running, export = _bbt(export="@article{someKey2022,\n  title = {T}\n}")
+        with running, export:
+            out = generate_bibtex(TRASHED_ITEM)
+        assert out.startswith("% Status: in trash\n")
+        assert "someKey2022" in out
+
+    def test_marker_survives_the_fallback_path(self):
+        running, export = _bbt(
+            error=BetterBibTexError("Better BibTeX has no citation key")
+        )
+        with running, export:
+            out = generate_bibtex(TRASHED_ITEM)
+        assert out.startswith("% Status: in trash\n")
+        assert "Organizational Research Methods" in out

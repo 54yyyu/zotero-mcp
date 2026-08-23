@@ -418,6 +418,14 @@ def generate_bibtex(item: dict[str, Any]) -> str:
     # top level in some locally-assembled items; accept either.
     item_key = data.get("key") or item.get("key")
 
+    # A trashed item exports a perfectly plausible entry, and BibTeX has no
+    # field that would say otherwise — markdown shows a trash status and JSON
+    # carries data.deleted, but a BibTeX consumer sees nothing. That gap is
+    # what made a trashed duplicate look like a healthy record to a caller
+    # reading only this format. A comment line is inert to every BibTeX
+    # parser and visible to every human.
+    trash_marker = "% Status: in trash\n" if data.get("deleted") else ""
+
     # Try Better BibTeX first — it produces better entries and the user's
     # real pinned citekeys. Any failure falls through to the local generator
     # below; BBT is an enhancement, never a prerequisite.
@@ -434,7 +442,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
                 # "no BibTeX" and from "no such item", which is the whole
                 # defect being fixed.
                 if exported and exported.strip():
-                    return exported
+                    return trash_marker + exported
                 logger.warning(
                     "Better BibTeX returned no entry for %s; "
                     "falling back to local BibTeX generation", item_key
@@ -530,7 +538,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         lines[-1] = lines[-1][:-1]
     lines.append("}")
 
-    return "\n".join(lines)
+    return trash_marker + "\n".join(lines)
 
 
 def configured_attachment_priority() -> tuple[str, ...]:
