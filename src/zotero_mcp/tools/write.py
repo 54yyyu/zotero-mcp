@@ -3275,7 +3275,12 @@ _TOC_TIMEOUT = 30
 # reaped right now, returning to the caller matters more than reaping.
 _TOC_KILL_GRACE = 5
 
-# Child script. It imports ONLY fitz — never zotero_mcp — so the subprocess
+# Marks the start of the JSON payload in the child's stdout. Everything the
+# child prints before this — and everything anything else in that interpreter
+# prints — is noise to be discarded (#455).
+_TOC_SENTINEL = "@@ZOTERO_MCP_TOC@@"
+
+# Child script. It imports ONLY PyMuPDF — never zotero_mcp — so the subprocess
 # cannot trigger FastMCP server initialization (macOS 'spawn' deadlock, #178).
 #
 # SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX) is set first on
@@ -3284,6 +3289,24 @@ _TOC_KILL_GRACE = 5
 # keeps them open while it writes a crash dump. The parent then sees a child
 # that never closes its pipes rather than a crash it can report (#431). With
 # the error mode set, the crash comes back as a plain NTSTATUS exit code.
+#
+# Two things keep the JSON channel clean, and both are needed (#455).
+#
+# The import is `pymupdf`, not `fitz`. PyMuPDF >= 1.28 ends its legacy `fitz`
+# shim with message_warning('The `fitz` API is deprecated ...'), and `message`
+# writes to *stdout*. Since our floor is only pymupdf>=1.24.2, every fresh
+# install resolves a version that does this, which is why `get_pdf_outline`
+# failed on every PDF regardless of the file: the notice arrived ahead of the
+# JSON and json.loads choked on the first character. `fitz` remains the
+# fallback for PyMuPDF older than 1.24.3, which has no `pymupdf` name.
+#
+# The payload is also sentinel-delimited, which is the part that generalises.
+# Fixing only the import would leave the channel one stray print away from
+# breaking again, and some of those prints are not ours to prevent: a
+# sitecustomize hook, a .pth file, or a C-level write from MuPDF itself all
+# land on fd 1 before or during our code and none of them can be caught from
+# inside this script. Taking everything after the last sentinel is immune to
+# all of it.
 _TOC_CHILD_SCRIPT = (
     "import json, sys\n"
     "if sys.platform == 'win32':\n"
@@ -3293,13 +3316,16 @@ _TOC_CHILD_SCRIPT = (
     "    except Exception:\n"
     "        pass\n"
     "try:\n"
-    "    import fitz\n"
+    "    import pymupdf as fitz\n"
     "except ImportError:\n"
-    f"    sys.exit({_TOC_EXIT_NO_PYMUPDF})\n"
+    "    try:\n"
+    "        import fitz\n"
+    "    except ImportError:\n"
+    f"        sys.exit({_TOC_EXIT_NO_PYMUPDF})\n"
     "doc = fitz.open(sys.argv[1])\n"
     "toc = doc.get_toc()\n"
     "doc.close()\n"
-    "sys.stdout.write(json.dumps(toc))\n"
+    f"sys.stdout.write({_TOC_SENTINEL!r} + json.dumps(toc))\n"
 )
 
 
@@ -3407,8 +3433,22 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
         return TocOutcome("error", [], str(exc))
 
     if proc.returncode == 0:
+        # Take only what follows the last sentinel. Anything ahead of it is
+        # something else in the child's interpreter writing to stdout — a
+        # PyMuPDF deprecation notice, a sitecustomize hook, a MuPDF warning
+        # — and is not ours to parse (#455).
+        payload = stdout or ""
+        if _TOC_SENTINEL in payload:
+            payload = payload.rsplit(_TOC_SENTINEL, 1)[1]
+        elif payload.strip():
+            # The child exited 0 but produced no sentinel. It cannot have
+            # reached its final write, so whatever is here is noise, not a
+            # truncated outline; say that rather than blaming the JSON.
+            return TocOutcome(
+                "error", [], "child produced no outline data (stdout was not tagged)"
+            )
         try:
-            return TocOutcome("ok", json.loads(stdout or "[]"))
+            return TocOutcome("ok", json.loads(payload or "[]"))
         except ValueError as exc:
             return TocOutcome("error", [], f"unreadable outline data: {exc}")
 

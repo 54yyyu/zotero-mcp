@@ -481,7 +481,7 @@ def _build_attachment_extra(info):
 
 @mcp.tool(
     name="zotero_get_collection_items",
-    description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. include_subcollections=True also returns items filed in collections nested beneath this one (default False, matching Zotero's own 'Search subcollections' checkbox). TIP: To find papers on a specific topic, use zotero_semantic_search instead — it's faster and returns only relevant results."
+    description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. include_subcollections=True also returns items filed in collections nested beneath this one (default False, matching Zotero's own 'Search subcollections' checkbox). For a collection larger than limit, page through it with offset (the response names the next offset to pass). TIP: To find papers on a specific topic, use zotero_semantic_search instead — it's faster and returns only relevant results."
 )
 @with_zotero_api_lock
 def get_collection_items(
@@ -489,6 +489,7 @@ def get_collection_items(
     detail: Literal["keys_only", "summary", "full"] = "summary",
     limit: int | str | None = 50,
     include_subcollections: bool = False,
+    offset: int | str | None = 0,
     *,
     ctx: Context
 ) -> str:
@@ -501,6 +502,8 @@ def get_collection_items(
         include_subcollections: Also return items in collections nested beneath
             this one. Defaults to False, matching Zotero's own "Search
             subcollections" checkbox and this tool's previous behaviour.
+        offset: Index of the first item to return, for paging through a
+            collection larger than `limit`.
         ctx: MCP context
 
     Returns:
@@ -525,7 +528,11 @@ def get_collection_items(
                 f"If you just created this collection, wait a moment and try again."
             )
 
-        limit = _helpers._normalize_limit(limit, default=50)
+        # The old ceiling was _normalize_limit's default of 100, which made
+        # a collection larger than that impossible to enumerate: raising
+        # `limit` did nothing past 100 and there was no offset (#453).
+        limit = _helpers._normalize_limit(limit, default=50, max_val=1000)
+        offset = _helpers._normalize_offset(offset)
 
         # Fetch all items (includes children mixed in with parents). With
         # subcollections requested this is one call per collection in the
@@ -577,18 +584,23 @@ def get_collection_items(
         if not parent_items:
             return f"No items found in collection: {collection_name} (Key: {collection_key})"
 
-        # Apply display limit after filtering
-        if limit and len(parent_items) > limit:
-            display_items = parent_items[:limit]
-            truncated = True
-        else:
-            display_items = parent_items
-            truncated = False
+        # Apply the display window after filtering.
+        total_items = len(parent_items)
+        display_items = parent_items[offset:offset + limit] if limit else parent_items[offset:]
+        shown_from = offset + 1 if display_items else offset
+        shown_to = offset + len(display_items)
+        has_more = shown_to < total_items
+
+        if offset and not display_items:
+            return (
+                f"# Items in Collection: {collection_name} ({total_items} items)\n\n"
+                f"*No items at offset {offset}; the collection holds {total_items}.*"
+            )
 
         # Format items as markdown based on detail level
-        output = [f"# Items in Collection: {collection_name} ({len(parent_items)} items)", ""]
+        output = [f"# Items in Collection: {collection_name} ({total_items} items)", ""]
 
-        for i, item in enumerate(display_items, 1):
+        for i, item in enumerate(display_items, offset + 1):
             key = item.get("key", "")
             data = item.get("data", {})
             info = attachment_info.get(key, {})
@@ -626,8 +638,14 @@ def get_collection_items(
                     extra_fields=extra
                 ))
 
-        if truncated:
-            output.append(f"\n*Showing {limit} of {len(parent_items)} items. Increase the limit parameter to see more.*")
+        if has_more or offset:
+            more = (
+                f" Pass offset={shown_to} for the next page."
+                if has_more else ""
+            )
+            output.append(
+                f"\n*Showing items {shown_from}-{shown_to} of {total_items}.{more}*"
+            )
 
         result = "\n".join(output)
         if detail == "full":
@@ -1385,7 +1403,12 @@ def get_recent(
         ctx.info(f"Fetching {limit} recent items")
         zot = _client.get_zotero_client()
 
-        limit = _helpers._normalize_limit(limit, default=10)
+        # The Zotero API serves at most 100 items per request, so a single
+        # call silently returned 100 for any larger limit -- and then the
+        # heading below announced the number that had been *asked* for (#453).
+        # Paginating makes the limit mean what it says; the heading now
+        # reports what actually came back either way.
+        limit = _helpers._normalize_limit(limit, default=10, max_val=1000)
 
         # Get recent items, optionally scoped to a collection
         if collection_key:
@@ -1395,16 +1418,21 @@ def get_recent(
                 _col = None
             if not _col or _col.get("key") != collection_key:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            items = zot.collection_items(collection_key, sort="dateAdded", direction="desc", limit=limit)
+            items = _utils._paginate(
+                zot.collection_items, collection_key,
+                sort="dateAdded", direction="desc", max_items=limit,
+            )
         else:
-            items = zot.items(limit=limit, sort="dateAdded", direction="desc")
+            items = _utils._paginate(
+                zot.items, sort="dateAdded", direction="desc", max_items=limit,
+            )
 
         if not items:
             return "No items found in your Zotero library." if not collection_key else f"No items found in collection: {collection_key}"
 
         # Format items as markdown
         scope = f" in Collection {collection_key}" if collection_key else ""
-        output = [f"# {limit} Most Recently Added Items{scope}", ""]
+        output = [f"# {len(items)} Most Recently Added Items{scope}", ""]
 
         for i, item in enumerate(items, 1):
             added = item.get("data", {}).get("dateAdded", "Unknown")

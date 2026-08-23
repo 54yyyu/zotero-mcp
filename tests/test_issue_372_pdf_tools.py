@@ -272,7 +272,9 @@ class TestExtractPdfTocIsolation:
         monkeypatch.setattr(
             write_tools,
             "_TOC_CHILD_SCRIPT",
-            "import sys; sys.stdout.write('[[1, \"Intro\", 1]]')",
+            "import sys; sys.stdout.write("
+            + repr(write_tools._TOC_SENTINEL)
+            + " + '[[1, \"Intro\", 1]]')",
         )
 
         outcome = write_tools._extract_pdf_toc(str(tmp_path / "paper.pdf"))
@@ -332,7 +334,9 @@ class TestExtractPdfTocIsolation:
         monkeypatch.setattr(
             write_tools,
             "_TOC_CHILD_SCRIPT",
-            "import json, os, sys; sys.stdout.write(json.dumps(sorted(os.environ)))",
+            "import json, os, sys; sys.stdout.write("
+            + repr(write_tools._TOC_SENTINEL)
+            + " + json.dumps(sorted(os.environ)))",
         )
 
         outcome = write_tools._extract_pdf_toc(str(tmp_path / "paper.pdf"))

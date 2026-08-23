@@ -167,8 +167,14 @@ def _paginate(zot_method, *args, max_items=None, **kwargs):
             break
         start += page_size
         if max_items and len(items) >= max_items:
-            items = items[:max_items]
             break
+    # Trimmed on the way out rather than only on the early-exit path. The cap
+    # used to be applied inside the loop, which the last page skips: a run
+    # that ended on a short batch returned everything it had fetched, however
+    # small max_items was. Callers that pass it to bound a *response* — not
+    # just the fetching — then over-reported (#453).
+    if max_items:
+        return items[:max_items]
     return items
 
 
