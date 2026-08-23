@@ -10,6 +10,19 @@ from typing import Any
 
 import requests
 
+
+class BetterBibTexError(Exception):
+    """A Better BibTeX JSON-RPC call could not produce a result.
+
+    Raised instead of returning an empty string so that a failure is
+    distinguishable from a legitimately empty result. BBT returns a *null*
+    citekey (not an error) for items it does not index — trashed items are
+    the common case — and the previous ``return ""`` collapsed that, RPC
+    errors, and timeouts into a value the caller could not tell apart from
+    "this item has no BibTeX" or "this item does not exist" (#465 follow-up).
+    """
+
+
 # Matches the opening ``@type{`` line of a BibTeX entry where the citekey is
 # either absent or followed immediately by the comma + newline that a
 # missing-citekey entry produces. Used to inject the citekey when BBT's
@@ -242,7 +255,11 @@ class ZoteroBetterBibTexAPI:
             library_id: Library ID (default: 1 = Personal Library)
 
         Returns:
-            BibTeX formatted string
+            BibTeX formatted string (never empty).
+
+        Raises:
+            BetterBibTexError: if BBT has no citation key for the item, the
+                JSON-RPC call fails, or the export comes back blank.
         """
         try:
             # Better BibTeX translator ID for BibTeX export
@@ -256,12 +273,15 @@ class ZoteroBetterBibTexAPI:
             )
 
             if not citation_mapping:
-                raise Exception(f"No citation key found for item: {item_key}")
+                raise BetterBibTexError(f"No citation key found for item: {item_key}")
 
             citation_key = citation_mapping.get(item_key)
 
             if not citation_key:
-                raise Exception(f"Citation key not found for item: {item_key}")
+                raise BetterBibTexError(
+                    f"Better BibTeX has no citation key for item {item_key} "
+                    "(BBT does not index trashed items)"
+                )
 
             # Step 2: Export BibTeX using the citation key.
             export_result = self._make_request(
@@ -284,14 +304,22 @@ class ZoteroBetterBibTexAPI:
             else:
                 bibtex_str = str(export_result)
 
+            if not bibtex_str or not bibtex_str.strip():
+                raise BetterBibTexError(
+                    f"Better BibTeX returned an empty export for item: {item_key}"
+                )
+
             # BBT's ``item.export`` omits the citekey from the @-line in some
             # versions (#293 Bug 2) — entries come back as ``@article{`` with
             # an empty key. Inject the citekey we already resolved above.
             return _inject_citekey(bibtex_str, citation_key)
 
+        except BetterBibTexError:
+            raise
         except Exception as e:
-            print(f"Error exporting BibTeX: {e}")
-            return ""
+            raise BetterBibTexError(
+                f"Better BibTeX export failed for item {item_key}: {e}"
+            ) from e
 
 
 def process_annotation(annotation: dict[str, Any], attachment: dict[str, Any], format_type: str = 'markdown') -> dict[str, Any]:

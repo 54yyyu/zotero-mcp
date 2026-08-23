@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
 
+### Fixed
+- **`zotero_get_item_metadata(format="bibtex")` no longer returns an empty string for an item it can read.** Better BibTeX does not index trashed items and answers `item.citationkey` for one with `{"KEY": null}` — a successful RPC carrying no key. `export_bibtex` caught the exception that raised, printed it, and returned `""`; `generate_bibtex` handed that straight back because Zotero was running, never reaching the local BibTeX generator sitting immediately below it. The reported item was a deduplicated duplicate in the trash: `format="markdown"` rendered the full record while `format="bibtex"` returned `""`, and an empty string reads the same as "this item has no BibTeX" and as "this item does not exist", so a caller cannot tell a failure from a negative result. `export_bibtex` now raises `BetterBibTexError` instead of returning `""`, and `generate_bibtex` treats Better BibTeX as an enhancement rather than a prerequisite: any failure, and any blank export, falls through to local generation. Reported with a live repro by the systematic-review agent running against a 15k-item library.
+
 ## [0.9.1] - 2026-08-05
 
 ### Changed
