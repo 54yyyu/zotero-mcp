@@ -9,10 +9,12 @@ suite free of binary fixtures.
 
 import logging
 import os
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 
 import pytest
 
-from zotero_mcp import fulltext_cache
+from zotero_mcp import fulltext_cache, local_db
 from zotero_mcp.local_db import (
     LocalZoteroReader,
     _extract_worker,
@@ -187,6 +189,114 @@ def test_cache_is_off_by_default(files, tmp_path):
     dict(reader.extract_fulltext_for_items([(1, "KEY1")]))
     root = fulltext_cache.get_fulltext_cache_root(cfg)
     assert list(root.glob("*.txt")) == []
+
+
+class DeadPool:
+    """An executor whose worker processes die partway through the batch.
+
+    Reproduces what a real :class:`BrokenProcessPool` does to a run: futures
+    that already completed keep their results, and every future still
+    outstanding raises the same error regardless of whether its own file was
+    the one that killed the worker. Faking the executor rather than provoking
+    a genuine OOM keeps the test deterministic, fast, and portable to Windows
+    CI — the handler under test only ever sees the exception type.
+    """
+
+    survive = 0  # submissions served normally before the pool dies
+
+    def __init__(self, max_workers=None, initializer=None):
+        self.submitted = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def submit(self, fn, *args):
+        future = Future()
+        self.submitted += 1
+        if self.submitted <= self.survive:
+            future.set_result(fn(*args))
+        else:
+            future.set_exception(
+                BrokenProcessPool("A process in the process pool was terminated abruptly")
+            )
+        return future
+
+
+def _dead_pool_after(monkeypatch, survive):
+    """Install a pool that serves ``survive`` submissions, then dies."""
+    monkeypatch.setattr(
+        local_db, "ProcessPoolExecutor", type("DeadPoolN", (DeadPool,), {"survive": survive})
+    )
+
+
+def test_broken_process_pool_is_a_runtime_error():
+    """Why a blanket ``except Exception`` silently absorbed it.
+
+    Guards the ordering of the two handlers: the specific one has to stay
+    ahead of the general one or the containment below is dead code.
+    """
+    assert issubclass(BrokenProcessPool, RuntimeError)
+
+
+def test_dead_pool_does_not_strand_the_rest_of_the_batch(files, tmp_path, monkeypatch):
+    """One dead worker must cost one item, not every item still pending.
+
+    Empty text is recorded as ``has_fulltext="failed"``, and that marker is
+    sticky — the skip logic will not retry it until the item's dateModified or
+    attachment set changes, or the whole collection is rebuilt. So letting
+    every outstanding future decay to empty text would quietly poison a large
+    run for every subsequent run too.
+    """
+    cfg = str(tmp_path / "config.json")
+    items = [(i, f"KEY{i}") for i in range(1, len(files) + 1)]
+    healthy = dict(FakeReader(files, workers=1).extract_fulltext_for_items(items))
+
+    _dead_pool_after(monkeypatch, survive=3)
+    reader = FakeReader(files, cfg=cfg, workers=4, ft_cache=True)
+    got = dict(reader.extract_fulltext_for_items(items))
+
+    assert got == healthy
+    assert all(v is not None for v in got.values())
+    # The recovered items went through the real in-process path, so their text
+    # is cached exactly as a healthy run would have cached it.
+    root = fulltext_cache.get_fulltext_cache_root(cfg)
+    assert len(list(root.glob("*.txt"))) == len(files)
+
+
+def test_dead_pool_still_reports_every_item(files, tmp_path, monkeypatch):
+    """Callers rely on one result per input to mark extraction as attempted.
+
+    The unreadable file stands in for whatever killed the worker: it still
+    yields ``None`` rather than vanishing, and it does not take the readable
+    items down with it.
+    """
+    files = [*files, tmp_path / "does-not-exist.txt"]
+    items = [(i, f"KEY{i}") for i in range(1, len(files) + 1)]
+
+    _dead_pool_after(monkeypatch, survive=2)
+    got = dict(FakeReader(files, workers=4).extract_fulltext_for_items(items))
+
+    assert set(got) == {i for i, _ in items}
+    assert got[len(files)] is None
+    assert all(got[i] is not None for i, _ in items[:-1])
+
+
+def test_dead_pool_recovers_through_the_zotero_ft_cache_too(files, tmp_path, monkeypatch):
+    """In-process recovery is the sequential path, fallbacks included."""
+    _dead_pool_after(monkeypatch, survive=0)  # dies on the very first result
+    reader = FakeReader(files, workers=4)
+    empty = tmp_path / "scanned.txt"
+    empty.write_text("", encoding="utf-8")
+    reader._files[1] = empty
+    reader.zotero_ft_cache["ATT1"] = "text from zotero"
+
+    got = dict(reader.extract_fulltext_for_items([(1, "KEY1"), (2, "KEY2")]))
+
+    assert got[1] == ("text from zotero", "zotero-cache")
+    assert got[2] is not None
 
 
 def test_worker_count_is_clamped_to_at_least_one():

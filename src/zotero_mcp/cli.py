@@ -624,6 +624,22 @@ def main():
                 print(f"Error: {stats['error']}")
                 sys.exit(1)
 
+            # Best-effort sweep so the transient cache cannot outlive the runs
+            # that fill it. Per-item eviction already covers everything that
+            # embeds successfully; this catches what it structurally cannot —
+            # entries abandoned by an interrupted run, entries whose
+            # attachment has since been deleted, and .txt files orphaned by a
+            # crash between writing the text and saving the index. Never fatal:
+            # the update itself has already succeeded by this point.
+            try:
+                from zotero_mcp import fulltext_cache
+
+                purged = fulltext_cache.purge_stale(config_path=str(config_path))
+                if purged:
+                    print(f"Purged {purged} stale fulltext cache entries")
+            except Exception as e:
+                print(f"Note: could not purge stale fulltext cache entries ({e})")
+
         except Exception as e:
             print(f"Error updating database: {e}")
             sys.exit(1)

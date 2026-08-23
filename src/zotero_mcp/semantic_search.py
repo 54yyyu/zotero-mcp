@@ -2788,6 +2788,19 @@ class ZoteroSemanticSearch:
                     stats["imported_items"] += len(ids)
                     stats["updated_items"] += len(existing_ids)
                     stats["added_items"] += len(ids) - len(existing_ids)
+                    # Same contract as the realtime path: the embeddings are
+                    # in ChromaDB, so the transient copy of their extracted
+                    # text has done its job. Without this the cache grows to
+                    # hold the whole library on the batch flow, since nothing
+                    # else on it ever evicts. Ids are ``<key>`` or
+                    # ``<key>#<n>``, so strip any chunk suffix first.
+                    try:
+                        fulltext_cache.evict_many(
+                            {doc_id.split("#", 1)[0] for doc_id in ids},
+                            config_path=self.config_path,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Fulltext cache eviction failed: {e}")
 
                 batch["imported_at"] = datetime.now().isoformat()
                 batch["imported_count"] = len(ids)
