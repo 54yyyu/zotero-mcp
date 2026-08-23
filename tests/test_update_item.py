@@ -1374,7 +1374,11 @@ class TestUpdateItemSkippedFields:
         # edition should be applied (valid for book)
         assert len(fake.update_calls) == 1
         assert fake.update_calls[0]["data"]["edition"] == "2nd"
-        assert "Successfully" in result
+        # A write that dropped two of three fields is not a success. The
+        # headline has to say so, or a caller reads "done" and never learns
+        # the fields went nowhere.
+        assert "Partially updated" in result
+        assert "Successfully" not in result
         # issue and pages should be skipped (not valid for book)
         assert "issue" in result
         assert "pages" in result
@@ -1394,9 +1398,81 @@ class TestUpdateItemSkippedFields:
         )
 
         assert len(fake.update_calls) == 0
-        assert "No changes" in result
+        # "No changes to apply" understates this: changes were requested and
+        # every one of them was discarded.
+        assert "No fields applied" in result
         assert "issue" in result
         assert "pages" in result
+        # And the caller is told how to make them writable.
+        assert "item_type" in result
+
+    def test_clean_update_still_reports_success(self, monkeypatch):
+        """No skips means no hedging — the headline stays "Successfully"."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            fields={"edition": "2nd"},
+            ctx=DummyContext(),
+        )
+
+        assert "Successfully updated" in result
+        assert "Partially" not in result
+        assert "Skipped" not in result
+
+    def test_partial_headline_counts_applied_and_skipped(self, monkeypatch):
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            fields={"edition": "2nd", "issue": "3", "pages": "1-10"},
+            ctx=DummyContext(),
+        )
+
+        assert "1 applied, 2 skipped" in result
+
+    def test_unchanged_valid_field_is_not_reported_as_invalid(self, monkeypatch):
+        """A valid field whose value already matches is a no-op, not a
+        rejection — the "every requested field is invalid" wording must not
+        claim otherwise just because nothing moved."""
+        item = _make_book_item(publisher="OUP")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            fields={"publisher": "OUP", "issue": "2"},
+            ctx=DummyContext(),
+        )
+
+        assert "No changes to apply" in result
+        assert "every requested field is invalid" not in result
+        # The skip is still surfaced.
+        assert "issue" in result
+
+    def test_nothing_requested_is_not_a_skip_report(self, monkeypatch):
+        """An empty update is still plain "No changes to apply" — nothing was
+        dropped, so there is nothing to warn about."""
+        item = _make_book_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="BOOK1234",
+            fields={},
+            ctx=DummyContext(),
+        )
+
+        assert "No changes to apply" in result
+        assert "Skipped" not in result
 
     def test_existing_field_skipped_on_wrong_type(self, monkeypatch):
         """Existing fields (e.g., publication_title) should also warn if not valid for type."""

@@ -1961,6 +1961,10 @@ def update_item(
 
         known_fields = _schema.valid_fields(item_type)
         skipped = []
+        # Counted separately from ``changes``: a valid field whose value
+        # already matches records no change but was still accepted, so the
+        # request was not "every field invalid".
+        accepted = 0
         for field, value in field_updates.items():
             actual = _schema.resolve_field(item_type, field)
             param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
@@ -1968,6 +1972,7 @@ def update_item(
             if not is_valid:
                 skipped.append(param_name)
                 continue
+            accepted += 1
             if actual in data:
                 old = data[actual]
                 if old != value:
@@ -2030,24 +2035,44 @@ def update_item(
                     f"- **collections**: replaced {old_collections} -> {deduped}"
                 )
 
+        # A skipped field is a dropped write, not a footnote. Reporting it
+        # under a "Successfully updated" headline reads as "done" to a caller,
+        # which is how an item can sit in the wrong type indefinitely: the
+        # fields that would make it right are silently discarded on every
+        # attempt. The headline states the partial outcome instead, and names
+        # the remedy — item_type migrates the item so the fields become valid.
         skip_warning = ""
         if skipped:
             item_type = data.get("itemType", "unknown")
             skip_warning = (
                 f"\n\nSkipped (not valid for item type "
                 f"'{item_type}'): {', '.join(skipped)}"
+                f"\nIf '{item_type}' is the wrong type for this item, pass "
+                f"item_type=... to migrate it; these fields can then be "
+                f"written."
             )
 
         if not changes:
+            # Every requested field was rejected — distinct from "the values
+            # you asked for were already set", which is a genuine no-op.
+            if skipped and not accepted:
+                return (
+                    f"No fields applied to item `{item_key}`: every requested "
+                    f"field is invalid for item type "
+                    f"'{data.get('itemType', 'unknown')}'." + skip_warning
+                )
             return "No changes to apply." + skip_warning
 
         resp = write_zot.update_item(item)
         if _helpers._handle_write_response(resp, ctx):
-            result = (
-                f"Successfully updated item `{item_key}`:\n\n"
-                + "\n".join(changes)
-            )
-            return result + skip_warning
+            if skipped:
+                headline = (
+                    f"Partially updated item `{item_key}` — "
+                    f"{len(changes)} applied, {len(skipped)} skipped:"
+                )
+            else:
+                headline = f"Successfully updated item `{item_key}`:"
+            return f"{headline}\n\n" + "\n".join(changes) + skip_warning
         return "Failed to update item: write operation returned failure"
 
     except ValueError as e:
