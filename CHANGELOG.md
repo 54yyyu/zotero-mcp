@@ -8,7 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`zotero_add_by_url` reads the citation a publisher page publishes about itself.** Journal platforms — OJS/PKP, Atypon, Frontiers, PLOS, DSpace repositories — embed the article's metadata in the page head as Highwire `citation_*` tags, which is what Zotero's browser connector reads. The generic-URL path never fetched the page: it built a `webpage` template, set `title = url`, and created it, so saving an article landing page produced an item whose only populated field was the URL. It now reads those tags (and Dublin Core, and Open Graph as a last resort for a title), and creates a `journalArticle` or `bookSection` with title, authors, journal, volume, issue, pages, date, DOI, ISSN and abstract. A page that declares its own DOI takes the `add_by_doi` route instead, which already handles DOI de-duplication, CrossRef enrichment and open-access PDF attachment, falling back to the page's tags if CrossRef does not know the DOI. Reported by the systematic-review agent against a real OJS install.
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
+
+### Fixed
+- **A URL that could only be recorded as a bare link now says why.** When a page cannot be fetched, is not HTML, or carries no citation metadata, `zotero_add_by_url` still creates the `webpage` item it always did, but the result names the reason and points at the remedy instead of returning a blank-looking success. The case that prompted this: a university OJS host whose HTTPS chain browsers and `curl` accept but OpenSSL will not verify, so the fetch fails for a reason that has nothing to do with the item and previously left no trace.
 
 ## [0.9.1] - 2026-08-05
 
