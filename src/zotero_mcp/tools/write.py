@@ -963,8 +963,20 @@ def add_by_doi(
     if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
     create_missing_collections: bool = False,
     *,
+    supplemental: EmbeddedMetadata | None = None,
     ctx: Context
 ) -> str:
+    """Add an item by DOI, from CrossRef.
+
+    ``supplemental`` carries metadata read from the page the DOI was found
+    on, and fills *only* fields CrossRef left empty. CrossRef stays
+    authoritative where it says anything at all. This matters because a
+    publisher can register an article's DOI as a ``journal-issue``, whose
+    CrossRef record legitimately carries no title, authors, volume, issue or
+    pages — while the article's own landing page advertises all of them.
+    Without this, routing such a page through the DOI produced a titleless
+    item, worse than not consulting CrossRef at all.
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -1089,6 +1101,31 @@ def add_by_doi(
         for field, value in field_map.items():
             if field in item_data and value:
                 item_data[field] = value
+
+        # Fill the gaps CrossRef left, from the page the DOI came from.
+        # Never overwrite: a value CrossRef supplied wins.
+        if supplemental is not None:
+            page_fields = {
+                "title": supplemental.title,
+                "publicationTitle": supplemental.publication,
+                "bookTitle": supplemental.book_title,
+                "volume": supplemental.volume,
+                "issue": supplemental.issue,
+                "pages": supplemental.pages,
+                "date": supplemental.date,
+                "ISSN": supplemental.issn,
+                "ISBN": supplemental.isbn,
+                "language": supplemental.language,
+                "publisher": supplemental.publisher,
+            }
+            for field, value in page_fields.items():
+                if value and field in item_data and not item_data[field]:
+                    item_data[field] = value
+            if supplemental.authors and not item_data.get("creators"):
+                item_data["creators"] = [
+                    {"creatorType": "author", "firstName": first, "lastName": last}
+                    for first, last in supplemental.authors
+                ]
 
         # Tags
         tag_list = _helpers._normalize_str_list_input(tags, "tags")
@@ -1356,6 +1393,7 @@ def add_by_url(
                 doi=embedded.doi, collections=collections, tags=tags,
                 attach_mode=attach_mode, if_exists=if_exists,
                 create_missing_collections=create_missing_collections,
+                supplemental=embedded,
                 ctx=ctx,
             )
             if not doi_result.startswith(("DOI not found", "Error", "Failed")):

@@ -1,0 +1,232 @@
+{
+  "indexed": {
+    "date-parts": [
+      [
+        2026,
+        8,
+        19
+      ]
+    ],
+    "date-time": "2026-08-19T18:52:44Z",
+    "timestamp": 1787165564438,
+    "version": "3.56.0"
+  },
+  "reference-count": 108,
+  "publisher": "Elsevier BV",
+  "issue": "1",
+  "license": [
+    {
+      "start": {
+        "date-parts": [
+          [
+            2020,
+            1,
+            1
+          ]
+        ],
+        "date-time": "2020-01-01T00:00:00Z",
+        "timestamp": 1577836800000
+      },
+      "content-version": "tdm",
+      "delay-in-days": 0,
+      "URL": "https://www.elsevier.com/tdm/userlicense/1.0/"
+    },
+    {
+      "start": {
+        "date-parts": [
+          [
+            2020,
+            1,
+            1
+          ]
+        ],
+        "date-time": "2020-01-01T00:00:00Z",
+        "timestamp": 1577836800000
+      },
+      "content-version": "tdm",
+      "delay-in-days": 0,
+      "URL": "https://www.elsevier.com/legal/tdmrep-license"
+    }
+  ],
+  "content-domain": {
+    "domain": [
+      "elsevier.com",
+      "sciencedirect.com"
+    ],
+    "crossmark-restriction": true
+  },
+  "published-print": {
+    "date-parts": [
+      [
+        2020,
+        1
+      ]
+    ]
+  },
+  "DOI": "10.1016/j.jbusvent.2019.105970",
+  "type": "journal-article",
+  "created": {
+    "date-parts": [
+      [
+        2019,
+        11,
+        12
+      ]
+    ],
+    "date-time": "2019-11-12T12:20:22Z",
+    "timestamp": 1573561222000
+  },
+  "page": "105970",
+  "update-policy": "https://doi.org/10.1016/elsevier_cm_policy",
+  "source": "Crossref",
+  "is-referenced-by-count": 487,
+  "title": "Using fuzzy-set qualitative comparative analysis for a finer-grained understanding of entrepreneurship",
+  "prefix": "10.1016",
+  "volume": "35",
+  "author": [
+    {
+      "given": "Evan J.",
+      "family": "Douglas",
+      "sequence": "first",
+      "affiliation": [],
+      "role": [
+        {
+          "vocabulary": "crossref",
+          "role": "author"
+        }
+      ]
+    },
+    {
+      "given": "Dean A.",
+      "family": "Shepherd",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+        {
+          "vocabulary": "crossref",
+          "role": "author"
+        }
+      ]
+    },
+    {
+      "given": "Catherine",
+      "family": "Prentice",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+        {
+          "vocabulary": "crossref",
+          "role": "author"
+        }
+      ]
+    }
+  ],
+  "member": "78",
+  "container-title": "Journal of Business Venturing",
+  "original-title": [],
+  "language": "en",
+  "link": [
+    {
+      "URL": "https://api.elsevier.com/content/article/PII:S0883902619300916?httpAccept=text/xml",
+      "content-type": "text/xml",
+      "content-version": "vor",
+      "intended-application": "text-mining"
+    },
+    {
+      "URL": "https://api.elsevier.com/content/article/PII:S0883902619300916?httpAccept=text/plain",
+      "content-type": "text/plain",
+      "content-version": "vor",
+      "intended-application": "text-mining"
+    }
+  ],
+  "deposited": {
+    "date-parts": [
+      [
+        2025,
+        10,
+        10
+      ]
+    ],
+    "date-time": "2025-10-10T18:50:00Z",
+    "timestamp": 1760122200000
+  },
+  "score": 1,
+  "resource": {
+    "primary": {
+      "URL": "https://linkinghub.elsevier.com/retrieve/pii/S0883902619300916"
+    }
+  },
+  "subtitle": [],
+  "short-title": [],
+  "issued": {
+    "date-parts": [
+      [
+        2020,
+        1
+      ]
+    ]
+  },
+  "references-count": 108,
+  "journal-issue": {
+    "issue": "1",
+    "published-print": {
+      "date-parts": [
+        [
+          2020,
+          1
+        ]
+      ]
+    }
+  },
+  "alternative-id": [
+    "S0883902619300916"
+  ],
+  "URL": "http://dx.doi.org/10.1016/j.jbusvent.2019.105970",
+  "relation": {},
+  "ISSN": [
+    "0883-9026"
+  ],
+  "subject": [],
+  "container-title-short": "Journal of Business Venturing",
+  "published": {
+    "date-parts": [
+      [
+        2020,
+        1
+      ]
+    ]
+  },
+  "assertion": [
+    {
+      "value": "Elsevier",
+      "name": "publisher",
+      "label": "This article is maintained by"
+    },
+    {
+      "value": "Using fuzzy-set qualitative comparative analysis for a finer-grained understanding of entrepreneurship",
+      "name": "articletitle",
+      "label": "Article Title"
+    },
+    {
+      "value": "Journal of Business Venturing",
+      "name": "journaltitle",
+      "label": "Journal Title"
+    },
+    {
+      "value": "https://doi.org/10.1016/j.jbusvent.2019.105970",
+      "name": "articlelink",
+      "label": "CrossRef DOI link to publisher maintained version"
+    },
+    {
+      "value": "article",
+      "name": "content_type",
+      "label": "Content Type"
+    },
+    {
+      "value": "© 2019 Elsevier Inc. All rights reserved.",
+      "name": "copyright",
+      "label": "Copyright"
+    }
+  ],
+  "article-number": "105970"
+}

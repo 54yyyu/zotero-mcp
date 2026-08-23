@@ -183,3 +183,94 @@ class TestDegradesToTheOldBehaviour:
             write.add_by_url(url=ARTICLE_URL, ctx=DummyContext())
 
         assert patched.created[0]["itemType"] == "journalArticle"
+
+
+# ---------------------------------------------------------------------------
+# Page metadata fills the gaps CrossRef leaves
+# ---------------------------------------------------------------------------
+
+class TestSupplementalMetadata:
+    """A publisher can register an article's DOI as a ``journal-issue``,
+    whose CrossRef record legitimately carries no title, authors, volume,
+    issue or pages — while the article's own landing page advertises all of
+    them.
+
+    Live example: 10.13165/vpa-20-19-2-04. CrossRef returns
+    ``title: []``, no author, no volume, no issue, no page. Routing that page
+    through its DOI without consulting the page again produced a *titleless*
+    item — worse than not asking CrossRef at all.
+    """
+
+    ISSUE_LEVEL_CROSSREF = {
+        "type": "journal-issue",
+        "title": [],
+        "container-title": ["Public Policy and Administration"],
+        "DOI": "10.13165/vpa-20-19-2-04",
+        "ISSN": ["1648-2603"],
+        "published": {"date-parts": [[2020]]},
+    }
+
+    def _crossref(self, message):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"status": "ok", "message": message}
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def _meta(self):
+        from zotero_mcp.html_metadata import extract_embedded_metadata
+        return extract_embedded_metadata(OJS_PAGE)
+
+    def test_page_fills_what_crossref_omits(self, patched):
+        from zotero_mcp.tools import write as w
+        with patch("zotero_mcp.tools.write.requests.get",
+                   return_value=self._crossref(self.ISSUE_LEVEL_CROSSREF)), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            w.add_by_doi(doi="10.13165/vpa-20-19-2-04",
+                         supplemental=self._meta(), ctx=DummyContext())
+
+        item = patched.created[0]
+        assert item["title"] == "DETERMINANTS OF PUBLIC TRUST", (
+            "CrossRef sent title: [] — the page had the title all along"
+        )
+        assert [c["lastName"] for c in item["creators"]] == ["Haning", "Hamzah"]
+
+    def test_crossref_still_wins_where_it_speaks(self, patched):
+        """The page fills gaps; it does not override. CrossRef is the
+        authority wherever it says anything at all."""
+        from zotero_mcp.tools import write as w
+        message = dict(self.ISSUE_LEVEL_CROSSREF)
+        message["title"] = ["The CrossRef Title"]
+        with patch("zotero_mcp.tools.write.requests.get",
+                   return_value=self._crossref(message)), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            w.add_by_doi(doi="10.13165/vpa-20-19-2-04",
+                         supplemental=self._meta(), ctx=DummyContext())
+
+        assert patched.created[0]["title"] == "The CrossRef Title"
+
+    def test_no_supplemental_is_unchanged(self, patched):
+        """Callers that pass nothing behave exactly as before."""
+        from zotero_mcp.tools import write as w
+        with patch("zotero_mcp.tools.write.requests.get",
+                   return_value=self._crossref(self.ISSUE_LEVEL_CROSSREF)), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            w.add_by_doi(doi="10.13165/vpa-20-19-2-04", ctx=DummyContext())
+
+        assert not patched.created[0].get("title")
+
+    def test_add_by_url_passes_the_page_down(self, patched):
+        """The wiring: a DOI-declaring page hands its own tags to the DOI
+        route rather than discarding them."""
+        with patch("zotero_mcp.tools.write.requests.get",
+                   return_value=_html_response(OJS_PAGE_WITH_DOI)), \
+             patch("zotero_mcp.tools.write.add_by_doi",
+                   return_value="Successfully added: **X**") as mock_doi:
+            write.add_by_url(url=ARTICLE_URL, ctx=DummyContext())
+
+        supplied = mock_doi.call_args.kwargs["supplemental"]
+        assert supplied.title == "DETERMINANTS OF PUBLIC TRUST"
+        assert supplied.volume == "19"
