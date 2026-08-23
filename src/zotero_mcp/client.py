@@ -5,6 +5,7 @@ Zotero client wrapper for MCP server.
 import functools
 import logging
 import os
+import re
 import shutil
 import threading
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ import httpx
 from dotenv import load_dotenv
 from pyzotero import zotero
 
+from zotero_mcp import schema
 from zotero_mcp.extract import (
     categorize_attachment,
     extract_file,
@@ -26,6 +28,7 @@ from zotero_mcp.utils import (
     _paginate,
     format_creators,
     html_to_text,
+    item_display_date,
     item_display_title,
 )
 from zotero_mcp.webdav import (
@@ -327,8 +330,9 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     if data.get("deleted"):
         lines.append("**Status:** 🗑️ In Trash (recoverable from Zotero Trash view)")
 
-    # Date
-    if date := data.get("date"):
+    # Date. Resolved the same way as the title: a case's date is
+    # `dateDecided`, a statute's `dateEnacted`, a patent's `issueDate` (#452).
+    if date := item_display_date(data):
         lines.append(f"**Date:** {date}")
 
     # Authors/Creators
@@ -369,6 +373,40 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         lines.append(f"**ISSN:** {issn}")
     if url := data.get("url"):
         lines.append(f"**URL:** {url}")
+
+    # Whatever the branches above did not cover. The formatter knows about
+    # journalArticle and bookSection by name and renders nothing type-specific
+    # for anything else, so a case lost `court`, `docketNumber` and `reporter`
+    # entirely — the whole reason its record looked empty (#452). Rather than
+    # adding a branch per type forever, ask the schema what fields this type
+    # has and show the populated ones that are not already above.
+    _shown = {
+        "key", "itemType", "title", "date", "creators", "tags", "collections",
+        "relations", "abstractNote", "extra", "note", "deleted", "version",
+        "dateAdded", "dateModified", "parentItem", "filename", "contentType",
+        "publicationTitle", "bookTitle", "volume", "issue", "pages",
+        "publisher", "place", "DOI", "ISBN", "ISSN", "url", "shortTitle",
+        "accessDate", "libraryCatalog", "callNumber", "archive",
+        "archiveLocation", "rights", "language",
+    }
+    # The type's own spellings of title and date are already in the heading
+    # and the Date line; showing them again under their raw names would read
+    # as two different pieces of information.
+    try:
+        _shown.add(schema.resolve_field(item_type, "title"))
+        _shown.add(schema.resolve_field(item_type, "date"))
+        _type_fields = schema.valid_fields(item_type)
+    except Exception:
+        _type_fields = set()
+
+    _extra_lines = []
+    for field in sorted(_type_fields - _shown):
+        value = data.get(field)
+        if value and isinstance(value, str):
+            # camelCase -> "Docket Number"
+            label = re.sub(r"(?<!^)(?=[A-Z])", " ", field).title()
+            _extra_lines.append(f"**{label}:** {value}")
+    lines.extend(_extra_lines)
 
     # Extra field often holds citation key / misc metadata
     if extra := data.get("extra"):
@@ -500,7 +538,13 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         first = creators[0]
         author = first.get("lastName", first.get("name", "").split()[-1] if first.get("name") else "").replace(" ", "")
 
-    year = data.get("date", "")[:4] if data.get("date") else "nodate"
+    # Resolved, not read straight off `date` — a case keeps its date in
+    # `dateDecided`, a statute in `dateEnacted` (#452). Take the first
+    # four-digit run rather than the leading four characters: these are
+    # display strings ("8 October 2024"), not ISO dates.
+    _display_date = item_display_date(data)
+    _year_match = re.search(r"\b(\d{4})\b", _display_date) if _display_date else None
+    year = _year_match.group(1) if _year_match else "nodate"
     # ``item_key`` can be absent on items assembled locally; never render the
     # literal string "None" into a citekey.
     cite_key = f"{author}{year}_{item_key}" if item_key else f"{author}{year}"
@@ -511,7 +555,18 @@ def generate_bibtex(item: dict[str, Any]) -> str:
     bib_type = type_map.get(item_type, "misc")
     lines = [f"@{bib_type}{{{cite_key},"]
 
-    # Add fields
+    # Add fields. `title` and `date` are resolved through the base-field map
+    # first, so a case or statute exports with its name and year rather than
+    # as an empty `@misc{nodate_KEY}` (#452).
+    resolved = dict(data)
+    if title := item_display_title(data):
+        if title not in ("Untitled", "Untitled Note"):
+            resolved["title"] = title
+
+    # No ("date", "year") entry: the block below already emits `year` from the
+    # resolved four-digit year. Mapping it here as well emitted it twice, the
+    # first time as the raw display string ("8 October 2024"), which is not a
+    # BibTeX year.
     field_mappings = [
         ("title", "title"),
         ("publicationTitle", "journal"),
@@ -529,7 +584,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
     ]
 
     for zotero_field, bibtex_field in field_mappings:
-        if value := data.get(zotero_field):
+        if value := resolved.get(zotero_field):
             # Escape special characters
             value = value.replace("{", "\\{").replace("}", "\\}")
             lines.append(f'  {bibtex_field} = {{{value}}},')
