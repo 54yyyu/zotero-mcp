@@ -229,6 +229,9 @@ def test_cmd_annotations_passes_json_format(capsys):
         limit=100,
         format="json",
         verbose=False,
+        # MagicMock answers every attribute with a truthy mock, so any flag
+        # the CLI reads via getattr() has to be pinned here or it reads as set.
+        json_out=False,
     )
     mock_annotations = MagicMock()
     mock_annotations.get_annotations.return_value = "[]"
@@ -287,6 +290,9 @@ class TestCmdSearch:
             verbose=False, mode="items", query="test", qmode="titleCreatorYear",
             limit=10, collection=None, conditions=None, join_mode="all",
             sort_by=None, sort_direction="asc", filters=None,
+            # MagicMock answers every attribute with a truthy mock, so any
+            # flag the CLI reads via getattr() has to be pinned here.
+            json_out=False,
         )
         defaults.update(kwargs)
         return MagicMock(**defaults)
