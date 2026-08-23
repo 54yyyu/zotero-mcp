@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`zotero_set_item_parent` sets or clears an item's parent.** It can parent standalone notes and attachments, move them between parents, or make them top-level again.
 
+### Fixed
+- **`zotero_update_item` no longer reports a write that dropped fields as a success.** Fields that are not valid for the item's type are skipped rather than written — correct — but the result still opened with "Successfully updated item", with the skip list appended below the diff. To a caller that reads as "done", which is how an item stays the wrong type indefinitely: the very fields that would repair it are discarded on every attempt and nothing in the outcome says the request failed. A partial write now says so in the headline (`Partially updated item \`KEY\` — 1 applied, 2 skipped`), a fully-rejected one returns "No fields applied" instead of "No changes to apply", and both name the remedy — `item_type` migrates the item so the fields become valid. A clean write is unchanged. A valid field whose value already matches still counts as accepted, so an unchanged value is never miscounted as a rejection. Reported by the systematic-review agent, which hit it repairing a `webpage` item that should have been a `journalArticle`.
+
 ## [0.9.1] - 2026-08-05
 
 ### Changed
