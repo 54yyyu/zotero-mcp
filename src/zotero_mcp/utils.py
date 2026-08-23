@@ -224,6 +224,32 @@ def item_display_title(data: dict) -> str:
     return data.get("title") or data.get("filename") or "Untitled"
 
 
+def item_display_date(data: dict) -> str:
+    """The date to show for an item, whatever field it actually lives in.
+
+    The mirror of :func:`item_display_title` for the ``date`` base field, and
+    the other half of #452. A case's date is ``dateDecided``, a statute's is
+    ``dateEnacted``, a patent's is ``issueDate``; reading ``data["date"]``
+    directly found nothing and rendered "No date" over a date Zotero holds
+    perfectly well.
+
+    Returns "" when there is genuinely no date, so callers choose their own
+    placeholder.
+    """
+    item_type = data.get("itemType", "")
+    if item_type:
+        try:
+            from zotero_mcp import schema as _schema
+
+            resolved = _schema.resolve_field(item_type, "date")
+        except Exception:  # schema unavailable — fall back to the plain field
+            resolved = "date"
+        if date := data.get(resolved):
+            return str(date)
+
+    return str(data.get("date") or "")
+
+
 def format_item_result(
     item: dict,
     index: int | None = None,
@@ -252,7 +278,7 @@ def format_item_result(
         heading,
         f"**Type:** {data.get('itemType', 'unknown')}",
         f"**Item Key:** {item.get('key', '')}",
-        f"**Date:** {data.get('date', 'No date')}",
+        f"**Date:** {item_display_date(data) or 'No date'}",
         f"**Authors:** {format_creators(data.get('creators', []))}",
     ]
 
