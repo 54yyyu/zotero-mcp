@@ -386,6 +386,17 @@ def cmd_annotations(args):
             text=args.text, comment=getattr(args, "comment", None),
             color=args.color, ctx=ctx,
         ))
+    elif args.subcommand == "update":
+        _out(args, "annotations update", text=annotations.update_annotation(
+            annotation_key=args.annotation_key, text=getattr(args, "text", None),
+            comment=getattr(args, "comment", None), color=getattr(args, "color", None),
+            add_tags=_split_csv(getattr(args, "add_tags", None)),
+            remove_tags=_split_csv(getattr(args, "remove_tags", None)), ctx=ctx,
+        ))
+    elif args.subcommand == "delete":
+        _out(args, "annotations delete", text=annotations.delete_annotation(
+            annotation_key=args.annotation_key, ctx=ctx,
+        ))
     else:
         if json_mode:
             _cli_json.emit_error("annotations",
@@ -787,6 +798,142 @@ def cmd_outline(args):
     _out(args, "outline", text=write_mod.get_pdf_outline(item_key=args.item_key, ctx=_ctx(args)))
 
 
+def _split_csv(value):
+    """Comma-separated flag value -> list, or None when the flag was absent."""
+    if not value:
+        return None
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def cmd_read(args):
+    """Read a page range out of an item's PDF."""
+    setup_zotero_environment()
+    from zotero_mcp.tools import read_pdf as read_pdf_mod
+    text = read_pdf_mod.read_pdf_pages(
+        item_key=args.item_key, start_page=args.start_page,
+        end_page=args.end_page, ctx=_ctx(args),
+    )
+    _out(args, "read",
+         data={"item_key": args.item_key, "start_page": args.start_page,
+               "end_page": args.end_page, "text": text, "chars": len(text)}
+         if _json_mode(args) else None,
+         text=text)
+
+
+def cmd_attach(args):
+    setup_zotero_environment()
+    _s, _r, _a, write_mod, _c = _import_tools()
+    _out(args, "attach", text=write_mod.attach_file(
+        item_key=args.item_key, file_path=args.file, url=args.url,
+        filename=args.filename, ctx=_ctx(args),
+    ))
+
+
+def cmd_delete(args):
+    setup_zotero_environment()
+    _s, _r, _a, write_mod, _c = _import_tools()
+    if args.subcommand == "item":
+        _out(args, "delete item", text=write_mod.delete_item(
+            item_key=args.item_key, allow_note=args.allow_note, ctx=_ctx(args),
+        ))
+    elif args.subcommand == "collection":
+        _out(args, "delete collection", text=write_mod.delete_collection(
+            collection_key=args.collection_key, ctx=_ctx(args),
+        ))
+    elif args.subcommand == "annotation":
+        _s2, _r2, annotations, _w2, _c2 = _import_tools()
+        _out(args, "delete annotation", text=annotations.delete_annotation(
+            annotation_key=args.annotation_key, ctx=_ctx(args),
+        ))
+    else:
+        _fail(args, "delete", f"Unknown 'delete' subcommand: {args.subcommand}",
+              "unknown_subcommand")
+
+
+def cmd_export(args):
+    setup_zotero_environment()
+    from zotero_mcp.tools import synthesis as synthesis_mod
+    text = synthesis_mod.export_bibliography(
+        item_keys=_split_csv(args.item_keys), collection_key=args.collection,
+        style=args.style, export_format=args.format, ctx=_ctx(args),
+    )
+    _out(args, "export",
+         data={"style": args.style, "format": args.format, "bibliography": text}
+         if _json_mode(args) else None,
+         text=text)
+
+
+def cmd_related(args):
+    setup_zotero_environment()
+    from zotero_mcp.tools import discovery as discovery_mod
+    _out(args, "related", text=discovery_mod.find_related_papers(
+        identifier=args.identifier, direction=args.direction,
+        limit=args.limit, ctx=_ctx(args),
+    ))
+
+
+def cmd_coverage(args):
+    setup_zotero_environment()
+    from zotero_mcp.tools import discovery as discovery_mod
+    _out(args, "coverage", text=discovery_mod.library_coverage(
+        collection_key=args.collection, limit=args.limit, ctx=_ctx(args),
+    ))
+
+
+def cmd_synthesize(args):
+    setup_zotero_environment()
+    from zotero_mcp.tools import synthesis as synthesis_mod
+    json_mode = _json_mode(args)
+    fmt = "json" if (json_mode and args.format == "markdown") else args.format
+    result = synthesis_mod.synthesize_annotations(
+        collection_key=args.collection, tag=_split_csv(args.tag),
+        limit=args.limit, format=fmt, ctx=_ctx(args),
+    )
+    if json_mode:
+        try:
+            _cli_json.emit("synthesize", json.loads(result))
+        except ValueError:
+            _out(args, "synthesize", text=result)
+        return
+    print(result)
+
+
+def cmd_path(args):
+    """Where an item's attachment actually lives on disk."""
+    setup_zotero_environment()
+    _s, retrieval, _a, _w, _c = _import_tools()
+    text = retrieval.get_attachment_path(item_key=args.item_key, ctx=_ctx(args))
+    _out(args, "path",
+         data={"item_key": args.item_key, "text": text} if _json_mode(args) else None,
+         text=text)
+
+
+def cmd_batch(args):
+    setup_zotero_environment()
+    _s, _r, _a, write_mod, _c = _import_tools()
+    set_keys = None
+    if args.set:
+        try:
+            set_keys = json.loads(args.set)
+        except json.JSONDecodeError as e:
+            _fail(args, "batch", f"invalid JSON in --set: {e}", "bad_json")
+    _out(args, "batch", text=write_mod.batch_update(
+        item_keys=_split_csv(args.item_keys), query=args.query or "",
+        tag=_split_csv(args.tag), add_tags=_split_csv(args.add_tags),
+        remove_tags=_split_csv(args.remove_tags), set_keys=set_keys,
+        remove_keys=_split_csv(args.remove_keys), limit=args.limit, ctx=_ctx(args),
+    ))
+
+
+def _fail(args, command: str, message: str, code: str = "error"):
+    """Report a usage error in whichever shape the caller asked for, then exit."""
+    if _json_mode(args):
+        _cli_json.emit_error(command, message, code=code)
+    else:
+        print(f"Error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -901,6 +1048,15 @@ def build_parser() -> argparse.ArgumentParser:
     al.add_argument("--pdf-extraction", action="store_true")
     al.add_argument("--limit", type=int, default=100)
     al.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    au = a_sub.add_parser("update", help="Update an existing annotation")
+    au.add_argument("annotation_key")
+    au.add_argument("--text")
+    au.add_argument("--comment")
+    au.add_argument("--color")
+    au.add_argument("--add-tags", help="Comma-separated tags to add")
+    au.add_argument("--remove-tags", help="Comma-separated tags to remove")
+    ad = a_sub.add_parser("delete", help="Delete an annotation")
+    ad.add_argument("annotation_key")
     ac = a_sub.add_parser("create", help="Create an annotation on a PDF/EPUB")
     ac.add_argument("--attachment-key", required=True)
     ac.add_argument("--page", required=True, type=int)
@@ -1082,6 +1238,74 @@ def build_parser() -> argparse.ArgumentParser:
     out_p = sub.add_parser("outline", help="Get PDF outline/table of contents")
     out_p.add_argument("item_key")
 
+    # read -- page ranges out of an item's PDF
+    rd_p = sub.add_parser("read", help="Read a page range from an item's PDF")
+    rd_p.add_argument("item_key")
+    rd_p.add_argument("--start-page", type=int, required=True)
+    rd_p.add_argument("--end-page", type=int, default=None,
+                      help="Defaults to --start-page (a single page)")
+
+    # attach
+    at_p = sub.add_parser("attach", help="Attach a file or link a URL to an item")
+    at_p.add_argument("item_key")
+    at_p.add_argument("--file", help="Path to a local file to upload")
+    at_p.add_argument("--url", help="URL to attach as a link")
+    at_p.add_argument("--filename", help="Override the stored filename")
+
+    # delete
+    del_p = sub.add_parser("delete", help="Delete an item, collection or annotation")
+    del_sub = del_p.add_subparsers(dest="subcommand")
+    di = del_sub.add_parser("item")
+    di.add_argument("item_key")
+    di.add_argument("--allow-note", action="store_true",
+                    help="Permit deleting a note (refused otherwise, since a "
+                         "note is usually deleted by mistake)")
+    dc = del_sub.add_parser("collection")
+    dc.add_argument("collection_key")
+    da = del_sub.add_parser("annotation")
+    da.add_argument("annotation_key")
+
+    # export
+    ex_p = sub.add_parser("export", help="Export a bibliography")
+    ex_p.add_argument("--item-keys", help="Comma-separated item keys")
+    ex_p.add_argument("--collection", help="Export a whole collection instead")
+    ex_p.add_argument("--style", default="apa", help="CSL style (default: apa)")
+    ex_p.add_argument("--format", choices=["bib", "citation", "bibtex"], default="bib")
+
+    # related
+    rel_p = sub.add_parser("related", help="Find references/citations for a paper")
+    rel_p.add_argument("identifier", help="DOI, arXiv ID, or Zotero item key")
+    rel_p.add_argument("--direction", choices=["references", "citations", "both"],
+                       default="both")
+    rel_p.add_argument("--limit", type=int, default=20)
+
+    # coverage
+    cov_p = sub.add_parser("coverage", help="Summarise a library or collection")
+    cov_p.add_argument("--collection", help="Scope to one collection")
+    cov_p.add_argument("--limit", type=int, default=200)
+
+    # synthesize
+    syn_p = sub.add_parser("synthesize", help="Synthesise annotations across items")
+    syn_p.add_argument("--collection")
+    syn_p.add_argument("--tag", help="Comma-separated tags to scope by")
+    syn_p.add_argument("--limit", type=int, default=200)
+    syn_p.add_argument("--format", choices=["markdown", "json"], default="markdown")
+
+    # path
+    pth_p = sub.add_parser("path", help="Show an attachment's path on disk")
+    pth_p.add_argument("item_key")
+
+    # batch
+    b_p = sub.add_parser("batch", help="Update tags/Extra fields across many items")
+    b_p.add_argument("--item-keys", help="Comma-separated item keys")
+    b_p.add_argument("--query", help="Select items by search query instead")
+    b_p.add_argument("--tag", help="Comma-separated tags to select by")
+    b_p.add_argument("--add-tags", help="Comma-separated tags to add")
+    b_p.add_argument("--remove-tags", help="Comma-separated tags to remove")
+    b_p.add_argument("--set", help="JSON object of Extra keys to set")
+    b_p.add_argument("--remove-keys", help="Comma-separated Extra keys to remove")
+    b_p.add_argument("--limit", type=int, default=50)
+
     return parser
 
 
@@ -1103,6 +1327,15 @@ _CMD_MAP = {
     "db": cmd_db,
     "library": cmd_library,
     "outline": cmd_outline,
+    "read": cmd_read,
+    "attach": cmd_attach,
+    "delete": cmd_delete,
+    "export": cmd_export,
+    "related": cmd_related,
+    "coverage": cmd_coverage,
+    "synthesize": cmd_synthesize,
+    "path": cmd_path,
+    "batch": cmd_batch,
 }
 
 
