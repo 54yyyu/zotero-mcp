@@ -454,6 +454,55 @@ def build_collection_paths(collections) -> dict[str, list[str]]:
     return paths
 
 
+def collection_descendants(collections, collection_key: str) -> list[str]:
+    """``collection_key`` plus every collection nested beneath it, breadth-first.
+
+    Pure: takes an already-fetched collection list so it can be tested without
+    a client. Built from the same ``data.parentCollection`` links
+    :func:`build_collection_paths` uses.
+
+    An unknown key returns ``[collection_key]`` unchanged rather than an empty
+    list — the caller's existing "collection not found" handling should decide
+    what that means, not this function. A parent cycle terminates instead of
+    looping: Zotero's own schema should not produce one, but a partially
+    synced or hand-edited database can, and this walk is cheap to make safe.
+    """
+    children: dict[str, list[str]] = {}
+    for coll in collections:
+        key = coll.get("key")
+        if not key:
+            continue
+        parent = coll.get("data", {}).get("parentCollection")
+        if parent:  # False/None/"" all mean top level
+            children.setdefault(parent, []).append(key)
+
+    ordered = [collection_key]
+    seen = {collection_key}
+    queue = [collection_key]
+    while queue:
+        current = queue.pop(0)
+        for child in children.get(current, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            ordered.append(child)
+            queue.append(child)
+    return ordered
+
+
+def expand_collection_scope(zot, collection_key: str, include_subcollections: bool) -> list[str]:
+    """Collection keys a scoped query should cover.
+
+    Returns ``[collection_key]`` unless subcollections were asked for, so the
+    default path costs nothing. Fetching the collection list is one extra API
+    round-trip, paid only when the caller opts in.
+    """
+    if not include_subcollections:
+        return [collection_key]
+    collections = _utils._paginate(zot.collections)
+    return collection_descendants(collections, collection_key)
+
+
 def resolve_collection_specs(
     zot,
     specs,

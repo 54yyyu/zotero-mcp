@@ -481,13 +481,14 @@ def _build_attachment_extra(info):
 
 @mcp.tool(
     name="zotero_get_collection_items",
-    description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. TIP: To find papers on a specific topic, use zotero_semantic_search instead — it's faster and returns only relevant results."
+    description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. include_subcollections=True also returns items filed in collections nested beneath this one (default False, matching Zotero's own 'Search subcollections' checkbox). TIP: To find papers on a specific topic, use zotero_semantic_search instead — it's faster and returns only relevant results."
 )
 @with_zotero_api_lock
 def get_collection_items(
     collection_key: str,
     detail: Literal["keys_only", "summary", "full"] = "summary",
     limit: int | str | None = 50,
+    include_subcollections: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -497,6 +498,9 @@ def get_collection_items(
     Args:
         collection_key: The collection key/ID
         limit: Maximum number of items to return
+        include_subcollections: Also return items in collections nested beneath
+            this one. Defaults to False, matching Zotero's own "Search
+            subcollections" checkbox and this tool's previous behaviour.
         ctx: MCP context
 
     Returns:
@@ -523,10 +527,28 @@ def get_collection_items(
 
         limit = _helpers._normalize_limit(limit, default=50)
 
-        # Fetch all items (includes children mixed in with parents)
-        all_items = _helpers._paginate(zot.collection_items, collection_key)
+        # Fetch all items (includes children mixed in with parents). With
+        # subcollections requested this is one call per collection in the
+        # subtree; an item filed in several of them is returned once.
+        scope_keys = _helpers.expand_collection_scope(
+            zot, collection_key, include_subcollections
+        )
+        all_items = []
+        seen_keys: set[str] = set()
+        for scope_key in scope_keys:
+            for item in _helpers._paginate(zot.collection_items, scope_key):
+                key = item.get("key")
+                if key and key in seen_keys:
+                    continue
+                if key:
+                    seen_keys.add(key)
+                all_items.append(item)
         if not all_items:
-            return f"No items found in collection: {collection_name} (Key: {collection_key})"
+            scope_note = "" if len(scope_keys) == 1 else f" or its {len(scope_keys) - 1} subcollections"
+            return (
+                f"No items found in collection: {collection_name} "
+                f"(Key: {collection_key}){scope_note}"
+            )
 
         # Build attachment/note summary from already-fetched children (zero extra API calls)
         attachment_info = {}
