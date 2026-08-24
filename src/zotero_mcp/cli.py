@@ -185,18 +185,56 @@ def _format_chunking_status(status: dict) -> str:
         return "disabled (item-level indexing)"
     if chunking.get("effective"):
         return "enabled"
-    return "requested but NOT applied (OpenAI Batch API path indexes item-level)"
+    return "requested but NOT applied (Batch API path indexes item-level)"
+
+
+# Providers with Batch API support, for argparse ``choices=``.
+#
+# Deliberately a literal rather than a call to
+# ``embeddings.registry.batch_capable_providers()``: that list is only
+# populated by importing openai_batch/gemini_batch, which pulls in chromadb
+# (~330ms, measured) — and argparse needs concrete choices while the parser is
+# being built, i.e. on *every* invocation including ``--version`` and
+# ``--help``. Paying that to render a help string would undo #445, which made
+# this module import nothing heavy at all. ``test_batch_provider_choices_match_registry``
+# fails if this drifts from what is actually registered.
+BATCH_PROVIDERS = ("openai", "gemini")
+
+
+def _provider_label(provider: str) -> str:
+    """Human-readable label for a provider name ("openai" -> "OpenAI").
+
+    Reads the registered batch adapter's own label so a newly added provider
+    displays correctly without touching this function. Only ever called from
+    command handlers, by which point the registry is imported anyway, so the
+    lazy import here costs nothing extra.
+    """
+    try:
+        from zotero_mcp.embeddings.registry import PROVIDERS
+
+        spec = PROVIDERS.get(provider)
+        if spec is not None and spec.batch is not None:
+            return spec.batch.label
+    except Exception:
+        pass
+    return provider.capitalize()
 
 
 def _print_update_stats(stats: dict) -> None:
     is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
-    label = "OpenAI batch submission" if is_batch else "Database update"
+    batch_provider = stats.get("batch_provider", "openai")
+    label = f"{_provider_label(batch_provider)} batch submission" if is_batch else "Database update"
     outcome = "failed" if stats.get("error") else "completed"
     print(f"\n{label} {outcome}:")
     print(f"- Total items: {stats.get('total_items', 0)}")
     print(f"- Processed: {stats.get('processed_items', 0)}")
     if stats.get("batch_submitted"):
-        print(f"- Submitted: {stats.get('submitted_items', 0)}")
+        sub_count = stats.get("submitted_items", 0)
+        tot_items = stats.get("total_items", 0)
+        if sub_count != tot_items:
+            print(f"- Submitted: {sub_count} chunks/records (from {tot_items} items)")
+        else:
+            print(f"- Submitted: {sub_count} records")
         print(f"- Estimated new items: {stats.get('estimated_added_items', 0)}")
         print(f"- Estimated existing items: {stats.get('estimated_updated_items', 0)}")
     else:
@@ -210,13 +248,40 @@ def _print_update_stats(stats: dict) -> None:
         print(f"- Manifest: {stats.get('batch_manifest')}")
         for batch_id in stats.get("batch_ids", []):
             print(f"- Batch ID: {batch_id}")
-        print("\nNext steps:")
-        print("  zotero-mcp openai-batch-status")
-        print("  zotero-mcp openai-batch-import")
+        if stats.get("batch_pending"):
+            print(f"- Pending chunks (throttled): {stats['batch_pending']}")
+        if stats.get("auto_loop"):
+            loop = stats["auto_loop"]
+            print(
+                f"- Auto-loop: {loop.get('polls', 0)} polls, "
+                f"{loop.get('submitted_chunks', 0)} pending chunks submitted, "
+                f"{loop.get('imported_items', 0)} embeddings imported"
+            )
+            if loop.get("stalled"):
+                print(f"- WARNING: stalled chunks: {', '.join(loop['stalled'])}")
+        else:
+            print("\nNext steps:")
+            print("  zotero-mcp batch-status")
+            print("  zotero-mcp batch-import")
 
 
-def _print_batch_status(status: dict) -> None:
-    print("=== OpenAI Batch Status ===")
+def _detect_batch_provider(search) -> str:
+    """Infer which provider's manifests to read from the configured model."""
+    from zotero_mcp.embeddings.registry import batch_capable_providers
+
+    model = search.chroma_client.embedding_model
+    providers = batch_capable_providers()
+    if model in providers:
+        return model
+    choices = " or ".join(f"--provider {p}" for p in sorted(providers))
+    raise ValueError(
+        f"Configured embedding model '{model}' has no Batch API support; "
+        f"pass {choices} to select a manifest explicitly."
+    )
+
+
+def _print_batch_status(status: dict, provider: str = "openai") -> None:
+    print(f"=== {_provider_label(provider)} Batch Status ===")
     print(f"Run: {status.get('run_id')}")
     print(f"Model: {status.get('model')}")
     print(f"Manifest: {status.get('manifest_path')}")
@@ -226,17 +291,23 @@ def _print_batch_status(status: dict) -> None:
         if not isinstance(counts, dict):
             counts = {}
         print()
-        print(f"Batch: {batch.get('batch_id')}")
+        print(f"Batch: {batch.get('batch_id') or '(not yet submitted)'}")
         print(f"- Status: {batch.get('status')}")
         print(f"- Requests: {batch.get('request_count', counts.get('total', 'Unknown'))}")
+        if batch.get("request_tokens"):
+            print(f"- Est. tokens: {batch['request_tokens']:,}")
         if counts:
             print(f"- Completed: {counts.get('completed', 0)}")
             print(f"- Failed: {counts.get('failed', 0)}")
         print(f"- Imported: {batch.get('imported_at') or 'No'}")
+    pending = [b for b in status.get("batches", []) if b.get("status") == "pending"]
+    if pending:
+        pending_tokens = sum(int(b.get("request_tokens") or 0) for b in pending)
+        print(f"\nPending chunks (throttled): {len(pending)} (~{pending_tokens:,} tokens)")
 
 
-def _print_batch_import(stats: dict) -> None:
-    print("=== OpenAI Batch Import ===")
+def _print_batch_import(stats: dict, provider: str = "openai") -> None:
+    print(f"=== {_provider_label(provider)} Batch Import ===")
     print(f"Run: {stats.get('run_id')}")
     print(f"Manifest: {stats.get('manifest_path')}")
     print(f"- Batches seen: {stats.get('batches_seen', 0)}")
@@ -295,10 +366,11 @@ def main():
         description="Zotero Model Context Protocol server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "OpenAI Batch API indexing:\n"
-            "  zotero-mcp update-db --openai-batch     Submit embeddings asynchronously\n"
-            "  zotero-mcp openai-batch-status          Check submitted batch status\n"
-            "  zotero-mcp openai-batch-import          Import completed embeddings\n"
+            "Batch API indexing (OpenAI or Gemini, ~50% of realtime cost):\n"
+            "  zotero-mcp update-db --batch            Submit embeddings asynchronously\n"
+            "  zotero-mcp update-db --batch --auto-loop  Submit, then poll and import\n"
+            "  zotero-mcp batch-status                 Check submitted batch status\n"
+            "  zotero-mcp batch-import                 Import completed embeddings\n"
             "  zotero-mcp help update-db               Show update-db options\n"
         ),
     )
@@ -365,25 +437,65 @@ def main():
     update_db_parser.add_argument("--clear-fulltext-cache", action="store_true",
                                  help="Discard the transient extracted-fulltext cache before "
                                       "running, forcing every attachment to be re-parsed")
+    batch_group = update_db_parser.add_mutually_exclusive_group()
+    batch_group.add_argument("--batch", dest="use_batch", action="store_true",
+                             help="Submit embeddings through the configured provider's asynchronous "
+                                  "Batch API (pair with --batch-provider to choose explicitly)")
+    batch_group.add_argument("--no-batch", dest="use_batch", action="store_false",
+                             help="Use realtime embeddings even if a Batch API is enabled in config")
+    update_db_parser.set_defaults(use_batch=None)
+    update_db_parser.add_argument("--batch-provider", choices=BATCH_PROVIDERS, default=None,
+                                 help="Batch provider to use with --batch (default: inferred from the "
+                                      "configured embedding model)")
+    update_db_parser.add_argument("--batch-max-tokens", type=int, default=None, metavar="N",
+                                 help="Cap estimated tokens enqueued with the provider at once; "
+                                      "chunks beyond it are held back and submitted as earlier ones finish")
+    update_db_parser.add_argument("--batch-max-requests", type=int, default=None, metavar="N",
+                                 help="Cap requests per uploaded batch file")
+    update_db_parser.add_argument("--auto-loop", action="store_true",
+                                 help="After submitting, keep polling, importing completed batches and "
+                                      "submitting held-back chunks until the run finishes")
+    update_db_parser.add_argument("--poll-interval", type=int, default=60, metavar="SECONDS",
+                                 help="Seconds between --auto-loop polls (default: 60)")
+
+    # Deprecated per-provider forms, kept working so existing scripts and
+    # docs do not break. --batch/--batch-provider is the supported spelling.
     openai_batch_group = update_db_parser.add_mutually_exclusive_group()
     openai_batch_group.add_argument("--openai-batch", dest="openai_batch", action="store_true",
-                                   help="Submit OpenAI embeddings through the asynchronous Batch API")
+                                   help="Deprecated: use --batch --batch-provider openai")
     openai_batch_group.add_argument("--no-openai-batch", dest="openai_batch", action="store_false",
-                                   help="Use realtime embeddings even if OpenAI Batch API is enabled in config")
+                                   help="Deprecated: use --no-batch")
     update_db_parser.set_defaults(openai_batch=None)
+    gemini_batch_group = update_db_parser.add_mutually_exclusive_group()
+    gemini_batch_group.add_argument("--gemini-batch", dest="gemini_batch", action="store_true",
+                                   help="Deprecated: use --batch --batch-provider gemini")
+    gemini_batch_group.add_argument("--no-gemini-batch", dest="gemini_batch", action="store_false",
+                                   help="Deprecated: use --no-batch")
+    update_db_parser.set_defaults(gemini_batch=None)
 
-    # OpenAI batch lifecycle commands
-    batch_status_parser = subparsers.add_parser("openai-batch-status", help="Show OpenAI Batch API status")
-    batch_status_parser.add_argument("--batch-id", action="append",
-                                     help="Specific OpenAI batch ID to inspect; can be repeated")
-    batch_status_parser.add_argument("--config-path",
-                                     help="Path to semantic search configuration file")
+    # Batch lifecycle commands. The openai-batch-* spellings shipped in 0.10.0
+    # stay as aliases pinned to --provider openai.
+    for name, helptext in (
+        ("batch-status", "Show embedding Batch API status"),
+        ("openai-batch-status", "Deprecated alias for batch-status --provider openai"),
+    ):
+        sp = subparsers.add_parser(name, help=helptext)
+        sp.add_argument("--batch-id", action="append",
+                        help="Specific batch ID to inspect; can be repeated")
+        sp.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
+                        help="Which provider's manifests to read (default: inferred from config)")
+        sp.add_argument("--config-path", help="Path to semantic search configuration file")
 
-    batch_import_parser = subparsers.add_parser("openai-batch-import", help="Import completed OpenAI batch embeddings")
-    batch_import_parser.add_argument("--batch-id", action="append",
-                                     help="Specific OpenAI batch ID to import; can be repeated")
-    batch_import_parser.add_argument("--config-path",
-                                     help="Path to semantic search configuration file")
+    for name, helptext in (
+        ("batch-import", "Import completed batch embeddings"),
+        ("openai-batch-import", "Deprecated alias for batch-import --provider openai"),
+    ):
+        sp = subparsers.add_parser(name, help=helptext)
+        sp.add_argument("--batch-id", action="append",
+                        help="Specific batch ID to import; can be repeated")
+        sp.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
+                        help="Which provider's manifests to read (default: inferred from config)")
+        sp.add_argument("--config-path", help="Path to semantic search configuration file")
 
     # Database status command
     db_status_parser = subparsers.add_parser("db-status", help="Show semantic search database status")
@@ -644,9 +756,22 @@ def main():
                 db_path=db_path,
                 extraction_workers=getattr(args, "extraction_workers", None),
             )
-            if args.openai_batch is True and search.chroma_client.embedding_model != "openai":
-                print("Error: --openai-batch requires ZOTERO_EMBEDDING_MODEL=openai", file=sys.stderr)
+            if args.use_batch is not None and (args.openai_batch is not None or args.gemini_batch is not None):
+                print(
+                    "Error: --batch/--no-batch cannot be combined with the deprecated "
+                    "--openai-batch/--gemini-batch flags. Use --batch --batch-provider NAME.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
+            for flag, provider in (("--openai-batch", "openai"), ("--gemini-batch", "gemini")):
+                if getattr(args, f"{provider}_batch") is True and (
+                    search.chroma_client.embedding_model != provider
+                ):
+                    print(
+                        f"Error: {flag} requires ZOTERO_EMBEDDING_MODEL={provider}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
 
             print("Starting database update...")
             if args.fulltext:
@@ -665,6 +790,13 @@ def main():
                 limit=args.limit,
                 extract_fulltext=args.fulltext,
                 use_openai_batch=args.openai_batch,
+                use_gemini_batch=args.gemini_batch,
+                use_batch=args.use_batch,
+                batch_provider=args.batch_provider,
+                batch_max_tokens=args.batch_max_tokens,
+                batch_max_requests=args.batch_max_requests,
+                auto_loop=args.auto_loop,
+                batch_poll_interval=args.poll_interval,
                 allow_mass_deletion=args.allow_mass_deletion,
             )
 
@@ -694,7 +826,7 @@ def main():
             print(f"Error updating database: {e}")
             sys.exit(1)
 
-    elif args.command == "openai-batch-status":
+    elif args.command in ("batch-status", "openai-batch-status"):
         setup_zotero_environment()
 
         from zotero_mcp.semantic_search import create_semantic_search
@@ -702,13 +834,15 @@ def main():
         config_path = _semantic_config_path(args.config_path)
         try:
             search = create_semantic_search(str(config_path))
-            status = search.get_openai_batch_status(batch_ids=args.batch_id)
-            _print_batch_status(status)
+            provider = "openai" if args.command == "openai-batch-status" else args.provider
+            provider = provider or _detect_batch_provider(search)
+            status = search._get_batch_status(provider, batch_ids=args.batch_id)
+            _print_batch_status(status, provider)
         except Exception as e:
-            print(f"Error getting OpenAI batch status: {e}")
+            print(f"Error getting batch status: {e}")
             sys.exit(1)
 
-    elif args.command == "openai-batch-import":
+    elif args.command in ("batch-import", "openai-batch-import"):
         setup_zotero_environment()
 
         from zotero_mcp.semantic_search import create_semantic_search
@@ -716,10 +850,12 @@ def main():
         config_path = _semantic_config_path(args.config_path)
         try:
             search = create_semantic_search(str(config_path))
-            stats = search.import_openai_batch(batch_ids=args.batch_id)
-            _print_batch_import(stats)
+            provider = "openai" if args.command == "openai-batch-import" else args.provider
+            provider = provider or _detect_batch_provider(search)
+            stats = search._import_batch(provider, batch_ids=args.batch_id)
+            _print_batch_import(stats, provider)
         except Exception as e:
-            print(f"Error importing OpenAI batch: {e}")
+            print(f"Error importing batch: {e}")
             sys.exit(1)
 
     elif args.command == "db-status":

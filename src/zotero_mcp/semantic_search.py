@@ -26,9 +26,10 @@ except Exception:
     _tokenizer = None
 
 
-from . import fulltext_cache, openai_batch
+from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_active_group_id, get_zotero_client
+from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 
@@ -42,6 +43,46 @@ from .update_policy import (  # noqa: F401
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
+
+# Batch-capable providers, by name. Everything provider-specific beyond the
+# module itself lives on the module's ``ADAPTER`` (see batch_common.
+# BatchAdapter), so this table stays a lookup rather than a second, parallel
+# description of each provider that could drift from the adapter.
+_BATCH_MODULES = {"openai": openai_batch, "gemini": gemini_batch}
+
+# How each provider spells "ready to import", for error text only. OpenAI
+# reports "completed", Gemini "succeeded"; both normalize to
+# batch_common.STATE_SUCCEEDED, which is what decision logic actually uses.
+_IMPORTABLE_DESC = {"openai": "completed", "gemini": "succeeded"}
+
+
+def _batch_module(provider: str):
+    """Module implementing ``provider``'s Batch API flows."""
+    try:
+        return _BATCH_MODULES[provider]
+    except KeyError:
+        raise ValueError(
+            f"Unknown batch provider {provider!r}; expected one of {sorted(_BATCH_MODULES)}"
+        ) from None
+
+
+def _batch_adapter(provider: str):
+    """``provider``'s BatchAdapter, read off its module so that monkeypatched
+    module attributes are still honored (adapter methods call by bare name)."""
+    return _batch_module(provider).ADAPTER
+
+
+def _report(message: str) -> None:
+    """Write a progress message to stderr, never failing the caller.
+
+    Progress output is a courtesy, so a closed or broken stderr must not take
+    down a multi-hour indexing run with it.
+    """
+    try:
+        sys.stderr.write(message)
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -478,23 +519,28 @@ class ZoteroSemanticSearch:
     # Message shown when the requested chunking setting cannot take effect.
     # Kept as a constant so the CLI, the logs and the tests all quote the
     # same wording (#416).
-    CHUNKING_IGNORED_ON_BATCH_PATH = (
-        "Passage chunking is NOT applied on the OpenAI Batch API path. "
+    # Templated per provider so a Gemini run is not told to pass a flag that
+    # only turns OpenAI off. The OpenAI wording is unchanged from #416.
+    CHUNKING_IGNORED_ON_BATCH_PATH_TEMPLATE = (
+        "Passage chunking is NOT applied on the {label} Batch API path. "
         "semantic_search.chunking.enabled is true, but this run indexes one "
         "vector per item, truncated at the embedding model's input limit, so "
         "text past that limit will not be searchable. To index with chunking, "
-        "set semantic_search.openai_batch.enabled to false or pass "
-        "--no-openai-batch. Otherwise this run proceeds item-level."
+        "set semantic_search.{provider}_batch.enabled to false or pass "
+        "--no-batch. Otherwise this run proceeds item-level."
     )
 
-    def _warn_chunking_ignored_on_batch_path(self) -> None:
+    def _chunking_ignored_message(self, provider: str = "openai") -> str:
+        """The #416 warning, worded for whichever provider is running."""
+        return self.CHUNKING_IGNORED_ON_BATCH_PATH_TEMPLATE.format(
+            label=_batch_adapter(provider).label, provider=provider
+        )
+
+    def _warn_chunking_ignored_on_batch_path(self, provider: str = "openai") -> None:
         """Surface the batch-path chunking limitation on stderr and in logs."""
-        logger.warning(self.CHUNKING_IGNORED_ON_BATCH_PATH)
-        try:
-            sys.stderr.write(f"\nWarning: {self.CHUNKING_IGNORED_ON_BATCH_PATH}\n")
-            sys.stderr.flush()
-        except Exception:
-            pass
+        message = self._chunking_ignored_message(provider)
+        logger.warning(message)
+        _report(f"\nWarning: {message}\n")
 
     def _load_reranker_config(self) -> dict[str, Any]:
         """Load reranker configuration from file or use defaults."""
@@ -538,8 +584,13 @@ class ZoteroSemanticSearch:
             logger.warning(f"Error loading include_fulltext setting: {e}")
             return True
 
-    def _load_openai_batch_enabled(self) -> bool:
-        """Whether OpenAI Batch API indexing is enabled by semantic config."""
+    def _load_batch_enabled(self, provider: str) -> bool:
+        """Whether Batch API indexing is enabled by config for ``provider``.
+
+        Reads ``semantic_search.<provider>_batch.enabled`` — sibling keys
+        (``openai_batch``, ``gemini_batch``), so an existing config keeps
+        working and no migration is needed.
+        """
         if not self.config_path or not os.path.exists(self.config_path):
             return False
         try:
@@ -548,18 +599,113 @@ class ZoteroSemanticSearch:
                 value = (
                     file_config
                     .get("semantic_search", {})
-                    .get("openai_batch", {})
+                    .get(f"{provider}_batch", {})
                     .get("enabled", False)
                 )
                 return bool(value)
         except Exception as e:
-            logger.warning(f"Error loading OpenAI batch setting: {e}")
+            logger.warning(f"Error loading {provider} batch setting: {e}")
             return False
+
+    def _load_openai_batch_enabled(self) -> bool:
+        """Whether OpenAI Batch API indexing is enabled by semantic config."""
+        return self._load_batch_enabled("openai")
+
+    def _load_batch_throttle_config(self, provider: str) -> dict[str, Any]:
+        """Throttling limits for ``provider``'s Batch API submissions.
+
+        ``semantic_search.<provider>_batch.batch_max_enqueued_tokens`` caps how
+        many estimated tokens may sit queued with the provider at once — the
+        quota whose violation surfaces as a 429 on a large library.
+        ``batch_max_requests`` caps requests per uploaded JSONL file. Defaults
+        are the providers' Tier 1 limits; raise them in config on higher tiers.
+        """
+        config: dict[str, Any] = {
+            "batch_max_enqueued_tokens": _batch_adapter(provider).default_max_enqueued_tokens,
+            "batch_max_requests": _batch_adapter(provider).max_requests,
+        }
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f)
+                block = file_config.get("semantic_search", {}).get(f"{provider}_batch", {})
+                for key in config:
+                    if block.get(key) is not None:
+                        config[key] = int(block[key])
+            except Exception as e:
+                logger.warning(f"Error loading {provider} batch throttle config: {e}")
+        return config
+
+    def _resolve_batch_enabled(self, provider: str, override: bool | None) -> bool:
+        """Resolve CLI override + config default for ``provider``'s batch indexing.
+
+        Batch mode is only active when the configured embedding model matches
+        ``provider``: submission builds requests from
+        ``self.chroma_client.embedding_config``, so running a provider whose
+        embedding space is not the configured one would write vectors that no
+        query could ever match.
+        """
+        requested = self._load_batch_enabled(provider) if override is None else override
+        return bool(requested and self.chroma_client.embedding_model == provider)
 
     def _resolve_openai_batch_enabled(self, use_openai_batch: bool | None) -> bool:
         """Resolve CLI override + config default for OpenAI batch indexing."""
-        requested = self._load_openai_batch_enabled() if use_openai_batch is None else use_openai_batch
-        return bool(requested and self.chroma_client.embedding_model == "openai")
+        return self._resolve_batch_enabled("openai", use_openai_batch)
+
+    def _resolve_gemini_batch_enabled(self, use_gemini_batch: bool | None) -> bool:
+        """Resolve CLI override + config default for Gemini batch indexing."""
+        return self._resolve_batch_enabled("gemini", use_gemini_batch)
+
+    def _resolve_batch_mode(
+        self,
+        use_batch: bool | None = None,
+        batch_provider: str | None = None,
+        use_openai_batch: bool | None = None,
+        use_gemini_batch: bool | None = None,
+    ) -> tuple[bool, str]:
+        """Resolve which provider (if any) runs the Batch API this run.
+
+        Returns ``(enabled, provider)``. Priority: explicit ``batch_provider``
+        > explicit ``use_batch`` > the deprecated per-provider flags > config.
+
+        An explicit ``batch_provider`` that disagrees with the configured
+        embedding model raises rather than silently falling back to realtime:
+        the caller asked for something that cannot be honored, and quietly
+        doing something else is how a multi-hour run ends up in the wrong
+        embedding space. ``use_batch=False`` still forces realtime without
+        discarding an explicit provider choice.
+        """
+        providers_with_batch = batch_capable_providers()
+        if batch_provider is not None and batch_provider not in providers_with_batch:
+            raise ValueError(
+                f"Unknown batch_provider {batch_provider!r}; must be one of "
+                f"{providers_with_batch} (providers with Batch API support)."
+            )
+        if batch_provider is not None:
+            if use_batch is False:
+                return False, batch_provider
+            if self.chroma_client.embedding_model != batch_provider:
+                raise ValueError(
+                    f"batch_provider={batch_provider!r} requires embedding_model "
+                    f"{batch_provider!r}, but '{self.chroma_client.embedding_model}' "
+                    "is configured."
+                )
+            return True, batch_provider
+        if use_batch is not None:
+            model = self.chroma_client.embedding_model
+            if use_batch and model not in providers_with_batch:
+                raise ValueError(
+                    f"use_batch=True requires a batch-capable embedding_model; "
+                    f"'{model}' has no Batch API support (supported: {providers_with_batch})."
+                )
+            provider = model if model in providers_with_batch else providers_with_batch[0]
+            return self._resolve_batch_enabled(provider, use_batch), provider
+        # Nothing explicit: per-provider config-driven resolution, which is
+        # exactly the pre-existing behaviour for an OpenAI-only config.
+        resolved_openai = self._resolve_batch_enabled("openai", use_openai_batch)
+        resolved_gemini = self._resolve_batch_enabled("gemini", use_gemini_batch)
+        provider = "openai" if resolved_openai else "gemini"
+        return resolved_openai or resolved_gemini, provider
 
     def _client_group_id(self) -> int:
         """group_id of the library ``self.zotero_client`` is actually scoped to.
@@ -1861,14 +2007,20 @@ class ZoteroSemanticSearch:
 
         return records, stats
 
-    def _submit_openai_batch_index(
+    def _submit_batch_index(
         self,
+        provider: str,
         items: list[dict[str, Any]],
         force_full_rebuild: bool,
         target_sync_version: int | None,
         stats: dict[str, Any],
+        max_enqueued_tokens: int | None = None,
+        max_requests: int | None = None,
     ) -> dict[str, Any]:
-        """Prepare records and submit asynchronous OpenAI embedding batches."""
+        """Prepare records and submit asynchronous embedding batches."""
+        module = _batch_module(provider)
+        adapter = _batch_adapter(provider)
+        label = adapter.label
         records, prepare_stats = self._prepare_index_records(items)
         stats["processed_items"] += prepare_stats["processed"]
         stats["skipped_items"] += prepare_stats["skipped"]
@@ -1876,13 +2028,18 @@ class ZoteroSemanticSearch:
 
         if not records:
             stats["batch_submitted"] = False
-            stats["batch_error"] = "No documents were prepared for OpenAI Batch API submission"
+            stats["batch_error"] = f"No documents were prepared for {label} Batch API submission"
             return stats
 
         ids = [record["id"] for record in records]
         existing_ids = self.chroma_client.get_existing_ids(ids) if ids and not force_full_rebuild else set()
-        model_name = self.chroma_client.embedding_config.get("model_name", "text-embedding-3-small")
-        manifest = openai_batch.submit_embedding_batches(
+        model_name = self.chroma_client.embedding_config.get("model_name", adapter.default_model)
+        submit_kwargs: dict[str, Any] = {}
+        if max_enqueued_tokens is not None:
+            submit_kwargs["max_enqueued_tokens"] = max_enqueued_tokens
+        if max_requests is not None:
+            submit_kwargs["max_requests"] = max_requests
+        manifest = module.submit_embedding_batches(
             records=records,
             model_name=model_name,
             embedding_config=self.chroma_client.embedding_config,
@@ -1892,15 +2049,51 @@ class ZoteroSemanticSearch:
             # The manifest's group_id keys the watermark save at import time;
             # it must carry the run's pinned identity, not the live override.
             group_id=self._pinned_group_id(),
+            **submit_kwargs,
         )
+        stats["batch_provider"] = provider
         stats["batch_submitted"] = True
         stats["batch_run_id"] = manifest["run_id"]
         stats["batch_manifest"] = manifest["manifest_path"]
-        stats["batch_ids"] = [batch["batch_id"] for batch in manifest.get("batches", [])]
+        # Pending (throttled, not yet submitted) chunks have no batch_id yet.
+        stats["batch_ids"] = [b["batch_id"] for b in manifest.get("batches", []) if b.get("batch_id")]
+        stats["batch_pending"] = sum(
+            1 for b in manifest.get("batches", []) if b.get("status") == batch_common.STATE_PENDING
+        )
         stats["submitted_items"] = len(records)
         stats["estimated_updated_items"] = len(existing_ids)
         stats["estimated_added_items"] = len(ids) - len(existing_ids)
         return stats
+
+    def _submit_openai_batch_index(
+        self,
+        items: list[dict[str, Any]],
+        force_full_rebuild: bool,
+        target_sync_version: int | None,
+        stats: dict[str, Any],
+        max_enqueued_tokens: int | None = None,
+        max_requests: int | None = None,
+    ) -> dict[str, Any]:
+        """Prepare records and submit asynchronous OpenAI embedding batches."""
+        return self._submit_batch_index(
+            "openai", items, force_full_rebuild, target_sync_version, stats,
+            max_enqueued_tokens=max_enqueued_tokens, max_requests=max_requests,
+        )
+
+    def _submit_gemini_batch_index(
+        self,
+        items: list[dict[str, Any]],
+        force_full_rebuild: bool,
+        target_sync_version: int | None,
+        stats: dict[str, Any],
+        max_enqueued_tokens: int | None = None,
+        max_requests: int | None = None,
+    ) -> dict[str, Any]:
+        """Prepare records and submit asynchronous Gemini embedding batches."""
+        return self._submit_batch_index(
+            "gemini", items, force_full_rebuild, target_sync_version, stats,
+            max_enqueued_tokens=max_enqueued_tokens, max_requests=max_requests,
+        )
 
     def update_database(
         self,
@@ -1909,6 +2102,13 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
         include_fulltext: bool | None = None,
         use_openai_batch: bool | None = None,
+        use_gemini_batch: bool | None = None,
+        use_batch: bool | None = None,
+        batch_provider: str | None = None,
+        batch_max_tokens: int | None = None,
+        batch_max_requests: int | None = None,
+        auto_loop: bool = False,
+        batch_poll_interval: int = 60,
         allow_mass_deletion: bool = False,
     ) -> dict[str, Any]:
         """
@@ -1924,8 +2124,25 @@ class ZoteroSemanticSearch:
                 `semantic_search.include_fulltext` config setting (True
                 unless explicitly disabled). Ignored in local mode since
                 `extract_fulltext` provides richer local extraction.
-            use_openai_batch: Override for OpenAI Batch API indexing. None
-                uses `semantic_search.openai_batch.enabled`.
+            use_openai_batch: Deprecated in favour of `use_batch` /
+                `batch_provider`. Override for OpenAI Batch API indexing.
+                None uses `semantic_search.openai_batch.enabled`. Ignored
+                whenever `use_batch` or `batch_provider` is given.
+            use_gemini_batch: Deprecated in favour of `use_batch` /
+                `batch_provider`. Override for Gemini Batch API indexing.
+                None uses `semantic_search.gemini_batch.enabled`.
+            use_batch: Provider-neutral on/off for Batch API indexing; the
+                provider is inferred from the configured embedding model
+                unless `batch_provider` names one.
+            batch_provider: Which batch provider to use. Must match the
+                configured embedding model.
+            batch_max_tokens: Override for the enqueued-token throttle
+                (`semantic_search.<provider>_batch.batch_max_enqueued_tokens`).
+            batch_max_requests: Override for the per-file request cap
+                (`semantic_search.<provider>_batch.batch_max_requests`).
+            auto_loop: After submitting, keep polling, importing completed
+                batches and submitting parked ones until the run finishes.
+            batch_poll_interval: Seconds between auto-loop polls.
             allow_mass_deletion: One-run opt-in for a deletion pass that
                 would remove a large share of the library's indexed docs
                 (or all of them, when item_versions() reports the library
@@ -2071,7 +2288,17 @@ class ZoteroSemanticSearch:
             # Web-API fulltext only applies when not using the local sqlite
             # extractor (extract_fulltext=True takes precedence in local mode)
             include_fulltext_via_api = include_fulltext and not extract_fulltext
-            use_openai_batch = self._resolve_openai_batch_enabled(use_openai_batch)
+            batch_enabled, active_batch_provider = self._resolve_batch_mode(
+                use_batch=use_batch,
+                batch_provider=batch_provider,
+                use_openai_batch=use_openai_batch,
+                use_gemini_batch=use_gemini_batch,
+            )
+            throttle = self._load_batch_throttle_config(active_batch_provider)
+            if batch_max_tokens is not None:
+                throttle["batch_max_enqueued_tokens"] = batch_max_tokens
+            if batch_max_requests is not None:
+                throttle["batch_max_requests"] = batch_max_requests
 
             # The Batch API path builds one item-level record per item
             # (_prepare_index_records) and has no chunking step, so a config
@@ -2079,13 +2306,13 @@ class ZoteroSemanticSearch:
             # item-level index instead. Say so once, before the run does any
             # work, rather than leaving it visible only by reading the
             # generated JSONL by hand (#416).
-            if use_openai_batch and self._chunking_enabled:
+            if batch_enabled and self._chunking_enabled:
                 stats["chunking_ignored"] = True
-                self._warn_chunking_ignored_on_batch_path()
+                self._warn_chunking_ignored_on_batch_path(active_batch_provider)
 
             # In batch mode, defer destructive rebuilds until import so the
             # existing search index remains usable while the batch runs.
-            if force_full_rebuild and not use_openai_batch:
+            if force_full_rebuild and not batch_enabled:
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
 
@@ -2277,34 +2504,45 @@ class ZoteroSemanticSearch:
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
 
-            if use_openai_batch:
+            if batch_enabled:
                 stats["batch_mode"] = True
+                stats["batch_provider"] = active_batch_provider
+                batch_label = _batch_adapter(active_batch_provider).label
                 if stats.get("deletion_skipped_reason"):
                     # The manifest's target_sync_version is promoted at import
                     # time; a skipped deletion pass must stay retryable there
                     # exactly as on the realtime path.
                     target_sync_version = None
-                try:
-                    sys.stderr.write(f"\nSubmitting {len(all_items)} items to OpenAI Batch API...\n")
-                    sys.stderr.flush()
-                except Exception:
-                    pass
-                stats = self._submit_openai_batch_index(
+                _report(f"\nSubmitting {len(all_items)} items to {batch_label} Batch API...\n")
+                stats = self._submit_batch_index(
+                    active_batch_provider,
                     all_items,
                     force_full_rebuild=force_full_rebuild,
                     target_sync_version=target_sync_version,
                     stats=stats,
+                    max_enqueued_tokens=throttle["batch_max_enqueued_tokens"],
+                    max_requests=throttle["batch_max_requests"],
                 )
-                try:
-                    batch_ids = ", ".join(stats.get("batch_ids", []))
-                    sys.stderr.write(
-                        "  Submitted OpenAI embedding batch"
-                        f"{'es' if len(stats.get('batch_ids', [])) != 1 else ''}: {batch_ids}\n"
+                batch_ids = ", ".join(stats.get("batch_ids", []))
+                _report(
+                    f"  Submitted {batch_label} embedding batch"
+                    f"{'es' if len(stats.get('batch_ids', [])) != 1 else ''}: {batch_ids}\n"
+                )
+                if stats.get("batch_pending"):
+                    _report(
+                        f"  {stats['batch_pending']} chunk(s) held back by the enqueued-token "
+                        "budget; they submit as running batches finish.\n"
                     )
-                    sys.stderr.write("  Run 'zotero-mcp openai-batch-status' to check progress.\n")
-                    sys.stderr.write("  Run 'zotero-mcp openai-batch-import' after the batch completes.\n")
-                except Exception:
-                    pass
+                if auto_loop and stats.get("batch_submitted"):
+                    self.auto_loop_batch_pipeline(
+                        active_batch_provider,
+                        poll_interval=batch_poll_interval,
+                        max_enqueued_tokens=throttle["batch_max_enqueued_tokens"],
+                        stats=stats,
+                    )
+                else:
+                    _report("  Run 'zotero-mcp batch-status' to check progress.\n")
+                    _report("  Run 'zotero-mcp batch-import' after the batch completes.\n")
                 end_time = datetime.now()
                 stats["duration"] = str(end_time - start_time)
                 stats["end_time"] = end_time.isoformat()
@@ -2577,14 +2815,16 @@ class ZoteroSemanticSearch:
 
         return stats
 
-    def get_openai_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Refresh and return OpenAI Batch API status for the latest run or selected batches."""
+    def _get_batch_status(self, provider: str, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Refresh and return Batch API status for the latest run or selected batches."""
+        module = _batch_module(provider)
+        label = _batch_adapter(provider).label
         selected_ids = set(batch_ids or [])
-        manifest = openai_batch.find_manifest(
+        manifest = module.find_manifest(
             config_path=self.config_path,
             batch_id=next(iter(selected_ids), None),
         )
-        manifest = openai_batch.refresh_manifest_status(
+        manifest = module.refresh_manifest_status(
             manifest,
             embedding_config=self.chroma_client.embedding_config,
             batch_ids=selected_ids or None,
@@ -2595,8 +2835,9 @@ class ZoteroSemanticSearch:
         ]
         missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
         if missing_ids:
-            raise FileNotFoundError(f"No OpenAI batch manifest entries found for: {', '.join(sorted(missing_ids))}")
+            raise FileNotFoundError(f"No {label} batch manifest entries found for: {', '.join(sorted(missing_ids))}")
         return {
+            "provider": provider,
             "run_id": manifest.get("run_id"),
             "manifest_path": manifest.get("manifest_path"),
             "model": manifest.get("model"),
@@ -2604,14 +2845,35 @@ class ZoteroSemanticSearch:
             "batches": batches,
         }
 
-    def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Import completed OpenAI Batch API embeddings into ChromaDB."""
+    def get_openai_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Refresh and return OpenAI Batch API status for the latest run or selected batches."""
+        return self._get_batch_status("openai", batch_ids)
+
+    def get_gemini_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Refresh and return Gemini Batch API status for the latest run or selected batches."""
+        return self._get_batch_status("gemini", batch_ids)
+
+
+    def _import_batch(
+        self,
+        provider: str,
+        batch_ids: list[str] | None = None,
+        _skip_lock: bool = False,
+    ) -> dict[str, Any]:
+        """Import completed Batch API embeddings into ChromaDB.
+
+        ``_skip_lock`` is for the auto-loop, which already holds the update
+        lock via ``update_database``; re-acquiring it would self-deadlock.
+        """
+        module = _batch_module(provider)
+        adapter = _batch_adapter(provider)
+        label = adapter.label
         selected_ids = set(batch_ids or [])
-        manifest = openai_batch.find_manifest(
+        manifest = module.find_manifest(
             config_path=self.config_path,
             batch_id=next(iter(selected_ids), None),
         )
-        manifest = openai_batch.refresh_manifest_status(
+        manifest = module.refresh_manifest_status(
             manifest,
             embedding_config=self.chroma_client.embedding_config,
             batch_ids=selected_ids or None,
@@ -2624,24 +2886,26 @@ class ZoteroSemanticSearch:
         ]
         missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
         if missing_ids:
-            raise FileNotFoundError(f"No OpenAI batch manifest entries found for: {', '.join(sorted(missing_ids))}")
+            raise FileNotFoundError(f"No {label} batch manifest entries found for: {', '.join(sorted(missing_ids))}")
         if not batches:
-            raise ValueError("No matching OpenAI batches found in the local manifest")
+            raise ValueError(f"No matching {label} batches found in the local manifest")
         if manifest.get("force_full_rebuild") and selected_ids and len(batches) != len(all_batches):
-            raise RuntimeError("Force-rebuild OpenAI batch runs must be imported as a complete run")
+            raise RuntimeError(f"Force-rebuild {label} batch runs must be imported as a complete run")
         if manifest.get("force_full_rebuild"):
             incomplete = [
-                batch.get("batch_id")
+                batch.get("batch_id") or "(pending)"
                 for batch in all_batches
-                if not batch.get("imported_at") and batch.get("status") != "completed"
+                if not batch.get("imported_at")
+                and batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES
             ]
             if incomplete:
                 raise RuntimeError(
-                    "Force-rebuild OpenAI batch runs can only be imported after all batches complete: "
+                    f"Force-rebuild {label} batch runs can only be imported after all batches complete: "
                     + ", ".join(incomplete)
                 )
 
         stats = {
+            "provider": provider,
             "run_id": manifest.get("run_id"),
             "manifest_path": manifest.get("manifest_path"),
             "batches_seen": len(batches),
@@ -2656,7 +2920,7 @@ class ZoteroSemanticSearch:
         }
 
         lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
-        lock_cm = _acquire_update_lock(lock_path)
+        lock_cm = contextlib.nullcontext(True) if _skip_lock else _acquire_update_lock(lock_path)
         acquired = lock_cm.__enter__()
         if not acquired:
             lock_cm.__exit__(None, None, None)
@@ -2671,37 +2935,45 @@ class ZoteroSemanticSearch:
             ):
                 self.chroma_client.reset_collection()
 
-            client = openai_batch.create_openai_client(self.chroma_client.embedding_config)
+            client = adapter.create_client(self.chroma_client.embedding_config)
             for batch in batches:
                 if batch.get("imported_at"):
                     stats["batches_skipped"] += 1
                     continue
-                if batch.get("status") != "completed":
+                if not batch.get("batch_id"):
+                    # A pending chunk parked by the enqueued-token throttle;
+                    # the auto-loop or a later import submits it.
+                    stats["batches_skipped"] += 1
+                    continue
+                if batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES:
                     stats["batches_skipped"] += 1
                     stats["errors"].append({
                         "batch_id": batch.get("batch_id"),
-                        "error": f"Batch status is {batch.get('status')}, not completed",
+                        "error": f"Batch status is {batch.get('status')}, not {_IMPORTABLE_DESC[provider]}",
                     })
                     continue
-                output_file_id = batch.get("output_file_id")
-                if not output_file_id:
+                if adapter.uses_error_file and not batch.get("output_file_id"):
                     stats["batches_skipped"] += 1
                     stats["errors"].append({"batch_id": batch.get("batch_id"), "error": "Missing output_file_id"})
                     continue
 
-                output_path = Path(batch["records_path"]).with_name(Path(batch["records_path"]).stem + "-output.jsonl")
+                records_path = Path(batch["records_path"])
+                output_path = records_path.with_name(records_path.stem + "-output.jsonl")
                 if output_path.exists():
                     output_text = output_path.read_text(encoding="utf-8")
                 else:
-                    output_text = openai_batch.download_file_text(client, output_file_id, output_path)
-                embeddings_by_id, row_failures = openai_batch.parse_embedding_output(output_text)
+                    output_text = adapter.download_output(client, batch, output_path)
 
-                if batch.get("error_file_id"):
-                    error_path = Path(batch["records_path"]).with_name(Path(batch["records_path"]).stem + "-errors.jsonl")
-                    error_text = openai_batch.download_file_text(client, batch["error_file_id"], error_path)
-                    row_failures.extend(openai_batch.parse_error_output(error_text))
+                # Rows without a correlation key are matched positionally
+                # against the exact submitted order, so the records file is
+                # read before parsing rather than after.
+                chunk_records = module.read_jsonl(records_path)
+                records = {record["id"]: record for record in chunk_records}
+                id_order = [record["id"] for record in chunk_records]
+                embeddings_by_id, row_failures = adapter.parse_output(output_text, id_order)
 
-                records = {record["id"]: record for record in openai_batch.read_jsonl(Path(batch["records_path"]))}
+                error_path = records_path.with_name(records_path.stem + "-errors.jsonl")
+                row_failures.extend(adapter.download_errors(client, batch, error_path))
                 ids = [doc_id for doc_id in embeddings_by_id if doc_id in records]
                 unexpected_output_ids = [doc_id for doc_id in embeddings_by_id if doc_id not in records]
                 failure_ids = {
@@ -2755,7 +3027,7 @@ class ZoteroSemanticSearch:
                 batch["imported_count"] = len(ids)
                 stats["batches_imported"] += 1
 
-            openai_batch.save_manifest(manifest)
+            module.save_manifest(manifest)
             if all(batch.get("imported_at") for batch in all_batches):
                 self.update_config["last_update"] = datetime.now().isoformat()
                 # Promote the watermark of the library the batch was submitted
@@ -2768,6 +3040,91 @@ class ZoteroSemanticSearch:
             return stats
         finally:
             lock_cm.__exit__(None, None, None)
+
+    def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Import completed OpenAI Batch API embeddings into ChromaDB."""
+        return self._import_batch("openai", batch_ids)
+
+    def import_gemini_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
+        """Import completed Gemini Batch API embeddings into ChromaDB."""
+        return self._import_batch("gemini", batch_ids)
+
+    def auto_loop_batch_pipeline(
+        self,
+        provider: str,
+        poll_interval: int = 60,
+        max_enqueued_tokens: int | None = None,
+        stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Drive a throttled batch run to completion: poll, import, submit pending.
+
+        Loops until every entry in the latest run's manifest is imported, or
+        until no further progress is possible (everything left is terminal and
+        nothing can be submitted). The on-disk manifest is consistent at every
+        step, so Ctrl-C or a crash resumes cleanly from the next
+        ``batch-import`` or ``--auto-loop``.
+
+        Must be called with the update lock already held (``update_database``
+        holds it), hence ``_skip_lock`` on the imports below.
+        """
+        import time
+
+        module = _batch_module(provider)
+        adapter = _batch_adapter(provider)
+        label = adapter.label
+        aggregate = {"provider": provider, "polls": 0, "imported_items": 0, "submitted_chunks": 0}
+
+        while True:
+            try:
+                import_stats = self._import_batch(provider, _skip_lock=True)
+                aggregate["imported_items"] += import_stats.get("imported_items", 0)
+            except RuntimeError as e:
+                # Force-rebuild manifests are all-or-nothing, so _import_batch
+                # refuses until every chunk is importable. Expected mid-run.
+                logger.debug(f"auto-loop import deferred: {e}")
+            aggregate["polls"] += 1
+
+            manifest = module.find_manifest(config_path=self.config_path)
+            client = adapter.create_client(self.chroma_client.embedding_config)
+            submitted = module.submit_pending_batches(
+                manifest,
+                embedding_config=self.chroma_client.embedding_config,
+                max_enqueued_tokens=max_enqueued_tokens,
+                client=client,
+            )
+            aggregate["submitted_chunks"] += submitted
+
+            entries = manifest.get("batches", [])
+            remaining = [b for b in entries if not b.get("imported_at")]
+            if not remaining:
+                break
+            active = [
+                b for b in remaining
+                if b.get("batch_id")
+                and batch_common._entry_state(adapter, b) not in batch_common.TERMINAL_STATES
+            ]
+            if not active and submitted == 0:
+                failed = [b.get("batch_id") or "(pending)" for b in remaining]
+                _report(
+                    f"  [{label} auto-loop] no progress possible - {len(remaining)} chunk(s) "
+                    f"failed or are stuck ({', '.join(failed)}). Inspect with 'zotero-mcp batch-status'.\n"
+                )
+                aggregate["stalled"] = failed
+                break
+
+            n_pending = sum(1 for b in remaining if b.get("status") == batch_common.STATE_PENDING)
+            _report(
+                f"  [{label} auto-loop] {len(entries) - len(remaining)}/{len(entries)} chunks imported, "
+                f"{submitted} newly submitted, {n_pending} pending; next poll in {poll_interval}s.\n"
+            )
+            time.sleep(poll_interval)
+
+        if "stalled" not in aggregate:
+            _report(f"  [{label} auto-loop] run complete: {aggregate['imported_items']} embeddings imported.\n")
+        if stats is not None:
+            stats["auto_loop"] = aggregate
+        return aggregate
+
 
     def search(self,
                query: str,

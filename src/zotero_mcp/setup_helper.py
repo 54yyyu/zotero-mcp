@@ -224,6 +224,9 @@ def setup_semantic_search(
         print(f"  - Embedding model name: {name}")
         if model == "openai":
             print(f"  - OpenAI Batch API updates: {'enabled' if openai_batch else 'disabled'}")
+        elif model == "gemini":
+            gemini_batch = existing_semantic_config.get("gemini_batch", {}).get("enabled", False)
+            print(f"  - Gemini Batch API updates: {'enabled' if gemini_batch else 'disabled'}")
         print(f"  - Update frequency: {update_freq}")
         print(f"  - Zotero database path: {db_path}")
         print("You can keep it or change it.")
@@ -326,6 +329,23 @@ def setup_semantic_search(
             print(f"Using custom Gemini base URL: {base_url}")
         else:
             print("Using default Gemini base URL")
+
+        existing_gemini_batch = existing_semantic_config.get("gemini_batch", {}) if existing_semantic_config else {}
+        default_gemini_batch = bool(existing_gemini_batch.get("enabled", False))
+        default_hint = "Y/n" if default_gemini_batch else "y/N"
+        print("\nGemini indexing mode:")
+        print("Batch API lowers costs for database updates, but results are imported later after the batch completes.")
+        print("Note: Google marks the Gemini embeddings Batch API as experimental.")
+        raw = input(f"Use Gemini Batch API for database updates? [{default_hint}]: ").strip().lower()
+        if raw == "":
+            gemini_batch_enabled = default_gemini_batch
+        else:
+            gemini_batch_enabled = raw in ["y", "yes"]
+        config["gemini_batch"] = {"enabled": gemini_batch_enabled}
+        if gemini_batch_enabled:
+            print("Gemini Batch API will be used by default for update-db.")
+        else:
+            print("Realtime Gemini embeddings will be used by default for update-db.")
 
     elif choice == "4":
         config["embedding_model"] = "ollama"
