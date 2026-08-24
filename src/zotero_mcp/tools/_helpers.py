@@ -19,6 +19,7 @@ from pyzotero.zotero_errors import (
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp.identifiers import normalize_doi
+from zotero_mcp.local_db import get_local_zotero_reader
 from zotero_mcp.utils import _paginate
 
 # ---------------------------------------------------------------------------
@@ -337,6 +338,38 @@ def _normalize_offset(offset: int | str | None, default: int = 0) -> int:
             return default
         offset = int(offset)
     return max(0, int(offset))
+
+
+def global_search_error() -> str | None:
+    """None when a global search can run here, else why it cannot (#163).
+
+    Global search is served exclusively by direct SQL over ``zotero.sqlite``:
+    one query covering every library at once. The Zotero API has no
+    equivalent — the best it could do is replay a single-library search
+    against each library in turn, which is a different (and far slower)
+    operation than the one the caller asked for. Refusing is therefore the
+    honest answer, and the message says what to change.
+    """
+    if _utils.get_search_backend() != "sqlite":
+        return (
+            "Error: global search requires the SQLite backend. The Zotero API "
+            "cannot search across libraries in one query, so this is refused "
+            "rather than emulated by searching each library in turn. Set "
+            "ZOTERO_SEARCH_BACKEND=sqlite (with ZOTERO_LOCAL=true) and restart "
+            "the server, or search one library at a time with "
+            "zotero_switch_library."
+        )
+    reader = get_local_zotero_reader()
+    if reader is None:
+        return (
+            "Error: global search needs to read zotero.sqlite directly, but the "
+            "local database is not available. Set ZOTERO_LOCAL=true (and "
+            "ZOTERO_DB_PATH if your Zotero data directory is in a custom "
+            "location), or search one library at a time with "
+            "zotero_switch_library."
+        )
+    reader.close()
+    return None
 
 
 def _parse_library_id_param(value: int | str | None) -> int | None:

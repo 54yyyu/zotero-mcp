@@ -324,9 +324,11 @@ _CREATOR_NAME_EXPR = "TRIM(COALESCE(c.firstName, '') || ' ' || COALESCE(c.lastNa
 # The shared item-metadata projection used by both search_items_sql and
 # advanced_search_sql — everything row_to_api_item() needs to build a
 # pyzotero-shaped item dict, correlated on `i` (items) via a leading
-# `WHERE i.libraryID = ?`.
-_ITEM_HYDRATION_SELECT = """
-    SELECT i.itemID, i.key, it.typeName as itemType, i.dateAdded, i.dateModified,
+# `WHERE i.libraryID IN (...)`. Built by `_item_hydration_select`, which
+# sizes that IN list; a global search (#163) passes every accessible
+# library rather than one.
+_ITEM_HYDRATION_SELECT_TEMPLATE = """
+    SELECT i.itemID, i.key, i.libraryID, it.typeName as itemType, i.dateAdded, i.dateModified,
            title_val.value as title, abstract_val.value as abstractNote,
            SUBSTR(date_val.value, INSTR(date_val.value, ' ') + 1) as date, doi_val.value as DOI, pub_val.value as publicationTitle
     FROM items i
@@ -344,9 +346,20 @@ _ITEM_HYDRATION_SELECT = """
     LEFT JOIN fields pub_f ON pub_f.fieldName = 'publicationTitle'
     LEFT JOIN itemData pub_data ON i.itemID = pub_data.itemID AND pub_data.fieldID = pub_f.fieldID
     LEFT JOIN itemDataValues pub_val ON pub_data.valueID = pub_val.valueID
-    WHERE i.libraryID = ?
+    WHERE i.libraryID IN ({library_placeholders})
     AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
 """
+
+
+def _item_hydration_select(library_count: int) -> str:
+    """`_ITEM_HYDRATION_SELECT_TEMPLATE` sized for `library_count` libraries.
+
+    The caller binds one parameter per library, ahead of every other
+    parameter in the statement.
+    """
+    return _ITEM_HYDRATION_SELECT_TEMPLATE.format(
+        library_placeholders=",".join("?" * library_count)
+    )
 
 
 def _like_or_eq(expr: str, operation: str, value: str) -> tuple[str, list]:
@@ -436,13 +449,88 @@ def _tag_condition(operation: str, value: str) -> tuple[str, list]:
     return positive_exists, params
 
 
-def row_to_api_item(row: sqlite3.Row, creators: list[dict], tags: list[dict]) -> dict:
+# Pattern metacharacters in Zotero's search UI and in SQL LIKE. The
+# translation below compares whole tag names, so an entry containing one may
+# mean something narrower here than on the API path. Rather than guess which
+# reading the caller wanted, decline the query and let them fall back.
+_TAG_WILDCARDS = ("%", "*")
+
+# ` OR ` as documented by `zotero_search_by_tag`, and `||` as Zotero's own
+# API spells it. Uppercase only: "or" is an ordinary word inside a tag name.
+_TAG_OR_SEPARATOR = re.compile(r"\s+OR\s+|\|\|")
+
+
+def _tag_dsl_condition(entries: list[str]) -> tuple[str, list] | None:
+    """Compile the `tag=` boolean DSL into one SQL fragment.
+
+    The syntax is the one `zotero_search_by_tag` documents and pyzotero
+    forwards to Zotero's `tag` parameter: entries are ANDed, ` OR ` (or
+    Zotero's own `||` spelling) disjoins within an entry, and a leading `-`
+    on a term excludes it.
+
+        ["a", "b"]            -> cond(a) AND cond(b)
+        ["a OR b"]            -> (cond(a) OR cond(b))
+        ["-draft"]            -> NOT cond(draft)
+        ["a OR b", "-draft"]  -> (cond(a) OR cond(b)) AND NOT cond(draft)
+
+    Exclusion is a plain `NOT EXISTS`, so an item carrying *no* tags
+    satisfies `-draft` — which is what Zotero's API returns. Deliberately
+    NOT ``_tag_condition("isNot", ...)``: that implements advanced search's
+    "a missing value satisfies nothing" rule for multi-valued fields, a
+    different question from this filter's.
+
+    Serving this in SQL is what lets a tag filter take part in a global
+    search (#163). Tags are a database-wide table keyed only by name —
+    ``tags(tagID, name UNIQUE)``, with no ``libraryID`` — so one tag row is
+    shared by items in every library and the condition needs no scoping of
+    its own; ``i.libraryID IN (...)`` on the outer query does all of it.
+
+    Returns None for an entry containing a pattern metacharacter, which this
+    whole-name comparison cannot honour.
+    """
+    clauses: list[str] = []
+    params: list = []
+    for entry in entries:
+        terms = [t.strip() for t in _TAG_OR_SEPARATOR.split(entry)]
+
+        term_sql: list[str] = []
+        for term in terms:
+            negated = term.startswith("-")
+            value = term[1:].strip() if negated else term
+            if not value:
+                continue
+            if any(w in value for w in _TAG_WILDCARDS):
+                return None
+            positive_sql, positive_params = _tag_condition("is", value)
+            term_sql.append(f"NOT ({positive_sql})" if negated else positive_sql)
+            params.extend(positive_params)
+        if not term_sql:
+            continue
+        clauses.append(f"({' OR '.join(term_sql)})")
+
+    if not clauses:
+        return None
+    return " AND ".join(clauses), params
+
+
+def row_to_api_item(
+    row: sqlite3.Row,
+    creators: list[dict],
+    tags: list[dict],
+    library: tuple[int, str] | None = None,
+) -> dict:
     """Build a pyzotero-shaped item dict from a search-backend result row.
 
     Covers exactly the fields the two search tools consume downstream
     (``format_item_result``, the advanced-search sort keys, and — on the
     fallback path — ``_extract_values``) rather than a full item
     representation: no ``version``, ``collections``, ``relations``, etc.
+
+    ``library`` is the row's ``(group_id, display_name)`` from
+    ``get_library_labels``. When given, it is attached under the top-level
+    ``library`` key in the same shape real pyzotero items carry, so a
+    global search's results (#163) can name where each hit came from and
+    the SQL and API paths stay interchangeable.
     """
     data = {
         "key": row["key"],
@@ -457,7 +545,15 @@ def row_to_api_item(row: sqlite3.Row, creators: list[dict], tags: list[dict]) ->
         "creators": creators,
         "tags": tags,
     }
-    return {"key": row["key"], "data": data}
+    item = {"key": row["key"], "data": data}
+    if library is not None:
+        group_id, name = library
+        item["library"] = {
+            "id": group_id,
+            "type": "user" if group_id == PERSONAL_LIBRARY_GROUP_ID else "group",
+            "name": name,
+        }
+    return item
 
 
 class LocalZoteroReader:
@@ -474,6 +570,7 @@ class LocalZoteroReader:
     extraction_workers: int = 1
     fulltext_cache_enabled: bool = False
     config_path: str | None = None
+    _library_labels: dict[int, tuple[int, str]] | None = None
 
     def __init__(
         self,
@@ -509,6 +606,7 @@ class LocalZoteroReader:
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
+        self._library_labels: dict[int, tuple[int, str]] | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
         self.attachment_priority: tuple[str, ...] = normalize_attachment_priority(
             attachment_priority
@@ -1630,6 +1728,63 @@ class LocalZoteroReader:
             row = conn.execute("SELECT libraryID FROM groups WHERE groupID = ?", (group_id,)).fetchone()
         return row[0] if row is not None else None
 
+    def _resolve_scope_library_ids(self, group_id: int | None) -> list[int] | None:
+        """The local ``libraryID``s one search should cover, or None if the
+        requested scope resolves to nothing.
+
+        ``group_id=None`` is the global-search scope (#163): every user and
+        group library in this database. Feeds and "My Publications" are left
+        out — they have no group_id equivalent, exactly as
+        ``get_key_group_map`` excludes them from the semantic index, so a
+        global result can always name the library it came from.
+
+        Any other value is the single-library case, delegated to
+        ``_resolve_scope_library_id``.
+        """
+        if group_id is not None:
+            lib_id = self._resolve_scope_library_id(group_id)
+            return [lib_id] if lib_id is not None else None
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT libraryID FROM libraries WHERE type IN ('user', 'group') "
+            "ORDER BY libraryID"
+        ).fetchall()
+        return [row[0] for row in rows] or None
+
+    def get_library_labels(self) -> dict[int, tuple[int, str]]:
+        """Map each local ``libraryID`` to ``(group_id, display_name)``.
+
+        ``group_id`` is the codebase-wide identity (0 = personal, else the
+        Zotero groupID) that ChromaDB metadata and ``zotero_switch_library``
+        already use. The personal library has no stored name, so it gets
+        "My Library" — the same label ``zotero_list_libraries`` prints.
+        Feeds and other libraries with no group_id equivalent are omitted,
+        matching ``_resolve_scope_library_ids``.
+
+        Cached per reader: a global search hydrates rows from several
+        libraries and would otherwise re-read this for every batch.
+        """
+        if self._library_labels is None:
+            conn = self._get_connection()
+            rows = conn.execute(
+                """
+                SELECT l.libraryID, l.type, g.groupID, g.name AS groupName
+                FROM libraries l
+                LEFT JOIN groups g ON l.libraryID = g.libraryID
+                """
+            ).fetchall()
+            labels: dict[int, tuple[int, str]] = {}
+            for row in rows:
+                if row["type"] == "user":
+                    labels[row["libraryID"]] = (PERSONAL_LIBRARY_GROUP_ID, "My Library")
+                elif row["type"] == "group" and row["groupID"] is not None:
+                    labels[row["libraryID"]] = (
+                        int(row["groupID"]),
+                        row["groupName"] or f"Group {row['groupID']}",
+                    )
+            self._library_labels = labels
+        return self._library_labels
+
     def _collection_condition(
         self, conn: sqlite3.Connection, operation: str, value: str, *, recursive: bool = False
     ) -> tuple[str, list] | None:
@@ -1750,12 +1905,43 @@ class LocalZoteroReader:
         item_ids = [row["itemID"] for row in rows]
         creators_by_item = self._fetch_creators(conn, item_ids)
         tags_by_item = self._fetch_tags(conn, item_ids)
+        labels = self.get_library_labels()
         return [
             row_to_api_item(
-                row, creators_by_item.get(row["itemID"], []), tags_by_item.get(row["itemID"], [])
+                row,
+                creators_by_item.get(row["itemID"], []),
+                tags_by_item.get(row["itemID"], []),
+                library=labels.get(row["libraryID"]),
             )
             for row in rows
         ]
+
+    def get_items_by_keys(self, keys: list[str]) -> dict[str, dict]:
+        """Hydrate item keys from *any* library into pyzotero-shaped dicts.
+
+        One query for the whole batch, keyed by ``items.key`` rather than
+        scoped to a library — which is the point: semantic search hits can
+        come from any indexed library, and the pyzotero client is bound to
+        exactly one, so a group hit cannot be fetched through it (#163).
+        Each result carries its ``library`` attribution, as with any other
+        row this reader hydrates.
+
+        Trashed items are excluded, matching every other search path here.
+        Keys with no live item are simply absent from the returned mapping.
+        """
+        if not keys:
+            return {}
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(None)
+        if not lib_ids:
+            return {}
+        placeholders = ",".join("?" * len(keys))
+        query_sql = (
+            _item_hydration_select(len(lib_ids))
+            + f" AND i.key IN ({placeholders})"
+        )
+        rows = conn.execute(query_sql, list(lib_ids) + list(keys)).fetchall()
+        return {item["key"]: item for item in self._hydrate_rows(conn, rows)}
 
     def search_items_sql(
         self,
@@ -1764,29 +1950,36 @@ class LocalZoteroReader:
         item_type: str = "-attachment",
         tag: list[str] | None = None,
         limit: int = 10,
-        group_id: int = PERSONAL_LIBRARY_GROUP_ID,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
     ) -> list[dict] | None:
         """#167 SQLite metadata search backend for zotero_search_items.
 
         Substring-matches every variant `_generate_search_variants(query)`
         produces against title/creator/year (plus abstract/tags/notes in
         'everything' mode), OR'd together in one query, scoped to the
-        library identified by `group_id`. Returns None — signalling "fall
-        back to the pyzotero path" — when a `tag` filter is given (the
-        boolean OR/exclusion tag DSL stays pyzotero's job) or `item_type`
-        is anything other than a bare type name or a single "-type"
-        exclusion, or when `group_id` has no matching library in this
-        database.
+        library identified by `group_id` — or to every accessible library
+        when `group_id` is None (#163). Returns None — signalling "fall
+        back to the pyzotero path" — when `item_type` is anything other
+        than a bare type name or a single "-type" exclusion, when a `tag`
+        filter uses a wildcard this translation cannot express, or when
+        `group_id` has no matching library in this database.
         """
-        if tag:
-            return None
         if qmode not in ("titleCreatorYear", "everything"):
             return None
 
         conn = self._get_connection()
-        lib_id = self._resolve_scope_library_id(group_id)
-        if lib_id is None:
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if lib_ids is None:
             return None
+
+        tag_sql = ""
+        tag_params: list = []
+        if tag:
+            built_tag = _tag_dsl_condition(tag)
+            if built_tag is None:
+                return None
+            tag_clause, tag_params = built_tag
+            tag_sql = f"AND {tag_clause}"
 
         type_filter_sql = ""
         type_params: list = []
@@ -1836,11 +2029,11 @@ class LocalZoteroReader:
                 like_params.append(pattern)
 
         query_sql = (
-            _ITEM_HYDRATION_SELECT
-            + f" {type_filter_sql} AND ({' OR '.join(like_clauses)})"
+            _item_hydration_select(len(lib_ids))
+            + f" {type_filter_sql} {tag_sql} AND ({' OR '.join(like_clauses)})"
             + " ORDER BY i.dateModified DESC LIMIT ?"
         )
-        params = [lib_id] + type_params + like_params + [limit]
+        params = list(lib_ids) + type_params + tag_params + like_params + [limit]
         rows = conn.execute(query_sql, params).fetchall()
         return self._hydrate_rows(conn, rows)
 
@@ -1848,7 +2041,7 @@ class LocalZoteroReader:
         self,
         conditions: list[dict[str, str]],
         join_mode: str = "all",
-        group_id: int = PERSONAL_LIBRARY_GROUP_ID,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
     ) -> list[dict] | None:
         """#167 SQLite metadata search backend for zotero_advanced_search.
 
@@ -1859,10 +2052,22 @@ class LocalZoteroReader:
         library in this database — the caller falls back to the existing
         client-side path. Sorting and the result limit are left to the
         caller, exactly as with that existing path.
+
+        `group_id=None` searches every accessible library (#163). A
+        `collection` condition is refused in that scope: a collection key
+        belongs to exactly one library (`collections.libraryID` is NOT
+        NULL, UNIQUE per library), so honouring it would silently answer a
+        one-library question while claiming to have searched them all.
+        Tags, by contrast, are a database-wide table with no libraryID, so
+        a tag condition spans libraries correctly and is allowed.
         """
         conn = self._get_connection()
-        lib_id = self._resolve_scope_library_id(group_id)
-        if lib_id is None:
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if lib_ids is None:
+            return None
+        if group_id is None and any(
+            c["field"].lower() in ("collection", "collections") for c in conditions
+        ):
             return None
 
         clauses: list[str] = []
@@ -1882,11 +2087,11 @@ class LocalZoteroReader:
         where_sql = joiner.join(f"({c})" for c in clauses)
 
         query_sql = (
-            _ITEM_HYDRATION_SELECT
+            _item_hydration_select(len(lib_ids))
             + " AND it.typeName NOT IN ('attachment', 'note', 'annotation')"
             + f" AND ({where_sql})"
         )
-        all_params = [lib_id] + params
+        all_params = list(lib_ids) + params
         rows = conn.execute(query_sql, all_params).fetchall()
         return self._hydrate_rows(conn, rows)
 

@@ -458,6 +458,33 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
   doesn't cover falls back to the API path automatically, so the results are
   either the same or better, never worse.
 
+**Global search across libraries:**
+
+With the SQLite backend enabled, `zotero_search_items`, `zotero_advanced_search`
+and `zotero_semantic_search` accept `search_all_libraries=True` (`--all-libraries`
+on the CLI). One query then covers your personal library and every group library
+at once, and each result is labelled with the library it came from:
+
+```
+**Library:** AI in entrepreneurship (groupID=6015547)
+```
+
+This is deliberately gated on `ZOTERO_SEARCH_BACKEND=sqlite`. The Zotero API can
+only search one library per request, so without direct SQL the best anyone could
+do is replay a single-library search against each library in turn — a different
+and far slower operation. Rather than emulate global search badly, the tools
+refuse and say so.
+
+Two limits follow from how Zotero stores things. **Collections are per-library**
+(`collections.libraryID` is NOT NULL), so `collection_key` and `collection`
+conditions cannot be combined with a global search. **Tags are not** — Zotero
+keeps one database-wide `tags` table shared by every library — so tag filters and
+`tag` conditions work globally and are the recommended way to slice a global
+search.
+
+Duplicates across libraries are returned as-is: the same paper filed in two
+libraries is two items, and collapsing them would hide where each copy lives.
+
 **Tool surface:**
 - `ZOTERO_MCP_TOOLSETS`: Which optional tool groups to expose. Every tool the
   server registers is sent to the model on *every* request, so the tool list is

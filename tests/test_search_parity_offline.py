@@ -105,7 +105,7 @@ def _run(monkeypatch, tmp_path, backend: str, **kwargs) -> set[str]:
     # Render each result as its key alone: parity is about which items come
     # back, and the formatted output is not the thing under test.
     monkeypatch.setattr(
-        _utils, "format_item_result", lambda item, index=0: [f"KEY:{item['key']}"]
+        _utils, "format_item_result", lambda item, index=0, **_kwargs: [f"KEY:{item['key']}"]
     )
     return _keys_from_output(_run_raw(monkeypatch, tmp_path, backend, **kwargs))
 
@@ -263,7 +263,7 @@ def _run_dates(monkeypatch, tmp_path, backend: str, **kwargs) -> dict[str, str]:
     monkeypatch.setattr(
         _utils,
         "format_item_result",
-        lambda item, index=0: [f"KEY:{item['key']}=DATE:{item['data'].get('date', '')}"],
+        lambda item, index=0, **_kwargs: [f"KEY:{item['key']}=DATE:{item['data'].get('date', '')}"],
     )
     out = _run_raw(monkeypatch, tmp_path, backend, **kwargs)
     pairs = {}

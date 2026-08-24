@@ -6,9 +6,12 @@ metadata-only migration backfill (evidence-based attribution), and DB-side
 
 Related coverage elsewhere: per-library sync_versions (#393) in
 test_sync_watermark_per_library.py; the library-scoped deletion pass (#404)
-in test_library_scoped_deletion.py. Still deferred upstream: cross-library
-result enrichment (fetching a group hit's full item via a client scoped to
-that group).
+in test_library_scoped_deletion.py; the global-search tool surface (#163
+phase 2) in test_global_search.py.
+
+Cross-library result enrichment — hydrating a hit from a library the
+pyzotero client is not scoped to — landed with #163 phase 2 and is covered
+at the bottom of this file.
 """
 
 import json
@@ -575,3 +578,142 @@ def test_search_merges_group_id_with_user_filters(monkeypatch):
     search = _build_search(monkeypatch, chroma)
     search.search(query="q", filters={"item_type": "note"}, group_id=GROUP_ID)
     assert chroma.last_search_where == {"$and": [{"item_type": "note"}, {"group_id": GROUP_ID}]}
+
+
+# ---------------------------------------------------------------------------
+# Cross-library result enrichment (#163, phase 2)
+# ---------------------------------------------------------------------------
+
+class _ScopedZot:
+    """pyzotero stand-in scoped to ONE library, like the real client.
+
+    A key from any other library 404s, which is exactly what broke global
+    semantic search: the hit was found in Chroma but could not be hydrated.
+    """
+
+    def __init__(self, library_type, library_id, items_by_key):
+        self.library_type = library_type
+        self.library_id = library_id
+        self._items = items_by_key
+
+    def item(self, key):
+        if key not in self._items:
+            raise LookupError(f"404: {key} is not in this library")
+        return self._items[key]
+
+
+class _FakeReader:
+    """LocalZoteroReader stand-in serving hydrated items for any library."""
+
+    def __init__(self, items_by_key):
+        self._items = items_by_key
+        self.asked_for: list[list[str]] = []
+
+    def get_items_by_keys(self, keys):
+        self.asked_for.append(list(keys))
+        return {k: self._items[k] for k in keys if k in self._items}
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _chroma_hit(item_key, group_id):
+    return {
+        "ids": [[item_key]],
+        "documents": [["a passage about quantum networks"]],
+        "metadatas": [[{"group_id": group_id}]],
+        "distances": [[0.1]],
+    }
+
+
+def test_group_hit_is_hydrated_from_the_local_db_not_the_scoped_client(monkeypatch):
+    group_item = {
+        "key": "GRPKEY01",
+        "library": {"id": GROUP_ID, "type": "group", "name": "Test Group"},
+        "data": {"itemType": "journalArticle", "title": "Group Paper"},
+    }
+    reader = _FakeReader({"GRPKEY01": group_item})
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: reader)
+
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(), is_local=True,
+        # The client is scoped to the personal library and holds nothing.
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("GRPKEY01", GROUP_ID), "quantum")
+
+    assert len(enriched) == 1
+    assert "error" not in enriched[0]
+    assert enriched[0]["zotero_item"]["data"]["title"] == "Group Paper"
+    assert reader.asked_for == [["GRPKEY01"]]
+
+
+def test_same_library_hit_still_uses_the_zotero_client(monkeypatch):
+    """The local DB is for foreign libraries only — an in-scope key must keep
+    coming from the API client, which is the authority on it."""
+    own_item = {"key": "MYKEY001", "data": {"itemType": "journalArticle", "title": "My Paper"}}
+    reader = _FakeReader({"MYKEY001": {"key": "MYKEY001", "data": {"title": "STALE"}}})
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: reader)
+
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(), is_local=True,
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {"MYKEY001": own_item}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("MYKEY001", 0), "quantum")
+
+    assert enriched[0]["zotero_item"]["data"]["title"] == "My Paper"
+    assert reader.asked_for == []
+
+
+def test_foreign_hit_without_a_local_db_keeps_reporting_the_error(monkeypatch):
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(),
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("GRPKEY01", GROUP_ID), "quantum")
+
+    assert "error" in enriched[0]
+
+
+def test_untagged_hit_the_client_cannot_serve_falls_back_to_the_local_db(monkeypatch):
+    """Indexes built before #396 carry no group_id at all, so a foreign hit
+    cannot be recognised as foreign up front. The client is still tried first
+    — it is authoritative for its own library — but a 404 must fall back to
+    the local database rather than being reported as an error, which is the
+    #163 symptom on every index that predates the tagging."""
+    group_item = {
+        "key": "GRPKEY01",
+        "library": {"id": GROUP_ID, "type": "group", "name": "Test Group"},
+        "data": {"itemType": "journalArticle", "title": "Group Paper"},
+    }
+    reader = _FakeReader({"GRPKEY01": group_item})
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: reader)
+
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(), is_local=True,
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
+    )
+
+    untagged = {
+        "ids": [["GRPKEY01"]],
+        "documents": [["a passage"]],
+        "metadatas": [[{}]],          # no group_id — pre-#396 index
+        "distances": [[0.1]],
+    }
+    enriched = search._enrich_search_results(untagged, "quantum")
+
+    assert "error" not in enriched[0]
+    assert enriched[0]["zotero_item"]["data"]["title"] == "Group Paper"
