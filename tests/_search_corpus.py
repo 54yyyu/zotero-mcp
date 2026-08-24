@@ -153,6 +153,13 @@ CORPUS: list[Item] = [
     Item("NOTEITM1", item_type="note"),
     Item("DELETED1", title="Should Never Appear"),
 
+    # --- partial dates, where Zotero pads the ISO half with 00 placeholders.
+    # These are what make an unstripped prefix visibly wrong rather than
+    # merely doubled: "2017-00-00 2017" instead of "2017". ---
+    Item("PARTDT01", title="Year Only Partial Date", date="2017-00-00 2017"),
+    Item("PARTDT02", title="Month And Year Partial Date", date="2021-03-00 03/2021"),
+    Item("PARTDT03", title="Slash Separated Full Date", date="2022-11-28 2022/11/28"),
+
     # --- group library, to keep library scoping honest ---
     Item("GRPITEM1", title="Group Library Paper about quantum",
          library_id=GROUP_LIBRARY_ID, tags=["physics"]),

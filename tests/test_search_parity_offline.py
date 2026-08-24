@@ -71,13 +71,12 @@ def _keys_from_output(text: str) -> set[str]:
     return {line[4:] for line in text.splitlines() if line.startswith("KEY:")}
 
 
-def _run(monkeypatch, tmp_path, backend: str, **kwargs) -> set[str]:
-    """Run the real advanced_search tool against *backend*, return item keys."""
-    # Render each result as its key alone: parity is about which items come
-    # back, and the formatted output is not the thing under test.
-    monkeypatch.setattr(
-        _utils, "format_item_result", lambda item, index=0: [f"KEY:{item['key']}"]
-    )
+def _run_raw(monkeypatch, tmp_path, backend: str, **kwargs) -> str:
+    """Route ``advanced_search`` to *backend* and return its raw output.
+
+    The caller is expected to have already installed whatever
+    ``format_item_result`` stand-in it wants to read results through.
+    """
     monkeypatch.setattr(_client, "get_active_group_id", lambda: 0)
     monkeypatch.setattr(_utils, "get_search_backend", lambda: backend)
 
@@ -98,8 +97,17 @@ def _run(monkeypatch, tmp_path, backend: str, **kwargs) -> set[str]:
             _client, "get_zotero_client", lambda: _CorpusZotero(corpus.build_api_items())
         )
 
-    out = server.advanced_search(ctx=DummyContext(), limit=100, **kwargs)
-    return _keys_from_output(out)
+    return server.advanced_search(ctx=DummyContext(), limit=100, **kwargs)
+
+
+def _run(monkeypatch, tmp_path, backend: str, **kwargs) -> set[str]:
+    """Run the real advanced_search tool against *backend*, return item keys."""
+    # Render each result as its key alone: parity is about which items come
+    # back, and the formatted output is not the thing under test.
+    monkeypatch.setattr(
+        _utils, "format_item_result", lambda item, index=0: [f"KEY:{item['key']}"]
+    )
+    return _keys_from_output(_run_raw(monkeypatch, tmp_path, backend, **kwargs))
 
 
 def _cond(field: str, operation: str, value: str) -> list[dict[str, str]]:
@@ -243,4 +251,57 @@ def test_year_on_multipart_dates_diverges_by_design(monkeypatch, tmp_path):
     assert "ACCENT01" not in api, (
         "the API path cannot see the ISO prefix; if this now passes, the "
         "divergence has been fixed and this test should become a parity case"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parity of rendered field values, not just of which items match.
+# ---------------------------------------------------------------------------
+
+def _run_dates(monkeypatch, tmp_path, backend: str, **kwargs) -> dict[str, str]:
+    """Like ``_run``, but render each result's key and its ``date`` field."""
+    monkeypatch.setattr(
+        _utils,
+        "format_item_result",
+        lambda item, index=0: [f"KEY:{item['key']}=DATE:{item['data'].get('date', '')}"],
+    )
+    out = _run_raw(monkeypatch, tmp_path, backend, **kwargs)
+    pairs = {}
+    for line in out.splitlines():
+        if line.startswith("KEY:"):
+            key, _, date = line[4:].partition("=DATE:")
+            pairs[key] = date
+    return pairs
+
+
+def test_backends_agree_on_the_rendered_date(monkeypatch, tmp_path):
+    """The hydrated ``date`` must be the API's display half, not Zotero's raw
+    multipart storage form.
+
+    Zotero stores ``"2017-00-00 2017"`` and the web API returns ``"2017"``.
+    ``_DATE_DISPLAY_SQL`` strips the ISO prefix for search *conditions*, but
+    the hydration projections that build the returned item selected
+    ``date_val.value`` raw, so every date rendered through the SQLite backend
+    carried the prefix: doubled where the user typed an ISO date, and visibly
+    mangled where they did not. Verified against a live Zotero 10 library, all
+    113 dated items were wrong before the fix and all 113 match the API after.
+
+    The rest of this module compares which keys come back, which is why this
+    went unnoticed: no case looked at a field value.
+    """
+    sql = _run_dates(monkeypatch, tmp_path, "sqlite", conditions=_cond("title", "contains", "a"))
+    api = _run_dates(monkeypatch, tmp_path, "api", conditions=_cond("title", "contains", "a"))
+
+    assert sql == api, "sqlite and api render different dates for the same items"
+
+    expected = {i.key: i.display_date for i in corpus.CORPUS}
+    for key, rendered in sql.items():
+        assert rendered == expected[key], (
+            f"{key}: rendered {rendered!r}, Zotero's API would say {expected[key]!r}"
+        )
+
+    # The cases that make an unstripped prefix visible rather than merely
+    # doubled must actually be in the comparison, not filtered out upstream.
+    assert {"PARTDT01", "PARTDT02", "PARTDT03"} <= set(sql), (
+        "the partial-date corpus items did not reach the comparison"
     )

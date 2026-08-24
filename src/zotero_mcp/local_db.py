@@ -312,6 +312,13 @@ _YEAR_FIELD_SQL = (
     "WHERE d.itemID = i.itemID AND f.fieldName = 'date' AND LENGTH(v.value) >= 4)"
 )
 
+# The display half of the multipart date, for the hydration projections
+# below. Conditions get this via _DATE_DISPLAY_SQL; the projections that build
+# the returned item need it too, or every rendered date carries Zotero's
+# internal ISO prefix ("2025-05-29 2025-05-29", "2017-00-00 2017"). INSTR
+# returns 0 when there is no space, and SUBSTR(v, 1) is then the whole value,
+# so a non-multipart value passes through unchanged.
+_DATE_DISPLAY_EXPR = "SUBSTR({col}, INSTR({col}, ' ') + 1)"
 _CREATOR_NAME_EXPR = "TRIM(COALESCE(c.firstName, '') || ' ' || COALESCE(c.lastName, ''))"
 
 # The shared item-metadata projection used by both search_items_sql and
@@ -321,7 +328,7 @@ _CREATOR_NAME_EXPR = "TRIM(COALESCE(c.firstName, '') || ' ' || COALESCE(c.lastNa
 _ITEM_HYDRATION_SELECT = """
     SELECT i.itemID, i.key, it.typeName as itemType, i.dateAdded, i.dateModified,
            title_val.value as title, abstract_val.value as abstractNote,
-           date_val.value as date, doi_val.value as DOI, pub_val.value as publicationTitle
+           SUBSTR(date_val.value, INSTR(date_val.value, ' ') + 1) as date, doi_val.value as DOI, pub_val.value as publicationTitle
     FROM items i
     JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
     LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
@@ -1011,7 +1018,7 @@ class LocalZoteroReader:
                    fi.readTime, fi.translatedTime,
                    title_val.value as title,
                    abstract_val.value as abstract,
-                   date_val.value as date,
+                   SUBSTR(date_val.value, INSTR(date_val.value, ' ') + 1) as date,
                    doi_val.value as DOI,
                    url_val.value as url,
                    GROUP_CONCAT(
