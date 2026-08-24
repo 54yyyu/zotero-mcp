@@ -391,6 +391,86 @@ class TestDoiRouteSelfSupplements:
         assert patched.created[0]["title"] == "DETERMINANTS OF PUBLIC TRUST"
 
 
+class TestThinRecordSurvivesTheBatchPath:
+    """The batch path resolves metadata for every DOI in one CrossRef request,
+    then builds items in a second pass — a different code path from the
+    single-DOI one, and the seam where #477's landing-page fallback could go
+    missing without any existing test noticing.
+
+    ``supplemental`` describes one specific page, so a batch cannot be handed
+    one; each thin record must therefore read its own landing page.
+    """
+
+    DOIS = ["10.13165/vpa-20-19-2-04", "10.13165/vpa-20-19-2-05"]
+
+    @staticmethod
+    def _thin(doi):
+        return {
+            "type": "journal-issue",
+            "title": [],
+            "container-title": ["Public Policy and Administration"],
+            "DOI": doi,
+            "URL": f"https://ojs.example/landing/{doi[-2:]}",
+            "published": {"date-parts": [[2020]]},
+        }
+
+    def _dispatch(self):
+        """CrossRef answers the batched filter form and the single form; any
+        other host serves the landing page."""
+        def _get(url, **kwargs):
+            if "api.crossref.org" in url:
+                r = MagicMock()
+                r.status_code = 200
+                r.raise_for_status = MagicMock()
+                if url.rstrip("/").endswith("/works"):
+                    r.json.return_value = {
+                        "status": "ok",
+                        "message": {"items": [self._thin(d) for d in self.DOIS]},
+                    }
+                else:
+                    doi = url.rsplit("/works/", 1)[1]
+                    r.json.return_value = {"status": "ok", "message": self._thin(doi)}
+                return r
+            return _html_response(OJS_PAGE)
+        return _get
+
+    def test_each_thin_record_in_a_batch_reads_its_own_page(self, patched):
+        with patch("zotero_mcp.tools.write.requests.get",
+                   side_effect=self._dispatch()), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            out = write.add_by_doi(doi=self.DOIS, attach_mode="none",
+                                   ctx=DummyContext())
+
+        assert out.splitlines()[0].startswith("# Added 2 of 2 DOIs"), out
+        titles = [i["title"] for i in patched.created]
+        assert titles == ["DETERMINANTS OF PUBLIC TRUST"] * 2, titles
+
+    def test_batch_landing_pages_are_read_outside_the_api_lock(self, patched):
+        """The fallback is outbound HTTP to a third party. Holding the
+        process-wide Zotero lock across it is the exact starvation the lock
+        narrowing exists to prevent."""
+        from test_lock_scope import _lock_is_free
+
+        free_during_page_fetch = []
+
+        def _get(url, **kwargs):
+            if "api.crossref.org" not in url:
+                free_during_page_fetch.append(_lock_is_free())
+            return self._dispatch()(url, **kwargs)
+
+        with patch("zotero_mcp.tools.write.requests.get", side_effect=_get), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            write.add_by_doi(doi=self.DOIS, attach_mode="none",
+                             ctx=DummyContext())
+
+        assert free_during_page_fetch, "no landing page fetched -- proves nothing"
+        assert all(free_during_page_fetch), (
+            "the Zotero API lock was held across a landing-page fetch"
+        )
+
+
 class TestThinRecordDetection:
     def test_empty_title_list_is_thin(self):
         assert write._crossref_record_is_thin({"title": []}, "journal-article")

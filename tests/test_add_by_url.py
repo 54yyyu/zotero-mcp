@@ -776,3 +776,117 @@ class TestArxivAttachMode:
         mock_linked.assert_not_called()
         # Binary upload path is invoked
         assert fake_zot.attachment_both.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Multiple URLs in one call
+# ---------------------------------------------------------------------------
+
+class TestMultipleUrls:
+    def test_creates_multiple_webpage_items(self, dummy_ctx, patch_write_client):
+        """A batch can mix ordinary webpage URLs; each is added independently
+        via the normal single-URL path, then the results are stacked."""
+        fake_zot = patch_write_client
+
+        result = write.add_item(
+            source="https://example.com/a, https://example.com/b",
+            source_type="url",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 2
+        assert fake_zot.created[0]["url"] == "https://example.com/a"
+        assert fake_zot.created[1]["url"] == "https://example.com/b"
+        assert "# Added 2 of 2 URLs" in result
+
+    def test_comma_in_a_query_string_does_not_split_the_url(
+        self, dummy_ctx, patch_write_client
+    ):
+        """Commas are ordinary characters in a query string. Splitting on one
+        unconditionally created a truncated page plus a junk item with
+        url="2" — one bad item and one wrong one, from a URL that worked
+        before batching existed."""
+        fake_zot = patch_write_client
+        url = "https://example.com/page?ids=1,2"
+
+        result = write.add_item(source=url, source_type="url", ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 1
+        assert fake_zot.created[0]["url"] == url
+        assert "# Added" not in result  # single item, not a batch
+
+    def test_comma_inside_one_url_of_a_newline_batch(
+        self, dummy_ctx, patch_write_client
+    ):
+        fake_zot = patch_write_client
+
+        write.add_item(
+            source="https://example.com/a?ids=1,2\nhttps://example.com/b",
+            source_type="url",
+            ctx=dummy_ctx,
+        )
+
+        assert [c["url"] for c in fake_zot.created] == [
+            "https://example.com/a?ids=1,2",
+            "https://example.com/b",
+        ]
+
+    def test_json_object_source_returns_an_error_string(
+        self, dummy_ctx, patch_write_client
+    ):
+        """Malformed structured input is a user error like any other, and
+        should come back as text rather than a traceback out of the tool."""
+        result = write.add_item(
+            source='{"url": "https://example.com/a"}',
+            source_type="url",
+            ctx=dummy_ctx,
+        )
+
+        assert result.startswith("Error")
+        assert "list of strings" in result
+
+
+class TestRepeatedUrls:
+    def test_same_url_twice_creates_one_item(self, dummy_ctx, patch_write_client):
+        fake_zot = patch_write_client
+
+        result = write.add_by_url(
+            url=["https://example.com/a", "https://example.com/a"],
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert "# Added 1 of 2 URLs" in result
+        assert "Same URL as entry 1 in this request" in result
+
+    def test_urls_differing_only_in_case_are_kept_apart(
+        self, dummy_ctx, patch_write_client
+    ):
+        """URL paths are case-sensitive, and there is no URL normalizer to
+        appeal to — so exact match is the only safe comparison."""
+        fake_zot = patch_write_client
+
+        write.add_by_url(
+            url=["https://example.com/Paper", "https://example.com/paper"],
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 2
+
+    def test_arxiv_batch_counts_as_added(self, dummy_ctx, patch_write_client):
+        """The arXiv branch opens its result block with its own wording, so
+        the batch summary has to recognize it as a success too."""
+        fake_zot = patch_write_client
+        mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
+
+        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
+            result = write.add_by_url(
+                url=["https://arxiv.org/abs/2401.00001",
+                     "https://arxiv.org/abs/2401.00002"],
+                attach_mode="none",
+                ctx=dummy_ctx,
+            )
+
+        assert len(fake_zot.created) == 2
+        assert "# Added 2 of 2 URLs" in result
+        assert "failed" not in result
