@@ -2216,8 +2216,13 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     # download and upload are outbound network work that has nothing to do
     # with Zotero API serialization — write_zot is always the cloud Web API
     # client (never the single-threaded local server the lock exists to
-    # protect), and A6's version-checked retry is what guards concurrent
-    # writes, not this lock (#A5b — mirrors add_by_doi's narrowing).
+    # protect). A6's version-checked retry guards concurrent *updates* to an
+    # item that already exists; it does not — and structurally cannot —
+    # stop two concurrent adds from each creating one, because two
+    # create_items() POSTs yield two new keys and no version to conflict on.
+    # Narrowing the lock leaves that race open deliberately: serializing adds
+    # is a separate question from keeping third-party network work out of the
+    # lock, tracked in #486 (#A5b — mirrors add_by_doi's narrowing).
     pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
     pdf_status = "no PDF attached"
     if attach_mode == "none":
