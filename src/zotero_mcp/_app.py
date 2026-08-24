@@ -29,11 +29,11 @@ def _sync_semantic_update() -> None:
     imported. That module pulls in ChromaDB and numpy, which costs roughly a
     second even when warm, and on Windows the import — running here, in the
     lifespan's worker thread — wedged the process for the length of the first
-    tool call (#485). ``update_policy`` answers "is an update due?" from the
+    tool call (#485). ``config_light`` answers "is an update due?" from the
     config file alone, with no third-party imports at all, so only a server
     that is actually about to index anything pays for ChromaDB.
     """
-    from zotero_mcp.update_policy import should_update
+    from zotero_mcp.config_light import should_update
 
     config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
     if not config_path.exists():

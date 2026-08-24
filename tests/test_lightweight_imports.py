@@ -88,3 +88,87 @@ def test_unknown_attribute_raises_attribute_error() -> None:
 
     with pytest.raises(AttributeError):
         zotero_mcp.does_not_exist
+
+
+# ---------------------------------------------------------------------------
+# #485: startup gates must decide from config before importing ChromaDB
+# ---------------------------------------------------------------------------
+
+_WARMUP_PROBE = """
+import json, pathlib, sys, threading
+sys.path.insert(0, {src!r})
+
+home = pathlib.Path(sys.argv[1])
+(home / ".config" / "zotero-mcp").mkdir(parents=True, exist_ok=True)
+if sys.argv[2] != "__none__":
+    (home / ".config" / "zotero-mcp" / "config.json").write_text(sys.argv[2])
+pathlib.Path.home = staticmethod(lambda: home)
+
+from zotero_mcp.cli import _warmup_reranker_in_background
+
+_warmup_reranker_in_background()
+for thread in threading.enumerate():
+    if thread.name == "zmcp-reranker-warmup":
+        thread.join(timeout=120)
+
+print(json.dumps({{
+    "semantic_search": "zotero_mcp.semantic_search" in sys.modules,
+    "chromadb": "chromadb" in sys.modules,
+}}))
+"""
+
+
+def _warmup_imports(tmp_path, raw_config):
+    """Run the reranker warmup in a fresh interpreter; report what it imported."""
+    import json
+
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _WARMUP_PROBE.format(src=SRC),
+            str(home),
+            "__none__" if raw_config is None else raw_config,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize(
+    "label,raw_config",
+    [
+        ("no config file", None),
+        ("reranker block absent", '{"semantic_search": {}}'),
+        ("reranker disabled", '{"semantic_search": {"reranker": {"enabled": false}}}'),
+        ("unparseable config", "{not json"),
+    ],
+)
+def test_reranker_warmup_gates_before_importing_chromadb(tmp_path, label, raw_config):
+    """A disabled reranker must not cost a ChromaDB import on every `serve`.
+
+    `warmup_reranker` applies the `enabled` check itself, but it lives in
+    `semantic_search`, so reaching it already paid for chromadb + numpy. That
+    is the #485 pattern a second time, in `cli.py` rather than `_app.py`: the
+    import above the check rather than below it. Measured before the fix:
+    892 ms and chromadb loaded with the reranker explicitly disabled.
+    """
+    seen = _warmup_imports(tmp_path, raw_config)
+    assert not seen["semantic_search"], f"{label}: imported zotero_mcp.semantic_search"
+    assert not seen["chromadb"], f"{label}: imported chromadb"
+
+
+def test_config_light_answers_the_reranker_gate_on_its_own():
+    """The gate must be reachable without the module it is gating."""
+    modules = _modules_after_importing("import zotero_mcp.config_light")
+    assert "chromadb" not in modules
+    assert "numpy" not in modules
+
+    from zotero_mcp.config_light import reranker_enabled
+
+    assert reranker_enabled(None) is False

@@ -187,22 +187,22 @@ def test_due_update_does_import_the_heavy_module(tmp_path):
 
 def test_due_update_check_is_config_only():
     """``should_update`` must stay importable without the heavy module."""
-    from zotero_mcp.update_policy import should_update
+    from zotero_mcp.config_light import should_update
 
     assert should_update({"auto_update": True, "update_frequency": "startup"}) is True
     assert should_update({"auto_update": False, "update_frequency": "startup"}) is False
     assert should_update({"auto_update": True, "update_frequency": "manual"}) is False
 
 
-def test_update_policy_has_no_heavy_dependencies():
-    """Guard the reason ``update_policy`` exists as its own module."""
+def test_config_light_has_no_heavy_dependencies():
+    """Guard the reason ``config_light`` exists as its own module."""
     import subprocess
 
     proc = subprocess.run(
         [
             sys.executable,
             "-c",
-            "import sys, json; import zotero_mcp.update_policy; "
+            "import sys, json; import zotero_mcp.config_light; "
             "print(json.dumps(sorted(m for m in ('chromadb', 'numpy', 'torch', "
             "'zotero_mcp.semantic_search') if m in sys.modules)))",
         ],

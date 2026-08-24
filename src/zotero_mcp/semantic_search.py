@@ -37,9 +37,12 @@ from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 
 # Re-exported so callers keep importing them from here, while the
 # ChromaDB-free definitions stay importable without this module (#485).
-from .update_policy import (  # noqa: F401
+from .config_light import (  # noqa: F401
+    _DEFAULT_RERANKER_CONFIG,
     _DEFAULT_UPDATE_CONFIG,
+    load_reranker_config,
     load_update_config,
+    reranker_enabled,
     should_update,
 )
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
@@ -292,30 +295,6 @@ def _split_prepared_into_requests(prepared: dict[str, Any], request_batch_size: 
 
     if buffer_docs:
         yield buffer_docs, buffer_metas, buffer_ids, buffer_keys
-
-
-_DEFAULT_RERANKER_CONFIG: dict[str, Any] = {
-    "enabled": False,
-    "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-    "candidate_multiplier": 3,
-}
-
-
-def load_reranker_config(config_path: str | None) -> dict[str, Any]:
-    """Read the semantic-search ``reranker`` block from disk.
-
-    Pure file read with no model load, so the server can consult it (e.g. to
-    decide whether to warm up) without paying the cross-encoder cost.
-    """
-    config = dict(_DEFAULT_RERANKER_CONFIG)
-    if config_path and os.path.exists(config_path):
-        try:
-            with open(config_path) as f:
-                file_config = json.load(f)
-            config.update(file_config.get("semantic_search", {}).get("reranker", {}))
-        except Exception as e:
-            logger.warning(f"Error loading reranker config: {e}")
-    return config
 
 
 def warmup_reranker(config_path: str | None = None) -> bool:

@@ -158,6 +158,22 @@ def _warmup_reranker_in_background() -> None:
     """
     import threading
 
+    # Gate on the config *before* importing anything heavy. `warmup_reranker`
+    # applies the same check, but it lives in `semantic_search`, so reaching it
+    # already costs the ChromaDB + numpy import — on every `serve`, for the
+    # default `enabled: false`. That is the #485 pattern a second time: the
+    # import above the check rather than below it. `config_light` answers it
+    # from the config file alone.
+    try:
+        # Imported here, not at module scope: cli.py keeps its import graph
+        # small so `--version` stays fast (#445). config_light is stdlib-only.
+        from zotero_mcp.config_light import reranker_enabled
+
+        if not reranker_enabled(str(_semantic_config_path(None))):
+            return
+    except Exception:
+        return  # an unreadable config cannot ask for a warmup
+
     def _run() -> None:
         try:
             from zotero_mcp.semantic_search import warmup_reranker
