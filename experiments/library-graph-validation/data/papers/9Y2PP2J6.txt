@@ -1,0 +1,642 @@
+PAPER KEY: 9Y2PP2J6
+TITLE: Denoising Diffusion Probabilistic Models
+AUTHORS: Ho, Jonathan; Jain, Ajay; Abbeel, Pieter
+
+Denoising Diffusion Probabilistic Models
+
+Jonathan Ho UC Berkeley jonathanho@berkeley.edu
+
+Ajay Jain UC Berkeley ajayj@berkeley.edu
+
+Pieter Abbeel UC Berkeley pabbeel@cs.berkeley.edu
+
+Abstract
+We present high quality image synthesis results using diffusion probabilistic models, a class of latent variable models inspired by considerations from nonequilibrium thermodynamics. Our best results are obtained by training on a weighted variational bound designed according to a novel connection between diffusion probabilistic models and denoising score matching with Langevin dynamics, and our models naturally admit a progressive lossy decompression scheme that can be interpreted as a generalization of autoregressive decoding. On the unconditional CIFAR10 dataset, we obtain an Inception score of 9.46 and a state-of-the-art FID score of 3.17. On 256x256 LSUN, we obtain sample quality similar to ProgressiveGAN. Our implementation is available at https://github.com/hojonathanho/diffusion.
+1 Introduction
+Deep generative models of all kinds have recently exhibited high quality samples in a wide variety of data modalities. Generative adversarial networks (GANs), autoregressive models, ﬂows, and variational autoencoders (VAEs) have synthesized striking image and audio samples [14, 27, 3, 58, 38, 25, 10, 32, 44, 57, 26, 33, 45], and there have been remarkable advances in energy-based modeling and score matching that have produced images comparable to those of GANs [11, 55].
+
+Figure 1: Generated samples on CelebA-HQ 256 × 256 (left) and unconditional CIFAR10 (right) 34th Conference on Neural Information Processing Systems (NeurIPS 2020), Vancouver, Canada.
+
+xT
+<latexit sha1_base64="l4LvSgM7PR7I/kkuy5soikK4gpU=">AAAEoXictVLditNAFE7XqGv92a5eejOYLexKLU0VFKRQ9EYvhCrb3YUklOlk2g6dnzBzYrcb8zK+lU/gazhJK6atuiB4YODM+T/n+8YJZwY6nW+1vRvuzVu39+/U7967/+CgcfjwzKhUEzokiit9McaGcibpEBhwepFoisWY0/Px/G3hP/9MtWFKnsIyoZHAU8kmjGCwplHjeygwzAjThNM4Kz/jSXaZj05zFHIlp5pNZ4C1VgsUkliB2TX/oQLYCpe/4rJwZhJM6NPMJyLPt9IM0SwBA0tOUaVGBs/8/J8mWVRH6eSjhtdpd0pBu4q/VjxnLYPR4d7XMFYkFVQC4diYwO8kEGVYA7P183qYGmr3meMpDawqsaAmykpEctS0lhhNlLZPAiqt1YwMC2OWYmwjiynNtq8w/s4XpDB5FWVMJilQSVaNJilHoFABL4qZpgT40irYntTOisgMa0zAkqC+0QbY/MquIfCcYssbsBH1UNIFUUJgGVePGfhR1qyj1YETXAaH/SqAnp836/lGftUfdNcFiqbBT8L2jouQdvE9iVAoVUyDWONFa5XVYlJSjezEPT+BlmCSiVQgw65or2vBaE0Y5z1e4D/VeBmhstwJyo5C0YeZ53vdo/z19lhVjly71+K6xRb/ZbO/rbLCS8HMwmVZ7W9zeFc567b95+3uxxde/82a3/vOY+eJc+z4zkun77xzBs7QIbUPNVP7Ustdz33vDtxPq9C92jrnkbMhbvAD81mObw==</latexit>
+
+! · · · ! xt
+
+p✓ (xt
+<latexit sha1_base64="XVzP503G8Ma8Lkwk3KKGZcZJbZ0=">AAACEnicbVC7SgNBFJ2Nrxhfq5Y2g0FICsNuFEwZsLGMYB6QLMvsZDYZMvtg5q4Y1nyDjb9iY6GIrZWdf+Mk2SImHrhwOOde7r3HiwVXYFk/Rm5tfWNzK79d2Nnd2z8wD49aKkokZU0aiUh2PKKY4CFrAgfBOrFkJPAEa3uj66nfvmdS8Si8g3HMnIAMQu5zSkBLrlmO3R4MGZBSLyAw9Pz0YeKmcG5P8CNekKDsmkWrYs2AV4mdkSLK0HDN714/oknAQqCCKNW1rRiclEjgVLBJoZcoFhM6IgPW1TQkAVNOOntpgs+00sd+JHWFgGfq4kRKAqXGgac7p0eqZW8q/ud1E/BrTsrDOAEW0vkiPxEYIjzNB/e5ZBTEWBNCJde3YjokklDQKRZ0CPbyy6ukVa3YF5Xq7WWxXsviyKMTdIpKyEZXqI5uUAM1EUVP6AW9oXfj2Xg1PozPeWvOyGaO0R8YX7+bCp4F</latexit>
+
+1|xt)
+!
+
+xt
+
+1
+
+! · · · ! x0
+
+!
+
+<latexit sha1_base64="7yFrn0YPyuP5dVIvc7Tl2zcbS/g=">AAAB+HicbVBNSwMxEJ2tX7V+dNWjl2ARPJXdKuix6MVjBfsB7VKyaXYbmk2WJKvU0l/ixYMiXv0p3vw3pu0etPXBwOO9GWbmhSln2njet1NYW9/Y3Cpul3Z29/bL7sFhS8tMEdokkkvVCbGmnAnaNMxw2kkVxUnIaTsc3cz89gNVmklxb8YpDRIcCxYxgo2V+m65x6WIFYuHBislH/tuxat6c6BV4uekAjkafferN5AkS6gwhGOtu76XmmCClWGE02mpl2maYjLCMe1aKnBCdTCZHz5Fp1YZoEgqW8Kgufp7YoITrcdJaDsTbIZ62ZuJ/3ndzERXwYSJNDNUkMWiKOPISDRLAQ2YosTwsSWYKGZvRWSIFSbGZlWyIfjLL6+SVq3qn1drdxeV+nUeRxGO4QTOwIdLqMMtNKAJBDJ4hld4c56cF+fd+Vi0Fpx85gj+wPn8AXOGk5o=</latexit>
+
+q(xt|xt <latexit sha1_base64="eAZ87UuTmAQoJ4u19RGH5tA+bCI=">AAACC3icbVC7TgJBFJ31ifhatbSZQEywkOyiiZQkNpaYyCMBspkdZmHC7MOZu0ay0tv4KzYWGmPrD9j5N87CFgieZJIz59ybe+9xI8EVWNaPsbK6tr6xmdvKb+/s7u2bB4dNFcaSsgYNRSjbLlFM8IA1gINg7Ugy4ruCtdzRVeq37plUPAxuYRyxnk8GAfc4JaAlxyzclbo+gaHrJQ8TB/AjnvsmcGZPTh2zaJWtKfAysTNSRBnqjvnd7Yc09lkAVBClOrYVQS8hEjgVbJLvxopFhI7IgHU0DYjPVC+Z3jLBJ1rpYy+U+gWAp+p8R0J8pca+qyvTRdWil4r/eZ0YvGov4UEUAwvobJAXCwwhToPBfS4ZBTHWhFDJ9a6YDokkFHR8eR2CvXjyMmlWyvZ5uXJzUaxVszhy6BgVUAnZ6BLV0DWqowai6Am9oDf0bjwbr8aH8TkrXTGyniP0B8bXL+1hmu8=</latexit>
+
+1)
+
+Figure 2: The directed graphical model considered in this work.
+
+This paper presents progress in diffusion probabilistic models [53]. A diffusion probabilistic model (which we will call a “diffusion model” for brevity) is a parameterized Markov chain trained using variational inference to produce samples matching the data after ﬁnite time. Transitions of this chain are learned to reverse a diffusion process, which is a Markov chain that gradually adds noise to the data in the opposite direction of sampling until signal is destroyed. When the diffusion consists of small amounts of Gaussian noise, it is sufﬁcient to set the sampling chain transitions to conditional Gaussians too, allowing for a particularly simple neural network parameterization.
+Diffusion models are straightforward to deﬁne and efﬁcient to train, but to the best of our knowledge, there has been no demonstration that they are capable of generating high quality samples. We show that diffusion models actually are capable of generating high quality samples, sometimes better than the published results on other types of generative models (Section 4). In addition, we show that a certain parameterization of diffusion models reveals an equivalence with denoising score matching over multiple noise levels during training and with annealed Langevin dynamics during sampling (Section 3.2) [55, 61]. We obtained our best sample quality results using this parameterization (Section 4.2), so we consider this equivalence to be one of our primary contributions.
+Despite their sample quality, our models do not have competitive log likelihoods compared to other likelihood-based models (our models do, however, have log likelihoods better than the large estimates annealed importance sampling has been reported to produce for energy based models and score matching [11, 55]). We ﬁnd that the majority of our models’ lossless codelengths are consumed to describe imperceptible image details (Section 4.3). We present a more reﬁned analysis of this phenomenon in the language of lossy compression, and we show that the sampling procedure of diffusion models is a type of progressive decoding that resembles autoregressive decoding along a bit ordering that vastly generalizes what is normally possible with autoregressive models.
+
+2 Background
+
+Diffusion models [53] are latent variable models of the form pθ(x0) := pθ(x0:T ) dx1:T , where x1, . . . , xT are latents of the same dimensionality as the data x0 ∼ q(x0). The joint distribution pθ(x0:T ) is called the reverse process, and it is deﬁned as a Markov chain with learned Gaussian transitions starting at p(xT ) = N (xT ; 0, I):
+
+T
+
+pθ(x0:T ) := p(xT ) pθ(xt−1|xt),
+t=1
+
+pθ(xt−1|xt) := N (xt−1; µθ(xt, t), Σθ(xt, t)) (1)
+
+What distinguishes diffusion models from other types of latent variable models is that the approximate
+posterior q(x1:T |x0), called the forward process or diffusion process, is ﬁxed to a Markov chain that gradually adds Gaussian noise to the data according to a variance schedule β1, . . . , βT :
+
+T
+
+q(x1:T |x0) := q(xt|xt−1), q(xt|xt−1) := N (xt; 1 − βtxt−1, βtI)
+
+(2)
+
+t=1
+
+Training is performed by optimizing the usual variational bound on negative log likelihood:
+
+E [− log pθ(x0)] ≤ Eq
+
+−
+
+log
+
+pθ(x0:T ) q(x1:T |x0)
+
+= Eq
+
+−
+
+log
+
+p(xT
+
+)
+
+−
+
+t≥1
+
+log
+
+pθ (xt−1 |xt ) q(xt|xt−1)
+
+=: L (3)
+
+The forward process variances βt can be learned by reparameterization [33] or held constant as
+
+hyperparameters, and expressiveness of the reverse process is ensured in part by the choice of
+
+Gaussian conditionals in pθ(xt−1|xt), because both processes have the same functional form when
+
+βt are small [53]. A notable property of the forward process is that it admits sampling xt at an
+
+arbitrary
+
+timestep
+
+t
+
+in
+
+closed
+
+form:
+
+using
+
+the
+
+notation √
+
+αt
+
+:=
+
+1
+
+−
+
+βt
+
+and
+
+α¯t
+
+:=
+
+t s=1
+
+αs,
+
+we
+
+have
+
+q(xt|x0) = N (xt; α¯tx0, (1 − α¯t)I)
+
+(4)
+
+2
+
+Efﬁcient training is therefore possible by optimizing random terms of L with stochastic gradient descent. Further improvements come from variance reduction by rewriting L (3) as:
+
+Eq DKL(q(xT |x0) p(xT )) + DKL(q(xt−1|xt, x0) pθ(xt−1|xt)) − log pθ(x0|x1) (5)
+
+LT
+
+t>1
+
+Lt−1
+
+L0
+
+(See Appendix A for details. The labels on the terms are used in Section 3.) Equation (5) uses KL
+
+divergence to directly compare pθ(xt−1|xt) against forward process posteriors, which are tractable
+
+when conditioned on x0:
+
+q(xt−1|xt, where µ˜ t(xt,
+
+x0) x0)
+
+= :=
+
+N√1(α¯x−tt−−α¯11βt; tµ˜xt0(x+t,
+
+√x0α),t(β˜1t
+
+I), − α¯t−1)
+
+1 − α¯t
+
+xt
+
+and
+
+β˜t
+
+:=
+
+1 − α¯t−1 1 − α¯t
+
+βt
+
+(6) (7)
+
+Consequently, all KL divergences in Eq. (5) are comparisons between Gaussians, so they can be calculated in a Rao-Blackwellized fashion with closed form expressions instead of high variance Monte Carlo estimates.
+
+3 Diffusion models and denoising autoencoders
+
+Diffusion models might appear to be a restricted class of latent variable models, but they allow a large number of degrees of freedom in implementation. One must choose the variances βt of the forward process and the model architecture and Gaussian distribution parameterization of the reverse process. To guide our choices, we establish a new explicit connection between diffusion models and denoising score matching (Section 3.2) that leads to a simpliﬁed, weighted variational bound objective for diffusion models (Section 3.4). Ultimately, our model design is justiﬁed by simplicity and empirical results (Section 4). Our discussion is categorized by the terms of Eq. (5).
+
+3.1 Forward process and LT
+We ignore the fact that the forward process variances βt are learnable by reparameterization and instead ﬁx them to constants (see Section 4 for details). Thus, in our implementation, the approximate posterior q has no learnable parameters, so LT is a constant during training and can be ignored.
+
+3.2 Reverse process and L1:T −1
+
+Now we discuss we set Σθ(xt, t)
+
+o=urσct2hIotioceusnitnrapinθe(xdtt−im1|exdt)ep=enNde(nxtt−co1n; µstθa(nxtst.,
+
+t), Σθ(xt, t)) for 1 < Experimentally, both
+
+t ≤ T . First, σt2 = βt and
+
+σt2
+
+=
+
+β˜t
+
+=
+
+β 1−α¯t−1
+1−α¯t t
+
+had
+
+similar
+
+results.
+
+The
+
+ﬁrst
+
+choice
+
+is optimal for x0
+
+∼
+
+N (0, I),
+
+and the
+
+second is optimal for x0 deterministically set to one point. These are the two extreme choices
+
+corresponding to upper and lower bounds on reverse process entropy for data with coordinatewise
+
+unit variance [53].
+
+Second, to represent following analysis of
+
+the Lt.
+
+mean With
+
+pµθθ((xxtt−,1t|)x, tw)e=prNop(oxste−1a;sµpθe(cxiﬁt,ctp),aσrat2mI)e,twereizcaatinown rmitoe:tivated
+
+by
+
+the
+
+Lt−1 = Eq
+
+1 2σt2
+
+µ˜ t(xt, x0) − µθ(xt, t) 2
+
++C
+
+(8)
+
+where C is a constant that does not depend on θ. So, we see that the most straightforward parameteri-
+
+zation of µθ is Eq. (8) further
+
+a model that predicts by reparameterizing
+
+µ˜ t, Eq.
+
+the (4)
+
+forward process√posterior as xt(x0, ) = α¯tx0 +
+
+m√ean. 1−
+
+However, we can expand α¯t for ∼ N (0, I) and
+
+applying the forward process posterior formula (7):
+
+Lt−1 − C = Ex0,
+
+1 2σt2
+
+µ˜ t
+
+xt(x0,
+
+),
+
+√1 α¯t
+
+(xt(x0,
+
+√ ) − 1 − α¯t
+
+)
+
+2
+− µθ(xt(x0, ), t)
+
+(9)
+
+= Ex0,
+
+1 2σt2
+
+1 √αt
+
+xt(x0,
+
+)
+
+−
+
+√ βt 1−
+
+α¯t
+
+2
+− µθ(xt(x0, ), t)
+
+(10)
+
+3
+
+Algorithm 1 Training
+
+1: repeat
+
+2: x0 ∼ q(x0)
+
+3: t ∼ Uniform({1, . . . , T })
+
+4: ∼ N (0, I)
+
+5:
+
+Take gradient des√cent step o√n ∇θ − θ( α¯tx0 + 1 − α¯t
+
+, t)
+
+2
+
+6: until converged
+
+Algorithm 2 Sampling
+
+1: xT ∼ N (0, I) 2: for t = T, . . . , 1 do 3: z ∼ N (0, I) if t > 1, else z = 0
+
+4:
+
+xt−1
+
+=
+
+√1 αt
+
+5: end for
+
+6: return x0
+
+xt
+
+−
+
+√1−αt 1−α¯t
+
+θ(xt, t)
+
++ σtz
+
+Equation (10) reveals that µθ must predict √1αt
+
+xt
+
+−
+
+√ βt 1−α¯t
+
+given xt. Since xt is available as
+
+input to the model, we may choose the parameterization
+
+µθ(xt, t) = µ˜ t
+
+xt,
+
+√1 α¯t
+
+(xt
+
+−
+
+√ 1
+
+−
+
+α¯t
+
+θ (xt ))
+
+= √1αt
+
+xt
+
+−
+
+√ βt 1−
+
+α¯t
+
+θ(xt, t)
+
+(11)
+
+where θ is a function approximator intended to predict from xt. To sample xt−1 ∼ pθ(xt−1|xt) is
+
+to compute xt−1 = √1αt
+
+xt
+
+−
+
+√ βt 1−α¯t
+
+θ(xt, t)
+
++ σtz, where z ∼ N (0, I). The complete sampling
+
+procedure, Algorithm 2, resembles Langevin dynamics with θ as a learned gradient of the data
+
+density. Furthermore, with the parameterization (11), Eq. (10) simpliﬁes to:
+
+Ex0,
+
+βt2 2σt2αt(1 − α¯t)
+
+−
+
+√
+
+√
+
+θ( α¯tx0 + 1 − α¯t
+
+, t)
+
+2
+
+(12)
+
+which resembles denoising score matching over multiple noise scales indexed by t [55]. As Eq. (12)
+
+is equal to (one term of) the variational bound for the Langevin-like reverse process (11), we see
+
+that optimizing an objective resembling denoising score matching is equivalent to using variational
+
+inference to ﬁt the ﬁnite-time marginal of a sampling chain resembling Langevin dynamics.
+
+To summarize, we can train the reverse process mean function approximator µθ to predict µ˜ t, or by modifying its parameterization, we can train it to predict . (There is also the possibility of predicting
+x0, but we found this to lead to worse sample quality early in our experiments.) We have shown that the -prediction parameterization both resembles Langevin dynamics and simpliﬁes the diffusion
+model’s variational bound to an objective that resembles denoising score matching. Nonetheless, it is just another parameterization of pθ(xt−1|xt), so we verify its effectiveness in Section 4 in an ablation where we compare predicting against predicting µ˜ t.
+
+3.3 Data scaling, reverse process decoder, and L0
+
+We assume that image data consists of integers in {0, 1, . . . , 255} scaled linearly to [−1, 1]. This
+
+ensures that the neural network reverse process operates on consistently scaled inputs starting from
+
+the standard normal prior p(xT ). To obtain discrete log likelihoods, we set the last term of the reverse process to an independent discrete decoder derived from the Gaussian N (x0; µθ(x1, 1), σ12I):
+
+D
+
+δ+ (xi0 )
+
+pθ(x0|x1) =
+
+N (x; µiθ(x1, 1), σ12) dx
+
+i=1 δ−(xi0)
+
+(13)
+
+δ+(x) =
+
+∞
+
+x
+
++
+
+1 255
+
+if x = 1 if x < 1
+
+δ−(x) =
+
+−∞
+
+x
+
+−
+
+1 255
+
+if x = −1 if x > −1
+
+where D is the data dimensionality and the i superscript indicates extraction of one coordinate.
+
+(It would be straightforward to instead incorporate a more powerful decoder like a conditional
+
+autoregressive model, but we leave that to future work.) Similar to the discretized continuous
+
+distributions used in VAE decoders and autoregressive models [34, 52], our choice here ensures that
+
+the variational bound is a lossless codelength of discrete data, without need of adding noise to the
+
+data or incorporating the Jacobian of the scaling operation into the log likelihood. At the end of
+
+sampling, we display µθ(x1, 1) noiselessly.
+
+3.4 Simpliﬁed training objective
+With the reverse process and decoder deﬁned above, the variational bound, consisting of terms derived from Eqs. (12) and (13), is clearly differentiable with respect to θ and is ready to be employed for
+
+4
+
+Table 1: CIFAR10 results. NLL measured in bits/dim.
+
+Model
+Conditional
+EBM [11] JEM [17] BigGAN [3] StyleGAN2 + ADA (v1) [29]
+Unconditional
+Diffusion (original) [53] Gated PixelCNN [59] Sparse Transformer [7] PixelIQN [43] EBM [11] NCSNv2 [56] NCSN [55] SNGAN [39] SNGAN-DDLS [4] StyleGAN2 + ADA (v1) [29] Ours (L, ﬁxed isotropic Σ) Ours (Lsimple)
+
+IS
+8.30 8.76 9.22 10.06
+4.60
+5.29 6.78
+8.87±0.12 8.22±0.05 9.09±0.10 9.74 ± 0.05 7.67±0.13 9.46±0.11
+
+FID
+37.9 38.4 14.73 2.67
+65.93
+49.46 38.2 31.75 25.32 21.7 15.42 3.26 13.51 3.17
+
+NLL Test (Train)
+Table 2: Unconditional CIFAR10 reverse process parameterization and training objective ablation. Blank entries were unstable to train and generated poor samples with out-ofrange scores.
+
+Objective
+
+IS
+
+FID
+
+≤ 5.40 3.03 (2.90)
+2.80
+
+µ˜ prediction (baseline)
+L, learned diagonal Σ L, ﬁxed isotropic Σ
+µ˜ − µ˜ θ 2
+prediction (ours)
+
+7.28±0.10 8.06±0.09
+–
+
+23.69 13.22
+–
+
+≤ 3.70 (3.69) ≤ 3.75 (3.72)
+
+L, learned diagonal Σ
+L, ﬁxed isotropic Σ ˜ − θ 2 (Lsimple)
+
+– 7.67±0.13 9.46±0.11
+
+– 13.51 3.17
+
+training. However, we found it beneﬁcial to sample quality (and simpler to implement) to train on the following variant of the variational bound:
+
+Lsimple(θ) := Et,x0,
+
+−
+
+√
+
+√
+
+θ( α¯tx0 + 1 − α¯t
+
+, t)
+
+2
+
+(14)
+
+where t is uniform between 1 and T . The t = 1 case corresponds to L0 with the integral in the discrete decoder deﬁnition (13) approximated by the Gaussian probability density function times the bin width, ignoring σ12 and edge effects. The t > 1 cases correspond to an unweighted version of Eq. (12), analogous to the loss weighting used by the NCSN denoising score matching model [55]. (LT does not appear because the forward process variances βt are ﬁxed.) Algorithm 1 displays the complete training procedure with this simpliﬁed objective.
+Since our simpliﬁed objective (14) discards the weighting in Eq. (12), it is a weighted variational bound that emphasizes different aspects of reconstruction compared to the standard variational bound [18, 22]. In particular, our diffusion process setup in Section 4 causes the simpliﬁed objective to down-weight loss terms corresponding to small t. These terms train the network to denoise data with very small amounts of noise, so it is beneﬁcial to down-weight them so that the network can focus on more difﬁcult denoising tasks at larger t terms. We will see in our experiments that this reweighting leads to better sample quality.
+
+4 Experiments
+We set T = 1000 for all experiments so that the number of neural network evaluations needed during sampling matches previous work [53, 55]. We set the forward process variances to constants increasing linearly from β1 = 10−4 to βT = 0.02. These constants were chosen to be small relative to data scaled to [−1, 1], ensuring that reverse and forward processes have approximately the same functional form while keeping the signal-to-noise ratio at xT as small as possible (LT = DKL(q(xT |x0) N (0, I)) ≈ 10−5 bits per dimension in our experiments).
+To represent the reverse process, we use a U-Net backbone similar to an unmasked PixelCNN++ [52, 48] with group normalization throughout [66]. Parameters are shared across time, which is speciﬁed to the network using the Transformer sinusoidal position embedding [60]. We use self-attention at the 16 × 16 feature map resolution [63, 60]. Details are in Appendix B.
+4.1 Sample quality
+Table 1 shows Inception scores, FID scores, and negative log likelihoods (lossless codelengths) on CIFAR10. With our FID score of 3.17, our unconditional model achieves better sample quality than most models in the literature, including class conditional models. Our FID score is computed with respect to the training set, as is standard practice; when we compute it with respect to the test set, the score is 5.24, which is still better than many of the training set FID scores in the literature.
+
+5
+
+Figure 3: LSUN Church samples. FID=7.89
+
+Figure 4: LSUN Bedroom samples. FID=4.90
+
+Algorithm 3 Sending x0
+1: Send xT ∼ q(xT |x0) using p(xT ) 2: for t = T − 1, . . . , 2, 1 do 3: Send xt ∼ q(xt|xt+1, x0) using pθ(xt|xt+1) 4: end for 5: Send x0 using pθ(x0|x1)
+
+Algorithm 4 Receiving
+1: Receive xT using p(xT ) 2: for t = T − 1, . . . , 1, 0 do 3: Receive xt using pθ(xt|xt+1) 4: end for 5: return x0
+
+We ﬁnd that training our models on the true variational bound yields better codelengths than training
+on the simpliﬁed objective, as expected, but the latter yields the best sample quality. See Fig. 1 for CIFAR10 and CelebA-HQ 256 × 256 samples, Fig. 3 and Fig. 4 for LSUN 256 × 256 samples [71], and Appendix D for more.
+
+4.2 Reverse process parameterization and training objective ablation
+In Table 2, we show the sample quality effects of reverse process parameterizations and training objectives (Section 3.2). We ﬁnd that the baseline option of predicting µ˜ works well only when trained on the true variational bound instead of unweighted mean squared error, a simpliﬁed objective akin to Eq. (14). We also see that learning reverse process varianc

@@ -1,0 +1,368 @@
+PAPER KEY: PZLYJU2U
+TITLE: Step-by-Step Diffusion: An Elementary Tutorial
+AUTHORS: Nakkiran, Preetum; Bradley, Arwen; Zhou, Hattie; Advani, Madhu
+
+Step-by-Step Diffusion: An Elementary Tutorial
+Preetum Nakkiran1, Arwen Bradley1, Hattie Zhou1,2, Madhu Advani1 1Apple, 2Mila, Université de Montréal
+We present an accessible first course on diffusion models and flow matching for machine learning, aimed at a technical audience with no diffusion experience. We try to simplify the mathematical details as much as possible (sometimes heuristically), while retaining enough precision to derive correct algorithms.
+
+arXiv:2406.08929v1 [cs.LG] 13 Jun 2024
+
+Contents
+
+1 Fundamentals of Diffusion
+
+3
+
+1.1 Gaussian Diffusion . . . . . . . . . . . . . . . . . . . . . . 3
+
+1.2 Diffusions in the Abstract . . . . . . . . . . . . . . . . . . 5
+
+1.3 Discretization . . . . . . . . . . . . . . . . . . . . . . . . . 6
+
+2 Stochastic Sampling: DDPM
+
+8
+
+2.1 Correctness of DDPM . . . . . . . . . . . . . . . . . . . . 9
+
+2.2 Algorithms . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+
+2.3 Variance Reduction: Predicting x0 . . . . . . . . . . . . . 11 2.4 Diffusions as SDEs [Optional] . . . . . . . . . . . . . . . . 13
+
+3 Deterministic Sampling: DDIM
+
+16
+
+3.1 Case 1: Single Point . . . . . . . . . . . . . . . . . . . . . . 16
+
+3.2 Velocity Fields and Gases . . . . . . . . . . . . . . . . . . 18
+
+3.3 Case 2: Two Points . . . . . . . . . . . . . . . . . . . . . . 18
+
+3.4 Case 3: Arbitrary Distributions . . . . . . . . . . . . . . . 20
+
+3.5 The Probability Flow ODE [Optional] . . . . . . . . . . . 21
+
+3.6 Discussion: DDPM vs DDIM . . . . . . . . . . . . . . . . 22
+
+3.7 Remarks on Generalization . . . . . . . . . . . . . . . . . 23
+
+4 Flow Matching
+
+25
+
+4.1 Flows . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+
+4.2 Pointwise Flows . . . . . . . . . . . . . . . . . . . . . . . . 26
+
+4.3 Marginal Flows . . . . . . . . . . . . . . . . . . . . . . . . 26
+
+4.4 A Simple Choice of Pointwise Flow . . . . . . . . . . . . 27
+
+4.5 Flow Matching . . . . . . . . . . . . . . . . . . . . . . . . 28
+
+4.6 DDIM as Flow Matching [Optional] . . . . . . . . . . . . 30
+
+4.7 Additional Remarks and References [Optional] . . . . . . 31
+
+5 Diffusion in Practice
+
+32
+
+A Additional Resources
+
+36
+
+B Omitted Derivations
+
+38
+
+step-by-step diffusion: an elementary tutorial 2
+Preface
+There are many existing resources for learning diffusion models. Why did we write another? Our goal was to teach diffusion as simply as possible, with minimal mathematical and machine learning prerequisites, but in enough detail to reason about its correctness. Unlike most tutorials on this subject, we take neither a Variational Auto Encoder (VAE) nor an Stochastic Differential Equations (SDE) approach. In fact, for the core ideas we will not need any SDEs, Evidence-Based-Lower-Bounds (ELBOs), Langevin dynamics, or even the notion of a score. The reader need only be familiar with basic probability, calculus, linear algebra, and multivariate Gaussians. The intended audience for this tutorial is technical readers at the level of at least advanced undergraduate or graduate students, who are learning diffusion for the first time and want a mathematical understanding of the subject.
+This tutorial has five parts, each relatively self-contained, but covering closely related topics. Section 1 presents the fundamentals of diffusion: the problem we are trying to solve and an overview of the basic approach. Sections 2 and 3 show how to construct a stochastic and deterministic diffusion sampler, respectively, and give intuitive derivations for why these samplers correctly reverse the forward diffusion process. Section 4 covers the closely-related topic of Flow Matching, which can be thought of as a generalization of diffusion that offers additional flexibility (including what are called rectified flows or linear flows). Finally, in Section 5 we return to diffusion and connect this tutorial to the broader literature while highlighting some of the design choices that matter most in practice, including samplers, noise schedules, and parametrizations.
+Acknowledgements
+We are grateful for helpful feedback and suggestions from many people, in particular: Josh Susskind, Eugene Ndiaye, Dan Busbridge, Sam Power, De Wang, Russ Webb, Sitan Chen, Vimal Thilak, Etai Littwin, Chenyang Yuan, Alex Schwing, and Miguel Angel Bautista Martin.
+
+step-by-step diffusion: an elementary tutorial 3
+
+1 Fundamentals of Diffusion
+
+The goal of generative modeling is: given i.i.d. samples from some unknown distribution p∗(x), construct a sampler for (approximately) the same distribution. For example, given a training set of dog images from some underlying distribution pdog, we want a method of producing new images of dogs from this distribution.
+One way to solve this problem, at a high level, is to learn a transformation from some easy-to-sample distribution (such as Gaussian noise) to our target distribution p∗. Diffusion models offer a general framework for learning such transformations. The clever trick of diffusion is to reduce the problem of sampling from distribution p∗(x) into to a sequence of easier sampling problems.
+This idea is best explained via the following Gaussian diffusion example. We’ll sketch the main ideas now, and in later sections we will use this setup to derive what are commonly known as the DDPM and DDIM samplers1, and reason about their correctness.
+
+1.1 Gaussian Diffusion
+
+For Gaussian diffusion, let x0 be a random variable in Rd distributed according to the target distribution p∗ (e.g., images of dogs). Then
+
+construct a sequence of random variables x1, x2, . . . , xT, by successively adding independent Gaussian noise with some small scale
+
+σ:
+
+xt+1 := xt + ηt, ηt ∼ N (0, σ2).
+
+(1)
+
+This is called the forward process2, which transforms the data distribu-
+tion into a noise distribution. Equation (1) defines a joint distribution over all (x0, x1, . . . , xT), and we let {pt}t∈[T] denote the marginal distributions of each xt. Notice that at large step count T, the distribution pT is nearly Gaussian3, so we can approximately sample from pT by just sampling a Gaussian.
+
+1 These stand for Denoising Diffusion Probabilistic Models (DDPM) and Denoising Diffusion Implicit Models (DDIM), following Ho et al. [2020] and Song et al. [2021].
+2 One benefit of using this particular forward process is computational: we can directly sample xt given x0 in constant time.
+3 Formally, pT is close in KL divergence to N (0, Tσ2), assuming p0 has bounded moments.
+
+Figure 1: Probability distributions defined by diffusion forward process on one-dimensional target distribution p0.
+
+step-by-step diffusion: an elementary tutorial 4
+
+Now, suppose we can solve the following subproblem:
+
+“Given a sample marginally distributed as pt, produce a sample marginally distributed as pt−1”.
+
+We will call a method that does this a reverse sampler4, since it tells us how to sample from pt−1 assuming we can already sample from pt. If we had a reverse sampler, we could sample from our target p0 by simply starting with a Gaussian sample from pT, and iteratively applying the reverse sampling procedure to get samples from pT−1, pT−2, . . . and finally p0 = p∗.
+The key insight of diffusion is, learning to reverse each intermediate step can be easier than learning to sample from the target distribution in one step5. There are many ways to construct reverse samplers, but for concreteness let us first see the standard diffusion sampler which we will call the DDPM sampler6.k
+The Ideal DDPM sampler uses the obvious strategy: At time t, given input z (which is promised to be a sample from pt), we output a sample from the conditional distribution
+
+p(xt−1 | xt = z).
+
+(2)
+
+This is clearly a correct reverse sampler. The problem is, it requires learning a generative model for the conditional distribution p(xt−1 | xt) for every xt, which could be complicated. But if the per-step noise σ is sufficiently small, then it turns out this conditional distribution becomes simple:
+
+Fact 1 (Diffusion Reverse Process). For small σ, and the Gaussian diffu-
+
+sion process defined in (1), the conditional distribution p(xt−1 | xt) is itself close to Gaussian. That is, for all times t and conditionings z ∈ Rd, there
+
+exists some mean parameter µ ∈ Rd such that
+
+p(xt−1 | xt = z) ≈ N (xt−1; µ , σ2).
+
+(3)
+
+This is not an obvious fact; we will derive it in Section 2.1. This fact enables a drastic simplification: instead of having to learn an
+
+4 Reverse samplers will be formally defined in Section 1.2 below.
+5 Intuitively this is because the distributions (pt−1, pt) are already quite close, so the reverse sampler does not need to do much. 6 This is the sampling strategy originally proposed in Sohl-Dickstein et al. [2015].
+
+Figure 2: Illustration of Fact 1. The prior distribution p(xt−1), leftmost, defines a joint distribution (xt−1, xt) where p(xt | xt−1) = N (0, σ2). We plot the reverse conditional distributions p(xt−1 | xt) for a fixed condi-
+tioning xt, and varying noise levels σ. Notice these distributions become close to Gaussian for small σ.
+
+step-by-step diffusion: an elementary tutorial 5
+
+arbitrary distribution p(xt−1 | xt) from scratch, we now know everything about this distribution except its mean, which we denote7 µt−1(xt). The fact that we can approximate the posterior distribution as Gaussian when σ is sufficiently small is illustrated in Fig 2. This is
+an important point, so to re-iterate: for a given time t and conditioning value xt, learning the mean of p(xt−1 | xt) is sufficient to learn the full conditional distribution p(xt−1 | xt).
+Learning the mean of p(xt−1 | xt) is a much simpler problem than learning the full conditional distribution, because we can solve it by regression. To elaborate, we have a joint distribution (xt−1, xt) from which we can easily sample, and we would like to estimate E[xt−1 | xt]. This can be done by optimizing a standard regression loss8:
+
+µt−1(z) := E[xt−1 | xt = z]
+
+(4)
+
+=⇒ µt−1 = argmin
+f :Rd→Rd
+
+E
+xt ,xt−1
+
+||
+
+f
+
+(xt)
+
+−
+
+xt−1 ||22
+
+(5)
+
+=
+
+argmin
+f :Rd→Rd
+
+E
+xt−1,η
+
+||
+
+f
+
+(xt−1
+
++ ηt) − xt−1)||22,
+
+(6)
+
+where the expectation is taken over samples x0 from our target distribution p∗.9 This particular regression problem is well-studied in certain settings. For example, when the target p∗ is a distribution on
+images, then the corresponding regression problem (Equation 6) is
+exactly an image denoising objective, which can be approached with
+familiar methods (e.g. convolutional neural networks).
+
+Stepping back, we have seen something remarkable: we have reduced the problem of learning to sample from an arbitrary distribution to the standard problem of regression.
+
+1.2 Diffusions in the Abstract
+Let us now abstract away the Gaussian setting, to define diffusionlike models in a way that will capture their many instantiations (including deterministic samplers, discrete domains, and flowmatching).
+Abstractly, here is how to construct a diffusion-like generative model: We start with our target distribution p∗, and we pick some base distribution q(x) which is easy to sample from, e.g. a standard Gaussian or i.i.d bits. We then try to construct a sequence of distributions which interpolate between our target p∗ and the base distribution q. That is, we construct distributions
+
+p0 , p1 , p2 , . . . , pT,
+
+(7)
+
+7 We denote the mean as a function µt−1 : Rd → Rd because the mean of p(xt−1 | xt) depends on the time t as well as the conditioning xt, as described in Fact 1.
+8 Recall the generic fact that for any distribution over (x, y), we have: argmin f E || f (x) − y||2 = E[y | x]
+9 Notice that we simulate samples of (xt−1, xt) by adding noise to the samples of x0, as defined in Equation 1.
+
+step-by-step diffusion: an elementary tutorial 6
+
+such that p0 = p∗ is our target, pT = q the base distribution, and adjacent distributions (pt−1, pt) are marginally “close” in some appropriate sense. Then, we learn a reverse sampler which transforms distributions pt to pt−1. This is the key learning step, which presumably is made easier by the fact that adjacent distributions are “close.” Formally, reverse samplers are defined below.
+
+Definition 1 (Reverse Sampler). Given a sequence of marginal distributions pt, a reverse sampler for step t is a potentially stochastic function Ft such that if xt ∼ pt, then the marginal distribution of Ft(xt) is exactly pt−1:
+
+{Ft(z) : z ∼ pt} ≡ pt−1.
+
+(8)
+
+There are many possible reverse samplers10, and it is even possible to construct reverse samplers which are deterministic. In the remainder of this tutorial we will see three popular reverse samplers more formally: the DDPM sampler discussed above (Section 2.1), the DDIM sampler (Section 3), which is deterministic, and the family of flow-matching models (Section 4), which can be thought of as a generalization of DDIM.11
+
+1.3 Discretization
+
+Before we proceed further, we need to be more precise about what we mean by adjacent distributions pt, pt−1 being “close". We want to think of the sequence p0, p1, . . . , pT as the discretization of some (well-behaved) time-evolving function p(x, t), that starts from the target distribution p0 at time t = 0 and ends at the noisy distribution pT at time t = 1:
+
+p(x, k∆t) = pk(x),
+
+where
+
+∆t
+
+=
+
+1 T
+
+.
+
+(9)
+
+The number of steps T controls the fineness of the discretization
+
+(hence the closeness of adjacent distributions).12
+
+In order to ensure that the variance of the final distribution, pT, is
+
+independent of the number of discretization steps, we also need to
+
+be more specific about the variance of each increment. Note that if
+
+xk = xk−1 + N (0, σ2), then xT ∼ N (x0, Tσ2). Therefore, we need to scale the variance of each increment by ∆t = 1/T, that is, choose
+
+√
+
+σ = σq ∆t,
+
+(10)
+
+where σq2 is the desired terminal variance. This choice√ensures that the variance of pT is always σq2, regardless of T. (The ∆t scaling will turn out to be important in our arguments for the correctness of our reverse solvers in the next chapter, and also connects to the SDE formulation in Section 2.4.)
+
+10 Notice that none of this abstraction is specific to the case of Gaussian noise— in fact, it does not even require the concept of “adding noise”. It is even possible to instantiate in discrete settings, where we consider distributions p∗ over a finite set, and define corresponding “interpolating distributions” and reverse samplers. 11 Given a set of marginal distributions {pt}, there are many possible joint distributions consistent with these marginals (such joint distributions are called couplings). There is therefore no canonical reverse sampler for a given set of marginals {pt} — we are free to chose whichever coupling is most convenient.
+12 This naturally suggests taking the continuous-time limit, which we discuss in Section 2.4, though it is not needed for most of our arguments.
+
+step-by-step diffusion: an elementary tutorial 7
+
+At this point, it is convenient to adjust our notation. From here on, t will represent a continuous-value in the interval [0, 1] (specifically, taking one of the values 0, ∆t, 2∆t, . . . , T∆t = 1). Subscripts will indicate time rather than index, so for example xt will now denote x at a discretized time t. That is, Equation 1 becomes:
+
+xt+∆t := xt + ηt, ηt ∼ N (0, σq2∆t),
+
+(11)
+
+which also implies that
+
+√
+
+xt ∼ N (x0, σt2), where σt := σq t,
+
+(12)
+
+since the total noise added up to time t (i.e. ∑τ∈{0,∆t,2∆t,...,t−∆t} ητ) is also Gaussian with mean zero and variance ∑τ σq2∆t = σq2t.
+
+step-by-step diffusion: an elementary tutorial 8
+
+2 Stochastic Sampling: DDPM
+
+In this section we review the DDPM-like reverse sampler discussed in Section 1, and heuristically prove its correctness. This sampler is conceptually the same as the sampler popularized in Denoising Diffusion Probabilistic Models (DDPM) by Ho et al. [2020] and originally introduced by Sohl-Dickstein et al. [2015], when adapted to our simplified setting. However, a word of warning for the reader familiar with Ho et al. [2020]: Although the overall strategy of our sampler is identical to Ho et al. [2020], certain technical details (like constants, etc) are slightly different13.
+We consider the setup from Section 1.3, with some target distribution p∗ and the joint distribution of noisy samples (x0, x∆t, . . . , x1) defined by Equation (11). The DDPM sampler will require estimates of the following conditional expectations:
+
+µt(z) := E[xt | xt+∆t = z].
+
+(13)
+
+This is a set of functions {µt}, one for every time step t ∈ {0, ∆t, . . . , 1 − ∆t}. In the training phase, we estimate these functions from i.i.d. samples of x0, by optimizing the denoising regression objective
+
+µt = argmin
+f :Rd→Rd
+
+E
+xt,xt+∆t
+
+|| f (xt+∆t)
+
+−
+
+xt ||22
+
+,
+
+(14)
+
+typically with a neural-network14 parameterizing f . Then, in the inference phase, we use the estimated functions in the following reverse sampler.
+
+Algorithm 1: Stochastic Reverse Sampler (DDPM-like) For input sample xt, and timestep t, output:
+
+xt−∆t ← µt−∆t(xt) + N (0, σq2∆t)
+
+(15)
+
+To actually generate a sample, we first sample x1 as an isotropic Gaussian x1 ∼ N (0, σq2), and then run the iteration of Algorithm 1 down to t = 0, to produce a generated sample x0. (Recall that in our discretized notation (12), x1 is the fully-noised terminal distribution, and the iteration takes steps of size ∆t.) Explicit pseudocode for these
+algorithms are given in Section 2.2.
+We want to reason about correctness of this entire procedure: why
+does iterating Algorithm 1 produce a sample from [approximately] our target distribution p∗? The key missing piece is, we need to prove
+some version of Fact 1: that the true conditional p(xt−∆t | xt) can be well-approximated by a Gaussian, and this approximation gets better as we scale ∆t → 0.
+
+13 For the experts, the main difference is we use the “Variance Exploding” diffusion forward process. We also use a constant noise schedule, and we do not discuss how to parameterize the predictor (“predicting x0 vs. xt−1 vs. noise η”). We elaborate on the latter point in Section 2.3.
+14 In practice, it is common to share parameters when learning the different regression functions {µt}t, instead of learning a separate function for each timestep independently. This is usually implemented by training a model fθ that accepts the time t as an additional argument, such that fθ (xt, t) ≈ µt(xt).
+
+step-by-step diffusion: an elementary tutorial 9
+
+2.1 Correctness of DDPM
+
+Here is a more precise version of Fact 1, along with a heuristic derivation. This will complete the argument that Algorithm 1 is correct— i.e. that it approximates a valid reverse sampler in the sense of Definition 1.
+
+Claim 1 (Informal). Let pt−∆t(x) be an arbitrary, sufficiently-smooth density over Rd. Consider the joint distribution of (xt−∆t, xt), where xt−∆t ∼ pt−∆t and xt ∼ xt−∆t + N (0, σq2∆t). Then, for sufficiently small ∆t, the following holds. For all conditionings z ∈ Rd, there exists µz
+such that:
+
+p(xt−∆t | xt = z) ≈ N (xt−∆t; µz , σq2∆t).
+
+(16)
+
+for some constant µz depending only on z. Moreover, it suffices to take15
+
+µz := E [xt−∆t | xt = z]
+
+(17)
+
+(xt−∆t ,xt )
+
+= z + (σq2∆t)∇ log pt(z),
+
+(18)
+
+where pt is the marginal distribution of xt.
+
+Before we see the derivation, a few remarks: Claim 1 implies that to sample from xt−∆t, it suffices to first sample from xt, then sample from a Gaussian distribution centered around E[xt−∆t | xt]. This is exactly what DDPM does, in Equation (15). Finally, in these notes we will not actually need the expression for µz in Equation (18); it is enough for us know that such a µz exists, so we can learn it from samples.
+
+Proof of Claim 1 (Informal). Here is a heuristic argument for why the score appears in the reverse process. We will essentially just apply Bayes rule and then Taylor expand appropriately. We start with Bayes rule:
+
+p(xt−∆t|xt) = p(xt|xt−∆t)pt−∆t(xt−∆t)/pt(xt)
+
+(19)
+
+Then take logs of both sizes. Throughout, we will drop any additive constants in the log (which translate to normalizing factors), and drop all terms of order O(∆t) 16. Note that we shou

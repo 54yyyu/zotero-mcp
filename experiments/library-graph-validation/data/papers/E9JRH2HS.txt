@@ -1,0 +1,116 @@
+PAPER KEY: E9JRH2HS
+TITLE: One Step Diffusion via Shortcut Models
+AUTHORS: Abbeel, Pieter; Levine, Sergey; Frans, Kevin; Hafner, Danijar
+
+Under review as a conference paper at ICLR 2025
+ONE STEP DIFFUSION VIA SHORTCUT MODELS
+Anonymous authors
+Paper under double-blind review
+ABSTRACT
+Diffusion models and flow-matching models have enabled generating diverse and realistic images by learning to transfer noise to data. However, sampling from these models involves iterative denoising over many neural network passes, making generation slow and expensive. Previous approaches for speeding up sampling require complex training regimes, such as multiple training phases, multiple networks, or fragile scheduling. We introduce shortcut models, a family of generative models that use a single network and training phase to produce high-quality samples in a single or multiple sampling steps. Shortcut models condition the network not only on the current noise level but also on the desired step size, allowing the model to skip ahead in the generation process. Across a wide range of sampling step budgets, shortcut models consistently produce higher quality samples than previous approaches, such as consistency models and reflow. Compared to distillation, shortcut models reduce complexity to a single network and training phase and additionally allow varying step budgets at inference time.
+1 INTRODUCTION
+Iterative denoising methods such as diffusion (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2020) and flow-matching (Lipman et al., 2022; Liu et al., 2022) have seen remarkable success in modelling diverse images (Rombach et al., 2022; Esser et al., 2024), video (Ho et al., 2022; BarTal et al., 2024), audio (Kong et al., 2020), and proteins (Abramson et al., 2024). Yet, their weakness lies in expensive inference. Despite producing high-quality samples, these methods require an iterative inference procedure—often requiring dozens to hundreds of forward passes of the neural network—making generation slow and expensive. We posit that there exists a generative modelling objective which retains the benefits of diffusion training, yet can denoise in a single step.
+Flow Matching Shortcut Models (ours)
+128 Steps
+Four Steps
+One Step
+Figure 1: Generations of flow-matching models and shortcut models for different inference budgets. Shortcut models generate high-quality images across a wide range of inference budgets, including using a single forward pass, drastically reducing sampling time compared to diffusion and flow-matching models. With too few steps, diffusion and flow-matching models predict the dataset mean. The same starting noise used within each column and two models are trained on CelebA-HQ and Imagenet-256 (class conditioned).
+1
+
+
+Under review as a conference paper at ICLR 2025
+We consider the end-to-end setting, in which one-step denoising is acquired by a single model over a single training run. Closely related are previous two-stage methods which take existing diffusion models and later distill one-step capabilities into them. These stages introduce complexity and require either generating a large synthetic dataset (Luhman & Luhman, 2021; Liu et al., 2022) or propagating through a series of teacher and student networks (Ho et al., 2020; Meng et al., 2023). Consistency models (Song et al., 2023) are step closer to the end-to-end setting, but their dependency on large amounts of bootstrapping requires a careful learning schedule throughout training. Twostage or tightly-scheduled procedures suffer from a need to specify when to end training and begin distillation. In contrast, end-to-end methods can be trained indefinitely to continually improve.
+We present shortcut models, a class of end-to-end generative models that produce high-quality generations under any inference budget, including in a single sampling step. Our key insight is to condition the neural network not only on the noise level but also the desired step size, enabling it to accurately jump ahead in the denoising process. Shortcut models can be seen as performing selfdistillation during training time, and thus do not require a separate distillation step and are trained over a single run. No schedules or careful warmups are necessary. Shortcut models are efficient to train, requiring only ∼ 16% more compute than that of a base diffusion model.
+Empirical evaluations display that shortcut models satisfy a number of useful desiderata. On the commonly used CelebA-HQ and Imagenet-256 benchmarks, a single shortcut model can handle many-step, few-step, and one-step generation. Accuracy is not sacrificed —- in fact, many-step generation quality matches those of baseline diffusion models. At the same time, shortcut models can consistently match or outperform two-stage distillation methods in the few- and one-step settings.
+The key contributions of this paper are summarized as follows:
+• We introduce shortcut models, a class of generative models that generate high-quality samples in a single forward pass, by conditioning the model on the desired step size. Unlike distillation or consistency models, shortcut models are trained in a single training run without a schedule. • We perform a comprehensive comparison of shortcut models to previous diffusion and flowmatching approaches on CelebAHQ-256 and ImageNet-256 under fixed architecture and compute. Shortcut models match or exceed the distillation methods that require multiple training phases and significantly outperform previous end-to-end methods across inference budgets. • To demonstrate the generality of shortcut models beyond image generation, we apply them to robotic control and replace diffusion policies with shortcut policies. We observe that shortcut models maintain comparable performance under an order-of-magnitude lower inference cost. • We release model checkpoints and the full training code for replicating our experimental results: https://anonymous.4open.science/r/shortcut-BDFB/
+2 BACKGROUND
+Diffusion and flow-matching. A recent family of models, including diffusion (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2020) and flow-matching1 (Lipman et al., 2022; Liu et al., 2022) models, approach the generative modelling problem by learning an ordinary differential equation (ODE) that transforms noise into data. In this work, we adopt the optimal transport flow-matching objective (Liu et al., 2022) for simplicity. We define xt as a linear interpolation between a data point x1 ∼ D and a noise point x0 ∼ N (0, I) of the same dimensionality. The velocity vt is the direction from the noise to the data point:
+xt = (1 − t) x0 + t x1 and vt = x1 − x0. (1)
+Given x0 and x1, the velocity vt is fully determined. But given only xt, there are multiple plausible pairs (x0, x1) and thus different values the velocity can take on, rendering vt a random variable. Flow models learn a neural network to estimate the expected value v ̄t = E[vt | xt] that averages over all plausible velocities at xt. The flow model can be optimized by regressing the empirical velocity of randomly sampled pairings of noise x0 and data x1 pairs:
+v ̄θ(xt, t) ≈ Ex0,x1∼D [vt | xt] LF(θ) = Ex0,x1∼D
+||v ̄θ(xt, t) − (x1 − x0)||2 (2)
+1We consider flow-matching as a special case of diffusion modelling (Kingma & Gao, 2024), and use the terms interchangeably.
+2
+
+
+Under review as a conference paper at ICLR 2025
+data
+noise
+Training pairings Learned ODE 4 Steps 2 Steps 1 Step
+Flow Matching Training Flow Matching Inference
+Figure 2: Naive diffusion and flow-matching models fail at few-step generation. Left: Training paths are created by randomly pairing data and noise. Note that the paths overlap; there is inherent uncertainty about the direction vt to the data point, given only xt. Right: While flow-matching models learn a deterministic ODE, its paths are not straight and have to be followed closely. The predicted directions vt point towards the average of plausible data points. The fewer inference steps, the more the generations are biased towards the dataset mean, causing them to go off track. At the first sampling step, the model points towards the dataset mean and thus cannot generate multi-modal data in a single step (see red circles).
+To sample from a flow model, a noise point x0 is first sampled from the normal distribution. This point is then iteratively updated from x0 to x1 following the the denoising ODE defined as following the learned flow model v ̄θ(xt, t). In practice, this process is approximated using Euler sampling over small discrete time intervals.
+Few-step ambiguity. While a perfectly trained ODE deterministically maps the noise distribution to the data distribution in continuous time, this guarantee is lost under finite step sizes. As illustrated in Figure 2, flow-matching learns to predict the average direction from xt towards the data, so following the prediction with a large step size will jump to an average of multiple data points. At t = 0 the model receives pure noise as input and (x0, x1) are randomly paired during training, so the predicted velocity at t = 0 points towards the dataset mean. Thus, even at the optimum of the flow matching objective, one step generation will fail for any multi-modal data distribution.
+3 SHORTCUT MODELS FOR FEW STEP GENERATION
+We introduce shortcut models, a new family of denoising generative models that overcomes the large number of sampling steps required by diffusion and flow-matching models. Our key intuition is that we can train a single model that supports different sampling budgets, by conditioning the model not only on the timestep t but also on a desired step size d.
+As shown in Figure 2, flow-matching learns an ODE that maps noise to data along curved paths. Naively taking large sampling steps leads to large discretization error and in the single-step case, to catastrophic failure. Conditioning on d allows shortcut models to account for the future curvature, and jump to the correct next point rather than going off track. We refer to the normalized direction from xt towards the correct next point x′
+t+d as the shortcut s(xt, t, d):
+x′
+t+d = xt + s(xt, t, d) d. (3)
+Our aim is to train a shortcut model sθ(xt, t, d) to learn the shortcut for all combinations of xt, t, and d. Shortcut models can thus be seen as a generalization of flow-matching models to larger step sizes: whereas flow-matching models only learn the instantaneous velocity, shortcut models additionally learn to make larger jumps. At d → 0, the shortcut is equivalent to the flow.
+A naive way to compute targets for training sθ(xt, t, d) would be to fully simulate the ODE forward with a small enough step size (Luhman & Luhman, 2021; Liu et al., 2022). However, this approach is computationally expensive, especially for end-to-end training. Instead, we leverage an inherent self-consistency property of shortcut models, namely that one shortcut step equals two consecutive shortcut steps of half the size:
+s(xt, t, 2d) = s(xt, t, d)/2 + s(x′
+t+d, t, d)/2 (4)
+This allows us to train shortcut models using self-consistency targets for d > 0 and using the flowmatching loss (Equation 2) as a base case for d = 0. In principle, we can train the model on any
+3
+
+
+Under review as a conference paper at ICLR 2025
+a) Diffusion / Flow Matching
+b) Shortcut Models
+Regress
+Train towards two smaller steps
+Figure 3: Overview of shortcut model training. At d ≈ 0, the shortcut objective is equivalent to the flow-matching objective, and can be trained by regressing onto empirical E[vt|xt] samples. Targets for larger d shortcuts are constructed by concatenating a sequence of two d/2 shortcuts. Both objectives can be trained jointly; shortcut models do not require a two-stage procedure or discretization schedule.
+distribution of d ∼ p(d). In practice, we split the batch into a fraction that is trained with d = 0 and another fraction with randomly sampled d > 0 targets. We thus arrive at the combined shortcut model loss function:
+LS(θ) = Ex0∼N, x1∼D, (t,d)∼p(t,d)
+h
+∥sθ(xt, t, 0) − (x1 − x0)∥2
+| {z }
+Flow-Matching
++ ∥sθ(xt, t, 2d) − starget∥2
+| {z }
+Self-Consistency
+i
+,
+where starget = sθ(xt, t, d)/2 + sθ(x′
+t+d, t, d)/2 and x′
+t+d = xt + sθ(xt, t, d)d.
+(5)
+Intuitively, the above objective learns a mapping from noise to data which is consistent when queried under any sequence of step sizes, including directly in a single step. The flow-matching portion of the objective grounds the shortcut model at small step size to match empirical velocity samples. This ensures that the shortcut model develops a base generation capability when queried with many steps, exactly as an equivalent flow-matching model does. In the self-consistency portion, appropriate targets for larger step-sizes are constructed by concatenating a sequence of two smaller shortcuts. This propagates the generation capability from multi-step to few-step to one-step. The combined objective can be trained jointly, using a single model and over a single end-to-end training run.
+3.1 TRAINING DETAILS
+We now present a simple framework for training shortcut models via the objective described above. At each stage, we opt for design decisions which encourage training stability and simplicity.
+Regressing onto empirical samples. As d → 0, the shortcut is equivalent to instantaneous flow. Thus, we can train the shortcut model at d = 0 using the loss given by Equation 2, i.e. by sampling random (x0, x1) pairs and fitting the expectation over vt. This term can be seen as grounding the small-step shortcuts to match the data denoising ODE. We find that sampling t ∼ U (0, 1) uniformly is the simplest and works as well as any other sampling scheme.
+Enforcing self-consistency. Given that the shortcut model is accurate at small step-size, our next goal is to ensure that the shortcut model maintains this behavior at larger step-size. We rely on self-generated bootstrap targets for this purpose. To limit compounding approximation error, it is desirable to limit the total length of the bootstrap paths. We therefore opt for a binary recursive formulation in which two shortcuts are used to construct a twice-as-large shortcut (Figure 3).
+We must decide on a number of steps M to represent the smallest unit of time for approximating the ODE; we use 128 in our experiments. This creates log2(128) + 1 = 8 possible shortcut lengths according to d ∈ (1/128, 1/64 ... 1/2, 1). During each training step, we sample xt, t, and a random d < 1, then take two sequential steps with the shortcut model. The concatenation of these two steps is then used as the target to train the model at 2d.
+Note that the second step is queried at x′
+t+d under the denoising ODE and not the empirical data
+pairing, i.e. it is constructed by adding the predicted first shortcut to xt, and not by interpolating
+4
+
+
+Under review as a conference paper at ICLR 2025
+Algorithm 1 Shortcut Model Training
+while not converged do
+x0 ∼ N (0, I), x1 ∼ D, (d, t) ∼ p(d, t)
+xt ← (1 − t) x0 + t x1 Corrupt data point
+for first k batch elements do starget ← x1 − x0 Flow-matching target d ←0
+for other batch elements do st ← sθ(xt, t, d) First small step xt+d ← xt + st d Follow ODE st+d ← sθ(xt+d, t + d, d) Second small step starget ← stopgrad(st + st+d)/2 Self-consistency target
+θ ← ∇θ||sθ(xt, t, 2d) − starget||2
+Algorithm 2 Sampling
+x ∼ N (0, I) d ← 1/M t ←0 for n ∈ [0, . . . , M − 1] do x ← x + sθ(x, t, d) d t ←t+d return x
+towards x1 from the dataset. When d is at the smallest value (e.g. 1/128), we instead query the model at d = 0.
+Joint optimization. Equation 5 consists of an empirical flow-matching objective and a selfconsistency objective, which are jointly optimized during training. The variance of the empirical term is much higher, as it regresses onto random noise pairings with inherent uncertainty, whereas the self-consistency term uses deterministic bootstrap targets. We found it helpful to construct a batch with significantly more empirical targets than self-consistency targets.
+The above behavior also gives us room for computational efficiency. Training requires less selfconsistency targets than empirical targets, and self-consistency targets are also more expensive to generate (requiring two additional forward passes). We can therefore construct a training batch by combining a ratio of 1 − k empirical targets with k self-consistency targets. We find k = (1/4) to be reasonable. In this way, we can reduce the training cost of a shortcut model to be roughly only ∼ 16% more than that of an equivalent diffusion model2.
+Guidance. Classifier-free guidance (CFG; Ho & Salimans, 2022) has proven to be an essential tool for diffusion models to reach high generation fidelity. CFG provides a linear approximation of a tradeoff between the class-conditional and -unconditional denoising ODE. We find that CFG helps at small step sizes but is error-prone at larger steps when linear approximation is not appropriate. We therefore use CFG when evaluating the shortcut model at d = 0 but forgo it elsewhere. A limitation of CFG in shortcut models is that the CFG scale must be specified before training.
+Exponential moving average weights. Many recent diffusion models use an exponential moving average (EMA) over weight parameters to improve sample quality. EMA induces a smoothing effect on the generations, which is especially helpful in the in diffusion modelling since the objective has inherent variance. We find that similarly in shortcut models, variance from loss at the d = 0 level can result in large oscillations in the output at d = 1. Utilizing EMA parameters for generating self-consistency targets alleviates this issue.
+Weight decay. We find that weight decay is crucial for enabling stability, especially early on in training. When the shortcut model is near initialization, the self-consistency targets it generates are largely noise. The model can latch on to these incoherent targets, resulting in artifacting and bad feature learning. We find that proper weight decay causes these issues to disappear, and enables us to bypass the need for discretization schedules or careful warmups.
+Discrete time sampling. In practice, we can reduce the burden of the shortcut network by only training on relevant timesteps. During training, we first sample d, then sample t only at the discrete points for which the shortcut model will be queried, i.e. multiples of d. We train the self-consistency objective only at these timesteps.
+2Approximating a backward pass as twice the compute of a forward pass. Each shortcut update uses 1 (forward) + 2 (backward) + (1/4)*2 (self-consistency targets) compute units, vs. 3 units in a diffusion update.
+5
+
+
+Under review as a conference paper at ICLR 2025
+4 RELATED WORK
+Distillation of diffusion models. A number of prior works have explored the distillation of pretrained diffusion models into a one-step or few-step model (Luo, 2023). Knowledge distillation (Luhman & Luhman, 2021) and rectified flows (Liu et al., 2022) generate a synthetic dataset by fully simulating the denoising ODE. As full simulation is expensive, a number of methods have been proposed that utilize bootstrapping to warm-start the ODE simulation (Gu et al., 2023; Xie et al., 2024). Alternatives to L2 distance have been proposed for distillation targets, such as adversarial (Sauer et al., 2023) or distribution-matching (Yin et al., 2024b;a) objectives. Our work most closely relates to techniques using binary time-distillation (Salimans & Ho, 2022; Meng et al., 2023; Berthelot et al., 2023), which divides distillation into log2(T ) stages of increasing step-size, shortening the required bootstrap paths. Unlike these prior works, we focus on learning a one-step generative model end-to-end, without a separate pretraining and distillation phase. Our method is computationally cheaper than full simulation methods (e.g. rectified flows, knowledge distillation) and avoids the multiple teacher-student phases of progressive distillation methods.
+Consistency modelling. Consistency models (Song et al., 2023) are a family of one-step generative mo

@@ -1,0 +1,356 @@
+PAPER KEY: UAB7HNXJ
+TITLE: Fast and accurate protein structure search with Foldseek
+AUTHORS: Steinegger, Martin; van Kempen, Michel; Kim, Stephanie S.; Tumescheit, Charlotte; Mirdita, Milot; Lee, Jeongjae; Gilchrist, Cameron L. M.; Söding, Johannes
+
+nature biotechnology
+
+Brief Communication
+
+https://doi.org/10.1038/s41587-023-01773-0
+
+Fast and accurate protein structure search
+
+with Foldseek
+
+Received: 17 February 2022 Accepted: 30 March 2023 Published online: 8 May 2023
+Check for updates
+
+Michel van Kempen    1,6, Stephanie S. Kim2,6, Charlotte Tumescheit2, Milot Mirdita    1,2, Jeongjae Lee    2, Cameron L. M. Gilchrist2, Johannes Söding    1,3  & Martin Steinegger    2,4,5 
+As structure prediction methods are generating millions of publicly available protein structures, searching these databases is becoming a bottleneck. Foldseek aligns the structure of a query protein against a database by describing tertiary amino acid interactions within proteins as sequences over a structural alphabet. Foldseek decreases computation times by four to five orders of magnitude with 86%, 88% and 133% of the sensitivities of Dali, TM-align and CE, respectively.
+
+The recent developments in in silico protein structure prediction at near-experimental quality1,2 are advancing structural biology and bioinformatics. The European Bioinformatics Institute already holds over 214 million structures predicted by AlphaFold2 (ref. 3), and the ESM Atlas contains over 617 million metagenomic structures predicted by ESMFold4. The scale of these databases poses challenges to state-of-the-art analysis methods.
+The most widely used approach to protein annotation and analysis is based on sequence similarity search5–8. The goal is to find homologous sequences from which properties of the query sequence can be inferred, such as molecular and cellular functions and structure. Despite the success of sequence-based homology inference, many proteins cannot be annotated because detecting distant evolutionary relationships from sequences alone remains challenging9.
+Detecting similarity between protein structures by threedimensional (3D) superposition offers higher sensitivity for identifying homologous proteins10. The availability of high-quality structures for any protein of interest allows us to use structure comparison to improve homology inference and structural, functional and evolutionary analyses. However, despite decades of effort to improve speed and sensitivity of structural aligners, current tools are much too slow to cope with today’s scale of structure databases.
+Searching with a single query structure through a database with 100 million protein structures would take the popular TM-align11 tool a month on one CPU core, and an all-versus-all comparison would take 10 millennia on a 1,000-core cluster. Sequence searching is four
+
+to five orders of magnitude faster: an all-versus-all comparison of 100 million sequences would take MMseqs2 (ref. 6) only around a week on the same cluster.
+Structural alignment tools (reviewed in ref. 12) are slower for two reasons. First, whereas sequence search tools employ fast and sensitive prefilter algorithms to gain orders of magnitude in speed, no similar prefilters exist for structure alignment. Second, structural similarity scores are non-local: changing the alignment in one part affects the similarity in all other parts. Most structural aligners, such as the popular TM-align, Dali and CE11,13,14, solve the alignment optimization problem by iterative or stochastic optimization.
+To increase speed, a crucial idea is to describe the amino acid backbone of proteins as sequences over a structural alphabet and compare structures using sequence alignments15. Structural alphabets thus reduce structure comparisons to much faster sequence alignments. Many ways to discretize the local amino acid backbone have been proposed16. Most, such as CLE, 3D-BLAST and Protein Blocks, discretize the conformations of short stretches of usually 3–5 Cα atoms17–19.
+For Foldseek, we developed a type of structural alphabet that does not describe the backbone but, rather, tertiary interactions. The 20 states of the 3D interaction (3Di) alphabet describe for each residue i the geometric conformation with its spatially closest residue j. 3Di has three key advantages over traditional backbone structural alphabets. (1) Weaker dependency between consecutive letters and (2) more evenly distributed state frequencies, both enhancing information density and reducing false positives (FPs) (Supplementary Table 1). (3) The highest information density is encoded in conserved protein
+
+1Quantitative and Computational Biology Group, Max Planck Institute for Multidisciplinary Sciences, Göttingen, Germany. 2School of Biological Sciences, Seoul National University, Seoul, South Korea. 3Campus Institute Data Science (CIDAS), Göttingen, Germany. 4Artificial Intelligence Institute, Seoul National University, Seoul, South Korea. 5Institute of Molecular Biology and Genetics, Seoul National University, Seoul, South Korea. 6These authors contributed equally: Michel van Kempen, Stephanie S. Kim.  e-mail: soeding@mpinat.mpg.de; martin.steinegger@snu.ac.kr
+
+Nature Biotechnology | Volume 42 | February 2024 | 243–246
+
+243
+
+Brief Communication
+
+https://doi.org/10.1038/s41587-023-01773-0
+
+a
+
+Query
+
+Target …
+
+(1) Discretize structure to sequence b and pre lter
+
+k-mer
+
+Double match on diagonal
+
+Ungapped alignment
+
+Query
+
+Targets (2) Structural alignment
+
+Gapped alignment
+
+b
+Virtual center
+… Val …
+(1) Find neighboring residues using virtual center
+
+Cαj+1 Cαj−1
+Cαj
+
+d
+
+Cαi
+
+Cαi−1
+
+(2) Extract features
+
+(4) (Discretization) conversion to 3Di sequence
+
+Cαi+1
+
+Amino acid …Val… 3Di sequence … A …
+
+cos 1,2
+
+cos 1,3
+
+cos 1,4
+
+A
+
+cos 1,5
+
+C
+
+cos 2,3
+
+Z0
+
+cos 3,4 Encoder Z1
+
+D
+
+cos 3,5
+
+d
+
+Y
+
+f1(i−j)
+
+f2(i−j)
+
+(3) Search 3Di state library
+
+State1 Z0A Z1A
+State2 Z0C ZC1 State3 Z0D Z1D
+State21 Z0Y Z1Y
+
+cos 1,2
+
+cos 1,3
+
+cos 1,4
+
+cos 1,5
+
+Z0A ZA1
+
+Decoder
+
+cos 2,3 cos 3,4
+
+cos 3,5
+
+d
+
+f1(i−j) f2(i−j)
+
+(4) (Training) predict features
+
+Fig. 1 | Foldseek workflow. a, Foldseek searches a set of query structures through a set of target structures. (1) Query and target structures are discretized into 3Di sequences (see b). To detect candidate structures, we apply the fast and sensitive k-mer and ungapped alignment prefilter of MMseqs2 to the 3Di sequences, (2) followed by vectorized Smith–Waterman local alignment combining 3Di and amino acid substitution scores. Alternatively, a global alignment is computed with a 1.7-times accelerated TM-align version (Supplementary Fig. 12). b, Learning the 3Di alphabet. (1) 3Di states describe tertiary interaction between a residue i and its nearest neighbor j. Nearest neighbors have the closest virtual
+
+center distance (yellow). Virtual center positions (Supplementary Fig. 1) were optimized for maximum search sensitivity. (2) To describe the interaction geometry of residues i and j, we extract seven angles, the Euclidean Cα distance and two sequence distance features from the six Cα coordinates of the two backbone fragments (blue and red). (3) These 10 features are used to define 20 3Di states by training a VQ-VAE28 modified to learn states that are maximally evolutionary conserved. For structure searches, the encoder predicts the bestmatching 3Di state for each residue.
+
+cores and the lowest in non-conserved coil/loop regions, whereas the opposite is true for backbone structural alphabets.
+Foldseek (https://foldseek.com/) (Fig. 1a) (1) discretizes the query structures into sequences over the 3Di alphabet and then uses a pre-trained 3Di substitution matrix (Supplementary Table 2) to search through the 3Di sequences of the target structures using the double-diagonal k-mer-based prefilter and gapless alignment prefilter modules from MMseqs2, our open-source sequence search software6. (2) High-scoring hits are aligned locally using 3Di (default) or globally with TM-align (Foldseek-TM). The local alignment stage combines 3Di and amino acid substitution scores. The construction of the 3Di alphabet is summarized in Fig. 1b and Supplementary Figs. 1–3.
+To reduce high-scoring FPs and provide reliable E values, we subtracted the reversed query alignment score from the original score and applied a compositional bias correction within a local 40-residue sequence window (see the ‘Pairwise local structural alignments’ subsection). E values are calculated using an extreme-value score distribution, with parameters predicted by a neural network based on 3Di sequence composition and query length (see the ‘E values’ subsection). Ranking of hits is determined by alignment bit score multiplied by the geometric mean of alignment TM-score and local distance difference test (LDDT). Foldseek also reports the probability for each match to be homologous, based on a fit of true and false matches on SCOPe.
+We measured the sensitivity and speed of Foldseek, six protein structure alignment tools, an alignment-free structure search tool (Geometricus20) and a sequence search tool (MMseqs2 (ref. 6)) on the SCOPe dataset of manually classified single-domain structures21. Clustering SCOPe 2.01 at 40% sequence identity yielded 11,211 non-redundant protein sequences (SCOPe40). We performed an all-versus-all search and compared the tools’ performance for finding members of the same SCOPe family, superfamily and fold (true-positive (TP) matches) by measuring for each query the fraction of TPs out of all possible correct matches until the first FP, a match to a different fold (see the ‘SCOPe benchmark’ subsection).
+We first measured the sensitivity to detect relationships at family and superfamily level by the area under the curve (AUC) of the cumulative receiver operating characteristic (ROC) curve up to the first FP (Fig. 2a and Supplementary Fig. 4). Foldseek’s sensitivity is below Dali
+
+and TM-align, higher than the structural aligner CE and much above the structural alphabet-based search tools 3D-BLAST and CLE-SW (Fig. 2a). In a precision-recall analysis, Foldseek-TM and Foldseek have the highest and third-highest area under the precision-recall curve on each of the three levels (Fig. 2b and Supplementary Fig. 4). Notably, Foldseek-TM improves over TM-align because its prefilter suppresses high-scoring FPs. Both sort hits by the average query and target length normalized TM-scores for best performance in the SCOPe benchmark.
+Foldseek’s performance is similar across all six secondary structure classes in SCOPe (Supplementary Fig. 5). On this small SCOPe40 benchmark set, Foldseek is more than 4,000 times faster than TM-align and Dali and over 21,000 times faster than CE (Fig. 2c). On the much larger AlphaFoldDB (version 1), where Foldseek approaches its full speed, it is around 184,600 and 23,000 times faster than Dali and TM-align, respectively (see below).
+We devised a reference-free benchmark to assess search sensitivity and alignment quality of structural aligners (Fig. 2d) on a realistic set of full-length, multi-domain proteins. We clustered the AlphaFoldDB (version 1) to 34,270 structures using BLAST and SPICi22. We randomly selected 100 query structures from this set and aligned them against the remaining structures. TP matches are those with an LDDT score23 of at least 0.6 and FPs below 0.25, ignoring matches in between. We set the LDDT thresholds according to the median inter-fold and intra-fold superfamily and family LDDT scores of SCOPe40 alignments (Supplementary Fig. 6). For other thresholds, see Supplementary Fig. 7. A domain-based sensitivity assessment would require a reference-based prediction of domains. To avoid it, we evaluated the sensitivity per residue. Figure 2d shows the distribution of the fraction of query residues that were part of alignments with at least x TP targets with better scores than the first FP match. Again, Foldseek has similar sensitivity as Dali, CE and TM-align and much higher sensitivity than CLE-SW and MMseqs2.
+We analyzed the quality of alignments produced by the top five matches per query. We computed the alignment sensitivity as the number of TP residues divided by the query length and the precision as the number of TP residues divided by the alignment length. TP residues are those with residue-specific LDDT score above 0.6; FP residues are below 0.25; and residues with other scores are ignored. Figure 2e shows the average sensitivity versus precision of the 100 × 5 structure alignments.
+
+Nature Biotechnology | Volume 42 | February 2024 | 243–246
+
+244
+
+Brief Communication
+
+https://doi.org/10.1038/s41587-023-01773-0
+
+Sensitivity up to the 1st FP
+
+a
+1.00
+0.75
+0.50
+0.25
+0 0
+
+Superfamily (AUROC1)
+
+0.25
+
+0.50
+
+0.75
+
+Fraction of queries
+
+b 1.00
+
+0.75
+
+Precision
+
+0.50
+
+0.25
+
+1.00
+
+0 0
+
+Superfamily (weighted ROC)
+Foldseek-TM TM-align TM-align−fast Foldseek Dali CE CLE−SW 3D-BLAST MMseqs2 Geometricus
+
+0.25
+
+0.50
+
+0.75
+
+1.00
+
+Recall
+
+Time (s)
+
+c
+106 105 104 103 102 101
+
+Fold
+
+Superfamily
+
+Family
+
+0
+
+0.25
+
+0.50
+
+0.75
+
+1.00
+
+Avg. sensitivity up to the 1st FP
+
+Query coverage
+
+d
+0.75
+0.50
+0.25
+0 1
+
+1 week 1 day
+1 hour
+1 min 9 s
+
+CE TM-align Dali
+
+158,222× 34,822× 19,989×
+
+TM-align−fast 3,289×
+
+Foldseek-TM 47×
+
+CLE−SW
+
+11×
+
+Foldseek MMseqs2
+
+1× 0.3×
+
+5
+
+10
+
+15
+
+20
+
+TP hits up to 1st FP
+
+e 0.6
+0.4
+
+Multidomain
+
+Sensitivity
+
+0.2
+
+0 1.0 0.8 0.6 0.4 0.2
+0 0
+
+Foldseek-TM TM-align TM-align−fast Foldseek
+0.25
+
+HOMSTRAD
+Dali CE CLE-SW MMseqs2
+0.50 Precision
+
+0.75
+
+f
+1.00
+
+Dali alignment F1 score
+
+0.75
+
+0.50
+
+0.25
+
+1.00
+
+0 0
+
+0.25
+
+0.50
+
+0.75
+
+1.00
+
+Foldseek alignment F1 score
+
+Fig. 2 | Foldseek reaches similar sensitivities as structural aligners at thousands of times their speed. a, Cumulative distributions of sensitivity for homology detection on the SCOPe40 database of single-domain structures. TPs are matches within the same superfamily; FPs are matches between different folds. Sensitivity is the area under the ROC (AUROC) curve up to the first FP (see Supplementary Fig. 4 for family and fold). b, Precision-recall curve of SCOPe40 superfamilies (see Supplementary Fig. 4 for family and fold). c, Average sensitivity up to the first FP for family, superfamily and fold versus total runtime on an AMD EPYC 7702P 64-core CPU for the all-versus-all searches of 11,211 structures of SCOPe40. d, Search sensitivity on multi-domain, full-length
+
+AlphaFold2 protein models. One hundred queries, randomly selected from AlphaFoldDB (version 1), were searched against this database. Per-residue query coverage (y axis) is the fraction of residues covered by at least x (x axis) TP matches ranked before the first FP match. e, Alignment quality for alignments of AlphaFoldDB (version 1) protein models (top panel), averaged over the top five matches of each of the 100 queries. Sensitivity = TP residues in alignment / query length; precision = TP residues / alignment length. Reference-based alignment quality benchmark on HOMSTRAD alignments. f, Alignment quality comparison between Foldseek and Dali for each HOMSTRAD family. The F1 score is the harmonic mean between sensitivity and precision.
+
+Foldseek alignments are more accurate and sensitive than MMseqs2, CLE-SW and TM-align, similarly accurate as Dali and 13% less precise but 15% more sensitive than CE. In the reference-based HOMSTRAD alignment quality benchmark24, Foldseek performs slightly below CE, Dali and TM-align (Fig. 2e). Figure 2f shows the comparison between Foldseek and Dali in alignment quality for all HOMSTRAD families (see Supplementary Fig. 8 for example alignments).
+To find potentially problematic high-scoring Foldseek FPs, we searched the set of unfragmented models in AlphaFoldDB (version 1) with average predicted LDDT1≥80 against itself. We inspected the 1,675 (of 133,813) high-scoring FPs (score per aligned column ≥ 1.0, TM-score < 0.5), revealing queries with multiple structured segments but with incorrect relative orientations (Supplementary Table 3 and Supplementary Fig. 9). The folded segments were correctly aligned by Foldseek. This illustrates that 3D aligners such as TM-align may overlook homologous structures that are not globally superposable, whereas Foldseek (as well as the two-dimensional (2D) aligner Dali) is independent of relative domain orientations and excels at detecting homologous multi-domain structures12.
+We developed a webserver (https://search.foldseek.com) for multi-database searches, including AlphaFoldDB (version 4: Proteomes and Swiss-Prot), AlphaFoldDB (version 4) and CATH25 clustered at 50% sequence identity, ESM Atlas-HQ and Protein Data Bank (PDB)26.
+We compared Foldseek webserver, TM-align and Dali using SARS-CoV-2 RdRp (PDB: 6M71, chain A (ref. 27); 942 residues) in AlphaFoldDB (version 1). Search times were 10 d for Dali, 33 h for TM-align and 6 s for Foldseek, making it 180,000 and 23,000 times faster. All top 10 hits were known RdRp homologs (Supplementary Table 4).
+The availability of high-quality structures for nearly every folded protein is transformative for biology and bioinformatics.
+
+Sequence-based analyses will soon be largely superseded by structure-based analyses. The main limitation in our view—the four orders of magnitude slower speed of structure comparisons—is removed by Foldseek.
+Online content
+Any methods, additional references, Nature Portfolio reporting summaries, source data, extended data, supplementary information, acknowledgements, peer review information; details of author contributions and competing interests; and statements of data and code availability are available at https://doi.org/10.1038/s41587-023-01773-0.
+References
+1. Jumper, J. et al. Highly accurate protein structure prediction with AlphaFold. Nature 596, 583–589 (2021).
+2. Baek, M. et al. Accurate prediction of protein structures and interactions using a three-track neural network. Science 373, 871–876 (2021).
+3. Varadi, M. et al. AlphaFold Protein Structure Database: massively expanding the structural coverage of protein– sequence space with high-accuracy models. Nucleic Acids Res. 50, D439–D444 (2022).
+4. Lin, Z. et al. Evolutionary-scale prediction of atomic-level protein structure with a language model. Science 379, 1123–1130 (2023).
+5. Altschul, S. F., Gish, W., Miller, W., Myers, E. W. & Lipman, D. J. Basic local alignment search tool. J. Mol. Biol. 215, 403–410 (1990).
+6. Steinegger, M. & Söding, J. MMseqs2 enables sensitive protein sequence searching for the analysis of massive data sets. Nat. Biotechnol. 35, 1026–1028 (2017).
+
+Nature Biotechnology | Volume 42 | February 2024 | 243–246
+
+245
+
+Brief Communication
+
+https://doi.org/10.1038/s41587-023-01773-0
+
+7. Steinegger, M. et al. HH-suite3 for fast remote homology detection and deep protein annotation. BMC Bioinformatics 20, 473 (2019).
+8. Buchfink, B., Reuter, K. & Drost, H.-G. Sensitive protein alignments at tree-of-life scale using DIAMOND. Nat. Methods 18, 366–368 (2021).
+9. Mahlich, Y., Steinegger, M., Rost, B. & Bromberg, Y. HFSP: high speed homology-driven function annotation of proteins. Bioinformatics 34, i304–i312 (2018).
+10. Illergård, K., Ardell, D. H. & Elofsson, A. Structure is three to ten times more conserved than sequence—a study of structural response in protein cores. Proteins 77, 499–508 (2009).
+11. Zhang, Y. & Skolnick, J. TM-align: a protein structure alignment algorithm based on the TM-score. Nucleic Acids Res. 33, 2302–2309 (2005).
+12. Hasegawa, H. & Holm, L. Advances and pitfalls of protein structural alignment. Curr. Opin. Struct. Biol. 19, 341–348 (2009).
+13. Holm, L. Using Dali for protein structure comparison. Methods Mol. Biol. 2112, 29–42 (2020).
+14. Shindyalov, I. N. & Bourne, P. E. Protein structure alignment by incremental combinatorial extension (CE) of the optimal path. Protein Eng. 11, 739–747 (1998).
+15. Guyon, F., Camproux, A.-C., Hochez, J. & Tuffery, P. SA-Search: a web tool for protein structure mining based on a structural alphabet. Nucleic Acids Res. 32, W545–W548 (2004).
+16. Ma, J. & Wang, S. Algorithms, applications, and challenges of protein structure alignment. Adv. Protein Chem. Struct. Biol. 94, 121–175 (2014).
+17. Wang, S. & Zheng, W.-M. CLePAPS: fast pair alignment of protein structures based on conformational letters. J. Bioinfo

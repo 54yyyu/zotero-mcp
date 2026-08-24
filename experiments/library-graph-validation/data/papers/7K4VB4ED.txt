@@ -1,0 +1,184 @@
+PAPER KEY: 7K4VB4ED
+TITLE: Flow Matching for Generative Modeling
+AUTHORS: Lipman, Yaron; Chen, Ricky T. Q.; Ben-Hamu, Heli; Nickel, Maximilian; Le, Matt
+
+Preprint
+FLOW MATCHING FOR GENERATIVE MODELING
+Yaron Lipman1,2 Ricky T. Q. Chen1 Heli Ben-Hamu2 Maximilian Nickel1 Matt Le1 1Meta AI (FAIR) 2Weizmann Institute of Science
+ABSTRACT
+We introduce a new paradigm for generative modeling built on Continuous Normalizing Flows (CNFs), allowing us to train CNFs at unprecedented scale. Specifically, we present the notion of Flow Matching (FM), a simulation-free approach for training CNFs based on regressing vector fields of fixed conditional probability paths. Flow Matching is compatible with a general family of Gaussian probability paths for transforming between noise and data samples—which subsumes existing diffusion paths as specific instances. Interestingly, we find that employing FM with diffusion paths results in a more robust and stable alternative for training diffusion models. Furthermore, Flow Matching opens the door to training CNFs with other, non-diffusion probability paths. An instance of particular interest is using Optimal Transport (OT) displacement interpolation to define the conditional probability paths. These paths are more efficient than diffusion paths, provide faster training and sampling, and result in better generalization. Training CNFs using Flow Matching on ImageNet leads to consistently better performance than alternative diffusion-based methods in terms of both likelihood and sample quality, and allows fast and reliable sample generation using off-the-shelf numerical ODE solvers.
+1 INTRODUCTION
+Deep generative models are a class of deep learning algorithms aimed at estimating and sampling from an unknown data distribution. The recent influx of amazing advances in generative modeling, e.g., for image generation Ramesh et al. (2022); Rombach et al. (2022), is mostly facilitated by the scalable and relatively stable training of diffusion-based models Ho et al. (2020); Song et al. (2020b). However, the restriction to simple diffusion processes leads to a rather confined space of sampling probability paths, resulting in very long training times and the need to adopt specialized methods (e.g., Song et al. (2020a); Zhang & Chen (2022)) for efficient sampling.
+In this work we consider the general and deterministic framework of Continuous Normalizing Flows (CNFs; Chen et al. (2018)). CNFs are capable of modeling arbitrary probability path
+Figure 1: Unconditional ImageNet-128 samples of a CNF trained using Flow Matching with Optimal Transport probability paths.
+and are in particular known to encompass the probability paths modeled by diffusion processes (Song et al., 2021). However, aside from diffusion that can be trained efficiently via, e.g., denoising score matching (Vincent, 2011), no scalable CNF training algorithms are known. Indeed, maximum likelihood training (e.g., Grathwohl et al. (2018)) require expensive numerical ODE simulations, while existing simulation-free methods either involve intractable integrals (Rozen et al., 2021) or biased gradients (Ben-Hamu et al., 2022).
+The goal of this work is to propose Flow Matching (FM), an efficient simulation-free approach to training CNF models, allowing the adoption of general probability paths to supervise CNF training. Importantly, FM breaks the barriers for scalable CNF training beyond diffusion, and sidesteps the need to reason about diffusion processes to directly work with probability paths.
+1
+arXiv:2210.02747v2 [cs.LG] 8 Feb 2023
+
+
+Preprint
+In particular, we propose the Flow Matching objective (Section 3), a simple and intuitive training objective to regress onto a target vector field that generates a desired probability path. We first show that we can construct such target vector fields through per-example (i.e., conditional) formulations. Then, inspired by denoising score matching, we show that a per-example training objective, termed Conditional Flow Matching (CFM), provides equivalent gradients and does not require explicit knowledge of the intractable target vector field. Furthermore, we discuss a general family of per-example probability paths (Section 4) that can be used for Flow Matching, which subsumes existing diffusion paths as special instances. Even on diffusion paths, we find that using FM provides more robust and stable training, and achieves superior performance compared to score matching. Furthermore, this family of probability paths also includes a particularly interesting case: the vector field that corresponds to an Optimal Transport (OT) displacement interpolant (McCann, 1997). We find that conditional OT paths are simpler than diffusion paths, forming straight line trajectories whereas diffusion paths result in curved paths. These properties seem to empirically translate to faster training, faster generation, and better performance.
+We empirically validate Flow Matching and the construction via Optimal Transport paths on ImageNet, a large and highly diverse image dataset. We find that we can easily train models to achieve favorable performance in both likelihood estimation and sample quality amongst competing diffusion-based methods. Furthermore, we find that our models produce better trade-offs between computational cost and sample quality compared to prior methods. Figure 1 depicts selected unconditional ImageNet 128×128 samples from our model.
+2 PRELIMINARIES: CONTINUOUS NORMALIZING FLOWS
+Let Rd denote the data space with data points x = (x1, . . . , xd) ∈ Rd. Two important objects we use in this paper are: the probability density path p : [0, 1] × Rd → R>0, which is a time
+dependent1 probability density function, i.e., ∫ pt(x)dx = 1, and a time-dependent vector field, v : [0, 1] × Rd → Rd. A vector field vt can be used to construct a time-dependent diffeomorphic
+map, called a flow, φ : [0, 1] × Rd → Rd, defined via the ordinary differential equation (ODE):
+d
+dt φt(x) = vt(φt(x)) (1)
+φ0(x) = x (2)
+Previously, Chen et al. (2018) suggested modeling the vector field vt with a neural network, vt(x; θ),
+where θ ∈ Rp are its learnable parameters, which in turn leads to a deep parametric model of the flow φt, called a Continuous Normalizing Flow (CNF). A CNF is used to reshape a simple prior density p0 (e.g., pure noise) to a more complicated one, p1, via the push-forward equation
+pt = [φt]∗p0 (3)
+where the push-forward (or change of variables) operator ∗ is defined by
+[φt]∗p0(x) = p0(φ−1
+t (x)) det
+[ ∂φ−1
+t
+∂x (x)
+]
+. (4)
+A vector field vt is said to generate a probability density path pt if its flow φt satisfies equation 3. One practical way to test if a vector field generates a probability path is using the continuity equation, which is a key component in our proofs, see Appendix B. We recap more information on CNFs, in particular how to compute the probability p1(x) at an arbitrary point x ∈ Rd in Appendix C.
+3 FLOW MATCHING
+Let x1 denote a random variable distributed according to some unknown data distribution q(x1). We assume we only have access to data samples from q(x1) but have no access to the density function itself. Furthermore, we let pt be a probability path such that p0 = p is a simple distribution, e.g., the standard normal distribution p(x) = N (x|0, I), and let p1 be approximately equal in distribution to q. We will later discuss how to construct such a path. The Flow Matching objective is then designed to match this target probability path, which will allow us to flow from p0 to p1.
+1We use subscript to denote the time parameter, e.g., pt(x).
+2
+
+
+Preprint
+Given a target probability density path pt(x) and a corresponding vector field ut(x), which generates pt(x), we define the Flow Matching (FM) objective as
+L
+FM(θ) = Et,pt(x)‖vt(x) − ut(x)‖2, (5)
+where θ denotes the learnable parameters of the CNF vector field vt (as defined in Section 2), t ∼ U [0, 1] (uniform distribution), and x ∼ pt(x). Simply put, the FM loss regresses the vector field ut with a neural network vt. Upon reaching zero loss, the learned CNF model will generate pt(x).
+Flow Matching is a simple and attractive objective, but na ̈ıvely on its own, it is intractable to use in practice since we have no prior knowledge for what an appropriate pt and ut are. There are many choices of probability paths that can satisfy p1(x) ≈ q(x), and more importantly, we generally don’t have access to a closed form ut that generates the desired pt. In this section, we show that we can construct both pt and ut using probability paths and vector fields that are only defined per sample, and an appropriate method of aggregation provides the desired pt and ut. Furthermore, this construction allows us to create a much more tractable objective for Flow Matching.
+3.1 CONSTRUCTING pt, ut FROM CONDITIONAL PROBABILITY PATHS AND VECTOR FIELDS
+A simple way to construct a target probability path is via a mixture of simpler probability paths: Given a particular data sample x1 we denote by pt(x|x1) a conditional probability path such that it satisfies p0(x|x1) = p(x) at time t = 0, and we design p1(x|x1) at t = 1 to be a distribution
+concentrated around x = x1, e.g., p1(x|x1) = N (x|x1, σ2I), a normal distribution with x1 mean and a sufficiently small standard deviation σ > 0. Marginalizing the conditional probability paths over q(x1) give rise to the marginal probability path
+pt(x) =
+∫
+pt(x|x1)q(x1)dx1, (6)
+where in particular at time t = 1, the marginal probability p1 is a mixture distribution that closely approximates the data distribution q,
+p1(x) =
+∫
+p1(x|x1)q(x1)dx1 ≈ q(x). (7)
+Interestingly, we can also define a marginal vector field, by “marginalizing” over the conditional vector fields in the following sense (we assume pt(x) > 0 for all t and x):
+ut(x) =
+∫
+ut(x|x1) pt(x|x1)q(x1)
+pt(x) dx1, (8)
+where ut(·|x1) : Rd → Rd is a conditional vector field that generates pt(·|x1). It may not seem apparent, but this way of aggregating the conditional vector fields actually results in the correct vector field for modeling the marginal probability path.
+Our first key observation is this:
+The marginal vector field (equation 8) generates the marginal probability path (equation 6).
+This provides a surprising connection between the conditional VFs (those that generate conditional probability paths) and the marginal VF (those that generate the marginal probability path). This connection allows us to break down the unknown and intractable marginal VF into simpler conditional VFs, which are much simpler to define as these only depend on a single data sample. We formalize this in the following theorem.
+Theorem 1. Given vector fields ut(x|x1) that generate conditional probability paths pt(x|x1), for any distribution q(x1), the marginal vector field ut in equation 8 generates the marginal probability path pt in equation 6, i.e., ut and pt satisfy the continuity equation (equation 26).
+The full proofs for our theorems are all provided in Appendix A. Theorem 1 can also be derived from the Diffusion Mixture Representation Theorem in Peluchetti (2021) that provides a formula for the marginal drift and diffusion coefficients in diffusion SDEs.
+3
+
+
+Preprint
+3.2 CONDITIONAL FLOW MATCHING
+Unfortunately, due to the intractable integrals in the definitions of the marginal probability path and VF (equations 6 and 8), it is still intractable to compute ut, and consequently, intractable to na ̈ıvely compute an unbiased estimator of the original Flow Matching objective. Instead, we propose a simpler objective, which surprisingly will result in the same optima as the original objective. Specifically, we consider the Conditional Flow Matching (CFM) objective,
+L
+CFM(θ) = Et,q(x1),pt(x|x1)
+∥
+∥vt(x) − ut(x|x1)∥
+∥
+2, (9)
+where t ∼ U [0, 1], x1 ∼ q(x1), and now x ∼ pt(x|x1). Unlike the FM objective, the CFM objective allows us to easily sample unbiased estimates as long as we can efficiently sample from pt(x|x1) and compute ut(x|x1), both of which can be easily done as they are defined on a per-sample basis. Our second key observation is therefore:
+The FM (equation 5) and CFM (equation 9) objectives have identical gradients w.r.t. θ.
+That is, optimizing the CFM objective is equivalent (in expectation) to optimizing the FM objective. Consequently, this allows us to train a CNF to generate the marginal probability path pt—which in particular, approximates the unknown data distribution q at t=1— without ever needing access to either the marginal probability path or the marginal vector field. We simply need to design suitable conditional probability paths and vector fields. We formalize this property in the following theorem.
+Theorem 2. Assuming that pt(x) > 0 for all x ∈ Rd and t ∈ [0, 1], then, up to a constant independent of θ, LCFM and LFM are equal. Hence, ∇θLFM(θ) = ∇θLCFM(θ).
+4 CONDITIONAL PROBABILITY PATHS AND VECTOR FIELDS
+The Conditional Flow Matching objective works with any choice of conditional probability path and conditional vector fields. In this section, we discuss the construction of pt(x|x1) and ut(x|x1) for a general family of Gaussian conditional probability paths. Namely, we consider conditional probability paths of the form
+pt(x|x1) = N (x | μt(x1), σt(x1)2I), (10)
+where μ : [0, 1] × Rd → Rd is the time-dependent mean of the Gaussian distribution, while σ : [0, 1] × R → R>0 describes a time-dependent scalar standard deviation (std). We set μ0(x1) = 0 and σ0(x1) = 1, so that all conditional probability paths converge to the same standard Gaussian noise distribution at t = 0, p(x) = N (x|0, I). We then set μ1(x1) = x1 and σ1(x1) = σmin, which is set sufficiently small so that p1(x|x1) is a concentrated Gaussian distribution centered at x1.
+There is an infinite number of vector fields that generate any particular probability path (e.g., by adding a divergence free component to the continuity equation, see equation 26), but the vast majority of these is due to the presence of components that leave the underlying distribution invariant—for instance, rotational components when the distribution is rotation-invariant—leading to unnecessary extra compute. We decide to use the simplest vector field corresponding to a canonical transformation for Gaussian distributions. Specifically, consider the flow (conditioned on x1)
+ψt(x) = σt(x1)x + μt(x1). (11)
+When x is distributed as a standard Gaussian, ψt(x) is the affine transformation that maps to a normally-distributed random variable with mean μt(x1) and std σt(x1). That is to say, according to equation 4, ψt pushes the noise distribution p0(x|x1) = p(x) to pt(x|x1), i.e.,
+[ψt]∗ p(x) = pt(x|x1). (12)
+This flow then provides a vector field that generates the conditional probability path:
+d
+dt ψt(x) = ut(ψt(x)|x1). (13)
+Reparameterizing pt(x|x1) in terms of just x0 and plugging equation 13 in the CFM loss we get
+L
+CFM(θ) = Et,q(x1),p(x0)
+∥ ∥
+∥vt(ψt(x0)) − d
+dt ψt(x0)
+∥ ∥ ∥
+2
+. (14)
+Since ψt is a simple (invertible) affine map we can use equation 13 to solve for ut in a closed form.
+Let f ′ denote the derivative with respect to time, i.e., f ′ = d
+dt f , for a time-dependent function f .
+4
+
+
+Preprint
+Theorem 3. Let pt(x|x1) be a Gaussian probability path as in equation 10, and ψt its corresponding flow map as in equation 11. Then, the unique vector field that defines ψt has the form:
+ut(x|x1) = σt′(x1)
+σt(x1) (x − μt(x1)) + μ′
+t(x1). (15)
+Consequently, ut(x|x1) generates the Gaussian path pt(x|x1).
+4.1 SPECIAL INSTANCES OF GAUSSIAN CONDITIONAL PROBABILITY PATHS
+Our formulation is fully general for arbitrary functions μt(x1) and σt(x1), and we can set them to any differentiable function satisfying the desired boundary conditions. We first discuss the special cases that recover probability paths corresponding to previously-used diffusion processes. Since we directly work with probability paths, we can simply depart from reasoning about diffusion processes altogether. Therefore, in the second example below, we directly formulate a probability path based on the Wasserstein-2 optimal transport solution as an interesting instance.
+Example I: Diffusion conditional VFs. Diffusion models start with data points and gradually add noise until it approximates pure noise. These can be formulated as stochastic processes, which have strict requirements in order to obtain closed form representation at arbitrary times t, resulting in Gaussian conditional probability paths pt(x|x1) with specific choices of mean μt(x1) and std σt(x1) (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2020b). For example, the reversed (noise→data) Variance Exploding (VE) path has the form
+pt(x) = N (x|x1, σ2
+1−tI), (16)
+where σt is an increasing function, σ0 = 0, and σ1  1. Next, equation 16 provides the choices of μt(x1) = x1 and σt(x1) = σ1−t. Plugging these into equation 15 of Theorem 3 we get
+ut(x|x1) = − σ′1−t
+σ1−t
+(x − x1). (17)
+The reversed (noise→data) Variance Preserving (VP) diffusion path has the form
+pt(x|x1) = N (x | α1−tx1, (1 − α2
+1−t
+) I), where αt = e− 1
+2 T (t), T (t) =
+∫t
+0
+β(s)ds, (18)
+and β is the noise scale function. Equation 18 provides the choices of μt(x1) = α1−tx1 and
+σt(x1) =
+√
+1 − α12−t. Plugging these into equation 15 of Theorem 3 we get
+ut(x|x1) = α′1−t
+1 − α12−t
+(α1−tx − x1) = − T ′(1 − t)
+2
+[
+e−T (1−t)x − e− 1
+2 T (1−t)x1
+1 − e−T (1−t)
+]
+. (19)
+Our construction of the conditional VF ut(x|x1) does in fact coincide with the vector field previously used in the deterministic probability flow (Song et al. (2020b), equation 13) when restricted to these conditional diffusion processes; see details in Appendix D. Nevertheless, combining the diffusion conditional VF with the Flow Matching objective offers an attractive training alternative—which we find to be more stable and robust in our experiments—to existing score matching approaches.
+Another important observation is that, as these probability paths were previously derived as solutions of diffusion processes, they do not actually reach a true noise distribution in finite time. In practice, p0(x) is simply approximated by a suitable Gaussian distribution for sampling and likelihood evaluation. Instead, our construction provides full control over the probability path, and we can just directly set μt and σt, as we will do next.
+Example II: Optimal Transport conditional VFs. An arguably more natural choice for conditional probability paths is to define the mean and the std to simply change linearly in time, i.e.,
+μt(x) = tx1, and σt(x) = 1 − (1 − σmin)t. (20)
+According to Theorem 3 this path is generated by the VF
+ut(x|x1) = x1 − (1 − σmin)x
+1 − (1 − σmin)t , (21)
+5
+
+
+Preprint
+t = 0.0 t = 1/3 t = 2/3 t = 1.0 Diffusion path – conditional score function
+t = 0.0 t = 1/3 t = 2/3 t = 1.0 OT path – conditional vector field
+Figure 2: Compared to the diffusion path’s conditional score function, the OT path’s conditional vector field has constant direction in time and is arguably simpler to fit with a parametric model. Note the blue color denotes larger magnitude while red color denotes smaller magnitude.
+which, in contrast to the diffusion conditional VF (equation 19), is defined for all t ∈ [0, 1]. The conditional flow that corresponds to ut(x|x1) is
+ψt(x) = (1 − (1 − σmin)t)x + tx1, (22)
+and in this case, the CFM loss (see equations 9, 14) takes the form:
+L
+CFM(θ) = Et,q(x1),p(x0)
+∥ ∥
+∥vt(ψt(x0)) −
+(
+x1 − (1 − σmin)x0
+)∥ ∥ ∥
+2
+. (23)
+Allowing the mean and std to change linearly not only leads to simple and intuitive paths, but it is actually also optimal in the following sense. The conditional flow ψt(x) is in fact the Optimal Transport (OT) displacement map between the two Gaussians p0(x|x1) and p1(x|x1). The OT interpolant, which is a probability path, is defined to be (see Definition 1.1 in McCann (1997)):
+pt = [(1 − t)id + tψ]?p0 (24)
+where ψ : Rd → Rd is the OT map pushing p0 to p1, id denotes the identity map, i.e., id(x) = x, and (1 − t)id + tψ is called the OT displacement map. Example 1.7 in McCann (1997) shows, that in our case of two Gaussians where the first is a standard one, the OT displacement map takes the form of equation 22.
+Diffusion OT
+Figu

@@ -1,0 +1,611 @@
+PAPER KEY: UZDNNCCJ
+TITLE: ESMAdam: a plug-and-play all-purpose protein ensemble generator
+AUTHORS: Yu, Zongxin; Liu, Yikai; Lin, Guang; Jiang, Wen; Chen, Ming
+
+1 ESMAdam: a plug-and-play all-purpose protein ensemble
+2 generator
+Zongxin Yu 1,+, Yikai Liu 2,+, Guang Lin 2, Wen Jiang 4, and Ming Chen *3
+3
+4 1Department of Engineering Sciences and Applied Math, Northwestern University, Evanston, IL, 60201
+5 2Department of Mechanical Engineering, Purdue University, West Lafayette, IN, 47907
+6 3Department of Chemistry, Purdue University, West Lafayette, IN, 47907
+7 4Department of Biochemistry and Molecular Biology, The Pennsylvania State University, University Park, PA 16802
+8 USA
+9 +these authors contributed equally to this work
+10 Abstract
+11 Proteins often adopt multiple ensemble conformations to perform essential functions
+12 such as catalysis, transport, and signal transduction. Traditional physics-based methods
+13 for generating these conformations, including molecular dynamics and Monte Carlo sim
+14 ulations, are computationally expensive and time-consuming, limiting their practicality for
+15 high-throughput applications like screening. Recent advances in machine learning, particu
+16 larly deep generative models, offer a promising alternative for protein conformation ensem
+17 ble generation. However, these models are often task-specific or rely on strong assump
+18 tions to generalize. Here, we introduce ESMAdam, a versatile and efficient framework for
+19 protein conformation ensemble generation. Using the ESMFold protein language model
+20 ESMFold and ADAM stochastic optimization in the continuous protein embedding space,
+21 ESMAdam addresses a wide range of ensemble generation tasks. In this work, we demon
+22 strate several basic applications of ESMAdam, including conditional ensemble generation
+23 and CG-to-all-atom backmapping. In addition, we showcase advanced applications, such as
+24 screening alternative binding modes of protein multimers and reconstructing 3D structures
+25 from cryo-EM images. Compared to traditional physics-based methods, ESMAdam signif
+26 icantly reduces computational time. Unlike deep-generative-model-based approaches, it
+27 requires no retraining and easily adapts to diverse ensemble restraint conditions, making it
+28 exceptionally suited for various structure prediction and screening tasks. This plug-and-play
+*chen4116@purdue.edu
+1
+perpetuity. It is made available under aCC-BY 4.0 International license.
+preprint (which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in
+bioRxiv preprint doi: https://doi.org/10.1101/2025.01.19.633818; this version posted January 21, 2025. The copyright holder for this
+
+
+29 framework represents a step toward efficient and flexible protein ensemble generation for
+30 applications in structural biology and drug discovery.
+31 Introduction
+32 The inherent dynamic nature of proteins is crucial for modulating their activity, facilitating in
+33 teractions with other biomolecules, and regulating intricate biological processes such as signal
+34 transduction and molecular transport. Generating and analyzing protein conformational ensem
+35 bles is essential for capturing this dynamism, as single static structures fail to represent the full
+36 spectrum of functional states. Accurate ensemble generation provides critical insights into the
+37 mechanisms underlying protein behavior in various states, enabling advancements in structural
+38 biology, drug discovery, and protein design.
+39 Protein conformation ensemble generation consists of a diverse tasks, each tailored to address
+40 specific scientific or practical needs. One fundamental objective is to generate protein confor
+41 mational ensembles that follows the Boltzmann distribution, reflecting the thermodynamic sta
+42 bility of the system under physiological conditions.1–4 Beyond thermodynamic considerations,
+43 many tasks focus on generating conformation ensembles that satisfy specific geometric or func
+44 tional constraints. For instance, these may involve generating conformations that facilitate in
+45 teractions with ligands5,6 or protein clustering,7,8 stabilize particular secondary structures,9 or
+46 adopt specific topologies critical for biological function.10 Another critical task is protein con
+47 formation inpainting, which involves reconstructing missing sections of a protein structure by
+48 simultaneously conditioning on its sequence and the surrounding structural context. This task
+49 is particularly relevant in coarse-grained molecular modeling, where atomistic details are of
+50 ten simplified for computational efficiency, leading to a gap between coarse-grained structures
+51 and atomistic-detail requirements in downstream applications, such as force field refinement,
+52 functional analysis, and experimental validation. Acurately recovering missing atomistic de
+53 tails, named as a “backmapping” process,11–13 ensures the integrity of the resulting structures
+54 and enhances their utility for downstream applications. Finally, generating protein conforma
+55 tion ensembles from cryo-electron microscopy (cryo-EM) images represents another significant
+56 challenge.14–17 Cryo-EM records proteins and complexes in various functional states. However,
+57 interpreting cryo-EM data often focuses on resolving the most stable structure and recovering
+58 the underlying conformational ensemble remains complex. Accurate ensemble generation from
+2
+perpetuity. It is made available under aCC-BY 4.0 International license.
+preprint (which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in
+bioRxiv preprint doi: https://doi.org/10.1101/2025.01.19.633818; this version posted January 21, 2025. The copyright holder for this
+
+
+59 cryo-EM images involves mapping 2D electron density projections of individual molecules to 3D
+60 structures while accounting for experimental noise and heterogeneity. This capability is trans
+61 formative for understanding flexible and multi-state proteins, as it enables the reconstruction
+62 of complete conformational landscapes.
+63 Advancements in AI-driven methods, including AlphaFold,18,19 RoseTTAFold,20 trRosetta,21 and
+64 ESMFold,22 have significantly improved the accuracy and efficiency of protein structure pre
+65 diction. More recently, the focus has shifted from single-structure predictions to generating
+66 protein conformational ensembles and capturing the dynamic range of protein states. Early ap
+67 proaches, such as MSA subsampling23 and clustering,24 expanded AlphaFold’s output by mod
+68 ifying model inputs to produce a more diverse set of conformations. Advanced methods have
+69 used deep generative models, particularly diffusion models,25,26 to address the challenge of en
+70 semble generation.27–30 These models utilize stochastic perturbation processes to effectively
+71 explore the conformational landscape, enhancing both accuracy and diversity, while predict
+72 ing the conformational dynamics that govern protein behavior. Deep generative models have
+73 also been broadly applied to other conformation generation tasks, including protein structure
+74 inpainting,31–35 protein-ligand docking prediction,36–38 and protein-protein interaction mod
+75 eling.39 However, these models are typically designed for one or a few specific conformation
+76 generation tasks. Recent advances have demonstrated that diffusion models can be adapted
+77 for general-purpose ensemble conformation generation tasks with arbitrarily defined ensemble
+78 constraints.40 Despite this versatility, the performance of such models declines significantly as
+79 the nonlinearity and dimensionality of the ensemble constraints increase, limiting their ability
+to generalize across complex tasks.41
+80
+81 In this study, we introduce ESMAdam, a simple yet efficient method for general-purpose pro
+82 tein conformation ensemble generation. Building upon the pretrained protein language model
+83 ESMFold,22 ESMAdam utilizes Adam stochastic optimization42 on the high-dimensional em
+84 bedding space of protein sequences. This approach is based on the assumption that pro
+85 tein conformation ensembles are latently embedded near the native structures within the high
+86 dimensional embedding space. Unlike other single-purpose protein conformation generation
+87 models, ESMAdam is highly flexible and can accommodate a wide range of tasks. We demon
+88 strate its efficacy through extensive protein conformation generation experiments, focusing on
+89 four key applications: (1) controllable conditional conformation ensemble generation for a vari
+3
+perpetuity. It is made available under aCC-BY 4.0 International license.
+preprint (which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in
+bioRxiv preprint doi: https://doi.org/10.1101/2025.01.19.633818; this version posted January 21, 2025. The copyright holder for this
+
+
+90 ety of stable, fast-folding, and intrinsically disordered proteins, (2) CG-to-all-atom configuration
+91 backmapping, (3) screening alternative binding modes of flexible protein-protein interactions,
+92 and (4) reconstructing protein 3D structures from cryo-EM images. Numerical evaluations reveal
+93 that ESMAdam consistently achieves high performance. We propose that ESMAdam serves as
+94 a versatile computational tool for rapidly generating protein ensembles, with broad applications
+95 in structural biology and drug discovery.
+96 Results
+97 Overview of the ESMAdam model Fig. 1 summarizes a high-level methodology framework of
+98 ESMAdam. The core philosophy of ESMAdam is that protein conformation ensembles can be
+99 encoded in the latent space near the embedding of the native structure. if a protein conforma
+100 tional ensemble is characterized by low-dimensional features such as experimental ensemble
+101 measurement, stable protein structures constrained by low-dimensional features are encoded
+102 in the latent space. By exploring the latent space variable with constraints from low-dimensional
+103 features, it is possible to generate reasonable protein conformation ensembles. With the re
+104 cently developed protein language model ESMFold, which excels in predicting native protein
+105 structures, ESMAdam leverages the latent space as a trainable variable. For any given ensem
+106 ble constraint, ESMAdam iteratively updates this trainable latent space variable using stochastic
+107 gradient descent methods, such as Adam, ensuring the generated protein conformations align
+108 with the desired constraints. Despite its simplicity, this method is highly adaptable to a wide
+109 range of tasks.
+110 Conditional protein conformation generation We demonstrate the effectiveness of ESMAdam
+111 on conditional protein conformation ensemble generation on a comprehensive benchmark dataset,
+112 which consists of a diverse set of proteins, including ordered (BPTI, gb3, Ubq), fast-folding (BBA,
+113 BBL, Homeodomain, ProteinB, TrpCage and WWDomain), and intrinsically disordered proteins
+114 (PaaA2, drkN, RS-peptide). This dataset spans a wide range of structural characteristics, includ
+115 ing varying degrees of order, secondary structure compositions, and sequence lengths. Protein
+116 ensembles representing the ground truth Boltzmann distribution were obtained from long, un
+117 biased molecular dynamics (MD) simulations. Previous studies40 have shown that diffusion
+118 model-based protein ensemble generation models can generate reasonable protein conforma
+119 tion ensembles when guided by both global and local feature distributions. Following this frame
+4
+perpetuity. It is made available under aCC-BY 4.0 International license.
+preprint (which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in
+bioRxiv preprint doi: https://doi.org/10.1101/2025.01.19.633818; this version posted January 21, 2025. The copyright holder for this
+
+
+Y Y D P E
+G T W Y
+Protein sequence
+T
+Pretrained ESM embedding
+5 1 2 3 4 6 4 3 0 2
+1 7 2 9 9 6 1 2 1 9
+3 4 8 1 4 6 5 3 0 3
+3 1 2 7 4 1 2 3 0 1
+3 2 2 6 8 5 0 1 2 2
+3 4 6 2 1 6 4 2 0 4
+Updated embedding
+Ensemble constraint
+• Experimental measurement • Coarse-grained representa�on • Cryo-EM density image • Mul�mer rela�ve posi�on ...
+Adam Op�miza�on
+MSE Loss
+ESMFold
+Figure 1: The high level framework of ESMAdam. In ESMAdam, the protein sequence of interest is first embedded using the pretrained protein language model ESMFold. This embedding represents the value in the latent space corresponding to the native structure of the sequence. ESMAdam treats the embedding space as a trainable parameter. The embedding is passed through the trunk of ESMFold to generate the corresponding 3D protein structure. To generate conformation ensembles under specific constraints, the embedding parameter is optimized using a Mean Square Error (MSE) loss function. Optimization is performed with a stochastic gradient descent method, such as Adam. The embedding parameter is updated iteratively until the loss converges below a defined threshold, resulting in a physically plausible ensemble of protein conformations that align with the desired constraints.
+120 work, we generated protein conformation ensembles guided by two key features: radius of gyra
+121 tion and secondary structure. These features are experimentally accessible through techniques
+122 such as small-angle X-ray scattering (SAXS),43–47 nuclear magnetic resonance (NMR),48–50 and
+123 circular dichroism spectroscopy51–55 experiments. For fair comparison, in this experiment,
+124 the distributions of these features are directly obtained from the reference MD simulation.
+125 To evaluate the generated ensembles quantitatively, we compare the equilibrium free energy
+126 surfaces between ESMAdam-generated conformation ensembles and ground-truth MD simula
+127 tions. These free energy surfaces were generated by projecting protein configurations to UMAP
+128 collective variables derived from ground truth MD simulations. The result, as shown in Fig. 2,
+129 highlights the ability of ESMAdam to accurately capture the conformational diversity and ther
+130 modynamic properties of the protein ensembles.
+131 CG-to-all-atom configuration backmapping Coarse-grained (CG) models are important for
+5
+perpetuity. It is made available under aCC-BY 4.0 International license.
+preprint (which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in
+bioRxiv preprint doi: https://doi.org/10.1101/2025.01.19.633818; this version posted January 21, 2025. The copyright holder for this
+
+
+−4 −2 0 2 4
+UMAP-0
+−6
+−4
+−2
+0
+2
+4
+6
+8
+UMAP-1
+True (MD)
+−4 −2 0 2 4
+UMAP-0
+−4
+−2
+0
+2
+4
+6
+8
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+bba
+−4 −2 0 2 4 6 8 10
+UMAP-0
+−6
+−4
+−2
+0
+2
+4
+UMAP-1
+True (MD)
+−5.0 −2.5 0.0 2.5 5.0 7.5
+UMAP-0
+−4
+−2
+0
+2
+4
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+bbl
+−8 −6 −4 −2 0 2 4
+UMAP-0
+−10
+−8
+−6
+−4
+−2
+0
+UMAP-1
+True (MD)
+−7.5 −5.0 −2.5 0.0 2.5
+UMAP-0
+−10
+−8
+−6
+−4
+−2
+0
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+BPTI
+−4 −2 0 2 4 6
+UMAP-0
+−6
+−4
+−2
+0
+2
+4
+6
+UMAP-1
+True (MD)
+−2 0 2 4 6
+UMAP-0
+−4
+−2
+0
+2
+4
+6
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+drkN
+−8 −6 −4 −2 0
+UMAP-0
+−8
+−6
+−4
+−2
+0
+2
+UMAP-1
+True (MD)
+−8 −6 −4 −2 0
+UMAP-0
+−6
+−4
+−2
+0
+2
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+gb3
+−10.0 −7.5 −5.0 −2.5 0.0 2.5 5.0
+UMAP-0
+−5
+0
+5
+10
+UMAP-1
+True (MD)
+−5 0 5
+UMAP-0
+−7.5
+−5.0
+−2.5
+0.0
+2.5
+5.0
+7.5
+10.0
+12.5
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+homeodomain
+−5.0 −2.5 0.0 2.5 5.0 7.5 10.0 12.5
+UMAP-0
+−5
+−4
+−3
+−2
+−1
+0
+1
+2
+3
+UMAP-1
+True (MD)
+−5 0 5 10
+UMAP-0
+−4
+−3
+−2
+−1
+0
+1
+2
+3
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+PaaA2
+−5 0 5 10
+UMAP-0
+−6
+−4
+−2
+0
+2
+4
+6
+8
+UMAP-1
+True (MD)
+−5 0 5 10
+UMAP-0
+−4
+−2
+0
+2
+4
+6
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+proteinb
+−3 −2 −1 0 1 2
+UMAP-0
+−3
+−2
+−1
+0
+1
+2
+3
+UMAP-1
+True (MD)
+−3 −2 −1 0 1 2
+UMAP-0
+−2
+−1
+0
+1
+2
+3
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+rspeptide
+−4 −2 0 2 4
+UMAP-0
+−5
+−4
+−3
+−2
+−1
+0
+1
+2
+3
+UMAP-1
+True (MD)
+−4 −2 0 2 4
+UMAP-0
+−4
+−3
+−2
+−1
+0
+1
+2
+3
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+Ubq
+−8 −6 −4 −2 0 2 4
+UMAP-0
+−6
+−4
+−2
+0
+2
+4
+UMAP-1
+True (MD)
+−7.5 −5.0 −2.5 0.0 2.5
+UMAP-0
+−6
+−4
+−2
+0
+2
+4 ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+WWdomain
+−7.5 −5.0 −2.5 0.0 2.5 5.0
+UMAP-0
+−2
+0
+2
+4
+6
+8
+UMAP-1
+True (MD)
+−5 0 5
+UMAP-0
+−2
+0
+2
+4
+6
+8
+ESMAdam
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Free energy (kJ/mol)
+trpcage
+Figure 2: Comparison between the reference MD simulation (left) and ESMAdam (right) guided by radius of gyration distribution and secondary structure free energy surface across the two dimensional UMAP for each protein. The UMAP mapping function was parameterized with the backbone torsion angles of the conformation ensembles from the reference MD simulation. The red triangle represents the native structure predicted by the ESMFold.
+132 studying protein structures, thermodynamic properties, and conformation dynamics. However,
+133 the coarse-graining process inherently results in the loss of detailed atomic information, mak
+134 ing protein backmapping, which reconstructs an all-atom ensemble from a CG configuration,
+135 a critical step in downstream applications. Recent advances in data-driven backmapping, par
+136 ticularly with generative models, have facilitated efficient methods that bypass computationally
+expensive physical simulations. Despite these advancements, the diversity of CG models,56–62
+137
+138 ranging from high-resolution multi-bead-per-residue representations58 to low-resolution ultra
+139 coarse-grained (ultraCG) models63 where a single bead represents multiple residues, presents a
+140 significant challenge for backmapping. No universal backmapping approach currently combines
+141 high accuracy with adaptability across different CG resolutions. In this work, we demonstrate
+142 that ESMAdam addresses this gap by adapting to CG models of varying scales without retrain
+143 ing. We conducted two CG-to-all-atom backmapping experiments to showcase its versatility.
+144 In the first experiment, each residue was represented by its α-carbon position. In the second
+6
+perpetuity. It is made available under aCC-BY 4.0 International license.
+preprint (which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in
+bioRxiv preprint doi: https://doi.org/10.1101/2025.01.19.633818; this version posted January 21, 2025. The copyright holder for this
+
+
+145 experiment, an ultraCG representation was used, with a single bead representing five residues.
+146 Both experiments were performed on a test set comprising proteins BBA, BBL, Homeodomain,
+147 ProteinB, TrpCage and WWDomain, which exhibit multiple states, diverse secondary structures
+148 and various sidechain structures. Similar to the last example, we also use MD simulations as
+149 the ground truth and to construct the marginal distribution of CG beads. The results of the first
+150 experiment are shown in Fig. 3, where ESMAdam successfully recovers sidechain distributions
+151 with high fidelity, capturing most modes of sidechain torsion angles. The results of the second
+152 experiment, presented in Fig. 4, demonstrate that ESMAdam accurately recovers secondary
+153 structure conformation ensembles even under ultraCG conditions where most of the backbone
+154 information is absent. These findings highlight ESMAdam’s potential as a universal backmap
+155 ping solution.
+156 Protein complex binding mode exploration In this experiment, we demonstrate an advanced
+157 application of ESMAdam: exploring multiple binding modes in flexible protein complexes. The
+158 test system is the well-characterized enzyme–inhibitor complex Barnase-Barstar, a protein com
+159 plex has been extensively studied experimentally.64 Previous hundreds microseconds molecular
+160 dynamics (MD) simulations65 have revealed the existence of multiple thermodynamic metastable
+161 states approximately 10–20 Åroot-mea

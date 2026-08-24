@@ -1,0 +1,129 @@
+PAPER KEY: GXZESCZ4
+TITLE: Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow
+AUTHORS: Liu, Xingchao; Gong, Chengyue; Liu, Qiang
+
+Flow Straight and Fast:
+Learning to Generate and Transfer Data with Rectified Flow
+Xingchao Liu* University of Texas at Austin xcliu@utexas.edu
+Chengyue Gong* University of Texas at Austin cygong@cs.utexas.edu
+Qiang Liu University of Texas at Austin lqiang@cs.utexas.edu
+Abstract
+We present rectified flow, a surprisingly simple approach to learning (neural) ordinary differential equation (ODE) models to transport between two empirically observed distributions π0 and π1, hence providing a unified solution to generative modeling and domain transfer, among various other tasks involving distribution transport. The idea of rectified flow is to learn the ODE to follow the straight paths connecting the points drawn from π0 and π1 as much as possible. This is achieved by solving a straightforward nonlinear least squares optimization problem, which can be easily scaled to large models without introducing extra parameters beyond standard supervised learning. The straight paths are special and preferred because they are the shortest paths between two points, and can be simulated exactly without time discretization and hence yield computationally efficient models. We show that the procedure of learning a rectified flow from data, called rectification, turns an arbitrary coupling of π0 and π1 to a new deterministic coupling with provably non-increasing convex transport costs. In addition, recursively applying rectification allows us to obtain a sequence of flows with increasingly straight paths, which can be simulated accurately with coarse time discretization in the inference phase. In empirical studies, we show that rectified flow performs superbly on image generation, image-to-image translation, and domain adaptation. In particular, on image generation and translation, our method yields nearly straight flows that give high quality results even with a single Euler discretization step.
+1 Introduction
+Compared with supervised learning, the shared difficulty of various forms of unsupervised learning is the lack of paired input/output data with which standard regression or classification tasks can be invoked. The gist of most unsupervised methods is to find, in one way or another, meaningful correspondences between points from two distributions. For example, generative models such as generative adversarial networks (GAN) and variational autoencoders (VAE) [e.g., 19, 32, 14] seek to map data points to latent codes following a simple elementary (Gaussian) distribution with which the data can be generated and manipulated. Representation learning rests on the idea that if a sufficiently smooth function can map a structured data
+*XL and CG contributed equally to this work.
+1
+arXiv:2209.03003v1 [cs.LG] 7 Sep 2022
+
+
+distribution to an elementary distribution, it can (likely) be endowed with certain semantically meaningful interpretation and useful for various downstream learning tasks. On the other hand, domain transfer methods find mappings to transfer points from two different data distributions, both observed empirically, for the purpose of image-to-image translation, style transfer, and domain adaption [e.g., 100, 16, 79, 59]. All these tasks can be framed unifiedly as finding a transport map between two distributions:
+The Transport Mapping Problem Given empirical observations of two distributions X0 ∼ π0, X1 ∼ π1 on Rd, find a transport map T : Rd → Rd (hopefully nice or optimal in certain sense), such that Z1 := T (Z0) ∼ π1 when Z0 ∼ π0, that is, (Z0, Z1) is a coupling (a.k.a transport plan) of π0 and π1.
+Several lines of techniques have been developed depending on how to represent and train the map T . In traditional generative models, T is parameterized as a neural network, and trained with either GAN-type minimax algorithms or (approximate) maximum likelihood estimation (MLE). However, GANs are known to suffer from numerically instability and mode collapse issues, and require substantial engineering efforts and human tuning, which often do not transfer well across different model architecture and datasets. On the other hand, MLE tends to be intractable for complex models, and hence requires approximate variational or Monte Carlo inference techniques such as those used in variational auto-encoders (VAE), or special model structures such as normalizing flow and auto-regressive models, to yield tractable likelihood, causing difficult trade-offs between expressive power and computational cost.
+Recently, advances have been made by representing the transport plan implicitly as a continuous time process, such as flow models with neural ordinary differential equations (ODEs) [e.g., 6, 56] and diffusion models by stochastic differential equations (SDEs) [e.g., 73, 23, 80, 11, 82]; in these models, a neural network is trained to represent the drift force of the processes and a numerical ODE/SDE solver is used to simulate the process during inference. The key idea is that, by leveraging the mathematical structures of ODEs/SDEs, the continuous-time models can be trained efficiently without resorting to minimax or traditional approximate inference techniques. The most notable examples are the recent score-based generative models [71–73] and denoising diffusion probabilistic models (DDPM) [23], which we call denoising diffusion methods collectively. These methods allow us to train large-scale diffusion/SDE-based generative models that surpass GANs on image generation in both image quality and diversity, without the instability and mode collapse issues [e.g., 12, 53, 61, 64]. The learned SDEs can be converted into deterministic ODE models for faster inference with the method of probability flow ODEs [73] and DDIM [70].
+However, compared with the traditional one-step models like GAN and VAE, a key drawback of continuoustimes models is the high computational cost in inference time: drawing a single point (e.g., image) requires to solve the ODE/SDE with a numerical solver that needs to repeatedly call the expensive neural drift function. In addition, the existing denoising diffusion techniques require substantial hyper-parameter search in an involved design space and are still poorly understood both empirically and theoretically [29].
+In existing approaches, generative modeling and domain transfer are typically treated separately. It often requires to extend or customize a generative learning techniques to solve domain transfer problems; see e.g., Cycle GAN [100] and diffusion-based image-to-image translation [e.g., 75, 97]. One framework that naturally unifies both domains is optimal transport (OT) [e.g., 85, 2, 15, 59], which endows a collection of techniques for finding optimal couplings with minimum transport costs of form E[c(Z1 − Z0)] w.r.t. a cost function c : Rd → R, yielding natural applications to both generative and transfer learning. However, the existing OT techniques are slow for problems with high dimensional and large volumes of data [59]. Furthermore, as the transport costs do not perfectly align with the actual learning performance, methods that faithfully find the optimal transport maps do not necessarily have better learning performance [34].
+2
+
+
+Figure 1: The trajectories of rectified flows for image generation (π0: standard Gaussian noise, π1: cat faces, top two rows), and image transfer between human and cat faces (π0: human faces, π1: cat faces, bottom two rows), when simulated using Euler method with step size 1/N for N steps. The first rectified flow induced from the training data (1-rectified flow) yields good results with a very small number (e.g., ≥ 2) of steps; the straightened reflow induced from 1-rectified flow (denoted as 2-rectified flow) has nearly straight line trajectories and yield good results even with one discretization step.
+Contribution
+We introduce rectified flow, a surprisingly simple approach to the transport mapping problem, which unifiedly solves both generative modeling and domain transfer. The rectified flow is an ODE model that transport distribution π0 to π1 by following straight line paths as much as possible. The straight paths are preferred both theoretically because it is the shortest path between two end points, and computationally because it can be exactly simulated without time discretization. Hence, flows with straight paths bridge the gap between one-step and continuous-time models.
+Algorithmically, the rectified flow is trained with a simple and scalable unconstrained least squares optimization procedure, which avoids the instability issues of GANs, the intractable likelihood of MLE methods, and the subtle hyper-parameter decisions of denoising diffusion models. The procedure of obtaining the rectified flow from the training data has the attractive theoretical property of 1) yielding a coupling with non-increasing transport cost jointly for all convex cost c, and 2) making the paths of flow increasingly straight and hence incurring lower error with numerical solvers. Therefore, with a reflow procedure that iteratively trains new rectified flows with the data simulated from the previously obtained rectified flow, we obtain nearly straight flows that yield good results even with the coarsest time discretization, i.e., one Euler step. Our method is purely ODE-based, and is both conceptually simpler and practically faster in inference time than the SDE-based approaches of [23, 73, 70].
+3
+
+
+(a) Linear interpolation
+Xt = tX1 + (1 − t)X0
+(b) Rectified flow Zt
+induced by (X0, X1)
+(c) Linear interpolation
+Zt = tZ1 + (1 − t)Z0
+(d) Rectified flow Zt′
+induced by (Z0, Z1)
+Figure 2: (a) Linear interpolation of data input (X0, X1) ∼ π0 × π1. (b) The rectified flow Zt induced by (X0, X1); the trajectories are “rewired” at the intersection points to avoid the crossing. (c) The linear interpolation of the end points (Z0, Z1) of flow Zt. (d) The rectified flow induced from (Z0, Z1), which follows straight paths.
+Empirically, rectified flow can yield high-quality results for image generation when simulated with a very few number of Euler steps (see Figure 1, top row). Moreover, with just one step of reflow, the flow becomes nearly straight and hence yield good results with a single Euler discretization step (Figure 1, the second row). This substantially improves over the standard denoising diffusion methods. Quantitatively, we claim a state-of-the-art result of FID (4.85) and recall (0.51) on CIFAR10 for one-step fast diffusion/flow models [5, 48, 91, 99, 47]. The same algorithm also achieves superb result on domain transfer tasks such as image-toimage translation (see the bottom two rows of Figure 1) and transfer learning.
+2 Method
+We provide a quick overview of the method in Section 2.1, followed with some discussion and remarks in Section 2.2. We introduce a nonlinear extension of our method in Section 2.3, with which we clarify the connection and advantages of our method with the method of probability flow ODEs [73] and DDIM [70].
+2.1 Overview
+Rectified flow Given empirical observations of X0 ∼ π0, X1 ∼ π1, the rectified flow induced from (X0, X1) is an ordinary differentiable model (ODE) on time t ∈ [0, 1],
+dZt = v(Zt, t)dt,
+which converts Z0 from π0 to a Z1 following π1. The drift force v : Rd → Rd is set to drive the flow to follow the direction (X1 − X0) of the linear path pointing from X0 to X1 as much as possible, by solving a simple least squares regression problem:
+mvin
+∫1
+0
+E
+[∥
+∥(X1 − X0) − v(Xt, t)∥
+∥
+2
+]
+dt, with Xt = tX1 + (1 − t)X0, (1)
+where Xt is the linear interpolation of X0 and X1. Naviely, Xt follows the ODE of dXt = (X1 − X0)dt, which is non-causal (or anticipating) as the update of Xt requires the information of the final point X1. By fitting the drift v with X1 − X0, the rectified flow causalizes the paths of linear interpolation Xt, yielding an ODE flow that can be simulated without seeing the future.
+In practice, we parameterize v with a neural network or other nonlinear models and solve (1) with any offthe-shelf stochastic optimizer, such as stochastic gradient descent, with empirical draws of (X0, X1). See
+4
+
+
+Algorithm 1. After we get v, we solve the ODE starting from Z0 ∼ π0 to transfer π0 to π1, backwardly starting from Z1 ∼ π1 to transfer π1 to π0. Specifically, for backward sampling, we simply solve dX ̃t = −v(X ̃t, t)dt initialized from X ̃0 ∼ π1 and set Xt = X ̃1−t. The forward and backward sampling are equally favored by the training algorithm, because the objective in (1) is time-symmetric in that it yields the equivalent problem if we exchange X0 and X1 and flip the sign of v.
+Flows avoid crossing A key to understanding the method is the non-crossing property of flows: the different paths following a well defined ODE dZt = v(Zt, t)dt, whose solution exists and is unique, cannot cross each other at any time t ∈ [0, 1). Specifically, there exists no location z ∈ Rd and time t ∈ [0, 1), such that two paths go across z at time t along different directions, because otherwise the solution of the ODE would be non-unique. On the other hand, the paths of the interpolation process Xt may intersect with each other (Figure 2a), which makes it non-causal. Hence, as shown in Figure 2b, the rectified flow rewires the individual trajectories passing through the intersection points to avoid crossing, while tracing out the same density map as the linear interpolation paths due to the optimization of (1). We can view the linear interpolation Xt as building roads (or tunnels) to connect π0 and π1, and the rectified flow as traffics of particles passing through the roads in a myopic, memoryless, non-crossing way, which allows them to ignore the global path information of how X0 and X1 are paired, and rebuild a more deterministic pairing of (Z0, Z1).
+Rectified flows reduce transport costs If (1) is solved exactly, the pair (Z0, Z1) of the rectified flow is guaranteed to be a valid coupling of π0, π1 (Theorem 3.3), that is, Z1 follows π1 if Z0 ∼ π0. Moreover, (Z0, Z1) guarantees to yield no larger transport cost than the data pair (X0, X1) simultaneously for all convex cost functions c (Theorem 3.5). The data pair (X0, X1) can be an arbitrary coupling of π0, π1, typically independent (i.e., (X0, X1) ∼ π0 × π1) as dictated by the lack of meaningfully paired observations in practical problems. In comparison, the rectified coupling (Z0, Z1) has a deterministic dependency as it is constructed from an ODE model. Denote by (Z0, Z1) = Rectify((X0, X1)) the mapping from (X0, X1) to (Z0, Z1). Hence, Rectify(·) converts an arbitrary coupling into a deterministic coupling with lower convex transport costs.
+Straight line flows yield fast simulation Following Algorithm 1, denote by Z = RectFlow((X0, X1)) the rectified flow induced from (X0, X1). Applying this operator recursively yields a sequence of rectified flows Zk+1 = RectFlow((Z0k, Z1k)) with (Z00, Z10) = (X0, X1), where Zk is the k-th rectified flow, or simply k-rectified flow, induced from (X0, X1).
+This reflow procedure not only decreases transport cost, but also has the important effect of straightening paths of rectified flows, that is, making the paths of the flow more straight. This is highly attractive computationally as flows with nearly straight paths incur small time-discretization error in numerical simulation. Indeed, perfectly straight paths can be simulated exactly with a single Euler step and is effectively a onestep model. This addresses the very bottleneck of high inference cost in existing continuous-time ODE/SDE models.
+2.2 Main Results and Properties
+We provide more in-depth discussions on the main properties of rectified flow. We keep the discussion informal to highlight the intuitions in this section and defer the full course theoretical analysis to Section 3.
+5
+
+
+Algorithm 1 Rectified Flow: Main Algorithm
+Procedure: Z = RectFlow((X0, X1)):
+Inputs: Draws from a coupling (X0, X1) of π0 and π1; velocity model vθ : Rd → Rd with parameter θ.
+Training: θˆ = arg min
+θ
+E
+[
+‖X1 − X0 − v(tX1 + (1 − t)X0, t)‖2]
+, with t ∼ Uniform([0, 1]).
+Sampling: Draw (Z0, Z1) following dZt = vθˆ(Zt, t)dt starting from Z0 ∼ π0 (or backwardly Z1 ∼ π1). Return: Z = {Zt : t ∈ [0, 1]}.
+Reflow (optional): Zk+1 = RectFlow((Z0k, Z1k)), starting from (Z00, Z10) = (X0, X1).
+Distill (optional): Learn a neural network Tˆ to distill the k-rectified flow, such that Z1k ≈ Tˆ(Z0k).
+First, for a given input coupling (X0, X1), it is easy to see that the exact minimum of (1) is achieved if
+vX (x, t) = E[X1 − X0 | Xt = x], (2)
+which is the expectation of the line directions X1 − X0 that pass through x at time t. We discuss below the property of rectified flow dZt = vX (Zt, t)dt with Z0 ∼ π0, assuming that the ODE has an unique solution.
+Marginal preserving property [Theorem 3.3] The pair (Z0, Z1) is a coupling of π0 and π1. In fact, the marginal law of Zt equals that of Xt at every time t, that is, Law(Zt) = Law(Xt), ∀t ∈ [0, 1].
+Intuitively, this is because, by the definition of vX in (2), the expected amount of mass that passes through every infinitesmal volume at all location and time are equal under the dynamics of Xt and Zt, which ensures that they trace out the same marginal distributions:
+Flow in & out
+()
+= Flow in & out
+()
+, ∀time & location =⇒ Law(Zt) = Law(Xt), ∀t.
+On the other hand, the joint distributions of the whole trajectory of Zt and that of Xt are different in general. In particular, Xt is in general a non-causal, non-Markov process, with (X0, X1) a stochastic coupling, and Zt causalizes, Markovianizes and derandomizes Xt, while preserving the marginal distributions at all time.
+Reducing transport costs [Theorem 3.5] The coupling (Z0, Z1) yields lower or equal convex transport costs than the input (X0, X1) in that E[c(Z1 − Z0)] ≤ E[c(X1 − X0)] for any convex cost c : Rd → R.
+The transport costs measure the expense of transporting the mass of one distribution to another following the assignment relation specified by the coupling and is a central topic in optimal transport [e.g., 84, 85, 65, 59, 15]. Typical examples are c(·) = ‖·‖α with α ≥ 1. Hence, Rectify(·) yields a Pareto descent on the collection of all convex transport costs, without targeting any specific c. This distinguishes it from the typical optimal transport optimization methods, which are explicitly framed to optimize a given c. As a result, recursive application of Rectify(·) does not guarantee to attain the c-optimal coupling for any given c, with the exception in the one-dimensional case when the fixed point of Rectify(·) coincides with the unique monotonic coupling that simultaneously minimizes all non-negative convex costs c; see Section 3.4.
+Intuitively, the convex transport costs are guaranteed to decrease because the paths of the rectified flow Zt is a rewiring of the straight paths connecting (X0, X1). To give an illustration, consider the simple case of
+6
+
+
+c(·) = ‖·‖ when transport costs E[‖X0 − X1‖] and E[‖Z0 − Z1‖] are the expected length of the straight lines connecting the end points. The inequality can be proved graphically as follows:
+E[‖Z0 − Z1‖] = Length
+()
+(∗)
+≤ Length
+()
+(∗=∗) Length
+()
+= E[‖X0 − X1‖] ,
+where
+(∗)
+≤ uses the triangle inequality, and (∗=∗) holds because the paths of Zt is a rewiring of the straight paths of Xt, following the construction of vX in (2). For general convex c, a similar proof using Jensen’s inequality is shown in Section 3.2.
+Reflow, straightening, fast simulation As shown in Figure 3, when we recursively apply the procedure Zk+1 = RectFlow((Z0k, Z1k)), the paths of the k-rectified flow Zk are increasingly straight, and hence easier to simulate numerically, as k increases. This straightening tendency can be guaranteed theoretically.
+(a)The 1st rectified flow Z1
+Z1 = RectFlow((X0, X1))
+(b) Reflow Z2
+Z2 = RectFlow((Z1
+0, Z1
+1 ))
+(c) Reflow Z3
+Z3 = RectFlow((Z2
+0, Z2
+1 ))
+(d) Transport cost, Straightness
+Figure 3: (a)-(c) Samples of trajectories drawn from the reflows on a toy example (π0: purple dots, π1: red dots; the green and

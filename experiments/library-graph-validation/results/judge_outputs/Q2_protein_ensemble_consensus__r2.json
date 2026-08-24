@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":6,"synthesis":8,"correctness":8,"faithfulness":8,"directness":8},
+            "Option 2": {"coverage":8,"synthesis":8,"correctness":8,"faithfulness":8,"directness":8},
+            "Option 3": {"coverage":8,"synthesis":9,"correctness":9,"faithfulness":9,"directness":8},
+            "Option 4": {"coverage":6,"synthesis":7,"correctness":8,"faithfulness":7,"directness":8}},
+ "ranking": ["Option 3","Option 2","Option 1","Option 4"],
+ "notes": "Option 3 best handles the core ask: it correctly recovers DiG's explicit equilibrium claim, captures the conditional nature of AlphaFlow's Boltzmann framing, and articulates the sharpest, most accurate disagreements (MD-data dependence, intermediate-state artifact vs signal, scope honesty). Option 2 is nearly as strong and also covers DiG, but slightly less precise on per-method framing. Options 1 and 4 both fail to cover Distributional Graphormer (explicitly admitting they lack the chunk), a named method central to the question, which caps their coverage; Option 4 is weakest, over-relying on the off-list ESMDiff paper and giving thinner cross-paper structure."}

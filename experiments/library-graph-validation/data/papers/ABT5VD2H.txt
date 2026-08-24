@@ -1,0 +1,145 @@
+PAPER KEY: ABT5VD2H
+TITLE: Ab initio characterization of protein molecular dynamics with AI2BMD
+AUTHORS: Wang, Tong; He, Xinheng; Li, Mingyu; Li, Yatao; Bi, Ran; Wang, Yusong; Cheng, Chaoran; Shen, Xiangzhen; Meng, Jiawei; Zhang, He; Liu, Haiguang; Wang, Zun; Li, Shaoning; Shao, Bin; Liu, Tie-Yan
+
+Nature | www.nature.com | 1
+Article
+Ab initio characterization of protein
+molecular dynamics with AI2BMD
+Tong Wang1,2,3 ✉, Xinheng He1,2, Mingyu Li1,2, Yatao Li1,2, Ran Bi1, Yusong Wang1, Chaoran Cheng1, Xiangzhen Shen1, Jiawei Meng1, He Zhang1, Haiguang Liu1, Zun Wang1, Shaoning Li1, Bin Shao1,3✉ & Tie-Yan Liu1
+Biomolecular dynamics simulation is a fundamental technology for life sciences research, and its usefulness depends on its accuracy and efficiency1–3. Classical molecular dynamics simulation is fast but lacks chemical accuracy4,5. Quantum chemistry methods such as density functional theory can reach chemical accuracy but cannot scale to support large biomolecules6. Here we introduce an artificial intelligence-based ab initio biomolecular dynamics system (AI2BMD) that can efficiently simulate full-atom large biomolecules with ab initio accuracy. AI2BMD uses a protein fragmentation scheme and a machine learning force field7 to achieve generalizable ab initio accuracy for energy and force calculations for various proteins comprising more than 10,000 atoms. Compared to density functional theory, it reduces the computational time by several orders of magnitude. With several hundred nanoseconds of dynamics simulations, AI2BMD demonstrated its ability to efficiently explore the conformational space of peptides and proteins, deriving accurate 3J couplings that match nuclear magnetic resonance experiments, and showing protein folding and unfolding processes. Furthermore, AI2BMD enables precise free-energy calculations for protein folding, and the estimated thermodynamic properties are well aligned with experiments. AI2BMD could potentially complement wet-lab experiments, detect the dynamic processes of bioactivities and enable biomedical research that is impossible to conduct at present.
+The research paradigm of life sciences is shifting as the accuracy of computational simulation models is becoming indistinguishable from that of wet-lab experiments1,2. Among the computational models, molecular dynamics (MD) simulation, as the ‘computational microscope’, is of particular interest for understanding how life works3,5,8. MD simulations study the dynamic evolution of molecules by moving the atoms in a molecular system. They differ in the way that the forces are calculated3. In classical MD, forces are calculated using a prescribed interatomic potential function, whereas in ab initio MD (AIMD), forces are calculated using the potential derived from the electronic structure of molecules6. AIMD provides accurate characterization of molecules; the main challenge of applying AIMD to biomolecular simulation is scalability. On the one hand, the widely used quantum chemistry methods for AIMD are computationally expensive; for example, with the system size N,the time complexity of density functional theory (DFT) is about O(N3), and that of the coupled cluster method with the inclusion of single, double and perturbative triple excitations (CCSD(T)) is O(N7). On the other hand, observing important conformational changes for biomolecules such as proteins usually requires billions of steps with at least cubic time complexity for thousands of atoms4. Until now, scalable and accurate AIMD for biomolecules has not existed. To alleviate the dilemma, machine learning force fields (MLFFs) trained on data generated at the DFT level provide accurate force
+calculations at a much lower cost and can be applied to small peptides and proteins7,9,10. The ability to generalize is the key challenge for the applicability and robustness for biomolecule simulations11. First, as the conformational space of a molecule is enormous, training on limited conformations of one kind of molecule and adapting it for conformational space exploration of other kinds of molecule is difficult5. Second, as the time and cost for generating data with DFT increase cubically with the size of the molecules, the lack of training data hinders the application of MLFFs for large biomolecules11. Furthermore, it is impossible to train a specific model for each kind of protein, and a unified solution with good generalization ability is needed. In this study, we propose AI2BMD, a generalizable solution for efficiently simulating a wide range of full-atom proteins with ab initio accuracy, surrounded by an explicit solvent modelled by a polarizable force field (Fig. 1). A generalizable protein fragmentation approach splits proteins into overlapped protein units. Simulations are performed by the AI2BMD simulation system. At each simulation step, the AI2BMD potential, based on ViSNet7, calculates the energy and atomic forces for the protein with ab initio accuracy. Through comprehensive analysis from both kinetics and thermodynamics perspectives, AI2BMD exhibits good alignment with wet-lab experimental data, such as the melting temperature of fast-folding proteins, and detects different phenomena than molecular mechanics (MM).
+https://doi.org/10.1038/s41586-024-08127-z
+Received: 31 March 2023
+Accepted: 26 September 2024
+Published online: xx xx xxxx
+Open access
+Check for updates
+1Microsoft Research, Beijing, China. 2These authors contributed equally: Tong Wang, Xinheng He, Mingyu Li, Yatao Li. 3These authors jointly supervised this work: Tong Wang, Bin Shao. ✉e-mail: tongwang.bio@outlook.com; binshao@live.com
+
+
+2 | Nature | www.nature.com
+Article
+Energy and force calculations
+To provide a generalizable solution for accurately simulating proteins, AI2BMD adopts a universal protein fragmentation approach. Although generating samples for a specific kind of protein and training MLFF on them is straightforward, simulating other kinds of protein with the MLFF usually leads to simulation collapse12 (Supplementary Fig. 1). Furthermore, it is computationally prohibitive to generate training data at the DFT level for large proteins. Thus, we fragment proteins into smaller units, specifically dipeptides, calculate intra- and inter-unit interactions, and then assemble them to determine the protein energy and forces acting on the atoms (see Methods for more details). Our fragmentation approach contains only 21 kinds of protein unit, and all protein units have similar and moderate numbers of atoms (range from 12 to 36), which is convenient for DFT data generation and MLFF training. Moreover, all kinds of protein can be broken down into the 21 kinds of protein unit, indicating that this is a generalizable fragmentation approach. We built a comprehensively sampled protein unit dataset. During dataset construction, we scanned the main-chain dihedrals of all protein units to cover a wide range of conformations and ran AIMD simulations with the 6-31g* basis set and the M06-2X functional13, as this functional models dispersion and weak interactions well and has been widely used for biomolecules14,15. We obtained 20.88 million samples (see Methods for more details). The whole dataset was split into training, validation and test sets to train ViSNet7 models as the AI2BMD potential. The model encodes physics-informed molecular representations and calculates four-body interactions with linear time complexity. The model subsequently generates precise force and energy estimations based on the atom types and the coordinates as inputs (Methods and Extended Data Fig. 1). The performance of the AI2BMD potential was compared with that of the conventional MM force field on the test set, with the results presented in Supplementary Table 1.
+In terms of energy mean absolute error (MAE), the AI2BMD potential outperformed the MM force field by approximately two orders of magnitude (AI2BMD: 0.045 kcal mol−1, MM: 3.198 kcal mol−1). The AI2BMD potential also demonstrated superior performance for the force MAE (0.078 kcal mol−1 Å−1) compared to MM (8.125 kcal mol−1 Å−1). Overall, the AI2BMD potential offers accurate predictions for both potential energy and atomic forces for protein units. On the basis of the AI2BMD potential, we developed an MD simulation system with a polarizable solvent described by the AMOEBA force field16 (see the Methods for further details). Then we conducted simulations for 9 proteins with the number of atoms ranging from 175 to 13,728 (Fig. 2a; see the Methods for more details). Each protein was assessed with 5 folded, 5 unfolded and 10 intermediate structures derived from replica-exchange MD simulations as the initial conformations, and 10 AI2BMD simulation steps were run resulting in 200 structures per protein. The AI2BMD simulation system’s ability to reach ab initio accuracy was evaluated by comparing its results to those calculated by DFT. Calculations by MM act as a control (Fig. 2b–e). For evaluation on potential energy (Fig. 2b,c), MM exhibited a broader error distribution and a much higher upper bound of error (that is, the maximum error) than AI2BMD. The average MAE of the MM potential energy consistently hovered around 0.2 kcal mol−1 per atom, whereas AI2BMD achieved a much lower value (0.038 kcal mol −1 per atom, averaged over the five proteins) (Fig. 2b). As the protein size increased from chignolin (175 atoms) to PACSIN3 (1,040 atoms), the increase of energy errors could be attributed to insufficient modelling for the escalating many-body interactions among protein units. For proteins from SSO0941 with 2,450 atoms to aminopeptidase N with 13,728 atoms, the reference value could be determined only through fragmented DFT (Fig. 2c). For these four proteins, AI2BMD’s performance (MAE of 7.18 × 10−3 kcal mol−1 per atom) was substantially superior to that of MM (0.214 kcal mol−1 per atom). In terms of force (Fig. 2d,e), compared with the MM force field, AI2BMD aligned much more closely
+Fragmentation
+AI2BMD potential
+Energy and atomic forces
+Proteins
+Simulation
+Trajectories:
+t + t ...  t + nt
+Thermodynamics
+Ab initio accuracy
+Kinetics
+Wet-lab experiment alignment
+Protein units Datasets
+Modelling Calculation
+...
++
+DFT
+High
+Low Time
+Dissociation
+fraction
+RMSD
+Low High
+Tm
+Fig. 1 | The overall pipeline of AI2BMD. Proteins are divided into protein units by a fragmentation process. The AI2BMD potential is designed on the basis of ViSNet, and the datasets are generated at the DFT level. It calculates the energy and atomic forces for the whole protein. The AI2BMD simulation system is built on these components and provides a generalizable solution for simulating the
+MD of proteins. It achieves ab initio accuracy in energy and force calculations. Through comprehensive analysis from both kinetics and thermodynamics perspectives, AI2BMD exhibits good alignment with wet-lab experimental data and detects different phenomena than MM.
+
+
+Nature | www.nature.com | 3
+with DFT results. For the first five proteins directly calculated by DFT, AI2BMD had an average MAE of 1.974 kcal mol−1 Å−1 compared to MM’s 8.094 kcal mol−1 Å−1 (Fig. 2d). For the last four large proteins, AI2BMD achieved an average MAE of 1.056 kcal mol−1 Å−1, whereas MM’s value was 8.392 kcal mol−1 Å−1 across four systems (Fig. 2e). We further compared the performance of AI2BMD for different conformations. As shown in Supplementary Figs. 2–4, the MAE values of the potential energy for unfolded, intermediate and folded conformations of each kind of protein were analysed. The MAE values of the potential energies of different
+conformations fluctuated among different proteins, whereas those of the atomic forces were slightly increased from unfolded conformations to folded conformations. The minimal MAE across different proteins and conformations underscores the ab initio accuracy of the AI2BMD system. Furthermore, to examine the efficiency of AI2BMD, we compared the time consumption of the energy calculation for all nine proteins by AI2BMD and DFT calculation software with graphics processing unit (GPU) support. In Fig. 2f, we present the computation time for
+0 2,000 4,000 6,000 8,000 10,000 12,000 14,000 Atoms
+0
+50
+100
+150
+200
+250
+Time consumption (days)
+AI2BMD DFT
+Chignolin Trp-cage WW domain
+ABD PACSIN3
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+MAE of energy (kcal mol–1)
+a
+Chignolin 175 atoms
+Trp-cage 281 atoms
+WW domain 571 atoms
+ABD 746 atoms
+PACSIN3 1,040 atoms
+SSO0941 2,450 atoms
+APC 5,292 atoms
+Polyphophate kinase 11,404 atoms
+Aminopeptidase N 13,728 atoms
+bc
+de
+f
+200 300 400 500 600 700 Atoms
+0
+20
+40
+60
+80
+Time consumption (min)
+SSO0941 APC Polyphosphate kinase
+Aminopeptidase N
+Chignolin Trp-cage WW domain
+ABD PACSIN3 SSO0941 APC Polyphosphate kinase
+Aminopeptidase N
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+Protein
+0
+2
+4
+6
+8
+10
+12
+MAE of force (kcal mol–1 Å–1)
+MAE of energy (kcal mol–1)
+MAE of force (kcal mol–1 Å–1)
+MM
+Proteins
+0
+2
+4
+6
+8
+10
+12
+AI2BMD
+MM
+AI2BMD
+MM
+AI2BMD
+MM
+AI2BMD
+Fig. 2 | Evaluation of energy and force calculations by AI2BMD and MM.
+a, Folded structures of nine evaluated proteins. For these proteins, the number of atoms ranges from 175 to 13,728. b–e, The MAE of potential energy (b,c) and atomic force (d,e). For each protein, we conducted replica-exchange MD and structure clustering to select representative structures, including folded, unfolded or intermediate states. AI2BMD simulations were conducted for the representative structures, and 200 samples in total were selected for evaluation. For the first 5 proteins within 1,040 atoms shown in b,d, DFT calculation for the whole protein performed by ORCA with the same settings in dataset generation is set as the reference value, whereas for the last 4 proteins shown in c,e, the
+reference value is set as the fragment DFT calculation owing to prohibitive computational cost. In b,c, the potential energy of each structure has that of the initial folded structure subtracted, and then is normalized by the number of atoms. The error bars in b–e indicate the standard deviations of the potential energy and atomic force of 200 different samples of the protein (n = 200), with each sample shown as a filled circle. f, Comparison of time consumption of energy calculation for nine proteins. DFT calculations were carried out on a GPU. For the last five proteins, the time consumption by DFT was estimated by the fitting curve from those of the first four proteins and is shown with a dashed line and circles. The inset shows a comparison for the first four proteins.
+
+
+4 | Nature | www.nature.com
+Article
+AI2BMD and DFT on a desktop with an A6000 GPU card (48-GB GPU memory) and 32 central processing unit cores. It is obvious that AI2BMD achieved ab initio accuracy much faster than DFT. The computational time for AI2BMD exhibited a near-linear increase. AI2BMD took 0.072 s to perform a simulation step for Trp-cage with 281 atoms, compared to 21 min by DFT. For the albumin-binding domain with 746 atoms, the time slightly increased to 0.125 s for AI2BMD compared to 92 min for DFT. For a larger protein, aminopeptidase N with 13,728 atoms, it was 2.610 s, and DFT calculations were not feasible with the estimated time exceeding 254 days, which would be more than 6 orders slower than AI2BMD. We further compared AI2BMD’s simulation speed with that of other AI-driven simulation systems, including DPMD17 and Allegro18, as well as the AMOEBA force field implemented in Tinker 8 and ff19SB implemented in Amber. As shown in Extended Data Table 1, AI2BMD exhibits a faster simulation speed, except for the smallest protein chignolin, than DPMD, even though DPMD uses a simpler model architecture. AI2BMD’s simulation speed substantially surpassed Allegro and AMOEBA for all cases. Furthermore, both DPMD and Allegro encountered an ‘out-of-memory’ error on an A6000 GPU card for some large proteins, whereas AI2BMD worked well. In addition, a non-polarizable force field exhibits the fastest simulation, being about one order faster than AI2BMD. In summary, AI2BMD is versatile, isgeneralizable to various proteins and offers both ab initio accuracy and highly efficient calculation for MD simulation.
+Conformational space exploration
+To demonstrate the capabilities of AI2BMD for conformational space exploration and protein kinetics, we carried out AI2BMD simulations for both protein dipeptides and proteins. We initially constructed an asparagine dipeptide (Ace-N-Nme) in which the amino acid is capped with acetyl and N-methylamino groups at its amino and carboxy termini, respectively, in a 5-Å water box and sampled the hydrogen bonds between the solute and the solvent by carrying out a 500-ps simulation using quantum mechanics (QM)–MM, AI2BMD with polarizable embedding and MM with Amber ff19SB. Then we scanned the distance between the oxygen in the water molecule and the acceptor on the dipeptide and calculated the energy fluctuations for the entire system by pure QM, AI2BMD and MM. As depicted in Extended Data Fig. 2a,b, the distance distributions between the oxygen in the water molecule and the hydrogen-bond acceptor on the main chain, as sampled by QM–MM and AI2BMD, exhibited high similarity. AI2BMD also demonstrated an energy distribution much more consistent with QM–MM than MM in the hydrogen-bond scanning (Extended Data Fig. 2c). Furthermore, AI2BMD showed consistent O–O distance distributions in comparison to QM–MM for the side-chain hydrogen bond with water (Extended Data Fig. 2d–f), with the peaks of both AI2BMD and QM–MM located at identical positions. In conclusion, the hydrogen-bond sampling and scanning experiments suggest that AI2BMD can accurately model the solvent effect and the interactions between the solute and the solvent. Then we comprehensively sampled the conformation space of different protein units. We first evaluated the accuracy of potential energy and atomic force calculations during the simulations produced by the AI2BMD system. AI2BMD simulations of 10 ns were carried out for each kind of dipeptide with a 10-Å water box, and 200 snapshots with solvent were evenly picked from the simulation trajectory. The energy and force were calculated by QM for the whole protein and the AMOEBA force field for the solvent part as the reference value. The MM calculations are for comparison. Throughout the various simulation trajectories, regardless of the type of protein unit involved, the relative energy and force for the entire system, as calculated by AI2BMD, showed neglectable errors when compared to the reference values. By contrast, the pure MM deviated substantially from the reference values (Fig. 3a–d and Supplementary Figs.5 and 6). Specifically, for the negatively charged protein unit Ace-E-Nme (Fig. 3a), AI2BMD exhibited
+slight differences compared with the reference values during the simulation (MAE: 0.183 kcal mol−1), whereas MM presented a distinct difference, with an MAE of 4.111 kcal mol−1. Furthermore, for Ace-R-Nme, the energy calculated by MM also exhibited fluctuations and was noticeably different from the reference value (MAE: 4.286 kcal mol−1 versus AI2BMD MAE: 0.477 kcal mol−1; Fig. 3b). In addition, AI2BMD consistently outperformed MM by a large margin for Ace-F-Nme with a benzene ring in the side chain (MM MAE: 2.997 kcal mol−1 versus AI2BMD MAE: 0.091 kcal mol−1) (Fig. 3c). With smaller side chains, such as Ace-S-Nme (Fig. 3d), the discrepancy between AI2BMD and the reference value further diminished (MAE: 0.056 kcal mol−1), whereas that of MM remained distinct (MAE: 2.788 kcal mol−1). For evaluations on atomic forces, AI2BMD also demonstrated much greater fidelity to the reference values (MAE: 0.002 kcal−1 mol−1 Å−1) than MM (MAE: 0.132 kcal mol−1 Å−1) for all cases in the 10-ns simulations (Supplementary Fig. 6). Consequently, AI2BMD maintained its accuracy across a diverse range of protein units during simulations. We further comprehensively sampled the conformation space of different protein units. For each protein unit, we conducted 100 independent AI2BMD simulations. To promote simulation efficiency, 50 initial structures were first derived from comprehensively sampled MM trajectories. Then, each initial structure underwent two independent AI2BMD simulation runs with an explicit solvent for 

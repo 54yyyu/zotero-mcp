@@ -1,0 +1,154 @@
+PAPER KEY: 8JVWMTUX
+TITLE: A DNA language model based on multispecies alignment predicts the effects of genome-wide variants
+AUTHORS: Benegas, Gonzalo; Song, Yun S.; Albors, Carlos; Aw, Alan J.; Ye, Chengzhong
+
+Nature Biotechnology
+nature biotechnology
+Brief Communication https://doi.org/10.1038/s41587-024-02511-w
+A DNA language model based on multispecies alignment predicts the effects of genome-wide variants
+Gonzalo Benegas1,2, Carlos Albors2,5, Alan J. Aw3,5, Chengzhong Ye3,5 & Yun S. Song 2,3,4
+Protein language models have demonstrated remarkable performance in predicting the effects of missense variants but DNA language models have not yet shown a competitive edge for complex genomes such as that of humans. This limitation is particularly evident when dealing with the vast complexity of noncoding regions that comprise approximately 98% of the human genome. To tackle this challenge, we introduce GPN-MSA (genomic pretrained network with multiple-sequence alignment), a framework that leverages whole-genome alignments across multiple species while taking only a few hours to train. Across several benchmarks on clinical databases (ClinVar, COSMIC and OMIM), experimental functional assays (deep mutational scanning and DepMap) and population genomic data (gnomAD), our model for the human genome achieves outstanding performance on deleteriousness prediction for both coding and noncoding variants. We provide precomputed scores for all ~9 billion possible single-nucleotide variants in the human genome. We anticipate that our advances in genome-wide variant effect prediction will enable more accurate rare disease diagnosis and improve rare variant burden testing.
+With the rising trend of whole-genome sequencing, there is a pressing need to understand the effects of genome-wide variants, which would lay the foundation for precision medicine1. In particular, predicting variant deleteriousness is key to rare disease diagnosis2 and rare variant burden tests3. Indeed, a recent review highlighted the analysis of functional rare variants as the biggest contribution of human genetics to drug discovery4. Language models are gaining traction as predictors of deleteriousness, with their ability to learn from massive sequence databases and score variants in an unsupervised manner. Given the success of accurately scoring missense variants with protein language models5–7, it is natural to consider scoring genome-wide variants with DNA language models. For this task, we recently developed the genomic pretrained network (GPN), a model based on a convolutional neural network
+trained on unaligned genomes, and showed that it achieves excellent variant effect prediction (VEP) results in the compact genome of Arabidopsis thaliana8. However, the human genome, which harbors a similar number of genes but interspersed over nearly 23-fold larger regions and containing many more repetitive elements, most of which may not be functional, is substantially harder to model. In fact, previous attempts at unsupervised VEP with human DNA language models (for example, Nucleotide Transformer9) showed inferior performance compared to simpler conservation scores. Increasing the scale of the model, data and computer improves performance but it can still be poor, even for a model trained for 28 days using 128 top-of-the-line graphics processing units (GPUs)9. To address the above challenge, we here introduce GPN-MSA (GPN with multiple-sequence alignment), a DNA language model that
+Received: 31 October 2023
+Accepted: 20 November 2024
+Published online: xx xx xxxx
+Check for updates
+1Graduate Group in Computational Biology, University of California, Berkeley, CA, US. 2Department of Electrical Engineering and Computer Sciences, University of California, Berkeley, CA, US. 3Department of Statistics, University of California, Berkeley, CA, US. 4Center for Computational Biology, University of California, Berkeley, CA, US. 5These authors contributed equally: Carlos Albors, Alan J. Aw, Chengzhong Ye. e-mail: yss@berkeley.edu
+
+
+Nature Biotechnology
+Brief Communication https://doi.org/10.1038/s41587-024-02511-w
+massive reduction in computational footprint will enable the efficient exploration of new ideas to train improved DNA language models for genome-wide VEP. GPN-MSA was trained on a whole-genome MSA of 100 vertebrate species (Supplementary Fig. 1), after processing (Fig. 1a) and filtering (Fig. 1b). It is an extension of GPN8 to learn nucleotide probability distributions conditioned not only on surrounding sequence contexts but also on aligned sequences from related species that provide important information about evolutionary constraints and adaptation (Fig. 1c and Methods). It draws inspiration from the MSA Transformer19, a protein language model trained on MSAs of diverse protein families; it was originally designed for structure prediction but was later shown to achieve excellent missense VEP performance5. In addition to the fact that our model operates on whole-genome DNA alignments, which comprise small, fragmented synteny blocks with highly variable levels of conservation and, hence, are considerably more complex than protein alignments, there are essential differences in the architecture and training procedure of GPN-MSA from the MSA Transformer (Methods). By using the MSA as auxiliary information, GPN-MSA can accurately predict nucleotides from their context, especially in functional regions (Supplementary Table 1). At sites where the reference allele differs from the inferred ancestral allele20, GPN-MSA usually favors the ancestral allele (Supplementary Table 2). However, predicting the human reference is just a pretext task. What we really care about is the likelihood assigned to human genetic variants that have not been seen during training. Conservation statistics computed on an MSA column, from simple frequencies to more complex phylogeny-aware P values14, are intuitive and powerful measures of deleteriousness. GPN-MSA is designed to process conservation information across multiple MSA columns, as has been exploited by earlier models such as phastCons21 based on a hidden Markov model. To illustrate GPN-MSA’s power beyond single-column statistics and its ability to leverage genomic context, we note that, even at perfectly conserved positions, GPN-MSA assigns more deleterious scores to loss-of-function (for example, stop gain or loss and splice donor or acceptor variant) and missense variants compared to synonymous variants (Fig. 2a). Furthermore, variants with extreme GPN-MSA log-likelihood ratios tend to have lower minor allele frequencies (MAFs) than variants with extreme log-likelihood ratios based on MSA column frequencies, suggesting that GPN-MSA is a better estimator of deleteriousness (Fig. 2b). We demonstrate the capability of GPN-MSA to improve the unsupervised deleteriousness prediction on several human variant datasets (Methods). We emphasize that only the reference genome is used to train GPN-MSA and that no human variant dataset is used in training. Nevertheless, GPN-MSA can still capture several functional attributes of variants, such as epigenetic marks and the impact of natural selection (Supplementary Fig. 2). For evaluation, we first consider the classification of ClinVar22 pathogenic versus common missense variants in gnomAD23. GPN-MSA substantially outperforms other human DNA language models such as Nucleotide Transformer9, with the largest number of parameters (2.5 billion), as well as HyenaDNA12, with the largest context size of 1 Mb (Fig. 2c and Extended Data Fig. 1a). We also find that GPN-MSA achieves improved performance compared to genome-wide predictors CADD24 and phyloP14,15, as well as the missense-specific ESM-1b6,16. These results are based on using common variants as controls instead of ClinVar benign-labeled variants, as recommended by the developers of CADD to reduce ascertainment bias13. When using benign-labeled variants in ClinVar as controls, the area under the receiving operating characteristic curve (AUROC) for every method is reduced and GPN-MSA performs marginally behind CADD and ESM-1b (Fig. 2d); regardless of the control set, the three methods perform very similarly on ClinVar missense variants. Next, we consider the classification of somatic missense variants frequently observed across cancer tumors (COSMIC25) versus
+is designed for genome-wide VEP and is based on the biologically motivated integration of MSA across diverse species using the flexible Transformer architecture10. We apply this modeling framework to humans using an MSA of diverse vertebrate genomes11 and show that it outperforms not only recent DNA language models such as Nucleotide Transformer9 and HyenaDNA12 but also current widely used models such as CADD13, phyloP14,15, ESM-1b6,16), Enformer17 and SpliceAI18. Our model took only 3.5 h to train on four NVIDIA A100 GPUs, which is a considerable reduction in the required computing resources compared to the aforementioned Nucleotide Transformer9. We anticipate that this
+Masking
+Training: mask 15% of positions
+Variant effect prediction: mask variant position
+Training:
+loss = –w × log (REF)
+(A)
+(C)
+(G)
+(T)
+Variant effect prediction:
+Output: masked nucleotide probability
+Transformer neural network
+? TC? T T A
+A - AGTGA
+C - ATTC 
+Model architecture
+With probability q: replace REF with random nucleotide
+c
+Input: MSA window
+Stitch alignment blocks
+Remove gaps in human
+Compute conservation: phastCons 75th percentile
+Pick 5% most conserved + 0.1% at random
+Training window selection
+MSA processing
+Extract 128-bp windows, overlapping 64 bp
+Exclude 10 closest primates
+a
+b
+score = log (ALT)
+(REF)
+Fig. 1 | Overview of GPN-MSA. a, MSA processing. Starting with a multiplealignment format file, alignment blocks are stitched together following the order in the human reference. Columns with gaps in the human reference are discarded, followed by the removal of the ten primate species closest to human (chimp to squirrel monkey). b, Training window selection. For each 128-bp window along the genome, conservation is computed as the 75th percentile of phastCons. The top 5% conserved windows are chosen alongside a random 0.1% from the remaining windows. c, Model architecture. The input is a 128-bp MSA window where certain positions in the human reference are masked and the goal is to predict the nucleotides at the masked positions given the context across both columns (positions) and rows (species) of the MSA. During training, 15% of the positions are masked. During VEP, only the variant position is masked. The sequence of MSA columns is processed through a Transformer neural network, resulting in a high-dimensional contextual embedding of each position. Then, a final layer outputs four nucleotide probabilities at each masked position. The model is trained with a weighted cross-entropy loss, designed to downweight repetitive elements and upweight conserved elements (Methods). As data augmentation in nonconserved regions, before computing the loss, the reference is sometimes replaced by a random nucleotide (Methods). The GPNMSA VEP score is defined as the log-likelihood ratio between the alternate (ALT) and reference (REF) allele. Mouse and fish icons are from Servier (https://smart. servier.com/).
+
+
+Nature Biotechnology
+Brief Communication https://doi.org/10.1038/s41587-024-02511-w
+gnomAD common missense variants. Because of the extreme class imbalance in this case, we focus on the precision and recall metrics. GPN-MSA achieves the highest performance, with substantial margins of improvement over other models (Fig. 2e and Extended Data Fig. 1b). We also evaluate deep mutational scanning (DMS) experimental data26 for 31 human proteins (Supplementary Table 3). GPN-MSA and CADD perform comparably on classifying variants labeled according to protein-specific binarization (Methods), with the former slightly outperforming the latter on the area under the precision–recall curve (AUPRC) metric (Supplementary Fig. 3). They both compare favorably with phyloP and phastCons. However, the protein language model ESM-1b achieves the best overall performance on this task; it likely benefits from modeling long-range interactions within each protein and training on diverse proteins across a much larger evolutionary timescale. Another challenge for genome-wide variant effect predictors on this task is that they expect additional context, such as introns,
+which is typically lacking in DMS experimental assays. Nevertheless, GPN-MSA performs better than ESM-1b on some proteins (for example, TAR DNA-binding protein (TADBP), for which the GPN-MSA AUROC is 0.83 while the ESM-1b AUROC is 0.75). An intriguing avenue for future research would be to explore the conditions under which one model outperforms another and integrate the strengths of both DNA and protein language models. As another note of caution, none of the models performs exceedingly well relative to ClinVar results. Moving on to regulatory variants, we evaluate the classification of a curated set of variants implicated in Mendelian disorders (OMIM27) versus gnomAD common variants. We again consider precision and recall because of the extreme class imbalance and find that GPN-MSA achieves the best performance overall, as well as in each variant category (Fig. 2f and Extended Data Figs. 1c and 2). Nucleotide Transformer exhibits poor performance compared to other models (Extended Data Fig. 2). For several variant categories, CADD’s precision increases from
+ab
+f
+c
+gh
+de
+Simulated variants at perfectly conserved positions
+Stop gained (n = 1.3K) Splice donor region (n = 30) Splice donor (n = 492)
+Splice donor 5th base (n = 54)
+Splice acceptor (n = 585) Stop lost (n = 41) Missense (n = 26.3K) Synonymous (n = 31)
+ClinVar pathogenic versus gnomAD common (missense)
+OMIM pathogenic versus gnomAD common (regulatory)
+gnomAD rare versus common (genome-wide)
+DepMap essential versus not (gene level)
+ClinVar pathogenic versus benign (missense)
+COSMIC frequent versus gnomAD common (missense)
+–12.5
+n = 21,300 versus 15,400 GPN-MSA
+GPN-MSA
+GPN-MSA CADD CADD
+CADD
+ESM-1b
+ESM-1b ESM-1b
+phyloP-100v phyloP-100v phyloP-100v
+phyloP-241m
+phyloP-241m phyloP-241m
+phastCons-100v
+phastCons-100v phastCons-100v
+NT HyenaDNA
+GPN-MSA GPN-MSA GPN-MSA
+CADD
+CADD
+CADD
+GeneBayes
+phyloP-100v
+phyloP-100v
+phyloP-241m phyloP-241m
+phastCons-100v phastCons-100v
+phyloP-100v phyloP-241m pLI hs
+0.969 0.914
+0.914
+0.907
+0.856
+0.804
+0.775 0.029
+0.089
+0.141
+0.167
+0.214
+0.355 0.963 0.944 0.923 0.905 0.874
+0.127
+0.048
+0.038
+0.028
+0.006 2.3 0.307
+0.316
+0.319
+0.410
+0.434
+0.436
+0.518
+9.8
+17.6
+35.3
+103.7
+0.597 0.501
+n = 21,300 versus 27,000
+n = 406 versus 2.6 million n = 252.7 million versus 5.9 million n = 508 versus 2,800
+n = 183 versus 15,400
+–10.0 –7.5
+10–3
+10–4
+10–5
+10–6 10–4 10–2 100
+Mean MAF
+Score quantile
+gnomAD variants (n = 488.7 M)
+Model GPN-MSA MSA column frequency
+GPN-MSA score
+–5.0
+0.6 0.8 AUROC
+0.05 0.10 AUPRC
+50 100 Odds ratio
+0.6 0.8 AUROC
+0.1 0.2 0.3 AUPRC
+0.2 0.4 AUPRC
+1.0
+Fig. 2 | VEP results. a, Variant-type-specific distribution of GPN-MSA scores at positions in held-out chromosome 22 where the corresponding MSA columns have perfect conservation (that is, no variation) in the 89 nonhuman species seen by the model. b, Mean MAF for different score quantile bins ([0, 10−6), (10−6, 10−5], ..., (10−1, 1]) in the full set of gnomAD biallelic sites. The MSA column frequency score is the log-likelihood ratio based on the empirical column frequencies, with a pseudocount of 1. To break ties, we added a very small random number to each score (the pattern across random seeds was stable). c, Classification of ClinVar pathogenic versus gnomAD common missense variants. Exact sample size, n = 21,273 versus 15,402. NT, Nucleotide Transformer. d, Classification of ClinVar pathogenic versus ClinVar benign missense variants. Exact sample size, n = 21,275 versus 26,993. e, Classification of COSMIC frequent (frequency > 0.1%) versus gnomAD common missense variants. Exact sample size,
+n = 183 versus 15,399. f, Classification of OMIM pathogenic versus gnomAD common regulatory variants. We matched OMIM promoter variants with gnomAD upstream-of-gene variants, enhancer with intergenic and ‘all’ with the union of the matches of the specific categories. Exact sample size, n = 406 versus 2,573,918. g, Enrichment of rare (singletons) versus common (MAF > 5%) gnomAD variants in the tail of deleterious scores (the threshold was chosen such that each score made 30 false discoveries). Odds ratios and P values were computed using a one-sided Fisher’s exact test. All shown odds ratios have a P value < 0.05. Exact sample size, n = 252,706,195 versus 5,894,721. h, Classification of DepMap essential versus nonessential genes using VEPs and selection constraint metrics (Methods). A gene is defined to be essential if >1,000 cell lines in DepMap assays depend on it, whereas it is defined to be nonessential if no cell line depends on it. Exact sample size, n = 508 versus 2,815.
+
+
+Nature Biotechnology
+Brief Communication https://doi.org/10.1038/s41587-024-02511-w
+near zero as recall increases, which indicates that a substantial fraction of its top discoveries are actually false (Extended Data Fig. 1c). One example of a deleterious variant that was assigned an extreme score by GPN-MSA is rs606231231, lying in the well-known ZRS enhancer that controls the expression of SHH at the long range of 1 Mb (Supplementary Fig. 4). This variant is associated with polydactyly28 and has been experimentally verified to alter gene expression in mouse limb29. Another example is rs1367115848, disrupting hepatocyte nuclear factor 4 binding at the F7 promoter and causing severe factor VII deficiency30 (Supplementary Fig. 5). Following this, we further evaluate the enrichment of rare versus common gnomAD variants in the tail of the distribution of deleteriousness scores. Deleterious variants should be under purifying selection and, hence, their frequencies in populations should tend to be lower. Therefore, if a variant effect predictor is accurate, we expect rare variants to be enriched compared to common variants for extreme deleteriousness scores. GPN-MSA achieves the highest enrichment overall (Fig. 2g), as well as within most variant categories, with different margins (Extended Data Fig. 3 and Supplementary Fig. 6). In the case of intronic variants, it also outperforms SpliceAI18, a state-of-the-art splicing predictor. There is one category where GPN-MSA performs behind CADD: splice-region variants (here, we group variants immediately close to the exon borders, such as splice donors and acceptors). To be clear, GPN-MSA generally assigns extreme scores to these variants (Extended Data Fig. 4a); the challenge is understanding which variants are not deleterious and more likely to be common in the population. CADD features useful for this task could potentially be integrated into GPN-MSA to improve performance. We note that the overall genome-wide performance in Fig. 2g is not merely an averaging of the performances in the different categories; it also involves scoring variants relative to each other across these categories. On a separate enrichment analysis of low-frequency versus common gnomAD variants in nonexonic regions, GPN-MSA achieves a substantially improved performance over Enformer17 (Extended Data Fig. 5 and Supplementary Fig. 7). Despite its improved ability to distinguish rare or low-frequency versus common variants in gnomAD, how well GPN-MSA would perform in distinguishing deleterious rare variants from benign rare variants genome-wide is an important open question, the answer to which will require more comprehensive labeled data. GPN-MSA also outperforms other methods when subsetting to putatively conserved, neutral or accelerated positions in the genome (Extended Data Fig. 6). While we observe that SpliceAI and Enformer, which are functional genomics models, perform worse than the simpler phyloP in deleteriousness prediction, we note that this is an application that they were not designed for. It is also worth noting that, although phyloP-241m (fit to the 241-way Zoonomia

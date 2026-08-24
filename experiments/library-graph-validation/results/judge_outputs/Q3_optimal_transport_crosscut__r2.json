@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":5,"synthesis":7,"correctness":7,"faithfulness":7,"directness":6},
+            "Option 2": {"coverage":6,"synthesis":8,"correctness":8,"faithfulness":8,"directness":8},
+            "Option 3": {"coverage":4,"synthesis":7,"correctness":8,"faithfulness":8,"directness":7},
+            "Option 4": {"coverage":10,"synthesis":9,"correctness":9,"faithfulness":9,"directness":8}},
+ "ranking": ["Option 4","Option 2","Option 1","Option 3"],
+ "notes": "Option 4 covers all 9 ground-truth papers including the biology cluster (GeneTrajectory, uniPort, NovoSpaRc) others miss, with accurate ICNN->CellOT lineage and GW/unbalanced-OT distinctions. Option 2 has sharp synthesis (OT-as-distance vs map-recovery) but omits the four biology papers. Options 1 and 3 lean on non-library papers (Rectified Flow, Flow Matching) and miss most single-cell work, with Option 3 wrongly declaring data alignment and trajectory inference uncovered despite SCOT/CellOT/GeneTrajectory existing in the library."}

@@ -1,0 +1,108 @@
+PAPER KEY: HRDTQ5TL
+TITLE: Structured Denoising Diffusion Models in Discrete State-Spaces
+AUTHORS: Ho, Jonathan; Austin, Jacob; Johnson, Daniel D.; Tarlow, Daniel; Berg, Rianne van den
+
+Structured Denoising Diffusion Models in Discrete State-Spaces
+Jacob Austin,∗Daniel D. Johnson,∗Jonathan Ho, Daniel Tarlow & Rianne van den Berg† Google Research, Brain Team
+{jaaustin,ddjohnson,jonathanho,dtarlow,riannevdberg}@google.com
+Abstract
+Denoising diffusion probabilistic models (DDPMs) [19] have shown impressive results on image and waveform generation in continuous state spaces. Here, we introduce Discrete Denoising Diffusion Probabilistic Models (D3PMs), diffusionlike generative models for discrete data that generalize the multinomial diffusion model of Hoogeboom et al. [20], by going beyond corruption processes with uniform transition probabilities. This includes corruption with transition matrices that mimic Gaussian kernels in continuous space, matrices based on nearest neighbors in embedding space, and matrices that introduce absorbing states. The third allows us to draw a connection between diffusion models and autoregressive and mask-based generative models. We show that the choice of transition matrix is an important design decision that leads to improved results in image and text domains. We also introduce a new loss function that combines the variational lower bound with an auxiliary cross entropy loss. For text, this model class achieves strong results on character-level text generation while scaling to large vocabularies on LM1B. On the image dataset CIFAR-10, our models approach the sample quality and exceed the log-likelihood of the continuous-space DDPM model.
+1 Introduction
+Generative modeling is a core problem in machine learning, useful both for benchmarking our ability to capture statistics of natural datasets and for downstream applications that require generating high-dimensional data like images, text, and speech waveforms. There has been a great deal of progress with the development of methods like GANs [15, 4], VAEs [25, 35], large autoregressive neural network models [51, 50, 52], normalizing flows [34, 12, 24, 32], and others, each with their own tradeoffs in terms of sample quality, sampling speed, log-likelihoods, and training stability.
+Recently, diffusion models [43] have emerged as a compelling alternative for image [19, 46] and audio [7, 26] generation, achieving comparable sample quality to GANs and log-likelihoods comparable to autoregressive models with fewer inference steps. A diffusion model is a parameterized Markov chain trained to reverse a predefined forward process, which is a stochastic process constructed to gradually corrupt training data into pure noise. Diffusion models are trained using a stable objective closely related to both maximum likelihood and score matching [21, 53], and they admit faster sampling than autoregressive models by using parallel iterative refinement [30, 45, 47, 44].
+Although diffusion models have been proposed in both discrete and continuous state spaces [43], most recent work has focused on Gaussian diffusion processes that operate in continuous state spaces (e.g. for real-valued image and waveform data). Diffusion models with discrete state spaces have been explored for text and image segmentation domains [20], but they have not yet been demonstrated as a competitive model class for large scale text or image generation.
+35th Conference on Neural Information Processing Systems (NeurIPS 2021).
+∗Equal contributions †Now at Microsoft Research
+arXiv:2107.03006v3 [cs.LG] 22 Feb 2023
+
+
+Figure 1: D3PM forward and (learned) reverse process applied to a quantized swiss roll. Each dot represents a 2D categorical variable. Top: samples from the uniform, discretized Gaussian, and absorbing state D3PM model forward processes, along with corresponding transition matrices Q. Bottom: samples from a learned discretized Gaussian reverse process.
+Our aim in this work is to improve and extend discrete diffusion models by using a more structured categorical corruption process to shape data generation, as illustrated in Figure 1. Our models do not require relaxing or embedding discrete data (including images) into continuous spaces, and can embed structure or domain knowledge into the transition matrices used by the forward process. We achieve significantly improved results by taking advantage of this flexibility. We develop structured corruption processes appropriate for text data, using similarity between tokens to enable gradual corruption and denoising. Expanding further, we also explore corruption processes that insert [MASK] tokens, which let us draw parallels to autoregressive and mask-based generative models. Finally, we study discrete diffusion models for quantized images, taking inspiration from the locality exploited by continuous diffusion models. This leads to a particular choice of discrete corruption process that diffuses preferentially to more similar states and leads to much better results in the image domain.
+Overall, we make a number of technical and conceptual contributions. Beyond designing several new structured diffusion models, we introduce a new auxiliary loss which stabilizes training of D3PMs and a family of noise schedules based on mutual information that lead to improved performance. We strongly outperform various non-autoregressive baselines for text generation on character-level text generation, and successfully scale discrete diffusion models to large vocabularies and long sequence lengths. We also achieve strong results on the image dataset CIFAR-10, approaching or exceeding the Gaussian diffusion model from Ho et al. [19] on log-likelihoods and sample quality.
+2 Background: diffusion models
+Diffusion models [43] are latent variable generative models characterized by a forward and a reverse Markov process. The forward process q(x1:T |x0) = ∏T
+t=1 q(xt|xt−1) corrupts the data x0 ∼
+q(x0) into a sequence of increasingly noisy latent variables x1:T = x1, x2, ..., xT . The learned reverse Markov process pθ(x0:T ) = p(xT ) ∏T
+t=1 pθ(xt−1|xt) gradually denoises the latent variables towards the data distribution. For example, for continuous data, the forward process typically adds Gaussian noise, which the reverse process learns to remove.
+In order to optimize the generative model pθ(x0) to fit the data distribution q(x0), we typically optimize a variational upper bound on the negative log-likelihood:
+Lvb = Eq(x0)
+[
+DKL[q(xT |x0)||p(xT )]
+} {{ }
+LT
++
+T
+∑
+t=2
+Eq (xt |x0 )
+[DKL[q(xt−1|xt, x0)||pθ(xt−1|xt)]]
+} {{ } Lt−1
+−Eq(x1|x0)[log pθ(x0|x1)]
+} {{ }
+L0
+]
+. (1)
+2
+
+
+When the number of time steps T goes to infinity, both the forward process and the reverse process share the same functional form [13], allowing the use of a learned reverse process from the same class of distributions as that of the forward process. Furthermore, for several choices of the forward process the distribution q(xt|x0) converges to a stationary distribution π(x) in the limit t → ∞ independent of the value of x0. When the number of time steps T is large enough and we choose π(x) as the prior p(xT ), we can guarantee that the LT term in (1) will approach zero regardless of the data distribution q(x0). (Alternatively, one can use a learned prior pθ(xT ).)
+While q(xt|xt−1) can in theory be arbitrary, efficient training of pθ is possible when q(xt|xt−1):
+1. Permits efficient sampling of xt from q(xt|x0) for an arbitrary time t, allowing us to randomly sample timesteps and optimize each Lt−1 term individually with stochastic gradient descent,
+2. Has a tractable expression for the forward process posterior q(xt−1|xt, x0), which allows us to compute the KL divergences present in the Lt−1 term of (1).
+The majority of recent work in continuous spaces [19, 44, 7, 30] defines the forward
+and reverse distributions as q(xt|xt−1) = N (xt|√1 − βtxt−1, βtI) and pθ(xt−1|xt) = N (xt−1|μθ(xt, t), Σθ(xt, t)), respectively. The aforementioned properties hold in the case of these Gaussian diffusion models: the forward process q(xt|x0) converges to a stationary distribution, motivating the choice p(xT ) = N (xT |0, I), and both q(xt|x0) and q(xt−1|xt, x0) are tractable Gaussian distributions for which the KL divergence can be computed analytically.
+3 Diffusion models for discrete state spaces
+Diffusion models with discrete state spaces were first introduced by Sohl-Dickstein et al. [43], who considered a diffusion process over binary random variables. Hoogeboom et al. [20] extended the model class to categorical random variables with transition matrices characterized by uniform transition probabilities. In their supplementary material, Song et al. [44] also derived this extension, although no experiments were performed with this model class. Here, we briefly describe a more general framework for diffusion with categorical random variables which includes these models as special cases.
+For scalar discrete random variables with K categories xt, xt−1 ∈ 1, ..., K the forward transition probabilities can be represented by matrices: [Qt]ij = q(xt = j|xt−1 = i). Denoting the one-hot version of x with the row vector x, we can write
+q(xt|xt−1) = Cat(xt; p = xt−1Qt), (2)
+where Cat(x; p) is a categorical distribution over the one-hot row vector x with probabilities given by the row vector p, and xt−1Qt is to be understood as a row vector-matrix product. We assume that Qt is applied to each pixel of an image or each token in a sequence independently, and that q factorizes over these higher dimensions as well; we thus write q(xt|xt−1) in terms of a single element. Starting from x0, we obtain the following t-step marginal and posterior at time t − 1:
+q(xt|x0) = Cat (xt; p = x0Qt
+) , with Qt = Q1Q2 . . . Qt
+q(xt−1|xt, x0) = q(xt|xt−1, x0)q(xt−1|x0)
+q(xt|x0) = Cat
+(
+xt−1; p = xtQt> x0Qt−1
+x0Qtxt>
+)
+. (3)
+Note that due to the Markov property of the forward process q(xt|xt−1, x0) = q(xt|xt−1). Assuming that the reverse process pθ(xt|xt−1) is also factorized as conditionally independent over the image or sequence elements, the KL divergence between q and pθ can be computed by simply summing over all possible values of each random variable; we thus satisfy criteria 1 and 2 discussed in Section 2. Depending on Qt, the cumulative products Qt can often be computed in closed form, or simply precomputed for all t. However, for large K and large T this may be prohibitive. In Appendix A.4 we discuss how to ensure Qt can still be computed efficiently in this case, allowing the framework to scale to a larger number of categories.
+In the next section we discuss the choice of the Markov transition matrices Qt and corresponding stationary distributions. From here on, we refer to the general class of diffusion models with discrete state spaces as Discrete Denoising Diffusion Probabilistic Models (D3PMs).
+3
+
+
+3.1 Choice of Markov transition matrices for the forward process
+An advantage of the D3PM framework described above is the ability to control the data corruption and denoising process by choosing Qt, in notable contrast to continuous diffusion, for which only additive Gaussian noise has received significant attention. Besides the constraint that the rows of Qt must sum to one to conserve probability mass, the only other constraint in choosing Qt is that the rows of Qt = Q1Q2 . . . Qt must converge to a known stationary distribution3 when t becomes large, which can be guaranteed while imposing minimal restrictions on Qt (see Appendix A.1).
+We argue that for most real-world discrete data, including images and text, it makes sense to add domain-dependent structure to the transition matrices Qt as a way of controlling the forward corruption process and the learnable reverse denoising process. Below we briefly discuss the uniform transition matrices that have been studied in prior work [20], along with a set of structured transition matrices we have explored for our image and text dataset experiments; see Appendix A.2 for more details on each matrix type. We also note that this set is not exhaustive, and many other transition matrices could also be used within the D3PM framework.
+Uniform (Appendix A.2.1). Sohl-Dickstein et al. [43] considered a simple 2 × 2 transition matrix for binary random variables. Hoogeboom et al. [20] later extended this to categorical variables, proposing a transition matrix Qt = (1 − βt)I + βt/K 11T with βt ∈ [0, 1]. Since this transition matrix is doubly stochastic with strictly positive entries, the stationary distribution is uniform. Because the transition probability to any other state is uniform, in this paper we equivalently refer to this discrete diffusion instance as D3PM-uniform.
+Absorbing state (Appendix A.2.2). Motivated by the success of BERT [11] and recent work on Conditional Masked Language Models (CMLMs) in text, we consider a transition matrix with an absorbing state (called [MASK]), such that each token either stays the same or transitions to [MASK] with some probability βt. This does not impose particular relationships between categories, similar to uniform diffusion, but still allows corrupted tokens to be distinguished from original ones. Moreover, the stationary distribution is not uniform but has all the mass on the [MASK] token. For images, we reuse the grey pixel as the [MASK] absorbing token.
+Discretized Gaussian (Appendix A.2.3). Instead of transitioning uniformly to any other state, for ordinal data we propose imitating a continuous space diffusion model by using a discretized, truncated Gaussian distribution. We choose a normalization such that the transition matrix is doubly stochastic, leading to a uniform stationary distribution. This transition matrix will transition between more similar states with higher probability, and is well suited for quantized ordinal data such as images.
+Token embedding distance (Appendix A.2.4). Textual data does not have ordinal structure, but there may still be interesting semantic relationships. For instance, in a character level vocabulary vowels may be more similar to each other than they are to consonants. As a demonstration of the generality of the D3PM framework, we explore using similarity in an embedding space to guide the forward process, and construct a doubly-stochastic transition matrix that transitions more frequently between tokens that have similar embeddings while maintaining a uniform stationary distribution.
+For uniform and absorbing-state diffusion, the cumulative products Qt can be computed in closed form (see Appendix A.4.1); the remainder can be precomputed.
+3.2 Noise schedules
+We consider several different options for the noise schedule of the forward process. For discretized Gaussian diffusion, we explore linearly increasing the variance of the Gaussian before discretizing it. (Note that a linear schedule for Qt leads to a nonlinear amount of cumulative noise in Qt.) For uniform diffusion we use the cosine schedule which sets the cumulative probability of a transition to a cosine function, as introduced by Nichol and Dhariwal [30] and adapted by Hoogeboom et al. [20]. For a general set of transition matrices Qt (such as the one based on token embeddings), previously proposed schedules may not be directly applicable. We consider linearly interpolating the mutual information between xt and x0 to zero, i.e. I(xt; x0) ≈ (1 − t
+T ) H(x0). Interestingly, for the
+3If a stationary distribution is not known, we can introduce a learned prior pθ(xT ); we note that this is equivalent to extending the forward process by appending a rank-one matrix QT +1 that ignores xT and produces a deterministic xT +1, then learning the reverse step pθ(xT |xT +1) = pθ(xT ).
+4
+
+
+specific case of absorbing-state D3PMs, this schedule reduces to exactly the (T − t + 1)−1 schedule proposed by Sohl-Dickstein et al. [43] for a Bernoulli diffusion process. See Appendix A.7 for more details.
+3.3 Parameterization of the reverse process
+While it is possible to directly predict the logits of pθ(xt−1|xt) using a neural network nnθ(xt), we follow Ho et al. [19] and Hoogeboom et al. [20] and focus on using a neural network nnθ(xt) to predict the logits of a distribution p ̃θ(x ̃0|xt), which we combine with q(xt−1|xt, x0) and a summation over one-hot representations of x0 to obtain the following parameterization
+pθ(xt−1|xt) ∝
+∑
+x ̃0
+q(xt−1, xt|x ̃0)p ̃θ(x ̃0|xt). (4)
+We note that under this x0-parameterization the KL divergence DKL[q(xt−1|xt, x0)||pθ(xt−1|xt)] will be zero if p ̃θ(x ̃0|xt) places all of its probability mass on the original value x0. The decomposition of q(xt−1|xt, x0) in (3) also provides us with a motivation for this parameterization. According to (3), in a given state xt, the optimal reverse process only takes into account transitions to states for which q(xt|xt−1) is non-zero. Therefore, the sparsity pattern of Qt determines the sparsity pattern of the ideal reverse transition probabilities in pθ(xt−1|xt). The parameterization in (4) automatically ensures that the learned reverse probability distribution pθ(xt−1|xt) has the correct sparsity pattern dictated by the choice of the Markov transition matrix Qt. This parameterization also lets us perform inference with k steps at a time, by predicting pθ(xt−k|xt) = ∑ q(xt−k, xt|x ̃0)p ̃θ(x ̃0|xt).
+Finally, when modeling ordinal discrete data, instead of predicting the logits of p ̃θ(x ̃0|xt) directly with the output of a neural net, another option is to model the probabilities with a truncated discretized logistic distribution (see Appendix A.8). This provides an extra ordinal inductive bias to the reverse model and boosts FID and log-likelihood scores for images.
+3.4 Loss function
+While the original diffusion models introduced by Sohl-Dickstein et al. [43] were optimized with the negative variational lower bound Lvb of (1), more recent diffusion models are optimized with different objectives. For instance, Ho et al. [19] derive a simplified loss function (Lsimple) that reweights the negative variational bound, and Nichol and Dhariwal [30] explore a hybrid loss Lhybrid = Lsimple + λLvb (using one term to learn the predicted mean and the other to learn predicted variance). Inspired by this recent work, we introduce an auxiliary denoising objective for the x0-parameterization of the reverse process, which encourages good predictions of the data x0 at each time step. We combine this with the negative variational lower bound, yielding the following alternative loss function:
+Lλ =Lvb + λ Eq(x0)Eq(xt|x0)[− log p ̃θ(x0|xt)]. (5)
+Note that the auxiliary loss coincides with the cross entropy term L0 in (1) at t = 1. Furthermore, due to the x0-parameterization of pθ(xt−1|xt), both the auxiliary loss term and DKL[q(xt−1|xt, x0)||pθ(xt−1|xt)] in Lvb are minimized exactly when p ̃θ(x ̃0|xt) has all its mass on the datapoint x0. We find that training with this loss leads to improved quality of image samples.
+4 Connection to existing probabilistic models for text
+In this section we expand on interesting connections between the D3PM framework and several existing probabilistic and language modeling approaches.
+BERT is a one-step diffusion model: One possible D3PM transition matrix is a combination of a uniform transition matrix and an absorbing state at the [MASK] token (i.e. Q = α1eTm + β11T /K + (1 − α − β)I, where em is a one-hot vector on the [MASK] token). For a one-step diffusion process in which q(x1|x0) replaces 10% of tokens with [MASK] and 5% uniformly at random, this leads precisely to the BERT denoising objective, i.e. Lvb − LT = −Eq(x1|x0)[log pθ(x0|x1)] = LBERT , since LT is a constant independent of θ (assuming a fixed prior).
+Autoregressive models are (discrete) diffusion models: Consider a diffusion process that deterministically masks tokens one-by-one in a sequence of length N = T : q([xt]i | x0) = [x0]i if i <
+5
+
+
+N −t else [MASK] . This is a deterministic forward process, so q(xt−1|xt, x0) is a delta distribution on the xt sequence with one fewer mask: q([xt−1]i |xt, x0) = δ[xt]i if i 6= T − t else δ[x0]i . While this process is not applied independently to each token, it can

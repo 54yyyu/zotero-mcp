@@ -1,0 +1,218 @@
+PAPER KEY: JVT3UUWG
+TITLE: Protein Conformation Generation via Force-Guided SE(3) Diffusion Models
+AUTHORS: Gu, Quanquan; Wang, Yan; Wang, Lihao; Shen, Yuning; Wang, Yiqun; Yuan, Huizhuo; Wu, Yue
+
+Protein Conformation Generation via Force-Guided SE(3) Diffusion Models
+
+arXiv:2403.14088v1 [q-bio.BM] 21 Mar 2024
+
+Yan Wang * 1 2 Lihao Wang * 1 Yuning Shen 1 Yiqun Wang 1 Huizhuo Yuan 3 Yue Wu 3 Quanquan Gu 1
+
+Abstract
+The conformational landscape of proteins is crucial to understanding their functionality in complex biological processes. Traditional physicsbased computational methods, such as molecular dynamics (MD) simulations, suffer from rare event sampling and long equilibration time problems, hindering their applications in general protein systems. Recently, deep generative modeling techniques, especially diffusion models, have been employed to generate novel protein conformations. However, existing score-based diffusion methods cannot properly incorporate important physical prior knowledge to guide the generation process, causing large deviations in the sampled protein conformations from the equilibrium distribution. In this paper, to overcome these limitations, we propose a force-guided SE(3) diffusion model, CONFDIFF, for protein conformation generation. By incorporating a force-guided network with a mixture of data-based score models, CONFDIFF can can generate protein conformations with rich diversity while preserving high fidelity. Experiments on a variety of protein conformation prediction tasks, including 12 fast-folding proteins and the Bovine Pancreatic Trypsin Inhibitor (BPTI), demonstrate that our method surpasses the state-of-the-art method.
+1 Introduction
+Proteins are dynamic macromolecules that play pivotal roles in various biological processes. Their functionality is realized primarily through conformational changes– structural alterations that enable proteins to interact with other molecules. Depicting the protein conformational landscape provides vital insights for (1) identifying potential
+*Equal contribution 1ByteDance Research 2School of Mathematical Sciences, Tongji University, Shanghai (this work was done during Yan’s internship at ByteDance Research) 3Department of Computer Science, University of California, Los Angeles (this work was done during Huizhuo and Yue’s internship at ByteDance Research). Correspondence to: Quanquan Gu <quanquan.gu@bytedance.com>.
+Preprint. Copyright 2024 by the author(s).
+
+druggable sites hidden beneath the protein surface, and (2) revealing transition pathways between multiple metastable states. A comprehensive understanding of protein conformations facilitates the elucidation of biological reaction mechanisms, thereby empowering researchers to design targeted inhibitors and therapeutic agents with improved specificity and efficacy.
+Traditional physics-based simulation methods such as molecular dynamics (MD) simulations have been extensively studied for protein conformation sampling. With a well-designed empirical force field and numerical integrator, the model propagates the 3D structure of a protein system over time following Newtonian mechanics. MD simulations converge towards the equilibrium distribution (i.e., the Boltzmann distribution) given sufficient time, which facilitates estimation of significant thermodynamic properties, e.g., binding free energy change (Wang et al., 2015). However, to preserve energy conservation and ensure numerical stability, the time step of MD simulations is typically only a few femtoseconds. This poses a challenge as certain biological processes of interest, such as protein folding, span much longer timescales, ranging from microseconds to seconds (Shaw et al., 2021). This results in limited sampling efficiency within conventional MD simulations, further compounded by the rare event sampling problem (TrendelkampSchroer & Noe´, 2016), impeding the research community to widely adopt MD for high throughput studies.
+Building upon the cornerstone of powerful folding models (e.g., AlphaFold (Jumper et al., 2021), RoseTTAFold (Baek et al., 2021), OmegaFold (Wu et al., 2022b), etc.), several attempts have been made to tailor these deep neural networks for protein conformation sampling. By perturbing the model input, such as multiple sequence alignment (MSA) masking (Stein & Mchaourab, 2022) or clustering (Wayment-Steele et al., 2023), the folding model provides a more diverse set of possible folded structures, i.e., alternative conformations. However, this heuristic approach cannot guarantee the predicted structure to be a low energy state of the target sequence. More recently, several works have incorporated diffusion models (Song et al., 2020; Ho et al., 2020) for protein conformation generation (Jing et al., 2023; Lu et al., 2024; Zheng et al., 2023). By pretraining on a large amount of known protein structures and efficient sampling through a predefined stochastic process, these models have shown
+
+1
+
+Protein Conformation Generation via Force-Guided SE(3) Diffusion Models
+
+promise in exploring diverse protein conformational states. Nevertheless, existing diffusion models fall short in utilizing important physical prior information, such as the MD force field, to guide their diffusion process, hampering their capability to faithfully sample diverse protein conformations complying with the Boltzmann distribution.
+To address the aforementioned challenges, we propose a novel force-guided diffusion model, CONFDIFF, aiming to generate high fidelity protein conformations that better adhere to the Boltzmann distribution. Drawing inspiration from the contrastive energy prediction (CEP) technique (Lu et al., 2023), we employ the MD energy prior as a physicsbased preference function. By introducing an additional force guidance network during the diffusion sampling process, it prioritizes generating conformations with lower potential energy, which effectively enhances sampling quality. Our model is trained on general protein structures from the Protein Data Bank (PDB) (Berman et al., 2000) as well as self-generated conformation samples, without relying on MD simulation data (Zheng et al., 2023). To sum up, the main contributions of this work are highlighted as follows:
+• Employing a sequence-conditional model to guide the unconditional model, we use classifier-free guidance on SE(3) to find a better trade-off between conformation quality and diversity. Compared with DiG (Zheng et al., 2023), our method does not rely on MD data during training; compared with Str2Str (Lu et al., 2024), the guidance intensity coefficient provides a higher degree of freedom for balancing sample diversity and quality.
+• We utilize the MD energy function as a physics-based reward to guide the generation of protein conformations. In addition, we propose an intermediate force guidance strategy during the diffusion sampling process. To the best of our knowledge, this is the first force-guided network suitable for protein conformation generation, contributing to the alignment of diverse conformation predictions with the equilibrium distribution.
+• Experiments on a variety of benchmarks demonstrate that our method outperforms the state-of-the-art approaches. In particular, energy and force guidance effectively guide the model to sample conformations with lower energy, leading to diverse samples more truthful to the underlying Boltzmann distribution.
+2 Related Work
+Protein Conformation Prediction. Perturbing pretrained folding models, such as AlphaFold (Jumper et al., 2021), to obtain a diverse set of alternative conformations marks the first attempt to use deep neural networks for multiconformation predictions. Stein & Mchaourab (2022) introduced mutations to the MSA representations to obtain different folded structures from AlphaFold. Similarly, WaymentSteele et al. (2023) clusters MSA by sequence similarity
+
+to enable AlphaFold to discover alternative folding states of known metamorphic proteins. Reducing the MSA depth can also unlock multi-conformation prediction capability of AlphaFold (Del Alamo et al., 2022). In addition, Vani et al. (2022) proposed to use the outputs from AlphaFold as initialization for AI-augmented MD simulations. Noe´ et al. (2019), Janson et al. (2023) and Mansoor et al. (2023) utilized MD simulation data to generate protein conformation ensembles.
+Recently, diffusion models have been employed for protein conformation generation. Zheng et al. (2023) proposed Distributional Graphormer (DiG), which is trained on both protein structures from the PDB and MD simulation data. Unlike our proposed method, DiG incorporates an additional regularization into its loss function to align the learned score with MD force field at small diffusion time, which then extends over the entire pathway by the Fokker-Planck equation. Jing et al. (2023) introduced EIGENFOLD, a harmonic diffusion model with physics-inspired prior to sample protein conformations. The cascading-resolution generative process allows efficient sampling across proteins of varying length. The model achieves remarkable performance in a number of benchmark tasks, yet the advantage of using a harmonic prior over the conventional isotropic Gaussian prior is not evidently clear. Inspired by simulated annealing, Lu et al. (2024) proposed Str2Str, a heating-annealing generative framework using an unconditional score model. By adjusting the duration Tδ of heating (i.e., forward diffusion) process, a certain degree of sample diversity could be achieved. However, during the model’s training/inference phase, the absence of sequence or energy information evokes a question of whether the diverse generated outcomes adhere to the Boltzmann distribution.
+Diffusion Models for Protein Design. Another line of work focuses on developing diffusion models for protein design (Trippe et al., 2022; Anand & Achim, 2022; Wu et al., 2022a). In particular, Watson et al. (2022) repurposed RoseTTAFold (Baek et al., 2021) to generate novel protein-binder backbones with successful experimental validation. Ingraham et al. (2023) proposed Chroma, which introduces a diffusion process that respects the conformational statistics of polymer ensembles, and can be effectively conditioned on protein semantics or even natural language to generate structures with desired properties. Yim et al. (2023b) proposed framediff, an innovative diffusion process on SE(3) for equivariant protein backbone generation, and has been recently extended to the flow-matching paradigm (Yim et al., 2023a; Bose et al., 2023). Diffusion models have also been applied to antibody sequence-structure co-design (Martinkus et al., 2023; Luo et al., 2022). The effectiveness of these approaches underscores the potential for further advancements of diffusion modeling in protein studies.
+Controllable Generation via Guided Diffusion. Control-
+
+2
+
+Protein Conformation Generation via Force-Guided SE(3) Diffusion Models
+
+lable generative modeling is key to aligning diffusion models with human preference in many real-world tasks. Both classifier guidance (Dhariwal & Nichol, 2021; Song et al., 2020) and classifier-free guidance (Ho & Salimans, 2022) have been proposed to guide an unconditional model with a preferred conditional variable, showing remarkable performance in a wide range of applications including text-toimage generation (Saharia et al., 2022; Nichol et al., 2021), video generation (Ho et al., 2022), etc. Recently, (Lu et al., 2023) proposed a novel energy guidance policy using a scalar reward function rather than fixed conditioning variables. By optimizing a contrastive energy prediction (CEP) objective, the model is guaranteed to converge to the exact guidance under enough model capacity and data samples. CEP shows great performance in image synthesis and reinforcement learning tasks. However, it is the gradient of energy function that is utilized as guidance in reverse sampling. This inspires us to propose a force guidance strategy which employs an equivariant network to directly approximate the intermediate force vector.
+3 Preliminaries
+3.1 Protein Backbone Diffusion on SE(3)
+We adopt the protein backbone representation from AlphaFold (Jumper et al., 2021): for a protein with N amino acid residues, its backbone atomic coordinates can be parameterized by a collection of N orientation preserving rigid transformations (i.e., frames) to the local [N,Cα,C,O] backbone atoms in each residue. We collectively denote the positions of all N frames by x0 = [T0, R0] ∈ SE(3)N , where T0 ∈ R3N and R0 ∈ SO(3)N denote the corresponding translation and rotation operations, respectively. With an additional backbone torsion angle ψ describing the rotation of the oxygen atom around the C–Cα bond within each residue, we can reconstruct the protein backbone structure from the frame representations.
+Following Yim et al. (2023b), diffusion modeling on manifold SE(3)N is employed for protein backbone generation. Two independent diffusion processes are defined for the translation and rotation subspaces, respectively:
+
+1 dTt = − 2 βtPTt dt + βtPdwt,
+
+dRt =
+
+d dt
+
+σt2
+
+dwtSO(3),
+
+(1)
+
+where subscript t denotes the diffusion time variable in
+
+[0, 1], βt and σt are predefined time-dependent noise sched-
+
+ules, P is a projection operator removing the center of
+
+mass, and [wt, wtSO(3)] represents the standard Wiener pro-
+
+cess in [N (0, I3)⊗N , U (SO(3))⊗N ]. T√he transition kernel of T satisfies pt(Tt|T0) = N (Tt; αtT0, (1 − αt)I),
+
+where αt
+
+=
+
+e−
+
+. t
+0
+
+βs ds
+
+The rotational transition kernel
+
+satisfies pt(Rt|R0) = IGSO3(Rt; R0, t), where IGSO3 is
+
+the isotropic Gaussian distribution on SO(3) (Leach et al., 2022).
+The associated reverse-time stochastic differential equation (SDE) is as follows:
+
+1 dTt = P − 2 βtTt − βt∇ log pt(Tt) dt + βtPdw¯ t,
+
+dRt
+
+=
+
+−
+
+d dt
+
+σt2
+
+∇
+
+log
+
+pt(Rt)dt
+
++
+
+d dt
+
+σt2dw¯ tSO(3),
+
+(2)
+
+where [w¯ t, w¯ tSO(3)] denotes another standard Wiener process in reverse time.
+
+3.2 Classifier-free Guidance for Diffusion Sampling
+
+Guided sampling has emerged as a critical strategy in devel-
+
+oping diffusion models capable of generating samples com-
+
+plying with human instructions. Consider existing paired
+
+data x0 ∼ p0(x0|c) with a conditioning variable c (subscript
+
+denotes diffusion time, where t = 0 corresponds to the orig-
+
+inal data), we typically perceive the conditional probability
+
+density at time t as pt(xt|c). Applying Bayes’ rule we can
+
+obtain
+
+pt(xt|c)
+
+=
+
+pt
+
+(xt )pt (c|xt p(c)
+
+)
+
+.
+
+Therefore,
+
+one
+
+can
+
+train
+
+a classifier to predict the conditioning probability pt(c|xt)
+
+with given noisy data xt, and use the score of the classifier
+
+output as guidance (Dhariwal & Nichol, 2021). Instead of
+
+training a separate classifier to estimate ∇ log pt(c|xt), Ho
+
+& Salimans (2022) proposed to utilize an implicit classi-
+
+fier pγt (c|xt) ∝
+
+pt (xt |c)p(c) pt (xt )
+
+γ, which then leads to a linear
+
+combination of an unconditional score estimator sθ(xt) and
+
+a conditional score estimator sθ(xt, c) to jointly estimate
+
+the target score function:
+
+∇xt log pt(xt|c) =∇xt log pt(xt) + γ∇xt log pt(c|xt) =γ∇xt log pt(xt, c) + (1 − γ)∇xt log pt(xt) ≈γsθ(xt, c) + (1 − γ)sθ(xt),
+
+where γ is a hyperparameter controlling the guidance strength. When γ = 0, it reduces to an unconditional model, while at γ = 1, it becomes a pure conditional model. These two models can be simultaneously trained under the same hood, where the unconditional model receives masked conditioning variable c during training.
+4 Force-Guided Diffusion for Protein Conformation Generation
+In this section, we propose force-guided CONFDIFF, a diffusion model targeting multi-conformation generation for proteins. Employing a sequence-based conditional score network to guide an unconditional score model in Section 4.1, CONFDIFF achieves reasonable conformation diversity while ensuring sample quality. Building upon the energy guidance foundations in Section 4.2, a novel force-guided sampling strategy is proposed to estimate the intermediate
+
+3
+
+Protein Conformation Generation via Force-Guided SE(3) Diffusion Models
+
+CONFDIFF
+
+Classifier-free Guidance
+
+Energy Improved
+
+∇xt log pt(xt|seq) is estimate by sθ(xt, t|seq) = γscθ(xt, t, seq) + (1 − γ)suθ (xt, t).
+
+Prior
+
++ Intermediate Force Guidance
+
+Figure 1. Protein conformation generation with multiple guidance strategies. Upper: With a mixture of sequence-conditional and unconditional score models, CONFDIFF in Section 4.1 samples diverse conformations with reasonable quality. Lower: Incorporating force guidance in Section 4.3, the model generates structures with lower energy, better comply with the Boltzmann distribution.
+force function, which is then embedded within reverse time sampling process in Section 4.3. Utilizing prior information from the MD force field, our model successfully reweights the generated conformations to ensure they adhere better to the equilibrium distribution. A visual depiction is shown in Figure 1.
+4.1 Sequence-Conditional Diffusion on SE(3)
+Our baseline model consists of an unconditional score model suθ (xt, t) and a sequence-conditional one scθ(xt, t, seq). The unconditional model is trained on protein structures (from the PDB) without any sequence information, effectively capturing the conformation distribution of general proteins. On the other hand, the sequence-conditional model has access to both protein sequence information (seq) and the corresponding structure xt at time t. We adopt a similar network architecture to FramePred (Yim et al., 2023b) to parameterize the corresponding score functions. The unconditional model takes sinusoidal embedding of the residue index and diffusion time t as its single ({si}) and pair ({zij}) embeddings, where the conditional model additionally concatenates precomputed representations from ESMFold (Lin et al., 2022) to its single embedding. Note that the choice of sequence representation for the conditional model is flexible – it has been shown that using pretrained representations from folding models helps diffusion models generate reasonable protein structures (Jing et al., 2023; Zheng et al., 2023), while the unconditional model can effectively improve sampling diversity. Both models have been trained with the denoising score matching (DSM) loss function:
+LDSM = E λ(t)∥sθ(xt, t) − ∇xt log pt(xt|x0)∥22 ,
+where λ(t) is a reweighting function inversely proportional to the score norm (Song et al., 2020). A detailed illustration of our model architecture is provided in Appendix B.
+During the reverse sampling process, we use a hyperparameter γ to control the classifier-free guidance strength from the conditional model, so that the score function
+
+For notation simplicity, we hereafter omit the sequence conditional term in our baseline score model, i.e., sθ(xt, t) = sθ(xt, t|seq).
+4.2 Intermediate Energy Guided Diffusion
+Despite the diffusion model’s capability to generate diverse structures, these conformations are not always reasonable in the sense that they may reside in the high energy region of the potential energy surface. Due to the limited availability of multi-conformation data within existing protein structure databases, the training data distribution does not comply with the equilibrium distribution, but rather only containing a few data points near the potential energy minima for each protein sequence. This necessitates the development of a generative model propelled by data and steered by physicsbased guidance towards generating samples according to the Boltzmann distribution. To that end, we introduce energy guidance, where the MD energy function attributes a reward to guide the conformation generation process.
+Given an existing (baseline) diffusion model which generates samples x0 ∼ q0(x0), our goal is to sample protein conformations from the equilibrium distribution
+
+e−kE0 (x0 )
+
+p0(x0) = q0(x0) Z ,
+
+(3)
+
+where Z := q0(x0)e−kE0(x0) dx0 is the intractable normalizing constant, E0 is the OpenMM (Eastman et al., 2017) energy function which evaluates the potential energy of each generated conformation x0. k is the inverse temperature factor. Given any test function F (x0), p0(x0) gives a more

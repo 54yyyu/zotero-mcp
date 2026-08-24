@@ -1,0 +1,517 @@
+PAPER KEY: 8V65ZJUK
+TITLE: Diffusion on the Probability Simplex
+AUTHORS: Floto, Griffin; Jonsson, Thorsteinn; Nica, Mihai; Sanner, Scott; Zhu, Eric Zhengyu
+
+Diffusion on the Probability Simplex
+Griffin Floto 1 Thorsteinn Jonsson 1 Mihai Nica 2 Scott Sanner 3 Eric Zhengyu Zhu 3
+Abstract
+Diffusion models learn to reverse the progressive noising of a data distribution to create a generative model. However, the desired continuous nature of the noising process can be at odds with discrete data. To deal with this tension between continuous and discrete objects, we propose a method of performing diffusion on the probability simplex. Using the probability simplex naturally creates an interpretation where points correspond to categorical probability distributions. Our method uses the softmax function applied to an OrnsteinUnlenbeck Process, a well-known stochastic differential equation. We find that our methodology also naturally extends to include diffusion on the unit cube which has applications for bounded image generation.
+1. Introduction
+Diffusion models (Sohl-Dickstein et al., 2015) (Ho et al., 2020) (Song & Ermon, 2019) have emerged as a wellestablished class of generative models, finding applications in image (Dhariwal & Nichol, 2021), speech (Jeong et al., 2021), and video (Singer et al., 2022) domains. Diffusion processes work by progressively adding noise to data, which transforms a complex data distribution into a simpler, easyto-sample distribution. Diffusion models are used to reverse the noising process by learning a stochastic differential equation (SDE) parameterized by a neural network that generates the data distribution (Song et al., 2021).
+In comparison to other popular methods, such as Generative Adversarial Networks (Goodfellow et al., 2014), diffusion models present a compelling advantage as they have an exact likelihood interpretation and do not require adversarial training that other state-of-the-art generative models require.
+*Equal contribution 1EthicalAI 2Department of Mathematics and Statistics, University of Guelph 3Department of Computer Science, University of Toronto. Correspondence to: Griffin Floto <griffin@ethicalairesearch.com>.
+Proceedings of the 40 th International Conference on Machine Learning, Honolulu, Hawaii, USA. PMLR 202, 2023. Copyright 2023 by the author(s).
+That is, diffusion models enjoy the benefit of having a more stable training process that avoid non-overlapping data and generated distributions (Yang et al., 2023). Furthermore, diffusion models are also advantageous over discretized normalizing flows, which face practical restrictions when computing the determinant of the Jacobian from the change of variables formula (Chen et al., 2018).
+Most work with diffusion models assume a continuous data distribution in Rn and noising is performed with Gaussian distributions. This presents a problem for discrete sampling: how would one add continuous Gaussian noise if the underlying categories are discrete? We propose the simple solution to perform diffusion by sampling from k categories on the probability simplex Sk := {x ∈ Rk : 0 ≤ xi ≤ 1, Pk
+i=1 xi = 1}. The result of the diffusion is interpreted as the probability that a given category is chosen. By shifting from categories themselves, to the space of probabilities over categories, we effectively turn a discrete problem into a continuous one.
+2. Background
+2.1. Diffusion with Score-Matching
+Score matching as formulated by (Song et al., 2021) considers a continuous time diffusion process. Typically, the forward process does not have parameters and is independent of the data distribution. In particular, the forward process is described by an SDE
+dxt = f (xt, t)dt + G(xt, t)dwt (1)
+where w is the standard Wiener process (also know as Brownian motion), f (·, t) : Rd → Rd is the drift term and G(·, t) : Rd → Rd×d is the diffusion coefficient. The process maps a data distribution, pt=0(xt) ∈ Rd into some limiting distribution pt=1(xt). The limiting distribution is chosen to be easy to sample from, and independent from the data distribution. Classical results in the theory of stochastic processes then tell us that the time reverse of this process is itself an SDE and obeys
+1
+arXiv:2309.02530v2 [cs.LG] 12 Sep 2023
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+dxt = f (xt, t)dt − 1
+2 ∇ · [G(xt, t)G(xt, t)⊤]dt
+−1
+2 G(xt, t)G(xt, t)⊤∇xlog pt(xt)dt + G(xt, t)dw ̄
+(2)
+where time now flows backwards from t = 1 to t = 0 and ∇ · F(x) := [∇ · f1(x), · · · , ∇ · fd(x)]⊤ for a matrixvalued function F(x) = [f1(x), · · · , fd(x)]⊤. The goal of diffusion models is to approximate the score ∇xlog pt(xt) and use the reverse SDE to sample from the generative model. The score can be approximated by sθ(xt, t) which provides the following objective
+θ∗ = argminθEt∼U [0,1]Ex0∼p0(x)Ext∼p0t(xt|x0)
+λ(t) ∥sθ(xt, t) − ∇xt log p0t(xt|x0)∥2
+2
+ (3)
+where λ(t) is a weighting function and pst(xt|xs) is the transition kernel from x(s) to x(t). We note that a number of other objectives can be used to learn the score function (Song et al., 2021). A common practice when using diffusion models is to discretize time into uniform steps (Ho et al., 2020).
+3. Method
+3.1. The Logistic-Normal Distribution on the Probability Simplex
+Recall the definition of the probability simplex Sk. We interpret points in the probability simplex as probability distributions over k categories.
+The logistic-normal distribution is an example of a probability distribution over the probability simplex. It is defined as the probability distribution of a random variable whose multinomial logit is a normal distribution, (or equivalently it is the distribution of the softmax function applied to a Gaussian, see (5)). The probability density function of the logistic normal is
+p(x; μ, Σ) = 1
+|(2π)d−1Σ|
+1
+Qd
+i=1 xi
+exp − 1
+2
+
+log
+  ̄xd
+xd
+
+−μ
+⊤
+Σ−1
+
+log
+  ̄xd
+xd
+
+−μ
+
+!
+(4)
+where x ∈ Sd and x ̄d = [x1, . . . , xd−1]⊤. In the d = 2 dimensional case, the distribution can be understood as mapping a Gaussian distribution on R to [0, 1] via the sigmoid function.
+Figure 1: Examples of the Logistic-Normal distribution (PDF values) on S3 with parameters μ = [0, 0], [0.2, 0.35] and σ = [0.5, 0, 5], [0.6, 0.8] respectively.
+To constructively sample from this distrubution, we map a point y ∈ Rd−1 to a point in the probability simplex x ∈ Sd using the additive logistic transformation σ : Rd−1 → Sd defined by
+xi = σi(y) :=
+
+   
+   
+eyi
+1 + Pd−1
+k=1 eyk
+, if i ∈ {1, . . . , d − 1}
+1
+1 + Pd−1
+k=1 eyk
+, if i = d
+(5)
+Where we note that 1 − Pd−1
+i=1 xi = (1 + Pd−1
+k=1 eyk )−1.
+Conversely, the unique inverse map from Sd to Rd−1 is
+yi = log
+ xi
+xd
+
+, i ∈ {1, . . . , d − 1}.
+3.2. The Ornstein-Unlenbeck Process
+The Ornstein-Unlenbeck (OU) process is a real-valued stochastic process used in financial mathematics and physical sciences. Originally, it was developed to model the velocity of a Brownian particle under the force of friction. The process can be described by the following stochastic differential equation:
+dYt = −θYtdt + σdWt
+where θ > 0 and σ > 0 are parameters and Wt is the WWiener process. The distribution at time t of the process is given by a normal distribution
+Yt
+=d N
+
+Y0e−θt, 1
+2θ 1 − e−2θt I
+
+.
+In the limit as t → ∞ the process has a distribution of N 0, 1
+2θ
+, meaning that θ uniquely determines the limiting distribution.
+2
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+3.3. Diffusion on the Probability Simplex
+Our main contribution is a novel diffusion process that operates on the probability simplex. Our method works by first defining the forward process by using the additive logistic transformation from equation 5 to map an OU process from Rd to Sd.
+Xt = σ(Yt)
+In our case we are able to get an exact solution for St by pushing forward the solution of the OU process, meaning that Xt ∼ σ N Y0e−θt, 1
+2θ 1 − e−2θt. In other words, at each point t we have a closed form representation of the transition kernel pt0(xt|x0) which is a logistic Gaussian distribution that we can efficiently sample from. Moreover, one can obtain the SDE for Xt by applying Ito’s lemma to the SDE for Yt. Carrying this out (see appendix A.2) gives
+dXt = f (Xt, t)dt + G(Xt, t)dWt (6)
+where the diffusion coefficient matrix G can be written as:
+Gij(x, t) =
+(
+xi(1 − xi), i = j
+−xixj, i ̸= j
+and the drift term f can be written as:
+fi(x, t) = −θxi
+
+(1 − xi)ai + X
+j̸=i
+xj aj
+
+
+where aj = xj + 1
+2 (1 − 2xj).
+In order to train the score-matching model, we must also have a closed form solution of ∇xlog p(x)i, which we show in Appendix A.1. The results of the derivation is that the score of the logistic-normal distribution is
+∇xlog p(x)i = − 1
+v
+1
+xd
+d−1
+X
+k=1
+σμ
+k (x) + 1
+xd
+σμ
+i (x)
+!
++ xi − xd
+xixd
+(7)
+where we write σμ
+k (x) = log
+h xi xd
+i
+− μ. Finally, the calcu
+lation for deriving ∇ · [G(xt, t)G(xt, t)⊤] is performed in Appendix A.3.
+3.4. Implementation Considerations
+An example application of this model is for modelling discrete data. A dataset with k different categories, can naturally be modelled with the simplex in Sk. The data distribution could then be represented as a linear combination
+of Dirac delta functions centered at the corners of the simplex at t = 0. In other words, each data sample would correspond to a one-hot vector. In practice we relax this condition such that at the beginning of the forward process, data samples are mapped to vectors x = [α, β, · · · , β]⊤, where β = 1−α
+d−2 . For example, a reasonable choice of α
+would be 0.9 if k = 6.
+During the optimization process, the score suffers from numerical instability in perimeter regions on the simplex. Furthermore, the region around the perimeter increases as the dimension of the simplex d grows. To deal with this problem, we notice that we directly predict the term −1
+2 G(x, t)G(x, t)⊤∇xlog pt(x) from the reverse diffusion SDE.
+0.0 0.2 0.4 0.6 0.8 1.0 x
+−2
+0
+2
+4
+6
+8
+10
+p(x)
+∇ log p(x)
+g2(x)∇ log p(x)
+Figure 2: A comparison between the regular score, ∇xlog pt(x), and the reverse SDE term, g2(x, t)∇xlog pt(x), in the one-dimensional case. The reverse SDE term is bounded at the border of the interval [0, 1], unlike the score. The PDF of the logistic-normal distribution is plotted for clarity, along with a dotted line around the score for visual clarity.
+4. Results
+We present initial results of the Simplex Diffusion model using the MNIST dataset. We create a discrete version of the dataset which maps the pixel values that are typically in [0, 1, · · · , 255] to [0, 1, 2] for a total of k = 3 unique categories. In our experiments we use the following parameters: θ = 20, α = 0.9 and t ∈ [0.01, 0.25]. We parameterize the score function by a U-Net (Ronneberger et al., 2015) model with 35 million parameters.
+3
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+When samples are generated, they must be converted from vectors on the probability simplex, to one of k discrete categories. We choose to take the argmax of the sampled vectors to convert from points on the simplex to discrete categories. Qualitative results from this initial experiment can be found in Figure 3.
+Figure 3: Random samples from a Simplex Diffusion model. Samples are taken at the beginning, middle and end of the reverse process and correspond to the top middle and bottom row respectively. Sampling is done with T = 1000 denoising steps
+5. Discussion
+Our methodology is related to recent works extending diffusion to the bounded domains of the probability simplex and the unit cube. In this section we compare these methodologies with our proposed model to highlight important differences.
+5.1. Simplex Diffusion
+Categorical SDEs with Simplex Diffusion (Richemond et al., 2022) use a diffusion process of Gamma random variables to sample from a Dirichlet distribution over the simplex. The Dirichlet distribution is an appealing choice as it is the conjugate prior of the categorical distribution . The forward process used is the Cox-Ingersoll-Ross process, which is
+defined by the SDE dθ = b(a − θ)dt + σ√2bθdw, where θ(t = 0) ≥ 0 and a, b, σ > 0. A drawback of this approach is that while the process has a limiting distribution that is Dirichlet, this is not the case during the transient regime of the process dynamics.
+Our proposed diffusion with the OU process and the LogitNormal distribution remains a Logistic-Normal distribution throughout the diffusion process due to the correspondence between diffusion spaces in Rd and Sd via Ito’s lemma.
+5.2. Unit-Cube Diffusion
+Reflected Diffusion (Lou & Ermon, 2023) is a method of performing diffusion on the unit cube [0, 1]d that is motivated by applications to pixel-based diffusion models. When image based diffusion models are used with Gaussian noise, sampling errors often compound and result in pixel values that are outside the valid data range of the unit cube. To mitigate this problem, thresholding is often performed to keep generated images to reasonable values via knowledge of the data distribution constraints (Ho et al., 2020) (Dhariwal & Nichol, 2021). While thresholding is popular in many image based diffusion models, it is theoretically unsound as there is a disconnect between the training and generative processes. The authors address this problem by using a reflected diffusion process that reflects particle trajectories into the interior of a data domain Ω that would normally extend outside the domain.
+An interesting property of our Simplex Diffusion Model is that it can be naturally extended to higher dimensions by performing diffusion on the unit cube. By taking the product of d one-dimensional processes that we have developed, we create a diffusion process that is contained to the unit cube. A drawback of the Reflected Diffusion approach is that the resulting score from the forward process cannot be written in closed form. The authors use a combination of two approximations to apply their model in practice. On the other hand, our method maintains an closed form score function that is easy to implement.
+6. Conclusion
+We introduce a novel method to perform diffusion on the probability simplex and the unit cube. In both cases our method allows for an exact solution for the SDE dynamics, and fits into the common diffusion training paradigm.
+Future work involves testing the method on more complex datasets and evaluating the properties on the categorical distribution. For example, if the entropy can be utilized as a natural notation of aleatoric uncertainty over generated values.
+References
+Chen, R. T. Q., Rubanova, Y., Bettencourt, J., and Duvenaud, D. K. Neural ordinary differential equations. In Advances in Neural Information Processing Systems, 2018.
+Dhariwal, P. and Nichol, A. Diffusion models beat gans on image synthesis, 2021.
+Goodfellow, I., Pouget-Abadie, J., Mirza, M., Xu, B., Warde-Farley, D., Ozair, S., Courville, A., and Bengio,
+4
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+Y. Generative adversarial nets. In Advances in Neural Information Processing Systems, 2014.
+Ho, J., Jain, A., and Abbeel, P. Denoising diffusion probabilistic models. In Larochelle, H., Ranzato, M., Hadsell, R., Balcan, M., and Lin, H. (eds.), Advances in Neural Information Processing Systems, 2020.
+Jeong, M., Kim, H., Cheon, S. J., Choi, B. J., and Kim, N. S. Diff-tts: A denoising diffusion model for text-to-speech, 2021.
+Lou, A. and Ermon, S. Reflected diffusion models, 2023.
+Richemond, P. H., Dieleman, S., and Doucet, A. Categorical sdes with simplex diffusion, 2022.
+Ronneberger, O., Fischer, P., and Brox, T. U-net: Convolutional networks for biomedical image segmentation. abs/1505.04597, 2015.
+Singer, U., Polyak, A., Hayes, T., Yin, X., An, J., Zhang, S., Hu, Q., Yang, H., Ashual, O., Gafni, O., Parikh, D., Gupta, S., and Taigman, Y. Make-a-video: Text-to-video generation without text-video data, 2022.
+Sohl-Dickstein, J., Weiss, E. A., Maheswaranathan, N., and Ganguli, S. Deep unsupervised learning using nonequilibrium thermodynamics, 2015.
+Song, Y. and Ermon, S. Generative modeling by estimating gradients of the data distribution. Advances in neural information processing systems, 2019.
+Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., and Poole, B. Score-based generative modeling through stochastic differential equations, 2021.
+Yang, L., Zhang, Z., Song, Y., Hong, S., Xu, R., Zhao, Y., Zhang, W., Cui, B., and Yang, M.-H. Diffusion models: A comprehensive survey of methods and applications, 2023.
+5
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+A. Mathematical calculations
+A.1. Score Derivation
+We want to calculate ∇xlog p(x) where
+log p(x) = −log [Z] − log
+"d Y
+i−1
+xi
+#
+−1
+2v log
+ x ̄d
+xd
+
+−μ
+2
+2
+We first find the gradient of second term, given that the log normalizing constant doesn’t have a gradient.
+α := −∇xlog
+"d Y
+i=1
+xi
+#
+αi = − ∂
+∂xi
+d−1
+X
+i=1
+log [xi] + log
+"
+a−
+d−1
+X
+k=1
+xk
+#!
+=−1
+xi
++1
+a − Pd−1
+k=1 xk
+=1
+xd
+−1
+xi = xi − xd
+xixd
+Next, we deal with the exponential term:
+β := − 1
+2v ∇x log
+ x ̄d
+xd
+
+−μ
+2
+2
+βi = − 1
+2v
+∂ ∂xi
+d−1
+X
+k=1
+
+log
+ xk
+xd
+
+−μ
+2!
+=− 1
+2v
+d−1
+X
+k=1
+∂
+∂u u2 ∂
+∂xi
+u
+
+, u = log
+ xk
+xd
+
+−μ
+Working with κ := ∂
+∂u u2 ∂
+∂xi u we get
+κ := ∂
+∂u u2 ∂
+∂xi
+u
+= 2u ∂
+∂xi
+log [xk] − ∂
+∂xi
+log
+"
+a−
+d−1
+X
+k=1
+xk
+#!
+= 2u
+
+δik
+1
+xi
++1
+xd
+
+Combining terms again we get:
+6
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+βi = − 1
+v
+d−1
+X
+k=1
+
+δik
+1
+xi
++1
+xd
+
+log
+  ̄xd
+xd
+
+−μ
+
+=− 1
+vxd
+d−1
+X
+k=1
+
+log
+ xk
+xd
+
+−μ
+
+−1
+vxi
+
+log
+ xi
+xd
+
+−μ
+
+=− 1
+vxd
+d−1
+X
+k=1
+γk
+μ(x) − 1
+vxi
+γi
+μ(x)
+where we write γiμ(x) = log
+h xi xd
+i
+−μ
+For the final results, we must combine the α and β terms together to get:
+∇xlog pa(x)i = − 1
+vxd
+d−1
+X
+k=1
+γk
+μ(x) − 1
+vxi
+γi
+μ(x) + xi − xd
+xixd
+A.2. Sampling and Ito’s Lemma
+We are working with an OU process of the following form:
+dYt = −θYtdt + dBt
+with a corresponding process on the simplex:
+Xt = σ(Yt)
+To keep this section self-contained the definition of σ is:
+σi(y) = eyi
+1 + Pd−1
+k=1 eyk
+, i ∈ {1, . . . , d − 1}
+We must write Xt in a form where Xt = f (X, t)dt + G(X, t)dBt. This can be done via Ito’s Lemma:
+dXi = −θ(∇X σi(X))⊤Xdt + 1
+2 Tr[HX σi(X)]dt + ∇X σi(X)⊤dB
+Where HX is the Hessian matrix and we drop the time dependence of St and Xt for notational simplicity. First we deal with the gradient term of the equation. We will use γ(X) = 1 + Pd−1
+k=1 eXk to keep notation smaller.
+∇X σi(X) = G = ∇X
+eXi
+γ(X)
+gj = ∂
+∂Xj
+eXi
+γ(X)
+7
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+We deal with the case when when j = i below
+Gi = ∂
+∂Xi
+eXi
+γ(X)
+= γ(X)−2
+
+γ(X) ∂
+∂Xi
+eXi − eXi ∂
+∂Xi
+γ(X)
+
+= γ(X)−2 eXi γ(X) − e2Xi 
+= σi(X)γ(X)−1[γ(X) − eXi ]
+= σi(X)(1 − σi(X))
+and the case when j ̸= i:
+Gj = ∂
+∂Xj
+aeXi
+γ(X)
+= − eXi eXj
+γ (X )2
+= −σi(X)σj(X)
+Next we deal with the trace Hessian term:
+Tr[HXσa
+i (X)] =
+d−1
+X
+j=1
+∂2
+∂X2
+j
+σa
+i (X)
+which again can be split into two cases. First we deal with the case when j = i
+∂2
+∂X2
+i
+σa
+i (X) = a ∂
+∂Xi
+σi(X)(1 − σi(X))
+= aσi(X)(1 − σi(X))(1 − 2σi(X))
+Then the case where j ̸= i
+∂2
+∂X2
+j
+σa
+i (X) = − ∂
+∂Xj
+σi (X)σj (X)
+= −σi(X)σj(X)(1 − 2σj(X))
+In summary the diffusion and drift terms are:
+Gij(x, t) =
+(
+xi(1 − xi), i = j
+−xixj, i ̸= j
+fi(x, t) = −θxi
+
+(1 − xi)ai + X
+j̸=i
+xj aj
+
+
+where aj = xj + 1
+2 (1 − 2xj)
+A.3. Diffusion Matrix Divergence
+Suppose we have x, which is some position on the probability simplex, and G from above in A.2. We want ∇ · G(x)G(x)⊤ where the definition of the matrix divergence over matrix valued function F is (defined similarly as Appendix A. in Song et al. (2021)):
+8
+
+
+Lifting Discrete Diffusion to the Probability Simplex
+∇ · F(x) := [∇ · f 1(x), ∇ · f 2(x), ...]⊤
+where F(x) = [f1(x), f2(x), ...]⊤. To further clarify some terms, we start with G(x) = G(x)⊤, which gives us the Hessian as H = G(x)G(x)⊤. Equivalently, the Hessian in coordinate-wise notation is:
+Hij = X
+k
+Gik(x)Gkj (x)
+We will then being our derivation by analyzing G(.), which decomposes into two cases:
+Gij(x) =
+(
+xi(1 − xi), when i = j
+−xixj, when i ̸= j
+Starting with case 1, i = j:
+Hii = X
+k
+Gik (x)Gki (x)
+= x2
+i (1 − xi)2 + x2
+i
+X
+k̸=i
+x2
+k
+= x2
+i
+
+(1 − xi)2 + X

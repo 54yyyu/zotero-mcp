@@ -1,0 +1,108 @@
+PAPER KEY: 3ZWYWBKV
+TITLE: Benchmarking DNA Sequence Models for Causal Regulatory Variant Prediction in Human Genetics
+AUTHORS: Benegas, Gonzalo; Eraslan, Gökcen; Song, Yun S.
+
+Benchmarking DNA Sequence Models for Causal Regulatory
+Variant Prediction in Human Genetics
+Gonzalo Benegas1, G ̈okcen Eraslan2,∗, Yun S. Song1,3,4,∗
+1Computer Science Division, University of California, Berkeley 2Biology Research | AI Development, gRED Computational Sciences, Genentech 3Department of Statistics, University of California, Berkeley 4Center for Computational Biology, University of California, Berkeley
+March 4, 2025
+Abstract
+Machine learning holds immense promise in biology, particularly for the challenging task of identifying causal variants for Mendelian and complex traits. Two primary approaches have emerged for this task: supervised sequence-to-function models trained on functional genomics experimental data and self-supervised DNA language models that learn evolutionary constraints on sequences. However, the field currently lacks consistently curated datasets with accurate labels, especially for non-coding variants, that are necessary to comprehensively benchmark these models and advance the field. In this work, we present TraitGym, a curated dataset of regulatory genetic variants that are either known to be causal or are strong candidates across 113 Mendelian and 83 complex traits, along with carefully constructed control variants. We frame the causal variant prediction task as a binary classification problem and benchmark various models, including functional-genomics-supervised models, self-supervised models, models that combine machine learning predictions with curated annotation features, and ensembles of these. Our results provide insights into the capabilities and limitations of different approaches for predicting the functional consequences of non-coding genetic variants. We find that alignmentbased models CADD and GPN-MSA compare favorably for Mendelian traits and complex disease traits, while functional-genomics-supervised models Enformer and Borzoi perform better for complex non-disease traits. Evo2 shows substantial performance gains with scale, but still lags somewhat behind alignment-based models, struggling particularly with enhancer variants. The benchmark, including a Google Colab notebook to evaluate a model in a few minutes, is available at https://huggingface.co/datasets/songlab/TraitGym.
+1 Introduction
+Machine learning is increasingly transforming the fields of genomics, human genetics, and healthcare by offering new avenues for predicting the impact of genetic variants on phenotypes and by potentially improving the accuracy of trait or disease risk predictions from individual human genomes. A major challenge in these domains is determining which among millions of intercorrelated genetic variants are causal for Mendelian and complex traits, including diseases. Tackling this challenge, which has profound implications for human health, requires robust and scalable methods that can
+∗To whom correspondence should be addressed: eraslan.gokcen@gene.com, yss@berkeley.edu
+1
+available under aCC-BY-NC-ND 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2025.02.11.637758; this version posted March 4, 2025. The copyright holder for this preprint
+
+
+decode the biological syntax of the human genome and how it drives molecular functions across different cells and tissues. Three major classes of approaches have been developed to model DNA sequences and predict the effects of genetic variants. The first approach utilizes supervised machine learning models, commonly referred to as sequence-to-function models, which are trained to predict genome-wide functional genomics experimental data from DNA sequences (Eraslan et al., 2019); we refer to these models as functional-genomics-supervised. These models predict the functional effects of specific variants by assessing how changes in the DNA sequence influence experimental outcomes. The second approach involves self-supervised genomic language models (gLMs), such as masked or autoregressive language models, which are trained only on DNA sequences from one or multiple species without relying on experimental data (Benegas et al., 2025b). Models that utilize sequences from multiple species take advantage of evolutionary conservation to gain functional insights. Variant effects in such models are assessed by comparing the log-likelihood between the alternative and reference alleles of the variant, as well as by quantifying changes in the latent representations. Another class of methods includes integrative approaches, which combine machine learning predictions with curated annotation features to improve the accuracy of variant effect prediction (Schubach et al., 2024). Additionally, traditional conservation scores phastCons (Siepel et al., 2005) and phyloP (Pollard et al., 2010) have been strong predictors of trait-associated variants (Sullivan et al., 2023). Despite its importance, the field currently lacks consistently processed and comprehensively curated datasets of putative causal regulatory genetic variants with reliable labels. Furthermore, there is a pressing need for establishing a common ground for systematically benchmarking state-ofthe-art models based on functional-genomics-supervised, self-supervised and integrative approaches, in order to help advance the field. In this article, we present TraitGym, a curation of two non-coding variant benchmark datasets from human genetics: one comprising causal variants for 113 Mendelian traits, and another consisting of strong causal variant candidates across 83 complex traits, along with carefully constructed control sets matching relevant summary statistics (such as minor allele frequencies, variant types, distances from transcription start sites, and linkage disequilibrium scores) of putative causal variants. We frame the task as binary classification between putatively causal and noncausal variants, allowing to evaluate several state-of-the-art functional-genomics-supervised and self-supervised models, alongside integrative methods and their ensembles. We find that alignmentbased integrative and self-supervised models compare favorably for Mendelian traits and complex disease traits, while functional-genomics-supervised models do better on complex non-disease traits. The classification of variants is substantially harder for complex traits, but consistent improvement is observed by ensembling input and predicted features from different models. Additionally, we introduce a new gLM trained specifically on regulatory regions and demonstrate that it compares favorably with other alignment-free self-supervised language models.
+2 Background
+One of the essential quests in biology is to understand the genotype-to-phenotype relationship (Figure 1). The genotype is the genetic makeup of an organism, i.e., the set of DNA sequences composing each genome. The phenotype is the collection of observable traits of an individual, such as height or cholesterol levels. Phenotypic variance can be decomposed into components attributed to genetic and environmental factors. The influence of non-coding genetic variants on phenotype is mediated via the expression of genes in different tissues and cell types. Functional-genomicssupervised models attempt to learn the relationship between DNA sequence and gene expression,
+2
+available under aCC-BY-NC-ND 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2025.02.11.637758; this version posted March 4, 2025. The copyright holder for this preprint
+
+
+High
+Low
+Natural selection
+Underlying biology
+Functional-genomics-supervised models
+Self-supervised models
+Genotype Gene expression Phenotype
+High
+Low
+Genotype Gene expression
+Genotype
+Figure 1: Genotype-to-phenotype relationship and general ML approaches for prediction.
+Mendelian trait Complex trait
+Genes
+Figure 2: Mendelian vs. complex traits. A single gene typically controls a Mendelian trait, whereas a complex trait is influenced by multiple mutations across several genes, each contributing a small individual effect.
+leveraging genome-wide experimental data (Eraslan et al., 2019). Natural selection closes the loop by impacting which genotypes are favored over time, based on the fitness of the phenotype on a given environment. Therefore, the space of observed DNA sequences contains rich information about the underlying biology; this is precisely the signal leveraged by self-supervised DNA language models (Benegas et al., 2025b). The are two classes of phenotypic traits: Mendelian and complex (Figure 2). Mendelian traits, such as hemophilia, can be strongly affected by a single mutation in a single gene. On the other hand, complex traits, such as the risk to develop Alzheimer’s disease, are affected by several mutations in multiple genes, each typically with a small individual effect. The fact that variants affecting Mendelian traits have larger phenotypic effect sizes than variants affecting complex traits makes the former relatively easier to predict, as they tend to have larger effects on gene expression (the signal picked up by functional-genomics-supervised models) and tend to be subject to stronger purifying selection (the signal picked up by self-supervised models).
+3 Related work
+Kathail et al. (2024) provide a comprehensive overview of the landscape of non-coding variant effect prediction in human genetics. GeneticsGym (Finucane et al., 2024) evaluates the prediction of causal variants for human complex traits, but limited to protein-coding variants. Dey et al. (2020)
+3
+available under aCC-BY-NC-ND 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2025.02.11.637758; this version posted March 4, 2025. The copyright holder for this preprint
+
+
+evaluate the prediction of non-coding causal variants for human complex traits, but limited to a previous generation of functional-genomics-supervised models. A recent work (Fabiha et al., 2024) also evaluates the prediction of causal variants for complex traits, but does not cover self-supervised models nor Mendelian traits. Benegas et al. (2025a) evaluate the prediction of non-coding causal variants for human Mendelian traits, but with a much larger, non-subsampled negative set of 2.6 million variants, which makes it less practical to evaluate some of the latest, computationally expensive models. Tang et al. (2024) and Patel et al. (2024) benchmark the ability of functional-genomics-supervised and self-supervised models to predict non-coding variant effects on gene expression and chromatin accessibility, but they cover neither Mendelian nor complex traits. BEND (Marin et al., 2024) and GV-Rep (Li et al., 2024) evaluate self-supervised models for the prediction of diseaseassociated variants from ClinVar (Landrum et al., 2020). While not documented, it is likely that these variants mostly cover Mendelian rather than complex diseases. Furthermore, expert-reviewed pathogenic variants in ClinVar are highly skewed towards coding and splice region variants, containing only a single promoter variant and no intergenic variants (Supplementary Table S7). Neither of these benchmarks establishes adequate baselines for this task. BEND includes a single earlygeneration functional-genomics-supervised model (Zhou & Troyanskaya, 2015), but does not include any conservation-based model, which are usually strong for this task (Benegas et al., 2025a). GVRep does not include any baseline. Thus, TraitGym is the only benchmark of causal non-coding variant prediction for both Mendelian and complex human traits. Furthermore, it is the only available framework to evaluate both the latest functional-genomics-supervised and self-supervised models, as well as strong non-neural baselines.
+4 Benchmark datasets
+TraitGym consists of two curated datasets of non-coding genetic variants affecting Mendelian and complex traits (Table 1). We focus on non-coding variants since understanding their impact is a particularly important use case for DNA sequence models, compared to coding variants which are more commonly interpreted using protein sequence models. Further, we focus on single-nucleotide variants, the most common form of genetic variation, which is still challenging to interpret. Our data curation process is outlined in Figure 3 and additional details are provided in Appendix A.
+Mendelian traits. Curated causal non-coding variants for 113 Mendelian diseases were collected from Online Mendelian Inheritance in Man, OMIM (Smedley et al., 2016). For additional stringency, we filtered out a small percentage of variants with minor allele frequency (MAF) greater than 0.1% in the Genome Aggregation Database, gnomAD (Chen et al., 2024). We used gnomAD common variants (MAF > 5%) as controls.
+Complex traits. Putative causal and control non-coding variants for 83 complex traits were
+Table 1: Number of variants and traits in TraitGym.
+Dataset Putatively causal variants Total variants Traits
+Mendelian traits 338 3,380 113 Complex traits 1,140 11,400 83
+4
+available under aCC-BY-NC-ND 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2025.02.11.637758; this version posted March 4, 2025. The copyright holder for this preprint
+
+
+OMIM pathogenic
+Causal variants Control variants
+Mendelian traits
+Complex traits UKBB PIP > 0.9 UKBB PIP < 0.01
+gnomAD common
+Consequence
+ TSS distance
+Consequence
+ TSS distance
+ MAF
+ LD Score
+Matching
+Figure 3: Matching putatively causal and control variants. Nine matched control variants are used for each putatively causal variant, within each chromosome. See the text for the details.
+Figure 4: Distribution of consequence classes of putative causal non-coding variants.
+obtained by processing statistical fine-mapping results (Kanai et al., 2021) from association studies in the UK BioBank data (Bycroft et al., 2018). Specifically, we used variants with posterior inclusion probability (PIP) in the credible set greater than 0.9 in any trait as positives and variants with PIP < 0.01 in all traits as controls. We additionally filtered the positive set to genome-wide significant variants (p < 5 × 10−8).
+Variant type (or consequence) annotation. We annotated the consequence (e.g., intergenic, intronic, 5′ UTR, 3′ UTR, etc.) of each variant using Ensembl (McLaren et al., 2016), and refined this annotation by overlapping with candidate cis-regulatory elements from ENCODE (Epstein et al., 2020). Distal non-exonic variants (potential enhancers) comprise a small proportion (10%) in the Mendelian traits dataset but the vast majority (76%) in the complex traits dataset (Figure 4).
+Matching positives and negatives. For each putative causal non-coding variant, we sampled 9 non-coding variants from the control set, matching chromosome, consequence, and distance to transcription start site (TSS). For complex traits, we additionally matched MAF and linkage disequilibrium (LD) score (Bulik-Sullivan et al., 2015) in the UK BioBank. We sampled only 9 controls per positive variant in order to be able to evaluate even the most computationally demanding models. However, we also provide a larger version of the dataset with millions of negative controls per positive variant, for which we evaluate a subset of the models. This expanded version of the dataset for Mendelian traits does not require any subsampling of negatives, but for complex traits we do subsample to match the MAF distribution (Finucane et al., 2024), while still keeping millions of variants.
+Task definition. The task is to classify whether a variant is putatively causal for any trait or not. The input data consist of the reference and alternate allele together with the DNA sequence context. As evaluation metric, we calculate the area under the precision recall curve (AUPRC) for each chromosome (for a model trained on the remaining chromosomes), and then compute a weighted average across chromosomes based on sample size, together with a standard error estimated via bootstrapping (described in Appendix B.4). The baseline AUPRC is 0.1, which is the proportion of positives.
+5
+available under aCC-BY-NC-ND 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2025.02.11.637758; this version posted March 4, 2025. The copyright holder for this preprint
+
+
+Table 2: Benchmarked models. Evo2 was trained with 1 M context size but utilizes a shorter context for variant effect prediction.
+Model Dependencies Params Context size
+Extracted features
+Source
+Functional genomics
+Alignment Population data
+Functional-genomics-supervised models
+Enformer Yes No No 246M 196K 5,138 Avsec et al. (2021) Sei Yes No No 890M 4K 41 Chen et al. (2022) Borzoi Yes No No 186M 524K 7,617 Linder et al. (2025)
+Self-supervised models
+GPN-MSA No Yes No 86M 128 770 Benegas et al. (2025a) NT No No No 2.5B 6K 2,562 Dalla-Torre et al. (2024) HyenaDNA No No No 14M 160K 258 Nguyen et al. (2023) Caduceus No No No 8M 131K 514 Schiff et al. (2024) SpeciesLM No No No 97M 2K 770 Tomaz da Silva et al. (2024) AIDO.DNA No No No 7B 4K 4,354 Ellington et al. (2024) Evo2 No No No 40B 8,192 8,194 Brixi et al. (2025) GPN-Promoter No No No 152M 512 1,026 This work
+Integrative models
+CADD Yes Yes Yes N/A N/A 114 Schubach et al. (2024)
+Conservation scores
+phastCons No Yes No N/A N/A N/A Siepel et al. (2005) phyloP No Yes No N/A N/A N/A Pollard et al. (2010)
+5 Models
+We benchmark functional-genomics-supervised models, self-supervised gLMs, integrative models and conservation scores (Table 2). We introduce a new gLM, called GPN-Promoter, trained using the genomes of 434 animal species, following the training objective of GPN (Benegas et al., 2023) and the ByteNet convolutional architecture (Kalchbrenner et al., 2017; Yang et al., 2024). It is only trained on promoters as an attempt to focus on regulatory regions (we would have liked to train on enhancers as well but no annotation exists for non-model organisms). In our comparisons we include SpeciesLM (Tomaz da Silva et al., 2024), which was also only trained on functional regions (2 kb upstream of start codon). LOL-EVE (Shearer et al., 2024) was also trained on promoters but is not yet publicly available. We also evaluate Evo2 (Brixi et al., 2025), the largest available gLM, trained on a dataset emphasizing exons and promoters. Additional details on models are provided in Appendix B. We evaluate zero-shot model scores as well as ridge logistic regression classifiers (linear probing) trained using extracted features (Table 3). We use a number of folds equal to the number of chromosomes. In each fold, we test on a single chromosome using a model trained on the remaining chromosomes, and the regularization hyperparameter is chosen based on cross-validation on the training chromosomes (detailed in Appendix B.4).
+Functional-genomics-supervised models. Sequence-to-function models predict activity in thousands of different functional genomic tracks, covering different assays, such as gene expression or chromatin accessibility, in different tissues and cell types. As variant effect prediction features, we calculate the norm (across spatial positions) of the predicted log-fold-change in activity between the reference and the alternate sequence, for each separate track (referred to as “l2 score” in Linder et al. (2025)). As zero-shot score, we aggregate the l2 s

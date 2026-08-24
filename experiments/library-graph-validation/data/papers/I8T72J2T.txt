@@ -1,0 +1,191 @@
+PAPER KEY: I8T72J2T
+TITLE: Prediction and entropy of printed English
+AUTHORS: Shannon, C. E.
+
+Prediction and Entropy of Printed English
+By C. E. SHANNON
+(MaNuscript Received Sept. I5, I950)
+A new method of estimating the entropy and redundancy of a language is described. This method exploits the knowledge of the language statistics possessed by those who speak the language, and depends on experimental results in prediction of the next letter when the preceding text is known, Results of experiments in prediction are given, and some properties of an ideal predictor are developed.
+1. hTRODUCTIOX
+I
+N A previous paper' the entropy and redundancy of a language have been defined. The entropy is a statistical parameter which measures, in a certain sense, how much information is produced on the average for each letter of a text in the language. If the language is translated into binary digits (0 or 1) in the most efficient way, the entropy [{ is the average number of binary digits required per letter of the original language. The redundancy, on the other hand, measures the amount of constraint imposed on a text in the language due to its statistical structure, e.g., in English the high frequency of the letter E, the strong tendency of H to follow T or of L' to follow Q. It was estimated that when statistical effects extending over not more than eight letters are considered the entropy is roughly 2.3 bits per letter, the redundancy about 50 per cent. Since then a new method has been found for estimating these quantities, which is more sensitive and takes account of long range statistics, intluences extending over phrases, sentences, etc. This method is based on a study of the predictability of English; how well can the next letter of a text be predicted when the preceding ?{ letters are known. The results of some experiments in prediction will be given, and a theoretical analysis of some of the properties of ideal prediction. By combining the experimental and theoretical results it is possible to estimate upper and lower bounds for the entropy and redundancy. From this analysis it appears that, in ordinary literary English, the long range statistical effects (up to 100 letters) reduce the entropy to something of the order of one bit per letter, with a corresponding redundancy of roughly 75%. The redundancy may be still higher when structure extending over paragraphs, chapters, etc. is included. However, as the lengths involved are increased, the parameters in question become more
+Ie. E. Shannon, "A Mathematical Theory of Communication," Bell System Technical
+Journal, v. Ti , PI'. 3i9-423, 623-656, July, October, 1948. 50
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+PRJo:DICTIOl\; AXD EXTROP,," OF PRIl\;TED ENGLISH 51
+erratic and uncertain, and they depend more critically on the type of text involved.
+2. ENTROPY C.-\.LCUL\TIO~ FROM nm STATISTICS OF EX(;USII
+One method of calculating the entropy II is by a series of approximations F«, FI , F~, ... , which successively take more and more of the statistics of the language into account and approach 1I as a limit. F.\· may be called the Y-gram entropy; it measures the amount of information or entropy due to statistics extending over ~Y adjacent letters of text. F:; is given by'
+F N = -L:p(b;,j) log2Pb,(j)
+- L p(b i , j) log, p(b;, j) + L p(b i) log pCb;)
+i,j .
+(1)
+in which: b , is a block of .Y-1 letters [(Y-1)-gram]
+j is an arbitrary letter following bi
+p(b;, j) is the probability of the ;V-gram hi, j
+hJj) is the conditional probability of letter j after the block bi,
+and is given by p(b, , j)/p(b;).
+The equation (1) can he interpreted as measuring the average uncertainty (conditional entropy) of the next letter j when the preceding X-1 letters are known. As X is increased, Fx includes longer and longer range statistics and the entropy, H, is given by the limiting value of F.v as ;V -+ or.; :
+H = Lim F«,
+N-+«J
+(2)
+The X-gram entropies F.v for small values of N can be calculated from standard tables of letter, digram and trigram Irequencies.' If spaces and punctuation are ignored we have a twenty-six letter alphabet and Fro may be taken (by definition) to be log, 26, or .t/ bits per letter. F t involves letter frequencies and is given by
+~6
+}.\ = - L p(i) log2 p(i) = 4.14 bits per letter.
+i=l
+The digram approximation 1"2 gives the result
+F2 = - L p(i, j) log, Pi(j)
+i.i
+- L p(i, j) log2 p(i, j) + L p(i) log, p(i)
+i,i i
+= 7.70 - 4.14 = .1.56 bits per letter.
+2 Fletcher Prall, "Secret and L'rgent," Blue Ribbon Books, 1942.
+(3)
+(4)
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+S2 THE BF.LL SYSTEM TECII:\J:CAL JOUR:\AL, JAXUARY 1951
+The trigram entropy is given by
+F3 = L p(i, i. k) log2 Pij(k)
+i,j,k
+L p(i, j, k) log- p(i, i. k) + L p(i, j) log, p(i, j) (5)
+i.i,k ;,j
+- 11.0 - 7.7 = 3.3
+In this calculation the trigram table" used did not take into account trigrams bridging two words, such as WOW and OWO in TWO WORDS. To compensate partially for this omission, corrected trigram probabilities pU, j, k) were obtained from the probabilities p'(i,j, k) of the table by the following rough formula:
+p(i, j, k) = ~:~ p'(i, j, k) + 4~5 r(i)p(j, k) + 4~5 p(i, j)s(k)
+where rei) is the probability of letter i as the terminal letter of a word and s(k) is the probability of k as an initial letter. Thus the trigrams within words (an average of 2.5 per word) are counted according to the table; the bridging trigrams (one of each type per word) are counted approximately by assuming independence of the terminal letter of one word and the initial digram in the next or vice versa. Because of the approximations involved here, and also because of the fact that the sampling error in identifying probability with sample frequency is more serious, the value of Fa is less reliable than the previous numbers. Since tables of :Y-gram frequencies were not available for N > 3, F., F 5 , etc. could not be calculated in the same way. However, word frequencies have been tabulated! and can be used to obtain a further approximation. Figure 1 is a plot on log-log paper of the probabilities of words against frequency rank. The most frequent English word "the" has a probability .071 and this is plotted against 1. The next most frequent word "of" has a probability of .034 and is plotted against 2, etc. Using logarithmic scales both for probability and rank, the curve is approximately a straight line with slope -1; thus, if pn is the probability of the nth most frequent word, we have, roughly
+.1
+pn = n (6)
+Zipf' has pointed out that this type of formula, p" = k/ n, gives a rather good approximation to the word probabilities in many different languages. The
+3 G. Dewey, "Relative Frequency of English Speech Sounds," Harvard University
+Press, 1923. , G. K. Zipf, "Human Behavior and the Principle of Least Effort," Addison-Wesley Press, 1949.
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+PREDICTION Al\'D ENTROPY OF PRINTED ENGLISH 53
+formula (6) clearly cannot hold indefinitely since the total probability ~pn
+'"
+-nust be unity, while L .1/n is infinite. If we assume (in the absence of any
+1
+better estimate) that the formula Pn = .1/n holds out to the n at which the
+2 4 6 B 10 20 40 60 100 200 400 1000 2000 4000 10,000 WORD ORDER
+Fig. 1-Relative frequency against rank for English words.
+F,~THE I
+"
+,/,OF I
+~ AND , [+-TO ~
+'~~~I ~.:\. .~
+'~OR ','I
+'~
+~ ~_SAY
+,~
+'q
+I\. "-REALLY
+\
+, >-QUALITY
+, ,,
+,,,
+,,
+O.OOOt
+o.OOOOt 1
+:zow~>
+~ o.oot
+II.
+ao~o:
+0.1
+o.ot
+total probability is unity, and that pn = 0 for larger 11, we find that the critical II is the word of rank 8,727. The entropy is then:
+8727
+- L pn log2 pn = 11.82 bits per word,
+1
+(7)
+or 11.82/4.5 = 2.62 bits per letter since the average word length in English is 4.5 letters. One might be tempted to identify this value with Fu , but actually the ordinate of the F.v curve at JY = 4.5 will be above this value. The reason is that F4 or F 6 involves groups of four or five letters regardless of word division. A word is a cohesive group of letters with strong internal
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+54 THE BELL SYSTEM TECHNICAL JOURNAL, JANUARY 1951
+statistical influences, and consequently the N-grams within words are more restricted than those which bridge words. The effect of this is that we have obtained, in 2.62 bits per letter, an estimate which corresponds more nearly to, say, F5 or Fa. A similar set of calculations was carried out including the space as an additional letter, giving a 27 letter alphabet. The results of both 26- and 27-letter calculations are summarized below:
+F. 26 letter .. _ , .. .. 4.70 27 letter .. _. _. . . . . . . . . . . .. 4.76
+Fl 4.14 4.03
+F. 3.56
+3.32
+F.
+3.3 3.1
+Fword
+2.62 •
+2.14
+The estimate of 2.3 for Fa, alluded to above, was found by several methods, one of which is the extrapolation of the 26-letter series above out to that point. Since the space symbol is almost completely redundant when sequences of one or more words are involved, the values of F N in the 27-letter
+case will be ::~ or .818 of FN for the 26-letter alphabet when N is reasonably
+large.
+3. PREDICTION OF ENGLISH
+The new method of estimating entropy exploits the fact that anyone speaking a language possesses, implicitly, an enormous knowledge of the statistics of the language. Familiarity with the words, idioms, cliches and grammar enables him to fill in missing or incorrect letters in proof-reading, or to complete an unfinished phrase in conversation. An experimental demonstration of the extent to which English is predictable can be given as follows: Select a short passage unfamiliar to the person who is to do the predicting. He is then asked to guess the first letter in the passage. If the guess is correct he is so informed, and proceeds to guess the second letter. If not, he is told the correct first letter and proceeds to his next guess. This is .continued through the text. As the experiment progresses, the subject writes down the correct text up to the current point for use in predicting future letters. The result of a typical experiment of this type is given below. Spaces were included as an additional letter, making a 27 letter alphabet. The first line is the original text; the second line contains a dash for each letter correctly guessed. In the case of incorrect guesses the correct letter is copied in the second line.
+(1) THE ROOM WAS NOT VERY LIGHT A SMALL OBLONG (2) ----ROO------NOT-V-----I------SM----OBL---(1) READING LAMP ON THE DESK SHED GLOW ON (2) REA----------O------D----SHED-GLO--O-(1) POLISHED WOOD BUT LESS ON THE SHABBY RED CARPET (2) P-L-S -- ---O---BU --L·8 --0 ----- -SB --··-RE--C-----
+(8)
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+PREDICTION AND ENTROPY OF PRINTED ENGLISH ss
+Of a total of 129 letters, 89 or 69% were guessed correctly. The errors, as would be expected, occur most frequently at the beginning of words and syllables where the line of thought has more possibility of branching out. It might be thought that the second line in (8), which we will call the reduced text, contains much less information than the first. Actually, both lines contain the same information in the sense that it is possible, at least in principle, to recover the first line from the second. To accomplish this we need an identical twin of the individual who produced the sequence. The twin (who must be mathematically, not just biologically identical) will respond in the same way when faced with the same problem. Suppose, now, we have only the reduced text of (8). We ask the twin to guess the passage. At each point we will know whether his guess is correct, since he is guessing the same as the first twin and the presence of a dash in the reduced text corresponds to a correct guess. The letters he guesses wrong are also available, so that at each stage he can be supplied with precisely the same information the first twin had available.
+ORIGINAL
+TEXT
+-.. - COMPARISON COMPARISON
+REDUCED TEXT
+-.. - ORIGINAL
+TEXT
+
+Fig. 2-Communication system using reduced text.
+The need for an identical twin in this conceptual experiment can be eliminated as follows. In general, good prediction does not require knowledge of more than N preceding letters of text, with N fairly small. There are only a finite number of possible sequences of N letters. We could ask the subject to guess the next letter for each of these possible N-grams. The complete list of these predictions could then be used both for obtaining the reduced text from the original and for the inverse reconstruction process. To put this another way, the reduced text can be considered to be an encoded form of the original, the result of passing the original text through a reversible transducer. In fact, a communication system could be constructed in which only the reduced text is transmitted from one point to the other. This could be set up as shown in Fig. 2, with two identical prediction devices. An extension of the above experiment yields further information concerning the predictability of English. As before, the subject knows the text up to the current point and is asked to guess the next letter. If he is wrong, he is told so and asked to guess again. This is continued until he finds the correct letter. A typical result with this experiment is shown below. The
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+S6 THE BELL SYSTEM TECHNICAL JOURNAL, JANUARY 1951
+first line is the original text and the numbers in the second line indicate the guess at which the correct letter was obtained.
+(1) THE REI S NOR EVE R S EON A MOT 0 R G Y G LEA
+(2) 1 1 1 5 1 1 2 11 2 11 15 1 17 1 1 1 2 1 3 2 1 22 7 1 1 1 1 4 1 1 1 1 1 3 1 (1) F R I E H D 0 F M I H E F 0 U N D T B ISO U T (2) 8 6 1 3 1 11 1 11 1 1 r 11 6 2 1 1 11 1 1 2 11 1 1 1 1
+(1) RAT HER D RAM A T I GAL L Y THE 0 T B E R DAY
+(2) 4 1 1 1 1 11 11 5 1 1 1 1 1 1 1 1 1 11 6 1 11 1 1 1 1 11 1 1 1 1 (9)
+Out of 102 symbols the subject guessed right on the first guess 79 times, on the second guess 8 times, on the third guess 3 times, the fourth and fifth guesses 2 each and only eight times required more than five guesses. Results of this order are typical of prediction by a good subject with ordinary literary English. Newspaper writing, scientific work and poetry generally lead to somewhat poorer scores. The reduced text in this case also contains the same information as the original. Again utilizing the identical twin we ask him at each stage to guess as many times as the number given in the reduced text and recover in this way the original. To eliminate the human element here we must ask our subject, for each possible iV-gram of text, to guess the most probable next letter, the second most probable next letter, etc. This set of data can then serve both for prediction and recovery. Just as before, the reduced text can be considered an encoded version of the original. The original language, with an alphabet of 27 symbols, it, B, ,Z, space, has been translated into a new language with the alphabet 1, 2, , 27. The translating has been such that the symbol 1 now has an extremely high frequency. The symbols 2, 3, 4 have successively smaller frequencies and the final symbols 20, 21, ..• , 27 occur very rarely. Thus the translating has simplified to a considerable extent the nature of the statistical structure involved. The redundancy which originally appeared in complicated constraints among groups of letters, has, by the translating process, been made explicit to a large extent in the very unequal probabilities of the new symbols. It is this, as will appear later, which enables one to estimate the entropy from these experiments. In order to determine how predictability depends on the number N of preceding letters known to the subject, a more involved experiment was carried out. One hundred samples of English text were selected at random from a book, each fifteen letters in length. The subject was required to guess the text, letter by letter, for each sample as in the preceding experiment. Thus one hundred samples were obtained in which the subject had available 0, 1, 2, 3, ... , 14 preceding letters. To aid in prediction the subject made such use as he wished of various statistical tables, letter, digram and trigram
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+PREDICTION AND ENTROPY OF PRINTED ENGLISH 57
+tables, a table of the frequencies of initial letters in words, a list of the frequencies of common words and a dictionary. The samples in this experiment were from "J~ffersoll the Virginian" by Dumas Malone. These results, together with a similar test in which 100 letters were known to the subject, are summarized in Table 1. The column corresponds to the number of preceding letters known to the subject plus one; the row is the number of the guess. The entry in column LV at row S is the number of times the subject guessed the right letter at the Sth guess when (LV-1) letters were known. For example,
+TABLE I
+I 2 3 4 5 6 7 8 9 10 II 12 13 14 15 100
+- ---- - - - - - - - - - - - - - 
+1 18.2 29.2 36 47 51 58 48 66 66 67 62 58 66 72 60 80
+2 10.7 14.8 20 18 13 19 17 15 13 10 I) 14 9 6 18 7
+3 8.6 10.0 12 14 8 5 3 5 9 4 7 7 4 9 5
+4 6.7 8.6 7 3 4 1 4 4 4 4 5 6 4 3 5 3 5 6.5 7.1 1 1 3 4 3 6 1 6 5 2 3 4 6 5.8 5.5 4 5 2 3 2 1 4 2 3 4 1 2
+7 5.6 4.5 3 3 2 2 8 1 1 1 4 1 4 1
+8 5.2 3.6 2 2 1 1 2 1 1 1 1 2 1 3
+9 5.0 3.0 4 5 1 4 2 1 1 2 1 1
+10 4.3 2.6 2 1 3 3 1 2
+11 3.1 2.2 2 2 2 1 1 3 1 1 2 1 12 2.8 1.9 4 2 1 1 1 2 1 1 1 1
+13 2.4 1.5 1 1 1 1 1 1 1 1 1 1
+14 2.3 1.2 1 1 1 1
+15 2.1 1.0 1 1 1 1 1
+16 2.0 .9 1 1 1
+17 1.6 .7 1 2 1 1 1 2 2 18 1.6 .5 1
+19 1.6 .4 1 1 1 1
+20 1.3 .3 1 1 1 21 1.2 .2 22 .8 .1 23 .3 .1
+24 .1 .0 2S .1 26 .1 27 .1
+the entry 19 in column 6, row 2, means that with five letters known the cor reet letter was obtained on the second guess nineteen times out of the hun dred. The first two columns of this table were not obtained by the experimental procedure outlined above but were calculated directly from the known letter and digram frequencies. Thus with no known letters the most probable symbol is the space (probability .182); the next guess, if this is wrong, should be E (probability .107), etc. These probabilities are the frequencies with which the right guess would occur at the first, second, etc., trials with best prediction. Similarly, a simple calculation from the digram table gives the entries in column 1 when the subject uses the table to best
+sed use limited to: Columbia University Libraries. Downloaded on February 03,2025 at 21:39:29 UTC from IEEE Xplore. Re
+
+
+58 THE BELL SYSTEM TEC1INICAL JOURNAL, JANUARY 1951
+advantage. Since the frequency tables are determined from long samples of English, these two columns are subject to less sampling error than the others. It will be seen that the prediction gradually improves, apart from some statistical fluctuation, with increasing knowledge of the past as indicated by the larger numbers of correct first guesses and the smaller numbers of high rank guesses. One experiment was carried out with "reverse" prediction, in which the subject guessed the letter preceding those already known. Although the task is subjectively much more difficult, the scores were only slightly poorer. Thus, with two 101 letter samples from the same source, the subject obtained the following results:
+No. of guess 1 Forward.................. 70 Reverse " 66
+23 10 7
+7 4 2"
+4
+56 23 62
+7 3 1
+8 >8
+o4
+29
+Incidentally, the N-gram entropy FN for a reversed language is equal to that for the forward language as may be seen from the second form in equation (1). Both term

@@ -1,0 +1,537 @@
+PAPER KEY: 56F6UULH
+TITLE: Tutorial on Diffusion Models for Imaging and Vision
+AUTHORS: Chan, Stanley H.
+
+arXiv:2403.18103v1 [cs.LG] 26 Mar 2024
+
+Tutorial on Diffusion Models for Imaging and Vision
+Stanley Chan1
+March 28, 2024
+Abstract. The astonishing growth of generative tools in recent years has empowered many exciting applications in text-to-image generation and text-to-video generation. The underlying principle behind these generative tools is the concept of diffusion, a particular sampling mechanism that has overcome some shortcomings that were deemed difficult in the previous approaches. The goal of this tutorial is to discuss the essential ideas underlying the diffusion models. The target audience of this tutorial includes undergraduate and graduate students who are interested in doing research on diffusion models or applying these models to solve other problems.
+
+Contents
+
+1 The Basics: Variational Auto-Encoder (VAE)
+
+2
+
+1.1 VAE Setting . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2
+
+1.2 Evidence Lower Bound . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+1.3 Training VAE . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+
+1.4 Loss Function . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+
+1.5 Inference with VAE . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+
+2 Denoising Diffusion Probabilistic Model (DDPM)
+
+10
+
+2.1 Building Blocks . . .√. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10 2.2 The magical scalars αt and 1 − αt . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13 2.3 Distribution qϕ(xt|x0) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+
+2.4 Evidence Lower Bound . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+
+2.5 Rewrite the Consistency Term . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18
+
+2.6 Derivation of qϕ(xt−1|xt, x0) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20
+
+2.7 Training and Inference . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23
+
+2.8 Derivation based on Noise Vector . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+
+2.9 Inversion by Direct Denoising (InDI) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27
+
+3 Score-Matching Langevin Dynamics (SMLD)
+
+30
+
+3.1 Langevin Dynamics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30
+
+3.2 (Stein’s) Score Function . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+
+3.3 Score Matching Techniques . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+
+4 Stochastic Differential Equation (SDE)
+
+39
+
+4.1 Motivating Examples . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 39
+
+4.2 Forward and Backward Iterations in SDE . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 41
+
+4.3 Stochastic Differential Equation for DDPM . . . . . . . . . . . . . . . . . . . . . . . . . . . . 43
+
+4.4 Stochastic Differential Equation for SMLD . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 45
+
+4.5 Solving SDE . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 46
+
+5 Conclusion
+
+49
+
+1School of Electrical and Computer Engineering, Purdue University, West Lafayette, IN 47907. Email: stanchan@purdue.edu.
+
+© 2024 Stanley Chan. All Rights Reserved.
+
+1
+
+1 The Basics: Variational Auto-Encoder (VAE)
+1.1 VAE Setting
+A long time ago, in a galaxy far far away, we want to build a generator that generates images from a latent code. The simplest (and perhaps one of the most classical) approach is to consider an encoder-decoder pair shown below. This is called a variational autoencoder (VAE) [1, 2, 3].
+
+The autoencoder has an input variable x and a latent variable z. For the sake of understanding the subject, we treat x as a beautiful image and z as some kind of vector living in some high dimensional space.
+Example. Getting a latent representation of an image is not an alien thing. Back in the time of JPEG compression (which is arguably a dinosaur), we use discrete cosine transform (DCT) basis φn to encode the underlying image / patches of an image. The coefficient vector z = [z1, . . . , zN ]T is obtained by projecting the patch x onto the space spanned by the basis: zn = ⟨φn, x⟩. So, if you give us an image x, we will return you a coefficient vector z. From z we can do inverse transform to recover (ie decode) the image. Therefore, the coefficient vector z is the latent code. The encoder is the DCT transform, and the decoder is the inverse DCT transform.
+
+The name “variational” comes from the factor that we use probability distributions to describe x and z. Instead of resorting to a deterministic procedure of converting x to z, we are more interested in ensuring that the distribution p(x) can be mapped to a desired distribution p(z), and go backwards to p(x). Because of the distributional setting, we need to consider a few distributions.
+
+• p(x): The distribution of x. It is never known. If we knew it, we would have become a billionaire. The whole galaxy of diffusion models is to find ways to draw samples from p(x).
+• p(z): The distribution of the latent variable. Because we are all lazy, let’s just make it a zero-mean unit-variance Gaussian p(z) = N (0, I).
+• p(z|x): The conditional distribution associated with the encoder, which tells us the likelihood of z when given x. We have no access to it. p(z|x) itself is not the encoder, but the encoder has to do
+something so that it will behave consistently with p(z|x). • p(x|z): The conditional distribution associated with the decoder, which tells us the posterior proba-
+bility of getting x given z. Again, we have no access to it.
+
+The four distributions above are not too mysterious. Here is a somewhat trivial but educational example that can illustrate the idea.
+
+Example. Consider a random variable X distributed according to a Gaussian mixture model with
+
+a latent variable z ∈ {1, . . . , K} denoting the cluster identity such that pZ(k) = P[Z = k] = πk for
+
+k = 1, . . . , K. We assume
+
+K k=1
+
+πk
+
+=
+
+1.
+
+Then,
+
+if
+
+we
+
+are
+
+told
+
+that
+
+we
+
+need
+
+to
+
+look
+
+at
+
+the
+
+k-th
+
+cluster
+
+only, the conditional distribution of X given Z is
+
+pX|Z (x|k) = N (x | µk, σk2I).
+
+© 2024 Stanley Chan. All Rights Reserved.
+
+2
+
+The marginal distribution of x can be found using the law of total probability, giving us
+
+K
+
+K
+
+pX(x) = pX|Z (x|k)pZ (k) = πkN (x | µk, σk2I).
+
+(1)
+
+k=1
+
+k=1
+
+Therefore, if we start with pX(x), the design question for the encoder to build a magical encoder such that for every sample x ∼ pX(x), the latent code will be z ∈ {1, . . . , K} with a distribution z ∼ pZ(k).
+To illustrate how the encoder and decoder work, let’s assume that the mean and variance are known and are fixed. Otherwise we will need to estimate the mean and variance through an EM algorithm. It is doable, but the tedious equations will defeat the purpose of this illustration.
+Encoder: How do we obtain z from x? This is easy because at the encoder, we know pX(x) and pZ(k). Imagine that you only have two class z ∈ {1, 2}. Effectively you are just making a binary decision of where the sample x should belong to. There are many ways you can do the binary decision. If you like maximum-a-posteriori, you can check
+
+pZ|X(1|x)
+
+≷ccllaassss
+
+1 2
+
+pZ|X(2|x),
+
+and this will return you a simple decision rule. You give us x, we tell you z ∈ {1, 2}. Decoder: On the decoder side, if we are given a latent code z ∈ {1, . . . , K}, the magical decoder
+just needs to return us a sample x which is drawn from pX|Z (x|k) = N (x | µk, σk2I). A different z will give us one of the K mixture components. If we have enough samples, the overall distribution will follow the Gaussian mixture.
+Smart readers like you will certainly complain: “Your example is so trivially unreal.” No worries. We understand. Life is of course a lot harder than a Gaussian mixture model with known means and known variance. But one thing we realize is that if we want to find the magical encoder and decoder, we must have a way to find the two conditional distributions. However, they are both high-dimensional creatures. So, in order for us to say something more meaningful, we need to impose additional structures so that we can generalize the concept to harder problems.
+In the literature of VAE, people come up with an idea to consider the following two proxy distributions:
+• qϕ(z|x): The proxy for p(z|x). We will make it a Gaussian. Why Gaussian? No particular good reason. Perhaps we are just ordinary (aka lazy) human beings.
+• pθ(x|z): The proxy for p(x|z). Believe it or not, we will make it a Gaussian too. But the role of this Gaussian is slightly different from the Gaussian qϕ(z|x). While we will need to estimate the mean and variance for the Gaussian qϕ(z|x), we do not need to estimate anything for the Gaussian pθ(x|z). Instead, we will need a decoder neural network to turn z into x. The Gaussian pθ(x|z) will be used to inform us how good our generated image x is.
+The relationship between the input x and the latent z, as well as the conditional distributions, are summarized in Figure 1. There are two nodes x and z. The “forward” relationship is specified by p(z|x) (and approximated by qϕ(z|x)), whereas the “reverse” relationship is specified by p(x|z) (and approximated by pθ(x|z)).
+
+Figure 1: In a variational autoencoder, the variables x and z are connected by the conditional distributions p(x|z) and p(z|x). To make things work, we introduce two proxy distributions pθ(x|z) and qϕ(z|x), respectively.
+
+© 2024 Stanley Chan. All Rights Reserved.
+
+3
+
+Example. It’s time to consider another trivial example. Suppose that we have a random variable x and a latent variable z such that
+x ∼ N (x | µ, σ2), z ∼ N (z | 0, 1).
+Our goal is to construct a VAE. (What?! This problem has a trivial solution where z = (x − µ)/σ and x = µ + σz. You are absolutely correct. But please follow our derivation to see if the VAE framework makes sense.)
+
+By constructing a VAE, we mean that we want to build two mappings “encode” and “decode”. For simplicity, let’s assume that both mappings are affine transformations:
+
+z = encode(x) = ax + b, x = decode(z) = cz + d,
+
+so that ϕ = [a, b], so that θ = [c, d].
+
+We are too lazy to find out the joint distribution p(x, z), nor the conditional distributions p(x|z) and p(z|x). But we can construct the proxy distributions qϕ(z|x) and pθ(x|z). Since we have the freedom to choose what qϕ and pθ should look like, how about we consider the following two Gaussians
+
+qϕ(z|x) = N (z | ax + b, 1), pθ(x|z) = N (x | cz + d, c).
+
+The choice of these two Gaussians is not mysterious. For qϕ(z|x): if we are given x, of course we want the encoder to encode the distribution according to the structure we have chosen. Since the encoder structure is ax + b, the natural choice for qϕ(z|x) is to have the mean ax + b. The variance is chosen as 1 because we know that the encoded sample z should be unit-variance. Similarly, for pθ(x|z): if we are given z, the decoder must take the form of cz + d because this is how we setup the decoder. The variance is c which is a parameter we need to figure out.
+We will pause for a moment before continuing this example. We want to introduce a mathematical tool.
+
+1.2 Evidence Lower Bound
+How do we use these two proxy distributions to achieve our goal of determining the encoder and the decoder? If we treat ϕ and θ as optimization variables, then we need an objective function (or the loss function) so that we can optimize ϕ and θ through training samples. To this end, we need to set up a loss function in terms of ϕ and θ. The loss function we use here is called the Evidence Lower BOund (ELBO) [1]:
+
+ELBO(x) d=ef Eqϕ(z|x)
+
+p(x, z) log
+qϕ(z|x)
+
+.
+
+(2)
+
+You are certainly puzzled how on the Earth people can come up with this loss function!? Let’s see what ELBO means and how it is derived.
+
+© 2024 Stanley Chan. All Rights Reserved.
+
+4
+
+In a nutshell, ELBO is a lower bound for the prior distribution log p(x) because we can show that
+
+p(x, z)
+
+log p(x) = some magical steps = Eqϕ(z|x)
+
+log qϕ(z|x)
+
++ DKL(qϕ(z|x)∥p(z|x))
+
+(3)
+
+p(x, z)
+
+≥ Eqϕ(z|x)
+
+log qϕ(z|x)
+
+d=ef ELBO(x),
+
+where the inequality follows from the fact that the KL divergence is always non-negative. Therefore, ELBO is a valid lower bound for log p(x). Since we never have access to log p(x), if we somehow have access to ELBO and if ELBO is a good lower bound, then we can effectively maximize ELBO to achieve the goal of maximizing log p(x) which is the gold standard. Now, the question is how good the lower bound is. As you can see from the equation and also Figure 2, the inequality will become an equality when our proxy qϕ(z|x) can match the true distribution p(z|x) exactly. So, part of the game is to ensure qϕ(z|x) is close to p(z|x).
+
+Figure 2: Visualization of log p(x) and ELBO. The gap between the two is determined by the KL divergence DKL(qϕ(z|x)∥p(z|x)).
+
+Proof of Eqn (3). The whole trick here is to use our magical proxy qϕ(z|x) to poke around p(x) and derive the bound.
+
+log p(x) = log p(x) × qϕ(z|x)dz
+
+multiply 1
+
+=1
+
+=
+
+log p(x) × qϕ(z|x) dz
+
+some constant wrt z
+= Eqϕ(z|x)[log p(x)],
+
+distribution in z
+
+move log p(x) into integral (4)
+
+where the last equality is an interesting fact that a × pZ(z)dz = E[a] for any random variable Z and a scalar a. Of course, E[a] = a.
+See, we have already got Eqϕ(z|x)[·]. Just a few more steps. Let’s use Bayes theorem which states that p(x, z) = p(z|x)p(x):
+
+p(x, z)
+
+Eqϕ(z|x)[log p(x)] = Eqϕ(z|x)
+
+log p(z|x)
+
+= Eqϕ(z|x)
+
+log p(x, z) × qϕ(z|x) p(z|x) qϕ(z|x)
+
+= Eqϕ(z|x)
+
+p(x, z) log
+qϕ(z|x)
+
++ Eqϕ(z|x)
+
+log qϕ(z|x) , p(z|x)
+
+ELBO
+
+DKL (qϕ (z|x)∥p(z|x))
+
+Bayes Theorem Multiply and divide qϕ(z|x)
+(5)
+
+where we recognize that the first term is exactly ELBO, whereas the second term is exactly the KL divergence. Comparing Eqn (5) with Eqn (3), we know that life is good.
+
+© 2024 Stanley Chan. All Rights Reserved.
+
+5
+
+We now have ELBO. But this ELBO is still not too useful because it involves p(x, z), something we have no access to. So, we need to do a little more things. Let’s take a closer look at ELBO
+
+ELBO(x) d=ef Eqϕ(z|x)
+
+p(x, z) log
+qϕ(z|x)
+
+p(x|z)p(z) = Eqϕ(z|x) log qϕ(z|x)
+
+p(z)
+
+= Eqϕ(z|x) [log p(x|z)] + Eqϕ(z|x)
+
+log qϕ(z|x)
+
+= Eqϕ(z|x) [log pθ(x|z)] − DKL(qϕ(z|x)∥p(z)),
+
+definition p(x, z) = p(x|z)p(z)
+split expectation definition of KL
+
+where we secretly replaced the inaccessible p(x|z) by its proxy pθ(x|z). This is a beautiful result. We just showed something very easy to understand.
+
+a Gaussian
+
+a Gaussian a Gaussian
+
+ELBO(x) = Eqϕ(z|x)[log pθ(x|z) ]
+
+−
+
+DKL qϕ(z|x) ∥ p(z) .
+
+(6)
+
+how good your decoder is
+
+how good your encoder is
+
+There are two terms in Eqn (6):
+• Reconstruction. The first term is about the decoder. We want the decoder to produce a good image x if we feed a latent z into the decoder (of course!!). So, we want to maximize log pθ(x|z). It is similar to maximum likelihood where we want to find the model parameter to maximize the likelihood of observing the image. The expectation here is taken with respect to the samples z (conditioned on x). This shouldn’t be a surprise because the samples z are used to assess the quality of the decoder. It cannot be an arbitrary noise vector but a meaningful latent vector. So, z needs to be sampled from qϕ(z|x).
+• Prior Matching. The second term is the KL divergence for the encoder. We want the encoder to turn x into a latent vector z such that the latent vector will follow our choice of (lazy) distribution N (0, I). To be slightly more general, we write p(z) as the target distribution. Because KL is a distance (which increases when the two distributions become more dissimilar), we need to put a negative sign in front so that it increases when the two distributions become more similar.
+
+Example. Let’s continue our trivial Gaussian example. We know from our previous derivation that
+
+qϕ(z|x) = N (z | ax + b, 1), pθ(x|z) = N (x | cz + d, c).
+
+To determine θ and ϕ, we need to minimize the prior matching error and maximize the reconstruction term. For the prior matching, we know that
+
+DKL(qϕ(z|x)∥p(z)) = DKL (N (z | ax + b, 1) ∥ N (z | 0, 1)) .
+
+Since
+
+E[x]
+
+=
+
+µ
+
+and
+
+Var[x]
+
+=
+
+σ2,
+
+the
+
+KL-divergence
+
+is
+
+minimized
+
+when
+
+a
+
+=
+
+1 σ
+
+and
+
+b
+
+=
+
+−
+
+µ σ
+
+so
+
+that
+
+ax + b
+
+=
+
+x−µ σ
+
+.
+
+It
+
+then
+
+follows
+
+that
+
+E[ax + b]
+
+=
+
+0,
+
+and
+
+Var[ax + b]
+
+=
+
+1.
+
+For
+
+the
+
+reconstruction
+
+term,
+
+we
+
+know that
+
+(cz + d − µ)2
+
+Eqϕ(z|x)[log pθ(x|z)] = Eqϕ(z|x) −
+
+2c2
+
+.
+
+Since E[z] = 0 and Var[z] = 1, it follows that the term is maximized when c = σ and d = µ.
+
+© 2024 Stanley Chan. All Rights Reserved.
+
+6
+
+To conclude, the encoder and decoder parameters are
+
+x−µ
+
+z = encode(x) =
+
+,
+
+σ
+
+x = decode(z) = σz + µ,
+
+which is fairly easy to understand.
+
+The reconstruction term and the prior matching terms are illustrated in Figure 3. In both cases, and
+during training, we assume that we have access to both z and x, where z needs to be sampled from qϕ(z|x). Then for reconstruction, we estimate θ to maximize pθ(x|z). For prior matching, we find ϕ to minimize the KL divergence. The optimization can be challenging, because if you update ϕ, the distribution qϕ(z|x) will change.
+
+Figure 3: Interpreting the reconstruction term and the prior matching term in ELBO for a variational autoencoder.
+
+1.3 Training VAE
+Now that we understand the meaning of ELBO, we can discuss how to train the VAE. To train a VAE, we need the ground truth pairs (x, z). We know how to get x; it is just the image from a dataset. But correspondingly what should z be?
+Let’s talk about the encoder. We know that z is generated from the distribution qϕ(z|x). We also know that qϕ(z|x) is a Gaussian. Assume that this Gaussian has a mean µ and a covariance matrix σ2I (Ha! Our laziness again! We do not use a general covariance matrix but assume an equal variance).
+The tricky part is how to determine µ and σ2 from the input image x. Okay, if you run out of clue, do not worry. Welcome to the Dark Side of the Force. We construct a deep neural network(s) such that
+
+µ = µϕ (x)
+
+neural network
+
+σ2 =
+
+σϕ2
+
+(x),
+
+neural network
+
+Therefore, the samples z(ℓ) (where ℓ denotes the ℓ-th training sample in the training set) can be sampled from the Gaussian distribution
+
+z(ℓ) ∼ N (z | µϕ(x(ℓ)), σϕ2 (x(ℓ))I),
+
+where µϕ, σϕ2 are functions of x.
+
+(7)
+
+qϕ (z|x(ℓ) )
+
+The idea is summarized in Figure 4 where we use a neural network to estimate the Gaussian parameters, and from the Gaussian we draw samples. Note that µϕ(x(ℓ)) and σϕ2 (x(ℓ)) are functions of x(ℓ). Thus, for a different x(ℓ) we will have a different Gaussian.
+
+© 2024 Stanley Chan. All Rights Reserved.
+
+7
+
+Figure 4: Implementation of a VAE encoder. We use a neural network to take the image x and estimate the mean µϕ and variance σϕ2 of the Gaussian distribution.
+
+Remark. For any high-dimensional Gaussian x ∼ N (x|µ, Σ), the sampling process can be done via
+
+the transformation of white noise
+
+1
+
+x = µ + Σ 2 w,
+
+(8)
+
+1
+where w ∼ N (0, I). The half matrix Σ 2 can be obtained through eigen-decomposition or Cholesky factorization. For diagonal matrices Σ = σ2I, the above reduces to
+
+x = µ + σw, where w ∼ N (0, I).
+
+(9)
+
+Let’s talk about the decoder. The decoder is implemented through a neural network. For notation simplicity, let’s define it as decodeθ where θ denotes the network parameters. The job of the decoder network is to take a latent variable z and generates an image x:
+
+x = decodeθ(z).
+
+(10)
+
+Now let’s make one more (crazy) assumption that the error between the decoded image x and the ground truth image x is Gaussian. (Wait, Gaussian again?!) We assume that
+
+(x − x) ∼ N (0, σd2ec),
+
+for some σd2ec.
+
+Then, it follows that the distribution pθ(x|z) is
+
+log pθ(x|z) = log N

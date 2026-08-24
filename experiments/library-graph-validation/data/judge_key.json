@@ -1,0 +1,74 @@
+{
+  "Q1_diffusion_lineage__r0": {
+    "Option 1": "B",
+    "Option 2": "D",
+    "Option 3": "A",
+    "Option 4": "C"
+  },
+  "Q1_diffusion_lineage__r1": {
+    "Option 1": "B",
+    "Option 2": "A",
+    "Option 3": "D",
+    "Option 4": "C"
+  },
+  "Q1_diffusion_lineage__r2": {
+    "Option 1": "A",
+    "Option 2": "C",
+    "Option 3": "B",
+    "Option 4": "D"
+  },
+  "Q2_protein_ensemble_consensus__r0": {
+    "Option 1": "C",
+    "Option 2": "D",
+    "Option 3": "A",
+    "Option 4": "B"
+  },
+  "Q2_protein_ensemble_consensus__r1": {
+    "Option 1": "D",
+    "Option 2": "B",
+    "Option 3": "A",
+    "Option 4": "C"
+  },
+  "Q2_protein_ensemble_consensus__r2": {
+    "Option 1": "B",
+    "Option 2": "D",
+    "Option 3": "C",
+    "Option 4": "A"
+  },
+  "Q3_optimal_transport_crosscut__r0": {
+    "Option 1": "D",
+    "Option 2": "B",
+    "Option 3": "C",
+    "Option 4": "A"
+  },
+  "Q3_optimal_transport_crosscut__r1": {
+    "Option 1": "A",
+    "Option 2": "D",
+    "Option 3": "B",
+    "Option 4": "C"
+  },
+  "Q3_optimal_transport_crosscut__r2": {
+    "Option 1": "B",
+    "Option 2": "C",
+    "Option 3": "A",
+    "Option 4": "D"
+  },
+  "Q4_dna_lm_variant_critique__r0": {
+    "Option 1": "C",
+    "Option 2": "A",
+    "Option 3": "D",
+    "Option 4": "B"
+  },
+  "Q4_dna_lm_variant_critique__r1": {
+    "Option 1": "B",
+    "Option 2": "C",
+    "Option 3": "D",
+    "Option 4": "A"
+  },
+  "Q4_dna_lm_variant_critique__r2": {
+    "Option 1": "B",
+    "Option 2": "D",
+    "Option 3": "A",
+    "Option 4": "C"
+  }
+}

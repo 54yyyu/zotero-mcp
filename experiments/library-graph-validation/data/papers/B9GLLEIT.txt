@@ -1,0 +1,186 @@
+PAPER KEY: B9GLLEIT
+TITLE: Wasserstein Flow Matching: Generative modeling over families of distributions
+AUTHORS: Haviv, Doron; Pe'er, Dana; Pooladian, Aram-Alexandre; Amos, Brandon
+
+Wasserstein Flow Matching: Generative modeling over families of distributions
+Doron Haviv1,2,∗, Aram-Alexandre Pooladian3,∗, Dana Pe’er1,4, Brandon Amos5,†
+1Memorial Sloan–Kettering Cancer Center
+2Weill Cornell
+3Center for Data Science, New York University
+4Howard Hughes Medical Institute
+5Meta AI
+November 4, 2024
+Abstract
+Generative modeling typically concerns the transport of a single source distribution to a single target distribution by learning (i.e., regressing onto) simple probability flows. However, in modern data-driven fields such as computer graphics and single-cell genomics, samples (say, point-clouds) from datasets can themselves be viewed as distributions (as, say, discrete measures). In these settings, the standard generative modeling paradigm of flow matching would ignore the relevant geometry of the samples. To remedy this, we propose Wasserstein flow matching (WFM), which appropriately lifts flow matching onto families of distributions by appealing to the Riemannian nature of the Wasserstein geometry. Our algorithm leverages theoretical and computational advances in (entropic) optimal transport, as well as the attention mechanism in our neural network architecture. We present two novel algorithmic contributions. First, we demonstrate how to perform generative modeling over Gaussian distributions, where we generate representations of granular cell states from single-cell genomics data. Secondly, we show that WFM can learn flows between high-dimensional and variable sized point-clouds and synthesize cellular microenvironments from spatial transcriptomics datasets. Code is available at WassersteinFlowMatching.
+1 Introduction
+Today’s abundance of data and scalability of training massive neural networks has made it possible to generate hyper-realistic images on the basis of training examples (OpenAI, 2022), as well as video and audio clips (Vyas et al., 2023; Xing et al., 2023), and, of course, text (Bubeck et al., 2023). All of these are instances of generative modeling: given access to finitely many samples from a distribution, devise a scheme which generates new samples from the same distribution. Generative modeling has also been revolutionary in the biomedical sciences, for drug design (Jumper et al., 2021) and single-cell genomics (Lopez et al., 2018). Nearly all frameworks exploit the notion that datasets (of, say, genomic profiles of cells, images, videos, or corpora of text documents) are
+∗Equal contribution. Correspondance to doron.haviv12@gmail.com and ap6599@nyu.edu. †Meta was involved only in an advisory role. All experimentation and data processing was conducted at MSKCC.
+1
+arXiv:2411.00698v1 [cs.LG] 1 Nov 2024
+
+
+Method Data type Source Target
+FM over Rd x ∈ Rd x ∼ p0 y ∼ p1 FM over M x ∈ M x ∼ p0 y ∼ p1 FM over ∆d μ ∈ P(∆d) μ ∼ p0 ν ∼ p1
+Wasserstein FM μ ∈ P(Rd) μ ∼ p0 ν ∼ p1 → Gaussians N (m, Σ) N (mμ, Σμ) ∼ p0 N (mν, Σν) ∼ p1 → Point-Clouds 1
+n
+P
+i δxi
+1 m
+P
+i δxi ∼ p0 1
+n
+P
+j δyj ∼ p1
+Wasserstein FM
+p0 p1
+μν
+N (mμ, Σμ) N (mν , Σν )
+1 m
+P
+i δxi
+1 n
+P
+j δyj
+Figure 1: Left: Table contrasting FM methods over Rd, general manifolds M, categorical and Dirichlet distributions on the d-simplex ∆d, and finally, our approach, FM problems defined over P(Rd). Right: WFM overview, which learns flows over distributions over distributions.
+instantiations of probability measures, and the task is to transform a point sampled from random noise to generate a data point that obeys the distribution of interest. Among the zoo of available generative models, one approach noted for its flexibility and simplicity is Flow Matching (FM) (Albergo and Vanden-Eijnden, 2022; Lipman et al., 2022; Liu et al., 2022). For a fixed target probability measure, FM learns an implicitly defined vector field that can transform a source measure (e.g., the standard Gaussian) to the target. Unlike discrete time and probabilistic generative models (such as Denoising Diffusion Models by Song et al. (2020)), FM learns a deterministic, continuous normalizing flow by regressing onto a simple conditional probability flow. This approach, while originally designed for Euclidean domains, can be readily adopted to Riemannian geometries (Chen and Lipman, 2023). Riemannian flow matching is widely used for generating samples over geometries such as spheres, tori, translation/rotation groups, simplices, triangular meshes, mazes, and molecular positions and structures. The Wasserstein geometry, a canonical geometry over distributions, does not easily fit into any of these existing frameworks and has not been successfully adapted for flow matching. This geometry is useful, for example, in computational graphics where collections of 3D shapes are represented as empirical distributions (point-clouds). Likewise, recent developments in single-cell genomics analysis have demonstrated that gene-expression profiles from groups of cells aggregated via their mean and covariance can capture cellular microenvironments or highlight fine-grain clusters (Haviv et al., 2024b; Persad et al., 2023). For both point-cloud and Gaussian settings, it is natural to search for a unified generative model that respects the underlying geometry of the data, namely, treating each sample as itself a probability distribution.
+Contributions. We introduce Wasserstein Flow Matching (WFM), a principled extension of the FM framework lifted to the space of probability distributions. As illustrated in Figure 1, a single point in our source and target datasets is itself a distribution (e.g., a single discrete measure or a single Gaussian), and our aim is to learn vector fields acting on the space of probability distributions and match the optimal transport map, which is the geodesic in Wasserstein space. WFM is an instantiation of Riemannian FM (Chen and Lipman, 2023), where we train a neural model to learn a continuous normalizing flow (CNF) between distributions over distributions. We demonstrate the effectiveness of our approach for generative modeling between distributions over Gaussian distributions and distributions over point-clouds. The former task is motivated by recent directions in single-cell and spatial transcriptomics (Haviv et al., 2024b; Persad et al., 2023), where we consider matching problems over the Bures–Wasserstein space (BW), the Gaussian submanifold of the Wasserstein space. In this case, we show that WFM can be further modified, resulting in the Bures–Wasserstein FM (BW-FM) algorithm. We validate BW-FM on a variety of
+2
+
+
+Gaussian-based datasets, where we observe that samples generated by our algorithm are significantly more robust than naı ̈ve approaches which do not fully exploit the underlying geometry of the data. In turn, we present a generative model for cell states and niches from single-cell genomics data. Point-cloud generation is made possible by two distinct, yet crucial, algorithmic primitives: (1) incorporating transformers in our neural network architecture (Vaswani, 2017; Lee et al., 2019), and (2) recent algorithmic advances in entropic optimal transport (Pooladian and Niles-Weed, 2021). Indeed, our WFM algorithm performs generative modeling in the Wasserstein space, where geodesics are given by pushforwards of optimal transport (OT) maps; see Section 2.3 for more information. Both the transformer architecture and entropic optimal transport are crucial to approximating the OT map between independent point-clouds. Indeed, the permutation equivariance of attention makes the transformer a natural basis for our model, inherently modeling the equivariance feature of the Wasserstein geometry while maintaining scalability in high-dimensions. For datasets of 3D point-clouds with uniform sizes, the performance of WFM is comparable to other current generative models. However, due to their particular training paradigms (namely the voxelization of 3D spaces), contemporary approaches cannot scale to high-dimensional point-clouds and fail on datasets with variable sized examples. Conversely, WFM succeeds in the high-dimensional and inhomogeneous settings, unlocking generative modeling to new, previously uncharted domains such as synthesizing niches from spatial genomics data. The ability to model tissue biology in this generative manner could enhance our understanding of how environment is associated with cell state. In the context of many diseases, most notably cancer and its tumor-immune microenvironment, these insights are critical for developing novel therapeutics (Binnewies et al., 2018).
+2 Background and related work
+We let P2(Rd) denote the set of probability distributions over Rd with finite second moment, and write P2,ac(Rd) to be those with densities. For a probability measure μ and (vector-valued) function f , we interchangeably write R ∥f (x)∥2 dμ(x) and ∥f ∥2
+L2(μ). Let M be a Riemannian manifold, with
+P(M) defining the space of probability measures over said manifold. For x ∈ M, we write TxM to mean the tangent space of the manifold at x, and write the metric on the tangent space (at x) as g(x). For x0 ∈ M with initial velocity v ∈ Tx0M, the terminal location of the resulting geodesic is expressed as the output of the exponential map v 7→ expx0(v) ∈ M. Similarly, for an initial point x0 and terminal location x1, the logarithmic map defines the tangent vector, denoted x1 7→ logx0(x1), such that expx0(logx0(x1)) = x1. The set of symmetric matrices (resp. positive
+definite matrices) over Rd are denoted by Sd (resp. Sd
+++).
+2.1 Riemannian flow matching
+We first briefly discuss the Riemannian flow matching (RFM) framework of Chen and Lipman (2023). Let p0 be the source distribution and p1 be the target distribution over a Riemannian manifold M, and let (γt)t∈[0,1] be a curve of probability measures satisfying γ0 = p0 and γ1 = p1. Letting (wt)t∈[0,1] denote a family of vector fields, we say that the pair (γt, wt)t∈[0,1] satisfy the continuity equation with respect to the metric g, abbreviated to (γt, wt) ∈ Cg if
+∂tγt + ∇g ·(γtwt) = 0 , (1)
+where ∇g· is the Riemannian divergence operator.
+3
+
+
+The goal of RFM is to regress a parameterized vector field (e.g., a neural network), written fθ(x, t) ∈ TxM for t ∈ [0, 1], onto the family wt by minimizing
+mθin
+Z1
+0
+Z
+∥fθ(zt, t) − wt(zt)∥2
+g(zt) dγt(zt) dt ,
+assuming access to a pair (γt, wt)t∈[0,1] that satisfies equation 1, which is not possible in many scenarios. Borrowing insights from recent work (e.g., Albergo and Vanden-Eijnden (2022); Lipman et al. (2022); Liu et al. (2022)), the authors construct a simple vector field that satisfies the continuity equation, resulting in the tractable objective
+mθin
+Z1
+0
+ZZ
+∥fθ(xt, t) − x ̇ t∥2
+g(xt) dp0(x) dp1(y) dt , (2)
+where, for example, xt = expx((1 − t) logx(y)) ∈ M, and x ̇ t ∈ TxtM. For complete discussions and proofs, see (Chen and Lipman, 2023). Once fθ is appropriately fit using equation 2, we can generate
+new samples from p1: start by sampling X0 ∼ p0, then follow X ̇ t = fθ(Xt, t) numerically by discretizing the dynamics given by the exponential map, resulting in X1 ∼ p1. We emphasize that the dynamics are only simulated at inference time and not when training fθ, which is commonly known as a simulation-free training paradigm.
+2.2 Related work
+Generative models for point-clouds. Paralleling the progress in generative models for natural images, the field of point-cloud generation is rapidly expanding. Many different models have been used from this task, namely generative-adversarial-nets (Achlioptas et al., 2018), variational autoencoders (Gadelha et al., 2018), normalizing flows (Yang et al., 2019; Kim et al., 2020; Klokov et al., 2020), diffusion (Zhou et al., 2021; Cai et al., 2020) and even euclidean FM (Wu et al., 2023). Thus far, these approaches are limited to uniformly sized point-clouds in 2D & 3D, and fail on high-dimensional spaces which cannot be voxelized.
+Generative models over families of distributions. Our work is not the first to instantiate Riemannian FM with a manifold of probability measures. Two notable works are Fisher FM (Davis et al., 2024) and Categorical FM (Cheng et al., 2024), which consider the FM algorithm with respect to the Fisher–Rao geometry Amari (2016); Nielsen (2020) over the d-dimensional simplex ∆d. The work of Stark et al. (2024) is similar in spirit, where they focus on the Dirichlet distribution for generation of discrete data. Another related work is that of Atanackovic et al. (2024), called Meta FM. Their approach requires pairs of distributions which are already coupled, with the goal of solving FM between a distribution over pairs. In contrast, we emphasize that our proposed Wasserstein FM applies between two separate uncoupled distributions over distributions.
+2.3 Wasserstein geometry
+The (squared) 2-Wasserstein distance between two probability measures μ, ν ∈ P2,ac(Rd) is given by the non-convex optimization problem over vector-valued maps T : Rd → Rd
+W2
+2 (μ, ν) := min
+T :T♯μ=ν ∥id − T ∥2
+L2(μ) , (3)
+4
+
+
+where the pushforward constraint, written T♯μ = ν, means that, for X ∼ μ, the image follows T (X) ∼ ν. The minimizer to equation 3 is called the optimal transport (OT) map, denoted T μ→ν
+⋆
+(we abbreviate this to T⋆ when it is clear from context). The existence and uniqueness of the optimal transport map under the stated regularity conditions is due to Brenier (1991). The Wasserstein space is the space of probability densities with finite second moment endowed with the Wasserstein distance; this space is known to be a metric space (Villani, 2009). Following the celebrated work of Otto (2001), the Wasserstein space can be formally (meaning, non-rigorously) viewed as a Riemannian manifold, whose properties we now describe in brief; see e.g., Ambrosio et al. (2008) for a rigorous treatment. Following the definition in Theorem 8.5.1 from Ambrosio et al. (2008), the tangent space at a point μ ∈ P2,ac(Rd) consists of all possible tangent vectors that emanate from μ, written formally as
+TμP2,ac(Rd) := {λ(T μ→ν
+⋆ − id) : λ > 0, ν ∈ P2(Rd)}L2(μ) ,
+where the overline denotes the closure of the set in L2(μ), and the norm on the tangent space is also L2(μ). The exponential and logarithmic maps read
+v 7→ expμ(v) := (id + v)♯μ , ν 7→ logμ(ν) := T μ→ν
+⋆ − id ,
+where id is the identity map. Consequently, the (constant-speed) geodesic, or McCann interpolation, between two measures μ and ν is given by the curve (μt)t∈[0,1] where
+μt := (T μ→ν
+t )♯μ := ((1 − t)id + tT μ→ν
+⋆ )♯μ ≡ expμ((1 − t) logμ(ν)) , (4)
+where the last expression writes the pushforward in terms of the exponential and logarithmic maps. Equivalently, at the level of the random variables, one can write Xt = (1 − t)X0 + tT μ→ν
+⋆ (X0), where X0 ∼ μ and Xt ∼ μt for any t ∈ [0, 1]. Combined with (vt)t∈[0,1] a suitable family of vector fields, the McCann interpolation satisfies the continuity equation equation 1 over Rd, re-written as
+∂tμt + ∇ · (μtvt) = 0 , s.t. μ0 = μ , μ1 = ν , (5)
+where the divergence operator is the usual Euclidean one over Rd, thus we write (μt, vt) ∈ C. The link between the constant speed geodesics and the 2-Wasserstein distance can be viewed from the celebrated Benamou–Brenier formulation of optimal transport (Benamou and Brenier, 2000):
+W2
+2 (μ, ν) = inf
+(μt,vt)∈C
+Z1
+0
+∥vt∥2
+L2(μt) dt . (6)
+The optimal curve of measures is given by the constant-speed geodesics described above, and the optimal velocity field is given by
+vt = (T μ→ν
+⋆ − id) ◦ (T μ→ν
+t )−1 . (7)
+The vector field equation 7 should be interpreted as the time-derivative of the McCann interpolation:
+X ̇ t = (T μ→ν
+⋆ − id)(X0) = (T μ→ν
+⋆ − id) ◦ (T μ→ν
+t )−1(Xt) , X0 ∼ μ .
+5
+
+
+2.3.1 Bures–Wasserstein (BW) space
+A known special case of the Wasserstein space is the Bures–Wasserstein space, which consists of the submanifold of non-degenerate Gaussians parameterized by means and covariances {(m, Σ) : m ∈ Rd, Σ ∈ Sd
+++}, endowed with the Wasserstein metric. We provide a brief exposition on the geometry of the Bures–Wasserstein space and refer the interested reader to Lambert et al. (2022) for detailed calculations and explanations, as we follow their notation conventions. The OT map between μ = N (mμ, Σμ) and ν = N (mν, Σν) has a closed-form (Gelbrich, 1990):
+T⋆(x) := mν + Cμ→ν(x − mμ) := b + Σ− 1
+μ 2 (Σ
+1
+μ2 Σν Σ
+1
+μ2 )
+1
+2 Σ− 1
+μ 2 (x − mμ) .
+As this map is affine, it is clear that the McCann interpolation between two Gaussians is always Gaussian (indeed, Gaussians undergoing affine transformations remain Gaussian). More generally, we have the succinct representation of the tangent space at a point in the Bures–Wasserstein space
+TμBW(Rd) := {a + S(id − mμ) : a ∈ Rd, S ∈ Sd} ,
+and the exponential and logarithmic maps between two non-degenerate Gaussians are
+(a, S) 7→ expμ((a, S)) := N (mμ + a, (S + I)Σμ(S + I)) ,
+ν 7→ logμ(ν) := (mν − mμ, Σ− 1
+μ 2 (Σ
+1
+μ2 Σν Σ
+1
+μ2 )
+1
+2 Σ− 1
+μ 2 − I),
+where the exponential map requires S ≻ −I. We also mention that the norm on the tangent space at μ in the Bures–Wasserstein space can be written as
+∥(a, S)∥2
+BW(μ) := ∥a − mμ∥2 + Tr(S2Σμ)
+With the above, it is easy to compute the closed-form solutions for the mean and covariance of the McCann interpolation μt = (Tt)♯μ = N (mt, Σt), given by
+mt := (1 − t)a + tb , Σt := TtATt := ((1 − t)I + tCA→B)A((1 − t)I + tCA→B) . (8)
+We can relate the Euclidean and Riemannian time-derivatives of Σt through the following manipulation (the latter of which respects the exponential and logarithmic maps above):
+ ̇ΣE
+t = T ̇tATt + TtAT ̇t = T ̇t(Tt)−1TtATt + TtATt(Tt)−1T ̇t =  ̇ΣBW
+t Σt + Σt  ̇ΣBW
+t.
+To this end, we can draw parallels to equation 7 by writing
+m ̇ t = b − a , Σ ̇ BW
+t = (CA→B − I)((1 − t)I + tCA→B)−1 . (9)
+3 Flow matching over the Wasserstein space
+3.1 Training
+Let p0 and p1 denote probability measures over the Wasserstein space.∗ Our goal is to learn a vector field that transports the family of measures p0 to the family p1. To accomplish this, we
+6
+
+
+Figure 2: When the number of training examples is too few, all methods collapse on the training data, though our Riemannian instantiation of BW-FM captures the covariances perfectly. In the presence of sufficiently many samples, all methods generate Gaussians along the whole spiral, and our Riemannian BW-FM algorithm produces the most consistent samples. Other methods produce Gaussians with degenerate covariance, highlighting their inability to effectively capture the geometry of the data.
+pass in the McCann interpolation μt and optimal velocity field vt in the Riemannian FM objective equation 2, resulting in our Wasserstein FM (WFM) objective:
+mθin
+Z1
+0
+ZZ
+∥f geo
+θ (μt, t) − vt∥2
+L2(μt) dp0(μ) dp1(ν) dt . (10)
+As mentioned in the introduction, our two use-cases of interest are flow matching over (1) families of point-clouds, and (2) families of Gaussian distributions. While the theory outlined in Section 2.3 explicitly requires continuous distributions to ensure all objects are well-defined, the approximation of measures by point-clouds is reasonable for our applications and can be made computationally efficient courtesy of existing open-source packages (Flamary et al., 2021; Cuturi et al., 2022). In the case of Gaussian measures, the theory as described in Section 2.3.1 holds in full force. Our training algorithm is described in Algorithm 1, and Appendix D contains precise details regarding our neural network parameterization. Finally, we mention that both frameworks can be modified by training via the multisample FM algorithm (Pooladian et al., 2023a; Tong et al., 2023). In brief, the idea is to augment the training regime by pairing the source and target minibatch samples according to some prescribed matching rule (instead of independent draws from both p0 and p1). We employ this augmentation during training, which we detail in Appendix B.
+∗This implies that μ ∼ p0 is itself a distribution (e.g., a Gaussian or a point-cloud), not a random variable.
+7
+
+
+Algorithm 1: Wasserstein FM Trainingd
+Data: base p0 ∈ P(P(Rd)), target p1 ∈ P(P(Rd)), geo ∈ {BW, P

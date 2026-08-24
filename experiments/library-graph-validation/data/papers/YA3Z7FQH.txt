@@ -1,0 +1,140 @@
+PAPER KEY: YA3Z7FQH
+TITLE: NovoSpaRc: flexible spatial reconstruction of single-cell gene expression with optimal transport
+AUTHORS: Friedman, Nir; Moriel, Noa; Senel, Enes; Rajewsky, Nikolaus; Karaiskos, Nikos; Nitzan, Mor
+
+NovoSpaRc: flexible spatial reconstruction
+of single-cell gene expression with optimal
+transport
+Noa Moriel1,6, Enes Senel2,6, Nir Friedman 1,3, Nikolaus Rajewsky 2, Nikos Karaiskos 2✉
+and Mor Nitzan 1,4,5✉
+Single-cell RNA-sequencing (scRNA-seq) technologies have revolutionized modern biomedical sciences. A fundamental challenge is to incorporate spatial information to study tissue organization and spatial gene expression patterns. Here, we describe a detailed protocol for using novoSpaRc, a computational framework that probabilistically assigns cells to tissue locations. At the core of this framework lies a structural correspondence hypothesis, that cells in physical proximity share similar gene expression profiles. Given scRNA-seq data, novoSpaRc spatially reconstructs tissues based on this hypothesis, and optionally, by including a reference atlas of marker genes to improve reconstruction. We describe the novoSpaRc algorithm, and its implementation in an open-source Python package (https://pypi.org/ project/novosparc). NovoSpaRc maps a scRNA-seq dataset of 10,000 cells onto 1,000 locations in <5 min. We describe results obtained using novoSpaRc to reconstruct the mouse organ of Corti de novo based on the structural correspondence assumption and human osteosarcoma cultured cells based on marker gene information, and provide a step-by-step guide to Drosophila embryo reconstruction in the Procedure to demonstrate how these two strategies can be combined.
+Introduction
+The emergence of single-cell RNA sequencing (scRNA-seq) technologies during the past decade has transformed the biomedical sciences1,2. High-throughput methods have enabled the simultaneous profiling of tens of thousands of cellular transcriptomes stemming from the same tissue3,4, and have been successfully employed throughout multiple discoveries, such as to dissect tissue heterogeneity5,6, to identify rare cell populations5,7,8, and to investigate cell states5,9 and cell differentiation processes10,11, among others. Most scRNA-seq methods, however, require dissociation of the tissue, which results in the loss of spatial information. The physical context of the cells is vital for the understanding of biological functions at the global collective scale, such as spatial gene expression patterns12–15, the organization of cell types in space8,16,17, and heterogeneous responses to perturbations or drug responses throughout diseased tissues18. At the local level, spatial information is critical to thoroughly study cell–cell interactions and individual cellular states19. A growing number of experimental techniques that preserve spatial information have been developed over the past few years to bridge this gap20. While these techniques are generally still at least partially limited in throughput14,16,17,21,22 spatial resolution23 and commercially available solutions are often costly and do not offer single-cell resolution (10x Genomics (https://www. 10xgenomics.com/products/spatial-gene-expression), Spatial Transcriptomics (https://spatialtra nscriptomics.com) and GeoMx Digital Spatial Profiling (https://www.nanostring.com/products/ geomx-digital-spatial-profiler/geomx-dsp-overview), experimental techniques are constantly diversifying, advancing and improving24. However, there is an urgent need to decipher spatial information from the vast single-cell data that already exist. Furthermore, there is a need to leverage the expanding
+1School of Computer Science and Engineering, The Hebrew University of Jerusalem, Jerusalem, Israel. 2Systems Biology of Gene Regulatory Elements, Berlin Institute for Medical Systems Biology, Max Delbrück Center for Molecular Medicine in the Helmholtz Association, Berlin, Germany. 3Institute of Life Sciences, The Hebrew University of Jerusalem, Jerusalem, Israel. 4Racah Institute of Physics, The Hebrew University of Jerusalem, Jerusalem, Israel. 5Faculty of Medicine, The Hebrew University of Jerusalem, Jerusalem, Israel. 6These authors contributed equally: Noa Moriel, Enes Senel.
+✉e-mail: nikolaos.karaiskos@mdc-berlin.de; mor.nitzan@mail.huji.ac.il
+NATURE PROTOCOLS | VOL 16 | SEPTEMBER 2021 | 4177–4200 | www.nature.com/nprot 4177
+PROTOCOL
+https://doi.org/10.1038/s41596-021-00573-7
+1234567890():,;
+1234567890():,;
+
+
+set of high-quality spatial transcriptomic experiments as complementary information for scRNA-seq data and learn how to efficiently integrate these two sources of information. The challenge of reconstructing spatial gene expression from single-cell data is tackled by multiple computational techniques that require the existence of a spatial atlas of marker genes to be used as a reference guide. Such a reference atlas is generally only feasible for stereotypical tissues with robust, relatively simple spatial expression patterns (which can repeat across multiple subunits within the tissue), such as liver lobules, the intestinal epithelium and some embryos at early developmental stages. In addition, such a reference atlas may not be straightforward to construct25–29. Recently, we presented novoSpaRc30, a new computational approach that can spatially reconstruct gene expression without the need of a reference atlas, while being able to incorporate it and enhance performance if such an atlas exists. NovoSpaRc is based on the hypothesis that physically neighboring cells share similar transcriptional profiles, so that gene expression, on average, does not change abruptly but in a continuous manner for a substantial subset of genes. We formulated this hypothesis within the framework of optimal transport(OT)31,32, which allows us to probabilistically assign single cells to tissue locations by interpolating between the continuity assumption and other types of prior experimental data, such as the spatial expression of a subset of marker genes (or a reference atlas), the local density of cells in the tissue and the technical quality of read measurements extracted from single cells. In this paper, we provide detailed guidelines for using novoSpaRc to recover the spatial organization of cells and genes in their tissue-of-origin based on single-cell data.
+Overview of the algorithm and workflow
+The main objective of novoSpaRc is to probabilistically map single cells onto the tissue’s physical structure, and infer gene expression patterns across the tissue. To do that, novoSpaRc requires a gene expression matrix and a target space (coordinates of the physical space). Atlas expression, that is, spatial expression of a subset of genes over the tissue, is an additional optional input. Using these inputs, novoSpaRc computes three cost matrices, which together allow us to interpolate between minimizing the deviation of a certain mapping from a structural correspondence assumption between distances of cells in gene expression and physical space, and from a potentially available reference atlas. NovoSpaRc outputs a transport matrix, a probabilistic mapping of cells onto the target space locations, using the OT framework, and computes the inferred spatial gene expression over the target space. The workflow is schematically represented in Fig. 1 along a detailed description below of each of these steps, the inputs and outputs of novoSpaRc, and optional validations and follow-up analyses.
+Input cells and locations descriptions to construct Tissue object (Steps 1–6)
+Cell expression. The main input to the novoSpaRc algorithm is a gene expression matrix that captures single-cell gene expression levels within a population of cells. Cell-by-gene matrices where each entry is the count of RNA molecules retrieved from scRNA-seq are a typical input. However, outputs of other experimental procedures that quantify gene expression levels can be integrated as well, such as using RNA quantization through amplification rounds33 (see organ of Corti example below), fluorescent imaging14,16,17 (see osteosarcoma example below) or other sequencing techniques (refs. 23 and34 and from 10x Genomics (https://www.10xgenomics.com/products/spatial-gene-expression)) (demonstrated for Slide-seq data in ref. 30). Preprocessing of the gene expression matrix can be minimal, such as the standard librarynormalization scheme of cell-count normalization and log transformation for scRNA-seq data35. Since scRNA-seq protocols suffer from low capture probabilities and expression representation is redundant and extensive in dimensions (e.g., ~20,000 genes), using a meaningful low-dimensional representation of expression such as a highly variable set of genes or a latent representation of expression (e.g., using principal component analysis (PCA)) can drastically enhance the quality and runtime of reconstruction.
+Target space. A target space is a set of coordinates corresponding to the physical locations across the tissue onto which novoSpaRc maps the single cells. The set of locations can span any 1D, 2D or 3D structure corresponding either to the explicit tissue structure or a representation that captures the structure’s inherent spatial symmetries. For optimal reconstruction results, the shape of the target space should resemble the shape (or underlying symmetries) of the tissue-of-origin, as the inherent coordinate relationships will be used for the spatial reconstruction. Note that while a faithful
+PROTOCOL NATURE PROTOCOLS
+4178 NATURE PROTOCOLS | VOL 16 | SEPTEMBER 2021 | 4177–4200 | www.nature.com/nprot
+
+
+Input cells and locations descriptions to construct Tissue object Steps 1–6
+Step 4
+a
+b
+c
+d
+Location
+X
+Steps 1–3
+Construct Tissue object
+Step 6
+Steps 7–8
+Location–location physical distance
+Cell–cell expression distance
+(Optional) atlas: cell–location expression distance
+KNN graph KNN graph
+Cells Locations
+Cell
+Cell
+Cell
+Cell
+Compute
+transport
+Predict
+expression
+Cell
+Location
+Location
+Location
+=
+D phys Dexp D exp,phys
+Compute optimal transport of cells to locations and predict expression over target space tissue.reconstruct(α) Step 9
+Fetch mapping and predicted expression over target space
+Cell-to-location mapping tissue.gw
+Predicted expression over target space tissue.sdge
+Gene 2
+Cells ij locations kl
+Cells i locations k
+Tik – εH (T)
+D exp.phys
+ik
+Gene k
+Gene 1
+= argmincoupling T
+Σ
+Σ
+Gene 1 Gene 2
+Gene k
+Cell1
+Cell2
+Cell3
+Celln
+Location
+Location
+Compute cost matrices
+Cell1
+Celln
+Cell2
+Cell3
+Gene 1 Gene 2
+Gene k
+y
+Target space e.g., locations = novosparc.geometry.construct_sphere(...)
+dataset = sc.read(...)
+Cell expression (Optional) atlas expression e.g., atlas_matrix = sc.read(...).X Step 5
+Gene 2
+Gene 4
+Gene 5
+tissue = novosparc.cm.Tissue(dataset, locations, atlas_matrix)
+tissue.sdge
+tissue.gw
+tissue.gw
+tissue.setup_reconstruction(...)
+(1 – α)
++α
+L(D phys,D exp)TikTjl
+kl ij
+•••
+•
+••
+••
+••
+•
+•
+•••
+NATURE PROTOCOLS PROTOCOL
+NATURE PROTOCOLS | VOL 16 | SEPTEMBER 2021 | 4177–4200 | www.nature.com/nprot 4179
+
+
+representation of the tissue-of-origin shape or symmetries is ideal, simpler target spaces or ones that only capture local structures and symmetries of the tissue are many times sufficient. There are two ways to create the target space if no prior reference is available. The most straightforward way is to use novoSpaRc’s internal functions and create a basic shape target space, e.g., rectangle, circle, sphere, prism, etc. If we are interested in reconstructing spatial variability along a single axis, for example, such as that corresponding to a 1D gradient of oxygen or morphogenes in the biological system, we should use a linear target space. For example, in the organ of Corti, a 2D spiral organ essential for hearing, gene expression within cell subpopulations mainly varies along a 1D apexto-base axis. By constructing a corresponding 1D target space, we illustrate novoSpaRc expression reconstruction along this axis (see ‘De novo spatial reconstruction of the organ of Corti’ below). Additionally, a target space can be created from experimental measurements. Representative images can be processed to determine cell locations (along with their corresponding information for gene expression). This is illustrated in the expression reconstruction of human osteosarcoma cultured cells where cell locations are deduced from microscope imaging obtained using multiplexed error-robust fluorescence in situ hybridization (MERFISH) (see osteosarcoma example below). A 3D analog of this case is illustrated in the reconstruction of the Drosophila embryo described in the Procedure.
+(Optional) Atlas expression. A reference atlas is an optional input, carrying information about the expression levels of a subset of genes across the target space. Such a reference atlas can be incorporated into novoSpaRc and increase the reconstruction quality by essentially restricting the space of possible reconstruction solutions to those that are consistent with the atlas, or by spatially regulating the mapping process. The reference atlas can guide the selection of the target space. For example, if marker gene expression is measured using in situ imaging at single-cell resolution, then we can set the target locations at the cells’ centroid locations. To account for atlas information at lower resolution, such as retrieved experimentally from bulk sequencing of sectioned tissue36–38, or from computational local aggregation of nearby cells due to low signal23, spatial expression of genes is binned and integrated (e.g., averaged) to provide expression over the set of target locations. In general, there are no special requirements or restrictions regarding the data format, number of genes and experimental method used to construct the reference atlas. However, reconstruction is likely to benefit from a reference atlas quantifying the expression of spatially informative genes. Given the target space locations, cellular gene expression and, optionally, the reference atlas of spatial expression, we construct a Tissue object, the main object of the novoSpaRc package.
+Compute cost matrices (Steps 7 and 8)
+Having the normalized gene expression matrix and the target space at our disposal, and potentially a reference atlas, we continue with computing the cost matrices that are needed for performing the spatial reconstruction.
+Computing the cell–cell and location–location cost matrices. The cell–cell cost matrix summarizes the distances between cells in gene expression space, and the location–location cost matrix summarizes the physical distances between locations in the target space. The assumption at the heart of novoSpaRc is that there is a correspondence between the structure of locations in physical space and the structure of cells in gene expression space potentially along a low-dimensional nonlinear manifold. More concretely, it implies that there is a correspondence between pairwise distances of locations in physical space and cells in gene expression space. To capture distances along potentially nonlinear low-dimensional structures, we construct k-nearest-neighbors (kNN) graphs (based on Euclidean distances) in physical space and in gene expression space. The corresponding cost matrices consist of pairwise distances between cells and locations, computed as the shortest paths along the corresponding kNN graphs. These cost matrices would be used to capture the essence of the
+Fig. 1 | Schematic representation of the novoSpaRc algorithm. a, Preparation of inputs for novoSpaRc’s Tissue object—constructing a target space and reading gene expression datasets. If a reference atlas is used, then the target space corresponds to its locations. b, Computation of cost matrices including physical distances between locations and expression distances between cells, both computed as the shortest path in kNN graphs. If a reference atlas is used, then an additional cost matrix of atlas correspondence captures the expression discrepancy between locations and cells according to the reference atlas. c, Computation of the OT of cells to locations (tissue.gw) given a parameter α interpolating between the structural correspondence and atlas correspondence objectives. The predicted expression of genes over locations (tissue.sdge) is then computed by matrix multiplication of cellular gene expression and their probabilistic mapping to locations (tissue.gw). The output probabilistic embedding and the predicted spatial gene expression can be fetched from the Tissue object.
+PROTOCOL NATURE PROTOCOLS
+4180 NATURE PROTOCOLS | VOL 16 | SEPTEMBER 2021 | 4177–4200 | www.nature.com/nprot
+
+
+structural correspondence assumption, that is, the averaged transcriptional similarity among physically proximal cells.
+Computing the reference atlas cost matrix. If a reference atlas is available for a subset of genes, the corresponding cost matrix captures the discrepancy between the expression of these genes in each cell and in each location of the target space. Specifically, we compute the Euclidean distance across the subset of genes composing the reference atlas between the cells and locations.
+Compute OT of cells to locations and predict expression over target space (Step 9)
+Setting marginal distributions. Here we set the marginal distributions for both the cells and locations. By default, novoSpaRc initializes the marginal distributions to be uniform. This means that the total spatial mapping probability associated with each cell is the same, and the total mapping probability associated with each location is the same. In cases where nonuniform mapping is desired, where prior biological knowledge exists for the physical density of cells, or where there is varying technical quality of cells, this can be readily incorporated at this step.
+Setting the alpha parameter. The alpha parameter is used to interpolate between two modes of reconstruction: (1) a de novo spatial reconstruction (α = 0), based only on the underlying structural correspondence assumption, and (2) a reconstruction based only on the information provided by the reference atlas for the spatial expression of a set of marker genes (α = 1). Intermediate values take into account both objectives during the reconstruction. Values closer to α = 1 reflect higher confidence in the reference atlas. For example, a reference atlas corresponding to a single-cell expression sample of high quality, and composed of a large number of marker genes, would be expected to generate highly informative cell-to-location distances, as shown below for the MERFISH data. Values closer to α = 0 reflect higher confidence in the structural correspondence assumption, and when spatial smoothness in gene expression is expected to dominate spatial expression variation, for example due to gradients of oxygen or nutrients, or due to physical progression of the cells, such as in the case of the crypt-to-villus axis in the intestinal epithelium12,30.
+Computing the transport matrix. NovoSpaRc then computes an OT matrix that probabilistically assigns single cells to locations through the extended framework of OT as described below.
+Predicting expression over target space. Given single-cell gene expression (as input) and the transport matrix (assigning each of these cells a probability distribution over tissue locations), we can compute the resulting full gene expression expected at each of the locations in the tissue-of-origin. Both the optimal mapping of cells to locations and the predicted expression can be fetched after reconstruction.
+Validation of results and follow-up analyses (Steps 10–14)
+Expression cross-validation. If available, high spatial correlation between the expression of genes from the reference atlas and their predicted expression indicates successful reconstruction and, therefore, can be used to cross-validate the reconstruction. Based on such quantitative evaluation, the algorithm’s parameters (such as α) can be tuned and selected. In addition, displaying genes that are expected to be spatially informative can assist in qualitatively evaluating the reconstruction (as displayed in Step 10 in the Procedure).
+Localized probabi

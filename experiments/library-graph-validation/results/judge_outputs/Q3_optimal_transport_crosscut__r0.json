@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":10,"synthesis":9,"correctness":9,"faithfulness":9,"directness":8},
+            "Option 2": {"coverage":5,"synthesis":6,"correctness":6,"faithfulness":4,"directness":6},
+            "Option 3": {"coverage":6,"synthesis":8,"correctness":7,"faithfulness":6,"directness":7},
+            "Option 4": {"coverage":3,"synthesis":6,"correctness":5,"faithfulness":5,"directness":6}},
+ "ranking": ["Option 1","Option 3","Option 2","Option 4"],
+ "notes": "Option 1 covers all 9 ground-truth papers with accurate purpose mapping and correct lineage claims (ICNN->CellOT, DSBM/SI->SB), making it decisively best. Options 2-4 hallucinate non-present papers (Flow Matching, Rectified Flow) and wrongly declare trajectory inference absent despite GeneTrajectory being present; Option 4 is worst, missing nearly all biology papers and falsely claiming data alignment and trajectory inference are uncovered."}

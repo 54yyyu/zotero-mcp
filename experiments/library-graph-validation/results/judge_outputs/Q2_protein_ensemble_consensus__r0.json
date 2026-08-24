@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":9,"synthesis":9,"correctness":8,"faithfulness":8,"directness":9},
+            "Option 2": {"coverage":9,"synthesis":8,"correctness":8,"faithfulness":8,"directness":8},
+            "Option 3": {"coverage":6,"synthesis":8,"correctness":7,"faithfulness":7,"directness":8},
+            "Option 4": {"coverage":8,"synthesis":9,"correctness":9,"faithfulness":9,"directness":8}},
+ "ranking": ["Option 4","Option 1","Option 2","Option 3"],
+ "notes": "Option 4 is most precise and faithful: it correctly surfaces AlphaFlow's own explicit separation of DiG into a distinct Boltzmann-learning line and P2DFlow's force-field concession, honestly flagging DiG as only secondhand. Option 1 covers all six with strong nuanced synthesis but treats DiG's claim as directly attested. Option 3 fails coverage by wrongly asserting Distributional Graphormer is absent from context, dropping one of the six named methods."}

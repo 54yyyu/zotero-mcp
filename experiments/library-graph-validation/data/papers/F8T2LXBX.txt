@@ -1,0 +1,218 @@
+PAPER KEY: F8T2LXBX
+TITLE: Denoising Diffusion Implicit Models
+AUTHORS: Ermon, Stefano; Meng, Chenlin; Song, Jiaming
+
+Published as a conference paper at ICLR 2021
+DENOISING DIFFUSION IMPLICIT MODELS
+Jiaming Song, Chenlin Meng & Stefano Ermon Stanford University
+{tsong,chenlin,ermon}@cs.stanford.edu
+ABSTRACT
+Denoising diffusion probabilistic models (DDPMs) have achieved high quality image generation without adversarial training, yet they require simulating a Markov chain for many steps in order to produce a sample. To accelerate sampling, we present denoising diffusion implicit models (DDIMs), a more efficient class of iterative implicit probabilistic models with the same training procedure as DDPMs. In DDPMs, the generative process is defined as the reverse of a particular Markovian diffusion process. We generalize DDPMs via a class of non-Markovian diffusion processes that lead to the same training objective. These non-Markovian processes can correspond to generative processes that are deterministic, giving rise to implicit models that produce high quality samples much faster. We empirically demonstrate that DDIMs can produce high quality samples 10× to 50× faster in terms of wall-clock time compared to DDPMs, allow us to trade off computation for sample quality, perform semantically meaningful image interpolation directly in the latent space, and reconstruct observations with very low error.
+1 INTRODUCTION
+Deep generative models have demonstrated the ability to produce high quality samples in many domains (Karras et al., 2020; van den Oord et al., 2016a). In terms of image generation, generative adversarial networks (GANs, Goodfellow et al. (2014)) currently exhibits higher sample quality than likelihood-based methods such as variational autoencoders (Kingma & Welling, 2013), autoregressive models (van den Oord et al., 2016b) and normalizing flows (Rezende & Mohamed, 2015; Dinh et al., 2016). However, GANs require very specific choices in optimization and architectures in order to stabilize training (Arjovsky et al., 2017; Gulrajani et al., 2017; Karras et al., 2018; Brock et al., 2018), and could fail to cover modes of the data distribution (Zhao et al., 2018).
+Recent works on iterative generative models (Bengio et al., 2014), such as denoising diffusion probabilistic models (DDPM, Ho et al. (2020)) and noise conditional score networks (NCSN, Song & Ermon (2019)) have demonstrated the ability to produce samples comparable to that of GANs, without having to perform adversarial training. To achieve this, many denoising autoencoding models are trained to denoise samples corrupted by various levels of Gaussian noise. Samples are then produced by a Markov chain which, starting from white noise, progressively denoises it into an image. This generative Markov Chain process is either based on Langevin dynamics (Song & Ermon, 2019) or obtained by reversing a forward diffusion process that progressively turns an image into noise (Sohl-Dickstein et al., 2015).
+A critical drawback of these models is that they require many iterations to produce a high quality sample. For DDPMs, this is because that the generative process (from noise to data) approximates the reverse of the forward diffusion process (from data to noise), which could have thousands of steps; iterating over all the steps is required to produce a single sample, which is much slower compared to GANs, which only needs one pass through a network. For example, it takes around 20 hours to sample 50k images of size 32 × 32 from a DDPM, but less than a minute to do so from a GAN on a Nvidia 2080 Ti GPU. This becomes more problematic for larger images as sampling 50k images of size 256 × 256 could take nearly 1000 hours on the same GPU.
+To close this efficiency gap between DDPMs and GANs, we present denoising diffusion implicit models (DDIMs). DDIMs are implicit probabilistic models (Mohamed & Lakshminarayanan, 2016) and are closely related to DDPMs, in the sense that they are trained with the same objective function.
+1
+arXiv:2010.02502v4 [cs.LG] 5 Oct 2022
+
+
+Published as a conference paper at ICLR 2021
+Figure 1: Graphical models for diffusion (left) and non-Markovian (right) inference models.
+In Section 3, we generalize the forward diffusion process used by DDPMs, which is Markovian, to non-Markovian ones, for which we are still able to design suitable reverse generative Markov chains. We show that the resulting variational training objectives have a shared surrogate objective, which is exactly the objective used to train DDPM. Therefore, we can freely choose from a large family of generative models using the same neural network simply by choosing a different, nonMarkovian diffusion process (Section 4.1) and the corresponding reverse generative Markov Chain. In particular, we are able to use non-Markovian diffusion processes which lead to ”short” generative Markov chains (Section 4.2) that can be simulated in a small number of steps. This can massively increase sample efficiency only at a minor cost in sample quality.
+In Section 5, we demonstrate several empirical benefits of DDIMs over DDPMs. First, DDIMs have superior sample generation quality compared to DDPMs, when we accelerate sampling by 10× to 100× using our proposed method. Second, DDIM samples have the following “consistency” property, which does not hold for DDPMs: if we start with the same initial latent variable and generate several samples with Markov chains of various lengths, these samples would have similar high-level features. Third, because of “consistency” in DDIMs, we can perform semantically meaningful image interpolation by manipulating the initial latent variable in DDIMs, unlike DDPMs which interpolates near the image space due to the stochastic generative process.
+2 BACKGROUND
+Given samples from a data distribution q(x0), we are interested in learning a model distribution pθ(x0) that approximates q(x0) and is easy to sample from. Denoising diffusion probabilistic models (DDPMs, Sohl-Dickstein et al. (2015); Ho et al. (2020)) are latent variable models of the form
+pθ(x0) =
+∫
+pθ(x0:T )dx1:T , where pθ(x0:T ) := pθ(xT )
+T
+∏
+t=1
+p(t)
+θ (xt−1|xt) (1)
+where x1, . . . , xT are latent variables in the same sample space as x0 (denoted as X ). The parameters θ are learned to fit the data distribution q(x0) by maximizing a variational lower bound:
+mθax Eq(x0)[log pθ(x0)] ≤ mθax Eq(x0,x1,...,xT ) [log pθ(x0:T ) − log q(x1:T |x0)] (2)
+where q(x1:T |x0) is some inference distribution over the latent variables. Unlike typical latent variable models (such as the variational autoencoder (Rezende et al., 2014)), DDPMs are learned with a fixed (rather than trainable) inference procedure q(x1:T |x0), and latent variables are relatively high dimensional. For example, Ho et al. (2020) considered the following Markov chain with Gaussian transitions parameterized by a decreasing sequence α1:T ∈ (0, 1]T :
+q(x1:T |x0) :=
+T
+∏
+t=1
+q(xt|xt−1), where q(xt|xt−1) := N
+(√ αt
+αt−1
+xt−1,
+(
+1 − αt
+αt−1
+)
+I
+)
+(3)
+where the covariance matrix is ensured to have positive terms on its diagonal. This is called the forward process due to the autoregressive nature of the sampling procedure (from x0 to xT ). We call the latent variable model pθ(x0:T ), which is a Markov chain that samples from xT to x0, the generative process, since it approximates the intractable reverse process q(xt−1|xt). Intuitively, the forward process progressively adds noise to the observation x0, whereas the generative process progressively denoises a noisy observation (Figure 1, left).
+A special property of the forward process is that
+q(xt|x0) :=
+∫
+q(x1:t|x0)dx1:(t−1) = N (xt; √αtx0, (1 − αt)I);
+2
+
+
+Published as a conference paper at ICLR 2021
+so we can express xt as a linear combination of x0 and a noise variable :
+xt = √αtx0 + √1 − αt, where  ∼ N (0, I). (4)
+When we set αT sufficiently close to 0, q(xT |x0) converges to a standard Gaussian for all x0, so it is natural to set pθ(xT ) := N (0, I). If all the conditionals are modeled as Gaussians with trainable
+mean functions and fixed variances, the objective in Eq. (2) can be simplified to1:
+Lγ (θ) :=
+T
+∑
+t=1
+γtEx0∼q(x0),t∼N (0,I)
+[
+‖(t)
+θ (√αtx0 + √1 − αtt) − t‖2
+2
+]
+(5)
+where θ := {(t)
+θ }tT=1 is a set of T functions, each (t)
+θ : X → X (indexed by t) is a function with trainable parameters θ(t), and γ := [γ1, . . . , γT ] is a vector of positive coefficients in the objective that depends on α1:T . In Ho et al. (2020), the objective with γ = 1 is optimized instead to maximize generation performance of the trained model; this is also the same objective used in noise conditional score networks (Song & Ermon, 2019) based on score matching (Hyva ̈rinen, 2005; Vincent, 2011). From a trained model, x0 is sampled by first sampling xT from the prior pθ(xT ), and then sampling xt−1 from the generative processes iteratively.
+The length T of the forward process is an important hyperparameter in DDPMs. From a variational perspective, a large T allows the reverse process to be close to a Gaussian (Sohl-Dickstein et al., 2015), so that the generative process modeled with Gaussian conditional distributions becomes a good approximation; this motivates the choice of large T values, such as T = 1000 in Ho et al. (2020). However, as all T iterations have to be performed sequentially, instead of in parallel, to obtain a sample x0, sampling from DDPMs is much slower than sampling from other deep generative models, which makes them impractical for tasks where compute is limited and latency is critical.
+3 VARIATIONAL INFERENCE FOR NON-MARKOVIAN FORWARD PROCESSES
+Because the generative model approximates the reverse of the inference process, we need to rethink the inference process in order to reduce the number of iterations required by the generative model. Our key observation is that the DDPM objective in the form of Lγ only depends on the marginals2 q(xt|x0), but not directly on the joint q(x1:T |x0). Since there are many inference distributions (joints) with the same marginals, we explore alternative inference processes that are non-Markovian, which leads to new generative processes (Figure 1, right). These non-Markovian inference process lead to the same surrogate objective function as DDPM, as we will show below. In Appendix A, we show that the non-Markovian perspective also applies beyond the Gaussian case.
+3.1 NON-MARKOVIAN FORWARD PROCESSES
+Let us consider a family Q of inference distributions, indexed by a real vector σ ∈ RT
+≥0:
+qσ(x1:T |x0) := qσ(xT |x0)
+T
+∏
+t=2
+qσ(xt−1|xt, x0) (6)
+where qσ(xT |x0) = N (√αT x0, (1 − αT )I) and for all t > 1,
+qσ(xt−1|xt, x0) = N
+(√αt−1x0 +
+√
+1 − αt−1 − σt2 · xt − √αtx0
+√1 − αt
+, σ2
+tI
+)
+. (7)
+The mean function is chosen to order to ensure that qσ(xt|x0) = N (√αtx0, (1 − αt)I) for all t (see Lemma 1 of Appendix B), so that it defines a joint inference distribution that matches the “marginals” as desired. The forward process3 can be derived from Bayes’ rule:
+qσ(xt|xt−1, x0) = qσ(xt−1|xt, x0)qσ(xt|x0)
+qσ(xt−1|x0) , (8)
+1Please refer to Appendix C.2 for details. 2We slightly abuse this term (as well as joints) when only conditioned on x0. 3We overload the term “forward process” for cases where the inference model is not a diffusion.
+3
+
+
+Published as a conference paper at ICLR 2021
+which is also Gaussian (although we do not use this fact for the remainder of this paper). Unlike the diffusion process in Eq. (3), the forward process here is no longer Markovian, since each xt could depend on both xt−1 and x0. The magnitude of σ controls the how stochastic the forward process is; when σ → 0, we reach an extreme case where as long as we observe x0 and xt for some t, then xt−1 become known and fixed.
+3.2 GENERATIVE PROCESS AND UNIFIED VARIATIONAL INFERENCE OBJECTIVE
+Next, we define a trainable generative process pθ(x0:T ) where each p(t)
+θ (xt−1|xt) leverages knowl
+edge of qσ(xt−1|xt, x0). Intuitively, given a noisy observation xt, we first make a prediction4 of the corresponding x0, and then use it to obtain a sample xt−1 through the reverse conditional distribution qσ(xt−1|xt, x0), which we have defined.
+For some x0 ∼ q(x0) and t ∼ N (0, I), xt can be obtained using Eq. (4). The model (t)
+θ (xt) then
+attempts to predict t from xt, without knowledge of x0. By rewriting Eq. (4), one can then predict the denoised observation, which is a prediction of x0 given xt:
+f (t)
+θ (xt) := (xt − √1 − αt · (t)
+θ (xt))/√αt. (9)
+We can then define the generative process with a fixed prior pθ(xT ) = N (0, I) and
+p(t)
+θ (xt−1|xt) =
+{
+N (f (1)
+θ (x1), σ12I) if t = 1
+qσ(xt−1|xt, f (t)
+θ (xt)) otherwise, (10)
+where qσ(xt−1|xt, f (t)
+θ (xt)) is defined as in Eq. (7) with x0 replaced by f (t)
+θ (xt). We add some
+Gaussian noise (with covariance σ12I) for the case of t = 1 to ensure that the generative process is supported everywhere.
+We optimize θ via the following variational inference objective (which is a functional over θ):
+Jσ(θ) := Ex0:T ∼qσ(x0:T )[log qσ(x1:T |x0) − log pθ(x0:T )] (11)
+= Ex0:T ∼qσ (x0:T )
+[
+log qσ(xT |x0) +
+T
+∑
+t=2
+log qσ(xt−1|xt, x0) −
+T
+∑
+t=1
+log p(t)
+θ (xt−1|xt) − log pθ(xT )
+]
+where we factorize qσ(x1:T |x0) according to Eq. (6) and pθ(x0:T ) according to Eq. (1).
+From the definition of Jσ, it would appear that a different model has to be trained for every choice of σ, since it corresponds to a different variational objective (and a different generative process). However, Jσ is equivalent to Lγ for certain weights γ, as we show below.
+Theorem 1. For all σ > 0, there exists γ ∈ RT>0 and C ∈ R, such that Jσ = Lγ + C.
+The variational objective Lγ is special in the sense that if parameters θ of the models (t)
+θ are not
+shared across different t, then the optimal solution for θ will not depend on the weights γ (as global optimum is achieved by separately maximizing each term in the sum). This property of Lγ has two implications. On the one hand, this justified the use of L1 as a surrogate objective function for the variational lower bound in DDPMs; on the other hand, since Jσ is equivalent to some Lγ from Theorem 1, the optimal solution of Jσ is also the same as that of L1. Therefore, if parameters are not shared across t in the model θ, then the L1 objective used by Ho et al. (2020) can be used as a surrogate objective for the variational objective Jσ as well.
+4 SAMPLING FROM GENERALIZED GENERATIVE PROCESSES
+With L1 as the objective, we are not only learning a generative process for the Markovian inference process considered in Sohl-Dickstein et al. (2015) and Ho et al. (2020), but also generative processes for many non-Markovian forward processes parametrized by σ that we have described. Therefore, we can essentially use pretrained DDPM models as the solutions to the new objectives, and focus on finding a generative process that is better at producing samples subject to our needs by changing σ.
+4Learning a distribution over the predictions is also possible, but empirically we found little benefits of it.
+4
+
+
+Published as a conference paper at ICLR 2021
+Figure 2: Graphical model for accelerated generation, where τ = [1, 3].
+4.1 DENOISING DIFFUSION IMPLICIT MODELS
+From pθ(x1:T ) in Eq. (10), one can generate a sample xt−1 from a sample xt via:
+xt−1 = √αt−1
+(
+xt − √1 − αt(t)
+θ (xt)
+√αt
+)
+} {{ }
+“ predicted x0”
++
+√
+1 − αt−1 − σt2 · (t)
+θ (xt)
+} {{ }
+“direction pointing to xt”
++ σtt
+}{{}
+random noise
+(12)
+where t ∼ N (0, I) is standard Gaussian noise independent of xt, and we define α0 := 1. Different choices of σ values results in different generative processes, all while using the same model θ, so re-training the model is unnecessary. When σt = √(1 − αt−1)/(1 − αt)√1 − αt/αt−1 for all t, the forward process becomes Markovian, and the generative process becomes a DDPM.
+We note another special case when σt = 0 for all t5; the forward process becomes deterministic given xt−1 and x0, except for t = 1; in the generative process, the coefficient before the random noise t becomes zero. The resulting model becomes an implicit probabilistic model (Mohamed & Lakshminarayanan, 2016), where samples are generated from latent variables with a fixed procedure (from xT to x0). We name this the denoising diffusion implicit model (DDIM, pronounced /d:Im/), because it is an implicit probabilistic model trained with the DDPM objective (despite the forward process no longer being a diffusion).
+4.2 ACCELERATED GENERATION PROCESSES
+In the previous sections, the generative process is considered as the approximation to the reverse process; since of the forward process has T steps, the generative process is also forced to sample T steps. However, as the denoising objective L1 does not depend on the specific forward procedure as long as qσ(xt|x0) is fixed, we may also consider forward processes with lengths smaller than T , which accelerates the corresponding generative processes without having to train a different model.
+Let us consider the forward process as defined not on all the latent variables x1:T , but on a subset {xτ1 , . . . , xτS }, where τ is an increasing sub-sequence of [1, . . . , T ] of length S. In particular, we define the sequential forward process over xτ1 , . . . , xτS such that q(xτi |x0) =
+N (√ατi x0, (1 − ατi )I) matches the “marginals” (see Figure 2 for an illustration). The generative process now samples latent variables according to reversed(τ ), which we term (sampling) trajectory. When the length of the sampling trajectory is much smaller than T , we may achieve significant increases in computational efficiency due to the iterative nature of the sampling process.
+Using a similar argument as in Section 3, we can justify using the model trained with the L1 objective, so no changes are needed in training. We show that only slight changes to the updates in Eq. (12) are needed to obtain the new, faster generative processes, which applies to DDPM, DDIM, as well as all generative processes considered in Eq. (10). We include these details in Appendix C.1.
+In principle, this means that we can train a model with an arbitrary number of forward steps but only sample from some of them in the generative process. Therefore, the trained model could consider many more steps than what is considered in (Ho et al., 2020) or even a continuous time variable t (Chen et al., 2020). We leave empirical investigations of this aspect as future work.
+5Although this case is not covered in Theorem 1, we can always approximate it by making σt very small.
+5
+
+
+Published as a conference paper at ICLR 2021
+4.3 RELEVANCE TO NEURAL ODES
+Moreover, we can rewrite the DDIM iterate according to Eq. (12), and its similarity to Euler integration for solving ordinary differential equations (ODEs) becomes more apparent:
+xt−∆t
+√αt−∆t
+= xt
+√αt
++
+(√
+1 − αt−∆t
+αt−∆t
+−
+√ 1 − αt
+αt
+)
+(t)
+θ (xt) (13)
+To derive the corresponding ODE, we can reparameterize (√1 − α/√α) with σ and (x/√α) with x ̄. In the continuous case, σ and x are functions of t, where σ : R≥0 → R≥0 is continous, increasing with σ(0) = 0. Equation (13) with can be treated as a Euler method over the following ODE:
+dx ̄(t) = (t)
+θ
+( x ̄(t)
+√σ2 + 1
+)
+dσ(t), (14)
+where the initial conditions is x(T ) ∼ N (0, σ(T )) for a very large σ(T ) (which corresponds to the case of α ≈ 0). This suggests that with enough discretization steps, the we can also reverse the generation process (going from t = 0 to T ), which encodes x0 to xT and simulates the reverse of the ODE in Eq. (14). This suggests that unlike DDPM, we can use DDIM to obtain encodings of the observations (as the form of xT ), which might be useful for other downstream applications that requires latent representations of a model.
+In a concurrent work, (Song et al., 2020) proposed a “probability flow ODE” that aims to recover the marginal densities of a stochastic differential equation (SDE) based on scores, from which a similar sampling schedule can be obtained. Here, we state that the our ODE is equivalent to a special case of theirs (which corresponds to a continuous-time analog of DDPM).
+Proposition 1. The ODE in E

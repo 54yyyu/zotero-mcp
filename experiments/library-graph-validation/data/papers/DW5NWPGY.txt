@@ -1,0 +1,121 @@
+PAPER KEY: DW5NWPGY
+TITLE: Gene trajectory inference for single-cell data by optimal transport metrics
+AUTHORS: Qu, Rihao; Cheng, Xiuyuan; Sefik, Esen; Stanley III, Jay S.; Landa, Boris; Strino, Francesco; Platt, Sarah; Garritano, James; Odell, Ian D.; Coifman, Ronald; Flavell, Richard A.; Myung, Peggy; Kluger, Yuval
+
+Nature Biotechnology | Volume 43 | February 2025 | 258–268 258
+nature biotechnology
+Article https://doi.org/10.1038/s41587-024-02186-3
+Gene trajectory inference for single-cell data by optimal transport metrics
+Rihao Qu1,2,3,11, Xiuyuan Cheng4,11, Esen Sefik 3, Jay S. Stanley III5, Boris Landa5, Francesco Strino 6, Sarah Platt2,7, James Garritano5, Ian D. Odell3,7, Ronald Coifman5,8,9, Richard A. Flavell 3,10,12, Peggy Myung 2,7,12 & Yuval Kluger 1,2,5,12
+Single-cell RNA sequencing has been widely used to investigate cell state transitions and gene dynamics of biological processes. Current strategies to infer the sequential dynamics of genes in a process typically rely on constructing cell pseudotime through cell trajectory inference. However, the presence of concurrent gene processes in the same group of cells and technical noise can obscure the true progression of the processes studied. To address this challenge, we present GeneTrajectory, an approach that identifies trajectories of genes rather than trajectories of cells. Specifically, optimal transport distances are calculated between gene distributions across the cell–cell graph to extract gene programs and define their gene pseudotemporal order. Here we demonstrate that GeneTrajectory accurately extracts progressive gene dynamics in myeloid lineage maturation. Moreover, we show that GeneTrajectory deconvolves key gene programs underlying mouse skin hair follicle dermal condensate differentiation that could not be resolved by cell trajectory approaches. GeneTrajectory facilitates the discovery of gene programs that control the changes and activities of biological processes.
+Dynamic gene expression changes often specify mechanisms through which cells determine state and function. Indeed, tightly regulated gene cascades underlie a myriad of fundamental processes, such as cell cycle (CC)/mitosis1–4 and tissue/organ differentiation5–8. With the emergence of single-cell RNA-sequencing (scRNA-seq) platforms, cell trajectory inference techniques9–19 are widely applied to study the cellular dynamics of biological processes. These techniques use single-cell whole-transcriptome data to organize cells into lineages and infer a unidimensional latent variable (that is, pseudotime20) that describes a cell’s position along a lineage process. After pseudotime
+construction, gene dynamics underlying a biological process can be inferred by tracking the changing patterns of their expression levels along the cell pseudotime12,15,21. However, when cells undergo multiple processes in parallel (for example, CC coupled with cell differentiation22 or circadian clock23) and each process is governed by a different set of genes, cell pseudotime learned by organizing cells using the collective genes becomes less informative, as it mixes the effects of multiple processes. Mathematically, when multiple processes that are not strongly correlated with each other co-occur in the same group of cells, cell geometry
+Received: 19 December 2022
+Accepted: 26 February 2024
+Published online: 5 April 2024
+Check for updates
+1Computational Biology & Bioinformatics Program, Yale University, New Haven, CT, USA. 2Department of Pathology, Yale University School of Medicine, New Haven, CT, USA. 3Department of Immunobiology, Yale University School of Medicine, New Haven, CT, USA. 4Department of Mathematics, Duke University, Durham, NC, USA. 5Program in Applied Mathematics, Yale University, New Haven, CT, USA. 6PCMGF Limited, Watford, UK. 7Department of Dermatology, Yale University School of Medicine, New Haven, CT, USA. 8Department of Mathematics, Yale University, New Haven, CT, USA. 9Department of Electrical Engineering, Yale University, New Haven, CT, USA. 10Howard Hughes Medical Institute, Yale University School of Medicine, New Haven, CT, USA. 11These authors contributed equally: Rihao Qu, Xiuyuan Cheng. 12These authors jointly supervised this work: Richard A. Flavell, Peggy Myung, Yuval Kluger. e-mail: yuval.kluger@yale.edu
+
+
+Nature Biotechnology | Volume 43 | February 2025 | 258–268 259
+Article https://doi.org/10.1038/s41587-024-02186-3
+populations. In our work, we distinctively define the graph-based Wasserstein distance between pairs of genes to study their underlying pseudotemporal dynamics. Specifically, we normalize the expression of a gene into a probabilistic distribution over cells and then compute the Wasserstein distances between gene distributions in the cell graph (Fig. 1d). Here the cell graph is constructed in a way that provides a representation of cells, which preserves the cell manifold structure in the high-dimensional space (Fig. 1c). In this construction, the graph-based Wasserstein distance between pairwise gene distributions has the following characteristics: (1) it takes into account the geometry of cells; that is, it assigns a higher cost to transport a point mass from one cell to a distant cell as compared to its adjacent neighbors. (2) It prevents the transport across the ambient cell space, which is often a problematic issue when using spatial distance measures (for example, the Euclidean distance in the cell space). In our approach, the computation of gene–gene Wasserstein distances is based on the following two steps (Table 1):
+• Construct a cell graph. As an initial step, we learn a reduceddimensional cell embedding that can capture and represent the cell manifold structure in the original high-dimensional space. Next, we construct a k-nearest neighbor (kNN) graph of cells based on their relative distances in the cell embedding (Fig. 1c). This establishes a cell–cell connectivity map that serves as the ‘roadmap’ for transporting gene distributions in the next step. Here, for a given pair of cells u and v, we search for the shortest path connecting them in the kNN cell graph and denote its length as the graph distance dG(u, v) between cells u and v. This graph distance will be used to define the cost of transporting a point mass between cells u and v in the next step. • Compute gene–gene Wasserstein distances over the cell graph. We model the expression level of genes as discrete distributions on the cell graph. Specifically, we divide the original expression level of a given gene in each cell by the sum of its expression level in all cells. We then define the distance between two gene distributions by the graph-based Wasserstein-p distance (Wp distance, 1 ≤ p < ∞; Fig. 1c,d). Accordingly, the transport cost between cells
+u and v is defined as Cu,v = dG(u, v)p. Here p is a user-defined parameter, and p = 1 refers to the well-known Earth Mover’s distance. Algorithmic details are described in ‘Step 2. Compute graph-based Wasserstein distances between genes’.
+In practice, computing the Wasserstein distance between all pairwise gene distributions can be computationally expensive. When the cell graph is large, the time cost for finding the OT solution increases exponentially. In our framework, we have designed two strategies to accelerate the computation based on (1) cell graph coarse-graining, and (2) gene graph sparsification (details in ‘Step 2. Compute graph-based Wasserstein distances between genes’).
+Gene trajectory construction
+The gene–gene Wasserstein distance captures the pseudotemporal relations of genes in the sense that if two genes are activated consecutively along a biological process, their distributions are expected to have a substantial overlap in the cell graph and thus have a small Wasserstein distance between each other (Fig. 1e). To visualize the geometry of all genes, we convert pairwise gene–gene Wasserstein distances into gene–gene affinities and use diffusion map to get a low-dimensional representation of genes. If dynamical cascades of gene activation and deactivation exist in the data, viewing the gene embedding by a combination of leading diffusion map eigenvectors delineates trajectories of genes (Fig. 1f). Each trajectory is linked with a specific gene program that dictates the underlying biological process. In our approach, the extraction of gene trajectories is performed in a sequential manner (Fig. 1g). To identify the first trajectory, we search
+(determined by these processes) cannot be effectively parametrized by a common single latent variable. Hence, organizing cells into unidimensional lineages is no longer appropriate. To address this challenge, we propose GeneTrajectory, an approach to studying dynamic processes that does not rely on unidimensional parameterization of the cell manifold. GeneTrajectory allows us to deconvolve multiple, independent processes with sequential gene dynamics. In contrast to cell trajectory approaches, GeneTrajectory constructs trajectories of genes rather than trajectories of cells. Our algorithm dissects out gene programs from the whole transcriptome, eliminating the need for initial cell trajectory construction or the specification of the initial and terminal cell states for each process. Using this method, genes that sequentially contribute to a given biological process can be extracted and organized into a respective gene trajectory that reveals the successive order of gene activity. In this work, we begin by showing GeneTrajectory’s efficacy for unraveling gene dynamics through simulation experiments and application to a human myeloid lineage dataset. Subsequently, we use our approach on a mouse embryonic skin dataset to demonstrate that GeneTrajectory can resolve critical cell state transitions during the early-stage development of hair follicles5,24. Our results indicate that GeneTrajectory extracts gene geometry without the need for constructing cell pseudotime, revealing independent trajectories of concurrent processes that are otherwise obscured by cell pseudotime approaches.
+Results
+Computing optimal transport between genes over the cell graph
+A progressive dynamic biological process is usually governed by a finely regulated gene cascade25–27, in which genes are activated and deactivated in a temporal order along the process, dictating the transcriptomic changes of underlying cell states. Moreover, cells can participate in multiple processes simultaneously, either in a dependent or independent manner. For instance, we illustrate two contrasting scenarios by considering the concurrence of a linear process (for example, differentiation) and a cyclic process (for example, CC; Fig. 1a). When these two processes are strictly dependent on each other, they can be parameterized by a common latent variable and result in a one-dimensional cell curve. In this scenario, it is straightforward to assign a meaningful pseudotime for the cells by ordering them along the curve. However, deconvolving genes into two processes and retrieving their pseudotemporal order in each process is not immediately apparent, which requires additional postprocessing (for example, clustering gene dynamics along the cell pseudotime12). In contrast, when these two processes are independent, cells fall into a manifold (as a Cartesian product of these two processes) with an intrinsic dimension >1. These processes do not share a common latent variable, thus gene dynamics inference based on unidimensional interpolation along the cell–cell manifold is no longer appropriate. In practice, the weak and stochastic nature of the dependency between concurrent biological processes can complicate the extraction of the cell path and the construction of cell pseudotime. Here we present GeneTrajectory, an approach to inferring gene processes through learning the gene–gene geometry without one-dimensional parameterization of the cell manifold (Fig. 1b). Specifically, GeneTrajectory quantifies the distance of genes based on their expression distributions over a cell graph using optimal transport (OT) metrics (Fig. 1d). Previously, OT metrics (for example, Wasserstein distance) have been applied in a wide range of scenarios in single-cell analysis, including (1) defining a distance measure between cells28,29 or cell populations30, (2) constructing cell trajectories31,32, (3) spatial reconstruction of single-cell transcriptome profiles33,34 and (4) multi-omics data integration35. In these works, the dissimilarity was quantified either between a pair of cells or between a pair of cell
+
+
+Nature Biotechnology | Volume 43 | February 2025 | 258–268 260
+Article https://doi.org/10.1038/s41587-024-02186-3
+for the gene that has the largest distance from the origin of diffusion map embedding, which serves as the terminus of the first gene trajectory. To retrieve the other genes along the first trajectory, we take that terminus gene as the starting point of a diffusion process. Specifically, we assign a unit point mass to that gene and then diffuse the mass to the other genes. As the probability mass propagates along the gene trajectory from its terminus, the trajectory can be retrieved by a heuristic thresholding procedure (‘Step 3. Construct gene trajectories’). After retrieving genes for the first trajectory, we identify the terminus of the subsequent gene trajectory among the remaining genes and iterate the same procedure, until all detectable gene trajectories are extracted (Fig. 1g,h). To order the genes along a given trajectory, we retain only these genes to recompute a diffusion map embedding based on their pairwise gene–gene Wasserstein distances. The obtained first nontrivial
+eigenvector of the diffusion map embedding provides an intrinsic ordering of the genes along that trajectory36,37. To examine how the gene order along a given gene trajectory is reflected over the cell graph, we can track how these genes are expressed across different regions in the cell embedding. Specifically, we first group genes along each gene trajectory into successive bins and generate a cell embedding ‘snapshot’ for each bin. In each snapshot, we color the cells according to the fraction of genes (from that bin) that they express. By plotting the expression level of each gene bin on the cell embedding, we can visualize how the underlying biological process progresses across cell populations.
+Assessing GeneTrajectory’s performance using simulation
+Assuming that a progressive biological process is temporally dictated by a sequence of genes, we simulated several artificial scRNA-seq
+(Dependent)
+(Intrinsic dimension = 1) (Intrinsic dimension = 2)
+Cell geometry
+Cell geometry
+Cell pseudotime Cell pseudotime (linear process)
+Cell pseudotime (cyclic process)
+Scenario A: Scenario B:
+Process diagram
+Linear
+Cyclic
+(Independent)
+Process diagram
+Linear
+Cyclic
+Trajectory identification and gene ordering
+Gene
+Cell
+Cell
+Cell
+Cell graph Gene
+Gene
+Gene graph Gene trajectories
+Count Distance OT
+distance
+g1
+Gene dynamics
+g2 g3
+g4
+Gene–gene OT distance matrix (submatrix example)
+Gene–gene OT distances (over the cell graph)
+Gene expression profiles
+Gene affinity graph
+b
+g1
+g2
+g3
+g4
+g1 g2 g3 g4 g1
+g2
+g3
+g4
+d
+e fg
+Visualization
+h
+Trajectory 1 Trajectory 2 Trajectory 3
+Terminus 1
+Terminus 2 Terminus 3
+Gene pseudo-order (normalized) 0 1
+Gene 1 Gene 2 g1
+g2
+Step 1: cell graph construction Step 2: gene–gene dist. computation Step 3: gene trajectory inference Step 4: gene ordering
+a
+0T 0 0
+Gene 1 (g1)
+Gene 2 (g2)
+Gene 3 (g3)
+Gene 4 (g4)
+g1
+g2
+g4
+g3
+TL TC
+Cell kNN graph
+c
+Transcriptome space (high-dimensional)
+Cell cloud
+10 8 6 4 2 0
+0.9 0.6 0.3 0
+1.5 1.0 0.5 0
+3 2 1 0
+1.5 1.0 0.5 0
+Fig. 1 | Overview of GeneTrajectory. a, Illustration of two scenarios when a
+linear process and a cyclic process are dependent or independent of each other, resulting in cell manifolds with different intrinsic dimensions and requiring distinct pseudotime parametrizations. b, Schematic representation of the major workflow of GeneTrajectory. c, Construction of cell kNN graph. d, Computation of graph-based OT (Wasserstein) distances between paired gene distributions (four representative genes are shown) over the cell graph. Gene distributions are defined by their normalized expression levels over cells. e, Heatmap of OT (Wasserstein) distances for genes g1–g4 in d. f, Construction of gene graph based
+on gene–gene affinities (transformed from gene–gene Wasserstein distances). g, Sequential identification of gene trajectories using a diffusion-based strategy. The initial node (terminus 1) is defined by the gene with the largest distance from the origin in the diffusion map embedding. A random-walk procedure is then used on the gene graph to select the other genes that belong to the trajectory terminated at terminus 1. After retrieving genes for the first trajectory, we identify the terminus of the subsequent gene trajectory among the remaining genes and repeat the steps above. This is done iteratively until all detectable trajectories are extracted. h, Diffusion map visualization of gene trajectories.
+
+
+Nature Biotechnology | Volume 43 | February 2025 | 258–268 261
+Article https://doi.org/10.1038/s41587-024-02186-3
+datasets with a variety of gene dynamics by modeling the change of gene expression over time (Extended Data Fig. 1a,b; ‘Workflow of gene dynamics simulation’). Specifically, for a gene involved in a given biological process, we simulate its expected expression level λ(t) as a function of time t. For clarity, we note that t represents the pseudotime of a biological process, linked with the cell state (for example, differentiation status) rather than the actual time (for example, specific day of a developmental process). Here we use multiple parameters to account for the heterogeneity of gene expression profiles in single-cell data, including the variation of duration time and expression intensities (details in ‘Workflow of gene dynamics simulation’). For each cell state at t along a biological process, we apply a Poisson sampling to generate the observed expression level of each gene by taking λ(t) as the mean of Poisson distribution. In these simulation experiments, we know the ground truth of both the pseudotime of each cell in the corresponding biological process and the temporal order of genes that dictate each process. Finally, we incorporate an optional step to account for sequencing depth. This is achieved by sampling a specified number of nonzero entries from the original count matrix. This procedure enables us to generate an artificial dataset with varying levels of missing data. We first simulated (1) a cycling process in which the change of gene expression shows a periodical pattern over time (Fig. 2a and Extended Data Fig. 1c), and (2) a process with a branching point where it diverges into two different lineages (Fig. 2b and Extended Data Fig. 1d). Inspection of the gene trajectories in these two simulation examples reveals similar layouts with their cell embeddings (Fig. 2a,b). The ordering of genes along each gene trajectory shows a high concordance with the ground truth (Supplementary Table 1). We next, created two scenarios that simulate a mixture of two concurrent processes (Fig. 2c,d and Extended Data Fig. 1e,f). Specifically, one process mimics cell differentiation (linear or branched in a multilayered fashion), and the other mimics the CC. In these two scenarios, each cell state is determined by two independent hidden variables—a pseudotime along the differentiation process and a pseudotime in the CC. For each process, we simulated an exclusive set of genes with distinct dynamic characteristics (Extended Data Fig. 1e,f; ‘Workflow of gene dynamics simulation’), generating a cell manifold with a cylinder-shaped or a coral-shaped structure (Fig. 2c,d). In both scenarios, our approach deconvolves the original mixture
+of two processes into two gene trajectories representing a (linear or tree-like) differentiation process and a (circular) CC process. Along each trajectory, genes are ordered in high concordance with the ground truth (Supplementary Table 1), indicating that GeneTrajectory allows deconvolving a mixture of biological processes that take place simultaneously in the same group of cells.
+GeneTrajec

@@ -1,0 +1,147 @@
+PAPER KEY: 46F2QSTY
+TITLE: Optimal transport mapping via input convex neural networks
+AUTHORS: Makkuva, Ashok Vardhan; Taghvaei, Amirhossein; Oh, Sewoong; Lee, Jason D.
+
+Optimal transport mapping via input convex neural networks
+Ashok Vardhan Makkuva * 1 Amirhossein Taghvaei * 2 Jason D. Lee 3 Sewoong Oh 4
+Abstract
+In this paper, we present a novel and principled approach to learn the optimal transport between two distributions, from samples. Guided by the optimal transport theory, we learn the optimal Kantorovich potential which induces the optimal transport map. This involves learning two convex functions, by solving a novel minimax optimization. Building upon recent advances in the field of input convex neural networks, we propose a new framework to estimate the optimal transport mapping as the gradient of a convex function that is trained via minimax optimization. Numerical experiments confirm the accuracy of the learned transport map. Our approach can be readily used to train a deep generative model. When trained between a simple distribution in the latent space and a target distribution, the learned optimal transport map acts as a deep generative model. Although scaling this to a large dataset is challenging, we demonstrate two important strengths over standard adversarial training: robustness and discontinuity. As we seek the optimal transport, the learned generative model provides the same mapping regardless of how we initialize the neural networks. Further, a gradient of a neural network can easily represent discontinuous mappings, unlike standard neural networks that are constrained to be continuous. This allows the learned transport map to match any target distribution with many discontinuous supports and achieve sharp boundaries.
+*Equal contribution. Order decided by a coin flip. 1Department of Electrical and Computer Engineering, University of Illinois at Urbana-Champaign. 2Department of Mechanical and Aerospace Engineering, University of California, Irvine. 3Department of Electrical Engineering, Princeton University, 4Allen School of Computer Science & Engineering, University of Washington. Correspondence to: Ashok <makkuva2@illinois.edu>, Amir <amirhoseintghv@gmail.com>.
+Proceedings of the 37 th International Conference on Machine Learning, Vienna, Austria, PMLR 108, 2020. Copyright 2020 by the author(s).
+1. Introduction
+Finding a mapping that transports mass from one distribution Q to another distribution P is an important task in various machine learning applications, such as deep generative models (Goodfellow et al., 2014; Kingma & Welling, 2013) and domain adaptation (Gopalan et al., 2011; BenDavid et al., 2010). Among infinitely many transport maps T that can map a random variable X from Q such that T (X) is distributed as P , several recent advances focus on discovering some inductive bias to find a transport map with desirable properties. Research in optimal transport has been leading such efforts, in applications such as color transfer (Ferradans et al., 2014), shape matching (Su et al., 2015), data assimilation (Reich, 2013), and Bayesian inference (El Moselhy & Marzouk, 2012). Searching for an optimal transport encourages a mapping that minimizes the total cost of transporting mass from Q to P , as originally formulated in Monge (1781), and provides the inductive bias needed in many such applications. However, finding the optimal transport map in general is a challenging task, especially in high dimensions where efficient approaches are critical.
+Algorithmic solutions are well-established for discrete variables; the optimal transport can be found as a solution to linear program. Building upon this mature area, typical approaches for general distributions use quantization, and this becomes intractable for high-dimensional variables we encounter in modern applications (Evans & Gangbo, 1999; Benamou & Brenier, 2000; Papadakis et al., 2014).
+To this end, we propose a novel minimax optimization approach to search for the optimal transport under the quadratic distance (i.e. 2-Wassertstein metric). A major challenge in a minimax formulation of optimal transport is that the constraints in the Kantorovich dual formulation (3) are notoriously challenging. They require the evaluation of the functions at every point in the domain, which is not tractable. A common straightforward heuristics sample some points and add those sampled constraints as regularizers. Such regularizations create biases that hinder learning the true optimal transport.
+Our key innovation is to depart from this common practice; we instead eliminate the constraints by restricting our search to the set of all convex functions, building upon the fundamental connection from Theorem 3.1. This leads to
+arXiv:1908.10962v2 [cs.LG] 17 Jun 2020
+
+
+Optimal transport mapping via input convex neural networks
+(a) Data samples (b) Our transport map (c) Displacement vector field (d) Level sets
+Figure 1. Results on Checkerboard dataset. (a) Samples from the source (orange) and target (green) distributions; (b) The learned transport map and the generated distribution, via Algorithm 1; (c) The learned displacement vector field generated by ∇g(y) − y; (d) The level sets of the original dual variable g(y) − 1
+2 |y|2. The experimental details are included in Section 4.1.
+a novel minimax formulation in (5). Leveraging on recent advances in input convex neural networks, we propose a new architecture and a training algorithm for solving this minimax optimization. We establish the consistency of our proposed minimax formulation in Theorem 3.3. In particular, we show that the solution to this optimization problems yields the exact optimal transport map. We provide stability analysis for the proposed estimator in Theorem 3.6.
+Further, when used to train deep generative models, our approach can be viewed as a novel framework to train a generator that is modeled as a gradient of a convex function. We provide a principled training rule based on the optimal transport theory. This ensures that (i) the generator converges to the optimal transport, independent of how we initialize the neural network; and (ii) represent sharp boundaries when the target has multiple disconnected supports. Gradient of a neural network naturally represents discontinuous functions, which is critical in mapping from a single connected support to disconnected supports.
+To model convex functions, we leverage Input Convex Neural Networks (ICNNs), a class of scalar-valued neural networks f (x; θ) such that the function x 7→ f (x; θ) ∈ R is convex. These neural networks were introduced by Amos et al. (2016) to provide efficient inference and optimization procedures for structured prediction, data imputation and reinforcement learning tasks. In this paper, we show that ICNNs can be efficiently trained to learn the optimal transport map between two distributions P and Q. To the best of our knowledge, this is the first such instance where ICNNs are leveraged for the well-known task of learning optimal transport maps in a scalable fashion. This framework opens up a new realm for understanding problems in optimal transport theory using parametric convex neural networks, both in theory and practice. Figure 1 provides an example where the optimal transport map has been learned via our proposed Algorithm 1 from the orange distribution to the green distribution.
+Notation. P(X ) denotes the set of probability measures on a Polish space X , and B(X ) denotes the Borel sub
+sets of X . For P ∈ P(X ) and Q ∈ P(Y), P ⊗ Q denotes the product measure on X × Y. For measurable map T : X → Y, T#P denotes the push-forward of P under T , i.e. (T#P )(A) = P (T −1(A)), ∀A ∈ B(Y). L1(P ) , {f is measurable & ∫ f dP < ∞} denotes the set of integrable functions with respect to P . CVX(P ) denotes the set of all convex functions in L1(P ). Id : x 7→ x denotes the identity function. 〈·, ·〉 and ‖ · ‖ denote the inner-product and `2-Euclidean norm.
+2. Background on optimal transport
+Let P and Q be two probability distributions on Rd with finite second order moments. The Monge’s optimal transportation problem is to transport the probability mass under Q to P with the least amount of cost1, i.e.
+minimize
+T :T#Q=P
+1
+2 EX∼Q‖X − T (X)‖2. (1)
+Any transport map T achieving the minimum in (1) is called optimal transport map. Optimal transport map may not exist. In fact, the feasible set in the above optimization problem may itself be empty, for example when Q is a Dirac distribution and P is any non-Dirac distribution.
+To resolve the existence issue of the Monge problem (1), Kantorovich introduced a relaxation of the problem,
+W2
+2 (P, Q) , inf
+π∈Π(P,Q)
+1
+2 E(X,Y )∼π‖X − Y ‖2, (2)
+where Π(P, Q) denotes the set of all joint probability distributions (or equivalently, couplings) whose first and second marginals are P and Q, respectively. The optimal value in (2) is the 2-Wasserstein distance W2(·, ·) squared. Any coupling π achieving the infimum is called the optimal coupling. Optimization problem (2) is also referred to as the primal formulation for 2-Wasserstein distance.
+1In general, Monge’s problem is defined in terms of cost function c(x, y). This paper is concerned with quadratic cost function c(x, y) = 1
+2 ‖x − y‖2 because of its nice geometrical properties
+and connection to convex analysis (Villani, 2003, Ch. 2).
+
+
+Optimal transport mapping via input convex neural networks
+Kantorovich also provided a dual formulation for (2), known as the Kantorovich duality (Villani, 2003, Theorem 1.3),
+W2
+2 (P, Q) = sup
+(f,g)∈Φc
+EP [f (X)] + EQ[g(Y )], (3)
+where Φc denotes the constrained space of functions, defined as Φc ,
+{(f, g) ∈ L1(P ) × L1(Q) : f (x) + g(y) ≤
+1
+2 ‖x − y‖22, ∀(x, y) dP ⊗ dQ a.e.}.
+The dual problem (3) can be recast as an stochastic optimization problem by approximating the expectations using independent samples from P and Q. However, there is no easy way to ensure the feasibility of the constraint (f, g) ∈ Φc along the gradient updates. Common approach is to translate the optimization into a tractable form, while sacrificing the original goal of finding the optimal transport map. Concretely, an entropic or a quadratic regularizer is added to the primal problem (2) (Cuturi, 2013; Essid & Solomon, 2018; Peyré et al., 2019; Blondel et al., 2017). Then, the dual to the regularized primal problem is an unconstrained version of (3) with additional penalty term. The unconstrained problem can be numerically solved using Sinkhorn algorithm in discrete setting (Cuturi, 2013) or stochastic gradient methods with suitable function representation in continuous setting (Genevay et al., 2016; Seguy et al., 2017). The optimal transport can then be obtained from f and g, using the first-order optimality conditions of the FenchelRockafellar’s duality theorem (Seguy et al., 2017), or by training a generator through an adversarial computational procedure (Leygonie et al., 2019).
+In this paper, we take a different approach: solve the dual problem without introducing a regularization. This builds upon (Taghvaei & Jalali, 2019), where ICNN for the task of approximating the Wasserstein distance and optimal transport map is originally proposed. We bring the idea proposed (Taghvaei & Jalali, 2019) into practice by introducing a novel minimax optimization formulation. We describe our proposed method in Section 3 and provide a detailed comparison in Remark 3.5. Discussion about other related works (Lei et al., 2017; Guo et al., 2019; Xie et al., 2019; Muzellec & Cuturi, 2019; Rabin et al., 2011; Korotin et al., 2019) appears in Appendix D.
+3. A novel minimax formulation to learn optimal transport
+Our goal is to learn the optimal transport map T ∗ from Q to P , from samples drawn from P and Q, respectively. We use the fundamental connection between optimal transport and Kantorovich dual in Theorem 3.1, to formulate learning T ∗ as a problem of estimating W22(P, Q). However, W22(P, Q) is notoriously hard to estimate. The standard Kantorovich dual formulation in Eq. (3) involves a supremum over a set Φc with infinite constraints, which is challenging to even approximately project onto. To this end, we derive an
+alternative optimization formulation in Eq. (5), inspired by the convexification trick (Villani, 2003, Section 2.1.2). This allows us to eliminate the distance constraint of Φc, and instead constrain our search over all convex functions. This constrained optimization can now be seamlessly integrated with recent advances in designing deep neural architectures with convexity guarantees. This leads to a novel minimax optimization to learn the optimal transport.
+We exploit the fundamental properties of W22(P, Q) and the corresponding optimal transport to reparametrize the optimization formulation. Note that for any (f, g) ∈ Φc,
+f (x) + g(y) ≤ 1
+2 ‖x − y‖2
+2 ⇐⇒
+[1
+2 ‖x‖2
+2 − f (x)
+]
++
+[1
+2 ‖y‖2
+2 − g(y)
+]
+≥ 〈x, y〉.
+Hence reparametrizing 1
+2 ‖ · ‖22 − f (·) and 1
+2 ‖ · ‖22 − g(·) by f and g respectively, and substituting them in (3) yields
+W2
+2 (P, Q) = CP,Q − inf
+(f ,g)∈  ̃Φc
+{
+EP [f (X)] + EQ[g(Y )]
+}
+,
+where CP,Q = (1/2)E[‖X‖22 + ‖Y ‖22] is a constant independent of (f, g) and Φ ̃c , {(f, g) ∈ L1(P ) × L1(Q) : f (x) + g(y) ≥ 〈x, y〉, ∀(x, y) dP ⊗ dQ a.e.}. While the above constrained optimization problem involves a pair of functions (f, g), it can be transformed into the following form involving only a single convex function f , thanks to Villani (2003, Theorem 2.9):
+W2
+2 (P, Q) = CP,Q − inf
+f∈CVX(P ) EP [f (X)]+EQ[f ∗(Y )], (4)
+where f ∗(y) = supx〈x, y〉 − f (x) is the convex conjugate of f (·).
+The crucial tools behind our formulation are the following celebrated results due to Knott-Smith and Brenier (Villani, 2003), which relate the optimal solutions for the dual form in (4) and the primal form in (2).
+Theorem 3.1 ((Villani, 2003, Theorem 2.12)). Let P, Q be two probability distributions on Rd with finite second order moments. Then,
+1. (Knott-Smith optimality criterion) A coupling π ∈ Π(P, Q) is optimal for the primal (2) if and only if there exists a convex function f ∈ CVX(Rd) such that Supp(π) ⊂ Graph(∂f ). Or equivalently, for all dπalmost (x, y), y ∈ ∂f (x). Moreover, the pair (f, f ∗) achieves the minimum in the dual form (4).
+2. (Brenier’s theorem) If Q admits a density with respect to the Lebesgue measure on Rd, then there is a unique optimal coupling π for the primal problem. In particular, the optimal coupling satisfies that
+dπ(x, y) = dQ(y)δx=∇f∗(y),
+
+
+Optimal transport mapping via input convex neural networks
+where the convex pair (f, f ∗) achieves the minimum in the dual problem (4). Equivalently, π = (∇f ∗ × Id)#Q.
+3. Under the above assumptions of Brenier’s theorem, ∇f ∗ in the unique solution to Monge transportation problem from Q to P , i.e.
+EQ‖∇f ∗(Y ) − Y ‖2 = inf
+T :T#Q=P EQ‖T (Y ) − Y ‖2.
+Remark 3.2. Whenever Q admits a density, we refer to ∇f ∗ as the optimal transport map.
+Henceforth, throughout the paper we assume that the distribution Q admits a density in Rd. Note that in view of Theorem 3.1, any optimal pair (f, f ∗) from the dual formulation in (4) provides us an optimal transport map ∇f ∗ pushing forward Q onto P . However, the objective (4) is not amenable to standard stochastic optimization schemes due to the conjugate function f ∗. To this end, we propose a novel minimax formulation in the following theorem where we replace the conjugate with a new convex function.
+Theorem 3.3. Whenever Q admits a density in Rd, we have
+W2
+2 (P, Q) = sup
+f ∈CVX(P ), f ∗∈L1(Q)
+inf
+g∈CVX(Q)
+VP,Q(f, g) + CP,Q, (5)
+where VP,Q(f, g) is a functional of f, g defined as
+VP,Q(f, g) = −EP [f (X)]−EQ[〈Y, ∇g(Y )〉−f (∇g(Y ))].
+In addition, there exists an optimal pair (f0, g0) achieving the infimum and supremum respectively, where ∇g0 is the optimal transport map from Q to P .
+Proof sketch. The proof follows from the inequality 〈y, ∇g(y)〉 − f (∇g(y)) ≤ f ∗(y) for all functions g, and then taking the expectation over Q, and observing that the equality is achieved with g = f ∗. The technical details appear in Appendix A.
+Remark 3.4. For any convex function f , the function g ∈ L1(Q) that achieves the infimum in (5) is convex and equals f ∗. Therefore, the constraint g ∈ CVX(Q) can be relaxed to g ∈ L1(Q) without changing the optimal value and optimizing functions. We numerically observe that the optimization algorithm performs better under this relaxation.
+Formulation (5) now provides a principled approach to learn the optimal transport mapping ∇g(·) as a solution of a minimax optimization. Since the optimization involves the search over the space of convex functions, we utilize the recent advances in input convex neural networks (ICNNs) to parametrize them as discussed in the following section.
+W1 W2 WL-1
+...
+...
+Figure 2. The input convex neural network (ICNN) architecture.
+3.1. Minimax optimization over ICNNs
+We propose using parametric models based on deep neural networks to approximate the set of convex functions. This is known as input convex neural networks (Amos et al., 2016), denoted by ICNN(Rd). We propose estimating the following approximate Wasserstein-2 distance, from samples:
+W ̃2
+2 (P, Q) = sup
+f ∈ICNN(Rd)
+inf
+g ∈ICNN(Rd )
+VP,Q(f, g)+CP,Q. (6)
+ICNNs are a class of scalar-valued neural networks f (x; θ) such that the function x 7→ f (x; θ) ∈ R is convex.
+The neural network architecture for an ICNN is as follows. Given an input x ∈ Rd, the mapping x 7→ f (x; θ) is given by a L-layer feed-forward NN using the following equations for l = 0, 1, . . . , L − 1:
+zl+1 = σl(Wlzl + Alx + bl), f (x; θ) = zL,
+where {Wl}, {Al} are weight matrices (with the convention that W0 = 0), and {bl} are the bias terms. σl denotes the entry-wise activation function at the layer l. This is illustrated in Figure 2. We denote the total set of parameters by θ = ({Wl}, {Al}, {bl}). It follows from Amos et al. (2016, Proposition 1) that f (x; θ) is convex in x provided
+(i) all entries of the weights Wl are non-negative;
+(ii) activation function σ0 is convex;
+(iii) σl is convex and non-decreasing, for l = 1, . . . , L − 1.
+While ICNNs are a specific parametric class of convex functions, it is important to understand if this class is rich enough representationally. This is answered positively by Chen et al. (2018, Theorem 1). In particular, they show that any convex function over a compact domain can be approximated in sup norm by a ICNN to the desired accuracy. This justifies the choice of ICNNs as a suitable approximating class for the convex functions.
+The proposed framework for learning the optimal transport provides a novel training method for deep generative models, where (a) the generator is modeled as a gradient of a convex function and (b) the minimax optimization in (6) (and more concretely, Algorithm 1) provides the training methodology. On the surface, Eq. (6) resembles the minimax optimization of generative adversarial networks based on Wasserstein-1
+
+
+Optimal transport mapping via input convex neural networks
+Source Target Transp.
+(a) Barycentric-OT (b) W1-LP (c) W2GAN (d) Our approach
+Figure 3. The transport maps learned by various approaches on ‘Checker board’ and ‘mixture of eight Gaussians’ datasets. (a) BarycentricOT (Seguy et al., 2017); (b) W1-LP (Petzka et al., 2017); (c) W2-GAN (Leygonie et al., 2019); (d) Our approach (Algorithm 1). The source distribution Q is highlighted in orange, target distribution P in green, the transported distribution T#Q in red, and the transport map with blue arrows.
+distance (Arjovsky et al., 2017), called WGAN. However, there are several critical differences making our approach attractive.
+First, because WGANs use optimal transportation distance only as a measure of distance, the learned generator map from the latent source to the target is arbitrary and sensitive to the initialization (see Figure 4) (Jacob et al., 2018). On the other hand, our proposed approach aims to find the optimal transport map and learns the same mapping regardless of the initialization (see Figure 1).
+Secondly, in a WGAN architecture (Arjovsky et al., 2017; Petzka et al., 2017), the transport map 

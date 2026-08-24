@@ -1,0 +1,724 @@
+PAPER KEY: ZCXNRXHG
+TITLE: Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution
+AUTHORS: Lou, Aaron; Ermon, Stefano; Meng, Chenlin
+
+Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution
+
+arXiv:2310.16834v3 [stat.ML] 6 Jun 2024
+
+Aaron Lou 1 Chenlin Meng 1 2 Stefano Ermon 1
+
+Abstract
+Despite their groundbreaking performance for many generative modeling tasks, diffusion models have fallen short on discrete data domains such as natural language. Crucially, standard diffusion models rely on the well-established theory of score matching, but efforts to generalize this to discrete structures have not yielded the same empirical gains. In this work, we bridge this gap by proposing score entropy, a novel loss that naturally extends score matching to discrete spaces, integrates seamlessly to build discrete diffusion models, and significantly boosts performance. Experimentally, we test our Score Entropy Discrete Diffusion models (SEDD) on standard language modeling tasks. For comparable model sizes, SEDD beats existing language diffusion paradigms (reducing perplexity by 25-75%) and is competitive with autoregressive models, in particular outperforming GPT-2. Furthermore, compared to autoregressive mdoels, SEDD generates faithful text without requiring distribution annealing techniques like temperature scaling (around 68× better generative perplexity than un-annealed GPT-2), can trade compute and quality (similar quality with 32× fewer network evaluations), and enables controllable infilling (matching nucleus sampling quality while enabling other strategies besides left to right prompting).
+
+The crucial part for any deep generative model is the probabilistic modeling technique. For discrete data such as natural language, autoregressive modeling (Yule, 1971)– arguably the simplest modeling type since it derives from the probabilistic chain rule–has remained the only competitive method for decades. Although modern autoregressive transformers have produced stunning results (Vaswani et al., 2017; Radford et al., 2019), there are limits. For example, the sequential sampling of tokens is slow, hard to control, and often degrades without distribution annealing techniques like nucleus sampling (Holtzman et al., 2019).
+To alleviate these issues, researchers have sought alternative approaches to generating text data. In particular, inspired by their success in the image domain, many works have extended diffusion models (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2021c) to language domains (Li et al., 2022; Austin et al., 2021). Yet, despite considerable effort, no such approach yet rivals autoregressive modeling, as they are not competitive on likelihoods, are slower to sample from, and do not generate comparable samples without resorting to heavy annealing and empirical alterations.
+In our work, we challenge the longstanding dominance of autoregressive models by introducing Score Entropy Discrete Diffusion models (SEDD). SEDD parameterizes a reverse discrete diffusion process using the ratios of the data distribution. These are learned using score entropy, a novel loss that is analogous to score matching for standard diffusion models (Hyva¨rinen, 2005; Song & Ermon, 2019) and results in several empirical benefits:
+
+1. Introduction
+Many recent advances in deep learning have centered around generative modeling. Here, a model learns how to generate novel samples from unstructured data. With the powerful capabilities of modern neural networks, these “generative AI” systems have developed unparalleled capabilities, such as creating images given only text (Ramesh et al., 2022) and answering complex questions (Brown et al., 2020).
+1Stanford University 2Pika Labs. Correspondence to: Aaron Lou <aaronlou@stanford.edu>.
+Proceedings of the 41 st International Conference on Machine Learning, Vienna, Austria. PMLR 235, 2024. Copyright 2024 by the author(s).
+
+1. On core language modeling tasks, SEDD outperforms all existing language diffusion models (Li et al., 2022; Austin et al., 2021; Gulrajani & Hashimoto, 2023; He et al., 2022) by large margins and is competitive with autoregressive models of the same size (beating GPT-2 on its zero-shot perplexity tasks (Radford et al., 2019)).
+2. SEDD generates high quality unconditional samples and enables one to naturally trade off compute for quality. When measuring the generative perplexity (given by large models) of unconditional and un-annealed samples from similarly sized models, SEDD beats
+We open source our code at github.com/louaaron/ScoreEntropy-Discrete-Diffusion
+
+1
+
+Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution
+
+GPT-2 by 6-8× and can match performance using 32× fewer function evaluations.
+3. By directly parameterizing probability ratios, SEDD is highly controllable. In particular, one can prompt SEDD from arbitrary positions without specialized training. For both standard (left to right) and infilling, SEDD outperforms language diffusion models and is comparable with autoregressive models with nucleus sampling (as measured by MAUVE score (Pillutla et al., 2021)).
+
+2. Preliminaries
+
+2.1. Discrete Diffusion Processes
+
+We will be modeling probability distributions over a finite support X = {1, . . . , N }. As the support is discrete, note
+that our probability distributions can be represented by probability mass vectors p ∈ RN that are positive and sum to 1. To define a discrete diffusion process, we evolve a family of distributions pt ∈ RN according to the a continuous time Markov process given by a linear ordinary differential
+equation (Campbell et al., 2022; Anderson, 2012):
+
+dpt dt
+
+=
+
+Qtpt
+
+p0 ≈ pdata
+
+(1)
+
+Here, Qt are the diffusion matrices RN×N and have non-
+
+negative non-diagonal entries and columns which sum to
+
+zero
+
+(so
+
+that
+
+the
+
+rate
+
+dpt dt
+
+sums
+
+to
+
+0,
+
+meaning
+
+pt
+
+does not
+
+gain or lose total mass). Generally, Qt are simple (e.g.
+
+a simple scalar factor Qt = σ(t)Q) so pt approaches a
+
+limiting distribution pbase as t → ∞.
+
+One can simulate this process by taking small ∆t Euler steps and randomly sampling the resulting transitions. In particular, the samples are defined by transition densities which come from the columns of Qt:
+p(xt+∆t = y|xt = x) = δxy + Qt(y, x)∆t + O(∆t2) (2)
+
+Finally, this process has a well known reversal (Kelly, 1980; Sun et al., 2023) given by another diffusion matrix Qt:
+
+dpT −t dt
+
+= QT −tpT −t
+
+Qt(y, x)
+
+=
+
+pt(y) pt(x)
+
+Qt
+
+(x,
+
+y)
+
+Qt(x, x) = − Qt(y, x) (3)
+y̸=x
+
+This reverse process is analogous to the time reversal for typ-
+
+ical
+
+diffusion
+
+processes
+
+on
+
+Rn,
+
+with
+
+the
+
+ratios
+
+pt (y ) pt (x)
+
+(which
+
+are collectively known as the concrete score (Meng et al.,
+
+2022)) generalizing the typical score function ∇x log pt (Song & Ermon, 2019) 1
+
+1The gradient operator for discrete structures is (up to some
+
+2.2. Discrete Diffusion Models
+
+The goal of a discrete diffusion model is to construct the
+
+aforementioned
+
+reverse
+
+process
+
+by
+
+learning
+
+the
+
+ratios
+
+pt pt
+
+(y) (x)
+
+.
+
+Unlike the continuous diffusion case, which has settled
+
+around (up to minor scaling variations) the theoretical frame-
+
+work given by score matching (Hyva¨rinen, 2005), there cur-
+
+rently exist many competing methods for learning discrete
+
+diffusion models. In particular, these tend to produce mixed
+
+empirical results, which spurs the need for a reexamination.
+
+Mean Prediction. Instead of directly parameterizing the
+
+ratios
+
+pt pt
+
+(y) (x)
+
+,
+
+Austin
+
+et
+
+al.
+
+(2021);
+
+Campbell
+
+et
+
+al.
+
+(2022)
+
+instead follow a strategy of Ho et al. (2020) to learn the re-
+
+verse
+
+density
+
+p0|t.
+
+This
+
+actually
+
+recovers
+
+the
+
+ratios
+
+pt (y ) pt (x)
+
+in
+
+a
+
+roundabout way (as shown in our Theorem 4.2), but comes
+
+with several drawbacks. First, learning p0|t is inherently
+
+harder since it is a density (as opposed to a general value).
+
+Furthermore, the objective breaks down in continuous time
+
+and must be approximated (Campbell et al., 2022). As a
+
+result, this framework largely underperforms empirically.
+
+Ratio Matching. Originally introduced in Hyva¨rinen (2007) and augmented in Sun et al. (2023), ratio matching learns the marginal probabilities of each dimension with maximum likelihood training. However, the resulting setup departs from standard score matching and requires specialized and expensive network architectures (Chen & Duvenaud, 2019). As such, this tends to perform worse than mean prediction.
+
+Concrete Score Matching. Meng et al. (2022) generalizes
+
+the standard Fisher divergence in score matching, learning
+
+sθ(x, t) ≈
+
+pt (y ) pt (x)
+
+with concrete score matching:
+y̸=x
+
+
+
+
+
+1 LCSM = 2 Ex∼pt 
+y̸=x
+
+sθ (xt ,
+
+t)y
+
+−
+
+pt(y) pt(x)
+
+2
+
+
+(4)
+
+Unfortunately, the ℓ2 loss is incompatible with the fact that
+
+pt (y ) pt (x)
+
+must be positive.
+
+In particular, this does not suffi-
+
+ciently penalize negative or zero values, leading to divergent
+
+behavior. Although theoretically promising, Concrete Score
+
+Matching struggles (as seen in Appendix D).
+
+3. Score Entropy Discrete Diffusion Models
+
+In this section, we introduce score entropy. Similar to con-
+
+crete score matching, we learn the collected concrete score
+
+sθ(x, t) ≈
+
+pt (y ) pt (x)
+
+(sθ : X × R → R|X |).
+y̸=x
+
+We design
+
+the score entropy loss to incorporate the fact that these ratios
+
+are positive and evolve under a discrete diffusion.
+
+scaling) defined for pairs x ̸= y by ∇f (xy) := f (y) − f (x).
+
+The score function would generalize to the normalized gradients
+
+∇p(xy) p(x)
+
+=
+
+p(y) p(x)
+
+− 1.
+
+2
+
+Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution
+
+Definition 3.1. The score entropy LSE for a distribution p, weights wxy ≥ 0 and a score network sθ(x)y is
+
+dimensions, this is intractable, which means we have to sample y uniformly, but this introduces additional variance analogous to that introduced by the Hutchinson trace esti-
+
+
+Ex∼p  wxy
+y̸=x
+
+p(y) sθ(x)y − p(x) log sθ(x)y + K
+
+p(y) p(x)
+
+mator (Hutchinson, 1989) for sliced score matching (Song  et al., 2019). As a result, implicit score entropy is impracti cal for large-scale tasks. Instead, we work a denoising score
+matching loss (Vincent, 2011) variant of score entropy:
+
+(5)
+
+where K(a) = a(log a − 1) is a normalizing constant func-
+
+tion that ensures that LSE ≥ 0.
+
+Remark. Instead of building off of Fisher divergences,
+
+score entropy builds off of the Bregman divergence
+
+DF
+
+s(x)y ,
+
+p(y) p(x)
+
+when F = − log is the convex function.
+
+As such, score entropy is non-negative, symmetric, and con-
+
+vex. It also generalizes standard cross entropy to general
+
+positive values (instead of simplex-valued probabilities), in-
+
+spiring the name. The weights wxy are used primarily when combining score entropy with diffusion models.
+
+While this expression is more complex than the standard score matching variants, it satisfies several desiderata for a discrete diffusion training objective:
+
+3.1. Score Entropy Properties First, score entropy is a suitable loss function that recovers
+
+Theorem 3.4 (Denoising Score Entropy). Suppose p is a
+perturbation of a base density p0 by a transition kernel p(·|·), ie p(x) = x0 p(x|x0)p0(x0). The score entropy LSE is equivalent (up to a constant independent of θ) to the denoising score entropy LDSE is
+
+
+
+x0E∼p0 
+
+wxy
+
+x∼p(·|x0) y̸=x
+
+
+
+sθ (x)y
+
+−
+
+p(y|x0) p(x|x0)
+
+log
+
+sθ (x)y
+
+
+
+(7)
+
+LDSE is scalable since Monte Carlo sampling only requires the evaluation of one sθ(x), which gives us all sθ(x)y, and the variance introduced by x0 is manageable. Additionally, it is particularly appealing for discrete diffusion since the intermediate pt are all perturbations of the base density p0 (resulting from Equations 1, 2), enabling us to train with LDSE using the diffusion transition densities pt|0(·|x0) (which we can make tractable).
+
+the ground truth concrete score.
+
+Proposition 3.2 (Consistency of Score Entropy). Suppose
+
+p is fully supported and wxy > 0. As the number of samples and model capacity approaches ∞, the optimal θ∗ that
+
+minimizes
+
+Equation
+
+5
+
+satisfies
+
+sθ∗ (x)y
+
+=
+
+p(y) p(x)
+
+for
+
+all
+
+pairs
+
+x, y Furthermore, LSE will be 0 at θ∗.
+
+Second, score entropy directly improves upon concrete
+
+score matching by rescaling problematic gradients. For
+
+the
+
+weights
+
+wxy
+
+=
+
+1,
+
+∇sθ(x)y LSE
+
+=
+
+sθ
+
+1 (x)y
+
+∇sθ
+
+(x)y
+
+LCSM
+
+,
+
+so the gradient signals for each pair (x, y) are scaled by a
+
+factor of sθ(x)y as a normalization component. As such, this forms a natural log-barrier which keeps our sθ ≥ 0.
+
+Third, similar to concrete score matching, score entropy
+
+can be made computationally tractable by removing the
+
+unknown
+
+p(y) p(x)
+
+term.
+
+There
+
+are
+
+two
+
+alternative
+
+forms,
+
+the
+
+first of which is analogous to the implicit score matching
+
+loss (Hyva¨rinen, 2005):
+
+3.2. Likelihood Bound For Score Entropy Discrete Diffusion
+
+Fourth, the score entropy can be used to define an ELBO for likelihood-based training and evaluation.
+
+Definition 3.5. For our time dependent score network
+
+sθ(·, t), the parameterized reverse matrix is Qθt (y, x) =
+
+sθ(x, t)yQt(x, y) − z̸=x Qθt (z, y)
+
+x ̸= y found by replacing the ground
+x=y
+
+truth scores in Equation 3. Our parameterized densities pθt
+
+thus satisfy the following differential equation:
+
+dpθT −t dt
+
+= QθT −tpθT −t
+
+pθT = pbase ≈ pT
+
+(8)
+
+The log likelihood of data points can be bounded using an ELBO based off of Dynkin’s formula (Hanson, 2007), which was derived for discrete diffusion models in Campbell et al.
+
+Proposition 3.3 (Implicit Score Entropy). LSE is equal up (2022). Interestingly, this takes the form of our denoising to a constant independent of θ to the implicit score entropy score entropy loss weighted by the forward diffusion:
+
+
+
+
+
+LISE = Ex∼p  wxysθ(x)y − wyx log sθ(y)x (6)
+y̸=x
+
+Theorem 3.6 (Likelihood Training and Evaluation). For the diffusion and forward probabilities defined above,
+− log pθ0(x0) ≤ LDWDSE(x0) + DKL(pT |0(·|x0) ∥ pbase) (9)
+
+Unfortunately, a Monte Carlo estimate would require sam- where LDWDSE(x0) is the diffusion weighted denoising pling an x and evaluating sθ(y)x for all other y. For high score entropy for data point x0
+
+3
+
+Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution
+
+T
+
+Ext ∼pt|0 (·|x0 )
+
+Qt(xt, y) sθ(xt, t)y−
+
+0
+
+y̸=xt
+
+pt|0(y|x0) pt|0(xt|x0)
+
+log
+
+sθ (xt ,
+
+t)y
+
++
+
+K
+
+pt|0(y|x0) pt|0(xt|x0)
+
+dt (10)
+
+Crucially, this result allows us to directly models based on their likelihood values (and the related perplexity scores), the core metric for language modeling tasks. In particular, we can train and evaluate an upper bound.
+Remark. The DWDSE (and the implicit version) can be derived from the general framework of Benton et al. (2022) assuming a concrete score parameterization. In particular, the implicit version coincides with the likelihood loss introduced in Campbell et al. (2022).
+
+3.3. Practical Implementation
+Fifth, score entropy can be scaled to high dimensional tasks.
+In practice, our state factorizes into sequences X = {1, . . . , n}d to form sequences x = x1 . . . xd (e.g. sequences of tokens or image pixel values). As a general Qt would be of exponential size, we instead choose a sparse structured matrix that perturbs tokens independently with a matrix Qttok. In particular, the nonzero entries of Qt are given by
+
+Qt(x1 . . . xi . . . xd, x1 . . . xi . . . xd) = Qttok(xi, xi) (11)
+
+Since LDWDSE weights the loss by Qt(x, y), this token level transition Qt renders most ratios irrelevant. In particular, we only need to model all ratios between sequences with
+Hamming distnace 1, so we can build our score network sθ(·, t) : {1, . . . , n}d → Rd×n as a seq-to-seq map:
+
+(sθ (x1
+
+. . . xi
+
+. . . xd, t))i,xi
+
+≈
+
+pt(x1 . . . xi . . . xd) pt(x1 . . . xi . . . xd)
+
+(12)
+
+To fully compute LDWDSE, we just need to calculate the forward transition pst|e0q(·|·). Luckily, this decomposes as each token is perturbed independently:
+
+d
+
+pst|e0q(x|x) = ptt|o0k(xi|xi)
+
+(13)
+
+i=1
+
+For each ptt|o0k(·|·), we employ the previously discussed strat-
+
+egy and set Qttok = σ(t)Qtok for a noise level σ and a fixed transition Qtok. This avoids numerical integration as, if we
+
+define σ(t) as the cumulative noise
+
+t 0
+
+σ(s)ds,
+
+we
+
+have:
+
+ptt|o0k(·|x) = x-th column of exp σ(t)Qtok
+
+(14)
+
+There are some practical consequences that render most Qtok unusable for large scale experiments (e.g. for GPT-2 tasks, n = 50257). In particular, one is not able to store all edge weights Qtok(i, j) since this takes around 20 GB of GPU memory and is extremely slow to access. Furthermore, one must be able to compute the columns exp(σ(t) · Qtok) to get the transition ratios, but this must avoid matrix-matrix multiplication again can’t be stored in memory.
+To sidestep these issues, we follow prior work (Austin et al., 2021; Campbell et al., 2022) and use two standard matrices with special structures. They arise, respectively, from considering a fully connected graph structure and from introducing a MASK absorbing state (similar to the BERT language modeling paradigm (Devlin et al., 2019)):
+
+1 − N 1 · · · 1 
+
+1
+
+Quniform =   
+
+...
+
+1−N ···
+
+...
+
+...
+
+1
+
+...
+
+  
+
+(15)
+
+1
+
+1 ··· 1−N
+
+−1 0 · · · 0 0
+
+ 0 −1 · · · 0 0
+
+ Qabsorb = 
+
+
+...
+
+...
+
+...
+
+...
+
+...
+
+  
+
+(16)
+
+ 
+
+0
+
+0 · · · −1 0
+
+1 1 ··· 1 0
+
+With such a structured Q, one can quickly and cheaply compute all values in LDWDSE. As such, our training iteration is about as fast and uses a similar amount of memory as standard autoregressive training. In particular, our training algorithm is given in Algorithm 1.
+
+4. Simulating Reverse Diffusion with Concrete Scores
+Given our scores sθ, we now derive various strategies for simulating a path xt = x1t x2t . . . xdt ∼ pt of the reverse diffusion process. Notably, the additional information that we gain from sθ being an approximate ratio of pt can be used to enhance the sampling process.
+4.1. Time-Reversal Strategies
+To simulate the diffusion in Definition 3.5, one may be tempted to use the Euler strategy from Equation 2. However, as noted in Campbell et al. (2022), this is inefficient because the structure of Qsteq only allows one position to be modified per step. Instead, a natural alternative has been to use τ -leaping (Gillespie, 2001), which performs an Euler step at each position simultaneously. In particular, given a sequence xt, we construct xt−∆t by sampling each token xit−∆t (independently) from the corresponding probability
+δxit (xit−∆t) + ∆tQttok(xit, xit−∆t)sθ(xt, t)i,xit−∆t (17)
+
+4
+
+Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution
+
+While τ -leaping is a viable simulation strategy, it is agnostic
+
+to fact that our sθ approximates the true concrete score.
+
+In
+
+particular,
+
+knowing
+
+all
+
+pt (y ) pt (x)
+
+enables
+
+optimal
+
+denoising,
+
+analogous to Tweedie’s theorem (Efron, 2011):
+
+Theorem 4.1 (Discrete Tweedie’s Theorem). Suppose that pt follows the diffusion ODE dpt = Qpt. Then the true denoiser is given by
+
+p0|t(x0|xt) =
+
+exp(−tQ)
+
+pt(i)) N pt(xt) i=1
+
+exp(tQ)(xt, x0)
+x0
+
+(18)
+
+Unfortunately, we do not know all of the ratios (only ratios between Hamming distance 1 sequences). However, we can use this intuition to build a Tweedie denoiser analogue of τ -leaping. In particular, we replace the token transition probabilities (for xit−∆t) with the values
+
+exp(−σt∆tQ)sθ(xt, t)i xit−∆t exp(σt∆tQ)(xit, xit−∆t) (19)
+
+where σt∆t = (σ(t) − σ(t − ∆t))
+
+(20)
+
+This generalizes the theorem but enforces the tau-leaping
+independence condition and, in fact, is optimal:
+Theorem 4.2 (Tweedie τ -leaping). Let pttw−e∆edt|ite(xt−∆t|xt) be the probability of the token update rule defined by Equation 19. Assuming sθ is learned perfectly, this minimizes the KL divergence with the true reverse pt−∆t|t(xt−∆t|xt) for all τ -leaping strategies (i.e. token transitions are applied
+independently and simultaneously).
+
+These simulation algorithms are unified in Algorithm 2.
+
+4.2. Arbitrary Prompting and Infilling
+Our concrete score can also be used to enable greater control over the generative process. This is due to the fact that we are modeling a function of the probability, allowing us to include conditional informati

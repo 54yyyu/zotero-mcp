@@ -1,0 +1,34 @@
+{
+  "composite": {
+    "Q1_diffusion_lineage": {
+      "A": 8.266666666666667,
+      "B": 6.8,
+      "C": 7.666666666666667,
+      "D": 8.533333333333333
+    },
+    "Q2_protein_ensemble_consensus": {
+      "A": 7.266666666666667,
+      "B": 7.866666666666667,
+      "C": 8.533333333333333,
+      "D": 8.333333333333334
+    },
+    "Q3_optimal_transport_crosscut": {
+      "A": 5.666666666666667,
+      "B": 5.866666666666667,
+      "C": 7.266666666666666,
+      "D": 9.0
+    },
+    "Q4_dna_lm_variant_critique": {
+      "A": 7.2,
+      "B": 8.066666666666666,
+      "C": 8.8,
+      "D": 8.6
+    }
+  },
+  "qids": [
+    "Q1_diffusion_lineage",
+    "Q2_protein_ensemble_consensus",
+    "Q3_optimal_transport_crosscut",
+    "Q4_dna_lm_variant_critique"
+  ]
+}

@@ -1,0 +1,110 @@
+PAPER KEY: A3NMCUD3
+TITLE: Is Target-Based Drug Discovery Efficient? Discovery and “Off-Target” Mechanisms of All Drugs
+AUTHORS: Sadri, Arash
+
+pubs.acs.org/jmc
+
+Perspective
+
+Is Target-Based Drug Discovery Efficient? Discovery and “Off-Target” Mechanisms of All Drugs
+Arash Sadri*
+
+Cite This: J. Med. Chem. 2023, 66, 12651−12677
+
+Read Online
+
+Downloaded via COLUMBIA UNIV on March 6, 2024 at 19:44:24 (UTC). See https://pubs.acs.org/sharingguidelines for options on how to legitimately share published articles.
+
+ACCESS
+
+Metrics & More
+
+Article Recommendations
+
+*sı Supporting Information
+
+ABSTRACT: Target-based drug discovery is the dominant paradigm of drug discovery; however, a comprehensive evaluation of its real-world efficiency is lacking. Here, a manual systematic review of about 32000 articles and patents dating back to 150 years ago demonstrates its apparent inefficiency. Analyzing the origins of all approved drugs reveals that, despite several decades of dominance, only 9.4% of small-molecule drugs have been discovered through “target-based” assays. Moreover, the therapeutic effects of even this minimal share cannot be solely attributed and reduced to their purported targets, as they depend on numerous off-target mechanisms unconsciously incorporated by phenotypic observations. The data suggest that reductionist targetbased drug discovery may be a cause of the productivity crisis in drug discovery. An evidence-based approach to enhance efficiency seems to be prioritizing, in selecting and optimizing molecules, higher-level phenotypic observations that are closer to the sought-after therapeutic effects using tools like artificial intelligence and machine learning.
+
+■ SIGNIFICANCE • This is the first systematic and comprehensive assessment of the real-world efficiency of target-based drug discovery. • Merely 9.4% of approved small-molecule drugs have been discovered by this approach. • Even these supposedly target-based drugs depend on numerous off-target mechanisms for their therapeutic effects. • Reductionist target-based drug discovery has thus far been inefficient and maybe a cause of the productivity crisis. • Approaches that prioritize higher-level observations are potentially more efficient based on both observational and theoretical evidence.
+1. INTRODUCTION
+1.1. Contemporary Drug Discovery Has Some Serious Problems. Drug discovery lies at an integral intersection where innovations and developments of diverse scientific fields and industries conjoin to translate into the ultimate purpose of improving health. However, the efficiency of discovering new drugs is so low that it would probably astonish researchers and practitioners in other domains.1,2 The ratio of the drug candidates that gain approval to those that enter clinical studies is about 13% but can be as low as 0.4% for more complex CNS disorders and cancers.3,4 Estimated research costs of introducing a new therapeutic to the market have soared up to 6.4 billion
+
+dollars with a mean of 1.3 billion dollars.5 The translation of basic scientific research to clinical real-world impact has been denigrated as the “valley of death”.6 Such challenges have compelled many pharmaceutical companies, including Pfizer, Merck, GSK, AstraZeneca, and Amgen, to withdraw from neuroscience research at some point,7 although its related disorders are a primary cause of disability worldwide,8,9 impose immense societal costs,10 and many of them have no cure. Moreover, many approved drugs that have been considered to be successful have been the subject of criticism by experts and available evidence. A considerable number are suggested to exert minimal effects,11−18 offering almost no benefit compared to previously approved drugs,18−22 or have been approved only based on surrogate end points15,16,23−28 or flawed and limited evidence.15−18,22,26,29−38 Compared to placebo, many approved drugs probably offer at best only marginal benefit and may even lower a patient’s quality of life and survival.17,22−24,39−44
+Adding to the oddity of this low productivity is the observation that productivity has declined significantly from several decades ago despite significant technological advance-
+Received: October 27, 2022 Published: September 6, 2023
+
+© 2023 American Chemical Society
+12651
+
+https://doi.org/10.1021/acs.jmedchem.2c01737 J. Med. Chem. 2023, 66, 12651−12677
+
+Journal of Medicinal Chemistry
+
+pubs.acs.org/jmc
+
+Perspective
+
+ments that have been developed and deployed in the most recent period. From 1950 to 2010, the number of drug approvals per billion dollars of research expenditure has halved every 9 years, a trend referred to as Eroom’s Law.45,46 Although, as was predicted earlier,34 it appears that the trend has been reversing in recent years,47,48 diagnosing the major causes of the low productivity of drug discovery and development is of paramount importance since it undermines the translation of all the progress we have made in advancing technology and enhancing biomedical knowledge into the ultimate goal of improving health.
+1.2. Where Does the Problem Lie? Several factors have been proposed as causes of the productivity decline: exhaustion of “the more accessible and easily discoverable drugs” (the lowhanging fruit1,46,49), the cumulative pressure to surpass previous blockbuster drugs (the “better than the Beatles” problem),1 the decreased tolerance for risk by drug regulatory agencies (the “cautious regulator” problem), the increase in human and technological investments (the “throw money at it” tendency), and the overestimation of the positive impacts of the scientific and technological advances, such as molecular biology and highthroughput screening, which has led to hastily abandoning previous methodologies (the “basic research-brute force” bias46). Many have also highlighted the reductionist tendency of the dominant methodology of drug discovery: target-based drug discovery.45,46,49−61 Interestingly, this methodology was born at roughly the same time as the onset of this decline and has now dominated drug discovery approaches for several decades.60 Most target-based drug discovery investigations are reductionist in nature since they are based on reducing the therapeutic effects that emerge from interacting with complex networks of cellular and extracellular components and their intricate feedback loops to the modulation of either a single or few proteins.62 Notwithstanding, it is important to acknowledge that there have been attempts to move away from this extreme reductionism in target-based drug discovery by adopting polypharmacological approaches. Let us explore the evolution of drug discovery in order to better assess the criticisms against the focus on reductionism.
+1.3. The Evolution of Drug Discovery. Drug discovery started when our ancestors began to recognize patterns between the substances they came across and their effects on the phenotypes they observed. For example, Piptoporus betulinus is a fungus whose several constituent substances have now been observed to be potent immunomodulator and antimicrobial agents.63−67 Evidence, including an infected mummified human carrying this fungus, suggests its potential use in treating infectious diseases like trichuriasis around 5300 years ago68−71 (also see refs 72−74). Further evidence indicates that the possible intentional use of effective drugs stretches back even further to 60000 years ago.75−81 Even now, some of the most crucial drugs used in the clinic can be traced back to the therapeutics our ancestors discovered centuries ago, including morphine analogs (21 drugs), aspirin, digoxin, and many others (the historically used category of Figure 4 and Supporting Information 1).
+After thousands of years and the cumulative growth of our knowledge and capabilities,78 some pioneers of modern biomedical sciences, like François Magendie82 and Claude Bernard,83 began to unravel how these substances exerted their effects on phenotypes, i.e., their mechanism of action. The continuation of such investigations by trailblazing scientists like Rudolf Buchheim and Oswald Schmiedeberg84,85 blossomed
+
+into the scientific discipline of pharmacology86 (Figure 1). Afterward, in the 20th century, several highly prolific scientists
+Figure 1. Some of the most important pioneers of pharmacology and rational drug discovery. Top row, from left to right: Rudolf Buchheim, Oswald Schmiedeberg, and Paul Ehrlich. Bottom row, from left to right: George Hitchings, Gertrude Elion, James Black, and Paul Janssen. The three images in the top row plus the photo of James Black in the bottom row are from Wikimedia Commons and are used under a CC BY 4.0 license. The images of George Hitchings and Gertrude Elion are from achievement.org/achiever/gertrude-elion. The image of Paul Janssen is from the Janssen Image Library, Janssen Global Services, LLC, used by permission.
+not only significantly contributed to the development of the science of pharmacology87 but also applied the knowledge of how molecules exert their effects on phenotypes to designing better drugs (Figure 1). Among these are Paul Ehrlich, who devised concepts like the magic bullet, chemotherapy, and chemoreceptor88 and discovered salvarsan and neosalvarsan,89 George Hitchings and Gertrude Elion, who used knowledge on metabolism pathways to discover mercaptopurine,90 thioguanine,91 azathioprine,91 pyrimethamine,92 allopurinol,91 cotrimoxazole,93 acyclovir,94 and nelarabine,95 James Black, who applied receptor theory96 to discover the first-in-class medicines propranolol and cimetidine,97 and Paul Janssen who discovered diphenoxylate,98 difenoxin,99 haloperidol,100 droperidol,100 fentanyl,101 loperamide,102 etomidate,103 pimozide, sufentanil, alfentanil, mebendazole, miconazole, terconazole, and ketoconazole.99
+This approach which attempted to use the available scientific knowledge, including pharmacological, pathological, and physiological aspects, to guide and focus the empirical screening of random substances and correlate with observations on their effects on phenotypes came to be known as rational drug discovery. Target-based drug discovery can be considered as a subsequent iteration of rational drug discovery that was born contemporaneously with the revolution of molecular biology and the development of technologies like X-ray crystallography, nuclear magnetic resonance imaging, computational chemistry, biotechnology, DNA sequencing, combinatorial chemistry, and high-throughput screening, that enabled the ever-finer dissection of biological processes to the point of the binding of molecules to a single protein.
+Currently, target-based drug discovery heavily dominates drug discovery approaches in both academia and the pharmaceutical industry.104−115 Drug candidates for complex disorders like OCD, depression, and Alzheimer’s disease are being screened, selected, and optimized primarily based on their binding affinity for a single protein that is hypothesized to be
+
+12652
+
+https://doi.org/10.1021/acs.jmedchem.2c01737 J. Med. Chem. 2023, 66, 12651−12677
+
+Journal of Medicinal Chemistry
+
+pubs.acs.org/jmc
+
+Perspective
+
+fundamentally related to the development of the disease.116 Observing the therapeutic effects of molecules is primarily used for terminal filtering.62
+1.4. Reductionism and Antireductionism. Reductionism has been a dominant attitude in sciences since the Scientific Revolution and the Industrial Revolution.117 This approach gained further momentum in the later years of the 20th century and the initial years of this century118 because of the technological progress that facilitated it.
+In parallel with the dominance of reductionism over the past 70 years, antireductionism, which was even advocated by Aristotle,119 has been spurred in diverse fields.120−131 This has been driven by the disillusionment resulting from the failures of reductionism in unraveling complexity, such as the unfulfilled promises of the Human Genome Project.118,130,132 Complex systems science has flourished133−135 with dedicated institutions specializing in it, including the Santa Fe Institute,136 the New England Complex Systems Institute, and Complexity Science Hub Vienna.137 Recognition of the importance of complexity science was also reflected by awarding the 2021 Nobel Prize in Physics “for groundbreaking contributions to our understanding of complex systems”.138 Systems biology has also bloomed trying to pay more attention to the comprehensiveness of the components being studied and their interactions using computational and mathematical tools.139,140 In drug discovery, antireductionism has grown in several approaches including systems pharmacology, network pharmacology,141,142 and polypharmcology143 and was given additional momentum after Swinney and Anthony showed that, despite the disproportionate dominance of reductionist target-based drug discovery, most of the first-in-class drugs approved between 1999 and 2008 were discovered by phenotypic approaches.54 This could have inaugurated a rejuvenation of phenotypic drug discovery; alas, it is still being sidelined by a focus on target-based drug discovery144,145 and is viewed merely as a complementary approach for discovering novel mechanisms of action and firstin-class drugs.54,146
+1.5. Hypothesis: Target-Based Drug Discovery Is Inefficient. What is the relationship between the affinity of a molecule for a specific protein and its therapeutic effects on, for example, depressive disorders?147 Can the tight binding of a molecule to a protein free the human body from such complex disorders? This question is the fundamental core of the criticisms that have been raised against the reductionism associated with target-based drug discovery. Besides the fact that plenty of these hypothesized “targets” may not even be relevant to the phenotypes they are attributed to,116,148 most disorders and desired therapeutic effects seem to be too complex to be reducible to modulating the behavior of single proteins, except maybe monogenetic Mendelian disorders.60 Moreover, it is established that our knowledge of the underlying pathology of many disorders is dwarfed by our ignorance about them.149 This knowledge gap further hampers the feasibility of pinpointing a single protein to target in an attempt to counteract a specific pathology.
+Despite the numerous criticisms that have been advanced against target-based drug discovery,45,46,49−61 there is an absence of a comprehensive and systematic study that would be able to provide a relatively firm answer to the question: Is target-based drug discovery an ef f icient, optimal, and rational approach? Here, I attempt to provide an answer by examining the methodology of target-based drug discovery from several perspectives:
+
+A. How many of the currently approved drugs are indebted to reductionist target-based drug discovery in contrast to less-reductionist approaches?
+B. Even for the drugs discovered based on reductionist target-based drug discovery, can the therapeutic effects be reduced to the binding and modulation of the select proteins?
+C. How does the binding of drugs to “therapeutic targets” with high affinity correlate with their therapeutic effects?
+D. Does the methodology of target-based drug discovery stand on a sound theoretical foundation based on the available scientific knowledge?
+2. EVIDENCE ON THE EFFICIENCY OF TARGET-BASED DRUG DISCOVERY
+2.1. Contribution of Observing Therapeutic Effects vs Effects on Proteins to the Discovery of Approved Drugs. 2.1.1. Rationale. I hypothesized that a fundamental cause of drug discovery’s decline is the transition to the reductionist methodology of target-based drug discovery that selects and optimizes structures primarily based on their binding to a few hypothetically relevant “target” proteins and usually uses in vivo and human data only as terminal filters. On the other hand, traditional drug discovery inevitably was a more empirical approach primarily relying on selecting and optimizing molecules based on their therapeutic effects on humans and other organisms like nonhuman animals (hereinafter referred to as animals), fungi, and bacteria because of the absence of the tools needed for reductionism that would enable directly assessing the effects of drugs at the lower levels associated with individual proteins.
+While the aforementioned analysis conducted by Swinney and Anthony was seminal in revitalizing phenotypic drug discovery, the period they analyzed (1999−2008) was so limited that their conclusions, apart from being restricted to the suggestion that phenotypic drug discovery may be more efficient for discovering first-in-class drugs, were subsequently challenged by an analysis that had assessed a longer time frame.150 Moreover, Swinney and Anthony’s analysis did not cover the golden period of traditional drug discovery at all; thus, it is not suitable for comparing the real-world contributions of traditional and targetbased drug discovery. Consequently, I expanded the analysis of Swinney and Anthony to include all approved drugs and tried to increase the accuracy and objectivity of the analysis.
+2.1.2. Methods. I manually (not by automated methods like natural language processing) investigated the discovery origins of all drugs approved by the US FDA by the end of 2020, the list of which I had compiled using three databases: National Center for Advancing Translational Sciences (NCATS) Inxight Drugs (drugs.ncats.io),151 Drugs@FDA (accessdata.fda.gov/scripts/ cder/daf/index.cfm), and the Orange Book (fda.gov/drugs/ drug-approvals-and-databases/approved-drug-productstherapeutic-equivalence-evaluations-orange-book). In querying Inxight Drugs, I chose “US Approved OTC” OR “US Approved Rx” for the development status, “Approved” for the highest phase, “Principal Form” for substance form, and excluded treatment modalities of “Secondary,” “Inactive Ingredient,” “Diagnostic.” From Drugs@FDA, I retrieved drugs with type 1 (New Molecular Entity) and type 7 (“Previously Marketed but Without an Approved NDA”) applications among “Original NDA and Original BLA Approvals” and excluded the discontinued ones. I also added the nondiscontinued drugs
+
+12653
+
+https://doi.org/10.1021/acs.jmedchem.2c01737 J. Med. Chem. 2023, 66, 12651−12677
+
+Journal of Medicinal Chemistry
+
+pubs.acs.org/jmc
+
+Perspective
+
+taken from the Orange Book if they were not already included. All of the retrieved drugs are listed in Supporting Information 1, yet I did not investigate the discovery origins of the following groups of drugs: diagnostic agents like contrast agents; nutrients, vitamins, and nutrient inorganic ions; secondary agents without therapeutic activity themselves, like mesna; antidotes; enantiopure or racemic formulations of previously approved drugs; prodrugs of previously approved drugs; excipients; drugs whose therapeutic effects depend more on the physical properties of molecules; e.g., surfactants, chelating agents, radiopharmaceuticals, photochemotherapeutics, and osmotic diuretics.
+To maximize objectivity, it is important to settle upon simple and unambiguous definitions (Table 1). Discovery origin was
+
+Table 1. Concepts Used for Assessing the Contribution of Observing Therapeutic Effects vs Observing Effects on Proteins to the Discovery of Approved Drugs
+
+concept
+Therapeutic class
+Discovery origin
+Target-based
+Phenotypebased
+
+definition
+A group of analogs along with their respective lead molecules which guided their discovery
+The first observation that has related a therapeutic class to its therapeutic effect
+Therapeutic classes whose discovery origin was observing the effects of molecules on proteins
+Therapeutic classes whose discovery origin was observing the effects of molecules on phenotypes
+
+defined as “the first observation that has related a therapeutic class to the therapeutic effect” and therapeutic class was defined as “a group of analogs (chemical and/or pharmacological152) along with their respective lead molecules which guided their discovery.”153 Drugs whose “discovery origin was observing the effects of molecules on 

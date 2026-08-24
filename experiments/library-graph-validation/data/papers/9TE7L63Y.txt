@@ -1,0 +1,112 @@
+PAPER KEY: 9TE7L63Y
+TITLE: Learning single-cell perturbation responses using neural optimal transport
+AUTHORS: Bunne, Charlotte; Stark, Stefan G.; Gut, Gabriele; del Castillo, Jacobo Sarabia; Levesque, Mitch; Lehmann, Kjong-Van; Pelkmans, Lucas; Krause, Andreas; Rätsch, Gunnar
+
+Nature Methods | Volume 20 | November 2023 | 1759–1768 1759
+nature methods
+Article https://doi.org/10.1038/s41592-023-01969-x
+Learning single-cell perturbation responses using neural optimal transport
+Charlotte Bunne 1,2,9, Stefan G. Stark1,2,3,4,9, Gabriele Gut 5,9, Jacobo Sarabia del Castillo5, Mitch Levesque6, Kjong-Van Lehmann 1,7 , Lucas Pelkmans 5 , Andreas Krause 1,2 & Gunnar Rätsch 1,2,3,4,8
+Understanding and predicting molecular responses in single cells upon chemical, genetic or mechanical perturbations is a core question in biology. Obtaining single-cell measurements typically requires the cells to be destroyed. This makes learning heterogeneous perturbation responses challenging as we only observe unpaired distributions of perturbed or non-perturbed cells. Here we leverage the theory of optimal transport and the recent advent of input convex neural architectures to present CellOT, a framework for learning the response of individual cells to a given perturbation by mapping these unpaired distributions. CellOT outperforms current methods at predicting single-cell drug responses, as profiled by scRNA-seq and a multiplexed protein-imaging technology. Further, we illustrate that CellOT generalizes well on unseen settings by (1) predicting the scRNA-seq responses of holdout patients with lupus exposed to interferon-β and patients with glioblastoma to panobinostat; (2) inferring lipopolysaccharide responses across different species; and (3) modeling the hematopoietic developmental trajectories of different subpopulations.
+Characterizing and modeling perturbation responses at the single-cell level from non-time-resolved data remains one of biology’s grand challenges. It finds applications in predicting cellular reactions to environmental stress or a patient’s response to drug treatments. Accurate inference of perturbation responses at the single-cell level allows us to understand how and why individual tumor cells evade cancer therapies1. More generally, it deepens the mechanistic understanding of the molecular machinery that determines the respective responses to perturbations. Single-cell responses to genetic or chemical perturbations are highly heterogeneous2 due to multiple factors, including pre-existing variability in the abundance and subcellular organization of messenger RNA and proteins3–6, cellular states7 and the cellular microenvironment8. To effectively predict the drug response of each cell in a population, whether derived from tissue culture or as primary
+cells from a patient biopsy, it is thus crucial to incorporate this heterogeneous multivariate subpopulation structure into the analysis. A fundamental difficulty in learning perturbation responses is that cells are usually fixed and stained or chemically destroyed to obtain these measurements. Hence, it is only possible to measure the same cells before or after a perturbation is applied. Therefore, while we do not have access to a set of paired control/perturbed single-cell observations, we do have access to separate sets of single-cell observations from control and perturbed cells, respectively. To subsequently match single cells between conditions and, at the same time, account for cellular heterogeneity is a highly complex pairing problem. Here, we seek to learn a perturbation model that robustly describes the cellular dynamics upon intervention while still accounting for underlying variability across samples. Learning the responses on an
+Received: 28 June 2022
+Accepted: 23 June 2023
+Published online: 28 September 2023
+Check for updates
+1Department of Computer Science, ETH Zurich, Zürich, Switzerland. 2AI Center, ETH Zurich, Zürich, Switzerland. 3Medical Informatics Unit, University of Zurich Hospital, Zürich, Switzerland. 4Swiss Institute of Bioinformatics, Zurich, Switzerland. 5Department of Molecular Life Sciences, University of Zurich, Zürich, Switzerland. 6Department of Dermatology, University of Zurich Hospital, University of Zurich, Zürich, Switzerland. 7Cancer Research Center Cologne–Essen, Site: Center Integrated Oncology Aachen, Aachen, Germany. 8Department of Biology, ETH Zurich, Zürich, Switzerland. 9These authors contributed equally: Charlotte Bunne, Stefan G. Stark, Gabriele Gut. e-mail: kjlehmann@ukaachen.de; lucas.pelkmans@mls.uzh.ch; krausea@ethz.ch; gunnar.raetsch@inf.ethz.ch
+
+
+Nature Methods | Volume 20 | November 2023 | 1759–1768 1760
+Article https://doi.org/10.1038/s41592-023-01969-x
+of each cell from the unperturbed cell population ρc into their perturbed state ρk upon treatment k. Despite originating from different observations, map Tk determines for each cell xi the most likely corresponding cell Tk(xi) in the perturbed population (Fig. 1c). Finding this map then not only allows us to model single-cell trajectories upon perturbation but also to predict the perturbed state of previously unseen control cells. As a result, we can forecast the outcome of a perturbation k by applying the learned map Tk to a new unperturbed population ρ′c (Fig. 1d).
+The optimal map Tk aligning the control and perturbed population, which we seek to find, should best describe the incremental changes in the multivariate profile of each cell after applying a perturbation k. Using OT23,24 to recover these maps and unveil single-cell reprogramming trajectories has been proposed as a strong modeling hypothesis in the domain of single-cell biology16,17,25–28. OT problems return the alignment between distributions ρc and ρk corresponding to the minimal overall cost between aligned molecular profiles, thus determining the most likely state of each cell upon perturbation (Fig. 1c). Tk is learned such that its image corresponds to ρk and mass is moved from ρc into ρk according to a principle of minimal effort. As directly parameterizing the OT map Tk
+20,21,29 is unstable18, we parameterize the convex potentials of the dual optimal transport problem f and g by input convex neural networks22 and recover the optimal map Tk using the gradient of a convex function gk (∇gk)18. Supplementary Section A.3 provides a more detailed review of optimal transport methods proposed for single-cell biology problems and how our approach deviates from previous methods. To put CellOT’s performance in perspective, we benchmark it against current state-of-the-art methods based on autoencoders12,13, which attempt to add perturbation effects through the manipulation of a learned latent representation (reviewed in Supplementary Section A.1). To further test the hypothesis of the OT modeling prior, we compare the learned OT map ∇gk for each perturbation k with naive non-OT-based alignments.
+CellOT outperforms state-of-the-art methods
+We apply CellOT to predict the responses of cell populations to cancer treatments using a proteomic dataset consisting of two melanoma cell lines (M130219 and M130429)30, profiled by 4i5 and a single-cell RNA-sequencing (scRNA-seq) dataset31, which contain 34 and 9 different treatments, respectively. For more details on the datasets see Online Methods. We benchmarked CellOT against two autoencoder-based tools, scGEN13 and cAE12, as well as PopAlign32, a method based on aligning subpopulations of the control and treated space approximated through a mixture of Gaussian densities. Due to the high-dimensional nature of scRNA-seq data, we apply CellOT on latent representations learned by an autoencoder. The marginal distributions for observed and predicted cell populations for two 4i treatments and two scRNA-seq treatments are shown in Fig. 2a,d. Two features are selected for each perturbation and the complete set of marginals is shown in Supplementary Figs. 1–4. While the autoencoder baselines tend to capture the mean of the treated cell population, they are less successful in matching all heterogeneous states of the perturbed population (higher moments of the perturbed population). Thus, these models tend to learn over-simplified perturbation effects and are insufficient when aiming to understand heterogeneous rather than average cellular behaviors. CellOT, on the other hand, is able to capture these higher moments, yielding accurate and nuanced predictions. This can be further quantified through distributional metrics such as the maximum mean discrepancy (MMD)33. Low values of MMD imply that all moments of two distributions are matched and thus the entire distribution of perturbed cells is captured in fine detail, beyond the population average (Online Methods provides details). The MMDs between the predicted and observed populations for the
+existing patient cohort enables inference of treatment responses for new (previously unseen) patients, assuming that we captured the heterogeneous drug reactions of patients during training. It is crucial, however, to not simply model average perturbation responses of a patient cohort, but to capture the specificities of a single patient through personalized treatment effect predictions. Previous methods to approximate single-cell perturbation responses fall short of solving this highly complex pairing problem while, at the same time, accounting for cellular heterogeneity and the strong subpopulation structure of cell samples9–11. Current state-of-the-art methods12–14 predict perturbation responses via linear shifts in a learned latent space. While this can capture nonlinear cell-type-specific responses, the use of linear interpolations reduces the alignment problem to the possibly more challenging task of learning representations that are invariant to the corresponding perturbation. In this work, we introduce CellOT, a new approach that predicts perturbation responses of single cells by directly learning and uncovering maps between control and perturbed cell states, thus explicitly accounting for heterogeneous subpopulation structures in multiplexed molecular readouts. Assuming perturbations incrementally alter molecular profiles of cells, such as gene expression or signaling activities, we learn these changes and alignments using optimal transportation theory (OT)15. Optimal transport provides natural geometric and mathematical tools to manipulate probability distributions. It has found recent successes modeling cellular development processes16,17, albeit in a non-parameterized setting. Thus, current OT-based approaches are unable to make predictions on unseen cells, such as those from unseen samples, for example from new patients. Based on recent developments in neural optimal transport18, CellOT learns an optimal transport map for each perturbation in a fully parameterized and highly scalable manner. Instead of directly learning a transport map19–21, CellOT parameterizes a pair of dual potentials with input convex neural networks22. This choice induces an important theory-motivated inductive bias essential to model stability18. We demonstrate CellOT’s effectiveness by (1) learning single-cell marker responses to different cancer drugs in melanoma cell lines; (2) predicting single-cell transcriptome responses in biopsies of patients with systemic lupus erythematosus as well as panobinostat treatment outcomes of glioblastoma patients; (3) inferring lipopolysaccharide (LPS) responses across different animal species; and (4) modeling the transcriptome evolution of cell fates in hematopoiesis. Moreover, we benchmark CellOT against current state-of-the-art methods on multiple tasks12,13.
+Results
+Predicting perturbation responses via optimal transport maps Small molecule drugs can have profound effects on the cellular phenotype by, for instance, altering signaling cascades. Most of these effects depend on the context in which the perturbation occurs. Given the heterogeneity among single cells in cell populations and tissues, predicting cellular responses requires understanding the rules by which context shapes genome activity and its response to drugs. High-dimensional single-cell data measured via single-cell genomics or multiplexed imaging technologies can provide this contextual information but only return unpaired or unaligned observations of cell populations. Here, CellOT allows us to utilize such unpaired data and enables learning cell-state transitions upon perturbation. In formal terms, we denote the unperturbed control population by ρc consisting of n cells xi for i = 1, ..., n. Upon perturbation k, the multivariate state of each cell xi of the unperturbed population changes, which we observe as the perturbed population ρk (Fig. 1a). To understand the mode of action and effect of perturbations, we seek to learn the transition and alignment between populations ρc and ρk via parameterizing a map Tk (see Fig. 1a,b), which explains the transition
+
+
+Nature Methods | Volume 20 | November 2023 | 1759–1768 1761
+Article https://doi.org/10.1038/s41592-023-01969-x
+selected perturbations are shown in Fig. 2b,e. For scRNA-seq data, MMD evaluations are computed using the top 50 marker genes. An analysis on the influence of the number of chosen marker genes can be found in Supplementary Fig. 7. In addition to the autoencoder baselines, we include the trivial identity baseline that predicts treatment effects simply by returning the untreated states, as well as a theoretical lower bound, observed, consisting of a different set of observed perturbed cells, thus only varying from the true predictions up to experimental noise. We find that CellOT can approach the lower bound (observed setting), whereas the baseline methods often do not improve much over the identity setting. Different evaluation metrics across all 35 4i therapies and 6 scRNA-seq therapies are summarized in Supplementary Figs. 5 and 6. Besides MMD, we additionally include the l2 mean that measures the distance between the observed and predicted mean drug effect over all features. Lastly, we compare the overall mean correlation coefficient r2 between the predicted and observed data on all features (Online Methods). CellOT outperforms the baselines in both metrics across all treatments, typically by one order of magnitude. We attribute the strong performance of CellOT to its ability to learn a transport function that considers explicitly the data geometries of cell populations through the theory of optimal transport. This hypothesis is supported by the observation that the inter-feature correlation structure remains largely conserved between treated and untreated populations, thus depicting a setting where OT approaches excel. For more information, see Extended Data Fig. 1. Extended Data Fig. 2 visualizes the learned maps, further demonstrating CellOT’s ability to model finegrained responses. Finally, we computed Uniform Manifold Approximation and Projection (UMAP) projections34 on a joint set of predicted and observed perturbed cells utilizing the full feature space (Fig. 2c,f). We observe that the perturbed cell states inferred by CellOT are well integrated with the observed perturbed cells. Again, both baselines do not recover the perturbed distribution in its entirety and thus the perturbed state of different subpopulations is not captured consistently.
+CellOT captures cell-to-cell variability in drug responses
+Capturing distinct perturbation responses of different cell types within the same sample remains a challenging computational task. To reduce the task’s complexity, prediction algorithms can be guided by predefined cell-type labels both in the perturbed and unperturbed states32 or set to approximate the mean drug response13. These simplifications come at a cost: the reliance on a priori knowledge about present and relevant cell types, the assumption that cell types are characterized by the same features before and after a perturbation and that the drug response is uniform within a cell type. In the worst case, these limitations risk masking true and important drug response heterogeneity and thus hamper the discovery of new cell-type- or cell-state-specific perturbation responses (further comparisons are provided in Supplementary Fig. 13). CellOT is free of these limitations and enables scientists to query the predicted single-cell responses at the granularity best suited to answer their biological questions. As a proof of concept, we co-cultured the aforementioned patient-derived melanoma cell lines (Online Methods) at equal ratios and performed a boutique drug screen, during which we exposed cells for 8 h to a panel of 34 drugs and measured the single-cell drug responses with the 4i technology. Using CellOT, we predict the perturbed cell states of a shared set of control (dimethylsulfoxide (DMSO)-treated) cells (Fig. 3a) for each drug. Previous work7 shows that phosphorylation levels of signaling kinases upon drug treatments are tightly linked to the cellular state. To assess whether this relationship was retained in predicted compared to observed perturbed cells, we analyzed the phosphorylation levels of extracellular signal-regulated kinases (pERK) using the transport maps learned by CellOT on each drug. Using 750 predicted and 750 observed perturbed cells, we computed UMAP projections joint-wise from all features except pERK. Figure 3b shows the predicted and observed population individually annotated with the respective pERK levels of each cell. We found that the spatial organization of the two projections looked almost identical and that pERK levels had a highly comparable distribution across the cells of either class and all drug treatments (further analysis in Extended Data Fig. 3a,b and Online Methods).
+Find such that overall cost to transport ρc to ρk is minimal.
+ab c
+Control
+n-dimensional space
+Perturbationk
+Perturbationl
+Perturbationm
+d
+=
+∆
+∆
+∆
+∆
+=
+∆
+Tk
+Tk
+Tk (xj)
+Tk (xi)
+gk
+xi
+xj
+xi − Tk (xi)
+Control Observed
+perturbationk
+=
+=
+=
+ρk
+ρk
+ρk
+ρl
+ρl
+ρm
+ρm
++
++
++
+Training data
+Trained for each perturbation
+Apply learned OT maps
+Predicted perturbations
+Training phase Testing phase
+Optimized
+OT maps New sample
+i
+2 2
+Arg min Tk#ρc = ρk
+ρc
+ρc
+ρc
+ρc’
+Tk
+Tl
+Tm
+Tk*
+Tl*
+Tm*
+Tk*
+Tl*
+Tm*
+ρ^k
+ρ^l
+ρ^m
+ρk
+ρc
+Tk
+Fig. 1 | Overview of the CellOT model. a, Distributions of single cells were
+measured in either an untreated control state (ρc) or in one of several perturbed states (ρk, ρl, ρm, ...). These distributions lie in a high-dimensional space of profiled features. b, For a perturbation k, we aim to model it with a function Tk that maps untreated cells in ρc to their treated counterparts in ρk. c, Lacking paired measurements, we assume that the perturbation transforms ρc into ρk under a principle of minimal effort. In particular, we learn Tk using optimal
+transport theory to directly estimate this distributional mapping as the gradient of the optimal transport dual potential ∇ gθ. d, OT maps are learned for all perturbations independently. Because these maps are fully parameterized, CellOT can be trained, for example, on a set of initially provided samples to then make predictions on untreated cells originating from new, previously unseen samples.
+
+
+Nature Methods | Volume 20 | November 2023 | 1759–1768 1762
+Article https://doi.org/10.1038/s41592-023-01969-x
+CellOT disentangles subpopulation-specific drug effects
+CellOT allows us to isolate the mode of action of each drug by computing the difference between predicted perturbed cells and untreated control cells. A UMAP embedding of all cells color-coded by the treatment distinctly separates different treatments (Fig. 3c and Extended Data Fig. 3e), all of which CellOT is able to faithfully learn (Supplementary Fig. 5). Such distinct treatment embeddings are not present when accounting only for an average perturbation effect (Extended Data Fig. 3d), indicating the importance of capturing the cellular heterogeneity of drug responses. Using Leiden clustering on the full feature set, we grouped unperturbed control cells in 12 cellular states (Fig. 3d, Extended Data Fig. 3g and Online Methods). Cellular states 1, 5, 6, 9 and 12 show high levels of MelA and no SOX9 and thus correspond to the melanocytic cell line M1

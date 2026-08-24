@@ -1,0 +1,196 @@
+PAPER KEY: 6GBVH9P8
+TITLE: AlphaFold Meets Flow Matching for Generating Protein Ensembles
+AUTHORS: Jing, Bowen; Berger, Bonnie; Jaakkola, Tommi
+
+AlphaFold Meets Flow Matching for Generating Protein Ensembles
+
+arXiv:2402.04845v1 [q-bio.BM] 7 Feb 2024
+
+Bowen Jing 1 Bonnie Berger 1 2 Tommi Jaakkola 1
+
+Abstract
+The biological functions of proteins often depend on dynamic structural ensembles. In this work, we develop a flow-based generative modeling approach for learning and sampling the conformational landscapes of proteins. We repurpose highly accurate single-state predictors such as AlphaFold and ESMFold and fine-tune them under a custom flow matching framework to obtain sequence-conditoned generative models of protein structure called AlphaFLOW and ESMFLOW. When trained and evaluated on the PDB, our method provides a superior combination of precision and diversity compared to AlphaFold with MSA subsampling. When further trained on ensembles from all-atom MD, our method accurately captures conformational flexibility, positional distributions, and higherorder ensemble observables for unseen proteins. Moreover, our method can diversify a static PDB structure with faster wall-clock convergence to certain equilibrium properties than replicate MD trajectories, demonstrating its potential as a proxy for expensive physics-based simulations. Code is available at https://github.com/ bjing2016/alphaflow.
+1. Introduction
+Proteins adopt complex three-dimensional structures, often as members of structural ensembles with distinct states, collective motions, and disordered fluctuations, to carry out their biological functions. For example, conformational changes are critical in the function of transporters, channels, and enzymes, and the properties of equilibrium ensembles help govern the strength and selectivity of molecular interactions (Meller et al., 2023; Vo¨gele et al., 2023). While deep learning methods such as AlphaFold (Jumper et al., 2021) have excelled in the single-state modeling of experimental protein structures, they fail to account for this conformational heterogeneity (Lane, 2023; Ourmazd et al., 2022).
+1CSAIL, Massachusetts Institute of Technology 2Department of Mathematics, Massachusetts Institute of Technology. Correspondence to: Bowen Jing <bjing@mit.edu>.
+
+Hence, a method which builds upon the level of accuracy of single-structure predictors, but reveals underlying structural ensembles, would be of great value to structural biologists.
+Existing machine learning approaches for generating structural ensembles have focused on inference-time interventions in AlphaFold that modify the multiple sequence alignment (MSA) input (Del Alamo et al., 2022; Stein & Mchaourab, 2022; Wayment-Steele et al., 2023), resulting in a different structure prediction for each version of the MSA. While these approaches have demonstrated some success, they suffer from two key limitations. First, by operating on the MSA, they cannot be generalized to structure predictors based on protein language models (PLMs) such as ESMFold (Lin et al., 2023) or OmegaFold (Wu et al., 2022), which have grown in popularity due to their fast runtime and ease of use. Secondly, these inference-time interventions do not provide the capability to train on protein ensembles from beyond the PDB—for example, ensembles from molecular dynamics, which are of significant scientific interest but can be extremely expensive to simulate (Shaw et al., 2010).
+To address these limitations, in this work we combine AlphaFold and ESMFold with flow matching, a recent generative modeling framework (Lipman et al., 2022; Albergo & Vanden-Eijnden, 2022), to propose a principled method for sampling the conformational landscape of proteins. While AlphaFold and ESMFold were originally developed and trained as regression models that predict a single best protein structure for a given MSA or sequence input, we develop a strategy for repurposing them as (sequence-conditioned) generative models of protein structure. This synthesis relies on the key insight that iterative denoising frameworks (such as diffusion and flow-matching) provide a general recipe for converting regression models to generative models with relatively little modification to the architecture and training objective. Unlike inference-time MSA ablation, this strategy applies equally well to PLM-based predictors and can be used to train or fine-tune on arbitrary ensembles.
+While flow matching has been well established for images, its application to protein structures remains nascent (Bose et al., 2023). Hence, we develop a custom flow matching framework tailored to the architecture and training practices of AlphaFold and ESMFold. Our framework leverages the polymer-structured prior distribution from harmonic diffu-
+
+1
+
+A q(x)
+
+AlphaFold Meets Flow Matching for Generating Protein Ensembles
+
+AlphaFold2
+
+C
+
+/ ESMFold
+
+B
+
+D
+
+Figure 1. Conceptual overview of AlphaFLOW / ESMFLOW. (A) Samples are drawn from a harmonic (polymer-like) prior. (B) The sample is progressively refined or denoised under a flow field controlled by the structure prediction model (AlphaFold or ESMFold). (C) At each step, the denoised structure prediction parameterizes the direction of the flow and we interpolate the current sample towards it. (D) The final prediction is a sample from the learned distribution of structures.
+
+sion (Jing et al., 2023), but improves over it by defining a scale-invariant noising process resilient to missing and cropped residues. These improvements directly result from the increased modeling flexibility offered by flow matching and contribute to the performance of our method.
+We demonstrate the performance of our flow-matching variants of AlphaFold and ESMFold—named AlphaFLOW and ESMFLOW—in two distinct settings. First, after fine-tuning these models only on structures from the PDB, we substantially surpass the precision-diversity Pareto frontier of MSA ablation baselines on a test set of recently deposited conformationally heterogeneous proteins. Second, we showcase the ability to learn from ensembles beyond the PDB by further training on the ATLAS dataset (Vander Meersche et al., 2023) of molecular dynamics simulations. When evaluated on test proteins structurally dissimilar from the training set, AlphaFLOW substantially surpasses the MSA baselines in the prediction of conformational flexibility, distributional modeling of atomic positions, and replication of higherorder ensemble observables such as intermittent contacts and solvent exposure. Furthermore, when a static PDB structure is provided as a template, sampling from AlphaFLOW provides faster wall-clock convergence to many equilibrium properties than running molecular dynamics (MD) simulation starting from that structure. Thus, our method can be used in place of expensive simulations to diversify and obtain equilibrium ensembles of solved protein structures.
+2. Background
+Protein structure prediction. The modern approach for protein structure prediction was pioneered by AlphaFold (Jumper et al., 2021), which takes as input (1) the protein
+
+sequence, (2) a MSA of evolutionarily related sequences, and optionally (3) a template structure of a related protein, and predicts the all-atom 3D coordinates of single protein structure. AlphaFold was developed and trained in an endto-end fashion under a regression-like FAPE loss with structures from the PDB. Later works, such as ESMFold (Lin et al., 2023) and OmegaFold (Wu et al., 2022), modified the pipeline by substituting the MSA with embeddings from a protein language model (PLM) and eschewing the template input, but otherwise kept the same architecture and training framework as AlphaFold.
+Modeling protein ensembles. In the post-AlphaFold era, several works have emphasized diversifying highly accurate single-structure predictions to reflect underlying conformational heterogeneity (Lane, 2023; Chakravarty & Porter, 2022; Saldan˜o et al., 2022; Xie & Huang, 2023; Brotzakis et al., 2023; Bryant, 2023; Porter et al., 2023). Most prominently, Del Alamo et al. (2022) demonstrated that multiple functional states could be obtained by subsampling the MSA input to AlphaFold. Since then, MSA subsampling has become the de-facto standard methodology and has been employed to study conformational states of kinases (Faezov & Dunbrack Jr, 2023; Herrington et al., 2023; Casadevall et al., 2023), variant effects on conformational states (da Silva et al., 2023), and to seed molecular dynamics simulations (Vani et al., 2023). Alternative approaches have also been proposed in the form of point mutations to the MSA (Stein & Mchaourab, 2022; 2023) and MSA clustering (Wayment-Steele et al., 2023). .
+An emerging line of work seeks to directly train sequenceto-structure generative models of protein ensembles. EigenFold (Jing et al., 2023) and Distributional Graphormer (Zheng et al., 2023) use harmonic diffusion and SE(3) diffu-
+
+2
+
+AlphaFold Meets Flow Matching for Generating Protein Ensembles
+
+sion (Yim et al., 2023), respectively, to generate ensembles. SENS (Lu et al., 2023) is a local generative model that diversifies single starting structures via local exploration of the conformational landscape. However, these models have yet to show convincing validations or comparisons with MSA subsampling methods on PDB test sets.
+A related but separate line of work has focused on learning generative models of Boltzmann distributions as proxies for expensive molecular dynamics simulation. These models were initially conceived as normalizing flows that provided exact likelihoods and thus a means to train with energies and reweigh samples at inference time (Noe´ et al., 2019; Ko¨hler et al., 2021; Midgley et al., 2022; Abdin & Kim, 2023; Felardos et al., 2023). However, these normalizing flows have proven difficult to scale beyond small molecules and toy systems. More recently, the proliferation of diffusion models has shifted the focus of this line of work towards scalability and generalization (Arts et al., 2023; Zheng et al., 2023) rather than exact likelihoods. Our method, when trained on MD ensembles, can be viewed as belonging to this new generation of Boltzmann-targeting generative models.
+Flow matching (Lipman et al., 2022; Albergo & VandenEijnden, 2022; Albergo et al., 2023; Liu et al., 2022) is a generative modeling paradigm that resembles and builds upon the significant success of diffusion models (Ho et al., 2020; Song et al., 2021) in image and molecule domains. The fundamental object in flow matching is a conditional probability path pt(x | x1), t ∈ [0, 1]: a family of densities conditioned on a data point x1 ∼ pdata which interpolates between a shared prior distribution p0(x | x1) = q(x) and an approximate Dirac p1(x | x1) ≈ δ(x − x1). Given a conditional vector field ut(x | x1) that generates the time evolution of pt(x | x1), one then learns the marginal vector field with a neural network:
+vˆ(x, t; θ) ≈ v(x, t) := Ex1∼pt(x1|x)[ut(x | x1)] (1)
+At convergence, the learned vector field vˆ(x, t; θ) is a neural ODE that evolves the prior distribution q(x) to the data distribution pdata(x). Score-matching in diffusion models can be seen as a special case of flow matching; however, as discussed in Section 3.3, flow matching circumvents certain difficulties that would otherwise arise with diffusion.
+3. Method
+3.1. AlphaFold as a Denoising Model
+Given a protein sequence A of amino acid tokens, our objective is to model the distribution p(x | A) over 3D coordinates x ∈ R3×N which represents the structural ensemble of that protein sequence. Considering the enormous intellectual efforts that went into a deterministic sequenceto-structure model (i.e., AlphaFold), developing a distri-
+
+Text-to-image generative model
+
+yorkshire terrier
+
+UNet
+
+Sequence-to-structure generative model
+
+MEEKLKKTKIIFVVGG…
+
+AlphaFold
+
+Figure 2. AlphaFold as a denoising model. Just as (diffusionbased) text-to-image generative models are simply neural networks that denoise images (with text input), a modified AlphaFold that ingests noisy structures and predicts clean structures (with sequence input) immediately provides a sequence-to-structure generative model—when trained under an appropriate framework.
+
+butional model of equivalent accuracy and generalization ability would appear to pose a considerable challenge. Our solution is to leverage recent conceptual advances in generative modeling in order to simply repurpose AlphaFold— nearly out of the box—as a generative model.
+Consider, for example, the (simplified) architecture of prototypical text-to-image diffusion models (Ho et al., 2020; Rombach et al., 2022), which aim to model conditional distributions p(x | s) of images x conditioned on text prompt s. At the heart of these models lies a denoising neural network (e.g., a UNet) which ingests a noisy image, along with a text prompt, to predict a clean image. Conditioned on these inputs, such models are otherwise are trained with simple, regression-like MSE objectives. Analogously, a protein structure predictor trained on a regression-like loss—like AlphaFold or ESMFold—can be converted to a denoising model simply by supplying an additional, noisy structure input (Figure 2). Not coincidentally, this is reminiscent of the idea of template structures employed by certain AlphaFold workflows. Thus, we develop an input embedding module very similar to AlphaFold’s template embedding stack and prepend it to the pairwise folding trunks of AlphaFold and ESMFold (details in Appendix A.1). By doing so, we obtain structure denoising architectures that are thin wrappers around well-validated single-structure predictors.
+With these architectural modifications, we are ready to plug AlphaFold and ESMFold into any iterative denoising-based generative modeling framework. Next, we will see how this concretely applies to flow matching for protein ensembles.
+
+3
+
+AlphaFold Meets Flow Matching for Generating Protein Ensembles
+
+3.2. Flow Matching for Protein Ensembles
+Designing a flow-matching generative framework amounts to the choice of a conditional probability path pt(x | x1) and its corresponding vector field ut(x | x1). Inspired by the interpolant-based perspective on flow matching (Albergo & Vanden-Eijnden, 2022), we define the conditional probability path by sampling noise x0 from the prior q(x0) and interpolating linearly with the data point x1:
+
+x | x1, t = (1 − t) · x0 + t · x1, x0 ∼ q(x0) (2)
+
+This probability path is associated with the vector field
+
+ut(x | x1) = (x1 − x)/(1 − t)
+
+(3)
+
+which matches the CondOT path and field proposed in (for example) Pooladian et al. (2023). Customarily, we then learn a neural network to approximate the marginal vector field according to Equation 1. However, if we instead define a neural network xˆ1(x, t; θ) and reparameterize via
+
+vˆ(x, t; θ) = (xˆ1(x, t; θ) − x)/(1 − t)
+
+(4)
+
+then rearrangements of Equations 1 and 4 reveal that we can equivalently learn the expectation of x1:
+
+xˆ1(x, t; θ) ≈ Ex1∼pt(x1|x)[x1]
+
+(5)
+
+This reparameterization is identical—up to the choice of probability path pt(x1 | x)—to that employed for image diffusion models (Ho et al., 2020). In our setting, since x1 refers to samples from the data distribution (i.e., protein structures), this allows the AlphaFold-based architectures discussed previously to be immediately used as the the denoising model xˆ1(x, t; θ), with x as the noisy input and t as an additional time embedding.
+
+To apply flow matching to protein structures, we describe a structure by the 3D coordinates of its β-carbons (α-carbon for glycine): x ∈ RN×3. (We choose β-carbons because these are the inputs to the template embedding stack.) We then define the prior distribution q(x) over the positions of these β-carbons to be a harmonic prior (Jing et al., 2023):
+
+q(x) ∝ exp
+
+α −
+2
+
+N −1
+∥xi
+
+−
+
+xi+1∥2
+
+(6)
+
+i=1
+
+This prior ensures that samples along the conditional probability path, and hence inputs to the neural network, always remain polymer-like, physically plausible 3D structures.
+
+The parameterization of learning the conditional expectation of x1 (Equation 5) suggests that the neural network should be trained with an MSE loss. However, there are several issues with this direct approach. (1) The structure prediction networks not only predict β-carbon coordinates,
+
+but also all-atom coordinates and residue frames. (2) The input to the network is SE(3)-invariant by design, which makes training with MSE loss unsuitable without further correction (Appendix A.2). Finally, (3) the networks obtain best performance (and were orginally trained) with the SE(3)-invariant Frame Aligned Point Error (FAPE) loss. To reconcile these issues with the flow-matching framework, we redefine the space of protein structures to be the quotient space R3×N /SE(3), with the prior distribution projected to this space. We redefine the interpolation between two points in this space to be linear interpolation in R3 after RMSDalignment. Further, because the quotient space is no longer a vector space, there is no longer a notion of “expectation” of a distribution; instead, we aim to learn the more general Fre´chet mean of the conditional distribution p(x1 | x):
+
+xˆ1(x,
+
+t;
+
+θ)
+
+≈
+
+min
+xˆ1
+
+Ex1 ∼pt (x1 |x)
+
+FAPE2(x1, xˆ1)
+
+(7)
+
+where we leverage the property that FAPE is a valid metric (Jumper et al., 2021) to define a Fre´chet mean. To learn this target, we use a training loss identical to the original FAPE, except now squared. The final result for the training and inference procedures are provided in Algorithms 1 and 2. An important implication of this modified framework is that while our model is faithfully supervised on all-atom coordinates, it technically is learning the distribution only over β-carbon coordinates. These procedures and their subtleties are more fully discussed in Appendix A.2.
+
+Algorithm 1 TRAINING
+Input: Training examples of structures, sequences, and MSAs {(Si, Ai, Mi)} for all (Si, Ai, Mi) do
+Extract x1 ← BetaCarbons(Si) Sample x0 ∼ HarmonicPrior(length(Ai)) Align x0 ← RMSDAlign(x0, x1) Sample t ∼ Uniform[0, 1] Interpolate xt ← t · x1 + (1 − t) · x0 Predict Sˆi ← AlphaFold(Ai, Mi, xt, t) Optimize loss L = FAPE2(Sˆi, Si)
+
+Algorithm 2 INFERENCE
+
+Input: Sequence and MSA (A, M ) Output: Sampled all-atom structure Sˆ
+
+Sample x0 ∼ HarmonicPrior(length(A)) for n ← 0 to N − 1 do
+
+Let t ← n/N and s ← t + 1/N
+
+Predict Sˆ ← AlphaFold(A, M, xt, t)
+
+if n = N − 1 then
+
+return Sˆ
+
+Extract xˆ1 ← BetaCarbons(Sˆ)
+
+Align xt ← RMSDAlign(xt, xˆ1)
+
+Interpolate xs
+
+←
+
+s−t 1−t
+
+· xˆ1
+
++
+
+1−s 1−t
+
+· xt
+
+4
+
+AlphaFold Meets Flow Matching for Generating Protein Ensembles
+
+3.3. Comparison with Diffusion
+Since our flow matching framework involves defining and reversing a noising process, it bears a number of similarities with harmonic diffusion for protein structures (Jing et al., 2023), which converges to the same prior distribution. However, as a more general framework, flow matching offers two key advantages. First, harmonic diffusion converges to the prior distribution only in the infinite-time limit, and at a rate that depends on the data dimensionality, i.e., protein size. This causes inference-time distributional shifts when training only on crops of relatively small size, as is the case with AlphaFold and ESMFold. On the other hand, in flow matching, the prior distribution is imposed as a boundary condition at time t = 0 for all dimensionalities. Second, flow matching provides an easy means to deal with missing (gap) residues—which are very common in the PDB—by simply omitting them in the interpolation. In contrast, harmonic diffusion induces dependencies across atomic positions and hence requires data imputation for missing residues. We discuss these aspects (with additional theoretical results) further in Appendix A.3.
+4. Experiments
+4.1. Training Regimen
+We fine-tune all weights of AlphaFold and ESMFold on the PDB with our flow matching framework, starting from their publicly available pretrained weights. We use OpenFold (Ahdritz et al., 2022) for the architecture implementation and training p

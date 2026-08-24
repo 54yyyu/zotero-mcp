@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":7,"synthesis":8,"correctness":7,"faithfulness":8,"directness":8},
+            "Option 2": {"coverage":8,"synthesis":8,"correctness":8,"faithfulness":9,"directness":8},
+            "Option 3": {"coverage":9,"synthesis":10,"correctness":9,"faithfulness":9,"directness":8},
+            "Option 4": {"coverage":8,"synthesis":9,"correctness":8,"faithfulness":6,"directness":8}},
+ "ranking": ["Option 3","Option 2","Option 4","Option 1"],
+ "notes": "Option 3 is best: it alone captures the genuine framing clash (Shortcut Models treats flow matching as a special case of diffusion) and correctly integrates DSBM's bridge-matching subsumption (FM = sigma->0 limit, DDM = first IPF iteration) with accurate hierarchy. Option 2 is clean and faithful but omits the DSBM axis and the Shortcut Models tension. Option 4 captures DSBM well but cites 'AlphaFold Meets Flow Matching', a paper not in the library (faithfulness hit). Option 1 has a muddled hierarchy putting score-based diffusion strictly below DDIM and misses DSBM entirely."}

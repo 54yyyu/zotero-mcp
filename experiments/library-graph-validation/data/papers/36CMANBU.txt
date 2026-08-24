@@ -1,0 +1,289 @@
+PAPER KEY: 36CMANBU
+TITLE: Diffusion Schrödinger Bridge Matching
+AUTHORS: Campbell, Andrew; Shi, Yuyang; Bortoli, Valentin De; Doucet, Arnaud
+
+Diffusion Schrödinger Bridge Matching
+Yuyang Shi∗
+University of Oxford
+Valentin De Bortoli∗
+ENS ULM
+Andrew Campbell
+University of Oxford
+Arnaud Doucet
+University of Oxford
+Abstract
+Solving transport problems, i.e. finding a map transporting one given distribution
+to another, has numerous applications in machine learning. Novel mass trans
+port methods motivated by generative modeling have recently been proposed, e.g.
+Denoising Diffusion Models (DDMs) and Flow Matching Models (FMMs) im
+plement such a transport through a Stochastic Differential Equation (SDE) or an
+Ordinary Differential Equation (ODE). However, while it is desirable in many
+applications to approximate the deterministic dynamic Optimal Transport (OT)
+map which admits attractive properties, DDMs and FMMs are not guaranteed to
+provide transports close to the OT map. In contrast, Schrödinger bridges (SBs)
+compute stochastic dynamic mappings which recover entropy-regularized versions
+of OT. Unfortunately, existing numerical methods approximating SBs either scale
+poorly with dimension or accumulate errors across iterations. In this work, we
+introduce Iterative Markovian Fitting (IMF), a new methodology for solving SB
+problems, and Diffusion Schrödinger Bridge Matching (DSBM), a novel numerical
+algorithm for computing IMF iterates. DSBM significantly improves over previ
+ous SB numerics and recovers as special/limiting cases various recent transport
+methods. We demonstrate the performance of DSBM on a variety of problems.
+1 Introduction
+Mass transport problems are ubiquitous in machine learning (Peyré and Cuturi, 2019). For discrete
+measures, the Optimal Transport (OT) map can be computed exactly but is computationally inten
+sive. In a landmark paper, Cuturi (2013) showed that an entropy-regularized version of OT can be
+computed more efficiently using the Sinkhorn algorithm (Sinkhorn, 1967). This has enabled the use
+of OT techniques in a variety of applications ranging from biology (Bunne et al., 2022) to shape
+correspondence (Feydy et al., 2017). However, applications involving high-dimensional continuous
+distributions and/or large datasets remain challenging for these techniques.
+One of such data-rich applications is generative modeling, a central transport problem in machine
+learning which requires designing a deterministic or stochastic mapping transporting a reference
+“noise” distribution to the data distribution. For example, Generative Adversarial Networks (Good
+fellow et al., 2014) define a static, deterministic transport map, while Denoising Diffusion Models
+(DDMs) (Song et al., 2021b; Ho et al., 2020) build a dynamic, stochastic transport map by simulating
+a Stochastic Differential Equation (SDE), whose drift is learned using score matching (Hyvärinen,
+2005; Vincent, 2011). The excellent performances of DDMs have motivated recent developments
+of Bridge Matching and Flow Matching models, which are dynamic transport maps using SDEs
+(Song et al., 2021a; Peluchetti, 2021; Liu, 2022; Albergo et al., 2023) or ODEs (Albergo and Vanden
+Eijnden, 2023; Heitz et al., 2023; Lipman et al., 2023; Liu et al., 2023b). Compared to DDMs, Bridge
+and Flow Matching methods do not rely on a forward “noising” diffusion converging to the reference
+distribution in infinite time, and are also more generally applicable as they can approximate transport
+maps between two general distributions based on their samples. Nonetheless, these transport maps
+∗Equal contribution.
+37th Conference on Neural Information Processing Systems (NeurIPS 2023).
+arXiv:2303.16852v3 [stat.ML] 12 Dec 2023
+
+
+DSBM
+Bridge Matching
+Denoising
+Diffusion Flow
+Matching
+Figure 1: Relationship between
+DSBM and existing methods.
+Sets for alternating projections Preserved properties
+IPF P0 = π0; PT = πT M, R(Q) IMF M; R(Q) P0 = π0, PT = πT
+Table 1: Comparison between Iterative Markovian Fitting (IMF)
+and Iterative Proportional Fitting (IPF). The Schrödinger Bridge is
+the unique P s.t. P0 = π0, PT = πT , P ∈ M, P ∈ R(Q) simul
+taneously by Proposition 5. M is the space of (regular) Markov
+measures and R(Q) the space of reciprocal measures of Q.
+are not necessarily close to the OT map minimizing the Wasserstein-2 metric, which is appealing for
+its many attractive properties (Peyré and Cuturi, 2019; Villani, 2009).
+In contrast, the Schrödinger Bridge (SB) problem is a dynamic version of entropy-regularized OT
+(EOT) (Föllmer, 1988; Léonard, 2014b). The SB is the finite-time diffusion which admits as initial
+and terminal distributions the two distributions of interest and is the closest in Kullback–Leibler
+divergence to a reference diffusion. Numerous methods to approximate SBs numerically have been
+proposed, see e.g. (Bernton et al., 2019; Chen et al., 2016; Finlay et al., 2020; Caluya and Halder,
+2021; Pavon et al., 2021), but these techniques tend to be restricted to low-dimensional settings.
+Recently, novel techniques using diffusion-based ideas have been proposed in (De Bortoli et al.,
+2021; Vargas et al., 2021; Chen et al., 2022) based on Iterative Proportional Fitting (IPF) (Fortet,
+1940; Kullback, 1968; Rüschendorf and Thomsen, 1993), a continuous state-space extension of the
+Sinkhorn algorithm (Essid and Pavon, 2019). These approaches have been shown to scale better
+empirically, but numerical errors tend to accumulate over iterations (Fernandes et al., 2021).
+In this paper, our contributions are three-fold. First, we introduce Iterative Markovian Fitting (IMF), a
+new procedure to compute SBs which alternates between projecting on the space of Markov processes
+and on the reciprocal class, i.e. the measures which have the same bridge as the reference measure of
+SB (Léonard et al., 2014). We establish various theoretical results for IMF. Contrary to IPF, the IMF
+iterates always preserve the initial and terminal distributions. The differences between IPF and IMF
+are presented in Table 1. Second, we propose Diffusion Schrödinger Bridge Matching (DSBM), a
+novel algorithm approximating numerically the SB solution derived from IMF. DSBM requires at
+each iteration solving a simple regression problem in the spirit of Bridge and Flow Matching, and does
+not suffer from the time-discretization and “forgetting” issues of previous DSB techniques (De Bortoli
+et al., 2021; Vargas et al., 2021; Chen et al., 2022). Finally, we demonstrate the performance of
+DSBM on a variety of transport tasks.2
+Notations. We denote by P(C), the space of path measures, i.e. P(C) = P(C([0, T ], Rd)) where
+T > 0. The subset of Markov path measures associated with an SDE of the form dXt = vt(Xt)dt +
+σtdBt, with σ, v locally Lipschitz, is denoted M. For any Q ∈ M, the reciprocal class of Q is
+denoted R(Q), see Definition 3. We also denote Qt its marginal distribution at time t, Qs,t the
+joint distribution at times s and t, Qs|t the conditional distribution at time s given state at time
+t, and Q|0,T ∈ P(C) its diffusion bridge. Unless specified otherwise, all gradient operators ∇
+are w.r.t. the variable xt with time index t. Let (X, X ) and (Y, Y) be probability spaces. Given
+a Markov kernel K : X × Y → [0, 1] and a probability measure μ defined on X , we write μK
+the probability measure on Y such that for any A ∈ Y we have μK(A) = R
+X K(x, A)dμ(x). In
+particular, for any joint distribution Π0,T over Rd × Rd, we denote the mixture of bridges measure as
+Π = Π0,T Q|0,T ∈ P(C), which is short for Π(·) = R
+Rd×Rd Q|0,T (·|x0, xT )Π0,T (dx0, dxT ).
+2 Dynamic Mass Transport Techniques
+2.1 Denoising Diffusion and Bridge Matching Models
+Denoising Diffusion Models (Song et al., 2021b; Ho et al., 2020) are a popular class of generative
+models. They define a forward noising process Q ∈ M using the SDE dXt = − 1
+2 Xtdt + dBt on
+the time-interval [0, T ], where X0 ∈ Rd is drawn from the data distribution π0 and (Bt)t∈[0,T ] is a d
+2Code can be found at https://github.com/yuyang-shi/dsbm-pytorch.
+2
+
+
+dimensional Brownian motion. This diffusion3 converges towards the standard Gaussian distribution
+N(0, Id) as T → ∞. A generative model is given by its time-reversal (Yt)t∈[0,T ] = (XT −t)t∈[0,T ], where Y0 ∼ QT and dYt = { 1
+2 Yt + ∇ log QT −t(Yt)}dt + dBt (Anderson, 1982; Haussmann
+and Pardoux, 1986). In practice, (Yt)t∈[0,T ] is initialized with Y0 ∼ πT = N(0, Id), and the Stein
+score ∇ log Qt(xt) = EQ0|t [∇ log Qt|0(Xt|X0) | Xt = xt] is approximated using a neural network
+sθ(t, xt) minimizing the denoising score matching loss EQ0,t [∥∇ log Qt|0(Xt|X0) − sθ(t, Xt)∥2].
+An alternative to considering the time-reversal of a forward noising process is to “build bridges”
+between the two distributions and learn a mimicking diffusion process. This approach generalizes
+DDMs and allows for more flexible choices of sampling processes. We call this framework Bridge
+Matching and adopt a presentation similar to Peluchetti (2021); Liu et al. (2022b), where πT is the
+data distribution.4 We denote Q ∈ M the path measure associated with the following process
+dXt = ft(Xt)dt + σtdBt, X0 ∼ Q0. (1)
+Consider now the distribution of this process pinned down at an initial and terminal point x0, xT ,
+denoted Q|0,T (·|x0, xT ). Under mild assumptions, the pinned process Q|0,T (·|x0, xT ) is a diffusion
+bridge and is given by
+dX0,T
+t = {ft(X0,T
+t ) + σt2∇ log QT |t(xT |X0,T
+t )}dt + σtdBt, X0,T
+0 = x0, (2)
+which satisfies X0,T
+T = xT using Doob h-transform theory (Rogers and Williams, 2000). Next, we
+define an independent coupling Π0,T = π0 ⊗ πT , and let Π = Π0,T Q|0,T . This path measure Π is a
+mixture of bridges. We aim to find a Markov diffusion dYt = {ft(Yt) + vt(Yt)}dt + σtdBt on
+[0, T ] which admits the same marginals as Π; i.e. for any t ∈ [0, T ], Yt ∼ Πt, so YT ∼ πT . For
+such vt, a generative model for sampling data distribution πT is obtained by simulating (Yt)t∈[0,T ].
+It can be verified that indeed Yt ∼ Πt for vt⋆(xt) = σt2EΠT|t [∇ log QT |t(XT |Xt) | Xt = xt]. We
+present the theory behind this idea more formally using Markovian projections in Section 3.1. In
+practice, we do not have access to vt⋆ and it is learned using neural networks with regression loss
+EΠt,T [∥σt2∇ log QT |t(XT |Xt) − vθ(t, Xt)∥2]. (3)
+For ft = 0 and σt = σ, Q|0,T is a Brownian Bridge and we have
+X0,T
+t =t
+T xT + (1 − t
+T )x0 + σt(Bt − t
+T BT ), dX0,T
+t = {(xT − X0,T
+t )/(T − t)}dt + σtdBt, (4)
+with (Bt − t
+T BT ) ∼ N(0, t(1 − t
+T ) Id). The regression loss (3) associated with (4) is given by
+EΠt,T [∥(XT − Xt)/(T − t) − vθ(t, Xt)∥2]. (5)
+Letting σ → 0, we recover Flow Matching models (see Appendix A.1 for further details).
+2.2 Schrödinger Bridges and Optimal Transport
+The Schrödinger Bridge (SB) problem (Schrödinger, 1932) consists in finding a path measure
+PSB ∈ P(C) such that
+PSB = argminP{KL(P|Q) : P0 = π0, PT = πT }, (6)
+where Q ∈ P(C) is a reference path measure. In what follows, we consider Q defined by the diffusion
+process (1) which is Markov, and without loss of generality, we assume Q0 = π0. Hence PSB is the
+path measure closest to Q in terms of Kullback–Leibler divergence which satisfies the initial and
+terminal constraints PS0B = π0 and PSTB = πT .
+Another crucial property of PSB is that it can also be defined as a mixture of bridges PSB = ΠS0,BT Q|0,T ,
+where ΠS0,BT = argminΠ0,T {KL(Π0,T |Q0,T ) : Π0 = π0, ΠT = πT } is the solution of the static SB
+problem (Léonard, 2014b). In particular, for Q associated with (σBt)t∈[0,T ] we have
+ΠS0,BT = argminΠ0,T {EΠ0,T [||X0 − XT ||2 − 2σ2T H(Π0,T ) : Π0 = π0, ΠT = πT },
+3This is known as the Ornstein–Uhlenbeck (OU) process or VPSDE (Song et al., 2021b).
+4To keep notations consistent with existing works, π0 is the data distribution in the context of DDM and SB,
+whereas πT is the data distribution in Bridge Matching. However, both SB and Bridge Matching methods allow
+transfer between arbitrary distributions π0, πT , so this distinction is not important.
+3
+
+
+where H(μ) denotes the entropy, i.e. ΠS0,BT is the solution of the entropy-regularized OT problem. In
+this case, the SB can also be obtained theoretically by solving the following problem (Dai Pra, 1991)
+vSB = argminv{R T
+0 EPt [||v(t, Xt)||2]dt : dXt = v(t, Xt)dt + σdBt, P0 = π0, PT = πT }.
+Then PSB is given by the SDE with drift vSB initialized with X0 ∼ π0. For σ = 0, we recover the
+classical OT problem and the Benamou–Brenier formula (Benamou and Brenier, 2000).
+A common approach to solve (6) is the Iterative Proportional Fitting (IPF) method (Fortet, 1940; Kullback, 1968; Rüschendorf, 1995) defining a sequence of path measures (P ̃n)n∈N where
+ ̃P2n+1 = argmin ̃P{KL( ̃P| ̃P2n) :  ̃PT = πT },  ̃P2n+2 = argmin ̃P{KL( ̃P| ̃P2n+1) : P ̃0 = π0},(7)
+with initialization  ̃P0 = Q. This procedure alternates between projections on the set of path measures
+with given initial distribution π0 and terminal distribution πT . It can be shown (De Bortoli et al., 2021)
+that (P ̃n)n∈N are associated with diffusions and that for any n ∈ N,  ̃P2n+1 is the time-reversal of P ̃2n with initialization πT , and P ̃2n+2 is the time-reversal of P ̃2n+1 with initialization π0. Leveraging this
+property, De Bortoli et al. (2021) proposed Diffusion Schrödinger Bridge (DSB), an algorithm which
+learns the time-reversals iteratively. In particular, DDMs can be seen as the first iteration of DSB.
+3 Iterative Markovian Fitting
+3.1 Markovian Projection and Reciprocal Projection
+Markovian Projection. Projecting on Markov measures is a key ingredient in our methodology
+and in the Bridge Matching framework. This concept was introduced multiple times in the literature
+(Gyöngy, 1986; Peluchetti, 2021; Liu et al., 2022b). In particular, we focus on Markovian projection
+of path measures given by a mixture of bridges Π = Π0,T Q|0,T ∈ P(C).
+Definition 1. Assume that Q is given by (1) and that for any (x0, xT ) ∈ Rd, Q|0,T (·|x0, xT ) is
+associated with (X0,T
+t )t∈[0,T ] given by dX0,T
+t = {ft(X0,T
+t ) + σt2∇ log QT |t(xT |X0,T
+t )}dt + σtdBt,
+with σ : [0, T ] → (0, +∞). Then, when it is well-defined, we introduce the Markovian projection of
+Π, M⋆ = projM(Π) ∈ M, which is associated with the SDE
+dXt⋆ = {ft(Xt⋆) + vt⋆(Xt⋆)}dt + σtdBt, vt⋆(xt) = σt2EΠT|t [∇ log QT |t(XT |Xt) | Xt = xt].
+Note that in our definition σt > 0 so ∇ log QT |t(xT |xt) is well-defined, but Flow Matching can be
+recovered as the deterministic case in the limit σt = σ → 0. In the following proposition, we show
+that the Markovian projection is indeed a projection for the reverse Kullback–Leibler divergence, and
+that it preserves marginals of Πt.
+Proposition 2. Assume that σt > 0. Let M⋆ = projM(Π). Then, under mild assumptions, we have
+M⋆ = argminM{KL(Π|M) : M ∈ M},
+KL(Π|M⋆) = 1
+2
+RT
+0 EΠ0,t [∥σt2EΠT |0,t [∇ log QT |t(XT |Xt) | X0, Xt] − vt⋆(Xt)∥2]/σt2dt.
+In addition, we have that for any t ∈ [0, T ], Mt⋆ = Πt. In particular, M⋆T = ΠT .
+Reciprocal Projection. While the Markovian projection ensures that the obtained measure is
+Markov, the associated bridge measure is not preserved in general, i.e. projM(Π)|0,T ̸= Π|0,T =
+Q|0,T . Measures with same bridge as Q are said to be in its reciprocal class (Léonard et al., 2014).
+Definition 3. Π ∈ P(C) is in the reciprocal class R(Q) of Q ∈ M if Π = Π0,T Q|0,T . We define the
+reciprocal projection of P ∈ P(C) as Π⋆ = projR(Q)(P) = P0,T Q|0,T .
+Similarly to Proposition 2, we have the following result, which justifies the term reciprocal projection.
+Proposition 4. Let P ∈ P(C), Π⋆ = projR(Q)(P). Then, Π⋆ = argminΠ{KL(P|Π) : Π ∈ R(Q)}.
+The reciprocal projection Π⋆ of a Markov path measure M does not preserve the Markov property in
+general. In fact, the Schrödinger Bridge is the unique path measure which satisfies the initial and
+terminal conditions, is Markov and is in the reciprocal class of Q, see (Léonard, 2014b).
+Proposition 5. Let P be a Markov measure in the reciprocal class of Q such that P0 = π0, PT = πT .
+Then, under assumptions on Q, π0 and πT , P is unique and is equal to the Schrödinger Bridge PSB.
+4
+
+
+3.2 Iterative Markovian Fitting
+Based on Proposition 5, we propose a novel methodology called Iterative Markovian Fitting (IMF) to
+solve Schrödinger Bridges. We consider a sequence (Pn)n∈N such that
+P2n+1 = projM(P2n), P2n+2 = projR(Q)(P2n+1), (8)
+with P0 such that P00 = π0, P0T = πT and P0 ∈ R(Q). These updates correspond to alternatively
+performing Markovian projections and reciprocal projections.
+Combining Proposition 2 and Definition 3, we get that for any n ∈ N, P0n = π0 and PTn = πT . This
+property is in contrast to the IPF algorithm (7) for which the marginals at the initial and final times
+are not preserved. We highlight this duality between IPF (7) and IMF (8) in Table 1.
+We conclude this section with a theoretical analysis of IMF. First, we start by showing a Pythagorean
+theorem for both the Markovian projection and the reciprocal projection.
+Lemma 6. Under mild assumptions, if M ∈ M, Π ∈ R(Q) and KL(Π|M) < +∞, we have
+KL(Π|M) = KL(Π|projM(Π)) + KL(projM(Π)|M).
+If KL(M|Π) < +∞, we have
+KL(M|Π) = KL(M|projR(Q)(M)) + KL(projR(Q)(M)|Π).
+Using Lemma 6, we have the following proposition.
+Proposition 7. Under mild assumptions, we have KL(Pn+1|PSB) ≤ KL(Pn|PSB) < ∞, and
+limn→+∞ KL(Pn|Pn+1) = 0.
+Hence, for the IMF sequence (Pn)n∈N, the Markov path measures (P2n+1)n∈N are getting closer to
+the reciprocal class, while the reciprocal path measures (P2n+2)n∈N are getting closer to the set of
+Markov measures. Proposition 7 should be compared with (Rüschendorf, 1995, Proposition 2.1, Equation (2.16)) which shows that, for the IPF sequence ( ̃Pn)n∈N, we have limn→+∞ KL(P ̃n+1|P ̃n) = 0.
+This result is similar to Proposition 7 but for the forward Kullback–Leibler divergence.
+Using Proposition 7, we finally prove the convergence of the IMF sequence (Pn)n∈N to the
+Schrödinger Bridge. This result was first shown in the concurrent work (Peluchetti, 2023, The
+orem 2). We present a simpler proof in Appendix C.6.
+Theorem 8. Under mild assumptions, the IMF sequence (Pn)n∈N admits a unique fixed point
+P⋆ = PSB, and limn→+∞ KL(Pn|P⋆) = 0.
+4 Diffusion Schrödinger Bridge Matching
+In this section, we present Diffusion Schrödinger Bridge Matching (DSBM), a practical algorithm for
+solving the SB problem obtained by combining the IMF procedure with Bridge Matching.
+Iterative Markovian Fitting in practice. IMF alternatively projects on the Markov class M and
+the reciprocal class R(Q). We denote Mn+1 = P2n+1 ∈ M and Πn = P2n ∈ R(Q). Assuming we
+know how to sample from the bridge Q|0,T given the initial and terminal conditions, sampling from
+the reciprocal projection projR(Q)(M) is simple: First, sample (X0, XT ) from the joint distribution
+M0,T .5 Then, sample from the bridge Q|0,T (·|X0, XT ). The bottleneck of IMF is in the computation
+of Markovian projections. By Definition 1, M⋆ = projM(Π) is associated with the process
+dXt = {ft(Xt) + σt2EΠT|t [∇ log QT |t(XT |Xt) | Xt]}dt + σtdBt, X0 ∼ π0.
+By Proposition 2, we can learn M⋆ using Mθ⋆ given by
+dXt = {ft(Xt) + vθ⋆ (t, Xt)}dt + σtdBt, X0 ∼ π0, (9)
+θ⋆ = argminθ{R T
+0 EΠt,T [∥σt2∇ log QT |t(XT |Xt) − vθ(t, Xt)∥2]/σt2dt : θ ∈ Θ}, (10)
+5In practice, we sample the SDE associated with M and save a batch of joint samples (X0, XT ). This is
+similar to the trajectory caching procedure in De Bortoli et al. (2021), but we only retain initial and final samples.
+5
+
+
+where {vθ : θ ∈ Θ} is a parametric family of functions, usually given by a neural network. The
+optimal vθ⋆ (t, xt) = σt2EΠT|t [∇ log QT |t(XT |Xt) | Xt = xt] for any t ∈ [0, T ] and xt ∈ Rd.
+With the above two procedures for computing projR(Q)(M) and projM(Π), we can now describe a
+numerical method implementing IMF (8). Let Π0 = Π00,T Q|0,T where Π00 = π0, Π0T = πT . Learn
+M1 ≈ projM(Π0) given by (9) with vθ⋆ given by (10). Next, sample from Π1 = projR(Q)(M1) =
+M10,T Q|0,T by sampling from M10,T and reconstructing the bridge Q|0,T . We iterate the process to
+obtain a sequence (Πn, Mn+1)n∈N. In practice, this algorithm performs poorly (see Figure 3), since
+the approximate minimization (10) for computing Mn+1 may not admit Mn+1
+T = πT exactly as in

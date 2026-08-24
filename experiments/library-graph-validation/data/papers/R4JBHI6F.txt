@@ -1,0 +1,239 @@
+PAPER KEY: R4JBHI6F
+TITLE: Protein generation with evolutionary diffusion: sequence is all you need
+AUTHORS: Berg, Rianne van den; Alamdari, Sarah; Thakkar, Nitya; Tenenholtz, Neil; Strome, Robert; Moses, Alan M.; Lu, Alex X.; Fusi, Nicolò; Amini, Ava P.; Yang, Kevin K.
+
+Protein generation with evolutionary diffusion:
+sequence is all you need
+Sarah Alamdari1, Nitya Thakkar2,†, Rianne van den Berg3, Neil Tenenholtz1, Robert Strome4, Alan M. Moses4, Alex X. Lu1, Nicol`o Fusi1, Ava P. Amini1,∗, Kevin K. Yang1,∗
+1Microsoft Research, Cambridge, MA, USA
+2Stanford University, Palo Alto, CA, USA
+3Microsoft Research AI for Science, Amsterdam, The Netherlands
+4Department of Cell and Systems Biology, University of Toronto, Toronto, Ontario, CA
+†Work done principally during an internship at Microsoft Research
+∗These authors jointly supervised the work
+∗ Correspondence to: ava.amini@microsoft.com, yang.kevin@microsoft.com.
+1
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+Abstract Deep generative models are increasingly powerful tools for the in silico design of
+novel proteins. Recently, a family of generative models called diffusion models has demon
+strated the ability to generate biologically plausible proteins that are dissimilar to any actual
+proteins seen in nature, enabling unprecedented capability and control in de novo protein de
+sign. However, current state-of-the-art diffusion models generate protein structures, which lim
+its the scope of their training data and restricts generations to a small and biased subset of
+protein design space. Here, we introduce a general-purpose diffusion framework, EvoDiff, that
+combines evolutionary-scale data with the distinct conditioning capabilities of diffusion mod
+els for controllable protein generation in sequence space. EvoDiff generates high-fidelity, di
+verse, and structurally-plausible proteins that cover natural sequence and functional space. We
+show experimentally that EvoDiff generations express, fold, and exhibit expected secondary
+structure elements. Critically, EvoDiff can generate proteins inaccessible to structure-based
+models, such as those with disordered regions, while maintaining the ability to design scaffolds
+for functional structural motifs. We validate the universality of our sequence-based formula
+tion by experimentally characterizing intrinsically-disordered mitochondrial targeting signals,
+metal-binding proteins, and protein binders designed using EvoDiff. We envision that EvoDiff
+will expand capabilities in protein engineering beyond the structure-function paradigm toward
+programmable, sequence-first design.
+2
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+Evolution has yielded a diversity of functional proteins that precisely modulate cellular pro
+cesses. Recent years have seen the emergence of deep generative models that aim to learn
+from this diversity to generate proteins that are both valid and novel, with the ultimate goal
+of then tailoring function to solve outstanding modern-day challenges, such as the rapid de
+velopment of targeted therapeutics and vaccines or engineered enzymes for the degradation of
+industrial waste (Fig. 1A) (1, 2). Diffusion models provide a particularly powerful framework
+for generative modeling of novel proteins, as they generate high-diversity samples and can be
+conditioned given a wide variety of inputs or design objectives (3–6). Indeed, today’s most
+biologically-plausible instances of in silico-designed proteins come from diffusion models of
+protein structure (7–15).
+These models – including the current state-of-the-art approach RFdiffusion (10) – fit in the
+structure-based protein design paradigm of first generating a structure that fulfills desired con
+straints and then designing a sequence that will fold to that structure. However, sequence, not
+structure, is the universal design space for proteins. Every protein is completely defined by its
+amino-acid sequence. We discover proteins by finding their coding sequences in genomes, and
+proteins are synthesized as amino-acid sequences. Sequence then determines function through
+both an ensemble of structural conformations and the chemistry enabled by the amino acids
+themselves. However, not every protein folds into a static structure. In these cases, structure
+based design is not viable because the function is not mediated by a static structure (16–18),
+with the most extreme examples being intrinsically disordered regions (IDRs) (19). Therefore,
+static structures characterized by X-ray crystallography are an incomplete distillation of the in
+formation captured in sequence space (20–23). Furthermore, structural data (ca. 200k solved
+structures in PDB) is scarce and unrepresentative of the full diversity of natural sequences (ca.
+billions of unique natural protein sequences; Fig. 1A), inherently limiting the capacity of any
+structure-based generative model to learn the full diversity of protein functional space.
+3
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+We combine evolutionary-scale datasets with diffusion models to develop a powerful new
+generative modeling framework, which we term EvoDiff, for controllable protein design from
+sequence data alone (Fig. 1). Given the natural framing of proteins as sequences of discrete
+tokens over an amino acid language, we use a discrete diffusion framework in which a for
+ward process iteratively corrupts a protein sequence by changing its amino acid identities, and a
+learned reverse process, parameterized by a neural network, predicts the changes made at each
+iteration (Fig. 1B). The reverse process can then be used to generate new protein sequences
+starting from random noise (Fig. 1C). Importantly, EvoDiff’s discrete diffusion formulation
+is mathematically distinct from continuous diffusion formulations previously used for protein
+structure design (7–15). Beyond evolutionary-scale datasets of single protein sequences, mul
+tiple sequence alignments (MSAs) inherently capture evolutionary relationships by revealing
+patterns of conservation and variation in the amino acid sequences of sets of related proteins.
+We thus additionally build discrete diffusion models trained on MSAs to leverage this additional
+layer of evolutionary information to generate new single sequences (Fig. 1C-D).
+We evaluate our sequence and MSA models – EvoDiff-Seq and EvoDiff-MSA, respectively
+– across a range of generation tasks to demonstrate their power for controllable protein design
+(Fig. 1D). We first show that EvoDiff-Seq unconditionally generates high-quality, diverse pro
+teins that capture the natural distribution of protein sequence, structural, and functional space.
+Unconditional sampling from EvoDiff can yield proteins that stably express and exhibit ex
+pected biophysical properties. Using EvoDiff-MSA, we achieve evolution-guided design of
+novel sequences conditioned on an alignment of evolutionarily-related, but distinct, proteins.
+Finally, by exploiting the conditioning capabilities of our diffusion-based modeling framework
+and its grounding in a universal design space, we demonstrate – through both in silico and wet
+lab experiments – that EvoDiff can reliably generate proteins with functional IDRs, directly
+overcoming a key limitation of structure-based generative models, and generate scaffolds for
+4
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+functional structural motifs without any explicit structural or binder information.
+Discrete diffusion models of protein sequence EvoDiff is the first generative diffusion model
+for protein design trained on evolutionary-scale protein sequence data. We investigated two
+types of forward processes for diffusion over discrete data modalities (24, 25) to determine
+which would be most effective (Fig. 1B). In order-agnostic autoregressive diffusion (EvoDiff
+OADM, see Methods) (24), one amino acid is converted to a special mask token at each step
+in the forward process (Fig. 1B). After T =L steps, where L is the length of the sequence, the
+entire sequence is masked. We additionally designed discrete denoising diffusion probabilistic
+models (EvoDiff-D3PM, see Methods) (25) for protein sequences. In EvoDiff-D3PM, the for
+ward process corrupts sequences by sampling mutations according to a transition matrix, such
+that after T steps the sequence is indistinguishable from a uniform sample over the amino acids
+(Fig. 1B). In the reverse process for both, a neural network model is trained to undo the pre
+vious corruption. The trained model can then generate new sequences starting from sequences
+of masked tokens or of uniformly-sampled amino acids for EvoDiff-OADM or EvoDiff-D3PM,
+respectively (Fig. 1C).
+To facilitate direct and quantitative model comparisons, we trained all EvoDiff sequence
+models on 42M sequences from UniRef50 (26) using a dilated convolutional neural network
+architecture introduced in the CARP protein masked language model (27). We trained 38M
+parameter and 640M-parameter versions for each forward corruption scheme to test the effect
+of model size on model performance. As a first evaluation of our EvoDiff sequence models, we
+calculated each model’s test-set perplexity, which reflects its ability to capture the distribution of
+natural sequences and generalize to unseen sequences (see Methods). We observe that EvoDiff
+OADM learns to reconstruct the test set more accurately than two tested EvoDiff-D3PM vari
+ants employing uniform and BLOSUM62-based transition matrices (Table S1; Fig. S1). Fur
+5
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+thermore, EvoDiff-OADM is the only model variant where performance scales with increased
+model size (Table S1; Fig. S1).
+To explicitly leverage evolutionary information, we designed and trained EvoDiff MSA
+models using the MSA Transformer (28) architecture on the OpenFold dataset (29). To do so,
+we subsampled MSAs to a length of 512 residues per sequence and a depth of 64 sequences, ei
+ther by randomly sampling the sequences (“Random”) or by greedily maximizing for sequence
+diversity (“Max”). Within each subsampling strategy, we then trained EvoDiff MSA models
+with the OADM and D3PM corruption schemes. OADM corruption results in the lowest vali
+dation set perplexities, indicating that OADM models are best able to generalize to new MSAs
+(Table S2; Fig. S2). To select a subsampling method, we compared the ability of each model
+to reconstruct validation set MSAs, finding that maximizing for sequence diversity yields im
+proved performance no matter how the validation MSAs are subsampled (Table S2). We thus
+selected the OADM-Max model for downstream analysis, hereafter referring to it as EvoDiff
+MSA.
+Structural plausibility of generated sequences We next investigated whether EvoDiff could
+generate new protein sequences that were individually valid and structurally plausible. To assess
+this, we developed a workflow that evaluates the foldability and self-consistency of sequences
+generated by EvoDiff (Fig. 2A). We generated 1000 sequences from each EvoDiff sequence
+model with lengths drawn from the empirical distribution of lengths in the training set. We
+compared EvoDiff’s generations to sequences generated from a left-to-right autoregressive lan
+guage model (LRAR) with the same architecture and training set as EvoDiff and to sequences
+generated from protein masked language models such as ESM-2 (30) (Figs. 2B-C, S3, S4;
+Table S3).
+We assessed the foldability of individual sequences by predicting their corresponding struc
+7
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+Figure 2: EvoDiff generates realistic and structurally-plausible protein sequences. (A) Workflow for evaluating the foldability and self-consistency of sequences generated by EvoDiff sequence models. (B-C) Distributions of foldability, measured by sequence pLDDT of predicted structures (B), and self-consistency, measured by scPerplexity (C), for sequences from the test set, EvoDiff models, and baselines (n=1000 sequences per model; box plots show median and interquartile range). (D) Sequence pLDDT versus scPerplexity for sequences from the test set (grey, n=1000) and the 640M-parameter OADM model EvoDiff-Seq (blue, n=1000). (E) Predicted structures and metrics for successfully expressed and characterized unconditional generations from EvoDiff-Seq, the 640M-parameter OADM model. OmegaFold predictions, colored by pLDDT, are shown, and the average pLDDT for each structure is reported. % coverage and % identity to the top BLAST hit is denoted below each design. (F) Circular dichroism (CD) spectra for designed sequences from (E). (G) Structural composition of each sequence design as inferred from CD spectra (blue) versus from OmegaFold (grey). AlphaFold predictions are included in Fig. S6 for comparison.
+tures using OmegaFold (31) and computing the average predicted local distance difference test
+(pLDDT) across the whole structure (Fig. 2B). pLDDT reflects OmegaFold’s confidence in its
+structure prediction for each residue. In addition to the average pLDDT across a whole protein,
+we observe that pLDDT scores can vary significantly across a protein sequence (Fig. S5 B ). It
+is important to note that while pLDDT scores above 70 are often considered to indicate high pre
+diction confidence, low pLDDT scores can be consistent with intrinsically disordered regions
+(IDRs) of proteins (32), which are found in many natural proteins. As an additional metric of
+structural plausibility, we computed a self-consistency perplexity (scPerplexity) by redesigning
+each predicted structure with the inverse folding algorithm ESM-IF (33) and computing the
+perplexity against the original generated sequence (Fig. 2A, C; Table S3). Given that ESM-IF
+and EvoDiff were both trained on UniRef50 data, it is possible that sequences from EvoDiff’s
+validation set overlap with sequences in the ESM-IF train set; thus we performed the same self
+consistency evaluations using ProteinMPNN (34), which is not trained on UniRef50, for inverse
+folding (Table S3).
+While no generative model approaches the test set values for foldability and self-consistency,
+9
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+EvoDiff-OADM outperforms EvoDiff-D3PM and improves when increasing the model size
+(Fig. 2B-D; Table S3). We therefore selected the 640M-parameter EvoDiff-OADM model for
+downstream analysis and hereafter refer to it as EvoDiff-Seq. While a left-to-right autoregres
+sive (LRAR) protein language model generates slightly more structurally-plausible sequences
+(Table S3), EvoDiff-Seq offers the advantage of direct, flexible conditional generation due to
+its order-agnostic decoding. Unconditional generation from masked language models produces
+less structurally-plausible sequences because of the mismatch between the training and gener
+ation tasks (Table S3). Analysis of representative examples of structurally plausible sequences
+sampled from EvoDiff-Seq across 4 different sequence lengths illustrates their structural plau
+sibility and novelty from sequences in the training set (Fig. S5).
+To assess the stability and quality of EvoDiff generations in vitro, we used EvoDiff-Seq to
+unconditionally generate a set of 1000 sequences across four different sequence lengths. We
+then nominated 25 candidates, based on structural plausibility (OmegaFold pLDDT > 70), for
+experimental characterization (Supplementary Table 1). Four designs (EvoDiff-Seq-Designs
+1...4, Fig. 2E) expressed and had circular dichroism (CD) spectra consistent with mixed alpha
+helical and beta sheet secondary structure elements (Fig. 2F-G). Two of our successful de
+signs (EvoDiff-Seq-Design-3 and EvoDiff-Seq-Design-4) have OmegaFold pLDDT < 85, but
+many unsuccessful designs have a pLDDT > 85. In one case (EvoDiff-Seq-Design-1), the
+OmegaFold and AlphaFold predictions even have significant disagreement (> 1  ̊A) in backbone
+RMSD, a common metric used to filter for designability in structure-based methods. These
+observations suggest that structural metrics are not always strong predictors of in vitro express
+ibility. Together, these in silico and in vitro results demonstrate that EvoDiff generates protein
+sequences that are individually valid.
+10
+available under aCC-BY 4.0 International license.
+(which was not certified by peer review) is the author/funder, who has granted bioRxiv a license to display the preprint in perpetuity. It is made
+bioRxiv preprint doi: https://doi.org/10.1101/2023.09.11.556673; this version posted November 4, 2024. The copyright holder for this preprint
+
+
+Biological properties of generated sequence distributions Having shown that EvoDiff’s
+generations are individually foldable and self-consistent, we next evaluated how well the dis
+tribution of designed protein sequences covered natural protein space. Ideally, generated se
+quences should capture the natural distribution of sequence, structural, and functional properties
+while still being diverse from each other and from natural sequences.
+Previous work has shown that even without explicit supervision, protein language model
+embeddings contain information about both sequence and function as captured in GO annota
+tions (35, 36). To evaluate coverage over the distribution of sequence and functional properties,
+we embedded each generated sequence using ProtT5 (37), a protein language model explicitly
+benchmarked for imputing GO annotations (35), and calculated the embedding space Fre ́chet
+distance between a set of generated sequences and the test set, where lower distance reflects
+better coverage. We refer 

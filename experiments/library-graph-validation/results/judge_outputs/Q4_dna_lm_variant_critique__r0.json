@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":9,"synthesis":9,"correctness":9,"faithfulness":9,"directness":9},
+            "Option 2": {"coverage":7,"synthesis":8,"correctness":6,"faithfulness":6,"directness":8},
+            "Option 3": {"coverage":9,"synthesis":9,"correctness":8,"faithfulness":8,"directness":8},
+            "Option 4": {"coverage":9,"synthesis":9,"correctness":8,"faithfulness":8,"directness":7}},
+ "ranking": ["Option 1","Option 3","Option 4","Option 2"],
+ "notes": "Option 1 covers all four ground-truth papers (including correctly treating PromoterAI as in-scope, fine-tuned), accurately contrasts GPN-MSA's self-claims with TraitGym's trait-dependent verdict, and explicitly flags the missing head-to-head ranking. Options 3 and 4 are strong and granular but Option 4 pads with citation tags and Option 3 is slightly verbose. Option 2 wrongly dismisses PromoterAI as off-topic (missing a relevant paper), invents off-library papers (ESM3, Shannon entropy) and mischaracterizes GPN-MSA's enumerated benchmark sources, hurting coverage and faithfulness."}

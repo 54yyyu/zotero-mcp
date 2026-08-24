@@ -1,0 +1,110 @@
+PAPER KEY: VLB8HKPI
+TITLE: Predicting equilibrium distributions for molecular systems with deep learning
+AUTHORS: Zhang, He; Liu, Haiguang; Liu, Tie-Yan; Shi, Yu; Zheng, Shuxin; Noé, Frank; He, Jiyan; Liu, Chang; Lu, Ziheng; Feng, Weitao; Ju, Fusong; Wang, Jiaxi; Zhu, Jianwei; Min, Yaosen; Tang, Shidi; Hao, Hongxia; Jin, Peiran; Chen, Chi
+
+Nature Machine Intelligence | Volume 6 | May 2024 | 558–567 558
+nature machine intelligence
+Article https://doi.org/10.1038/s42256-024-00837-3
+Predicting equilibrium distributions for molecular systems with deep learning
+Shuxin Zheng 1,5 , Jiyan He 2,5, Chang Liu 1,5 , Yu Shi1,5, Ziheng Lu1,5, Weitao Feng1,2, Fusong Ju 1, Jiaxi Wang1, Jianwei Zhu 1, Yaosen Min1, He Zhang1, Shidi Tang 1, Hongxia Hao 1, Peiran Jin1, Chi Chen 3, Frank Noé4, Haiguang Liu 1 & Tie-Yan Liu 1
+Advances in deep learning have greatly improved structure prediction of molecules. However, many macroscopic observations that are important for real-world applications are not functions of a single molecular structure but rather determined from the equilibrium distribution of structures. Conventional methods for obtaining these distributions, such as molecular dynamics simulation, are computationally expensive and often intractable. Here we introduce a deep learning framework, called Distributional Graphormer (DiG), in an attempt to predict the equilibrium distribution of molecular systems. Inspired by the annealing process in thermodynamics, DiG uses deep neural networks to transform a simple distribution towards the equilibrium distribution, conditioned on a descriptor of a molecular system such as a chemical graph or a protein sequence. This framework enables the efficient generation of diverse conformations and provides estimations of state densities, orders of magnitude faster than conventional methods. We demonstrate applications of DiG on several molecular tasks, including protein conformation sampling, ligand structure sampling, catalyst–adsorbate sampling and property-guided structure generation. DiG presents a substantial advancement in methodology for statistically understanding molecular systems, opening up new research opportunities in the molecular sciences.
+Deep learning methods excel at predicting molecular structures with high efficiency. For example, AlphaFold predicts protein structures with atomic accuracy1, enabling new structural biology applications2–4; neural network-based docking methods predict ligand binding structures5,6, supporting drug discovery virtual screening7,8; and deep learning models predict adsorbate structures on catalyst surfaces9–12. These developments demonstrate the potential of deep learning in modelling molecular structures and states. However, predicting the most probable structure only reveals a fraction of the information about a molecular system in equilibrium.
+Molecules can be very flexible, and the equilibrium distribution is essential for the accurate calculation of macroscopic properties. For example, biomolecule functions can be inferred from structure probabilities to identify metastable states; and thermodynamic properties, such as entropy and free energies, can be computed from probabilistic densities in the structure space using statistical mechanics. Figure 1a shows the difference between conventional structure prediction and distribution prediction of molecular systems. Adenylate kinase has two distinct functional conformations (open and closed states), both experimentally determined, but a predicted structure
+Received: 2 August 2023
+Accepted: 10 April 2024
+Published online: 8 May 2024
+Check for updates
+1Microsoft Research AI4Science, Beijing, China. 2University of Science and Technology of China, Hefei, China. 3Microsoft Quantum, Redmond, WA, USA. 4Microsoft Research AI4Science, Berlin, Germany. 5These authors contributed equally: Shuxin Zheng, Jiyan He, Chang Liu, Yu Shi, Ziheng Lu. e-mail: shuxin.zheng@microsoft.com; chang.liu@microsoft.com; haiguang.liu@microsoft.com; tie-yan.liu@microsoft.com
+
+
+Nature Machine Intelligence | Volume 6 | May 2024 | 558–567 559
+Article https://doi.org/10.1038/s42256-024-00837-3
+high-probability regions. This diffusion process is implemented by a deep learning model based upon the Graphormer architecture10 (Fig. 1b), conditioned on a descriptor of the target molecule, such as a chemical graph or a protein sequence. DiG can be trained with structure data from experiments and MD simulations. For data-scarce cases, we develop a physics-informed diffusion pre-training (PIDP) method to train DiG with energy functions (such as force fields) of the systems. In both data-based or energy-supervised modes, the model gets a training signal in each diffusion step independently (Fig. 1b, left arrow symbol), enabling efficient training that avoids long-chain back-propagation. We evaluate DiG on three predictive tasks: protein structure distribution, the ligand conformation distribution in binding pockets and the molecular adsorption distribution on catalyst surfaces. DiG generates realistic and diverse molecular structures in these tasks. For the proteins in this Article, DiG efficiently generated structures resembling major functional states. We further demonstrate that DiG can facilitate the inverse design of molecular structures by applying biased distributions that favour structures with desired properties. This capability can expand molecular design for properties that lack enough data. These results indicate that DiG advances deep learning for molecules from predicting a single structure towards predicting structure distributions, paving the way for efficient prediction of the thermodynamic properties of molecules.
+Results
+Here, we demonstrate that DiG can be applied to study protein conformations, protein–ligand interactions and molecule adsorption on catalyst surfaces. In addition, we investigate the inverse design capability of DiG through its application to carbon allotrope generation for desired electronic band gaps.
+Protein conformation sampling
+At physiological conditions, most protein molecules exhibit multiple functional states that are linked via dynamical processes. Sampling of these conformations is crucial for the understanding of protein properties and their interactions with other molecules. Recently, it was
+usually corresponds to a highly probable metastable state or an intermediate state (as shown in this figure). A method is desired to sample the equilibrium distribution of proteins with multiple functional states, such as adenylate kinase. Unlike single structure prediction, equilibrium distribution research still depends on classical and costly simulation methods, while deep learning methods are underdeveloped. Commonly, equilibrium distributions are sampled with molecular dynamics (MD) simulations, which are expensive or infeasible13. Enhanced sampling simulations14,15 and Markov state modelling16 can accelerate rare event sampling but need system-specific collective variables and are not easily generalized. Another approach is coarse-grained MD17,18, where deep learning approaches have been proposed19,20. These deep learning coarse-grained methods have worked well for individual molecular systems but have not yet demonstrated generalization. Boltzmann generators21 are a deep learning approach to generate equilibrium distributions by creating a probability flow from a simple reference state, but this also hard to generalize to different molecules. Generalization has been demonstrated for flows generating simulations with longer time steps for small peptides but has not yet been scaled to large proteins22. In this Article, we develop DiG, a deep learning approach to approximately predict the equilibrium distribution and efficiently sample diverse and function-relevant structures of molecular systems. We show that DiG can generalize across molecular systems and propose diverse structures that resemble observations in experiments. DiG draws inspiration from simulated annealing23–26, which transforms a uniform distribution to a complex one through a simulated annealing process. DiG simulates a diffusion process that gradually transforms a simple distribution to the target one, approximating the equilibrium distribution of the given molecular system27,28 (Fig. 1b, right arrow symbol). As the simple distribution is chosen to enable independent sampling and have a closed-form density function, DiG enables independent sampling of the equilibrium distribution and also provides a density function for the distribution by tracking the process. The diffusion process can also be biased towards a desired property for inverse design and allows interpolation between structures that passes through
+Supervision from energy function
+Structural representation
+Pair representation
+Node representation
+Diffusion step tN – 1
+qN – 1
+pN = psimple
+Diffusion step tN
+Diffusion step tN – 2
+Diffusion step tN – 3
+Supervision from data samples
+DiG
+Distribution prediction
+Descriptor
+a
+b
+Descriptor
+Structure prediction Semi-closed
+Closed Open
+Transition paths
+qN – 2 qN – 3
+pN – 1 pN – 2 pN – 3 p0
+Graphormer
+Fig. 1 | Predicting conformational distributions with the DiG framework. a, DiG takes the basic descriptor DD of a target molecular system as input—for example, an amino acid sequence—to generate a probability distribution of structures that aims at approximating the equilibrium distribution and sampling different metastable or intermediate states. In contrast, static structure prediction methods, such as AlphaFold1, aim at predicting one single highprobability structure of a molecule. b, The DiG framework for predicting distributions of molecular structures. A deep learning model (Graphormer10) is
+used as modules to predict a diffusion process (→) that gradually transforms a simple distribution towards the target distribution. The model is trained so that the derived distribution pi in each intermediate diffusion time step i matches the corresponding distribution qi in a predefined diffusion process (←) that is set to transform the target distribution to the simple distribution. Supervision can be obtained from both samples (workflow in the top row) and a molecular energy function (workflow shown in the bottom row).
+
+
+Nature Machine Intelligence | Volume 6 | May 2024 | 558–567 560
+Article https://doi.org/10.1038/s42256-024-00837-3
+reported that AlphaFold1 can generate alternative conformations for certain proteins by manipulating input information such as multiple sequence alignments (MSAs)29. However, this approach is developed on the basis of varying the depth of MSAs, and it is hard to generalize to all proteins (especially those with a small number of homologous sequences). Therefore, it is highly desirable to develop advanced artificial intelligence (AI) models that can sample diverse structures consistent with the energy landscape in the conformational space29. Here, we show that DiG is capable of generating diverse and functionally relevant protein structures, which is a key capability for being able to efficiently sample equilibrium distributions. Because the equilibrium distribution of protein conformations is difficult to obtain experimentally or computationally, there is a lack of high-quality data for training or benchmarking. To train this model, we collect experimental and simulated structures from public databases. To mitigate the data scarcity, we generated an MD simulation dataset and developed the PIDP training method (see Supplementary Information sections A.1.1 and D.1 for the training procedure and the dataset). The performance of DiG was assessed at two levels: (1) by comparing the conformational distributions against those obtained from extensive (millisecond timescale) atomistic MD simulations and (2) by validating on proteins with multiple conformations. As shown in Fig. 2a, the conformational distributions are obtained from MD simulations for two proteins from the SARS-CoV-2 virus30 (the receptor-binding domain (RBD) of the spike protein and the main protease, also known as 3CL protease; see Supplementary Information section A.7 for details on the MD simulation data). These two proteins are the crucial components of the SARS-CoV-2 and key targets for drug development in treating COVID-1931,32. The millisecond-timescale MD simulations extensively sample conformation space, and we therefore regard the resulting distribution as a proxy for the equilibrium distribution. Taking protein sequences as the descriptor inputs for DiG, structures were generated and compared with simulation data. Although simulation data of RBD and the main protease were not used for DiG training, generated structures resemble the conformational distributions (Fig. 2a). In the two-dimensional (2D) projection space of RBD conformations, MD simulations populate four regions, which are all sampled by DiG (Fig. 2a, left). Four representative structures are well reproduced by DiG. Similarly, three representative structures from main protease simulations are predicted by DiG (Fig. 2a). We noticed that conformations in cluster I are not well recovered by DiG, indicating room for improvement. In terms of conformational coverage, we compared the regions sampled by DiG with those from simulations in the 2D manifold (Fig. 2a), observing that about 70% of the RBD conformations sampled by simulations can be covered with just 10,000 DiG-generated structures (Supplementary Fig. 1). Atomistic MD simulations are computationally expensive, therefore millisecond-timescale simulations of proteins are rarely executed, except for simulations on special-purpose hardware such as the Anton supercomputer13 or extensive distributed simulations combined in Markov state models16. To obtain an additional assessment on the diverse structures generated by DiG, we turn to proteins with multiple structures that have been experimentally determined. In Fig. 2b, we show the capability of DiG in generating multiple conformations for four proteins. Experimental structures are shown in cylinder cartoons, each aligned with two structures generated by DiG (thin ribbons). For example, DiG generated structures similar to either open or closed states of the adenylate kinase protein (for example, backbone root mean square difference (r.m.s.d.) < 1.0 Å to the closed state, 1ake). Similarly, for the drug transport protein LmrP, DiG generated structures covering both states (r.m.s.d. < 2.0 ): one structure is experimentally determined, and the other (denoted as DEER-AF) is the AlphaFold prediction29 supported by double electron electron resonance (DEER) experiments33. For human BRAF kinase, the overall structural difference between the two states is less pronounced. The major difference is in
+the A-loop region and a nearby helix (the αC-helix, indicated in the figure)34. Structures generated by DiG accurately capture such regional structural differences. For D-ribose binding protein, the packing of two domains is the major source of structural difference. DiG correctly generates structures corresponding to both the straight-up conformation
+Human BRAF kinase αC-helix
+6uan 3skc 2dri 1urp
+4ake 1ake DEER-AF 6t1z
+Adenylate kinase
+Cluster representative AlphaFold
+Cluster representative AlphaFold
+III
+III
+IV
+I
+I
+II
+–1.0 1.0 2.0 IC 1
+IC 2
+–2.0
+–8.0
+–6.0
+–4.0
+–2.0
+IC 2
+0
+3.0
+2.0
+1.0
+–1.0
+–2.0
+–3.0
+0
+a
+b
+0
+IV
+III
+II
+II
+III
+I
+I
+–1.5 –1.0 –0.5 0.5 1.0 IC 1
+0
+II
+D-ribose binding protein
+LmrP membrane protein
+Fig. 2 | Distribution and sampling results for protein conformations. a, Structures generated by DiG resemble the diverse conformations of millisecond MD simulations. MD-simulated structures are projected onto the reduced space spanned by two time-lagged independent component analysis (TICA) coordinates (that is, independent component (IC) 1 and 2), and the probability densities are depicted using contour lines. Left: for the RBD protein, MD simulation reveals four highly populated regions in the 2D space spanned by TICA coordinates. DiG-generated structures are mapped to this 2D space (shown as orange dots), with a distribution reflected by the colour intensity. Under the distribution plot, structures generated by DiG (thin ribbons) are superposed on representative structures. AlphaFold-predicted structures (stars) are shown in the plot. Right: the results for the SARS-CoV-2 main protease, compared with MD simulation and AlphaFold prediction results. The contour map reveals three clusters, DiG-generated structures overlap with clusters II and III, whereas structures in cluster I are underrepresented. b, The performance of DiG on generating multiple conformations of proteins. Structures generated by DiG (thin ribbons) are compared with the experimentally determined structures (each structure is labelled by its PDB ID, except DEER-AF, which is an AlphaFold predicted model, shown as cylindrical cartoons). For the four proteins (adenylate kinase, LmrP membrane protein, human BRAF kinase and D-ribose binding protein), structures in two functional states (distinguished by cyan and brown) are well reproduced by DiG (ribbons).
+
+
+Nature Machine Intelligence | Volume 6 | May 2024 | 558–567 561
+Article https://doi.org/10.1038/s42256-024-00837-3
+(cylinder cartoon) and the twisted or tilted conformation. If we align one domain of D-ribose binding protein, the other domain only partially matches the twisted conformation as an ‘intermediate’ state. Furthermore, DiG can generate plausible conformation transition pathways by latent space interpolations (see demonstration cases in Supplementary Videos 1 and 2). In summary, beyond static structure prediction for proteins, DiG generates diverse structures corresponding to different functional states.
+Ligand structure sampling around binding sites
+An immediate extension of protein conformational sampling is to predict ligand structures in druggable pockets. To model the interactions between proteins and ligands, we conducted MD simulations for 1,500 complexes to train the DiG model (see Supplementary Information section D.1 for the dataset). We evaluated the performance of DiG with 409 protein–ligand systems35,36 that are not in the training dataset. The inputs of DiG include protein pocket information (atomic type and position) and the ligand descriptor (a SMILES string). We pad the input node and pair representations with zeros to handle the different number of atoms surrounding a pocket and the different length of SMILES strings. The predicted results are the atomic coordinate distributions of both the ligand and the protein pocket. For protein pockets, changes in atomic positions are up to 1.0 Å in terms of r.m.s.d. compared with the input values, reflecting pocket flexibility during ligand structure generation. For the ligand structures, the deviation comes from two sources: (1) the conformational difference between generated and experimental structures, and (2) the difference in the binding pose due to ligand translation and rotation. Among all the tested cases, the conformational differences are small, with an r.m.s.d. value of 1.74 Å on average, indicating that generated structures are highly similar to the ligands resolved in crystal structures (Fig. 3a). When including the binding pose deviations, larger discrepancies are observed. Yet, the DiG predicts structures that are very similar to the experimental structure for each system. The best matched structure among 50 generated structures for each system is within 2.0 Å r.m.s.d. compared with the experimental data for nearly all 409 testing systems (see Fig. 3a for the r.m.s.d. distribution, with more cases shown in Supplementary Fig. 3). The accuracy of generated structures for ligand is related to the characteristics of the binding pocket. For example, in the case of the TYK2 kinase protein, the ligand shown in Fig. 3b (top) deviated from
+the crystal structure by 0.91 Å (r.m.s.d.) on average. For target P38, the ligand exhibited more diverse binding poses, probably owing to the relatively shallow binding pocket, making the most stable binding pose less dominant compared with other poses (Fig. 3b, bottom). MD simulations reveal similar trends as DiG-generated structures, with ligand binding to TYK2 more tightly than in the case of P38 (Sup

@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":7,"synthesis":8,"correctness":9,"faithfulness":9,"directness":8},
+            "Option 2": {"coverage":8,"synthesis":8,"correctness":8,"faithfulness":5,"directness":8},
+            "Option 3": {"coverage":7,"synthesis":7,"correctness":6,"faithfulness":6,"directness":7},
+            "Option 4": {"coverage":9,"synthesis":9,"correctness":9,"faithfulness":8,"directness":8}},
+ "ranking": ["Option 4","Option 1","Option 2","Option 3"],
+ "notes": "Option 4 covers the most frameworks (SI, DSBM/IMF, FM, rectified flow) and uniquely surfaces the genuine clash where Shortcut Models calls flow matching a special case of diffusion, while staying accurate. Option 1 is precise and well-attributed but omits DSBM. Option 2 has strong DSBM synthesis but cites 'AlphaFold Meets Flow Matching,' an outside paper not in the library (faithfulness hit). Option 3 overclaims a clean total order and includes shaky attributions (e.g. SI 'strictly generalizes DDPM/DDIM,' consistency-model reframing)."}

@@ -1,0 +1,153 @@
+PAPER KEY: BUZ6K42H
+TITLE: Structure Language Models for Protein Conformation Generation
+AUTHORS: Lu, Jiarui; Chen, Xiaoyin; Lu, Stephen Zhewen; Shi, Chence; Guo, Hongyu; Bengio, Yoshua; Tang, Jian
+
+Preprint. Under review.
+STRUCTURE LANGUAGE MODELS FOR PROTEIN
+CONFORMATION GENERATION
+Jiarui Lu1,2,†, Xiaoyin Chen1,2,†, Stephen Z. Lu1,3, Chence Shi1,2, Hongyu Guo4,5, Yoshua Bengio1,2,6 & Jian Tang1,6,7
+1Mila - Que ́bec AI Institute, 2Universite ́ de Montre ́al, 3McGill University, 4University of Ottawa, 5National Research Council Canada, 6CIFAR AI Chair, 7HEC Montre ́al
+ABSTRACT
+Proteins adopt multiple structural conformations to perform their diverse biological functions, and understanding these conformations is crucial for advancing drug discovery. Traditional physics-based simulation methods often struggle with sampling equilibrium conformations and are computationally expensive. Recently, deep generative models have shown promise in generating protein conformations as a more efficient alternative. However, these methods predominantly rely on the diffusion process within a 3D geometric space, which typically centers around the vicinity of metastable states and is often inefficient in terms of runtime. In this paper, we introduce Structure Language Modeling (SLM) as a novel framework for efficient protein conformation generation. Specifically, the protein structures are first encoded into a compact latent space using a discrete variational auto-encoder, followed by conditional language modeling that effectively captures sequencespecific conformation distributions. This enables a more efficient and interpretable exploration of diverse ensemble modes compared to existing methods. Based on this general framework, we instantiate SLM with various popular LM architectures as well as proposing the ESMDiff, a novel BERT-like structure language model fine-tuned from ESM3 with masked diffusion. We verify our approach in various scenarios, including the equilibrium dynamics of BPTI, conformational change pairs, and intrinsically disordered proteins. SLM provides a highly efficient solution, offering a 20-100x speedup than existing methods in generating diverse conformations, shedding light on promising avenues for future research.
+1 INTRODUCTION
+Protein structure dynamics are fundamental to understanding the biological functions of proteins. The ability of proteins to adopt multiple conformations is crucial for their function in influencing interactions with other biomolecules and the environment. Traditional computational methods, such as molecular dynamics (MD) simulations, have long been used to explore these dynamics. However, these methods are computationally expensive and time-consuming. Structure prediction models, such as AlphaFold 2 (Jumper et al., 2021) and RosettaFold (Baek et al., 2021), have made significant strides in predicting static protein structures, yet often fail to accurately capture the dynamic nature of proteins and their multiple conformations (Chakravarty & Porter, 2022).
+Recently, significant progress has been made by adopting deep generative models as conformation samplers to efficiently explore the complicated protein conformational space. For example, Noe ́ et al. (2019) adopts normalizing flow to match the underlying Boltzmann distribution by learning from simulation data. Despite their potential, normalizing flow-based methods (Noe ́ et al., 2019; Klein et al., 2023) face significant challenges in modeling large protein systems with hundreds of amino acids, as the invertibility constraint becomes a major obstacle when scaling up model parameters. As a remedy, denoising diffusion approaches (Jing et al., 2023; Lu et al., 2024; Wang et al., 2024; Zheng et al., 2024) can efficiently learn from structural data, achieve good generalization, and
+†Equal contribution. Code available at https://github.com/lujiarui/esmdiff. Correspondence to: jiarui.lu@mila.quebec
+1
+arXiv:2410.18403v1 [q-bio.BM] 24 Oct 2024
+
+
+Preprint. Under review.
+perform amortized inference. However, modeling high-dimensional protein structures explicitly in their 3D Euclidean space can demand intensive computation and usually requires accounting for special equivariant properties (Ko ̈hler et al., 2020). Furthermore, L2-based training objectives such as denoising score matching (Song et al., 2020) tend to predict local perturbations rather than capturing remote modes of alternative conformations (Wang et al., 2024). Consequently, these models may overallocate their capacity to learn structural noises in the training data instead of focusing on low-frequency structural changes (Chou, 1985).
+In complement with existing approaches, we present Structure Language Modeling (SLM), a novel framework for protein conformation generation that performs generative modeling in the latent space of protein structures. Inspired by the recent progress in developing structural vocabularies for protein representation learning (Su et al., 2023; Hayes et al., 2024), our approach first encodes structural flexibility into a distribution over latent tokens using a discrete variational autoencoder, as illustrated in Fig. 1. The discrete latent encoding removes high-frequency details of protein structures, forming “structure languages” that effectively capture the uncertainty of complex protein conformations (Fig. 2a); Conditional language modeling is then applied to these latent structure tokens, using amino acid types as context to capture sequence-specific conformation distributions (Fig. 2b); Protein conformations can finally be reconstructed by mapping structure tokens into 3D space with a learned decoder (Fig. 2c). By leveraging generative language modeling in the discrete latent space, SLM bypasses the complexity of equivariant constraints associated with geometric symmetries and benefits from enhanced model capacity. As a general framework, SLM is fully compatible with any existing language model (LM) architectures and shows promising scalability. To further demonstrate the versatility of our approach, we introduce ESMDiff, a novel BERT-like structure language model instantiation fine-tuned from ESM3 (Hayes et al., 2024) with masked discrete diffusion (Austin et al., 2021; Zhao et al., 2024) grounded in the SLM framework. Experimental results across various conformation generation scenarios demonstrate the state-of-the-art performance of SLM including the representative ESMDiff model, achieving orders of magnitude faster speeds compared to existing generative methods. The proposed framework paves the way for new research avenues in addressing the protein conformation sampling challenge.
+We summarize our key contributions as follows.
+• We comprehensively explore an innovative conformation generation framework based on language modeling in the latent space, which opens up potential research avenues.
+• We introduce ESMDiff, a novel fine-tuned variant of a state-of-the-art protein language model, built on masked discrete diffusion.
+• We demonstrate the superior capability of structure language models by evaluating them on various conformation generation settings and comparing them with existing methods.
+2 RELATED WORK
+Flexibility
+Flexibility
+GLU49
+GLY12
+Figure 1: Residue flexibility (BPTI clusters, Shaw et al. (2010)) reflected by the categorical distribution over latent structure tokens. Different tokens (colored in different shades ) are used to encode varying local structural patterns.
+Protein language models. In recent years, several language models of protein sequence have been built. Among these, the ESM-series (Rives et al., 2021; Lin et al., 2023; Hayes et al., 2024) and other similar models (Elnaggar et al., 2021; Alley et al., 2019) have garnered great attention because of their wide range of downstream applications such as protein engineering (Meier et al., 2021). On the other hand, auto-regressive protein language models, based on either recurrent neural networks (Alley et al., 2019), or Transformer including ProGen (Madani et al., 2023) and ProtGPT2 (Ferruz et al., 2022), are able to generate de novo sequences with input controlling tokens. Specially, inverse folding models (Ingraham et al., 2019; Jing et al., 2020; Hsu et al., 2022; Dauparas et al., 2022; Gao et al., 2022) learn to perform structure-based protein design with geometric-aware encoders.
+Generative conformation sampling. Given the intensive computation of traditional MD simulations, generative models have been used to learn conformation distributions in a data-driven fashion. The Boltzmann generator (Noe ́ et al., 2019) uses normalizing flow to fit the Boltzmann dis
+2
+
+
+Preprint. Under review.
+Encoder Decoder
+Structure Language Model
+AA-type tokens
+Structure tokens
+...
+...
+...
+Structure Language Model
+Structure Language Model
+Input
+Structure tokens
+Conformation ensemble (size = )
+...
+Encoder
+Decoder
+Neighborhoodaware invariant encoding
+Residue embeddings
+AA-type tokens
+...
+Codebook
+Structure tokens
+Sample times
+...
+dVAE for Structure
+3D structure coords
+(a) Encoding (b) Training (c) Inference
+Figure 2: An illustration of the proposed SLM framework.
+tribution from target-specific simulation data. Arts et al. (2023) extends this by using denoising diffusion models for coarse-grained protein conformations. Furthermore, EigenFold (Jing et al., 2023), Str2Str (Lu et al., 2024), AlphaFlow (Jing et al., 2024), ConfDiff (Wang et al., 2024), and DiG (Zheng et al., 2024) leverage diffusion or flow matching to conditionally sample protein conformations by learning from PDB data. Recently, AlphaFold3 (Abramson et al., 2024) revised the structure decoder of AlphaFold2 to a diffusion-based module for diversified structure prediction.
+Quantized representation for protein structures. Beside the prevailing diffusion models for protein structure, representation learning of protein structures using discrete variational autoencoders (dVAE) has gained increasing attention in recent years. FoldSeek (van Kempen et al., 2022) is one of the earliest attempt to build dVAE for fast structure search and alignment. Based on this, SaProt (Su et al., 2023) constructs learned representations with both sequence and structure tokens as input, while ProtT5 (Heinzinger et al., 2023) fine-tuned an existing language model to accept structure tokens as input. PVQD (Haiyan et al., 2023) applied latent diffusion in the embedding space of dVAE for conditional protein structure generation. ProSST (Li et al., 2024) trained an autoencoder with Kmeans clustering applied in the latent space. Gaujac et al. (2024) and Gao et al. (2024) respectively build dVAE with large vocabularies for learning protein structure representations.
+Remarks: Our work is closely related to these concurrent research directions by leveraging LMs to model and efficiently perform conformation generation over the quantized representation of protein structures. We refer to this framework as “structure language models” and describe them in detail.
+3 PROTEIN CONFORMATION GENERATION WITH LANGUAGE MODELING
+Notation. A protein with L residues is identified by its sequence of amino acid types c ∈ |S|L where S is the vocabulary of 20 standard amino acids. The protein (backbone) structure is represented by its composing 3D atom positions x ∈ X ≡ RL×4×3 including all backbone heavy atoms. Through an encoder q(z|x), the structure x is encoded to a sequence of latent codes z ∼ q(z|x) where z ≡ (z1, . . . , zL) ∈ |V |L and V is the pre-specified vocabulary of latent codes; the structure tokens z are decoded by first mapping to embedding vectors and then to the 3D structure x.
+3.1 LEARNING THE SEQUENCE-STRUCTURE DISTRIBUTION
+To address the conformation generation problem, we start with modeling the sequence-to-structure translation distribution p(x|c) of interest and derive the learning objective in this section. To circumvent explicitly learning in the structure space, the roto-translation invariant* latent representation z is introduced to encode 3D atomic protein structure. Given this, the target distribution
+*For example, features like distance and angle are roto-translation invariant. This relationship can be formally written as q(z|T ◦ x) ≜ q(z|R ◦ x + t) = q(z|x), ∀T .
+3
+
+
+Preprint. Under review.
+p(x|c) can be derived by marginalizing the joint distribution p(x|c) = R
+z p(x, z|c). We fur
+ther factorize this joint distribution according to the Bayes’ rule by isolating the latent variable z: pθ,φ(x, z|c) = pφ(x|c, z)pθ(z|c), where pφ denotes the (decoding) distribution over the 3D protein structures given the structure token and sequence, and pθ denotes the conditional distribution over the structure tokens, respectively modeled by neural networks with parameter set φ, θ. This gives rise to the evidence lower bound on the likelihood of model distribution over protein structures conditioned on sequence:
+log pθ,ψ(x|c) ≥ Eqψ(z|x) [log pφ(x|c, z)] − DKL(qψ(z|x)∥pθ(z|c)) ≜ L(φ, θ), (1)
+where ψ is introduced to parameterized the posterior distribution over latent representation z. Please refer to the Appendix G.1 for the full derivation of Eq. 1. Directly optimizing the right-hand side of Eq. 1 can be intractable and difficult since we have unknown posterior qψ. As a result, we adopt an one-step expectation–maximization (EM) approach (Dempster et al., 1977) by first jointly learning pφ and qψ with a simple and parameter-free prior distribution p(z|c), followed by optimization on
+pθ with the learned p∗
+φ and q∗
+ψ. This yields the overall two-stage and separable training pipeline:
+Learning quantized representation for structure. With the prior p(z|c) fixed, we begin by maximizing the ELBO L(φ, θ) with respect to the encoder ψ and decoder φ, using protein structure samples D = c, x. In the context of discrete latent spaces, this process is analogous to training a discrete VAE (dVAE) (Van Den Oord et al., 2017) to learn quantized representations for protein structures. Here, the encoder qψ(z|x) maps structures to latent tokens, while the decoder pφ(x|z, c) reconstructs structures from these tokens†. The prior p(z|c) is fixed to be uniform during this stage.
+Learning the prior over latent tokens. In this stage, we fix the learned parameters φ∗ and ψ∗, and train the prior pθ by maximizing the ELBO: arg maxθ L(φ∗, θ). Since both φ∗ and ψ∗ are fixed, the reconstruction term in the ELBO cancels out, and training reduces to minimizing the KL divergence DKL(qψ∗ ∥pθ). This is equivalent to performing maximum likelihood estimation, as E(c,x)∼DEz∼qψ(z|x)pθ(z|c) with respect to pθ. Given that both z and c are categorical variables, this formulation resembles a translation task, allowing pθ to be parameterized by language models.
+3.2 STRUCTURE LANGUAGE MODELING
+The prior learned in the previous stage is now applied to conformation generation, which can be framed as a conditional generative modeling problem for sequence-to-structure (seq2str) translation. Given an input condition c ∈ |S|L which determines the molecular topology, the goal is to sample a conformation ensemble from p(x|c). To do this, we first sample a set of latent variables from the prior distribution learned earlier, z ∼ pθ(z|c), and then decode these latents using the decoder pφ(x|c, z). The decoder is jointly trained with the encoder qψ(z|x) in the first stage, ensuring that the sampled latents align with the reconstruction. This framework supports roto-translation invariant inference and is described in Algorithm 1. Next, we illustrate this approach with two straightforward examples of structure language models (SLM): the encoder-decoder and decoder-only architectures.
+Encoder-decoder. Given the conditional nature of translation, the prior pθ(z|c) can be explicitly modeled by an encoder-decoder architecture like T5 (Raffel et al., 2020). The decoder conditions on the context c and factorizes the structure tokens sequentially: p(z|c) = QL
+l=1 p(zl|z<l, c), where
+z ∈ Z represents the quantized structure tokens. The training objective is the negative log-likelihood (NLL) loss conditioned on c: L(θ) = −E(c,x)∼DEz∼q(z|x)
+PL
+l=1 log pθ(zl|z<l, c), z<1 ≡ ∅.
+Decoder-only. Alternatively, the latent prior pθ(z|c) ∝ pθ(c, z) can be modeled autoregressively using a decoder-only architecture, such as GPT (Radford et al., 2019), where c serves as the “prompt”. We define y ≜ [c, z] = [c1, . . . , cL, z1, . . . , zL], and the training involves maximizing the likelihood over y via the NLL minimization: L(θ) =
+−E(c,x)∼D Ez∼q(z|x)
+P2L
+l=1 log pθ(yl|y<l), where c, x ∼ D is the i.i.d. samples from the data dis
+tribution over structures each with the associated amino-acid sequence as condition c. In practice, we add an additional special token [sep] to differentiate between these two modalities.
+Inference involves sampling with a left-to-right decoding order, as defined by the autoregressive factorization of both language models. Figure 3 briefly illustrates these two modeling strategies.
+†We assume that x is conditionally independent of c given latent variable z.
+4
+
+
+Preprint. Under review.
+(a) Encoder-decoder
+Encoder
+Structure tokens
+...
+...
+...
+...
+AA-type tokens
+cross attention
+Decoder
+?
+Structure tokens
+...
+...
+...
+...
+AA-type tokens <sep>
+(b) Decoder-only
+Decoder
+?
+Figure 3: Autoregressive prior modeling the for latent structure tokens discussed in Section 3.2.
+4 ESMDIFF: A MASKED DIFFUSION INSTANTIATION
+Building on the foundation of SLM, we here propose ESMDiff as an instantiation based on discrete diffusion models (Austin et al., 2021). ESMDiff incorporates the inductive bias of seq2str translation and leverages the protein foundation model ESM3 (Hayes et al., 2024) through masked diffusion fine-tuning. The effectively fine-tuning of ESMDiff also exemplifies how a large pretrained BERTlike masked language model can be adapted to acquire additional generative capabilities, making it well-suited for broader downstream tasks such as conformation generation.
+4.1 REVISITING DISCRETE DIFFUSION AS DISTRIBUTION INTERPOLATION
+The discrete diffusion models (Austin et al., 2021; Lou et al., 2023; Sun et al., 2022; Campbell et al., 2022; Zheng et al., 2023) can be generally defined by a sequential process of progressive noisy variables zt ∈ V from the categorical variable z0 ∈ V . Denote the one-hot (row) vector of zt as zt ∈ {0, 1}|V |, in the discrete-time case (Austin et al., 2021), the forward marginal probability of zt at time t has the following form as a composition of Markov kernel defined by Qt (t = 1, 2 . . . , T ):
+q(zt|z0) = Cat zt; z0Q ̄t
+
+≜ Cat (zt; z0Q1 · · · · · Qt) , (2)
+where Qt indicates the transition probability matrix for time t represented by [Qt]ij = q(zt = j|zt−1 = i), and Cat(·; p), p ∈ ∆|V | indicates the categorical distribution with probability and ∆|V | is the |V |-simplex. Eq. 2 also induce the form of the marginal distribution for ∀t > s is q(zt|zs) = Cat zt; zsQ ̄t|s
+
+≜ Cat (zt; zsQs+1 · · · · · Qt). Correspondingly, the posterior q(zs|zt, z0) can be obtained by the reverse process (Austin et al., 2021):
+q(zs|zt, z0) = q(zt|zs, z0)q(zs|z0)
+q(zt|z0) = Cat zs;
+ztQ⊤
+t|s ⊙ z0Q ̄ s
+z0Q ̄ tzt⊤
+!
+, ∀ s < t. (3)
+Both Zhao et al. (2024) and Shi et al. (2024) discuss how the discrete-time diffusion process can be generalized to the time domain t ∈ [0, 1], akin to the diffusion over continuous space (Song et al., 2020), by demonstrating the continuous-time limit as T → ∞. Notably, when the stationary distribution is explicitly specified (denoted as p ∈ ∆|V |), we can choose a state-independent transition kernel in the simple form: Qt|s ≜
+α(s)−1α(t)I + (1 − α(s)−1α(t))1⊤p , thus simplifying the continuous-time forward marginal to:
+q(zt|zs) = Cat
+
+zt; α(t)
+α(s) zs + (1 − α(t)
+α(s) )p
+
+, ∀ 0 ≤ s < t < 1, (4)
+where α(t) ∈ [0, 1) is a strictly monotone decreasing function with α0 = 1 and α1 → 0. The equation above demonstrates that the discrete diffusion, when defined with an explicit stationary distribution, can be viewed as an interpolation between two categorical distributions controlled by α(t). According to Eq. 3, the reverse process of diffusion defined in Eq. 4 takes the following form for the poster

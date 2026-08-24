@@ -1,0 +1,314 @@
+PAPER KEY: VGKUAJ3B
+TITLE: Generative Flows on Discrete State-Spaces: Enabling Multimodal Flows with Applications to Protein Co-Design
+AUTHORS: Yim, Jason; Barzilay, Regina; Jaakkola, Tommi; Campbell, Andrew; Rainforth, Tom; Yim, Jason; Barzilay, Regina; Jaakkola, Tommi; Campbell, Andrew; Rainforth, Tom
+
+Generative Flows on Discrete State-Spaces: Enabling Multimodal Flows with Applications to Protein Co-Design
+
+arXiv:2402.04997v1 [stat.ML] 7 Feb 2024
+
+Andrew Campbell * 1 Jason Yim * 2 Regina Barzilay 2 Tom Rainforth 1 Tommi Jaakkola 2
+
+Abstract
+Combining discrete and continuous data is an important capability for generative models. We present Discrete Flow Models (DFMs), a new flow-based model of discrete data that provides the missing link in enabling flow-based generative models to be applied to multimodal continuous and discrete data problems. Our key insight is that the discrete equivalent of continuous space flow matching can be realized using Continuous Time Markov Chains. DFMs benefit from a simple derivation that includes discrete diffusion models as a specific instance while allowing improved performance over existing diffusion-based approaches. We utilize our DFMs method to build a multimodal flow-based modeling framework. We apply this capability to the task of protein co-design, wherein we learn a model for jointly generating protein structure and sequence. Our approach achieves state-of-the-art co-design performance while allowing the same multimodal model to be used for flexible generation of the sequence or structure.
+1. Introduction
+Scientific domains often involve continuous atomic interactions with discrete chemical descriptions. Expanding the capabilities of generative models to handle discrete and continuous data, which we refer to as multimodal, is a fundamental problem to enable their widespread adoption in scientific applications (Wang et al., 2023). One such application requiring a multimodal generative model is protein co-design where the aim is to jointly generate continuous protein structures alongside corresponding discrete amino acid sequences (Shi et al., 2022). Proteins have been wellstudied: the function of the protein is endowed through its
+*Equal contribution 1Department of Statistics, University of Oxford, UK 2Department of Electrical Engineering and Computer Science, Massachusetts Institute of Technology, Massachusetts, USA. Correspondence to: Andrew Campbell <campbell@stats.ox.ac.uk>, Jason Yim <jyim@csail.mit.edu>.
+
+structure while the sequence is the blueprint of how the structure is made. This interplay motivates jointly generating the structure and sequence rather than in isolation. To this end, the focus of our work is to develop a multimodal generative framework capable of co-design.
+Diffusion models (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2020) have achieved state-of-the-art performance across multiple applications. They have potential as a multimodal framework because they can be defined on both continuous and discrete spaces (Hoogeboom et al., 2021; Austin et al., 2021). However, their sample time inflexibility makes them unsuitable for multimodal problems. On even just a single modality, finding optimal sampling parameters requires extensive re-training and evaluations (Karras et al., 2022). This problem is exacerbated for multiple modalities. On the other hand, flow-based models (Liu et al., 2023; Albergo & Vanden-Eijnden, 2023; Lipman et al., 2023) improve over diffusion models with a simpler framework that allows for superior performance through sampling flexibility (Ma et al., 2024). Unfortunately, our current inability to define a flow-based model on discrete spaces holds us back from a multimodal flow model.
+We address this by introducing a novel flow-based model for discrete data named Discrete Flow Models (DFMs) and thereby unlock a complete framework for flow-based multimodal generative modeling. Our key insight comes from seeing that a discrete flow-based model can be realized using Continuous Time Markov Chains (CTMCs). DFMs are a new discrete generative modeling paradigm: less restrictive than diffusion, allows for sampling flexibility without re-training and enables simple combination with continuous state space flows to form multimodal flow models.
+Fig. 1A provides an overview of DFMs. We first define a probability flow pt that linearly interpolates from noise to data. We then generate new data by simulating a sequence trajectory xt that follows pt across time which requires training a denoising neural network with cross-entropy. The sequence trajectory could have many transitions or few, a property we term CTMC Stochasticity (Fig. 1B). Prior discrete diffusion models are equivalent to picking a specific stochasticity at training time, whereas we can adjust it at inference: enhancing sample quality and exerting control
+
+Discrete Flow Models
+
+Figure 1. Overview. (A.) A DFM trajectory with masking over a 3-dim. sequence with 4 possible states. (B.) CTMC stochasticity controls the number of transitions in a sequence trajectory while respecting the flow pt. Shown is a 1-dim. sequence with 5 states. (C.) Sampling with Multiflow can start from noise (bottom left) or with either the structure or sequence given (top left and bottom right). Any sampling tasks (structure/sequence generation, forward/inverse folding, co-generation) can be achieved with a single Multiflow model.
+
+over sample distributional properties.
+Using DFMs, we are then able to create a multimodal flow model by defining factorized flows for each data modality. We apply this capability to the task of protein co-design by developing a novel continuous structure and discrete sequence generative model named Multiflow. We combine a DFM for sequence generation and a flow-based structure generation method developed in Yim et al. (2023a). Previous multimodal approaches either generated only the sequence or only the structure and then used a prediction model to infer the remaining modality (see Sec. 5). Our single model can jointly generate sequence and structure while being able to condition on either modality.
+In our experiments (Sec. 6), we first verify on small scale text data that DFMs outperform the discrete diffusion alternative, D3PM (Austin et al., 2021) through their expanded sample time flexibility. We then move to our main focus, assessing Multiflow’s performance on the co-design task of jointly generating protein structure and sequence. Multiflow achieves state-of-the-art co-design performance while data distillation allows for obtaining state-of-the-art structure generation. We find CTMC stochasticity enables controlling sample properties such as secondary structure composition and diversity. Preliminary results on inverse and forward folding show Multiflow is a promising path towards a general-purpose protein generative model.
+Our contributions are summarized as follows:
+• We present Discrete Flow Models (DFMs), a novel discrete generative modeling method built through a CTMC simulating a probability flow.
+• We combine DFMs with continuous flow-based methods to create a multimodal generative modeling framework.
+• We use our multimodal framework to develop Multiflow, a state-of-the-art generative protein co-design model with the flexibility of multimodal protein generation.
+
+2. Background
+We aim to model discrete data where a sequence x ∈ {1, . . . , S}D has D dimensions, each taking on one of S states. For ease of exposition, we will assume D = 1; all results hold for D > 1 as discussed in App. E. We first explain a class of continuous time discrete stochastic processes called Continuous Time Markov Chains (CTMCs) (Norris, 1998) and then describe the link to probability flows.
+
+2.1. Continuous Time Markov Chains.
+
+A sequence trajectory xt over time t ∈ [0, 1] that follows a CTMC alternates between resting in its current state and
+periodically jumping to another randomly chosen state. We
+show example trajectories in Fig. 1B. The frequency and
+destination of the jumps are determined by the rate matrix Rt ∈ RS×S with the constraint its off-diagonal elements are non-negative. The probability xt will jump to a different state j is Rt(xt, j)dt for the next infinitesimal time step dt . We can write the transition probability as
+
+pt+dt|t(j|xt) =
+
+Rt(xt, j)dt 1 + Rt(xt, xt)dt
+
+for j ̸= xt for j = xt
+
+(1)
+
+= δ {xt, j} + Rt(xt, j)dt
+
+(2)
+
+where δ {i, j} is the Kronecker delta which is 1 when i = j
+and is otherwise 0 and Rt(xt, xt) := − k̸=x Rt(xt, k) in order for pt+dt|t(·|i) to sum to 1. We use compact notation Eq. (2) in place of Eq. (1). Therefore, pt+dt|t is a Categorical distribution with probabilities δ {xt, ·} + Rt(xt, ·)dt that we denote as Cat(δ {xt, j} + Rt(xt, j)dt):
+
+j ∼ pt+dt|t(j|xt) ⇐⇒ j ∼ Cat(δ {xt, j} + Rt(xt, j)dt).
+
+In practice, we need to simulate the sequence trajectory with finite time intervals ∆t. A sequence trajectory can be simulated with Euler steps (Sun et al., 2023b)
+
+xt+∆t ∼ Cat(δ {xt, xt+∆t} + Rt(xt, xt+∆t)∆t), (3)
+
+Discrete Flow Models
+
+where the sequence starts from an initial sample x0 ∼ p0 at time t = 0. The rate matrix Rt along with an initial distribution p0 together define the CTMC.
+
+2.2. Kolmogorov equation
+
+For a sequence trajectory following the dynamics of a CTMC, we write its marginal distribution at time t as pt(xt). The Kolmogorov equation allows us to relate the rate matrix Rt to the change in pt(xt). It has the form:
+
+∂tpt(xt) = Rt(j, xt)pt(j) − Rt(xt, j)pt(xt) (4)
+
+j̸=xt
+
+j̸=xt
+
+incoming
+
+outgoing
+
+The difference between the incoming and outgoing
+probability mass is the time derivative of the marginal ∂tpt(xt). Using our definition of Rt(xt, xt), Eq. (4) can be succinctly written as ∂tpt = Rt⊤pt where the marginals are treated as probability mass vectors: pt ∈ [0, 1]S. This defines an Ordinary Differential Equation (ODE) in a vector space. We refer to the series of distributions pt ∀t ∈ [0, 1] satisfying the ODE as a probability flow.
+
+Key terms: A CTMC is defined by an initial distribution
+p0 and rate matrix Rt. Samples along CTMC dynamics are called a sequence trajectory xt. The probability flow pt is the marginal distribution of xt at every time t. We say Rt generates pt if ∂tpt = Rt⊤pt ∀t ∈ [0, 1].
+
+3. Discrete Flow Models
+A Discrete Flow Model (DFM) is a Discrete data generative model built around a probability Flow that interpolates from noise to data. To sample new datapoints, we simulate a sequence trajectory that matches the noise to data probability flow. The flow construction allows us to combine DFM with continuous data flow models to define a multimodal generative model. Proofs for all propositions are in App. B.
+
+3.1. A Flow Model for Sampling Discrete Data
+
+We start by constructing the data generating probability flow referred to as the generative flow, pt, that we will later sample from using a CTMC. The generative flow interpolates from noise to data where p0(x0) = pnoise(x0) and p1(x1) = pdata(x1). Since pt is complex to consider directly, the insight of flow matching is to define pt using a simpler datapoint conditional flow, pt|1(·|x1) that we will be able to write down explicitly. We can then define pt as
+
+pt(xt) := Epdata(x1) pt|1(xt|x1) .
+
+(5)
+
+The conditional flow, pt|1(·|x1) interpolates from noise to the datapoint x1. The conditioning allows us to write the flow down in closed form. We are free to define pt|1(·|x1)
+
+as needed for the specific application. The conditional flows we use in this paper linearly interpolate towards x1 from a uniform prior or an artificially introduced mask state, M :
+
+put|n1if
+
+(xt|x1)
+
+=
+
+Cat(tδ
+
+{x1,
+
+xt}
+
++
+
+(1
+
+−
+
+t)
+
+1 S
+
+),
+
+(6)
+
+pmt|1ask(xt|x1) = Cat(tδ {x1, xt} + (1 − t)δ {M, xt}).
+
+We require our conditional flow to converge on the datapoint
+
+x1 at t = 1, i.e. pt|1(xt|x1) = δ {x1, xt}. We also require
+
+that the conditional flow starts from noise at t = 0, i.e.
+
+pt|1(xt|x1) = pnoise(xt). In our examples, punnoiisfe(xt) =
+
+1 S
+
+and pmnoaisske (xt)
+
+=
+
+δ {M, xt}.
+
+These two requirements
+
+ensure our generative flow, pt, defined in Eq. (5) interpolates
+
+from pnoise at t = 0 towards pdata at t = 1 as desired. Next,
+
+we will show how to sample from the generative flow by
+
+exploiting pt’s decomposition into conditional flows.
+
+3.1.1. SAMPLING
+
+To sample from pdata using the generative flow, pt, we need access to a rate matrix Rt(xt, j) that generates pt. Given a Rt(xt, j), we could use Eq. (3) to simulate a sequence trajectory that begins with marginal distribution pnoise at t = 0 and ends with marginal distribution pdata at t = 1. The definition of pt in Eq. (5) suggests Rt(xt, j) can also be derived as an expectation over a simpler conditional rate
+
+matrix. Define Rt(xt, j|x1) as a datapoint conditional rate matrix that generates pt|1(xt|x1). We now show Rt(xt, j) can indeed be defined as an expectation over Rt(xt, j|x1).
+
+Proposition 3.1. If Rt(xt, j|x1) is a rate matrix that gener-
+
+ates the conditional flow pt|1(xt|x1), then
+
+Rt(xt, j) := Ep1|t(x1|xt) [Rt(xt, j|x1)]
+
+(7)
+
+is a rate matrix that generates pt defined in Eq. (5). The
+
+expectation
+
+is
+
+taken
+
+over
+
+p1|t(x1|xt)
+
+=
+
+. pt|1 (xt |x1 )pdata (x1 )
+pt (xt )
+
+Our aim now is to calculate Rt(xt, j|x1) and p1|t(x1|xt) to plug into Eq. (7). p1|t(x1|xt) is the distribution predicting clean data x1 from noisy data xt and in Sec. 3.1.2, we will train a neural network pθ1|t(x1|xt) to approximate it. In Sec. 3.2, we will show how to derive Rt(xt, j|x1) in closed
+form. Sampling pseudo-code is provided in Alg. 1.
+
+Algorithm 1 DFM Sampling
+1: init t = 0, x0 ∼ p0, choice of Rt(xt, ·|x1) (Sec. 3.2) 2: while t < 1 do 3: Rtθ(xt, ·) ← Epθ1|t(x1|xt) [Rt(xt, ·|x1)] 4: xt+∆t ∼ Cat δ {xt, xt+∆t} + Rtθ(xt, xt+∆t)∆t 5: t ← t + ∆t
+6: end while 7: return x1
+
+We discuss further CTMC sampling methods in App. G. Our construction of the generative flow from conditional flows
+
+Discrete Flow Models
+
+Table 1. Comparison between continuous space linear interpolant flow models and DFMs with masking. Both start with a conditional flow pt|1(xt|x1) interpolating between data and noise. For continuous, pt|1(xt|x1) = N (tx1, (1 − t)2I) and for discrete we use pm t|1ask. Solving the Fokker-Planck or Kolmogorov equations with pt|1(xt|x1) gives a data conditioned process, specified either by the velocity field (νt) or the rate matrix (Rt). We train a model to learn the unconditional process – written analytically as the expected value of the
+conditional quantity – which is then used for sampling. The side-by-side comparison reveals the similar forms of each quantity.
+
+QUANTITY
+FOKKER-PLANCK-KOLMOGOROV CONDITIONAL PROCESS GENERATIVE PROCESS GENERATIVE SAMPLING
+
+CONTINUOUS
+
+∂tpt = −∇ · (vtpt)
+
+νt(xt|x1)
+
+=
+
+xt −x1 1−t
+
+νt(xt) = Ep1|t(x1|xt) [νt(xt|x1)]
+
+xt+∆t = xt + vt(xt)∆t
+
+DISCRETE
+
+∂tpt = Rt⊤pt
+
+Rt(xt, j|x1)
+
+=
+
+δ{j,x1 } 1−t
+
+δ
+
+{xt,
+
+M
+
+}
+
+Rt(xt, j) = Ep1|t(x1|xt) [R(xt, j|x1)]
+
+xt+∆t ∼ Cat(δ {xt, xt+∆t} + Rt(xt, xt+∆t)∆t)
+
+is analogous to the construction of generative probability paths from conditional probability paths in Lipman et al. (2023), where instead of a continuous vector field generating the probability path, we have a rate matrix generating the probability flow. We expand on these links in Table. 1.
+
+3.1.2. TRAINING
+We train a neural network with parameters θ, pθ1|t(xt|x1), to approximate the true denoising distribution using the standard cross-entropy i.e. learning to predict the clean datapoint x1 when given noisy data xt ∼ pt|1(xt|x1).
+
+L = E ce
+
+pdata(x1)U (t;0,1)pt|1(xt|x1)
+
+log pθ1|t(x1|xt)
+
+(8)
+
+where U(t; 0, 1) is a uniform distribution on [0, 1]. xt can be sampled from pt|1(xt|x1) in a simulation-free manner by using the explicit form we wrote down for pt|1 e.g. Eq. (6). In App. C, we analyse how Lce relates to the model loglikelihood and its relation to the Evidence Lower Bound
+(ELBO) used to train diffusion models. We stress that Lce does not depend on Rt(xt, j|x1) and so we can postpone the choice of Rt(xt, j|x1) until after training. This enables inference time flexibility in how our discrete data is sampled.
+
+3.2. Choice of Rate Matrix
+
+The missing piece in Eq. (7) is a conditional rate matrix Rt(xt, j|x1) that generates the conditional flow pt|1(xt|x1). There are many choices for Rt(xt, j|x1) that all generate the same pt|1(xt|x1) as we later show in Prop. 3.3. In order to proceed, we start by giving one valid choice of rate matrix and from this, build a set of rate matrices that all generate pt|1. At inference time, we can then pick the rate matrix from this set that performs the best. Our starting choice for a rate matrix that generates pt|1 is defined for xt ̸= j as,
+
+Rt∗(xt, j|x1) := ReLU
+
+∂tpt|1(j|x1) − ∂tpt|1(xt|x1) S · pt|1(xt|x1)
+
+where ReLU(a) = max(a, 0) and ∂tpt|1 can be found by differentiating our explicit form for pt|1. This assumes pt|1(xt|x1) > 0, see App. B.2 for the full form.
+
+We first heuristically justify Rt∗ and then prove it generates pt|1(xt|x1) in Prop. 3.2. Rt∗ can be understood as distributing probability mass to states that require it. If
+∂tpt|1(j|x1) > ∂tpt|1(xt|x1) then state j needs to gain more probability mass than the current state xt resulting in a positive rate. If ∂tpt|1(j|x1) ≤ ∂tpt|1(i|x1) then state xt should give no mass to state j hence the ReLU. This rate
+should then be normalized by the probability mass in the
+current state. The ReLU ensures off-diagonal elements of Rt∗ are positive and is inspired by Zhang et al. (2023).
+Proposition 3.2. Assuming zero mass states, pt|1(j|x1) = 0, have ∂tpt|1(j|x1) = 0, then Rt∗ generates pt|1(xt|x1).
+
+The proof is easy to derive by substituting Rt∗ along with pt|1(xt|x1) into the Kolmogorov equation Eq. (4). The forms for Rt∗(xt, j|x1) under put|n1if or pmt|1ask are simple
+
+Rt∗unif
+
+=
+
+δ{x1
+
+,j}(1−δ{x1 1−t
+
+,xt
+
+})
+
+,
+
+Rt∗mask
+
+=
+
+δ{x1,j}δ{xt,M } 1−t
+
+as we derive in App. F. Using Rt∗ as a starting point, we now build out a set of rate matrices that all generate pt|1. We can accomplish this by adding on a second rate matrix
+that is in detailed balance with pt|1.
+Proposition 3.3. Let RtDB be a rate matrix that satisfies the detailed balance condition for pt|1,
+
+pt|1(i|x1)RtDB(i, j|x1) = pt|1(j|x1)RtDB(j, i|x1), . (9)
+
+Let Rtη be defined by Rt∗, RtDB and parameter η ∈ R≥0, Rtη := Rt∗ + ηRtDB.
+
+Then we have Rtη generates pt|1(xt|x1), ∀η ∈ R≥0.
+
+The detailed balance condition intuitively enforces the incoming probability mass, pt|1(j|x1)RtDB(j, i|x1) to equal the outgoing probability mass, pt|1(i|x1)RtDB(i, j|x1). Therefore, RtDB has no overall effect on the probability flow and can be added on to Rt∗ with the combined rate still generating pt|1. In many cases, Eq. (9) is easy to solve for RtDB due to the explicit relation between elements of RtDB as we exemplify in App. F. Detailed balance has been used
+previously in CTMC generative models (Campbell et al.,
+2022) to make post-hoc inference adjustments.
+
+Discrete Flow Models
+
+CTMC stochasticity. We now have a set of rate matrices, {Rtη : η ≥ 0}, that all generate pt|1. We can plug any one of these into our definition for Rt(xt, j) (Eq. (7)) and sample novel datapoints using Alg. 1. The chosen value for η will influence the dynamics of the CTMC we are simulating. For large values of η, the increased influence of RtDB will cause large exchanges of probability mass between states. This manifests as increasing the frequency of jumps occurring in the sequence trajectory. This leads to a short auto-correlation time for the CTMC and a high level of unpredictability of future states given the current state. We refer to the behaviour that η controls as CTMC stochasticity. Fig. 1B shows examples of high and low η.
+On a given task, we expect there to be an optimal stochasticity level. Additional stochasticity improves performance in continuous diffusion models (Cao et al., 2023; Xu et al., 2023), but too much stochasticity can result in a poorly performing degenerate CTMC. In some cases, setting η = 0, i.e. using Rt∗, results in the minimum possible number of jumps because the ReLU within Rt∗ removes state pairs that needlessly exchange mass (Zhang et al., 2023).
+Proposition 3.4. For put|n1if and pmt|1ask, Rt∗ generates pt|1 whilst minimizing the expected number of jumps during the sequence trajectory. This assumes mu

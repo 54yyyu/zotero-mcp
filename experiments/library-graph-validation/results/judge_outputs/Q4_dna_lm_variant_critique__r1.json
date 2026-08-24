@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":7,"synthesis":9,"correctness":8,"faithfulness":8,"directness":8},
+            "Option 2": {"coverage":9,"synthesis":8,"correctness":9,"faithfulness":9,"directness":8},
+            "Option 3": {"coverage":8,"synthesis":9,"correctness":9,"faithfulness":9,"directness":8},
+            "Option 4": {"coverage":6,"synthesis":8,"correctness":6,"faithfulness":6,"directness":7}},
+ "ranking": ["Option 3","Option 2","Option 1","Option 4"],
+ "notes": "Option 3 best balances coverage of all four papers (including PromoterAI), strong consensus/disagreement structure separating alignment-based vs alignment-free LMs, and accurate self-reported caveats. Option 2 is similarly faithful and quantitative (auROC, ESM-1b on DMS) but slightly less crisp on lineage. Option 1 synthesizes well and adds the shared-authorship insight but drops PromoterAI and uses opaque [B#] citation tags. Option 4 wrongly excludes PromoterAI as 'not a DNA LM' and introduces off-topic ESM3/Shannon papers not in the ground truth, hurting faithfulness and correctness."}

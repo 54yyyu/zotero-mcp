@@ -1,0 +1,6 @@
+{"scores": {"Option 1": {"coverage":8,"synthesis":9,"correctness":8,"faithfulness":7,"directness":8},
+            "Option 2": {"coverage":9,"synthesis":9,"correctness":9,"faithfulness":9,"directness":8},
+            "Option 3": {"coverage":7,"synthesis":8,"correctness":9,"faithfulness":8,"directness":8},
+            "Option 4": {"coverage":9,"synthesis":8,"correctness":9,"faithfulness":9,"directness":9}},
+ "ranking": ["Option 2","Option 4","Option 1","Option 3"],
+ "notes": "Option 2 best balances full coverage (correctly handling PromoterAI as supervised), accurate consensus/disagreement structure, and faithful per-paper attribution including GPN-MSA's candid self-limits. Option 4 is similarly strong and most direct with concrete metrics but slightly thinner cross-paper synthesis. Option 1 has rich synthesis but cites opaque [B##] tags and the conservation-baseline framing is partly unsupported; Option 3 omits PromoterAI entirely (misclassifying it as off-topic) and overstates a 'subsumption' framing, hurting coverage."}
