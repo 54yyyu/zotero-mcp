@@ -156,6 +156,31 @@ class TestAddByUrlLockScope:
         assert observed["lock_held_during_create"] is True
 
 
+    def test_page_fetch_does_not_hold_lock(self, monkeypatch, fake_zot, dummy_ctx):
+        """The generic-URL branch is no longer free of third-party network
+        work: it reads the publisher page to pick up the citation the page
+        publishes about itself. That fetch is an arbitrary third-party host —
+        it must not be made while holding the process-wide Zotero lock.
+        """
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        observed = {"lock_free_during_page_fetch": None}
+
+        def spying_fetch(url, ctx):
+            observed["lock_free_during_page_fetch"] = _lock_is_free()
+            return None, "not fetched"
+
+        monkeypatch.setattr("zotero_mcp.tools.write._fetch_embedded_metadata",
+                            spying_fetch)
+
+        write.add_item(
+            source="https://example.com/some-article", source_type="url", ctx=dummy_ctx
+        )
+
+        assert observed["lock_free_during_page_fetch"] is True
+
 ARXIV_ATOM_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom"

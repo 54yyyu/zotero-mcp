@@ -185,7 +185,7 @@ def _duplicate_of_message(kind: str, position: int) -> str:
 # describes — structured per-item dicts rendered through
 # _format_batch_result — at which point these go away.
 _CREATED_MARKERS = (
-    "Successfully added",       # add_by_doi, add_by_isbn
+    "Successfully added",       # add_by_doi, add_by_isbn, embedded metadata
     "Successfully added arXiv",  # _add_by_arxiv
     "Created webpage item for:",  # add_by_url's generic-webpage branch
 )
