@@ -170,7 +170,7 @@ def test_batch_run_with_chunking_requested_warns_on_stderr(monkeypatch, tmp_path
     err = capsys.readouterr().err
     assert "Passage chunking is NOT applied on the OpenAI Batch API path" in err
     # The user has to be told what to do about it, not only that it happened.
-    assert "--no-openai-batch" in err
+    assert "--no-batch" in err
     # Warned exactly once per run.
     assert err.count("Passage chunking is NOT applied") == 1
 
