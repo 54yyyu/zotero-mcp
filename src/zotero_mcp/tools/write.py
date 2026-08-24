@@ -1,5 +1,6 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
+import contextlib
 import difflib
 import hashlib
 import json
@@ -1671,20 +1672,60 @@ def add_by_doi(
                                              tags, coll_keys, page_meta)
             pending.append((i, built))
 
-        created = (
-            _create_and_attach_batch(
-                write_zot, [payload["item_data"] for _, payload in pending],
-                attach_mode, ctx,
-                crossref_by_doi={payload["doi"]: payload["cr"]
-                                 for _, payload in pending},
+        # Phase 3b: serialize check-and-create per DOI (#486).
+        #
+        # Phase 1's dedup ran before the CrossRef fetch, so a parallel add of
+        # the same DOI can have created the item in between — and there is no
+        # version to conflict on, so nothing downstream would catch it. The
+        # locks are per-DOI and taken in sorted order, which is what makes
+        # holding several of them at once deadlock-free.
+        #
+        # This costs one extra dedup read per DOI. It does not undo #A5/#A4:
+        # CrossRef is still one batched request per 50 DOIs and creates are
+        # still one POST per 50 — only the dedup read, which was always per
+        # DOI, happens twice.
+        #
+        # The OA PDF attach inside _create_and_attach_batch runs while these
+        # are held. That is deliberate and is not the thing the narrowing was
+        # protecting: a per-DOI lock held across that DOI's own download
+        # blocks only a concurrent add of the same item, never unrelated
+        # work, which is the opposite of the global lock's blast radius.
+        with contextlib.ExitStack() as identifier_locks:
+            for doi_key in sorted({payload["doi"] for _, payload in pending
+                                   if payload.get("doi")}):
+                identifier_locks.enter_context(
+                    _helpers.identifier_lock("doi", doi_key)
+                )
+
+            if if_exists != "duplicate" and pending:
+                still_pending: list[tuple[int, dict]] = []
+                for i, payload in pending:
+                    existing = _helpers.find_existing_items(
+                        read_zot, doi=payload["doi"], ctx=ctx
+                    )
+                    if existing:
+                        work_results[i] = _handle_existing_item(
+                            write_zot, existing, coll_keys, tags, if_exists,
+                            matched_by=f"DOI {payload['doi']}", ctx=ctx,
+                        )
+                    else:
+                        still_pending.append((i, payload))
+                pending = still_pending
+
+            created = (
+                _create_and_attach_batch(
+                    write_zot, [payload["item_data"] for _, payload in pending],
+                    attach_mode, ctx,
+                    crossref_by_doi={payload["doi"]: payload["cr"]
+                                     for _, payload in pending},
+                )
+                if pending else []
             )
-            if pending else []
-        )
-        for (i, payload), cr_result in zip(pending, created):
-            work_results[i] = _render_doi_create_result(
-                cr_result, payload["zot_type"], payload["doi"], coll_keys,
-                payload["type_note"],
-            )
+            for (i, payload), cr_result in zip(pending, created):
+                work_results[i] = _render_doi_create_result(
+                    cr_result, payload["zot_type"], payload["doi"], coll_keys,
+                    payload["type_note"],
+                )
 
         # Expand back to one result per requested token.
         results: list[str] = [None] * len(doi_list)
@@ -1995,7 +2036,20 @@ def add_by_url(
         if embedded is not None and not embedded.is_usable():
             embed_problem = "the page carries no citation metadata"
 
-        with zotero_api_lock():
+        # Serialize check-and-create for this identifier (#486). The dedup
+        # check above ran before the fetch, so a parallel add can have created
+        # the item in between; re-checking inside the lock is what makes the
+        # pair atomic. The identifier lock is always taken *outside* the API
+        # lock, so the two are acquired in one consistent order everywhere.
+        with _helpers.identifier_lock("url", url), zotero_api_lock():
+            if if_exists != "duplicate":
+                existing = _helpers.find_existing_items(read_zot, url=url, ctx=ctx)
+                if existing:
+                    return _handle_existing_item(
+                        write_zot, existing, coll_keys, tags, if_exists,
+                        matched_by=f"URL {url}", ctx=ctx,
+                    )
+
             ctx.info(f"Creating webpage item for: {url}")
             template = write_zot.item_template("webpage")
             template["url"] = url
@@ -2184,7 +2238,19 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             else:
                 authors.append({"creatorType": "author", "name": name})
 
-    with zotero_api_lock():
+    # Serialize check-and-create for this arXiv ID (#486) — see add_by_url's
+    # note; the metadata fetch above sits between the first check and here.
+    with _helpers.identifier_lock("arxiv", arxiv_id), zotero_api_lock():
+        if if_exists != "duplicate":
+            existing = _helpers.find_existing_items(
+                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
+            )
+            if existing:
+                return _handle_existing_item(
+                    write_zot, existing, coll_keys, tags, if_exists,
+                    matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
+                )
+
         template = write_zot.item_template("preprint")
         template["title"] = title
         if authors:
@@ -2526,7 +2592,22 @@ def add_by_isbn(
         if coll_keys:
             item_data["collections"] = coll_keys
 
-        result = write_zot.create_items([item_data])
+        # Serialize check-and-create for this ISBN (#486). The dedup check
+        # above ran before the Open Library / Google Books lookups, so a
+        # parallel add of the same book can have created it in between. The
+        # check is repeated here rather than moved because the lookups must
+        # stay outside the lock — that is the whole point of the narrowing.
+        with _helpers.identifier_lock("isbn", normalized):
+            if if_exists != "duplicate":
+                existing = _helpers.find_existing_items(
+                    read_zot, isbn=normalized, ctx=ctx
+                )
+                if existing:
+                    return _handle_existing_item(
+                        write_zot, existing, coll_keys, tags, if_exists,
+                        matched_by=f"ISBN {normalized}", ctx=ctx,
+                    )
+            result = write_zot.create_items([item_data])
         if isinstance(result, dict) and result.get("success"):
             item_key = next(iter(result["success"].values()))
             missing = _helpers.ensure_collection_membership(
