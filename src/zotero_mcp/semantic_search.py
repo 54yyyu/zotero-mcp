@@ -87,6 +87,17 @@ def _report(message: str) -> None:
         pass
 
 
+def _realtime_slice_size(max_parallel: int) -> int:
+    """How many items one preparation pass hands to the embedding workers.
+
+    Scales with parallelism so a single pass yields enough payloads to keep
+    every worker busy, and is capped so the classify step — which holds
+    ``_chroma_call_lock`` — stays short. The floor of 25 is the historical
+    sequential batch size, so an unparallelized run slices exactly as before.
+    """
+    return min(25 * max(1, max_parallel), 200)
+
+
 def _pid_is_alive(pid: int) -> bool:
     """Best-effort liveness check for a process id (POSIX ``kill(pid, 0)``)."""
     try:
@@ -2933,10 +2944,7 @@ class ZoteroSemanticSearch:
         synchronous path does, so the caller's end-of-run retry pass is shared
         between both paths.
         """
-        # Slices scale with parallelism so one preparation pass yields enough
-        # payloads to keep every worker busy, and are capped so the classify
-        # step — which holds _chroma_call_lock — stays short.
-        slice_size = min(25 * max(1, max_parallel), 200)
+        slice_size = _realtime_slice_size(max_parallel)
         request_batch_size = (
             getattr(embedding_function, "request_batch_size", None) or 64
         )

@@ -539,3 +539,40 @@ def test_splitter_skips_items_that_produced_no_documents():
 def test_splitter_yields_nothing_for_an_empty_slice():
     """No documents means no requests at all."""
     assert list(semantic_search._split_prepared_into_requests(_prepared([]), 10)) == []
+
+
+# ---------------------------------------------------------------------------
+# Slice sizing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("max_parallel", "expected"),
+    [(1, 25), (2, 50), (4, 100), (8, 200), (16, 200), (64, 200)],
+)
+def test_realtime_slice_size_scales_then_caps(max_parallel, expected):
+    """Slices grow with parallelism so every worker has payloads waiting.
+
+    The 200 cap is not cosmetic: the classify step for a slice holds
+    _chroma_call_lock, so an uncapped slice would lengthen the window during
+    which nothing else can touch the collection.
+    """
+    assert semantic_search._realtime_slice_size(max_parallel) == expected
+
+
+@pytest.mark.parametrize("degenerate", [0, -1])
+def test_realtime_slice_size_floors_at_the_sequential_batch(degenerate):
+    """A non-positive worker count must still yield a usable slice size.
+
+    Both degenerate inputs break the producer, differently, if the floor is
+    removed: the slice size becomes the step of ``range(0, len(all_items),
+    slice_size)``, so a negative gives an empty range — the producer emits
+    nothing and the run reports success having indexed no items — and a zero
+    raises ``ValueError: range() arg 3 must not be zero``.
+
+    Zero is unreachable today because the call site coerces it (``... or 1``),
+    but a negative is not: ``-2 or 1`` is ``-2``, so a hand-edited
+    ``max_parallel_requests: -2`` reaches this function intact. The silent
+    variant is the one worth guarding against.
+    """
+    assert semantic_search._realtime_slice_size(degenerate) == 25
