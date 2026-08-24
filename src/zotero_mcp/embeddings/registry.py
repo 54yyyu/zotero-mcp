@@ -21,6 +21,7 @@ direction only: provider modules depend on ``embeddings.base`` alone, never on
 this module or on ``chroma_client``.
 """
 
+import dataclasses
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -70,6 +71,11 @@ class ProviderSpec:
     ``model_aliases`` maps a short alias the user may put in
     ``embedding_model`` (``"qwen"``, ``"embeddinggemma"``) to the concrete
     model name it stands for.
+
+    ``batch`` holds this provider's ``batch_common.BatchAdapter`` when it has
+    one, and ``None`` when it does not. Typed ``Any`` rather than imported:
+    ``batch_common`` is a leaf module and importing it here would make the
+    registry depend on it just to spell a type, for no gain.
     """
 
     name: str
@@ -77,6 +83,7 @@ class ProviderSpec:
     ef_factory: Callable[[dict[str, Any]], Any]
     env: EnvSpec = field(default_factory=EnvSpec)
     model_aliases: Mapping[str, str] = field(default_factory=dict)
+    batch: Any | None = None
 
 
 PROVIDERS: dict[str, ProviderSpec] = {}
@@ -86,6 +93,28 @@ def register_provider(spec: ProviderSpec) -> ProviderSpec:
     """Register (or replace) a provider spec by name, returning the spec."""
     PROVIDERS[spec.name] = spec
     return spec
+
+
+def batch_capable_providers() -> list[str]:
+    """Names of providers that currently have a batch adapter attached.
+
+    Drives the CLI's ``--batch-provider`` choices, so it reflects what is
+    actually wired up rather than a hand-maintained list that can drift.
+    """
+    return [name for name, spec in PROVIDERS.items() if spec.batch is not None]
+
+
+def attach_batch_adapter(name: str, adapter: Any) -> ProviderSpec:
+    """Attach a ``BatchAdapter`` to an already-registered provider spec.
+
+    ``ProviderSpec`` is frozen, so this replaces the stored spec rather than
+    mutating it. ``openai_batch`` and ``gemini_batch`` each call this at module
+    scope, which is why importing either module is what makes its provider
+    batch-capable — see the note on ``_load_batch_providers`` in ``cli.py``.
+    """
+    updated = dataclasses.replace(PROVIDERS[name], batch=adapter)
+    PROVIDERS[name] = updated
+    return updated
 
 
 def _openai_ef_factory(config: dict[str, Any]) -> Any:
