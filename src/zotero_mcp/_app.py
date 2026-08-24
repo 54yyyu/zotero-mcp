@@ -23,24 +23,38 @@ logging.basicConfig(
 
 
 def _sync_semantic_update() -> None:
-    """Check for and run semantic search auto-update (called in a worker thread)."""
-    from zotero_mcp.semantic_search import create_semantic_search
+    """Check for and run semantic search auto-update (called in a worker thread).
+
+    Every early return below happens *before* ``zotero_mcp.semantic_search`` is
+    imported. That module pulls in ChromaDB and numpy, which costs roughly a
+    second even when warm, and on Windows the import — running here, in the
+    lifespan's worker thread — wedged the process for the length of the first
+    tool call (#485). ``update_policy`` answers "is an update due?" from the
+    config file alone, with no third-party imports at all, so only a server
+    that is actually about to index anything pays for ChromaDB.
+    """
+    from zotero_mcp.update_policy import should_update
 
     config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
     if not config_path.exists():
         return
 
-    # Avoid initializing ChromaDB on every server startup when semantic
-    # auto-update is disabled. This also avoids racing a foreground
+    # Avoid initializing ChromaDB on every server startup when no semantic
+    # auto-update is due. This also avoids racing a foreground
     # zotero_semantic_search call for the same persisted ChromaDB directory.
     try:
         with open(config_path) as f:
             cfg = json.load(f)
         update_cfg = cfg.get("semantic_search", {}).get("update_config", {})
-        if not update_cfg.get("auto_update", False):
-            return
     except Exception:
-        pass
+        # An unreadable config cannot say an update is due, and guessing "yes"
+        # here is what would drag the heavy import back in on every startup.
+        return
+
+    if not should_update(update_cfg):
+        return
+
+    from zotero_mcp.semantic_search import create_semantic_search
 
     search = create_semantic_search(str(config_path))
     if not search.should_update_database():

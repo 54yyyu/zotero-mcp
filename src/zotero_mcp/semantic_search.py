@@ -13,7 +13,7 @@ import os
 import re
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,14 @@ from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_active_group_id, get_zotero_client
 from .extract import PAGE_SEPARATOR
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
+
+# Re-exported so callers keep importing them from here, while the
+# ChromaDB-free definitions stay importable without this module (#485).
+from .update_policy import (  # noqa: F401
+    _DEFAULT_UPDATE_CONFIG,
+    load_update_config,
+    should_update,
+)
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
@@ -139,13 +147,6 @@ def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
     return text
 
 
-_DEFAULT_UPDATE_CONFIG = {
-    "auto_update": False,
-    "update_frequency": "manual",
-    "last_update": None,
-    "update_days": 7,
-}
-
 # Bumped when the ChromaDB metadata shape changes in a way that requires a
 # one-time migration of existing documents. Version 2 (#163) added the
 # `group_id` field. A persisted collection whose config.json records a lower
@@ -183,24 +184,6 @@ def _extract_fulltext_batch(reader, items):
         return
     for item_id, _item_key in items:
         yield item_id, reader.extract_fulltext_for_item(item_id)
-
-
-def load_update_config(config_path: str | None) -> dict[str, Any]:
-    """Read the semantic-search ``update_config`` block from disk.
-
-    Pure file read with no ChromaDB or embedding-model side effects, so it is
-    safe on the read-only status path. Returns defaults when the file is
-    missing or unreadable.
-    """
-    config = dict(_DEFAULT_UPDATE_CONFIG)
-    if config_path and os.path.exists(config_path):
-        try:
-            with open(config_path) as f:
-                file_config = json.load(f)
-            config.update(file_config.get("semantic_search", {}).get("update_config", {}))
-        except Exception as e:
-            logger.warning(f"Error loading update config: {e}")
-    return config
 
 
 _DEFAULT_RERANKER_CONFIG: dict[str, Any] = {
@@ -245,40 +228,6 @@ def warmup_reranker(config_path: str | None = None) -> bool:
     except Exception as e:
         logger.warning(f"Reranker warmup failed for '{model}': {e}")
         return False
-
-
-def should_update(update_config: dict[str, Any]) -> bool:
-    """Decide whether an auto-update is due from ``update_config`` alone.
-
-    Pure function of the config dict (and the wall clock) — no I/O, no model
-    load — so both :class:`ZoteroSemanticSearch` and the status tool can share
-    one source of truth.
-    """
-    if not update_config.get("auto_update", False):
-        return False
-
-    frequency = update_config.get("update_frequency", "manual")
-
-    if frequency == "manual":
-        return False
-    elif frequency == "startup":
-        return True
-    elif frequency == "daily":
-        last_update = update_config.get("last_update")
-        if not last_update:
-            return True
-        return datetime.now() - datetime.fromisoformat(last_update) >= timedelta(days=1)
-    elif frequency.startswith("every_"):
-        try:
-            days = int(frequency.split("_")[1])
-            last_update = update_config.get("last_update")
-            if not last_update:
-                return True
-            return datetime.now() - datetime.fromisoformat(last_update) >= timedelta(days=days)
-        except (ValueError, IndexError):
-            return False
-
-    return False
 
 
 # ---------------------------------------------------------------------------

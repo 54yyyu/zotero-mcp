@@ -59,15 +59,43 @@ def _noisy_env(message):
 
     Stands in for PyMuPDF's own deprecation notice: both are plain prints that
     land on the child's stdout before it writes anything of its own, which is
-    the whole of the #455 failure. Using usercustomize rather than monkey-
+    the whole of the #455 failure. Hooking the interpreter rather than monkey-
     patching PyMuPDF keeps the test meaningful on versions that don't warn.
+
+    The hook is ``sitecustomize`` rather than ``usercustomize``: ``site.main``
+    runs ``execsitecustomize()`` unconditionally but gates
+    ``execusercustomize()`` on ``ENABLE_USER_SITE``, which every venv sets to
+    False. With ``usercustomize`` the noise never appeared inside a venv, so
+    this test failed its own precondition for anyone not running from a
+    system or conda interpreter.
     """
-    site = tempfile.mkdtemp()
-    with open(os.path.join(site, "usercustomize.py"), "w") as fh:
+    site_dir = tempfile.mkdtemp()
+    with open(os.path.join(site_dir, "sitecustomize.py"), "w") as fh:
         fh.write(f"print({message!r})\n")
     env = dict(os.environ)
-    env["PYTHONPATH"] = site + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = site_dir + os.pathsep + env.get("PYTHONPATH", "")
     return env
+
+
+def _require_noisy_stdout(message):
+    """Skip rather than fail if this interpreter cannot be made to print.
+
+    A test whose *precondition* cannot be established here proves nothing, but
+    it is also not evidence of a defect, and reporting it as a failure has
+    sent several contributors chasing a phantom regression.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", "pass"],
+        capture_output=True,
+        text=True,
+        env=_noisy_env(message),
+        timeout=60,
+    )
+    if not proc.stdout.startswith(message):
+        pytest.skip(
+            "this interpreter ignores the sitecustomize hook, so stdout "
+            "pollution cannot be injected here"
+        )
 
 
 def test_child_imports_pymupdf_not_the_deprecated_fitz_shim():
@@ -89,6 +117,7 @@ def test_child_tags_its_payload(pdf_with_outline):
 def test_outline_survives_a_deprecation_notice_on_stdout(pdf_with_outline):
     """The exact #455 shape: a notice printed to stdout ahead of the JSON."""
     notice = "warning: The `fitz` API is deprecated and will be removed in future."
+    _require_noisy_stdout(notice)
     proc = _run_child(pdf_with_outline, env=_noisy_env(notice))
 
     assert proc.returncode == 0
@@ -100,6 +129,7 @@ def test_outline_survives_a_deprecation_notice_on_stdout(pdf_with_outline):
 
 def test_parent_discards_everything_before_the_sentinel(pdf_with_outline, monkeypatch):
     """End-to-end through _extract_pdf_toc, not just the child in isolation."""
+    _require_noisy_stdout("noise on stdout")
     monkeypatch.setenv("PYTHONPATH", _noisy_env("noise on stdout")["PYTHONPATH"])
     outcome = _extract_pdf_toc(pdf_with_outline)
     assert outcome.status == "ok"
