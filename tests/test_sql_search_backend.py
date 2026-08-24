@@ -197,13 +197,19 @@ def test_search_items_sql_unknown_group_returns_none(tmp_path):
     assert result is None
 
 
-def test_search_items_sql_tag_filter_unsupported_falls_back(tmp_path):
+def test_search_items_sql_tag_filter_is_served_in_sql(tmp_path):
+    # #163 taught the backend the boolean tag DSL, so a tag filter no longer
+    # returns None to punt the whole query to pyzotero. Full DSL coverage
+    # lives in test_global_search.py.
     reader = _reader(tmp_path)
     try:
         result = reader.search_items_sql("quantum", tag=["physics"], group_id=0)
+        unmatched = reader.search_items_sql("quantum", tag=["history"], group_id=0)
     finally:
         reader.close()
-    assert result is None
+    assert result is not None
+    assert {r["key"] for r in result} == {"PERS0001"}
+    assert unmatched == []
 
 
 def test_search_items_sql_boolean_item_type_unsupported_falls_back(tmp_path):

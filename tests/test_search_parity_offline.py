@@ -76,7 +76,8 @@ def _run(monkeypatch, tmp_path, backend: str, **kwargs) -> set[str]:
     # Render each result as its key alone: parity is about which items come
     # back, and the formatted output is not the thing under test.
     monkeypatch.setattr(
-        _utils, "format_item_result", lambda item, index=0: [f"KEY:{item['key']}"]
+        _utils, "format_item_result",
+        lambda item, index=0, **_kwargs: [f"KEY:{item['key']}"],
     )
     monkeypatch.setattr(_client, "get_active_group_id", lambda: 0)
     monkeypatch.setattr(_utils, "get_search_backend", lambda: backend)

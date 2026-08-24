@@ -14,7 +14,7 @@ from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
-from zotero_mcp.local_db import get_local_zotero_reader
+from zotero_mcp.local_db import PERSONAL_LIBRARY_GROUP_ID, get_local_zotero_reader
 from zotero_mcp.tools import _helpers
 
 _search_logger = _logging.getLogger("zotero_mcp.search")
@@ -197,15 +197,31 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
     return _exclude_note_content_matches(all_items, qmode)
 
 
+class GlobalSearchUnsupported(Exception):
+    """A global search hit a query shape the SQLite backend cannot express.
+
+    Raised instead of returning results because the usual recovery — fall
+    back to `_search_with_variants` — searches one library, and answering a
+    narrower question than the caller asked, without saying so, is the one
+    outcome worse than an error (#163).
+    """
+
+
 def _search_items_via_backend(zot, query: str, qmode: str, limit: int,
                               item_type: str = "-attachment",
                               tag: list[str] | None = None,
                               cascade_start: float | None = None,
-                              cascade_timeout: float | None = None) -> list:
+                              cascade_timeout: float | None = None,
+                              group_id: int | None = PERSONAL_LIBRARY_GROUP_ID) -> list:
     """Try the #167 SQLite metadata backend first; fall back to the
     pyzotero-based `_search_with_variants` on any unsupported condition or
     error. Mirrors `_search_with_variants`'s signature and return shape so
     every call site in the fallback cascade can swap it in unchanged.
+
+    `group_id` is the library scope: a groupID, 0 for the personal library,
+    or None for every library (#163). The global case has no pyzotero
+    fallback available, so an unsupported query raises
+    `GlobalSearchUnsupported` rather than quietly narrowing to one library.
     """
     if _utils.get_search_backend() == "sqlite":
         try:
@@ -214,14 +230,24 @@ def _search_items_via_backend(zot, query: str, qmode: str, limit: int,
                 try:
                     result = reader.search_items_sql(
                         query, qmode=qmode, item_type=item_type, tag=tag,
-                        limit=limit, group_id=_client.get_active_group_id(),
+                        limit=limit, group_id=group_id,
                     )
                 finally:
                     reader.close()
                 if result is not None:
                     return result
         except Exception as e:
+            if group_id is None:
+                raise
             _search_logger.debug(f"[SEARCH] sqlite backend failed, falling back: {e}")
+    if group_id is None:
+        raise GlobalSearchUnsupported(
+            "Global search could not be served by the SQLite backend. This "
+            "happens for query shapes it cannot express — a wildcard tag "
+            "filter, or a boolean itemType expression like 'book || "
+            "journalArticle'. Simplify the query, or search one library at a "
+            "time with zotero_switch_library, which can use the API path."
+        )
     return _search_with_variants(zot, query, qmode, limit, item_type=item_type, tag=tag,
                                  cascade_start=cascade_start, cascade_timeout=cascade_timeout)
 
@@ -248,8 +274,12 @@ def _search_items_via_backend(zot, query: str, qmode: str, limit: int,
         "collection_key: 8-char key to restrict to a collection (bypasses "
         "the fallback cascade). include_subcollections: also search "
         "collections nested beneath it (default False). "
+        "search_all_libraries: search personal + all group libraries at "
+        "once, labelling each result with its library — use it when you "
+        "don't know which library holds the item. Needs "
+        "ZOTERO_SEARCH_BACKEND=sqlite; excludes collection_key. "
         "Example: zotero_search_items(query='Cladder-Micus') or "
-        "zotero_search_items(query='Brewer 2011', limit=5)."
+        "zotero_search_items(query='Brewer 2011', search_all_libraries=True)."
     )
 )
 @with_zotero_api_lock
@@ -261,6 +291,7 @@ def search_items(
     tag: list[str] | list[dict] | str | None = None,
     collection_key: str | None = None,
     include_subcollections: bool = False,
+    search_all_libraries: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -282,6 +313,10 @@ def search_items(
         include_subcollections: Also search collections nested beneath
             collection_key. Ignored when collection_key is not given. Defaults
             to False, matching Zotero's own "Search subcollections" checkbox.
+        search_all_libraries: Search every accessible library at once instead
+            of the active one (#163). Requires the SQLite backend; each result
+            is labelled with the library it came from. Cannot be combined with
+            collection_key, which names a collection inside one library.
         ctx: MCP context
 
     Returns:
@@ -290,6 +325,24 @@ def search_items(
     try:
         if not query.strip():
             return "Error: Search query cannot be empty"
+
+        if search_all_libraries:
+            if gate_error := _helpers.global_search_error():
+                return gate_error
+            if collection_key:
+                return (
+                    "Error: collection_key cannot be combined with "
+                    "search_all_libraries. A collection belongs to exactly one "
+                    "library, so scoping a global search to one is not a "
+                    "meaningful request. Drop collection_key to search every "
+                    "library, or drop search_all_libraries and switch to the "
+                    "collection's library with zotero_switch_library."
+                )
+
+        # One scope for the whole call — the initial query and every fallback
+        # strategy below. None means "every library"; resolving it once is
+        # what stops a retry silently reverting to the active library.
+        scope_group_id = None if search_all_libraries else _client.get_active_group_id()
 
         # Normalize tag across every wire shape clients produce (#237).
         tag = _helpers._normalize_tag_filter(tag)
@@ -341,7 +394,8 @@ def search_items(
             items = _search_items_via_backend(zot, query, qmode, limit,
                                               item_type=item_type, tag=tag,
                                               cascade_start=_cascade_start,
-                                              cascade_timeout=CASCADE_TIMEOUT)
+                                              cascade_timeout=CASCADE_TIMEOUT,
+                                              group_id=scope_group_id)
             _search_logger.debug(f"[CASCADE] initial: {len(items)} results in {_time.monotonic() - _cascade_start:.2f}s")
 
             # --- Fallback cascade (only if initial search returned nothing) ---
@@ -379,7 +433,8 @@ def search_items(
                     items = _search_items_via_backend(zot, simple_query, qmode, limit,
                                                       item_type=item_type, tag=tag,
                                                       cascade_start=_cascade_start,
-                                                      cascade_timeout=CASCADE_TIMEOUT)
+                                                      cascade_timeout=CASCADE_TIMEOUT,
+                                                      group_id=scope_group_id)
                     _search_logger.debug(f"[CASCADE] strategy 1 (author+year): {len(items)} results in {_time.monotonic() - t0:.2f}s")
                     if items:
                         fallback_strategy = f"simplified to '{simple_query}'"
@@ -392,7 +447,8 @@ def search_items(
                     items = _search_items_via_backend(zot, author_only, qmode, limit,
                                                       item_type=item_type, tag=tag,
                                                       cascade_start=_cascade_start,
-                                                      cascade_timeout=CASCADE_TIMEOUT)
+                                                      cascade_timeout=CASCADE_TIMEOUT,
+                                                      group_id=scope_group_id)
                     _search_logger.debug(f"[CASCADE] strategy 2 (author only): {len(items)} results in {_time.monotonic() - t0:.2f}s")
                     if items:
                         fallback_strategy = f"author only '{author_only}'"
@@ -405,7 +461,8 @@ def search_items(
                     items = _search_items_via_backend(zot, query, "everything", limit,
                                                       item_type=item_type, tag=tag,
                                                       cascade_start=_cascade_start,
-                                                      cascade_timeout=CASCADE_TIMEOUT)
+                                                      cascade_timeout=CASCADE_TIMEOUT,
+                                                      group_id=scope_group_id)
                     _search_logger.debug(f"[CASCADE] strategy 3 (everything): {len(items)} results in {_time.monotonic() - t0:.2f}s")
                     if items:
                         fallback_strategy = "full-text search"
@@ -421,14 +478,14 @@ def search_items(
                             sem_search = create_semantic_search(str(config_path))
                             _search_logger.debug(f"[CASCADE] semantic init: {_time.monotonic() - t0:.2f}s")
                             t0 = _time.monotonic()
-                            # The semantic index can span multiple libraries
-                            # (#163) while this tool's own results come from
-                            # exactly one (whichever zot is scoped to) — scope
-                            # the fallback the same way so it never surfaces a
-                            # group-library hit for what looks like a
-                            # single-library search.
+                            # The semantic index spans every library, so the
+                            # fallback has to be given this call's own scope
+                            # (#163) — otherwise a single-library search ends
+                            # by surfacing a group-library hit, and a global
+                            # one narrows to the active library on its last
+                            # step. `scope_group_id` is already either.
                             sem_results = sem_search.search(
-                                query=query, limit=limit or 10, group_id=_client.get_active_group_id()
+                                query=query, limit=limit or 10, group_id=scope_group_id
                             )
                             _search_logger.debug(f"[CASCADE] semantic query: {_time.monotonic() - t0:.2f}s")
                             if sem_results and sem_results.get("results"):
@@ -455,9 +512,13 @@ def search_items(
 
         # --- Format results as markdown ---
         output = [f"# Search Results for '{query}'", f"{tag_condition_str}", ""]
+        if search_all_libraries:
+            output.insert(1, "*Scope: all accessible libraries.*")
 
         for i, item in enumerate(items, 1):
-            output.extend(_utils.format_item_result(item, index=i))
+            output.extend(
+                _utils.format_item_result(item, index=i, show_library=search_all_libraries)
+            )
 
         # Prepend fallback verification note (AFTER output is built)
         if fallback_strategy:
@@ -481,6 +542,9 @@ def search_items(
 
         return _helpers._prepend_size_warning("\n".join(output))
 
+    except GlobalSearchUnsupported as e:
+        ctx.error(str(e))
+        return f"Error: {e}"
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
         return f"Error searching Zotero: {str(e)}"
@@ -703,6 +767,10 @@ def search_by_citation_key(
         "include_subcollections: make a 'collection' condition match items "
         "anywhere in that collection's subtree, for the is/isNot operations "
         "(default False). "
+        "search_all_libraries: search every accessible library at once, "
+        "labelling each result with its library; needs "
+        "ZOTERO_SEARCH_BACKEND=sqlite. 'tag' conditions work; 'collection' "
+        "conditions and include_subcollections do not. "
         "Example: zotero_advanced_search(conditions=[{'field': 'itemType', "
         "'operation': 'is', 'value': 'preprint'}, {'field': 'dateAdded', "
         "'operation': 'isAfter', 'value': '2026-03-22'}], "
@@ -717,6 +785,7 @@ def advanced_search(
     sort_direction: Literal["asc", "desc"] = "asc",
     limit: int | str = 50,
     include_subcollections: bool = False,
+    search_all_libraries: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -738,6 +807,12 @@ def advanced_search(
             membership questions; other operators keep comparing keys as
             before. Defaults to False, matching Zotero's own "Search
             subcollections" checkbox.
+        search_all_libraries: Search every accessible library at once instead
+            of the active one (#163). Requires the SQLite backend; each result
+            is labelled with its source library. A `collection` condition is
+            rejected in this mode — collection keys are per-library — while
+            `tag` conditions work, since Zotero stores tags in one
+            database-wide table shared by every library.
         ctx: MCP context
 
     Returns:
@@ -809,6 +884,31 @@ def advanced_search(
             parsed_conditions.append(
                 {"field": field, "operation": operation, "value": value}
             )
+
+        if search_all_libraries:
+            if gate_error := _helpers.global_search_error():
+                return gate_error
+            if any(
+                c["field"].lower() in ("collection", "collections")
+                for c in parsed_conditions
+            ):
+                return (
+                    "Error: a `collection` condition cannot be combined with "
+                    "search_all_libraries. A collection belongs to exactly one "
+                    "library (Zotero keys collections per library), so a global "
+                    "search scoped to one is not a meaningful request. Drop the "
+                    "condition, or drop search_all_libraries and switch to that "
+                    "collection's library with zotero_switch_library. Tag "
+                    "conditions are unaffected — tags are shared across "
+                    "libraries and search globally as expected."
+                )
+            if include_subcollections:
+                return (
+                    "Error: include_subcollections cannot be combined with "
+                    "search_all_libraries, for the same reason a `collection` "
+                    "condition cannot — a collection subtree lives inside one "
+                    "library."
+                )
 
         # With subcollections requested, a `collection` condition stops being a
         # per-value comparison and becomes set membership: the item matches if
@@ -912,6 +1012,8 @@ def advanced_search(
         # quietly answer a narrower question than the caller asked. Keep
         # that on the client-side path until the SQL translator grows
         # subtree membership of its own.
+        scope_group_id = None if search_all_libraries else _client.get_active_group_id()
+
         results = None
         if _utils.get_search_backend() == "sqlite" and not collection_scopes:
             try:
@@ -920,13 +1022,28 @@ def advanced_search(
                     try:
                         results = reader.advanced_search_sql(
                             parsed_conditions, join_mode=join_mode,
-                            group_id=_client.get_active_group_id(),
+                            group_id=scope_group_id,
                         )
                     finally:
                         reader.close()
             except Exception as e:
+                if search_all_libraries:
+                    raise
                 _search_logger.debug(f"[ADVANCED SEARCH] sqlite backend failed, falling back: {e}")
                 results = None
+
+        if results is None and search_all_libraries:
+            # The client-side scan below pages ONE library. Falling into it
+            # here would answer a narrower question than the caller asked
+            # while presenting the result as global (#163).
+            return (
+                "Error: this query could not be served by the SQLite backend, "
+                "and global search has no fallback — the client-side path "
+                "searches a single library. One of the conditions uses a "
+                "field or operator the SQL translator does not cover. Simplify "
+                "the conditions, or search one library at a time with "
+                "zotero_switch_library."
+            )
 
         scan_warning: str | None = None
         if results is None:
@@ -1043,6 +1160,8 @@ def advanced_search(
         output.append(f"Found {len(results)} items matching the search criteria:")
         output.append("")
         output.append("## Search Criteria")
+        if search_all_libraries:
+            output.append("Scope: all accessible libraries")
         output.append(f"Join mode: {join_mode.upper()}")
         for i, condition in enumerate(parsed_conditions, 1):
             output.append(
@@ -1058,7 +1177,9 @@ def advanced_search(
         output.append("## Results")
 
         for i, item in enumerate(results, 1):
-            output.extend(_utils.format_item_result(item, index=i))
+            output.extend(
+                _utils.format_item_result(item, index=i, show_library=search_all_libraries)
+            )
 
         return "\n".join(output)
 
@@ -1074,17 +1195,18 @@ def advanced_search(
         "to a query using AI embeddings — the BEST tool for finding papers "
         "on a topic (e.g. 'papers about mindfulness-based therapy'), far "
         "more efficient than scanning collection items or reading "
-        "abstracts. Searches across every indexed library by default (your "
-        "personal library plus any group libraries that have been synced); "
-        "use library_id to scope to one. "
+        "abstracts. Searches the ACTIVE library by default; pass "
+        "search_all_libraries=True to cover every indexed library. "
         "query: the topic or concept; natural-language phrases work well. "
         "limit: max results (default 10). "
         "filters: optional metadata filters as a dict (e.g. "
         "{'itemType': 'journalArticle', 'year': '2023'}); also accepts a "
         "JSON string. "
-        "library_id: optional — restrict results to one library. 0 or "
-        "'user' for your personal library, or a group's numeric groupID "
-        "(see zotero_list_libraries). Omit to search all indexed libraries. "
+        "library_id: optional — scope to one library other than the active "
+        "one: 0 or 'user' for personal, else a groupID (see "
+        "zotero_list_libraries). search_all_libraries: search every indexed "
+        "library at once, labelling each result with its library; needs "
+        "ZOTERO_SEARCH_BACKEND=sqlite, excludes library_id. "
         "Requires the semantic search database to be POPULATED — run "
         "zotero_update_search_database first if you just installed the "
         "server or added new items; check readiness with "
@@ -1101,6 +1223,7 @@ def semantic_search(
     limit: int = 10,
     filters: dict[str, str] | str | None = None,
     library_id: int | str | None = None,
+    search_all_libraries: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -1111,9 +1234,11 @@ def semantic_search(
         query: Search query text - can be concepts, topics, or natural language descriptions
         limit: Maximum number of results to return (default: 10)
         filters: Optional metadata filters as dict or JSON string. Example: {"item_type": "note"}
-        library_id: Optional library scope — 0/"user" for the personal library, a
-            groupID for a group library, or None (default) to search every
-            indexed library.
+        library_id: Optional library scope — 0/"user" for the personal library
+            or a groupID for a group library. Defaults to the active library.
+        search_all_libraries: Search every indexed library at once (#163).
+            Requires the SQLite backend; results are labelled with their
+            source library. Mutually exclusive with library_id.
         ctx: MCP context
 
     Returns:
@@ -1124,9 +1249,27 @@ def semantic_search(
             return "Error: Search query cannot be empty"
 
         try:
-            group_id = _helpers._parse_library_id_param(library_id)
+            explicit_group_id = _helpers._parse_library_id_param(library_id)
         except ValueError as e:
             return f"Error: {e}"
+
+        if search_all_libraries:
+            if explicit_group_id is not None:
+                return (
+                    "Error: library_id and search_all_libraries are mutually "
+                    "exclusive — one scopes to a single library, the other "
+                    "removes the scope. Pass whichever you meant, not both."
+                )
+            if gate_error := _helpers.global_search_error():
+                return gate_error
+
+        # Scope defaults to the active library, matching zotero_search_items
+        # and zotero_advanced_search. None — searching every indexed library
+        # — is now reached only by asking for it (#163).
+        group_id = None if search_all_libraries else (
+            explicit_group_id if explicit_group_id is not None
+            else _client.get_active_group_id()
+        )
 
         # Parse and validate filters parameter
         if filters is not None:
@@ -1186,6 +1329,9 @@ def semantic_search(
 
         # Format results as markdown
         output = [f"# Semantic Search Results for '{query}'", ""]
+        if search_all_libraries:
+            output.append("*Scope: all indexed libraries.*")
+            output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
 
@@ -1217,7 +1363,10 @@ def semantic_search(
                     extra["Matched Passage"] = snippet
                 # Override key from result since it may differ from item["key"]
                 zotero_item.setdefault("key", result.get("item_key", ""))
-                output.extend(_utils.format_item_result(zotero_item, index=i, extra_fields=extra))
+                output.extend(_utils.format_item_result(
+                    zotero_item, index=i, extra_fields=extra,
+                    show_library=search_all_libraries,
+                ))
             else:
                 # Fallback if full Zotero item not available
                 output.append(f"## {i}. Item {result.get('item_key', 'Unknown')}")

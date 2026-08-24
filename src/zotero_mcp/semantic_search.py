@@ -2949,17 +2949,108 @@ class ZoteroSemanticSearch:
             if "char_start" not in enriched_result and passage_offset:
                 enriched_result["passage_offset"] = passage_offset
 
-            try:
-                enriched_result["zotero_item"] = self.zotero_client.item(item_key)
-            except Exception as e:
-                logger.error(f"Error enriching result for item {item_key}: {e}")
-                enriched_result["error"] = f"Could not fetch full item data: {e}"
-
             enriched.append(enriched_result)
             if limit and len(enriched) >= limit:
                 break
 
+        self._attach_zotero_items(enriched)
         return enriched
+
+    def _attach_zotero_items(self, enriched: list[dict[str, Any]]) -> None:
+        """Fill in each result's ``zotero_item``, in place.
+
+        Hits from the library ``self.zotero_client`` is scoped to are fetched
+        through it, as before. Hits from any *other* library cannot be: the
+        client is bound to one library and a foreign key simply 404s, which is
+        why a group-library paper was found by semantic search and then
+        reported as an error rather than a result (#163). Those are hydrated
+        from ``zotero.sqlite`` instead, in one batched query, and arrive
+        already carrying their ``library`` attribution.
+
+        A document whose ``group_id`` is missing cannot be recognised as
+        foreign up front — every index built before #396 is untagged, which
+        is most of them. Those go to the client first and fall back to the
+        local database when it cannot serve them, so the fix does not depend
+        on having re-indexed.
+        """
+        try:
+            client_group_id = self._client_group_id()
+        except ValueError:
+            client_group_id = None
+
+        def _is_foreign(result: dict[str, Any]) -> bool:
+            group_id = (result.get("metadata") or {}).get("group_id")
+            if group_id is None or client_group_id is None:
+                return False
+            return int(group_id) != int(client_group_id)
+
+        already_tried = {r["item_key"] for r in enriched if _is_foreign(r)}
+        local_items = self._hydrate_locally(sorted(already_tried))
+
+        unresolved: list[dict[str, Any]] = []
+        for result in enriched:
+            item_key = result["item_key"]
+            if item_key in local_items:
+                result["zotero_item"] = local_items[item_key]
+                continue
+            try:
+                result["zotero_item"] = self.zotero_client.item(item_key)
+            except Exception as e:
+                result["_enrich_error"] = e
+                unresolved.append(result)
+
+        # Second chance for anything the client could not serve: on an
+        # untagged index that is exactly how a foreign hit presents itself.
+        # Keys the pass above already looked up are skipped — they are known
+        # to be absent, and asking twice cannot change that.
+        retry = [r for r in unresolved if r["item_key"] not in already_tried]
+        if retry:
+            recovered = self._hydrate_locally([r["item_key"] for r in retry])
+            for result in retry:
+                item = recovered.get(result["item_key"])
+                if item is not None:
+                    result["zotero_item"] = item
+                    result.pop("_enrich_error", None)
+
+        for result in enriched:
+            error = result.pop("_enrich_error", None)
+            if error is not None:
+                logger.error(
+                    f"Error enriching result for item {result['item_key']}: {error}"
+                )
+                result["error"] = f"Could not fetch full item data: {error}"
+
+    def _hydrate_locally(self, keys: list[str]) -> dict[str, dict]:
+        """Hydrate `keys` from zotero.sqlite, or {} if that is not possible."""
+        if not keys:
+            return {}
+        try:
+            reader = self._open_local_reader()
+        except Exception as e:
+            logger.debug(f"Cross-library enrichment: no local database ({e})")
+            return {}
+        if reader is None:
+            return {}
+        try:
+            return reader.get_items_by_keys(keys)
+        except Exception as e:
+            logger.warning(f"Cross-library enrichment failed: {e}")
+            return {}
+        finally:
+            reader.close()
+
+    def _open_local_reader(self) -> LocalZoteroReader | None:
+        """A reader over this install's ``zotero.sqlite``, or None outside
+        local mode. Resolves the database path the same way the group_id
+        backfill does: an explicit ``db_path``, else the one recorded in the
+        semantic-search config, else auto-detection."""
+        if not is_local_mode():
+            return None
+        zotero_db_path = self.db_path
+        if not zotero_db_path and self.config_path and os.path.exists(self.config_path):
+            with open(self.config_path) as f:
+                zotero_db_path = json.load(f).get("semantic_search", {}).get("zotero_db_path")
+        return LocalZoteroReader(db_path=zotero_db_path)
 
     def get_database_status(self) -> dict[str, Any]:
         """Get status information about the semantic search database."""

@@ -70,6 +70,19 @@ zotero-cli --json search "diffusion models" --limit 5 --detail keys_only \
 `zotero-cli db update` to build). If it is empty, fall back to `items` and
 say why rather than reporting no results.
 
+Every search covers one library — the active one. When you don't know which
+library holds something, or a search comes up empty and the item might live in
+a group library, add `--all-libraries`:
+
+```bash
+zotero-cli search "Cladder-Micus" --all-libraries
+```
+
+Each result is then labelled `**Library:** <name>`. It needs the server running
+with `ZOTERO_SEARCH_BACKEND=sqlite` and errors clearly if it is not, so try it
+once and fall back to per-library searches if it is refused. Tag filters work
+with it; `--collection` does not, because a collection lives inside one library.
+
 ## Reading efficiently
 
 `get fulltext` on a book-length PDF returns a great deal of text. When you

@@ -250,12 +250,34 @@ def item_display_date(data: dict) -> str:
     return str(data.get("date") or "")
 
 
+def library_label(item: dict) -> str | None:
+    """Human-readable source library for one item, or None if unattributed.
+
+    Reads the top-level ``library`` key that pyzotero items carry and the
+    SQLite backend stamps via ``row_to_api_item``. Renders the personal
+    library as "My Library (personal)" and a group as
+    "<name> (groupID=<id>)", so a global search's results say where each hit
+    lives (#163).
+    """
+    library = item.get("library")
+    if not isinstance(library, dict):
+        return None
+    name = str(library.get("name") or "").strip()
+    library_id = library.get("id")
+    if library.get("type") in ("user", "users"):
+        return f"{name or 'My Library'} (personal)"
+    if library_id is None:
+        return name or None
+    return f"{name or 'Group'} (groupID={library_id})"
+
+
 def format_item_result(
     item: dict,
     index: int | None = None,
     abstract_len: int | None = 200,
     include_tags: bool = True,
     extra_fields: dict[str, str] | None = None,
+    show_library: bool = False,
 ) -> list[str]:
     """Format a single Zotero item as markdown lines.
 
@@ -267,6 +289,9 @@ def format_item_result(
         include_tags: Whether to append tags.
         extra_fields: Additional ``**Label:** value`` pairs inserted after
             authors (e.g. ``{"Similarity Score": "0.912"}``).
+        show_library: Add a ``**Library:**`` line naming the item's source
+            library. Off by default so single-library output is unchanged;
+            global searches turn it on, where the label is the whole point.
 
     Returns:
         List of markdown lines (caller joins with ``"\\n"``).
@@ -281,6 +306,9 @@ def format_item_result(
         f"**Date:** {item_display_date(data) or 'No date'}",
         f"**Authors:** {format_creators(data.get('creators', []))}",
     ]
+
+    if show_library and (label := library_label(item)):
+        lines.insert(3, f"**Library:** {label}")
 
     # Trash status. pyzotero's default list endpoints filter trashed items
     # out, but not every call site does (e.g. includeTrashed=1, direct

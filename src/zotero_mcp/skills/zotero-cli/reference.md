@@ -24,6 +24,7 @@ Every command also accepts `--json` (machine-readable envelope on stdout) and
  - `--sort-by`
  - `--sort-direction` -- one of `asc`, `desc` -- default `asc`
  - `--filters` -- JSON filters for semantic mode
+ - `--all-libraries` -- Search every accessible library at once instead of the active one, labelling each result with its library (items, advanced and semantic modes). Requires ZOTERO_SEARCH_BACKEND=sqlite.
  - `--detail` -- one of `keys_only`, `summary`, `full` -- default `summary` -- How much of each item --json returns (no effect on markdown output)
 
 ## `get (alias: g)`

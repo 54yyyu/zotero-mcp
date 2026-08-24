@@ -211,7 +211,8 @@ def cmd_search(args):
         result = search_mod.advanced_search(
             conditions=conditions, join_mode=args.join_mode,
             sort_by=args.sort_by, sort_direction=args.sort_direction,
-            limit=args.limit, ctx=ctx,
+            limit=args.limit,
+            search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
         )
     elif args.mode == "semantic":
         filters = None
@@ -222,14 +223,16 @@ def cmd_search(args):
                 print(f"Error: invalid JSON in --filters: {e}", file=sys.stderr)
                 sys.exit(1)
         result = search_mod.semantic_search(
-            query=args.query, limit=args.limit, filters=filters, ctx=ctx,
+            query=args.query, limit=args.limit, filters=filters,
+            search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
         )
     elif args.mode == "notes":
         result = annotations.search_notes(query=args.query, limit=args.limit, ctx=ctx)
     else:
         result = search_mod.search_items(
             query=args.query, qmode=args.qmode, limit=args.limit,
-            collection_key=getattr(args, "collection", None), ctx=ctx,
+            collection_key=getattr(args, "collection", None),
+            search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
         )
 
     if _json_mode(args):
@@ -1005,6 +1008,11 @@ def build_parser() -> argparse.ArgumentParser:
     s_p.add_argument("--sort-by")
     s_p.add_argument("--sort-direction", choices=["asc", "desc"], default="asc")
     s_p.add_argument("--filters", help='JSON filters for semantic mode')
+    s_p.add_argument("--all-libraries", action="store_true",
+                     help="Search every accessible library at once instead of "
+                          "the active one, labelling each result with its "
+                          "library (items, advanced and semantic modes). "
+                          "Requires ZOTERO_SEARCH_BACKEND=sqlite.")
     s_p.add_argument("--detail", choices=["keys_only", "summary", "full"],
                      default="summary",
                      help="How much of each item --json returns (no effect on "
