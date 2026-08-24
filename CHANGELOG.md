@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Concurrent adds of the same identifier no longer create duplicates (#486).** The Zotero API lock exists to protect the single-threaded local API, and making check-then-create atomic was only ever a side effect of how wide it happened to be. Narrowing it — correctly, to keep CrossRef and page fetches out of a held lock — removed that side effect wherever a fetch now sits between the dedup check and the write, so two parallel tool calls could both pass the check and both create. Nothing downstream would catch it: the version-checked retry guards updates to an item that already exists, and two `create_items()` POSTs yield two new keys with no version to conflict on. Adds by DOI, ISBN, URL and arXiv ID now take a short-lived lock keyed on the *normalized* identifier — so ISBN-10 and ISBN-13 of one book, or a bare DOI and its doi.org URL, take the same lock — held across a re-check and the create only, never across third-party network work. An identifier that cannot be normalized takes no lock rather than sharing one, so a batch of junk tokens cannot serialize itself. This is in-process: it closes one server issuing parallel tool calls, which is the reported case and the normal shape for an agent driving this toolset; two servers against one library still race, and nothing here changes that.
+
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
 
 ### Added

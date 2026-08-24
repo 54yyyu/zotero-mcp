@@ -1,11 +1,13 @@
 """Shared private helpers used across tool modules."""
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import socket
 import tempfile
+import threading
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlparse
 
@@ -907,6 +909,94 @@ def _collection_not_found_message(zot, spec, paths) -> str:
 #: stdlib-only :mod:`zotero_mcp.identifiers` so consumers can import it
 #: without pulling in the tool layer. Existing callers keep working.
 _normalize_doi = normalize_doi
+
+
+# ---------------------------------------------------------------------------
+# Per-identifier serialization of adds (#486)
+#
+# The Zotero API lock exists to protect the single-threaded local API on port
+# 23119. It never promised to make check-then-create atomic; that was a side
+# effect of how wide it used to be. Narrowing it — correctly, to keep CrossRef
+# and page fetches out of a held lock — removed that side effect wherever a
+# fetch now sits between the dedup check and the create, so two callers can
+# both pass the check and both create. The version-checked retry cannot close
+# it: two ``create_items()`` POSTs produce two new keys and no version to
+# conflict on.
+#
+# These locks are keyed on the *normalized* identifier, so ISBN-10 and ISBN-13
+# of one book take the same lock, and held across a re-check and the create
+# only — never across third-party network work, which is the whole point of
+# the narrowing.
+#
+# IN-PROCESS ONLY, and worth saying plainly: this serializes parallel tool
+# calls within one server, which is the reported case. Two servers against one
+# library still race, and nothing here changes that.
+# ---------------------------------------------------------------------------
+
+#: key -> [lock, waiter_count]. Entries are dropped once the last holder
+#: leaves, so a long indexing run does not accumulate one lock per identifier
+#: it has ever seen.
+_identifier_locks = {}
+_identifier_locks_guard = threading.Lock()
+
+
+def identifier_lock_key(kind, raw):
+    """Canonical lock key for an identifier, or ``None`` if it has none.
+
+    ``None`` means "take no lock": an identifier that cannot be normalized
+    cannot dedup-match anything either, so serializing on it buys nothing and
+    would make a batch of junk tokens queue behind each other. Kinds are part
+    of the key so a DOI and a URL that happen to stringify alike stay apart.
+    """
+    if raw is None:
+        return None
+    if kind == "doi":
+        normalized = normalize_doi(raw)
+    elif kind == "isbn":
+        normalized = _normalize_isbn(raw)
+    elif kind == "arxiv":
+        normalized = _normalize_arxiv_id(raw)
+    elif kind == "url":
+        # URLs have no normalizer, so this is exact-after-strip, matching what
+        # #443 settled on for collapsing repeats. Deliberately no case or
+        # trailing-slash folding: either can be a genuinely different page.
+        normalized = str(raw).strip() or None
+    else:
+        raise ValueError(f"unknown identifier kind {kind!r}")
+    return None if normalized is None else f"{kind}:{normalized}"
+
+
+@contextlib.contextmanager
+def identifier_lock(kind, raw):
+    """Serialize check-then-create for one identifier within this process.
+
+    Yields the lock key, or ``None`` when the identifier is unnormalizable and
+    no lock was taken. Re-entrant, because the add paths call into helpers
+    that may take the same identifier again — a plain ``Lock`` there would
+    wedge the process rather than fail loudly.
+    """
+    key = identifier_lock_key(kind, raw)
+    if key is None:
+        yield None
+        return
+
+    with _identifier_locks_guard:
+        entry = _identifier_locks.get(key)
+        if entry is None:
+            entry = _identifier_locks[key] = [threading.RLock(), 0]
+        entry[1] += 1
+
+    entry[0].acquire()
+    try:
+        yield key
+    finally:
+        entry[0].release()
+        with _identifier_locks_guard:
+            entry[1] -= 1
+            if entry[1] == 0:
+                # Only drop it if nobody re-created it in the meantime.
+                if _identifier_locks.get(key) is entry:
+                    del _identifier_locks[key]
 
 
 def _normalize_isbn(raw):
