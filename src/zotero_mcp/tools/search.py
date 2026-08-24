@@ -711,7 +711,7 @@ def search_by_citation_key(
 )
 @with_zotero_api_lock
 def advanced_search(
-    conditions: list[dict[str, str]],
+    conditions: list[dict[str, str]] | str,
     join_mode: Literal["all", "any"] = "all",
     sort_by: str | None = None,
     sort_direction: Literal["asc", "desc"] = "asc",
@@ -744,6 +744,13 @@ def advanced_search(
         Markdown-formatted search results
     """
     try:
+        # `| str` on the annotation is load-bearing, not documentation. Pydantic
+        # validates against the published schema before this body runs, so with
+        # `list[dict[str, str]]` alone a client that stringifies untyped
+        # arguments was rejected at the boundary and this branch was dead code
+        # — while the tool's own description promised "also accepts a JSON
+        # string". Same failure as #459's `rect`, found by sweeping every tool
+        # for list/dict params without string tolerance.
         if isinstance(conditions, str):
             try:
                 conditions = json.loads(conditions)

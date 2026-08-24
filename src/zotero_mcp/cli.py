@@ -421,16 +421,21 @@ def main():
     # Agent skill installation
     skill_parser = subparsers.add_parser(
         "install-skill",
-        help="Install the packaged zotero-cli agent skill into ~/.claude/skills")
+        help="Install the zotero-cli agent skill into whatever agent harness "
+             "is set up here (Claude Code, Cursor, Windsurf, AGENTS.md, Gemini)")
     skill_parser.add_argument(
-        "--scope", choices=["user", "project"], default="user",
-        help="user: ~/.claude/skills (every project). "
-             "project: ./.claude/skills (this repo only). Default: user")
+        "--target", action="append", metavar="NAME",
+        help="Install into this harness instead of auto-detecting. Repeatable. "
+             "One of: claude, claude-user, cursor, windsurf, agents, gemini")
     skill_parser.add_argument(
-        "--path", help="Install into this skills directory instead")
+        "--root", help="Directory to treat as the project root (default: cwd)")
+    skill_parser.add_argument(
+        "--list-targets", action="store_true",
+        help="Show every supported harness and whether it is detected here")
     skill_parser.add_argument(
         "--force", action="store_true",
-        help="Overwrite an existing skill directory. No backup is kept.")
+        help="Overwrite existing files. In a shared instructions file only the "
+             "managed block changes. No backup is kept.")
 
     args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
 
@@ -446,18 +451,35 @@ def main():
         sys.exit(0)
 
     elif args.command == "install-skill":
-        from zotero_mcp.skill_install import install_skill
+        from pathlib import Path as _Path
 
-        installed, message = install_skill(
-            skills_root=args.path, scope=args.scope, force=args.force,
+        from zotero_mcp.skill_install import (
+            TARGETS,
+            detect_targets,
+            format_results,
+            install_skill,
         )
-        print(message, file=sys.stdout if installed else sys.stderr)
-        if installed:
-            print(
-                "\nRestart your agent session to pick it up. It fires when you "
-                "ask about your Zotero library.",
-            )
-        sys.exit(0 if installed else 1)
+
+        root = _Path(args.root) if args.root else _Path.cwd()
+
+        if args.list_targets:
+            detected = set(detect_targets(root))
+            print(f"Agent harnesses, checked against {root}:\n")
+            for name, spec in TARGETS.items():
+                mark = "detected" if name in detected else "-"
+                print(f"  {name:<14} {mark:<10} {spec['label']}")
+            print("\nRun `zotero-mcp install-skill` to install into every "
+                  "detected one, or `--target NAME` to choose.")
+            sys.exit(0)
+
+        results = install_skill(
+            targets=args.target, root=root, force=args.force,
+        )
+        message = format_results(results, root)
+        failed = [r for r in results if r.status in ("error", "skipped")]
+        print(message, file=sys.stderr if (failed and not any(r.ok for r in results))
+              else sys.stdout)
+        sys.exit(1 if (failed and not any(r.ok for r in results)) else 0)
 
     elif args.command == "schema-refresh":
         from zotero_mcp import schema

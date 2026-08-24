@@ -72,7 +72,29 @@
 ### ⌨️ Standalone CLI (`zotero-cli`)
 - Search, browse, and edit your library directly from the terminal — no AI assistant required
 - Ideal for scripting, automation, and quick lookups
-- Short aliases (`s`, `g`, `ann`, `coll`) for interactive use
+- `--json` on every command for pipelines and agents; short aliases (`s`, `g`, `ann`, `coll`) for interactive use
+
+### 🪶 Agent skill — the same library for ~1% of the context
+
+If your agent has shell access (Claude Code, Cursor, Codex, Windsurf, Gemini CLI, Amp, OpenCode …), one command teaches it to drive `zotero-cli` directly:
+
+```bash
+zotero-mcp install-skill
+```
+
+It detects the harnesses in your project and installs to each — no flags, no per-tool instructions to look up.
+
+Why it matters: an MCP server sends **every tool's schema on every request**, before you type anything. The skill sits at 98 tokens until the agent decides it is relevant.
+
+| Route | In context | Paid |
+|---|---:|---|
+| MCP server, default profile (38 tools) | **13,448** | every request |
+| Agent skill, frontmatter only | **98** | always |
+| Agent skill, body loaded | 1,368 | when it fires |
+
+~137x cheaper before either is used, ~10x once the skill has fired. Re-measure any time with `python scripts/measure_context_cost.py`. This is the fixed context cost only — it does not measure task success or round trips, and a cheaper surface that gets the answer wrong is not cheaper. [Details below](#-agent-skill-one-command-for-any-harness).
+
+Both routes work, and they share one config. Use the MCP server when your client speaks MCP but has no shell (Claude Desktop, ChatGPT); use the skill when it has a shell.
 
 ## 🚀 Quick Install
 
@@ -558,16 +580,34 @@ The MCP server sends every enabled tool's name, description and JSON parameter s
 
 That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the relationship stops holding.
 
-### Agent skill
-
-If you drive Zotero from an agent with shell access, install the packaged skill so it knows how to use the CLI:
+### 🪶 Agent skill: one command for any harness
 
 ```bash
-zotero-mcp install-skill                 # -> ~/.claude/skills/zotero-cli
-zotero-mcp install-skill --scope project # -> ./.claude/skills/zotero-cli
+zotero-mcp install-skill
 ```
 
-It teaches the find-keys-then-act loop, `--json`, how to pick a search mode, paging, and when an empty result means "not indexed" rather than "not there". Installing over a skill you have edited is refused unless you pass `--force`.
+Run it in your project. It detects which agent harnesses are set up there and installs to each one, in that harness's own format:
+
+| Harness | Detected by | Installs |
+|---|---|---|
+| Claude Code (project) | `.claude/` | `.claude/skills/zotero-cli/` |
+| Claude Code (user) | `~/.claude/` | `~/.claude/skills/zotero-cli/` |
+| Cursor | `.cursor/` | `.cursor/rules/zotero-cli.mdc` |
+| Windsurf | `.windsurf/` | `.windsurf/rules/zotero-cli.md` |
+| Codex, Amp, OpenCode, Jules … | `AGENTS.md` | a pointer block in `AGENTS.md` |
+| Gemini CLI | `GEMINI.md` or `.gemini/` | a pointer block in `GEMINI.md` |
+
+```bash
+zotero-mcp install-skill --list-targets      # what is detected here
+zotero-mcp install-skill --target cursor     # install one explicitly
+zotero-mcp install-skill --force             # overwrite an existing copy
+```
+
+**It will not overwrite your work.** A destination that exists and differs is reported, not replaced, unless you pass `--force`. For shared instruction files it is stricter: only the text between the `zotero-cli` markers is ever managed, so the rest of your `AGENTS.md` is untouchable by construction — re-running updates that block in place rather than appending a second one.
+
+**It keeps the context advantage.** Shared instruction files get a short pointer block, not the whole skill; the body lands beside it and the agent opens it only when it decides Zotero is relevant. Pasting 1,400 tokens into every agent's always-loaded context would spend exactly the advantage this exists for.
+
+The skill teaches the find-keys-then-act loop, `--json`, how to pick among the six search modes, paging, reading a PDF by outline-then-page-range rather than whole, and when an empty result means "the index is not built" rather than "you have no papers on that".
 
 ### Machine-readable output (`--json`)
 
