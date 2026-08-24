@@ -304,3 +304,83 @@ def test_create_annotation_rect_still_validates_geometry(monkeypatch):
     )
 
     assert "Rectangle must fit within the page width" in result
+
+
+def test_create_annotation_rect_accepts_stringified_json(monkeypatch, fake_zot):
+    """MCP clients that stringify untyped params send rect as a JSON string.
+
+    The sibling ``tags`` parameter on this same tool already tolerates this
+    (see ``_helpers._normalize_str_list_input``); rect must too.
+    """
+    fake_zot._items = [_pdf_attachment()]
+
+    monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: None)
+    monkeypatch.setattr("zotero_mcp.client.get_active_library", lambda: None)
+    _patch_fitz(monkeypatch, [FakePage(width=600, height=800, label="7")])
+
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        rect="[0.1, 0.2, 0.3, 0.4]",
+        comment="Figure detail",
+        ctx=DummyContext(),
+    )
+
+    assert "Successfully created area annotation" in result
+    created = fake_zot.created[0]
+    assert json.loads(created["annotationPosition"]) == {
+        "pageIndex": 0,
+        "rects": [[60.0, 320.0, 240.0, 640.0]],
+    }
+
+
+def test_create_annotation_rect_rejects_malformed_json_string():
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        rect="[0.1, 0.2, 0.3]",
+        ctx=DummyContext(),
+    )
+
+    assert "exactly four numbers" in result
+
+
+def test_create_annotation_rect_rejects_non_json_string():
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        rect="not json at all",
+        ctx=DummyContext(),
+    )
+
+    assert "exactly four numbers" in result
+
+
+def test_create_annotation_rect_rejects_non_list_json_string():
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        rect='{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4}',
+        ctx=DummyContext(),
+    )
+
+    assert "exactly four numbers" in result
+
+
+def test_create_annotation_rect_rejects_non_numeric_entries():
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01",
+        page=1,
+        rect='["a", "b", "c", "d"]',
+        ctx=DummyContext(),
+    )
+
+    assert "exactly four numbers" in result
+
+
+def test_normalize_float_list_input_rejects_unsupported_type():
+    from zotero_mcp.tools._helpers import _normalize_float_list_input
+
+    assert _normalize_float_list_input(42, 4, "rect") is None
+    assert _normalize_float_list_input(None, 4, "rect") is None

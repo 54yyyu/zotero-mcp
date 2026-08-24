@@ -366,6 +366,37 @@ def _parse_library_id_param(value: int | str | None) -> int | None:
     return int(value)
 
 
+def _normalize_float_list_input(value, length, field_name="value"):
+    """Normalize a fixed-length numeric list that MCP clients may stringify.
+
+    Mirrors ``_normalize_str_list_input``: some MCP transports stringify
+    untyped/loosely-typed arguments before dispatch, so a client-side
+    ``[x, y, w, h]`` list can arrive here as the JSON text ``"[x, y, w, h]"``
+    instead. Returns ``None`` (never raises) when ``value`` is not a JSON
+    array of exactly ``length`` numbers, so callers keep their own
+    user-facing error message for the invalid-shape case.
+    """
+    if isinstance(value, (list, tuple)):
+        candidate = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, list):
+            return None
+        candidate = parsed
+    else:
+        return None
+
+    if len(candidate) != length:
+        return None
+    try:
+        return [float(v) for v in candidate]
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_str_list_input(value, field_name="value"):
     """Normalize list-like user input into a list of non-empty strings."""
     if value is None:
