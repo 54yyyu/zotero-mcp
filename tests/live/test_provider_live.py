@@ -32,16 +32,24 @@ from zotero_mcp.embeddings.registry import create_embedding_function  # noqa: E4
 
 DOCS = ["alpha short text", "beta short text", "gamma short text", "delta short text", "epsilon short text"]
 
+# Output dimensions for models whose size is fixed and published. A model that
+# is not listed simply skips the dimension assertion rather than failing, so a
+# new or custom model does not break the suite.
+KNOWN_DIMS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+    "gemini-embedding-001": 3072,
+}
+
 
 class _ProviderLiveTests:
     """Shared test bodies for a provider, parametrized by class attribute
-    ``PROVIDER``. Subclasses set ``PROVIDER`` and (optionally) a fixed
-    ``EXPECTED_DIM``; when ``EXPECTED_DIM`` is None the dim is derived from
-    the first live call instead of hardcoded.
+    ``PROVIDER``. Subclasses set ``PROVIDER``; the expected output dimension
+    comes from ``KNOWN_DIMS`` keyed on the configured model name.
     """
 
     PROVIDER: str
-    EXPECTED_DIM: int | None = None
 
     @pytest.fixture
     def production_config(self, configured_provider):
@@ -56,8 +64,13 @@ class _ProviderLiveTests:
         ef = self._build_ef(production_config)
         vec = ef.embed_query("live provider smoke test query")
         assert len(vec) > 0
-        if self.EXPECTED_DIM is not None:
-            assert len(vec) == self.EXPECTED_DIM
+        # Keyed to the model actually configured, not to whichever one the
+        # author happened to run: these tests exist to exercise *this*
+        # machine's config, so hardcoding one model's dim makes the test fail
+        # for anyone configured differently.
+        expected = KNOWN_DIMS.get(production_config.get("model_name"))
+        if expected is not None:
+            assert len(vec) == expected
         # A second call must be consistent in dimensionality.
         vec2 = ef.embed_query("a different short probe")
         assert len(vec2) == len(vec)
@@ -102,9 +115,7 @@ class _ProviderLiveTests:
 
 class TestOpenAILive(_ProviderLiveTests):
     PROVIDER = "openai"
-    EXPECTED_DIM = 1536  # text-embedding-3-small
 
 
 class TestGeminiLive(_ProviderLiveTests):
     PROVIDER = "gemini"
-    EXPECTED_DIM = None  # derive from the live call; model/dim isn't pinned here
