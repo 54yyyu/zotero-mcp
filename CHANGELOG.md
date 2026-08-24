@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Windows: every tool call stalled until the client timed out (#485).** `_sync_semantic_update` imported `zotero_mcp.semantic_search` — and through it ChromaDB and numpy — at the top of the function, above the config check that a comment in the same function described as guarding it. The import therefore ran on every server startup regardless of configuration, inside the worker thread the lifespan spawns, and on Windows it wedged the process: `initialize` and `tools/list` answered, `tools/call` never returned, and clients gave up after ~120s. The due-check now lives in a new `zotero_mcp.update_policy` module that imports nothing beyond the standard library, so a server with no update due never loads ChromaDB at all. Measured on the early-return paths: about 590ms and a full chromadb + numpy import before, under a millisecond and neither module after. `should_update`, `load_update_config` and `_DEFAULT_UPDATE_CONFIG` are re-exported from `zotero_mcp.semantic_search`, so existing imports are unaffected.
+
+  The check is also now the complete one rather than just `auto_update`: a config with `auto_update: true` and `update_frequency: "manual"`, or an interval that is not yet due, no longer pays for the import either.
+
+### Changed
+- `tests/test_issue_455_toc_stdout_pollution.py` injects its stdout pollution through `sitecustomize` instead of `usercustomize`. `site.main()` runs `execsitecustomize()` unconditionally but gates `execusercustomize()` on `ENABLE_USER_SITE`, which every venv sets to False, so the test failed its own precondition — and therefore the whole test — for anyone running the suite from a venv rather than a system or conda interpreter. Several contributors reported it as a pre-existing failure on `main`. It now works there, and skips with a stated reason on any interpreter where the hook does not fire, rather than failing.
+
 ## [0.10.0] - 2026-08-23
 
 **Upgrading:** no breaking changes. `zotero-cli`'s default output is unchanged — `--json` is opt-in. The pyzotero floor moves to 1.13.5, which pip resolves on upgrade.
