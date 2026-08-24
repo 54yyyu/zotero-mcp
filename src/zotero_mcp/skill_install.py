@@ -123,6 +123,21 @@ def _describe_difference(src: Path, dst: Path) -> list[str]:
     return changed
 
 
+def _display_path(path: Path, root: Path) -> str:
+    """A path as it should appear inside a markdown document.
+
+    Always forward slashes. ``Path.relative_to`` hands back an OS-native path,
+    so on Windows this text would otherwise read
+    ``.agents\\skills\\zotero-cli\\SKILL.md`` — wrong for a markdown
+    document, and a backslash is an escape character in enough contexts that
+    an agent can misread the path it is told to open.
+    """
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def _skill_body(*, reference_path: Path, root: Path) -> str:
     """The SKILL.md body, with its pointer to the command reference resolved.
 
@@ -134,13 +149,9 @@ def _skill_body(*, reference_path: Path, root: Path) -> str:
     src = (packaged_skill_dir() / "SKILL.md").read_text(encoding="utf-8")
     parts = src.split("---", 2)
     body = parts[2].lstrip("\n") if len(parts) > 2 else src
-    try:
-        rel = reference_path.relative_to(root)
-    except ValueError:
-        rel = reference_path
     return body.replace(
         "`reference.md` in this skill directory",
-        f"`{rel}`",
+        f"`{_display_path(reference_path, root)}`",
     )
 
 
@@ -151,10 +162,7 @@ def _pointer_block(skill_path: Path, root: Path) -> str:
     every turn of every conversation, so it says only what is needed to decide
     whether to open the real thing.
     """
-    try:
-        rel = skill_path.relative_to(root)
-    except ValueError:
-        rel = skill_path
+    rel = _display_path(skill_path, root)
     return "\n".join([
         BLOCK_BEGIN,
         "",

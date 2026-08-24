@@ -111,6 +111,50 @@ class TestDetection:
         assert "claude-user" in detect_targets(project)
 
 
+class TestRenderedPaths:
+    """Paths written into markdown are POSIX-style on every platform.
+
+    `Path.relative_to` returns an OS-native path, so on Windows the pointer
+    block read `.agents\\skills\\zotero-cli\\SKILL.md`. Wrong for a markdown
+    document, and a backslash is an escape character in enough contexts that
+    an agent can misread the file it is told to open. Caught by the Windows
+    CI runner; these use pure-Windows path semantics so they fail on any
+    platform rather than only there.
+    """
+
+    def test_display_path_uses_forward_slashes_under_windows_semantics(self):
+        from pathlib import PureWindowsPath
+
+        from zotero_mcp.skill_install import _display_path
+
+        root = PureWindowsPath(r"C:\Users\me\project")
+        target = root / ".agents" / "skills" / SKILL_NAME / "SKILL.md"
+
+        rendered = _display_path(target, root)
+
+        assert rendered == ".agents/skills/zotero-cli/SKILL.md"
+        assert "\\" not in rendered
+
+    def test_display_path_falls_back_when_not_under_root(self):
+        from pathlib import PureWindowsPath
+
+        from zotero_mcp.skill_install import _display_path
+
+        target = PureWindowsPath(r"D:\elsewhere\SKILL.md")
+        rendered = _display_path(target, PureWindowsPath(r"C:\project"))
+
+        assert rendered == "D:/elsewhere/SKILL.md"
+
+    def test_no_backslash_paths_reach_a_written_document(self, project):
+        install_skill(["agents", "cursor"], root=project)
+
+        for path in (project / "AGENTS.md",
+                     project / ".cursor" / "rules" / "zotero-cli.mdc"):
+            text = path.read_text(encoding="utf-8")
+            assert "\\skills\\" not in text
+            assert ".agents/skills/" in text
+
+
 class TestClaude:
     def test_installs_a_self_contained_skill_directory(self, project):
         (project / ".claude").mkdir()
