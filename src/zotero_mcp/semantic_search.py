@@ -3763,8 +3763,9 @@ class ZoteroSemanticSearch:
         if client is None:
             result["_enrich_error"] = RuntimeError(
                 f"item belongs to library {group_id}, which cannot be "
-                "reached — no local Zotero database, and no ZOTERO_API_KEY "
-                "to open that library over the web API"
+                "reached from this configuration — no local Zotero "
+                "database, and the web API needs ZOTERO_API_KEY plus, for "
+                "the personal library, a user-scoped ZOTERO_LIBRARY_ID"
             )
             return
         try:
@@ -3796,7 +3797,14 @@ class ZoteroSemanticSearch:
         local = is_local_mode()
         api_key = os.getenv("ZOTERO_API_KEY")
         if group_id == PERSONAL_LIBRARY_GROUP_ID:
-            library_id = os.getenv("ZOTERO_LIBRARY_ID") or ("0" if local else None)
+            if not local and os.getenv("ZOTERO_LIBRARY_TYPE", "user") == "group":
+                # Group-primary configuration: ZOTERO_LIBRARY_ID names a
+                # group, so the personal user ID is unknowable here. A
+                # client built from it would ask the wrong library and 404
+                # misleadingly; better no client and the explicit message.
+                library_id = None
+            else:
+                library_id = os.getenv("ZOTERO_LIBRARY_ID") or ("0" if local else None)
             library_type = "user"
         else:
             library_id, library_type = str(group_id), "group"

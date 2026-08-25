@@ -738,6 +738,31 @@ def test_foreign_hit_credentials_cannot_see_the_group_names_the_library(monkeypa
     assert str(GROUP_ID) in enriched[0]["error"]
 
 
+def test_group_primary_web_config_never_builds_a_wrong_personal_client(monkeypatch):
+    """A group-primary web config (ZOTERO_LIBRARY_TYPE=group) stores a
+    groupID in ZOTERO_LIBRARY_ID, so the personal user ID is unknowable. A
+    personal-library hit must get the explicit unreachable message, not a
+    client built for users/<groupID> whose 404 would blame the wrong
+    library."""
+    def _exploding_scoped_client(*a):
+        raise AssertionError("no client must be constructed here")
+
+    monkeypatch.setenv("ZOTERO_API_KEY", "test-key")
+    monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "group")
+    monkeypatch.setenv("ZOTERO_LIBRARY_ID", str(GROUP_ID))
+    monkeypatch.setattr(semantic_search, "_new_scoped_client", _exploding_scoped_client)
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(),
+        # Bound client is the group; a personal (group_id=0) hit is foreign.
+        get_zotero_client_fn=lambda: _ScopedZot("group", str(GROUP_ID), {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("PERSKEY1", 0), "quantum")
+
+    assert "library 0" in enriched[0]["error"]
+    assert "zotero_item" not in enriched[0]
+
+
 def test_scoped_client_is_built_once_per_library(monkeypatch):
     """Ten hits from one group must not cost ten client constructions, and an
     unreachable library must fail once for the batch, not once per hit."""
