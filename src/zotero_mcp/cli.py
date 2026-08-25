@@ -149,6 +149,61 @@ def _semantic_config_path(path_arg: str | None) -> Path:
     return Path(path_arg) if path_arg else Path.home() / ".config" / "zotero-mcp" / "config.json"
 
 
+def _should_preimport_semantic(platform: str, config_path: str) -> bool:
+    """The gate for the pre-import below, as a pure function of its inputs.
+
+    Split out from the action so it is testable on any host: deciding for
+    ``win32`` cannot be checked by faking ``sys.platform``, since a spoofed
+    platform sends asyncio looking for ``_overlapped`` and the import fails
+    for an unrelated reason.
+    """
+    if platform != "win32":
+        return False
+    try:
+        from zotero_mcp.config_light import semantic_search_configured
+
+        return semantic_search_configured(config_path)
+    except Exception:
+        return False
+
+
+def _preimport_semantic_search_on_main_thread() -> None:
+    """Load ChromaDB here rather than let an AnyIO worker thread do it (#485).
+
+    On Windows, importing ``chromadb`` -> ``numpy`` inside the worker thread
+    that serves a tool call wedges the process. py-spy shows one thread stuck
+    in ``numpy._core.multiarray`` ``create_module`` — a native DLL load — with
+    the main thread idle in the proactor loop and zero lock contention. The
+    identical import on the main thread takes about two seconds, every time.
+
+    Confirmed on two independent Windows 11 machines by @w-clary and
+    @llrllr0123 (#485), and neither could reduce it below the full server
+    process: a plain ``threading.Thread`` and ``anyio.to_thread.run_sync``
+    under a proactor loop both fail to reproduce it. So this is a mitigation
+    with measurements behind it, not a root-cause fix, and it is written to be
+    easy to delete if the real cause turns up.
+
+    Two gates, both deliberate:
+
+    - **Windows only.** Nothing else has shown the stall, and pre-importing
+      unconditionally would cost every macOS and Linux user a couple of
+      seconds of startup for no benefit.
+    - **Only where semantic search is configured.** The other two #485 fixes
+      exist to stop installs that never use it from loading ChromaDB at all,
+      and this must not quietly undo that.
+
+    Runs before ``_warmup_reranker_in_background`` on purpose: the warmup
+    thread imports the same module, and letting it get there first would put
+    the import back on a worker thread.
+    """
+    if not _should_preimport_semantic(sys.platform, str(_semantic_config_path(None))):
+        return
+    try:
+        import zotero_mcp.semantic_search  # noqa: F401
+    except Exception:
+        pass  # best-effort: a failed pre-import must not stop the server
+
+
 def _warmup_reranker_in_background() -> None:
     """Preload the reranker (if enabled) off the request path — see issue #283.
 
@@ -1119,6 +1174,9 @@ def main():
         # semantic search doesn't pay the ~tens-of-seconds model load inside the
         # request path and time out (issue #283). Daemon thread: never blocks
         # startup, never crashes the server if loading fails.
+        # Windows only: get the ChromaDB import onto the main thread before any
+        # worker thread can attempt it (#485). Must precede the warmup thread.
+        _preimport_semantic_search_on_main_thread()
         _warmup_reranker_in_background()
         if transport == "stdio":
             mcp.run(transport="stdio")

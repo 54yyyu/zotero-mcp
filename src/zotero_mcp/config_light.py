@@ -119,3 +119,20 @@ def reranker_enabled(config_path: str | None) -> bool:
     apply it *before* importing ``semantic_search`` rather than after (#485).
     """
     return bool(load_reranker_config(config_path).get("enabled", False))
+
+
+def semantic_search_configured(config_path: str | None) -> bool:
+    """Whether this install has semantic search set up at all.
+
+    ``zotero-mcp setup --skip-semantic-search`` writes no ``semantic_search``
+    block, and those installs should never pay for ChromaDB — which is the
+    whole point of the gates above. Used to decide whether the Windows
+    main-thread pre-import in ``cli.serve`` applies (#485).
+    """
+    if not config_path or not os.path.exists(config_path):
+        return False
+    try:
+        with open(config_path) as f:
+            return bool(json.load(f).get("semantic_search"))
+    except Exception:
+        return False

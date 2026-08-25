@@ -172,3 +172,72 @@ def test_config_light_answers_the_reranker_gate_on_its_own():
     from zotero_mcp.config_light import reranker_enabled
 
     assert reranker_enabled(None) is False
+
+
+_CONFIGURED = '{"semantic_search": {"embedding_model": "default"}}'
+
+
+@pytest.mark.parametrize(
+    "label,raw_config,platform,expected",
+    [
+        # The mitigation applies only where the stall was observed...
+        ("windows, configured", _CONFIGURED, "win32", True),
+        # ...and must not undo the other two #485 fixes for anyone else.
+        ("windows, not configured", '{"semantic_search": {}}', "win32", False),
+        ("windows, no config file", None, "win32", False),
+        ("windows, unparseable config", "{not json", "win32", False),
+        ("macos, configured", _CONFIGURED, "darwin", False),
+        ("linux, configured", _CONFIGURED, "linux", False),
+    ],
+)
+def test_main_thread_preimport_is_gated(tmp_path, label, raw_config, platform, expected):
+    """Pre-import ChromaDB on Windows with semantic configured, nowhere else.
+
+    Importing chromadb inside the AnyIO worker thread that serves a tool call
+    wedges the process on Windows (#485), confirmed on two machines; the same
+    import on the main thread takes ~2s. Doing it unconditionally would put
+    the ChromaDB cost back on every install, which is exactly what the other
+    two fixes in this issue removed.
+
+    The predicate is tested rather than the import: faking ``sys.platform`` to
+    exercise the Windows branch on a Mac makes asyncio look for
+    ``_overlapped`` and fail for a reason that has nothing to do with #485.
+    The real end-to-end path is covered by the test below, which runs on
+    whatever host it finds — including the Windows CI job.
+    """
+    from zotero_mcp.cli import _should_preimport_semantic
+
+    config_path = tmp_path / "config.json"
+    if raw_config is not None:
+        config_path.write_text(raw_config)
+
+    assert _should_preimport_semantic(platform, str(config_path)) is expected, label
+
+
+def test_preimport_matches_its_own_gate_on_this_host(tmp_path):
+    """End-to-end on the real platform, whatever that is.
+
+    Asserts the action agrees with the predicate rather than hardcoding an
+    outcome, so it is meaningful on the Windows runner and on the others.
+    """
+    import json as _json
+    import subprocess as _sub
+
+    home = tmp_path / "home"
+    (home / ".config" / "zotero-mcp").mkdir(parents=True)
+    (home / ".config" / "zotero-mcp" / "config.json").write_text(_CONFIGURED)
+
+    code = (
+        "import json, pathlib, sys\n"
+        f"sys.path.insert(0, {SRC!r})\n"
+        f"pathlib.Path.home = staticmethod(lambda: pathlib.Path({str(home)!r}))\n"
+        "from zotero_mcp.cli import (_preimport_semantic_search_on_main_thread,\n"
+        "                            _should_preimport_semantic, _semantic_config_path)\n"
+        "want = _should_preimport_semantic(sys.platform, str(_semantic_config_path(None)))\n"
+        "_preimport_semantic_search_on_main_thread()\n"
+        "print(json.dumps({'want': want, 'got': 'chromadb' in sys.modules}))\n"
+    )
+    proc = _sub.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    out = _json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["got"] is out["want"], out
