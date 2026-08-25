@@ -675,8 +675,40 @@ def test_same_library_hit_still_uses_the_zotero_client(monkeypatch):
     assert reader.asked_for == []
 
 
-def test_foreign_hit_without_a_local_db_keeps_reporting_the_error(monkeypatch):
-    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
+def test_foreign_hit_web_mode_is_served_by_a_client_scoped_to_its_library(monkeypatch):
+    """Web-API mode has no zotero.sqlite, so before #492 a group hit was a
+    dead end: the bound client 404'd and there was no fallback at all. A
+    client scoped to the hit's own library serves it."""
+    group_item = {
+        "key": "GRPKEY01",
+        "library": {"id": GROUP_ID, "type": "group", "name": "Test Group"},
+        "data": {"itemType": "journalArticle", "title": "Group Paper"},
+    }
+    built = []
+
+    def _fake_scoped_client(library_id, library_type, api_key, local):
+        built.append((library_id, library_type, api_key, local))
+        return _ScopedZot(library_type, library_id, {"GRPKEY01": group_item})
+
+    monkeypatch.setenv("ZOTERO_API_KEY", "test-key")
+    monkeypatch.setattr(semantic_search, "_new_scoped_client", _fake_scoped_client)
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(),
+        get_zotero_client_fn=lambda: _ScopedZot("user", "14786213", {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("GRPKEY01", GROUP_ID), "quantum")
+
+    assert "error" not in enriched[0]
+    assert enriched[0]["zotero_item"]["data"]["title"] == "Group Paper"
+    assert built == [(str(GROUP_ID), "group", "test-key", False)]
+
+
+def test_foreign_hit_web_mode_without_credentials_names_the_library(monkeypatch):
+    """No local database and no API key means the hit genuinely cannot be
+    served — but the error must say which library holds the item and what is
+    missing, not surface as a 404 from a library that never had it."""
+    monkeypatch.delenv("ZOTERO_API_KEY", raising=False)
     search = _build_search(
         monkeypatch, _FakeChromaClient(),
         get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
@@ -684,7 +716,110 @@ def test_foreign_hit_without_a_local_db_keeps_reporting_the_error(monkeypatch):
 
     enriched = search._enrich_search_results(_chroma_hit("GRPKEY01", GROUP_ID), "quantum")
 
-    assert "error" in enriched[0]
+    assert str(GROUP_ID) in enriched[0]["error"]
+    assert "ZOTERO_API_KEY" in enriched[0]["error"]
+
+
+def test_foreign_hit_credentials_cannot_see_the_group_names_the_library(monkeypatch):
+    """A key that cannot read the group must produce an error naming the
+    library, per #492 — the silent 404 is exactly the failure being removed."""
+    monkeypatch.setenv("ZOTERO_API_KEY", "test-key")
+    monkeypatch.setattr(
+        semantic_search, "_new_scoped_client",
+        lambda *a: _ScopedZot("group", str(GROUP_ID), {}),  # key not visible
+    )
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(),
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("GRPKEY01", GROUP_ID), "quantum")
+
+    assert str(GROUP_ID) in enriched[0]["error"]
+
+
+def test_group_primary_web_config_never_builds_a_wrong_personal_client(monkeypatch):
+    """A group-primary web config (ZOTERO_LIBRARY_TYPE=group) stores a
+    groupID in ZOTERO_LIBRARY_ID, so the personal user ID is unknowable. A
+    personal-library hit must get the explicit unreachable message, not a
+    client built for users/<groupID> whose 404 would blame the wrong
+    library."""
+    def _exploding_scoped_client(*a):
+        raise AssertionError("no client must be constructed here")
+
+    monkeypatch.setenv("ZOTERO_API_KEY", "test-key")
+    monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "group")
+    monkeypatch.setenv("ZOTERO_LIBRARY_ID", str(GROUP_ID))
+    monkeypatch.setattr(semantic_search, "_new_scoped_client", _exploding_scoped_client)
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(),
+        # Bound client is the group; a personal (group_id=0) hit is foreign.
+        get_zotero_client_fn=lambda: _ScopedZot("group", str(GROUP_ID), {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("PERSKEY1", 0), "quantum")
+
+    assert "library 0" in enriched[0]["error"]
+    assert "zotero_item" not in enriched[0]
+
+
+def test_scoped_client_is_built_once_per_library(monkeypatch):
+    """Ten hits from one group must not cost ten client constructions, and an
+    unreachable library must fail once for the batch, not once per hit."""
+    items = {
+        f"GRPKEY0{n}": {"key": f"GRPKEY0{n}", "data": {"title": f"Paper {n}"}}
+        for n in (1, 2)
+    }
+    built = []
+
+    def _fake_scoped_client(library_id, library_type, api_key, local):
+        built.append(library_id)
+        return _ScopedZot(library_type, library_id, items)
+
+    monkeypatch.setenv("ZOTERO_API_KEY", "test-key")
+    monkeypatch.setattr(semantic_search, "_new_scoped_client", _fake_scoped_client)
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(),
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
+    )
+
+    two_hits = {
+        "ids": [["GRPKEY01", "GRPKEY02"]],
+        "documents": [["passage one", "passage two"]],
+        "metadatas": [[{"group_id": GROUP_ID}, {"group_id": GROUP_ID}]],
+        "distances": [[0.1, 0.2]],
+    }
+    enriched = search._enrich_search_results(two_hits, "quantum")
+
+    assert [r["zotero_item"]["data"]["title"] for r in enriched] == ["Paper 1", "Paper 2"]
+    assert built == [str(GROUP_ID)]
+
+
+def test_local_mode_scoped_client_is_the_last_resort_after_the_local_db(monkeypatch):
+    """In local mode the batched sqlite path stays first (#487) — the scoped
+    client only steps in for a foreign key the snapshot could not serve."""
+    group_item = {"key": "GRPKEY01", "data": {"title": "Newer Than Snapshot"}}
+    reader = _FakeReader({})  # sqlite predates the item
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: reader)
+    built = []
+
+    def _fake_scoped_client(library_id, library_type, api_key, local):
+        built.append((library_id, library_type, local))
+        return _ScopedZot(library_type, library_id, {"GRPKEY01": group_item})
+
+    monkeypatch.setattr(semantic_search, "_new_scoped_client", _fake_scoped_client)
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(), is_local=True,
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("GRPKEY01", GROUP_ID), "quantum")
+
+    assert "error" not in enriched[0]
+    assert enriched[0]["zotero_item"]["data"]["title"] == "Newer Than Snapshot"
+    assert reader.asked_for == [["GRPKEY01"]]
+    assert built == [(str(GROUP_ID), "group", True)]
 
 
 def test_untagged_hit_the_client_cannot_serve_falls_back_to_the_local_db(monkeypatch):
