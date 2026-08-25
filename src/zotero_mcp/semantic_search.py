@@ -31,9 +31,6 @@ except Exception:
 from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_active_group_id, get_zotero_client
-from .embeddings.registry import batch_capable_providers
-from .extract import PAGE_SEPARATOR
-from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 
 # Re-exported so callers keep importing them from here, while the
 # ChromaDB-free definitions stay importable without this module (#485).
@@ -45,6 +42,9 @@ from .config_light import (  # noqa: F401
     reranker_enabled,
     should_update,
 )
+from .embeddings.registry import batch_capable_providers
+from .extract import PAGE_SEPARATOR
+from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
@@ -491,6 +491,18 @@ def get_cached_reranker(model_name: str) -> CrossEncoderReranker:
         return cached
 
 
+def _new_scoped_client(library_id: str, library_type: str, api_key: str | None, local: bool):
+    """Construct a pyzotero client scoped to one library — seam for tests."""
+    from pyzotero import zotero
+
+    return zotero.Zotero(
+        library_id=library_id,
+        library_type=library_type,
+        api_key=api_key,
+        local=local,
+    )
+
+
 class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
@@ -534,6 +546,10 @@ class ZoteroSemanticSearch:
         # Item keys seen by the most recent local sqlite scan (set by
         # _get_items_from_local_db); used to verify watermark promotion.
         self._last_scan_snapshot_keys: set[str] | None = None
+        # Per-library clients for cross-library result enrichment (#492).
+        # Keyed by group_id; None records that a library was found
+        # unreachable so a batch of hits from it fails once, not per item.
+        self._scoped_clients: dict[int, Any] = {}
 
         # Load update configuration
         self.update_config = self._load_update_config()
@@ -3665,6 +3681,12 @@ class ZoteroSemanticSearch:
         from ``zotero.sqlite`` instead, in one batched query, and arrive
         already carrying their ``library`` attribution.
 
+        Where the local database cannot serve a foreign hit — every web-API
+        install, since there is no ``zotero.sqlite`` there — a client scoped
+        to the hit's *own* library is tried instead (#492). Failures on that
+        path name the library and the credential requirement, because the
+        alternative is the silent 404 this exists to remove.
+
         A document whose ``group_id`` is missing cannot be recognised as
         foreign up front — every index built before #396 is untagged, which
         is most of them. Those go to the client first and fall back to the
@@ -3690,6 +3712,14 @@ class ZoteroSemanticSearch:
             item_key = result["item_key"]
             if item_key in local_items:
                 result["zotero_item"] = local_items[item_key]
+                continue
+            if _is_foreign(result):
+                # Local hydration came up empty for a hit known to be
+                # foreign. The bound client cannot serve it — that 404 is
+                # the #492 symptom — so ask a client scoped to the hit's own
+                # library instead. Outside local mode this is the only path
+                # that can serve the hit at all.
+                self._fetch_via_scoped_client(result)
                 continue
             try:
                 result["zotero_item"] = self.zotero_client.item(item_key)
@@ -3717,6 +3747,71 @@ class ZoteroSemanticSearch:
                     f"Error enriching result for item {result['item_key']}: {error}"
                 )
                 result["error"] = f"Could not fetch full item data: {error}"
+
+    def _fetch_via_scoped_client(self, result: dict[str, Any]) -> None:
+        """Hydrate one foreign hit through a client scoped to its library.
+
+        Reached only when ``_hydrate_locally`` could not serve a hit whose
+        ``group_id`` names a library other than the bound client's. Fills in
+        ``zotero_item`` on success; on failure records an ``_enrich_error``
+        that names the library and, where relevant, the credential
+        requirement — a foreign hit must never surface as a bare 404 from a
+        library that was never going to have it.
+        """
+        group_id = int((result.get("metadata") or {})["group_id"])
+        client = self._client_for_group(group_id)
+        if client is None:
+            result["_enrich_error"] = RuntimeError(
+                f"item belongs to library {group_id}, which cannot be "
+                "reached — no local Zotero database, and no ZOTERO_API_KEY "
+                "to open that library over the web API"
+            )
+            return
+        try:
+            result["zotero_item"] = client.item(result["item_key"])
+        except Exception as e:
+            result["_enrich_error"] = RuntimeError(
+                f"item belongs to library {group_id}, and the configured "
+                f"credentials could not read it from there: {e}"
+            )
+
+    def _client_for_group(self, group_id: int):
+        """A pyzotero client scoped to the library ``group_id`` names, or None.
+
+        The per-library complement of ``_hydrate_locally`` (#492): the bound
+        client can only serve its own library, and outside local mode there
+        is no ``zotero.sqlite`` to fall back on, so a foreign hit needs a
+        client of its own. 0 is the personal library; anything else is a
+        Zotero groupID. Cached per id for this instance's lifetime — a search
+        returning ten hits from one group builds one client, and a library
+        found unreachable is recorded as None so it fails once, not per hit.
+
+        In local mode the local API serves group libraries too, so the
+        resolver also acts as a last resort when ``zotero.sqlite`` did not
+        hold a key (e.g. the snapshot predates the item).
+        """
+        if group_id in self._scoped_clients:
+            return self._scoped_clients[group_id]
+
+        local = is_local_mode()
+        api_key = os.getenv("ZOTERO_API_KEY")
+        if group_id == PERSONAL_LIBRARY_GROUP_ID:
+            library_id = os.getenv("ZOTERO_LIBRARY_ID") or ("0" if local else None)
+            library_type = "user"
+        else:
+            library_id, library_type = str(group_id), "group"
+
+        client = None
+        if library_id and (local or api_key):
+            try:
+                client = _new_scoped_client(library_id, library_type, api_key, local)
+            except Exception as e:
+                logger.warning(
+                    f"Cross-library enrichment: could not build a client for "
+                    f"library {group_id}: {e}"
+                )
+        self._scoped_clients[group_id] = client
+        return client
 
     def _hydrate_locally(self, keys: list[str]) -> dict[str, dict]:
         """Hydrate `keys` from zotero.sqlite, or {} if that is not possible."""
