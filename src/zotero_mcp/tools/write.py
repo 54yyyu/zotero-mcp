@@ -4090,17 +4090,14 @@ def get_pdf_outline(
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with zotero_api_lock():
-                zot = _client.get_zotero_client()
+                backend = _library.get_library_backend()
 
                 attachment_key = None
                 filename = "document.pdf"
 
                 # The key may name the PDF attachment itself — attachments have
                 # no children, so the parent scan below would find nothing (#372).
-                try:
-                    item = zot.item(item_key)
-                except Exception:
-                    item = None
+                item = backend.get_item(item_key)
                 data = item.get("data", {}) if isinstance(item, dict) else {}
                 if (
                     data.get("itemType") == "attachment"
@@ -4109,7 +4106,7 @@ def get_pdf_outline(
                     attachment_key = item.get("key") or data.get("key") or item_key
                     filename = data.get("filename") or f"{attachment_key}.pdf"
                 else:
-                    for child in _helpers._paginate(zot.children, item_key):
+                    for child in backend.get_children([item_key]).get(item_key, []):
                         child_data = child.get("data", {})
                         if child_data.get("contentType") == "application/pdf":
                             attachment_key = child["key"]
@@ -4119,26 +4116,33 @@ def get_pdf_outline(
                 if not attachment_key:
                     return f"No PDF attachment found for item `{item_key}`."
 
-                # Download via the multi-source downloader so WebDAV- and
-                # local-storage-backed attachments work, not just Zotero cloud.
-                local_mode = _utils.is_local_mode()
-                download = _client.download_attachment_file(
-                    attachment_key,
-                    tmpdir,
-                    os.path.basename(filename),
-                    local_client=(
-                        zot if local_mode else _client.get_local_zotero_client()
-                    ),
-                    web_client=None if local_mode else zot,
-                )
-                pdf_path = download.path
+                # A file already in Zotero's own storage needs no download at
+                # all — and is the only option with Zotero closed.
+                download_errors: list[str] = []
+                pdf_path = _library.attachment_path_for(attachment_key)
+                if pdf_path is None:
+                    # Otherwise fall back to the multi-source downloader so
+                    # WebDAV- and cloud-backed attachments still work.
+                    zot = _client.get_zotero_client()
+                    local_mode = _utils.is_local_mode()
+                    download = _client.download_attachment_file(
+                        attachment_key,
+                        tmpdir,
+                        os.path.basename(filename),
+                        local_client=(
+                            zot if local_mode else _client.get_local_zotero_client()
+                        ),
+                        web_client=None if local_mode else zot,
+                    )
+                    pdf_path = download.path
+                    download_errors = download.errors
                 if (
                     not pdf_path
                     or not pdf_path.exists()
                     or pdf_path.stat().st_size == 0
                 ):
                     detail = (
-                        f" ({'; '.join(download.errors)})" if download.errors else ""
+                        f" ({'; '.join(download_errors)})" if download_errors else ""
                     )
                     return (
                         f"Could not download PDF for attachment "

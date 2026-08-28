@@ -77,6 +77,13 @@ class LibraryBackend(Protocol):
     def get_related(self, key: str) -> list[dict]: ...
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]: ...
     def top_items(self, *, limit: int = 100) -> list[dict]: ...
+    def list_items(
+        self,
+        item_type: str | None = None,
+        *,
+        limit: int = 100,
+        tag: list[str] | None = None,
+    ) -> list[dict]: ...
 
     # -- collections ------------------------------------------------------
     def list_collections(self, *, include_trashed: bool = False) -> list[dict]: ...
@@ -176,6 +183,22 @@ class SqliteBackend:
         result = self._reader.get_recent_items(limit=limit, group_id=self._group_id)
         if result is None:
             raise UnsupportedByBackend("top-level listing is not available from SQLite")
+        return result
+
+    def list_items(
+        self,
+        item_type: str | None = None,
+        *,
+        limit: int = 100,
+        tag: list[str] | None = None,
+    ) -> list[dict]:
+        result = self._reader.list_items_of_type(
+            item_type, limit=limit, group_id=self._group_id, tag=tag
+        )
+        if result is None:
+            raise UnsupportedByBackend(
+                "that itemType or tag filter is not expressible in SQL"
+            )
         return result
 
     # -- collections ------------------------------------------------------
@@ -326,6 +349,20 @@ class ApiBackend:
 
     def top_items(self, *, limit: int = 100) -> list[dict]:
         return _utils._paginate(self._zot.top, max_items=limit)[:limit]
+
+    def list_items(
+        self,
+        item_type: str | None = None,
+        *,
+        limit: int = 100,
+        tag: list[str] | None = None,
+    ) -> list[dict]:
+        params: dict[str, Any] = {}
+        if item_type:
+            params["itemType"] = item_type
+        if tag:
+            params["tag"] = tag
+        return _utils._paginate(self._zot.items, max_items=limit, **params)
 
     # -- collections ------------------------------------------------------
 

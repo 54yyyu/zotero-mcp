@@ -6,6 +6,7 @@ import tempfile
 from fastmcp import Context
 
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp.config import load_config
@@ -68,8 +69,7 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
     storage, which must be left alone: those paths point into the real
     library, and deleting one takes the user's copy of the PDF with it.
     """
-    zot = _client.get_zotero_client()
-    item = zot.item(item_key)
+    item = _library.get_library_backend().get_item(item_key)
 
     # Try local storage first (persists on disk — no cleanup needed)
     try:
@@ -107,6 +107,10 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
     # Zotero cloud) so WebDAV-backed attachments work, not just cloud storage.
     # PDF only: this tool renders page ranges, so a markdown-first
     # attachment_priority must not hand it a file it cannot paginate.
+    # Everything below is the download fallback, reached only when the file
+    # is not in local storage. The API client is built here so a PDF already
+    # on disk never needs one.
+    zot = _client.get_zotero_client()
     attachment = _client.get_attachment_details(zot, item, priority=("pdf",))
     if not attachment:
         return None

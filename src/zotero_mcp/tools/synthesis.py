@@ -10,7 +10,7 @@ import json
 from collections import Counter
 from typing import Literal
 
-from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
@@ -20,7 +20,7 @@ from zotero_mcp.tools.annotations import _annotation_to_record
 
 
 def _resolve_paper_context(
-    zot,
+    backend,
     parent_key: str,
     cache: dict[str, dict[str, str | None]],
 ) -> dict[str, str | None]:
@@ -42,13 +42,13 @@ def _resolve_paper_context(
         "attachment_title": None,
     }
     try:
-        parent = zot.item(parent_key)
+        parent = backend.get_item(parent_key)
         data = parent.get("data", {}) if parent else {}
         if data.get("itemType") == "attachment" and data.get("parentItem"):
             gp_key = data["parentItem"]
             attachment_title = data.get("title") or None
             try:
-                grandparent = zot.item(gp_key)
+                grandparent = backend.get_item(gp_key)
                 gp_data = grandparent.get("data", {}) if grandparent else {}
                 title = gp_data.get("title") or attachment_title or parent_key
             except Exception:
@@ -119,7 +119,7 @@ def synthesize_annotations(
     """
     try:
         ctx.info("Gathering annotations and notes for synthesis")
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
 
         limit = _helpers._normalize_limit(limit, default=200, max_val=5000)
         tags = _helpers._normalize_tag_filter(tag)
@@ -128,29 +128,23 @@ def synthesize_annotations(
         allowed_keys: set[str] | None = None
         if collection_key:
             try:
-                coll_items = _helpers._paginate(
-                    zot.collection_items,
-                    collection_key,
-                    itemType="-attachment",
-                )
-                allowed_keys = {it.get("key") for it in coll_items if it.get("key")}
+                coll_items = backend.collection_items(collection_key) or []
+                allowed_keys = {
+                    key for it in coll_items
+                    if it.get("data", {}).get("itemType") != "attachment"
+                    and (key := it.get("key"))
+                }
             except Exception as e:
                 ctx.warning(f"Could not load collection items: {e}")
                 allowed_keys = set()
 
-        anno_params = {"itemType": "annotation"}
-        note_params = {"itemType": "note"}
-        if tags:
-            anno_params["tag"] = tags
-            note_params["tag"] = tags
-
         try:
-            annotations = _helpers._paginate(zot.items, max_items=limit, **anno_params)
+            annotations = backend.list_items("annotation", limit=limit, tag=tags)
         except Exception as e:
             ctx.warning(f"Annotation fetch failed: {e}")
             annotations = []
         try:
-            notes = _helpers._paginate(zot.items, max_items=limit, **note_params)
+            notes = backend.list_items("note", limit=limit, tag=tags)
         except Exception as e:
             ctx.warning(f"Note fetch failed: {e}")
             notes = []
@@ -185,15 +179,10 @@ def synthesize_annotations(
             # Member if the immediate parent, or its grandparent paper, is in scope.
             if parent_key in allowed_keys:
                 return True
-            try:
-                parent = zot.item(parent_key)
-                data = parent.get("data", {}) if parent else {}
-                gp = data.get("parentItem")
-                if gp and gp in allowed_keys:
-                    return True
-            except Exception:
-                pass
-            return False
+            parent = backend.get_item(parent_key)
+            data = parent.get("data", {}) if parent else {}
+            gp = data.get("parentItem")
+            return bool(gp and gp in allowed_keys)
 
         highlight_count = 0
         for anno in annotations:
@@ -206,7 +195,7 @@ def synthesize_annotations(
             if parent_key and not _in_scope(parent_key):
                 continue
             context = (
-                _resolve_paper_context(zot, parent_key, context_cache)
+                _resolve_paper_context(backend, parent_key, context_cache)
                 if parent_key
                 else {
                     "item_key": None,
@@ -233,7 +222,7 @@ def synthesize_annotations(
             if parent_key and not _in_scope(parent_key):
                 continue
             context = (
-                _resolve_paper_context(zot, parent_key, context_cache)
+                _resolve_paper_context(backend, parent_key, context_cache)
                 if parent_key
                 else {
                     "item_key": None,

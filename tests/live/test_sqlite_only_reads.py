@@ -35,8 +35,10 @@ _LOCAL_API_PORTS = {23119}
 _WEB_API_HOSTS = {"api.zotero.org"}
 
 
-class ZoteroApiDown(Exception):
-    """Raised in place of any HTTP call to a Zotero API endpoint."""
+#: Marker put into every blocked-call exception message. Distinctive on
+#: purpose: assertions look for this exact string rather than for words like
+#: "connection", which appear legitimately in real annotation text.
+API_DOWN_MARKER = "[zotero-api-blocked-by-test]"
 
 
 def _is_zotero_api_url(url: str) -> bool:
@@ -236,7 +238,7 @@ def sqlite_only(monkeypatch, sqlite_db_path):
 
     def guarded_httpx_send(self, request, *args, **kwargs):
         if _is_zotero_api_url(request.url):
-            raise httpx.ConnectError(f"[test] Zotero API is down: {request.url}")
+            raise httpx.ConnectError(f"{API_DOWN_MARKER} {request.url}")
         return real_httpx_send(self, request, *args, **kwargs)
 
     monkeypatch.setattr(httpx.Client, "send", guarded_httpx_send)
@@ -246,7 +248,7 @@ def sqlite_only(monkeypatch, sqlite_db_path):
     def guarded_requests_send(self, request, *args, **kwargs):
         if _is_zotero_api_url(request.url):
             raise requests.exceptions.ConnectionError(
-                f"[test] Zotero API is down: {request.url}"
+                f"{API_DOWN_MARKER} {request.url}"
             )
         return real_requests_send(self, request, *args, **kwargs)
 
@@ -254,13 +256,18 @@ def sqlite_only(monkeypatch, sqlite_db_path):
 
 
 def assert_served(text: str, label: str) -> str:
-    """Fail with the tool's own message when it reported an error."""
+    """Fail with the tool's own message when it reported an error.
+
+    The blocked-API check looks for `API_DOWN_MARKER` rather than for words
+    like "connection": real annotation text contains those, and matching
+    them failed a tool that had answered perfectly well from SQLite.
+    """
     assert isinstance(text, str) and text.strip(), f"{label}: returned no output"
     first = text.strip().splitlines()[0]
     assert not first.lower().startswith("error"), f"{label}: {text[:600]}"
-    lowered = text.lower()
-    for phrase in ("connection", "connecterror", "failed to establish", "refused"):
-        assert phrase not in lowered, f"{label}: leaked a connection failure: {text[:600]}"
+    assert API_DOWN_MARKER not in text, (
+        f"{label}: reached the Zotero API instead of answering from SQLite. {text[:600]}"
+    )
     return text
 
 
@@ -532,3 +539,79 @@ def test_get_annotations_json(sqlite_only, facts, dummy_ctx):
     )
     records = json.loads(out)
     assert isinstance(records, list) and records, "expected annotation records"
+
+
+# --------------------------------------------------------------------------
+# attachments, PDFs and synthesis
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(180)
+def test_get_pdf_outline(sqlite_only, facts, dummy_ctx):
+    from zotero_mcp.tools.write import get_pdf_outline
+
+    if facts["pdf_item"] is None:
+        pytest.skip("library has no item with a PDF attachment")
+    # A PDF with no embedded outline is a legitimate answer, not a failure;
+    # what must not happen is a connection error.
+    assert_served(
+        get_pdf_outline(item_key=facts["pdf_item"]["key"], ctx=dummy_ctx),
+        "get_pdf_outline",
+    )
+
+
+@pytest.mark.timeout(180)
+def test_read_pdf_pages(sqlite_only, facts, dummy_ctx):
+    from zotero_mcp.tools.read_pdf import read_pdf_pages
+
+    if facts["pdf_item"] is None:
+        pytest.skip("library has no item with a PDF attachment")
+    assert_served(
+        read_pdf_pages(item_key=facts["pdf_item"]["key"], start_page=1, ctx=dummy_ctx),
+        "read_pdf_pages",
+    )
+
+
+@pytest.mark.timeout(180)
+def test_synthesize_annotations(sqlite_only, facts, dummy_ctx):
+    from zotero_mcp.tools.synthesis import synthesize_annotations
+
+    if facts["annotated"] is None:
+        pytest.skip("library has no annotations")
+    assert_served(
+        synthesize_annotations(limit=20, ctx=dummy_ctx),
+        "synthesize_annotations",
+    )
+
+
+@pytest.mark.timeout(120)
+def test_library_coverage(sqlite_only, facts, dummy_ctx):
+    from zotero_mcp.tools.discovery import library_coverage
+
+    if facts["collection"] is None:
+        pytest.skip("library has no non-empty collection")
+    assert_served(
+        library_coverage(collection_key=facts["collection"]["key"], ctx=dummy_ctx),
+        "library_coverage",
+    )
+
+
+# --------------------------------------------------------------------------
+# MCP resources — the same reads, reached through the resource handlers
+# --------------------------------------------------------------------------
+
+
+def test_resource_collections(sqlite_only, facts, dummy_ctx):
+    from zotero_mcp.resources import collections_resource
+
+    if facts["collection"] is None:
+        pytest.skip("library has no non-empty collection")
+    out = assert_served(collections_resource(), "resource:collections")
+    assert facts["collection"]["key"] in out
+
+
+def test_resource_item(sqlite_only, facts, dummy_ctx):
+    from zotero_mcp.resources import item_resource
+
+    out = assert_served(item_resource(facts["item"]["key"]), "resource:item")
+    assert facts["item"]["title"][:40] in out

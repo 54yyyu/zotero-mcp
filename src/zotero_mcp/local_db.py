@@ -2518,6 +2518,59 @@ class LocalZoteroReader:
                 result[parent_key].append(item)
         return result
 
+    def list_items_of_type(
+        self,
+        item_type: str | None = None,
+        *,
+        limit: int = 100,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        tag: list[str] | None = None,
+    ) -> list[dict] | None:
+        """Items of one type across the library, fully hydrated.
+
+        Serves the library-wide listings (`itemType="annotation"`,
+        `"note"`, `"-attachment"`) that several tools walk. Full hydration
+        matters here rather than the search projection: annotation records
+        carry their text and comment in a side table, and a caller
+        digesting them needs those fields.
+
+        Returns None when the tag filter uses a shape this backend cannot
+        express, so the caller can fall back.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+
+        type_sql, type_params = "", []
+        if item_type:
+            if item_type.startswith("-") and item_type.count("-") == 1 and "||" not in item_type:
+                type_sql = " AND it.typeName != ?"
+                type_params = [item_type[1:]]
+            elif re.fullmatch(r"[A-Za-z]+", item_type):
+                type_sql = " AND it.typeName = ?"
+                type_params = [item_type]
+            else:
+                return None
+
+        tag_sql, tag_params = "", []
+        if tag:
+            built = _tag_dsl_condition(tag)
+            if built is None:
+                return None
+            tag_clause, tag_params = built
+            tag_sql = f" AND {tag_clause}"
+
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL{type_sql}{tag_sql}
+                   ORDER BY i.dateModified DESC LIMIT ?""",
+            list(lib_ids) + type_params + tag_params + [limit],
+        ).fetchall()
+        return self._build_full_items(conn, rows)
+
     def get_recent_items(
         self,
         *,
