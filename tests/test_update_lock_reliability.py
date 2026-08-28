@@ -32,6 +32,36 @@ def test_read_lock_holder_live_pid(tmp_path):
     assert alive is True
 
 
+def test_pid_is_alive_never_calls_os_kill_on_windows(monkeypatch):
+    """``os.kill(pid, 0)`` is a Ctrl+C broadcast on Windows, not a probe.
+
+    ``signal.CTRL_C_EVENT`` is 0, so the POSIX idiom hands
+    ``GenerateConsoleCtrlEvent`` a real console control event, which lands on
+    every process sharing the console. It interrupted this suite at 97% and
+    took down whatever shell launched it. Nothing on this path may reach
+    ``os.kill`` while the platform is Windows.
+    """
+    if sys.platform != "win32":
+        pytest.skip("the os.kill routing under test is Windows-only")
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("os.kill must never run on Windows")
+
+    monkeypatch.setattr(os, "kill", _forbidden)
+    assert semantic_search._pid_is_alive(os.getpid()) is True
+
+
+@skip_on_ci
+def test_pid_is_alive_agrees_with_reality():
+    """Own pid is alive; a pid that cannot exist is not.
+
+    Shares ``test_read_lock_holder_dead_pid``'s 999999 and so shares its
+    skip: the value is only *essentially* certain to be free.
+    """
+    assert semantic_search._pid_is_alive(os.getpid()) is True
+    assert semantic_search._pid_is_alive(999999) is False
+
+
 @skip_on_ci
 def test_read_lock_holder_dead_pid(tmp_path):
     lock = tmp_path / "update.lock"
