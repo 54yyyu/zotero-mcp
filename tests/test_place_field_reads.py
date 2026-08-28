@@ -11,6 +11,7 @@ import json
 import pytest
 
 from zotero_mcp.client import format_item_metadata, generate_bibtex
+from zotero_mcp.library import ApiBackend as _ApiBackend
 from zotero_mcp.tools import connectors as _conn
 
 from conftest import DummyContext
@@ -142,7 +143,8 @@ class TestConnectorFetchMetadata:
             def item(self, key):
                 return {"key": key, "data": fake_data}
 
-        monkeypatch.setattr(_conn._client, "get_zotero_client", lambda: _FakeZot())
+        monkeypatch.setattr(_conn._library, "get_library_backend",
+                            lambda: _ApiBackend(_FakeZot()))
         monkeypatch.setattr(
             _conn,
             "get_item_fulltext",

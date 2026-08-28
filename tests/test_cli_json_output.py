@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zotero_mcp import cli_json
+from zotero_mcp.library import ApiBackend
 from zotero_mcp.cli_standalone import (
     _fetch_projected,
     _keys_from_markdown,
@@ -153,33 +154,37 @@ class TestKeyExtraction:
 
 
 class TestFetchProjected:
+    """_fetch_projected takes the read backend, so these wrap a fake client
+    in ApiBackend — which is also where the itemKey chunking moved to."""
+
     def test_result_order_follows_the_requested_order(self):
         """Rank order carries the answer for a search; the API returns
         whatever order it likes."""
         zot = MagicMock()
         zot.items.return_value = [_raw("BBBB2222"), _raw("AAAA1111")]
-        got = _fetch_projected(zot, ["AAAA1111", "BBBB2222"], "keys_only")
+        got = _fetch_projected(ApiBackend(zot), ["AAAA1111", "BBBB2222"], "keys_only")
         assert [i["key"] for i in got] == ["AAAA1111", "BBBB2222"]
 
     def test_keys_the_fetch_cannot_resolve_are_dropped_not_faked(self):
         zot = MagicMock()
         zot.items.return_value = [_raw("AAAA1111")]
-        got = _fetch_projected(zot, ["AAAA1111", "GONE0000"], "keys_only")
+        zot.item.side_effect = Exception("no such item")
+        got = _fetch_projected(ApiBackend(zot), ["AAAA1111", "GONE0000"], "keys_only")
         assert [i["key"] for i in got] == ["AAAA1111"]
 
     def test_no_keys_makes_no_request(self):
         zot = MagicMock()
-        assert _fetch_projected(zot, []) == []
+        assert _fetch_projected(ApiBackend(zot), []) == []
         zot.items.assert_not_called()
 
     def test_more_than_fifty_keys_are_chunked(self):
         """itemKey takes at most 50 per request."""
         keys = [f"K{i:07d}" for i in range(120)]
         zot = MagicMock()
-        zot.items.side_effect = lambda itemKey, limit: [
+        zot.items.side_effect = lambda itemKey: [
             _raw(k) for k in itemKey.split(",")
         ]
-        got = _fetch_projected(zot, keys, "keys_only")
+        got = _fetch_projected(ApiBackend(zot), keys, "keys_only")
         assert len(got) == 120
         assert zot.items.call_count == 3
 
@@ -204,9 +209,11 @@ class TestSearchCommand:
         search_mod = MagicMock()
         search_mod.search_items.return_value = "## 1. A Paper\n**Item Key:** ABCD1234\n"
         client = MagicMock()
-        client.get_zotero_client.return_value.items.return_value = [_raw("ABCD1234")]
+        backend = MagicMock()
+        backend.get_items.return_value = {"ABCD1234": _raw("ABCD1234")}
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
+             patch("zotero_mcp.cli_standalone._read_backend", return_value=backend), \
              patch("zotero_mcp.cli_standalone._import_tools",
                    return_value=(search_mod, MagicMock(), MagicMock(), MagicMock(), client)):
             cmd_search(args)
@@ -242,6 +249,7 @@ class TestSearchCommand:
         search_mod.search_items.return_value = "No items found."
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
+             patch("zotero_mcp.cli_standalone._read_backend", return_value=MagicMock()), \
              patch("zotero_mcp.cli_standalone._import_tools",
                    return_value=(search_mod, MagicMock(), MagicMock(), MagicMock(), MagicMock())):
             cmd_search(args)

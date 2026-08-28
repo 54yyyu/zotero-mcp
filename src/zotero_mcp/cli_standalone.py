@@ -132,32 +132,26 @@ def _keys_from_markdown(markdown: str) -> list[str]:
     return keys
 
 
-def _fetch_projected(zot, keys: list[str], detail: str = "summary") -> list[dict]:
+def _fetch_projected(backend, keys: list[str], detail: str = "summary") -> list[dict]:
     """Fetch *keys* and project them, preserving the order they were given in.
 
     Order carries meaning -- relevance for a search, recency for `get recent`
-    -- so it is restored explicitly rather than left to whatever the API
+    -- so it is restored explicitly rather than left to whatever the backend
     returns. Keys the fetch does not return (deleted between the two calls,
-    or not visible to this client) are dropped rather than faked.
+    or not visible here) are dropped rather than faked. Batching is the
+    backend's business now, so there is no chunk loop left here.
     """
     if not keys:
         return []
-    found: dict[str, dict] = {}
-    # itemKey takes up to 50 per request.
-    for i in range(0, len(keys), 50):
-        chunk = keys[i:i + 50]
-        try:
-            batch = zot.items(itemKey=",".join(chunk), limit=len(chunk))
-        except Exception:
-            batch = []
-        for item in batch or []:
-            if isinstance(item, dict) and item.get("key"):
-                found[item["key"]] = item
+    try:
+        found = backend.get_items(keys)
+    except Exception:
+        found = {}
     return [_cli_json.project_item(found[k], detail) for k in keys if k in found]
 
 
-def _zot(args):
-    """The Zotero client, for the JSON paths that project raw records.
+def _read_backend():
+    """The read backend, for the JSON paths that project raw records.
 
     Structured output reads the same records the markdown formatters read;
     it just skips the formatting. Nothing about *which* records to fetch is
@@ -165,8 +159,9 @@ def _zot(args):
     variants, the semantic cascade), the JSON path calls that same logic and
     projects its result.
     """
-    _search, _retrieval, _annotations, _write, _client = _import_tools()
-    return _client.get_zotero_client()
+    from zotero_mcp import library as _library
+
+    return _library.get_library_backend()
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +232,7 @@ def cmd_search(args):
 
     if _json_mode(args):
         keys = _keys_from_markdown(result)
-        items = _fetch_projected(_client.get_zotero_client(), keys,
+        items = _fetch_projected(_read_backend(), keys,
                                  getattr(args, "detail", "summary"))
         _out(args, "search", data={
             "query": args.query, "mode": args.mode,
@@ -284,8 +279,7 @@ def cmd_get(args):
              text=result)
     elif sub == "collections":
         if json_mode:
-            from zotero_mcp.utils import _paginate
-            cols = _paginate(_client.get_zotero_client().collections, max_items=args.limit)
+            cols = _read_backend().list_collections()[:args.limit]
             _cli_json.emit("get collections", {
                 "count": len(cols),
                 "collections": [_cli_json.project_collection(c) for c in cols],
@@ -303,7 +297,7 @@ def cmd_get(args):
                 "collection_key": args.collection_key,
                 "offset": getattr(args, "offset", 0),
                 "count": len(keys),
-                "items": _fetch_projected(_client.get_zotero_client(), keys, args.detail),
+                "items": _fetch_projected(_read_backend(), keys, args.detail),
             })
             return
         print(result)
@@ -317,14 +311,13 @@ def cmd_get(args):
             _cli_json.emit("get children", {
                 "item_key": keys,
                 "count": len(child_keys),
-                "items": _fetch_projected(_client.get_zotero_client(), child_keys, "summary"),
+                "items": _fetch_projected(_read_backend(), child_keys, "summary"),
             })
             return
         print(result)
     elif sub == "tags":
         if json_mode:
-            from zotero_mcp.utils import _paginate
-            tags = _paginate(_client.get_zotero_client().tags, max_items=args.limit)
+            tags = _read_backend().list_tags(limit=args.limit)
             _cli_json.emit("get tags", {
                 "count": len(tags),
                 "tags": [_cli_json.project_tag(t) for t in tags],
@@ -339,7 +332,7 @@ def cmd_get(args):
             keys = _keys_from_markdown(result)
             _cli_json.emit("get recent", {
                 "count": len(keys),
-                "items": _fetch_projected(_client.get_zotero_client(), keys, "summary"),
+                "items": _fetch_projected(_read_backend(), keys, "summary"),
             })
             return
         print(result)
@@ -424,11 +417,11 @@ def cmd_notes(args):
         )
         if json_mode:
             keys = _keys_from_markdown(result)
-            zot = _client.get_zotero_client()
+            fetched = _read_backend().get_items(keys)
             notes = []
             for key in keys:
                 try:
-                    notes.append(_cli_json.project_note(zot.item(key)))
+                    notes.append(_cli_json.project_note(fetched[key]))
                 except Exception:
                     continue
             _cli_json.emit("notes list", {"count": len(notes), "notes": notes})
