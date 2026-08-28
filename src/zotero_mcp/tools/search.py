@@ -708,21 +708,19 @@ def search_by_citation_key(
         citekey = citekey.strip()
         ctx.info(f"Looking up citation key: {citekey}")
 
-        # Strategy A: pyzotero search across all fields, then verify via Extra.
-        # Note: the previous BetterBibTeX ``item.search`` JSON-RPC call was
-        # removed in #293 — that BBT method does not exist in current versions
-        # (always returned -32601 Method not found) and the exception handler
-        # silently fell through to the same Extra-field search, so the BBT
-        # branch only added noise.
-        zot = _client.get_zotero_client()
-        zot.add_parameters(q=citekey, qmode="everything", itemType="-attachment", limit=25)
-        results = zot.items()
-
-        for item in results:
-            data = item.get("data", {})
-            extra = data.get("extra", "")
-            if data.get("citationKey") == citekey or _helpers._extra_has_citekey(extra, citekey):
-                return _helpers._format_citekey_result(item, citekey)
+        # The BetterBibTeX ``item.search`` JSON-RPC call was removed in #293 —
+        # that BBT method does not exist in current versions (always returned
+        # -32601 Method not found) and the handler fell through to the same
+        # Extra-field search anyway, so the BBT branch only added noise.
+        #
+        # The SQLite backend matches Zotero 7's real ``citationKey`` field
+        # exactly. The API backend still has to rank a substring search and
+        # verify the top 25 candidates, since there is nothing to query
+        # server-side — which is why a key outside that window used to be
+        # reported as missing.
+        item = _library.get_library_backend().find_by_citation_key(citekey)
+        if item is not None:
+            return _helpers._format_citekey_result(item, citekey)
 
         return f"No item found with citation key: '{citekey}'"
 

@@ -2571,6 +2571,66 @@ class LocalZoteroReader:
         ).fetchall()
         return self._build_full_items(conn, rows)
 
+    def find_by_citation_key(
+        self,
+        citekey: str,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> dict | None:
+        """The item owning `citekey`, matched exactly.
+
+        Zotero 7 stores the key in a real ``citationKey`` field, so this is
+        an indexed equality match rather than the ranked substring search
+        the API path had to use. Older items keep it as a ``Citation Key:``
+        line inside ``extra``; those are checked second, which is why the
+        pattern match is only reached when the field lookup misses.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return None
+        lib_ph = ",".join("?" * len(lib_ids))
+
+        row = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" JOIN itemData ck_data ON ck_data.itemID = i.itemID
+                   JOIN fields ck_f
+                       ON ck_f.fieldID = ck_data.fieldID AND ck_f.fieldName = 'citationKey'
+                   JOIN itemDataValues ck_v ON ck_v.valueID = ck_data.valueID
+                   WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL
+                   AND ck_v.value = ?
+                   LIMIT 1""",
+            list(lib_ids) + [citekey],
+        ).fetchone()
+        if row is not None:
+            return self._build_full_items(conn, [row])[0]
+
+        # Legacy placement: a "Citation Key: <key>" line in `extra`. LIKE
+        # narrows to candidates; the exact line match is applied in Python
+        # by the caller's `_extra_has_citekey`, so this only has to avoid
+        # returning the wrong item, not parse the field itself.
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" JOIN itemData ex_data ON ex_data.itemID = i.itemID
+                   JOIN fields ex_f
+                       ON ex_f.fieldID = ex_data.fieldID AND ex_f.fieldName = 'extra'
+                   JOIN itemDataValues ex_v ON ex_v.valueID = ex_data.valueID
+                   WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL
+                   AND ex_v.value LIKE ?
+                   LIMIT 25""",
+            list(lib_ids) + [f"%{_semantics.escape_like(citekey)}%"],
+        ).fetchall()
+        for item in self._build_full_items(conn, rows):
+            if item["data"].get("citationKey") == citekey:
+                return item
+            from zotero_mcp.tools._helpers import _extra_has_citekey
+
+            if _extra_has_citekey(item["data"].get("extra", ""), citekey):
+                return item
+        return None
+
     def get_recent_items(
         self,
         *,

@@ -75,6 +75,7 @@ class LibraryBackend(Protocol):
     """
 
     def get_related(self, key: str) -> list[dict]: ...
+    def find_by_citation_key(self, citekey: str) -> dict | None: ...
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]: ...
     def top_items(self, *, limit: int = 100) -> list[dict]: ...
     def list_items(
@@ -170,6 +171,9 @@ class SqliteBackend:
 
     def get_related(self, key: str) -> list[dict]:
         return self._reader.get_related_items(key, group_id=self._group_id)
+
+    def find_by_citation_key(self, citekey: str) -> dict | None:
+        return self._reader.find_by_citation_key(citekey, group_id=self._group_id)
 
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]:
         result = self._reader.get_recent_items(
@@ -337,6 +341,22 @@ class ApiBackend:
                     if (fetched := self.get_item(match.group(1))) is not None:
                         related.append(fetched)
         return related
+
+    def find_by_citation_key(self, citekey: str) -> dict | None:
+        # No indexed field to query server-side, so this stays the ranked
+        # substring search it always was: fetch candidates, verify locally.
+        from zotero_mcp.tools import _helpers
+
+        self._zot.add_parameters(
+            q=citekey, qmode="everything", itemType="-attachment", limit=25
+        )
+        for item in self._zot.items() or []:
+            data = item.get("data", {})
+            if data.get("citationKey") == citekey or _helpers._extra_has_citekey(
+                data.get("extra", ""), citekey
+            ):
+                return item
+        return None
 
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]:
         if collection_key:

@@ -155,6 +155,19 @@ def facts(sqlite_db_path) -> dict:
             """,
             (library_id,),
         )
+        citekey = one(
+            """
+            SELECT i.key AS key, v.value AS citekey
+            FROM itemData id
+            JOIN fields f ON f.fieldID = id.fieldID AND f.fieldName = 'citationKey'
+            JOIN itemDataValues v ON v.valueID = id.valueID
+            JOIN items i ON i.itemID = id.itemID
+            WHERE i.libraryID = ?
+              AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            LIMIT 1
+            """,
+            (library_id,),
+        )
         first_tag = one(
             """
             SELECT t.name AS name
@@ -202,6 +215,7 @@ def facts(sqlite_db_path) -> dict:
             "collection": collection,
             "tag": tag,
             "first_tag": first_tag,
+            "citekey": citekey,
             "note_parent": note_parent,
             "annotated": annotated,
             "feed_library_id": feed["libraryID"] if feed else None,
@@ -615,3 +629,23 @@ def test_resource_item(sqlite_only, facts, dummy_ctx):
 
     out = assert_served(item_resource(facts["item"]["key"]), "resource:item")
     assert facts["item"]["title"][:40] in out
+
+
+@pytest.mark.timeout(120)
+def test_search_by_citation_key(sqlite_only, facts, dummy_ctx):
+    """An exact citekey lookup, not a ranked substring search.
+
+    The API path fetched 25 candidates for a `q=` search and filtered them
+    in Python, so a key whose item did not rank in that window was simply
+    not found. Zotero stores citationKey as a real field, so this is an
+    exact match — and must resolve to the item the database says owns it.
+    """
+    from zotero_mcp.tools.search import search_by_citation_key
+
+    if facts["citekey"] is None:
+        pytest.skip("library has no items with a citation key")
+    out = assert_served(
+        search_by_citation_key(citekey=facts["citekey"]["citekey"], ctx=dummy_ctx),
+        "search_by_citation_key",
+    )
+    assert facts["citekey"]["key"] in out
