@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -611,38 +612,27 @@ def search_by_tag(
             return "Error: Tag cannot be empty"
 
         ctx.info(f"Searching Zotero for tag '{tag}'")
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
 
         limit = _helpers._normalize_limit(limit, default=10)
 
         # Search library-wide or scoped to a collection
         if collection_key:
-            try:
-                _col = zot.collection(collection_key)
-            except Exception:
-                _col = None
-            if not _col or _col.get("key") != collection_key:
+            if backend.get_collection(collection_key) is None:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            scope_keys = _helpers.expand_collection_scope(
-                zot, collection_key, include_subcollections
+            # Scope goes down into the query rather than filtering a
+            # separately-limited result set, so `limit` still means "this
+            # many matches in this collection" and the tag DSL (`a OR b`,
+            # `-c`) stays evaluated in exactly one place per backend.
+            results = backend.search_items(
+                "", item_type=item_type, tag=tag, limit=limit,
+                collection_keys=[collection_key],
+                include_subcollections=include_subcollections,
             )
-            results = []
-            _seen: set[str] = set()
-            for _scope_key in scope_keys:
-                for _item in _helpers._paginate(
-                    zot.collection_items, _scope_key,
-                    tag=tag, itemType=item_type, max_items=limit,
-                ):
-                    _key = _item.get("key")
-                    if _key and _key in _seen:
-                        continue
-                    if _key:
-                        _seen.add(_key)
-                    results.append(_item)
-            results = results[:limit]
         else:
-            zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
-            results = zot.items()
+            results = backend.search_items(
+                "", item_type=item_type, tag=tag, limit=limit
+            )
 
         if not results:
             if collection_key:

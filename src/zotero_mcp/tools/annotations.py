@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import tempfile
 import uuid
 from typing import Literal
@@ -9,6 +10,7 @@ from typing import Literal
 import requests
 
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
@@ -205,8 +207,18 @@ def get_annotations(
         Markdown-formatted annotations or a JSON array of normalized records.
     """
     try:
-        # Initialize Zotero client
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
+
+        # The pyzotero client is only needed by the paths below that have no
+        # local equivalent (library-wide listing, PDF download). Built on
+        # demand so a read the backend can serve never constructs one — with
+        # Zotero closed, constructing it eagerly failed the whole tool.
+        _zot_cache = []
+
+        def _api_client():
+            if not _zot_cache:
+                _zot_cache.append(_client.get_zotero_client())
+            return _zot_cache[0]
 
         # Prepare annotations list
         annotations = []
@@ -215,12 +227,11 @@ def get_annotations(
         # If an item key is provided, use specialized retrieval
         if item_key:
             # First, verify the item exists and get its details
-            try:
-                parent = zot.item(item_key)
-                parent_title = parent["data"].get("title", "Untitled Item")
-                ctx.info(f"Fetching annotations for item: {parent_title}")
-            except Exception:
+            parent = backend.get_item(item_key)
+            if parent is None:
                 return f"Error: No item found with key: {item_key}"
+            parent_title = parent["data"].get("title", "Untitled Item")
+            ctx.info(f"Fetching annotations for item: {parent_title}")
 
             # Determine whether item_key is an attachment or a parent item.
             # In the Zotero API, annotations are children of attachments, not of
@@ -362,27 +373,29 @@ def get_annotations(
             if not better_bibtex_annotations:
                 try:
                     if _is_attachment:
-                        # item_key is already a PDF attachment -- annotations are
-                        # direct children, so one paginated call suffices.
-                        zotero_api_annotations = _helpers._paginate(
-                            zot.children, item_key, itemType="annotation"
-                        )
+                        # item_key is already a PDF attachment -- annotations
+                        # are its direct children.
+                        zotero_api_annotations = backend.get_children(
+                            [item_key], item_type="annotation"
+                        ).get(item_key, [])
                     else:
                         # item_key is a parent item. Annotations live under
                         # attachments (parent -> attachment -> annotation).
                         # Only PDF, EPUB, and snapshot attachments carry annotations.
                         _annotatable = {"application/pdf", "application/epub+zip", "text/html"}
-                        all_children = _helpers._paginate(zot.children, item_key)
+                        all_children = backend.get_children([item_key]).get(item_key, [])
                         att_keys = [
                             c["key"] for c in all_children
                             if c.get("data", {}).get("itemType") == "attachment"
                             and c.get("data", {}).get("contentType") in _annotatable
                         ]
+                        # One call for every attachment, not one per
+                        # attachment — the second hop used to be N+1.
                         seen = set()
-                        for att_key in att_keys:
-                            for a in _helpers._paginate(
-                                zot.children, att_key, itemType="annotation"
-                            ):
+                        for children in backend.get_children(
+                            att_keys, item_type="annotation"
+                        ).values():
+                            for a in children:
                                 k = a.get("key")
                                 if k and k not in seen:
                                     seen.add(k)
@@ -399,7 +412,7 @@ def get_annotations(
                     # Ensure PDF annotation tool is installed
                     if ensure_pdfannots_installed():
                         # Get PDF attachments via the resolved parent key
-                        children = _helpers._paginate(zot.children, parent_item_key)
+                        children = backend.get_children([parent_item_key]).get(parent_item_key, [])
                         pdf_attachments = [
                             item for item in children
                             if item.get("data", {}).get("contentType") == "application/pdf"
@@ -410,11 +423,15 @@ def get_annotations(
                             with tempfile.TemporaryDirectory() as tmpdir:
                                 att_key = attachment.get("key", "")
                                 file_path = os.path.join(tmpdir, f"{att_key}.pdf")
-                                zot.dump(
-                                    att_key,
-                                    filename=os.path.basename(file_path),
-                                    path=tmpdir,
-                                )
+                                local_pdf = _library.attachment_path_for(att_key)
+                                if local_pdf is not None:
+                                    shutil.copyfile(local_pdf, file_path)
+                                else:
+                                    _api_client().dump(
+                                        att_key,
+                                        filename=os.path.basename(file_path),
+                                        path=tmpdir,
+                                    )
 
                                 if os.path.exists(file_path):
                                     extracted = extract_annotations_from_pdf(file_path, tmpdir)
@@ -458,10 +475,14 @@ def get_annotations(
             annotations = better_bibtex_annotations + zotero_api_annotations + pdf_annotations
 
         else:
-            # Retrieve all annotations in the library
+            # Retrieve all annotations in the library. No backend operation
+            # covers an unfiltered library-wide annotation listing, so this
+            # stays on the API client.
             limit = _helpers._normalize_limit(limit, default=100)
             # Use _paginate helper instead of inline manual pagination
-            annotations = _helpers._paginate(zot.items, max_items=limit, itemType="annotation")
+            annotations = _helpers._paginate(
+                _api_client().items, max_items=limit, itemType="annotation"
+            )
 
         # Handle no annotations found
         if not annotations:
@@ -479,7 +500,7 @@ def get_annotations(
                 if (parent_key := anno.get("data", {}).get("parentItem"))
             }
         parent_contexts = (
-            _batch_resolve_annotation_contexts(zot, parent_keys, ctx)
+            _batch_resolve_annotation_contexts(backend, parent_keys, ctx)
             if parent_keys
             else {}
         )
@@ -634,29 +655,23 @@ def get_notes(
     """
     try:
         ctx.info(f"Fetching notes{f' for item {item_key}' if item_key else ''}")
-        zot = _client.get_zotero_client()
-
-        # Prepare search parameters
-        params = {"itemType": "note"}
+        backend = _library.get_library_backend()
 
         limit = _helpers._normalize_limit(limit, default=20)
 
-        # Get notes (paginated to avoid missing results)
         notes = []
         if item_key:
-            notes = _helpers._paginate(zot.children, item_key, max_items=limit, **params)
+            notes = backend.get_children([item_key], item_type="note").get(item_key, [])[:limit]
         else:
-            notes = _helpers._paginate(zot.items, max_items=limit, **params)
+            zot = _client.get_zotero_client()
+            notes = _helpers._paginate(zot.items, max_items=limit, itemType="note")
 
         if not notes and item_key:
             # `item_key` may name a note itself rather than its parent. A note
             # has no children, so the query above finds nothing and the tool
             # reported "No notes found" for a note that plainly exists —
             # leaving no way to read one whose key you already hold (#447).
-            try:
-                candidate = zot.item(item_key)
-            except Exception:
-                candidate = None
+            candidate = backend.get_item(item_key)
             if candidate and candidate.get("data", {}).get("itemType") == "note":
                 notes = [candidate]
 
@@ -671,7 +686,7 @@ def get_notes(
             if pk:
                 note_parent_keys.add(pk)
         if note_parent_keys:
-            note_parent_titles = _batch_resolve_parent_titles(zot, note_parent_keys, ctx)
+            note_parent_titles = _batch_resolve_parent_titles(backend, note_parent_keys, ctx)
 
         # Generate markdown output
         output = [f"# Notes{f' for Item: {item_key}' if item_key else ''}", ""]
@@ -722,39 +737,30 @@ def get_notes(
 
 @with_zotero_api_lock
 def _batch_resolve_parent_titles(
-    zot, parent_keys: set[str], ctx: Context
+    backend, parent_keys: set[str], ctx: Context
 ) -> dict[str, str]:
-    """Fetch parent item titles in batch instead of one-by-one (N+1 fix)."""
-    titles: dict[str, str] = {}
+    """Parent item titles for a set of keys, resolved in one batch.
+
+    The backend does its own batching (the API one still chunks at the
+    Zotero itemKey limit, the SQLite one answers in a single query), so
+    there is no chunk loop or per-key fallback left here.
+    """
     keys_list = list(parent_keys)
-    BATCH_SIZE = 50  # Zotero API limit for itemKey parameter
-    for i in range(0, len(keys_list), BATCH_SIZE):
-        batch = keys_list[i:i + BATCH_SIZE]
-        try:
-            items = zot.items(itemKey=",".join(batch))
-            for item in items:
-                titles[item.get("key", "")] = item.get("data", {}).get("title", "Untitled")
-        except Exception as e:
-            ctx.warning(f"Batch parent lookup failed: {e}")
-            for k in batch:
-                titles.setdefault(k, f"(parent key: {k})")
-
-    # Individual fallback for keys the batch missed (not in local cache)
-    missing = [k for k in parent_keys if k not in titles]
-    for key in missing:
-        try:
-            item = zot.item(key)
-            if item:
-                titles[key] = item.get("data", {}).get("title", "Untitled")
-        except Exception:
-            titles.setdefault(key, f"(parent key: {key})")
-
-    return titles
+    try:
+        items = backend.get_items(keys_list)
+    except Exception as e:
+        ctx.warning(f"Batch parent lookup failed: {e}")
+        items = {}
+    return {
+        key: items[key].get("data", {}).get("title", "Untitled")
+        if key in items else f"(parent key: {key})"
+        for key in keys_list
+    }
 
 
 @with_zotero_api_lock
 def _batch_resolve_annotation_contexts(
-    zot, parent_keys: set[str], ctx: Context
+    backend, parent_keys: set[str], ctx: Context
 ) -> dict[str, dict[str, str | None]]:
     """Resolve annotation parent keys to paper and attachment metadata.
 
@@ -762,63 +768,33 @@ def _batch_resolve_annotation_contexts(
     This does a two-hop lookup: annotation → attachment → paper. Parents that
     aren't attachments degrade to a one-hop context; parents that couldn't be
     fetched at all are omitted so the caller can supply its own fallback.
+
+    Two backend calls total, one per hop. The chunk loops and per-key
+    fallbacks this replaced belonged to the API's 50-key itemKey limit,
+    which the backend now handles on its own side.
     """
-    BATCH_SIZE = 50
+    try:
+        attachment_data = backend.get_items(list(parent_keys))
+    except Exception as e:
+        ctx.info(f"Batch attachment lookup failed: {e}")
+        attachment_data = {}
 
-    # Step 1: Batch-fetch the immediate parents (attachments)
-    attachment_data: dict[str, dict] = {}
-    grandparent_keys: set[str] = set()
+    grandparent_keys = {
+        gp_key
+        for item in attachment_data.values()
+        if item.get("data", {}).get("itemType") == "attachment"
+        and (gp_key := item.get("data", {}).get("parentItem"))
+    }
 
-    keys_list = list(parent_keys)
-    for i in range(0, len(keys_list), BATCH_SIZE):
-        batch = keys_list[i:i + BATCH_SIZE]
-        try:
-            items = zot.items(itemKey=",".join(batch))
-            for item in items:
-                key = item.get("key", "")
-                attachment_data[key] = item
-                gp_key = item.get("data", {}).get("parentItem")
-                if gp_key and item.get("data", {}).get("itemType") == "attachment":
-                    grandparent_keys.add(gp_key)
-        except Exception as e:
-            ctx.info(f"Batch attachment lookup failed: {e}")
-
-    # Step 1b: Individual fallback for attachment keys the batch missed
-    missing_attachments = [k for k in parent_keys if k not in attachment_data]
-    for key in missing_attachments:
-        try:
-            item = zot.item(key)
-            if item:
-                attachment_data[key] = item
-                gp_key = item.get("data", {}).get("parentItem")
-                if gp_key and item.get("data", {}).get("itemType") == "attachment":
-                    grandparent_keys.add(gp_key)
-        except Exception:
-            pass
-
-    # Step 2: Batch-fetch the grandparents (papers)
     grandparent_titles: dict[str, str] = {}
-    gp_list = list(grandparent_keys)
-    for i in range(0, len(gp_list), BATCH_SIZE):
-        batch = gp_list[i:i + BATCH_SIZE]
+    if grandparent_keys:
         try:
-            items = zot.items(itemKey=",".join(batch))
-            for item in items:
-                grandparent_titles[item.get("key", "")] = (
-                    item.get("data", {}).get("title", "Untitled")
-                )
+            grandparent_titles = {
+                key: item.get("data", {}).get("title", "Untitled")
+                for key, item in backend.get_items(list(grandparent_keys)).items()
+            }
         except Exception as e:
             ctx.info(f"Batch grandparent lookup failed: {e}")
-
-    # Step 2b: Individual fallback for grandparent keys the batch missed
-    missing_gp = [k for k in grandparent_keys if k not in grandparent_titles]
-    for key in missing_gp:
-        try:
-            item = zot.item(key)
-            if item:
-                grandparent_titles[key] = item.get("data", {}).get("title", "Untitled")
-        except Exception:
-            pass
 
     # Step 3: Map immediate parent keys to stable paper/attachment context.
     # Keys we couldn't fetch are left out so callers can apply their own
@@ -852,10 +828,10 @@ def _batch_resolve_annotation_contexts(
 
 @with_zotero_api_lock
 def _batch_resolve_grandparent_titles(
-    zot, parent_keys: set[str], ctx: Context
+    backend, parent_keys: set[str], ctx: Context
 ) -> dict[str, str]:
     """Backward-compatible title-only view of annotation parent contexts."""
-    contexts = _batch_resolve_annotation_contexts(zot, parent_keys, ctx)
+    contexts = _batch_resolve_annotation_contexts(backend, parent_keys, ctx)
     return {
         key: context["parent_title"] or f"(parent key: {key})"
         for key, context in contexts.items()
@@ -981,6 +957,9 @@ def search_notes(
 
     # ---------- API mode: separate try/except blocks ----------
     zot = _client.get_zotero_client()
+    # The batch resolvers below speak the backend port, not raw pyzotero, so
+    # wrap this client rather than reaching past the port with it.
+    api_backend = _library.ApiBackend(zot)
 
     # Notes — always try (this works since upstream PR #136)
     try:
@@ -990,7 +969,7 @@ def search_notes(
         # Batch-resolve parent titles
         parent_keys = {n.get("data", {}).get("parentItem") for n in notes
                        if n.get("data", {}).get("parentItem")}
-        parent_titles = _batch_resolve_parent_titles(zot, parent_keys, ctx) if parent_keys else {}
+        parent_titles = _batch_resolve_parent_titles(api_backend, parent_keys, ctx) if parent_keys else {}
 
         query_lower = query.lower()
         for note in notes:
@@ -1025,7 +1004,7 @@ def search_notes(
             pk = anno.get("data", {}).get("parentItem")
             if pk:
                 anno_parent_keys.add(pk)
-        anno_parent_titles = _batch_resolve_grandparent_titles(zot, anno_parent_keys, ctx) if anno_parent_keys else {}
+        anno_parent_titles = _batch_resolve_grandparent_titles(api_backend, anno_parent_keys, ctx) if anno_parent_keys else {}
 
         query_lower = query.lower()
         for anno in annotations:

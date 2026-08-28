@@ -16,6 +16,7 @@ import requests
 
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import schema as _schema
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -1002,19 +1003,14 @@ def search_collections(
     ctx: Context
 ) -> str:
     try:
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
         ctx.info(f"Searching collections for '{query}'")
 
-        collections = _helpers._paginate(zot.collections)
-        trashed_keys: set[str] = set()
-        if include_trashed:
-            trashed = _helpers.fetch_trashed_collections(zot)
-            existing_keys = {c.get("key") for c in collections}
-            for coll in trashed:
-                key = coll.get("key")
-                if key and key not in existing_keys:
-                    trashed_keys.add(key)
-                    collections.append(coll)
+        collections = backend.list_collections(include_trashed=include_trashed)
+        trashed_keys = {
+            c["key"] for c in collections
+            if c.get("key") and c.get("data", {}).get("deleted")
+        }
         if not collections:
             return "No collections found in your Zotero library."
 
@@ -1027,6 +1023,13 @@ def search_collections(
         if not matching:
             return f"No collections found matching '{query}'"
 
+        # The whole listing is already here, so a parent's name is a dict
+        # lookup rather than one API call per matching collection.
+        names_by_key = {
+            c["key"]: c.get("data", {}).get("name", "")
+            for c in collections if c.get("key")
+        }
+
         lines = [f"# Collections matching '{query}'", ""]
         for i, coll in enumerate(matching, 1):
             name = coll["data"].get("name", "Unnamed")
@@ -1036,10 +1039,10 @@ def search_collections(
             lines.append(f"## {i}. {name}{trash_marker}")
             lines.append(f"**Key:** `{key}`")
             if parent_key:
-                try:
-                    parent = zot.collection(parent_key)
-                    lines.append(f"**Parent:** {parent['data'].get('name', parent_key)}")
-                except Exception:
+                parent = names_by_key.get(parent_key)
+                if parent:
+                    lines.append(f"**Parent:** {parent}")
+                else:
                     lines.append(f"**Parent key:** {parent_key}")
             lines.append("")
 
