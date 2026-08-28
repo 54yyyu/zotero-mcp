@@ -5,7 +5,6 @@ from typing import Literal
 
 import requests
 
-from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils  # noqa: F401  (kept for module-level conventions)
 from zotero_mcp._app import mcp
@@ -19,19 +18,18 @@ _ITEM_KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
 _HTTP_TIMEOUT = 30
 
 
-def _doi_in_library(zot, doi: str) -> bool:
+def _doi_in_library(backend, doi: str) -> bool:
     """Best-effort membership check: is a paper with this DOI already in Zotero?
 
-    Tolerates any pyzotero error by returning False (treat as "not in library").
+    Tolerates any backend error by returning False (treat as "not in library").
     """
     if not doi:
         return False
     try:
-        zot.add_parameters(q=doi, qmode="everything", itemType="-attachment", limit=5)
-        results = zot.items()
+        results = backend.search_items(doi, qmode="everything", limit=5)
     except Exception:
         try:
-            results = zot.items(q=doi, qmode="everything", itemType="-attachment", limit=5)
+            results = backend.search_items(doi, qmode="everything", limit=5)
         except Exception:
             return False
     norm = doi.strip().lower()
@@ -91,14 +89,14 @@ def _openalex_get(url: str, params: dict | None = None) -> dict | None:
         return None
 
 
-def _resolve_doi(identifier: str, zot) -> str | None:
+def _resolve_doi(identifier: str, backend) -> str | None:
     """Resolve an identifier (Zotero item key or DOI/URL) to a normalized DOI."""
     ident = (identifier or "").strip()
     if not ident:
         return None
     if _ITEM_KEY_RE.match(ident):
         try:
-            item = zot.item(ident)
+            item = backend.get_item(ident)
         except Exception:
             return None
         raw_doi = (item or {}).get("data", {}).get("DOI")
@@ -163,10 +161,10 @@ def find_related_papers(
             return "Error: direction must be 'references', 'citations', or 'both'."
 
         limit = _helpers._normalize_limit(limit, default=20, max_val=50)
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
 
         ctx.info(f"Resolving identifier to DOI: {identifier}")
-        doi = _resolve_doi(identifier, zot)
+        doi = _resolve_doi(identifier, backend)
         if not doi:
             return (
                 f"Could not resolve a DOI for '{identifier}'. Provide a valid "
@@ -212,7 +210,7 @@ def find_related_papers(
 
         # Flag library membership for every related paper.
         for p in references + citations:
-            p["in_library"] = _doi_in_library(zot, p["doi"]) if p["doi"] else False
+            p["in_library"] = _doi_in_library(backend, p["doi"]) if p["doi"] else False
 
         src_title = work.get("title") or work.get("display_name") or doi
         output = [
