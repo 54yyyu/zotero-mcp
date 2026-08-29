@@ -294,9 +294,15 @@ class ApiBackend:
         keys = list(keys)
         for start in range(0, len(keys), self._ITEMKEY_BATCH):
             batch = keys[start:start + self._ITEMKEY_BATCH]
+            wanted = set(batch)
             try:
                 for item in self._zot.items(itemKey=",".join(batch)) or []:
-                    if item.get("key"):
+                    # Zotero's API answers an itemKey filter with the matching
+                    # items *and their child notes* — verified against the
+                    # local server at the HTTP level, so it is not a pyzotero
+                    # artifact. Returning those would break this method's
+                    # contract, which is "the keys you asked for".
+                    if item.get("key") in wanted:
                         found[item["key"]] = item
             except Exception:
                 continue
