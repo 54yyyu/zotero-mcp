@@ -1150,7 +1150,19 @@ def switch_library(
         _client.set_active_library(library_id, library_type)
         ctx.info(f"Switched to library {library_id} (type={library_type})")
 
-        # Verify the switch works by making a test call
+        # Verify the switch works by making a test call.
+        #
+        # Skipped when SQLite is serving reads: `validate_library_switch` has
+        # already confirmed the library against zotero.sqlite, and every read
+        # after this point is answered from that same file. The probe would
+        # then only establish that Zotero desktop happens to be running —
+        # a different question, and one whose answer used to be reported as
+        # "Could not access library" for a library that was fully readable.
+        if _library.get_library_backend().name == "sqlite":
+            return (
+                f"Successfully switched to library **{library_id}** "
+                f"(type={library_type}). All tools now operate on this library."
+            )
         try:
             zot = _client.get_zotero_client()
             zot.add_parameters(limit=1)
@@ -1197,6 +1209,18 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
                         return (
                             f"Group '{library_id}' not found. "
                             f"Available groups: {', '.join(sorted(valid_ids))}"
+                        )
+                elif library_type == "user":
+                    # Previously unvalidated here, because the HTTP probe below
+                    # caught a bad id. That probe no longer runs when SQLite is
+                    # serving reads, so the check has to live here instead.
+                    # A local database holds exactly one personal library,
+                    # addressed as "0" by convention (see get_zotero_client).
+                    if library_id not in ("0", "", None):
+                        return (
+                            f"Personal library id '{library_id}' is not addressable "
+                            f"in local mode. Use '0', or switch to a group with "
+                            f"library_type='group'."
                         )
                 elif library_type == "feed":
                     valid_ids = {str(library["libraryID"]) for library in libraries if library["type"] == "feed"}

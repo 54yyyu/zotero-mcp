@@ -155,6 +155,27 @@ def facts(sqlite_db_path) -> dict:
             """,
             (library_id,),
         )
+        # A collection plus a word from one of its items' titles, so a
+        # collection-scoped search has something real to match.
+        scoped = one(
+            """
+            SELECT c.key AS collection_key, idv.value AS title
+            FROM collections c
+            JOIN collectionItems ci ON ci.collectionID = c.collectionID
+            JOIN items i ON i.itemID = ci.itemID
+            JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            JOIN itemData id ON id.itemID = i.itemID
+            JOIN itemDataValues idv ON idv.valueID = id.valueID
+            JOIN fields f ON f.fieldID = id.fieldID AND f.fieldName = 'title'
+            WHERE c.libraryID = ?
+              AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+              AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+              AND LENGTH(idv.value) > 12
+            LIMIT 1
+            """,
+            (library_id,),
+        )
+        group = one("SELECT groupID FROM groups LIMIT 1")
         citekey = one(
             """
             SELECT i.key AS key, v.value AS citekey
@@ -216,6 +237,8 @@ def facts(sqlite_db_path) -> dict:
             "tag": tag,
             "first_tag": first_tag,
             "citekey": citekey,
+            "scoped": scoped,
+            "group_id": group["groupID"] if group else None,
             "note_parent": note_parent,
             "annotated": annotated,
             "feed_library_id": feed["libraryID"] if feed else None,
@@ -649,3 +672,76 @@ def test_search_by_citation_key(sqlite_only, facts, dummy_ctx):
         "search_by_citation_key",
     )
     assert facts["citekey"]["key"] in out
+
+
+# --------------------------------------------------------------------------
+# regressions: reads that asked the API a question SQLite had already answered
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(120)
+def test_search_items_scoped_to_a_collection(sqlite_only, facts, dummy_ctx):
+    """A collection-scoped search must not deny a collection that exists.
+
+    This branch of `search_items` never reached the SQLite path: it validated
+    the key with `zot.collection()`, and with the API unreachable reported
+    "Collection not found" for a collection sitting right there in the
+    database. That is worse than an error — it is a confident wrong answer.
+    """
+    from zotero_mcp.tools.search import search_items
+
+    if facts["scoped"] is None:
+        pytest.skip("library has no collection with a titled item")
+    word = max(facts["scoped"]["title"].split(), key=len)
+    out = assert_served(
+        search_items(
+            query=word, limit=5,
+            collection_key=facts["scoped"]["collection_key"], ctx=dummy_ctx,
+        ),
+        "search_items(collection_key=...)",
+    )
+    assert "not found" not in out.lower(), (
+        f"denied a collection that exists: {out[:300]}"
+    )
+
+
+@pytest.mark.timeout(120)
+def test_switch_library_to_a_group(sqlite_only, facts, dummy_ctx):
+    """Switching must not require Zotero desktop to be running.
+
+    `validate_library_switch` already confirms the group against
+    zotero.sqlite, and every read after the switch is served from SQLite —
+    so the HTTP probe only proved the desktop app was up, which is a
+    different question from whether the library is readable.
+    """
+    import zotero_mcp.client as _client
+    from zotero_mcp.tools.retrieval import get_collections, switch_library
+
+    if facts["group_id"] is None:
+        pytest.skip("no group libraries in this database")
+    try:
+        out = assert_served(
+            switch_library(library_id=str(facts["group_id"]), library_type="group",
+                           ctx=dummy_ctx),
+            "switch_library(group)",
+        )
+        assert "could not access" not in out.lower(), out[:300]
+        # And the switch must actually take effect for subsequent reads.
+        assert_served(get_collections(limit=20, ctx=dummy_ctx), "get_collections after switch")
+    finally:
+        _client.clear_active_library()
+
+
+@pytest.mark.timeout(120)
+def test_switch_library_rejects_an_unknown_group(sqlite_only, facts, dummy_ctx):
+    """Dropping the HTTP probe must not drop validation with it."""
+    import zotero_mcp.client as _client
+    from zotero_mcp.tools.retrieval import switch_library
+
+    try:
+        out = switch_library(library_id="99999999", library_type="group", ctx=dummy_ctx)
+        assert "not found" in out.lower(), (
+            f"an unknown group should be refused, got: {out[:300]}"
+        )
+    finally:
+        _client.clear_active_library()

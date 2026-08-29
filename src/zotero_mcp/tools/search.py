@@ -353,37 +353,26 @@ def search_items(
             tag_condition_str = f" with tags: '{', '.join(tag)}'"
 
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
+        backend = _library.get_library_backend()
+        # Constructing the client makes no request — only calling it does — so
+        # the cascade below still has one to fall back to.
         zot = _client.get_zotero_client()
 
         limit = _helpers._normalize_limit(limit, default=10)
 
         if collection_key:
-            # Collection-scoped search — query the collection directly, no cascade needed
-            try:
-                _col = zot.collection(collection_key)
-            except Exception:
-                _col = None
-            if not _col or _col.get("key") != collection_key:
+            # Collection-scoped search — query the collection directly, no
+            # cascade needed. Both the existence check and the scoped query go
+            # through the backend: asking the HTTP API whether a collection
+            # exists made this branch answer "Collection not found" for a
+            # collection sitting in the database, whenever Zotero was closed.
+            if backend.get_collection(collection_key) is None:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            scope_keys = _helpers.expand_collection_scope(
-                zot, collection_key, include_subcollections
+            items = backend.search_items(
+                query, qmode=qmode, item_type=item_type, tag=tag, limit=limit,
+                collection_keys=[collection_key],
+                include_subcollections=include_subcollections,
             )
-            items = []
-            _seen: set[str] = set()
-            for _scope_key in scope_keys:
-                # limit applies to the merged result, so each subcollection may
-                # still contribute up to it before deduplication.
-                for _item in _helpers._paginate(
-                    zot.collection_items, _scope_key,
-                    q=query, qmode=qmode, itemType=item_type,
-                    max_items=limit, **({"tag": tag} if tag else {}),
-                ):
-                    _key = _item.get("key")
-                    if _key and _key in _seen:
-                        continue
-                    if _key:
-                        _seen.add(_key)
-                    items.append(_item)
             # Ahead of the slice, so a dropped note never costs a result slot
             # that a real match could have filled.
             items = _exclude_note_content_matches(items, qmode)
