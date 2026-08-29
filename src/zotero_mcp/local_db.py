@@ -556,6 +556,159 @@ def row_to_api_item(
     return item
 
 
+# ---------------------------------------------------------------------------
+# Full-fidelity readers backing the SQLite library backend (see library.py)
+# ---------------------------------------------------------------------------
+#
+# `row_to_api_item` above hydrates the eleven fields the two search tools
+# consume. The readers below hydrate whatever Zotero actually holds, because
+# the tools ported onto `LibraryBackend` promise more than search does:
+# `zotero_get_item_metadata` advertises "the complete raw Zotero item record",
+# `generate_bibtex` reads type-specific fields, and `format_item_metadata`
+# renders a trash status out of `data["deleted"]`.
+#
+# Every reader here answers in a fixed, small number of queries no matter how
+# many keys it is handed — the plural signatures are the whole point. Asking
+# for N items' children one key at a time costs ~3300x what a single JOIN
+# costs on a real-sized library, and paging a 17k-tag library at 100 rows per
+# OFFSET query costs ~67x a single SELECT. Both of those shapes exist only
+# because the Zotero API is remote; over a local file they are pure waste.
+
+#: Zotero's numeric attachment link modes, spelled as the API spells them.
+_LINK_MODES = {
+    0: "imported_file",
+    1: "imported_url",
+    2: "linked_file",
+    3: "linked_url",
+    4: "embedded_image",
+}
+
+#: Zotero's numeric annotation types, spelled as the API spells them. Same
+#: mapping `search_annotations_local` already uses.
+_ANNOTATION_TYPES = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}
+
+
+def _api_timestamp(value: str | None) -> str:
+    """Zotero stores 'YYYY-MM-DD HH:MM:SS'; the API returns ISO 8601 UTC."""
+    if not value:
+        return ""
+    if " " in value and not value.endswith("Z"):
+        return value.replace(" ", "T") + "Z"
+    return value
+
+
+def _api_date_field(value: str | None) -> str:
+    """Strip Zotero's sort prefix off a stored ``date`` value.
+
+    Dates are stored multipart — ``"2011-03-00 March 2011"`` — with the
+    user's own spelling after the first space, which is the only part the
+    API returns. Mirrors the SUBSTR in `_ITEM_HYDRATION_SELECT_TEMPLATE`.
+    """
+    if not value:
+        return ""
+    return value.split(" ", 1)[1] if " " in value else value
+
+
+def _api_filename(zotero_path: str | None) -> str:
+    """The bare filename the API reports for an attachment.
+
+    Stored paths are prefixed (``storage:foo.pdf``, ``attachments:a/b.pdf``)
+    or absolute; the API's ``filename`` is just the basename either way.
+    """
+    if not zotero_path:
+        return ""
+    tail = zotero_path.split(":", 1)[1] if ":" in zotero_path[:12] else zotero_path
+    return tail.rsplit("/", 1)[-1]
+
+
+def _row_to_full_api_item(
+    row,
+    fields: dict[str, str],
+    creators: list[dict],
+    tags: list[dict],
+    collections: list[str],
+    relations: dict[str, object],
+    library: tuple[int, str] | None,
+) -> dict:
+    """Build a complete pyzotero-shaped item record from one hydrated row.
+
+    The counterpart to `row_to_api_item` for callers that need the whole
+    record rather than the search projection: every ``itemData`` field under
+    its own name, the side-table fields for notes/attachments/annotations,
+    plus ``version``, ``collections``, ``relations``, ``parentItem`` and the
+    ``deleted`` flag the API sets on trashed items.
+    """
+    item_type = row["itemType"]
+    data: dict = {
+        "key": row["key"],
+        "version": row["version"],
+        "itemType": item_type,
+        "dateAdded": _api_timestamp(row["dateAdded"]),
+        "dateModified": _api_timestamp(row["dateModified"]),
+        "tags": tags,
+        "collections": collections,
+        "relations": relations,
+    }
+
+    for name, value in fields.items():
+        data[name] = _api_date_field(value) if name == "date" else value
+
+    if item_type not in ("attachment", "note", "annotation"):
+        data["creators"] = creators
+
+    if row["parentKey"]:
+        data["parentItem"] = row["parentKey"]
+
+    if item_type == "note":
+        data["note"] = row["noteBody"] or ""
+        # Zotero derives a note's title from its first line and stores it;
+        # `item_display_title` recomputes the same thing from the body, so
+        # only surface it when Zotero actually has one.
+        if row["noteTitle"]:
+            data["title"] = row["noteTitle"]
+    elif item_type == "attachment":
+        data["linkMode"] = _LINK_MODES.get(row["linkMode"], "")
+        data["contentType"] = row["contentType"] or ""
+        data["filename"] = _api_filename(row["path"])
+    elif item_type == "annotation":
+        data["annotationType"] = _ANNOTATION_TYPES.get(row["annType"], "")
+        data["annotationText"] = row["annText"] or ""
+        data["annotationComment"] = row["annComment"] or ""
+        data["annotationColor"] = row["annColor"] or ""
+        data["annotationPageLabel"] = row["annPageLabel"] or ""
+        data["annotationSortIndex"] = row["annSortIndex"] or ""
+        data["annotationPosition"] = row["annPosition"] or ""
+
+    if row["deleted"]:
+        data["deleted"] = 1
+
+    item = {"key": row["key"], "version": row["version"], "data": data}
+    if library is not None:
+        group_id, name = library
+        item["library"] = {
+            "id": group_id,
+            "type": "user" if group_id == PERSONAL_LIBRARY_GROUP_ID else "group",
+            "name": name,
+        }
+    return item
+
+
+def _row_to_api_collection(row) -> dict:
+    """Build a pyzotero-shaped collection record from a hydrated row."""
+    return {
+        "key": row["key"],
+        "version": row["version"],
+        "data": {
+            "key": row["key"],
+            "version": row["version"],
+            "name": row["collectionName"] or "",
+            "parentCollection": row["parentKey"] or False,
+            "relations": {},
+            **({"deleted": 1} if row["deleted"] else {}),
+        },
+    }
+
+
 class LocalZoteroReader:
     """
     Direct SQLite reader for Zotero's local database.
@@ -1951,6 +2104,8 @@ class LocalZoteroReader:
         tag: list[str] | None = None,
         limit: int = 10,
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        collection_keys: list[str] | None = None,
+        include_subcollections: bool = False,
     ) -> list[dict] | None:
         """#167 SQLite metadata search backend for zotero_search_items.
 
@@ -1971,6 +2126,36 @@ class LocalZoteroReader:
         lib_ids = self._resolve_scope_library_ids(group_id)
         if lib_ids is None:
             return None
+
+        collection_sql = ""
+        collection_params: list = []
+        if collection_keys:
+            # Scoping in SQL rather than by intersecting a separately-limited
+            # result set: the limit then still means "this many matches in
+            # this collection", which a post-filter cannot promise.
+            collection_ids: list[int] = []
+            seen_ids: set[int] = set()
+            for collection_key in collection_keys:
+                if include_subcollections:
+                    collection_ids.extend(
+                        self._resolve_collection_ids(conn, collection_key, seen_ids)
+                    )
+                else:
+                    # `_resolve_collection_ids` always walks descendants, so
+                    # the singular lookup is the one that means "this
+                    # collection only".
+                    own_id = self._resolve_collection_id(conn, collection_key)
+                    if own_id is not None and own_id not in seen_ids:
+                        seen_ids.add(own_id)
+                        collection_ids.append(own_id)
+            if not collection_ids:
+                return []
+            id_placeholders = ",".join("?" * len(collection_ids))
+            collection_sql = (
+                f" AND i.itemID IN (SELECT itemID FROM collectionItems"
+                f" WHERE collectionID IN ({id_placeholders}))"
+            )
+            collection_params = collection_ids
 
         tag_sql = ""
         tag_params: list = []
@@ -1994,10 +2179,16 @@ class LocalZoteroReader:
                 return None  # boolean itemType expressions ("a || b") unsupported
 
         variants = _generate_search_variants(query)
-        if not variants:
-            return None
         like_clauses: list[str] = []
         like_params: list = []
+        if not variants:
+            # A blank query is a *filter-only* search — "every item carrying
+            # this tag" — which is exactly what zotero_search_by_tag asks for
+            # and which this backend can answer perfectly well. It is only
+            # unanswerable with nothing else to filter on, since that would
+            # quietly mean "return the whole library".
+            if not (tag or item_type):
+                return None
         for variant in variants:
             # Escaped, but deliberately not zsearch_norm-folded: this free-text
             # path matches by OR-ing _generate_search_variants, which also
@@ -2028,12 +2219,16 @@ class LocalZoteroReader:
                 )
                 like_params.append(pattern)
 
+        like_sql = f" AND ({' OR '.join(like_clauses)})" if like_clauses else ""
         query_sql = (
             _item_hydration_select(len(lib_ids))
-            + f" {type_filter_sql} {tag_sql} AND ({' OR '.join(like_clauses)})"
+            + f" {type_filter_sql} {tag_sql}{collection_sql}{like_sql}"
             + " ORDER BY i.dateModified DESC LIMIT ?"
         )
-        params = list(lib_ids) + type_params + tag_params + like_params + [limit]
+        params = (
+            list(lib_ids) + type_params + tag_params + collection_params
+            + like_params + [limit]
+        )
         rows = conn.execute(query_sql, params).fetchall()
         return self._hydrate_rows(conn, rows)
 
@@ -2094,6 +2289,554 @@ class LocalZoteroReader:
         all_params = list(lib_ids) + params
         rows = conn.execute(query_sql, all_params).fetchall()
         return self._hydrate_rows(conn, rows)
+
+
+    # -- full-fidelity readers for the SQLite library backend --------------
+    #
+    # See the module-level note above `_row_to_full_api_item`. Each of these
+    # takes a *collection* of keys and answers in a fixed number of queries;
+    # none of them pages, because there is nothing to page over.
+
+    def _fetch_fields(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, dict[str, str]]:
+        """Every ``itemData`` field of every given item, in one query."""
+        if not item_ids:
+            return {}
+        placeholders = ",".join("?" * len(item_ids))
+        rows = conn.execute(
+            f"""
+            SELECT id.itemID, f.fieldName, idv.value
+            FROM itemData id
+            JOIN itemDataValues idv ON idv.valueID = id.valueID
+            JOIN fields f ON f.fieldID = id.fieldID
+            WHERE id.itemID IN ({placeholders})
+            """,
+            item_ids,
+        ).fetchall()
+        result: dict[int, dict[str, str]] = {}
+        for row in rows:
+            result.setdefault(row["itemID"], {})[row["fieldName"]] = row["value"]
+        return result
+
+    def _fetch_item_collections(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[str]]:
+        """Collection keys each given item belongs to, in one query."""
+        if not item_ids:
+            return {}
+        placeholders = ",".join("?" * len(item_ids))
+        rows = conn.execute(
+            f"""
+            SELECT ci.itemID, c.key
+            FROM collectionItems ci
+            JOIN collections c ON c.collectionID = ci.collectionID
+            WHERE ci.itemID IN ({placeholders})
+            """,
+            item_ids,
+        ).fetchall()
+        result: dict[int, list[str]] = {}
+        for row in rows:
+            result.setdefault(row["itemID"], []).append(row["key"])
+        return result
+
+    def _fetch_relations(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, dict[str, object]]:
+        """Relation predicates and objects per item, in one query.
+
+        Shaped exactly as the API shapes them: a lone object is a bare
+        string, several are a list. `zotero_get_item_related` normalises
+        both, but matching the API keeps the two backends comparable.
+        """
+        if not item_ids:
+            return {}
+        placeholders = ",".join("?" * len(item_ids))
+        rows = conn.execute(
+            f"""
+            SELECT ir.itemID, rp.predicate, ir.object
+            FROM itemRelations ir
+            JOIN relationPredicates rp ON rp.predicateID = ir.predicateID
+            WHERE ir.itemID IN ({placeholders})
+            """,
+            item_ids,
+        ).fetchall()
+        gathered: dict[int, dict[str, list[str]]] = {}
+        for row in rows:
+            gathered.setdefault(row["itemID"], {}).setdefault(row["predicate"], []).append(row["object"])
+        return {
+            item_id: {pred: (objs[0] if len(objs) == 1 else objs) for pred, objs in preds.items()}
+            for item_id, preds in gathered.items()
+        }
+
+    _FULL_ITEM_COLUMNS = """
+            SELECT i.itemID, i.key, i.libraryID, i.version, i.dateAdded, i.dateModified,
+                   it.typeName AS itemType,
+                   (del.itemID IS NOT NULL) AS deleted,
+                   parent.key AS parentKey,
+                   ia.linkMode AS linkMode, ia.contentType AS contentType, ia.path AS path,
+                   n.note AS noteBody, n.title AS noteTitle,
+                   ann.type AS annType, ann.text AS annText, ann.comment AS annComment,
+                   ann.color AS annColor, ann.pageLabel AS annPageLabel,
+                   ann.sortIndex AS annSortIndex, ann.position AS annPosition
+            FROM items i
+            JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            LEFT JOIN itemAttachments ia ON ia.itemID = i.itemID
+            LEFT JOIN itemNotes n ON n.itemID = i.itemID
+            LEFT JOIN itemAnnotations ann ON ann.itemID = i.itemID
+            LEFT JOIN items parent
+                ON parent.itemID = COALESCE(ia.parentItemID, n.parentItemID, ann.parentItemID)
+    """
+
+    def _build_full_items(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
+        """Hydrate `_FULL_ITEM_COLUMNS` rows into complete API-shaped items.
+
+        Five queries total regardless of row count: fields, creators, tags,
+        collection membership, relations.
+        """
+        if not rows:
+            return []
+        item_ids = [row["itemID"] for row in rows]
+        fields = self._fetch_fields(conn, item_ids)
+        creators = self._fetch_creators(conn, item_ids)
+        tags = self._fetch_tags(conn, item_ids)
+        collections = self._fetch_item_collections(conn, item_ids)
+        relations = self._fetch_relations(conn, item_ids)
+        labels = self.get_library_labels()
+        return [
+            _row_to_full_api_item(
+                row,
+                fields.get(row["itemID"], {}),
+                creators.get(row["itemID"], []),
+                tags.get(row["itemID"], []),
+                collections.get(row["itemID"], []),
+                relations.get(row["itemID"], {}),
+                labels.get(row["libraryID"]),
+            )
+            for row in rows
+        ]
+
+    def get_full_items(
+        self,
+        keys: list[str],
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        include_trashed: bool = True,
+    ) -> dict[str, dict]:
+        """Complete records for `keys`, keyed by item key.
+
+        Trashed items are included by default and carry ``data["deleted"]``:
+        an item lookup by key must still find them — `zotero_get_item_metadata`
+        documents exactly that, and renders a trash status — unlike the list
+        readers below, which exclude them.
+
+        Keys with no matching item in scope are simply absent from the result.
+        """
+        if not keys:
+            return {}
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return {}
+        lib_ph = ",".join("?" * len(lib_ids))
+        key_ph = ",".join("?" * len(keys))
+        trash_sql = "" if include_trashed else " AND del.itemID IS NULL"
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f" WHERE i.libraryID IN ({lib_ph}) AND i.key IN ({key_ph}){trash_sql}",
+            list(lib_ids) + list(keys),
+        ).fetchall()
+        return {item["key"]: item for item in self._build_full_items(conn, rows)}
+
+    def get_children_of(
+        self,
+        parent_keys: list[str],
+        *,
+        item_type: str | None = None,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> dict[str, list[dict]]:
+        """Children of every given parent, keyed by parent key, in one pass.
+
+        The plural signature is the reason this exists: `zot.children()` is
+        one call per parent because each one used to be an HTTP round trip,
+        which over SQLite costs ~3300x a single lookup for a 100-key batch.
+        Parents with no children map to an empty list, so a caller can tell
+        "no children" from "not asked for".
+
+        Child ids come from a UNION over the three side tables rather than
+        from a ``COALESCE(...)`` join on ``items``: the union hits an index
+        on each table's ``parentItemID``, while the COALESCE cannot use one
+        and scans (2.9 ms vs 99.7 ms for 100 parents, measured).
+        """
+        if not parent_keys:
+            return {}
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return {}
+        lib_ph = ",".join("?" * len(lib_ids))
+        key_ph = ",".join("?" * len(parent_keys))
+
+        parent_ids = {
+            row["itemID"]: row["key"]
+            for row in conn.execute(
+                f"SELECT itemID, key FROM items"
+                f" WHERE libraryID IN ({lib_ph}) AND key IN ({key_ph})",
+                list(lib_ids) + list(parent_keys),
+            ).fetchall()
+        }
+        result: dict[str, list[dict]] = {key: [] for key in parent_keys}
+        if not parent_ids:
+            return result
+
+        pid_ph = ",".join("?" * len(parent_ids))
+        pids = list(parent_ids)
+        links = conn.execute(
+            f"""
+            SELECT itemID, parentItemID FROM itemAttachments WHERE parentItemID IN ({pid_ph})
+            UNION ALL
+            SELECT itemID, parentItemID FROM itemNotes WHERE parentItemID IN ({pid_ph})
+            UNION ALL
+            SELECT itemID, parentItemID FROM itemAnnotations WHERE parentItemID IN ({pid_ph})
+            """,
+            pids * 3,
+        ).fetchall()
+        if not links:
+            return result
+
+        parent_of = {row["itemID"]: row["parentItemID"] for row in links}
+        child_ph = ",".join("?" * len(parent_of))
+        type_sql, type_params = "", []
+        if item_type:
+            type_sql = " AND it.typeName = ?"
+            type_params = [item_type]
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" WHERE i.itemID IN ({child_ph})
+                   AND del.itemID IS NULL{type_sql}
+                   ORDER BY i.itemID""",
+            list(parent_of) + type_params,
+        ).fetchall()
+        for row, item in zip(rows, self._build_full_items(conn, rows)):
+            parent_key = parent_ids.get(parent_of.get(row["itemID"]))
+            if parent_key is not None:
+                result[parent_key].append(item)
+        return result
+
+    def list_items_of_type(
+        self,
+        item_type: str | None = None,
+        *,
+        limit: int = 100,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        tag: list[str] | None = None,
+    ) -> list[dict] | None:
+        """Items of one type across the library, fully hydrated.
+
+        Serves the library-wide listings (`itemType="annotation"`,
+        `"note"`, `"-attachment"`) that several tools walk. Full hydration
+        matters here rather than the search projection: annotation records
+        carry their text and comment in a side table, and a caller
+        digesting them needs those fields.
+
+        Returns None when the tag filter uses a shape this backend cannot
+        express, so the caller can fall back.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+
+        type_sql, type_params = "", []
+        if item_type:
+            if item_type.startswith("-") and item_type.count("-") == 1 and "||" not in item_type:
+                type_sql = " AND it.typeName != ?"
+                type_params = [item_type[1:]]
+            elif re.fullmatch(r"[A-Za-z]+", item_type):
+                type_sql = " AND it.typeName = ?"
+                type_params = [item_type]
+            else:
+                return None
+
+        tag_sql, tag_params = "", []
+        if tag:
+            built = _tag_dsl_condition(tag)
+            if built is None:
+                return None
+            tag_clause, tag_params = built
+            tag_sql = f" AND {tag_clause}"
+
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL{type_sql}{tag_sql}
+                   ORDER BY i.dateModified DESC LIMIT ?""",
+            list(lib_ids) + type_params + tag_params + [limit],
+        ).fetchall()
+        return self._build_full_items(conn, rows)
+
+    def find_by_citation_key(
+        self,
+        citekey: str,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> dict | None:
+        """The item owning `citekey`, matched exactly.
+
+        Zotero 7 stores the key in a real ``citationKey`` field, so this is
+        an indexed equality match rather than the ranked substring search
+        the API path had to use. Older items keep it as a ``Citation Key:``
+        line inside ``extra``; those are checked second, which is why the
+        pattern match is only reached when the field lookup misses.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return None
+        lib_ph = ",".join("?" * len(lib_ids))
+
+        row = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" JOIN itemData ck_data ON ck_data.itemID = i.itemID
+                   JOIN fields ck_f
+                       ON ck_f.fieldID = ck_data.fieldID AND ck_f.fieldName = 'citationKey'
+                   JOIN itemDataValues ck_v ON ck_v.valueID = ck_data.valueID
+                   WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL
+                   AND ck_v.value = ?
+                   LIMIT 1""",
+            list(lib_ids) + [citekey],
+        ).fetchone()
+        if row is not None:
+            return self._build_full_items(conn, [row])[0]
+
+        # Legacy placement: a "Citation Key: <key>" line in `extra`. LIKE
+        # narrows to candidates; the exact line match is applied in Python
+        # by the caller's `_extra_has_citekey`, so this only has to avoid
+        # returning the wrong item, not parse the field itself.
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" JOIN itemData ex_data ON ex_data.itemID = i.itemID
+                   JOIN fields ex_f
+                       ON ex_f.fieldID = ex_data.fieldID AND ex_f.fieldName = 'extra'
+                   JOIN itemDataValues ex_v ON ex_v.valueID = ex_data.valueID
+                   WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL
+                   AND ex_v.value LIKE ?
+                   LIMIT 25""",
+            list(lib_ids) + [f"%{_semantics.escape_like(citekey)}%"],
+        ).fetchall()
+        for item in self._build_full_items(conn, rows):
+            if item["data"].get("citationKey") == citekey:
+                return item
+            from zotero_mcp.tools._helpers import _extra_has_citekey
+
+            if _extra_has_citekey(item["data"].get("extra", ""), citekey):
+                return item
+        return None
+
+    def get_recent_items(
+        self,
+        *,
+        limit: int = 10,
+        collection_key: str | None = None,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        sort: str = "dateAdded",
+        direction: str = "desc",
+    ) -> list[dict] | None:
+        """Most recently added/modified top-level items.
+
+        Returns None for a sort field this backend cannot order by, so the
+        caller can fall back rather than silently reorder the answer.
+        """
+        sort_column = {
+            "dateAdded": "i.dateAdded",
+            "dateModified": "i.dateModified",
+            "title": "title_val.value",
+        }.get(sort)
+        if sort_column is None or direction.lower() not in ("asc", "desc"):
+            return None
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+        collection_sql, collection_params = "", []
+        if collection_key:
+            collection_id = self._resolve_collection_id(conn, collection_key)
+            if collection_id is None:
+                return []
+            collection_sql = (
+                " AND i.itemID IN (SELECT itemID FROM collectionItems WHERE collectionID = ?)"
+            )
+            collection_params = [collection_id]
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + """ LEFT JOIN itemData title_data
+                      ON title_data.itemID = i.itemID AND title_data.fieldID = 1
+                  LEFT JOIN itemDataValues title_val ON title_val.valueID = title_data.valueID"""
+            + f""" WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL
+                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                   {collection_sql}
+                   ORDER BY {sort_column} {direction.upper()} LIMIT ?""",
+            list(lib_ids) + collection_params + [limit],
+        ).fetchall()
+        return self._build_full_items(conn, rows)
+
+    def get_related_items(
+        self,
+        key: str,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> list[dict]:
+        """Items related to `key`, hydrated in one batch.
+
+        Relations are stored as URIs; the related keys are extracted from
+        them here so the caller gets items rather than strings to re-fetch
+        one at a time.
+        """
+        source = self.get_full_items([key], group_id=group_id)
+        item = source.get(key)
+        if item is None:
+            return []
+        related_keys: list[str] = []
+        for objects in item["data"].get("relations", {}).values():
+            for uri in objects if isinstance(objects, list) else [objects]:
+                match = re.search(r"/items/([A-Z0-9]{8})$", uri) if isinstance(uri, str) else None
+                if match and match.group(1) not in related_keys:
+                    related_keys.append(match.group(1))
+        if not related_keys:
+            return []
+        fetched = self.get_full_items(related_keys, group_id=group_id)
+        return [fetched[k] for k in related_keys if k in fetched]
+
+    # -- collections and tags ---------------------------------------------
+
+    def list_collections(
+        self,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        include_trashed: bool = False,
+    ) -> list[dict]:
+        """Every collection in scope, API-shaped, in one query.
+
+        Unpaged by design: `_paginate` would turn this into an OFFSET walk,
+        which on a large library is where the 67x tag penalty came from.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+        trash_sql = "" if include_trashed else " AND dc.collectionID IS NULL"
+        rows = conn.execute(
+            f"""
+            SELECT c.collectionID, c.key, c.collectionName, c.version, c.libraryID,
+                   parent.key AS parentKey,
+                   (dc.collectionID IS NOT NULL) AS deleted
+            FROM collections c
+            LEFT JOIN collections parent ON parent.collectionID = c.parentCollectionID
+            LEFT JOIN deletedCollections dc ON dc.collectionID = c.collectionID
+            WHERE c.libraryID IN ({lib_ph}){trash_sql}
+            ORDER BY c.collectionName
+            """,
+            list(lib_ids),
+        ).fetchall()
+        return [_row_to_api_collection(row) for row in rows]
+
+    def get_collection(
+        self,
+        collection_key: str,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> dict | None:
+        """One collection by key, or None when it is not in scope."""
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return None
+        lib_ph = ",".join("?" * len(lib_ids))
+        row = conn.execute(
+            f"""
+            SELECT c.collectionID, c.key, c.collectionName, c.version, c.libraryID,
+                   parent.key AS parentKey,
+                   (dc.collectionID IS NOT NULL) AS deleted
+            FROM collections c
+            LEFT JOIN collections parent ON parent.collectionID = c.parentCollectionID
+            LEFT JOIN deletedCollections dc ON dc.collectionID = c.collectionID
+            WHERE c.libraryID IN ({lib_ph}) AND c.key = ?
+            """,
+            list(lib_ids) + [collection_key],
+        ).fetchone()
+        return _row_to_api_collection(row) if row is not None else None
+
+    def get_collection_items(
+        self,
+        collection_key: str,
+        *,
+        include_subcollections: bool = False,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> list[dict] | None:
+        """Items filed in a collection, optionally including its subtree.
+
+        Returns None when the key names no collection in scope, so callers
+        can distinguish that from an empty collection.
+        """
+        conn = self._get_connection()
+        # `_resolve_collection_ids` always walks descendants; the singular
+        # lookup is the one that means "this collection only".
+        if include_subcollections:
+            collection_ids = self._resolve_collection_ids(conn, collection_key)
+        else:
+            own_id = self._resolve_collection_id(conn, collection_key)
+            collection_ids = [own_id] if own_id is not None else []
+        if not collection_ids:
+            return None
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+        coll_ph = ",".join("?" * len(collection_ids))
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f""" WHERE i.libraryID IN ({lib_ph})
+                   AND del.itemID IS NULL
+                   AND i.itemID IN (
+                        SELECT itemID FROM collectionItems WHERE collectionID IN ({coll_ph}))
+                   ORDER BY i.itemID""",
+            list(lib_ids) + list(collection_ids),
+        ).fetchall()
+        return self._build_full_items(conn, rows)
+
+    def list_tags(
+        self,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        limit: int | None = None,
+    ) -> list[str]:
+        """Every tag name in scope, sorted, in one query.
+
+        Measured at 221 ms for 17 302 tags against a 2.3 GB database; the
+        same listing walked at 100 rows per OFFSET query took 14.9 s.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+        limit_sql, limit_params = "", []
+        if limit is not None:
+            limit_sql, limit_params = " LIMIT ?", [limit]
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT t.name
+            FROM tags t
+            JOIN itemTags itg ON itg.tagID = t.tagID
+            JOIN items i ON i.itemID = itg.itemID
+            WHERE i.libraryID IN ({lib_ph})
+              AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            ORDER BY t.name{limit_sql}
+            """,
+            list(lib_ids) + limit_params,
+        ).fetchall()
+        return [row["name"] for row in rows]
 
 
 def get_local_zotero_reader() -> LocalZoteroReader | None:

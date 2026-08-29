@@ -5,7 +5,7 @@ from typing import Literal
 
 import requests
 
-from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils  # noqa: F401  (kept for module-level conventions)
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
@@ -18,19 +18,18 @@ _ITEM_KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
 _HTTP_TIMEOUT = 30
 
 
-def _doi_in_library(zot, doi: str) -> bool:
+def _doi_in_library(backend, doi: str) -> bool:
     """Best-effort membership check: is a paper with this DOI already in Zotero?
 
-    Tolerates any pyzotero error by returning False (treat as "not in library").
+    Tolerates any backend error by returning False (treat as "not in library").
     """
     if not doi:
         return False
     try:
-        zot.add_parameters(q=doi, qmode="everything", itemType="-attachment", limit=5)
-        results = zot.items()
+        results = backend.search_items(doi, qmode="everything", limit=5)
     except Exception:
         try:
-            results = zot.items(q=doi, qmode="everything", itemType="-attachment", limit=5)
+            results = backend.search_items(doi, qmode="everything", limit=5)
         except Exception:
             return False
     norm = doi.strip().lower()
@@ -90,14 +89,14 @@ def _openalex_get(url: str, params: dict | None = None) -> dict | None:
         return None
 
 
-def _resolve_doi(identifier: str, zot) -> str | None:
+def _resolve_doi(identifier: str, backend) -> str | None:
     """Resolve an identifier (Zotero item key or DOI/URL) to a normalized DOI."""
     ident = (identifier or "").strip()
     if not ident:
         return None
     if _ITEM_KEY_RE.match(ident):
         try:
-            item = zot.item(ident)
+            item = backend.get_item(ident)
         except Exception:
             return None
         raw_doi = (item or {}).get("data", {}).get("DOI")
@@ -162,10 +161,10 @@ def find_related_papers(
             return "Error: direction must be 'references', 'citations', or 'both'."
 
         limit = _helpers._normalize_limit(limit, default=20, max_val=50)
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
 
         ctx.info(f"Resolving identifier to DOI: {identifier}")
-        doi = _resolve_doi(identifier, zot)
+        doi = _resolve_doi(identifier, backend)
         if not doi:
             return (
                 f"Could not resolve a DOI for '{identifier}'. Provide a valid "
@@ -211,7 +210,7 @@ def find_related_papers(
 
         # Flag library membership for every related paper.
         for p in references + citations:
-            p["in_library"] = _doi_in_library(zot, p["doi"]) if p["doi"] else False
+            p["in_library"] = _doi_in_library(backend, p["doi"]) if p["doi"] else False
 
         src_title = work.get("title") or work.get("display_name") or doi
         output = [
@@ -241,11 +240,14 @@ def find_related_papers(
         return f"Error finding related papers: {e}"
 
 
-def _item_has_pdf(zot, item: dict) -> bool:
+def _item_has_pdf(children_by_key: dict[str, list[dict]], item: dict) -> bool:
     """Return True if the item is/has a PDF attachment.
 
-    A standalone PDF attachment counts directly; otherwise we inspect the
-    item's children for any PDF attachment. Tolerant of children() errors.
+    A standalone PDF attachment counts directly; otherwise the item's
+    children are inspected. Children arrive pre-fetched for the whole scan,
+    so this makes no request of its own. A key whose lookup failed is absent
+    from the mapping and reads as "no PDF", matching the previous
+    error-tolerant behaviour.
     """
     data = item.get("data", {})
     if data.get("itemType") == "attachment" and data.get("contentType") == "application/pdf":
@@ -253,11 +255,7 @@ def _item_has_pdf(zot, item: dict) -> bool:
     key = item.get("key") or data.get("key")
     if not key:
         return False
-    try:
-        children = _helpers._paginate(zot.children, key)
-    except Exception:
-        return False
-    for child in children or []:
+    for child in children_by_key.get(key) or []:
         cdata = child.get("data", {})
         if cdata.get("itemType") == "attachment" and cdata.get("contentType") == "application/pdf":
             return True
@@ -294,24 +292,27 @@ def library_coverage(
     """Report PDF-attachment coverage across the library or a collection."""
     try:
         limit = _helpers._normalize_limit(limit, default=200, max_val=2000)
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
 
         skip_types = {"attachment", "note", "annotation"}
 
         ctx.info("Scanning library for PDF coverage...")
         if collection_key:
-            items = _helpers._paginate(
-                zot.collection_items,
-                collection_key,
-                max_items=limit,
-                itemType="-attachment",
-            )
+            items = [
+                item for item in (backend.collection_items(collection_key) or [])
+                if item.get("data", {}).get("itemType") != "attachment"
+            ][:limit]
         else:
-            items = _helpers._paginate(
-                zot.items,
-                max_items=limit,
-                itemType="-attachment",
-            )
+            items = backend.list_items("-attachment", limit=limit)
+
+        # One children lookup for the whole scan. This used to be a call per
+        # item inside the loop below — up to 2000 round trips for a single
+        # coverage report.
+        scan_keys = [
+            key for item in (items or [])
+            if (key := item.get("key") or item.get("data", {}).get("key"))
+        ]
+        children_by_key = backend.get_children(scan_keys) if scan_keys else {}
 
         scanned = 0
         with_pdf = 0
@@ -327,7 +328,7 @@ def library_coverage(
                 continue
 
             scanned += 1
-            if _item_has_pdf(zot, item):
+            if _item_has_pdf(children_by_key, item):
                 with_pdf += 1
             else:
                 title = data.get("title") or data.get("filename") or "Untitled"

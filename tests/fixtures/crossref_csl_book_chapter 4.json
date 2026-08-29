@@ -1,0 +1,160 @@
+{
+  "indexed": {
+    "date-parts": [
+      [
+        2026,
+        6,
+        3
+      ]
+    ],
+    "date-time": "2026-06-03T12:03:24Z",
+    "timestamp": 1780488204514,
+    "version": "3.54.1"
+  },
+  "reference-count": 0,
+  "publisher": "University of Colorado Press",
+  "isbn-type": [
+    {
+      "value": "9781607320395",
+      "type": "electronic"
+    }
+  ],
+  "content-domain": {
+    "domain": [],
+    "crossmark-restriction": false
+  },
+  "published-print": {
+    "date-parts": [
+      [
+        2009,
+        11,
+        15
+      ]
+    ]
+  },
+  "DOI": "10.5876/9781607320395.c008",
+  "type": "book-chapter",
+  "created": {
+    "date-parts": [
+      [
+        2026,
+        6,
+        3
+      ]
+    ],
+    "date-time": "2026-06-03T11:04:46Z",
+    "timestamp": 1780484686000
+  },
+  "page": "161-185",
+  "source": "Crossref",
+  "is-referenced-by-count": 0,
+  "title": "5 From Shacks to Shanties",
+  "prefix": "10.5876",
+  "author": [
+    {
+      "given": "Sarah J.",
+      "family": "Chicone",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+        {
+          "vocabulary": "crossref",
+          "role": "author"
+        }
+      ]
+    }
+  ],
+  "member": "3910",
+  "container-title": "The Archaeology of Class War",
+  "original-title": [],
+  "link": [
+    {
+      "URL": "https://www.degruyterbrill.com/document/doi/10.5876/9781607320395.c008/xml",
+      "content-type": "application/xml",
+      "content-version": "vor",
+      "intended-application": "text-mining"
+    },
+    {
+      "URL": "https://www.degruyterbrill.com/document/doi/10.5876/9781607320395.c008/pdf",
+      "content-type": "unspecified",
+      "content-version": "vor",
+      "intended-application": "similarity-checking"
+    }
+  ],
+  "deposited": {
+    "date-parts": [
+      [
+        2026,
+        6,
+        3
+      ]
+    ],
+    "date-time": "2026-06-03T11:04:47Z",
+    "timestamp": 1780484687000
+  },
+  "score": 1,
+  "resource": {
+    "primary": {
+      "URL": "https://www.degruyterbrill.com/document/doi/10.5876/9781607320395.c008/html"
+    }
+  },
+  "subtitle": [
+    "Working-Class Poverty and the 1913–1914 Southern Colorado Coalfield Strike"
+  ],
+  "editor": [
+    {
+      "given": "Karin",
+      "family": "Larkin",
+      "sequence": "first",
+      "affiliation": [],
+      "role": [
+        {
+          "vocabulary": "crossref",
+          "role": "editor"
+        }
+      ]
+    },
+    {
+      "given": "Randall H.",
+      "family": "McGuire",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+        {
+          "vocabulary": "crossref",
+          "role": "editor"
+        }
+      ]
+    }
+  ],
+  "short-title": [],
+  "issued": {
+    "date-parts": [
+      [
+        2009,
+        11,
+        15
+      ]
+    ]
+  },
+  "ISBN": [
+    "9781607320395"
+  ],
+  "references-count": 0,
+  "alternative-id": [
+    "10.5876/9781607320395.c008",
+    "10.5876/9781607320395"
+  ],
+  "URL": "http://dx.doi.org/10.5876/9781607320395.c008",
+  "relation": {},
+  "subject": [],
+  "published": {
+    "date-parts": [
+      [
+        2009,
+        11,
+        15
+      ]
+    ]
+  }
+}

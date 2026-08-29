@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -352,37 +353,26 @@ def search_items(
             tag_condition_str = f" with tags: '{', '.join(tag)}'"
 
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
+        backend = _library.get_library_backend()
+        # Constructing the client makes no request — only calling it does — so
+        # the cascade below still has one to fall back to.
         zot = _client.get_zotero_client()
 
         limit = _helpers._normalize_limit(limit, default=10)
 
         if collection_key:
-            # Collection-scoped search — query the collection directly, no cascade needed
-            try:
-                _col = zot.collection(collection_key)
-            except Exception:
-                _col = None
-            if not _col or _col.get("key") != collection_key:
+            # Collection-scoped search — query the collection directly, no
+            # cascade needed. Both the existence check and the scoped query go
+            # through the backend: asking the HTTP API whether a collection
+            # exists made this branch answer "Collection not found" for a
+            # collection sitting in the database, whenever Zotero was closed.
+            if backend.get_collection(collection_key) is None:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            scope_keys = _helpers.expand_collection_scope(
-                zot, collection_key, include_subcollections
+            items = backend.search_items(
+                query, qmode=qmode, item_type=item_type, tag=tag, limit=limit,
+                collection_keys=[collection_key],
+                include_subcollections=include_subcollections,
             )
-            items = []
-            _seen: set[str] = set()
-            for _scope_key in scope_keys:
-                # limit applies to the merged result, so each subcollection may
-                # still contribute up to it before deduplication.
-                for _item in _helpers._paginate(
-                    zot.collection_items, _scope_key,
-                    q=query, qmode=qmode, itemType=item_type,
-                    max_items=limit, **({"tag": tag} if tag else {}),
-                ):
-                    _key = _item.get("key")
-                    if _key and _key in _seen:
-                        continue
-                    if _key:
-                        _seen.add(_key)
-                    items.append(_item)
             # Ahead of the slice, so a dropped note never costs a result slot
             # that a real match could have filled.
             items = _exclude_note_content_matches(items, qmode)
@@ -611,38 +601,27 @@ def search_by_tag(
             return "Error: Tag cannot be empty"
 
         ctx.info(f"Searching Zotero for tag '{tag}'")
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
 
         limit = _helpers._normalize_limit(limit, default=10)
 
         # Search library-wide or scoped to a collection
         if collection_key:
-            try:
-                _col = zot.collection(collection_key)
-            except Exception:
-                _col = None
-            if not _col or _col.get("key") != collection_key:
+            if backend.get_collection(collection_key) is None:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            scope_keys = _helpers.expand_collection_scope(
-                zot, collection_key, include_subcollections
+            # Scope goes down into the query rather than filtering a
+            # separately-limited result set, so `limit` still means "this
+            # many matches in this collection" and the tag DSL (`a OR b`,
+            # `-c`) stays evaluated in exactly one place per backend.
+            results = backend.search_items(
+                "", item_type=item_type, tag=tag, limit=limit,
+                collection_keys=[collection_key],
+                include_subcollections=include_subcollections,
             )
-            results = []
-            _seen: set[str] = set()
-            for _scope_key in scope_keys:
-                for _item in _helpers._paginate(
-                    zot.collection_items, _scope_key,
-                    tag=tag, itemType=item_type, max_items=limit,
-                ):
-                    _key = _item.get("key")
-                    if _key and _key in _seen:
-                        continue
-                    if _key:
-                        _seen.add(_key)
-                    results.append(_item)
-            results = results[:limit]
         else:
-            zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
-            results = zot.items()
+            results = backend.search_items(
+                "", item_type=item_type, tag=tag, limit=limit
+            )
 
         if not results:
             if collection_key:
@@ -718,21 +697,19 @@ def search_by_citation_key(
         citekey = citekey.strip()
         ctx.info(f"Looking up citation key: {citekey}")
 
-        # Strategy A: pyzotero search across all fields, then verify via Extra.
-        # Note: the previous BetterBibTeX ``item.search`` JSON-RPC call was
-        # removed in #293 — that BBT method does not exist in current versions
-        # (always returned -32601 Method not found) and the exception handler
-        # silently fell through to the same Extra-field search, so the BBT
-        # branch only added noise.
-        zot = _client.get_zotero_client()
-        zot.add_parameters(q=citekey, qmode="everything", itemType="-attachment", limit=25)
-        results = zot.items()
-
-        for item in results:
-            data = item.get("data", {})
-            extra = data.get("extra", "")
-            if data.get("citationKey") == citekey or _helpers._extra_has_citekey(extra, citekey):
-                return _helpers._format_citekey_result(item, citekey)
+        # The BetterBibTeX ``item.search`` JSON-RPC call was removed in #293 —
+        # that BBT method does not exist in current versions (always returned
+        # -32601 Method not found) and the handler fell through to the same
+        # Extra-field search anyway, so the BBT branch only added noise.
+        #
+        # The SQLite backend matches Zotero 7's real ``citationKey`` field
+        # exactly. The API backend still has to rank a substring search and
+        # verify the top 25 candidates, since there is nothing to query
+        # server-side — which is why a key outside that window used to be
+        # reported as missing.
+        item = _library.get_library_backend().find_by_citation_key(citekey)
+        if item is not None:
+            return _helpers._format_citekey_result(item, citekey)
 
         return f"No item found with citation key: '{citekey}'"
 
