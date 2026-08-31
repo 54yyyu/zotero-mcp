@@ -1700,8 +1700,13 @@ def add_by_doi(
             if if_exists != "duplicate" and pending:
                 still_pending: list[tuple[int, dict]] = []
                 for i, payload in pending:
+                    # CrossRef metadata is in hand here, so pass the title: a
+                    # DOI is not server-side searchable, and the identifier
+                    # query alone misses items already in the library.
                     existing = _helpers.find_existing_items(
-                        read_zot, doi=payload["doi"], ctx=ctx
+                        read_zot, doi=payload["doi"],
+                        title=(payload.get("item_data") or {}).get("title"),
+                        ctx=ctx,
                     )
                     if existing:
                         work_results[i] = _handle_existing_item(
@@ -2242,8 +2247,11 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     # note; the metadata fetch above sits between the first check and here.
     with _helpers.identifier_lock("arxiv", arxiv_id), zotero_api_lock():
         if if_exists != "duplicate":
+            # The title is known by now (fetched above), so pass it: the arXiv
+            # ID is not server-side searchable, and the identifier query alone
+            # misses items that are already in the library.
             existing = _helpers.find_existing_items(
-                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
+                read_zot or write_zot, arxiv_id=arxiv_id, title=title, ctx=ctx
             )
             if existing:
                 return _handle_existing_item(
@@ -2599,8 +2607,12 @@ def add_by_isbn(
         # stay outside the lock — that is the whole point of the narrowing.
         with _helpers.identifier_lock("isbn", normalized):
             if if_exists != "duplicate":
+                # Open Library / Google Books metadata is in hand by now, so
+                # pass the title: an ISBN is not server-side searchable, and
+                # the identifier query alone misses books already shelved.
                 existing = _helpers.find_existing_items(
-                    read_zot, isbn=normalized, ctx=ctx
+                    read_zot, isbn=normalized,
+                    title=item_data.get("title"), ctx=ctx,
                 )
                 if existing:
                     return _handle_existing_item(
@@ -5132,7 +5144,14 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
     doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
     if not doi:
         return None
-    existing = _helpers.find_existing_items(read_zot, doi=doi, ctx=ctx)
+    # The entry's title comes along as a search key, not as a match rule:
+    # a DOI is not server-side searchable, so without it the lookup misses
+    # items that are already here and the batch re-creates every one of
+    # them. The DOI still decides (see find_existing_items), so "entries
+    # without a DOI always create" above is unaffected.
+    existing = _helpers.find_existing_items(
+        read_zot, doi=doi, title=item_data.get("title"), ctx=ctx
+    )
     if not existing:
         return None
 

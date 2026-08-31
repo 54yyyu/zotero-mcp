@@ -99,6 +99,30 @@ def _patch_clients(monkeypatch, zot):
 # find_existing_items
 # ---------------------------------------------------------------------------
 
+class IdentifierBlindMixin:
+    """Models the Web API: only a title/creator query returns anything.
+
+    ``q`` searches titles and creator fields, so an identifier query scores
+    zero against an item that is present. Plain ``FakeZotero.items()``
+    ignores ``q`` entirely and hands back the whole library, which exercises
+    the client-side matcher but never the search — so a call site that
+    forgets to pass a title looks fine there and duplicates in production.
+    """
+
+    def items(self, **kwargs):
+        if kwargs.get("qmode") != "titleCreatorYear":
+            return []
+        tokens = (kwargs.get("q") or "").lower().split()
+        if not tokens:
+            return []
+        out = []
+        for it in self._items:
+            haystack = (it.get("data", {}).get("title") or "").lower()
+            if all(t in haystack for t in tokens):
+                out.append(it)
+        return out
+
+
 class TestFindExistingItems:
     def test_doi_match(self, fake_zot):
         out = _helpers.find_existing_items(fake_zot, doi=DOI)
@@ -158,6 +182,302 @@ class TestFindExistingItems:
         })
         out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00002")
         assert [i["key"] for i in out] == ["ARXIV002"]
+
+    # -- arXiv identity across storage sites and versions ------------------
+    #
+    # Zotero records an arXiv identity in a different field depending on how
+    # the item arrived. Matching only url+extra misses the rest, so a re-add
+    # of a paper already in the library silently creates a duplicate.
+
+    def test_arxiv_match_via_archive_id(self, fake_zot):
+        """Browser-connector imports put the ID in archiveID, not url/extra."""
+        fake_zot._items.append({
+            "key": "ARXIV003",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "archiveID": "arXiv:2401.00003",
+                "url": "",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00003")
+        assert [i["key"] for i in out] == ["ARXIV003"]
+
+    def test_arxiv_match_via_datacite_doi(self, fake_zot):
+        """An item added by DOI carries only arXiv's 10.48550 DataCite DOI."""
+        fake_zot._items.append({
+            "key": "ARXIV004",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "DOI": "10.48550/arXiv.2401.00004",
+                "url": "",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00004")
+        assert [i["key"] for i in out] == ["ARXIV004"]
+
+    def test_arxiv_versioned_add_matches_bare_stored_id(self, fake_zot):
+        """Adding .../abs/2401.00005v2 must reuse the stored unversioned item."""
+        fake_zot._items.append({
+            "key": "ARXIV005",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00005",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00005v2")
+        assert [i["key"] for i in out] == ["ARXIV005"]
+
+    def test_arxiv_bare_add_matches_versioned_stored_id(self, fake_zot):
+        """And the reverse: a stored v1 is the same paper as a bare re-add."""
+        fake_zot._items.append({
+            "key": "ARXIV006",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00006v1",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00006")
+        assert [i["key"] for i in out] == ["ARXIV006"]
+
+    def test_arxiv_does_not_match_a_different_paper(self, fake_zot):
+        """The version-insensitive compare must not collapse distinct IDs."""
+        fake_zot._items.append({
+            "key": "ARXIV007",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00007",
+                "DOI": "10.48550/arXiv.2401.00007",
+                "archiveID": "arXiv:2401.00007",
+                "extra": "arXiv:2401.00007 [cs]",
+            },
+        })
+        assert _helpers.find_existing_items(fake_zot, arxiv_id="2401.00008") == []
+
+    def test_arxiv_ignores_a_non_arxiv_doi(self, fake_zot):
+        """A publisher DOI must not be read as an arXiv identity."""
+        fake_zot._items.append({
+            "key": "JOURNAL01",
+            "version": 1,
+            "data": {
+                "itemType": "journalArticle",
+                "DOI": "10.1038/nature12373",
+                "url": "",
+                "extra": "",
+            },
+        })
+        assert _helpers.find_existing_items(fake_zot, arxiv_id="2401.00009") == []
+
+    # -- title fallback ----------------------------------------------------
+    #
+    # Zotero's `q` "searches titles and individual creator fields"; the API
+    # docs add that "searching of other fields will be possible in the
+    # future". So DOI/url/archiveID/extra are NOT searchable server side and
+    # an identifier query returns nothing for an item that IS present. The
+    # title is the one field the API does index, so it supplies the
+    # candidates; the identifier still decides.
+
+    def test_title_fallback_finds_item_identifier_search_cannot(self):
+        """The real-world failure: identifier query returns nothing."""
+        item = {
+            "key": "TITLE001",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "title": "RL's Razor",
+                "DOI": "10.48550/arXiv.2509.04259",
+                "url": "",
+                "extra": "",
+            },
+        }
+
+        class IdentifierBlindZotero(FakeZoteroIdem):
+            """Models the Web API: only a title/creator query matches."""
+
+            def items(self, **kwargs):
+                q = (kwargs.get("q") or "").lower()
+                if kwargs.get("qmode") == "titleCreatorYear" and "razor" in q:
+                    return [item]
+                return []
+
+        z = IdentifierBlindZotero()
+        # Without the title the identifier query finds nothing at all.
+        assert _helpers.find_existing_items(z, arxiv_id="2509.04259") == []
+        # With it, the item is found and confirmed by its DOI.
+        out = _helpers.find_existing_items(
+            z, arxiv_id="2509.04259", title="RL's Razor"
+        )
+        assert [i["key"] for i in out] == ["TITLE001"]
+
+    def test_title_fallback_still_requires_the_identifier_to_match(self, fake_zot):
+        """A same-title different-paper must NOT be treated as the same item.
+
+        The title only supplies candidates; the identifier decides. Without
+        this the fallback would merge unrelated papers that share a title.
+        """
+        fake_zot._items.append({
+            "key": "OTHER001",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "title": "Generalized Linear Models",
+                "DOI": "10.48550/arXiv.1111.11111",
+                "url": "",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(
+            fake_zot, arxiv_id="2222.22222", title="Generalized Linear Models"
+        )
+        assert out == []
+
+    def test_title_fallback_is_skipped_when_identifier_already_matched(self):
+        """No second query when the identifier query already confirmed."""
+        item = {
+            "key": "IDENT001",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00010",
+                "extra": "",
+            },
+        }
+
+        class CountingZotero(FakeZoteroIdem):
+            def __init__(self):
+                super().__init__()
+                self.queries = []
+
+            def items(self, **kwargs):
+                self.queries.append(kwargs.get("qmode"))
+                return [item]
+
+        z = CountingZotero()
+        out = _helpers.find_existing_items(
+            z, arxiv_id="2401.00010", title="Whatever"
+        )
+        assert [i["key"] for i in out] == ["IDENT001"]
+        assert z.queries == ["everything"]
+
+    def test_title_fallback_survives_crossref_jats_markup(self):
+        """A marked-up CrossRef title must not take the lookup to zero.
+
+        Zotero's quick search ANDs whitespace-separated tokens, so a literal
+        '<i>' or '&amp;' carried over from CrossRef's title[0] is a token
+        that matches nothing and the whole fallback returns empty against an
+        item whose stored title is clean. Measured against the live API:
+        the exact title hits, the same title with one <i> pair scores zero.
+        """
+        item = {
+            "key": "JATS001",
+            "version": 1,
+            "data": {
+                "itemType": "journalArticle",
+                "title": "Horizontal transfer in Escherichia coli & kin",
+                "DOI": "10.1234/jats.2024.001",
+                "url": "",
+                "extra": "",
+            },
+        }
+
+        class TokenAndingZotero(FakeZoteroIdem):
+            """Models quick search: every token must appear in the title."""
+
+            def items(self, **kwargs):
+                if kwargs.get("qmode") != "titleCreatorYear":
+                    return []
+                stored = item["data"]["title"].lower()
+                tokens = (kwargs.get("q") or "").lower().split()
+                return [item] if tokens and all(t in stored for t in tokens) else []
+
+        z = TokenAndingZotero()
+        raw = "Horizontal transfer in <i>Escherichia coli</i> &amp; kin"
+        # The raw CrossRef spelling matches nothing...
+        assert _helpers.find_existing_items(
+            z, doi="10.1234/jats.2024.001", title=None
+        ) == []
+        # ...but the normalized query finds it, and the DOI confirms it.
+        out = _helpers.find_existing_items(
+            z, doi="10.1234/jats.2024.001", title=raw
+        )
+        assert [i["key"] for i in out] == ["JATS001"]
+
+    def test_title_fallback_skipped_when_title_is_only_markup(self):
+        """Nothing usable left after stripping means no second query."""
+
+        class CountingZotero(FakeZoteroIdem):
+            def __init__(self):
+                super().__init__()
+                self.queries = []
+
+            def items(self, **kwargs):
+                self.queries.append(kwargs.get("qmode"))
+                return []
+
+        z = CountingZotero()
+        assert _helpers.find_existing_items(
+            z, doi="10.1234/nope", title="<i></i>   "
+        ) == []
+        assert z.queries == ["everything"]
+
+    def test_search_window_reaches_past_fifty_candidates(self):
+        """A generic title must not push the real item out of the window.
+
+        Quick search matches each token as a substring and returns results
+        newest-first, so a short title pulls in far more candidates than it
+        looks like it should and the one being searched for — already in the
+        library, therefore not recently touched — sorts to the back. Measured
+        against a real 16.8k-item library, 'Stochastic Processes' matched 83
+        items and the book itself fell outside a 50-item window.
+        """
+        target = {
+            "key": "OLDBOOK1",
+            "version": 1,
+            "data": {
+                "itemType": "book",
+                "title": "Stochastic Processes",
+                "ISBN": "9788126517572",
+            },
+        }
+        # 82 noise items that all match the query, sorted ahead of the target
+        # because they were modified more recently; the target sits at 60.
+        noise = [
+            {"key": f"NOISE{i:03d}", "version": 1,
+             "data": {"itemType": "journalArticle",
+                      "title": f"Stochastic Processes and Other Matters {i}",
+                      "ISBN": ""}}
+            for i in range(82)
+        ]
+        ordered = noise[:60] + [target] + noise[60:]
+
+        class WindowedZotero(FakeZoteroIdem):
+            """Honours `limit` the way the API does, newest-first."""
+
+            def __init__(self):
+                super().__init__()
+                self.limits = []
+
+            def items(self, **kwargs):
+                self.limits.append(kwargs.get("limit"))
+                if kwargs.get("qmode") != "titleCreatorYear":
+                    return []
+                return ordered[:kwargs.get("limit")]
+
+        z = WindowedZotero()
+        out = _helpers.find_existing_items(
+            z, isbn="9788126517572", title="Stochastic Processes"
+        )
+        assert [i["key"] for i in out] == ["OLDBOOK1"]
+        # 100 is the API maximum; anything less loses the item at rank 60.
+        assert z.limits and all(lim == 100 for lim in z.limits)
 
     def test_isbn_match_across_10_13_forms(self, fake_zot):
         # ISBN-10 0306406152 == ISBN-13 9780306406157
@@ -363,6 +683,55 @@ class TestAddByIsbnIfExists:
         assert "Already in library" in result
 
 
+    def test_existing_isbn_reused_when_search_is_identifier_blind(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The ISBN check after the Open Library lookup must pass its title.
+
+        Without it the second dedup pass — the one holding the identifier
+        lock, i.e. the one that actually guards the create — scores zero
+        against the real API and the book is shelved twice.
+        """
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        z = BlindZot()
+        z._collections = [
+            {"key": "COLB0001", "data": {"name": "Target", "parentCollection": False}},
+        ]
+        z._items.append({
+            "key": "BOOK0002",
+            "version": 4,
+            "data": {
+                "itemType": "book",
+                "title": "Structure and Interpretation of Computer Programs",
+                "ISBN": "0-262-51087-1",
+                "collections": [],
+                "tags": [],
+            },
+        })
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (z, z),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools.write._lookup_isbn_openlibrary",
+            lambda isbn, ctx: {
+                "title": "Structure and Interpretation of Computer Programs",
+                "creators": [], "date": "1985",
+            },
+        )
+
+        result = server.add_by_isbn(
+            isbn="9780262510875", collections=["COLB0001"],
+            if_exists="file", ctx=dummy_ctx,
+        )
+
+        assert z.created == []
+        assert ("COLB0001", "BOOK0002") in z.addto_calls
+        assert "Already in library" in result
+
+
 # ---------------------------------------------------------------------------
 # add_by_bibtex × if_exists (batch: mixed existing/new)
 # ---------------------------------------------------------------------------
@@ -393,6 +762,53 @@ class TestAddByBibtexIfExists:
         assert ("COLB0001", "EXIST001") in fake_zot.addto_calls
         assert "1 already existed" in result
         assert "reused existing" in result
+
+    def test_batch_import_reuses_when_search_is_identifier_blind(
+        self, monkeypatch, dummy_ctx
+    ):
+        """_maybe_reuse_existing must pass the entry's title.
+
+        This is the highest-volume dedup path in the package — a BibTeX or
+        CSL-JSON import can carry hundreds of entries — and against the real
+        API a DOI-only query answers "not present" for every one of them.
+        """
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        z = BlindZot()
+        z._collections = [
+            {"key": "COLB0001", "data": {"name": "Target", "parentCollection": False}},
+        ]
+        z._items = [{
+            "key": "EXIST001",
+            "version": 5,
+            "data": {
+                "itemType": "journalArticle",
+                "title": "Existing Paper",
+                "DOI": DOI,
+                "collections": [],
+                "tags": [],
+            },
+        }]
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (z, z),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf",
+            lambda *a, **kw: "skipped (test)",
+        )
+
+        bib = ("@article{exists, title={Existing Paper}, author={A, B}, "
+               "year={2024}, doi={" + DOI + "}}")
+        result = server.add_by_bibtex(
+            bibtex=bib, collections=["COLB0001"], if_exists="file",
+            ctx=dummy_ctx,
+        )
+
+        assert z.created == []
+        assert ("COLB0001", "EXIST001") in z.addto_calls
+        assert "Already in library" in result
 
     def test_skip_mode_reports_without_changes(self, monkeypatch, fake_zot, dummy_ctx):
         monkeypatch.setattr(

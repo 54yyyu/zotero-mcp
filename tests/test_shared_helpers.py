@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from zotero_mcp import server
+from zotero_mcp.tools import _helpers
 from zotero_mcp.utils import clean_html
 from conftest import DummyContext, FakeZotero
 
@@ -133,6 +134,92 @@ class TestNormalizeArxivId:
         assert server._normalize_arxiv_id("not-an-id") is None
         assert server._normalize_arxiv_id("") is None
         assert server._normalize_arxiv_id(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _arxiv_identity
+# ---------------------------------------------------------------------------
+
+class TestArxivIdentity:
+    """The version-independent identity used for deduplication.
+
+    Distinct from _normalize_arxiv_id, which keeps the version because its
+    callers use the result to fetch a specific version from arXiv.
+    """
+
+    def test_strips_the_version(self):
+        assert _helpers._arxiv_identity("2401.00001v2") == "2401.00001"
+        assert _helpers._arxiv_identity("https://arxiv.org/abs/2401.00001v11") == "2401.00001"
+        assert _helpers._arxiv_identity("hep-ph/9901234v2") == "hep-ph/9901234"
+
+    def test_accepts_the_datacite_doi(self):
+        assert _helpers._arxiv_identity("10.48550/arXiv.2401.00001") == "2401.00001"
+        assert _helpers._arxiv_identity(
+            "https://doi.org/10.48550/arXiv.2401.00001v3"
+        ) == "2401.00001"
+
+    def test_every_spelling_of_one_paper_agrees(self):
+        spellings = [
+            "2401.00001",
+            "2401.00001v1",
+            "arXiv:2401.00001",
+            "http://arxiv.org/abs/2401.00001",
+            "https://arxiv.org/abs/2401.00001v2",
+            "https://arxiv.org/pdf/2401.00001v3.pdf",
+            "10.48550/arXiv.2401.00001",
+        ]
+        assert {_helpers._arxiv_identity(s) for s in spellings} == {"2401.00001"}
+
+    def test_distinct_papers_stay_distinct(self):
+        assert _helpers._arxiv_identity("2401.00001") != _helpers._arxiv_identity("2401.00002")
+
+    def test_non_arxiv_returns_none(self):
+        assert _helpers._arxiv_identity("10.1038/nature12373") is None
+        assert _helpers._arxiv_identity("https://example.com/foo") is None
+        assert _helpers._arxiv_identity("not-an-id") is None
+        assert _helpers._arxiv_identity("") is None
+        assert _helpers._arxiv_identity(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _title_search_query
+# ---------------------------------------------------------------------------
+
+class TestTitleSearchQuery:
+    """Normalization of a fetched title into a quick-search query.
+
+    Zotero's quick search ANDs whitespace-separated tokens, so anything the
+    source added that the stored title lacks — JATS tags, XML entities — is
+    a token that matches nothing and zeroes the whole lookup.
+    """
+
+    def test_strips_jats_markup(self):
+        assert _helpers._title_search_query(
+            "Growth of <i>Escherichia coli</i> at <sub>4</sub>C"
+        ) == "Growth of Escherichia coli at 4C"
+
+    def test_resolves_xml_entities(self):
+        assert _helpers._title_search_query("Ethics &amp; Society") == "Ethics & Society"
+        assert _helpers._title_search_query("A &lt; B") == "A < B"
+
+    def test_escaped_tags_survive_as_literal_text(self):
+        """'&lt;i&gt;' is text in a title, not markup — stripping order matters."""
+        assert _helpers._title_search_query("The &lt;i&gt; Element") == "The <i> Element"
+
+    def test_collapses_arxiv_wrap_whitespace(self):
+        assert _helpers._title_search_query(
+            "Chain-of-Thought Prompting Elicits Reasoning   in Large Language Models"
+        ) == "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"
+        assert _helpers._title_search_query("  padded  title \n here ") == "padded title here"
+
+    def test_a_clean_title_is_returned_unchanged(self):
+        assert _helpers._title_search_query("RL's Razor") == "RL's Razor"
+
+    def test_nothing_usable_returns_none(self):
+        assert _helpers._title_search_query("") is None
+        assert _helpers._title_search_query(None) is None
+        assert _helpers._title_search_query("   ") is None
+        assert _helpers._title_search_query("<i></i>") is None
 
 
 # ---------------------------------------------------------------------------

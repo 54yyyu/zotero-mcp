@@ -2,6 +2,7 @@
 
 import contextlib
 import hashlib
+import html as _html
 import json
 import os
 import re
@@ -786,18 +787,73 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
+def _title_search_query(title):
+    """Reduce a freshly-fetched title to something quick search can match.
+
+    Zotero's quick search splits the query on whitespace and requires EVERY
+    token to match (measured: reordering the words of a title still finds
+    it, appending one junk word drops it to zero hits). That makes the
+    fallback query only as good as the title handed to it, and a title
+    arrives in the shape its *source* stores it, not the shape Zotero does.
+    CrossRef ships JATS markup and XML entities in ``title[0]`` — a real
+    ``<i>``, ``<sub>`` or ``&amp;`` in the query is a token that matches
+    nothing, so one italicised species name takes the whole lookup to zero
+    against an item whose stored title is clean. Tags are therefore stripped
+    and entities resolved before the query is built.
+
+    Runs of whitespace are collapsed as well. That one is free rather than
+    load-bearing — quick search tokenizes, so it already ignores them — but
+    arXiv's wrapped Atom titles reach us full of them and a query string
+    that reads like the title it is searching for is easier to debug.
+
+    Returns None when nothing usable survives, which the caller reads as
+    "no title supplied" and skips the fallback entirely.
+    """
+    if not title:
+        return None
+    # Strip tags before resolving entities: an escaped '&lt;i&gt;' is
+    # literal text in a title and must survive, which it would not if
+    # unescaping ran first and handed a real tag to the tag stripper.
+    cleaned = _html.unescape(_utils.clean_html(str(title)))
+    return " ".join(cleaned.split()) or None
+
+
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
-                        ctx=None) -> list[dict]:
+                        title=None, ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
 
     Exactly one of doi / arxiv_id / isbn / url should be given (already
     normalized via the corresponding ``_normalize_*`` helper, except url).
-    A server-side quick search (``q=<id>, qmode='everything',
-    itemType='-attachment'``) narrows candidates cheaply; a client-side
-    normalized comparison confirms real matches. Searching with the BARE
-    identifier means the substring quick-search also catches values stored
-    with prefixes ('https://doi.org/10...', 'arXiv:...'). The items endpoint
-    excludes the Trash, so a trashed copy never blocks a re-add.
+    ``title`` is optional and additive: see below.
+
+    A server-side quick search narrows candidates cheaply; a client-side
+    normalized comparison confirms real matches. The items endpoint excludes
+    the Trash, so a trashed copy never blocks a re-add.
+
+    **The identifier query alone cannot be relied on.** Zotero's ``q``
+    parameter "searches titles and individual creator fields", and the API
+    documentation notes that "searching of other fields will be possible in
+    the future" — so DOI, url, archiveID and extra are NOT searchable server
+    side. Against the Web API an identifier query therefore returns zero
+    candidates for an item that IS present, the caller reads that as "not in
+    the library", and ``if_exists='file'`` creates a duplicate.
+
+    So when ``title`` is given and the identifier query confirms nothing, a
+    second pass queries the title — which the API does index — and runs the
+    same identifier comparison over those candidates. The identifier still
+    decides, so this widens the net without loosening the test: a
+    same-title-different-paper is rejected exactly as before. Callers that
+    have already fetched metadata should pass it.
+
+    Be clear about what that costs. Because the identifier query almost
+    never matches against the Web API, "only on a miss" means "on nearly
+    every call": passing a title should be expected to cost two searches per
+    check, not one. It is still worth keeping the identifier query in front
+    rather than skipping it when a title is available, because the two cover
+    different things — ``qmode='everything'`` also searches child-attachment
+    full text, where a paper's own DOI genuinely does appear, and it finds an
+    item stored under a title that no longer matches the one just fetched.
+    The title query cannot do either.
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
@@ -810,11 +866,21 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
         def _matches(data):
             return _normalize_doi(data.get("DOI") or "") == doi
     elif arxiv_id:
-        query = arxiv_id
+        # Compare on the version-independent identity, and search on it too:
+        # quick-search is a substring match, so the bare id finds a stored
+        # 'arXiv:2401.00001v2' while the versioned form would miss a stored
+        # bare one.
+        ident = _arxiv_identity(arxiv_id) or arxiv_id
+        query = ident
         def _matches(data):
-            if _normalize_arxiv_id(data.get("url") or "") == arxiv_id:
-                return True
-            return f"arxiv:{arxiv_id}".lower() in (data.get("extra") or "").lower()
+            # Zotero stores an arXiv identity in up to four places depending
+            # on how the item arrived (connector, DOI add, arXiv add, manual).
+            # Checking only url+extra misses connector- and DOI-sourced items,
+            # which is how a re-add duplicates a paper already in the library.
+            for field in ("url", "archiveID", "DOI"):
+                if _arxiv_identity(data.get(field) or "") == ident:
+                    return True
+            return f"arxiv:{ident}".lower() in (data.get("extra") or "").lower()
     elif isbn:
         query = isbn
         def _matches(data):
@@ -832,42 +898,70 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     else:
         return []
 
-    try:
-        candidates = zot.items(
-            q=query, qmode="everything", itemType="-attachment", limit=50
-        )
-    except (TooManyRetriesError, TooManyRequestsError):
-        # A rate-limited search is deliberately not swallowed. Every other
-        # failure here degrades to "no match" and the caller creates the item,
-        # which is the right trade for a genuinely failed search — but a
-        # throttled search hasn't answered the question, and reading it as "not
-        # present" silently creates duplicates of items that are. pyzotero
-        # >=1.13.5 has already retried and waited out the server's backoff by
-        # the time it raises, so there is nothing left to do but propagate.
-        raise
-    except Exception as e:
-        if ctx is not None:
-            ctx.warning(f"Existing-item search failed (treating as no match): {e}")
-        return []
+    def _search(q, qmode):
+        try:
+            # 100 is the API maximum, and the window is load-bearing now that
+            # a title query is in play. Quick search matches each token as a
+            # SUBSTRING, so a short title pulls in far more than it looks
+            # like it should — 'Dependence' matches 91 items in a 16.8k
+            # library, 'Noise' 87. Results come back sorted by dateModified
+            # descending, and that ordering runs against us: the item being
+            # deduped against is by definition already in the library, so it
+            # is competing for the window with everything touched since.
+            # Measured at limit=50 a real book ('Stochastic Processes', 83
+            # matches) fell outside it and would have been duplicated; every
+            # over-50 title in that library fits under 100.
+            return zot.items(
+                q=q, qmode=qmode, itemType="-attachment", limit=100
+            )
+        except (TooManyRetriesError, TooManyRequestsError):
+            # A rate-limited search is deliberately not swallowed. Every other
+            # failure here degrades to "no match" and the caller creates the
+            # item, which is the right trade for a genuinely failed search —
+            # but a throttled search hasn't answered the question, and reading
+            # it as "not present" silently creates duplicates of items that
+            # are. pyzotero >=1.13.5 has already retried and waited out the
+            # server's backoff by the time it raises, so there is nothing left
+            # to do but propagate.
+            raise
+        except Exception as e:
+            if ctx is not None:
+                ctx.warning(f"Existing-item search failed (treating as no match): {e}")
+            return None
 
-    matches = []
-    for item in candidates or []:
-        # Skip anything that isn't a well-formed item dict. The try above only
-        # wraps the call, not this iteration, so a malformed entry would raise
-        # here and abort the whole import instead of costing one dedup match.
-        # The known cause of that is fixed in pyzotero >=1.13.5, which this
-        # package now requires, but this stays as a backstop: nothing about the
-        # contract of a search result guarantees every entry is a dict.
-        if not isinstance(item, dict):
-            continue
-        data = item.get("data")
-        if not isinstance(data, dict):
-            continue
-        if data.get("itemType") in ("attachment", "note", "annotation"):
-            continue
-        if _matches(data):
-            matches.append(item)
-    return matches
+    def _confirm(candidates):
+        matches = []
+        for item in candidates or []:
+            # Skip anything that isn't a well-formed item dict. _search only
+            # wraps the call, not this iteration, so a malformed entry would
+            # raise here and abort the whole import instead of costing one
+            # dedup match. The known cause of that is fixed in pyzotero
+            # >=1.13.5, which this package now requires, but this stays as a
+            # backstop: nothing about the contract of a search result
+            # guarantees every entry is a dict.
+            if not isinstance(item, dict):
+                continue
+            data = item.get("data")
+            if not isinstance(data, dict):
+                continue
+            if data.get("itemType") in ("attachment", "note", "annotation"):
+                continue
+            if _matches(data):
+                matches.append(item)
+        return matches
+
+    matches = _confirm(_search(query, "everything"))
+    if matches:
+        return matches
+
+    title_query = _title_search_query(title)
+    if not title_query:
+        return matches
+
+    # The identifier is not server-side searchable (see the docstring), so
+    # fall back to the one field that is. The identifier comparison in
+    # _confirm still decides which of these candidates is really the item.
+    return _confirm(_search(title_query, "titleCreatorYear"))
 
 
 def _collection_not_found_message(zot, spec, paths) -> str:
@@ -1077,6 +1171,38 @@ def _normalize_arxiv_id(raw):
     if re.match(r"^[a-z\-]+/\d{7}(?:v\d+)?$", s, flags=re.IGNORECASE):
         return s
     return None
+
+
+# arXiv's DataCite DOIs are minted as 10.48550/arXiv.<id>, which is what
+# Zotero puts in the DOI field for a preprint imported from arXiv.
+_ARXIV_DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$",
+                           re.IGNORECASE)
+_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
+
+
+def _arxiv_identity(raw):
+    """The version-independent arXiv identity of an ID, URL, DOI or archiveID.
+
+    ``_normalize_arxiv_id`` deliberately keeps the ``v2`` suffix: callers use
+    its result to fetch a specific version from arXiv. Deduplication wants the
+    opposite — 2401.00001v1 and 2401.00001v2 are the same paper and must not
+    become two library items — so identity comparison goes through here
+    instead. This also accepts arXiv's DataCite DOI form, so an item added by
+    DOI is recognized by a later add of the same paper's arXiv ID.
+
+    Returns the bare, unversioned ID, or None if ``raw`` isn't an arXiv
+    identifier in any of those forms.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    m = _ARXIV_DOI_RE.match(s)
+    if m:
+        s = m.group(1)
+    ident = _normalize_arxiv_id(s)
+    if not ident:
+        return None
+    return _ARXIV_VERSION_RE.sub("", ident)
 
 
 # ---------------------------------------------------------------------------
