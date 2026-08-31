@@ -22,10 +22,10 @@ from zotero_mcp.tools import _helpers
 DOI = "10.1234/test.2024.001"
 
 
-def _make_crossref_response():
+def _make_crossref_response(title="Fresh Paper"):
     msg = {
         "type": "journal-article",
-        "title": ["Fresh Paper"],
+        "title": [title],
         "DOI": DOI,
         "author": [{"given": "A", "family": "Author"}],
     }
@@ -98,6 +98,30 @@ def _patch_clients(monkeypatch, zot):
 # ---------------------------------------------------------------------------
 # find_existing_items
 # ---------------------------------------------------------------------------
+
+class IdentifierBlindMixin:
+    """Models the Web API: only a title/creator query returns anything.
+
+    ``q`` searches titles and creator fields, so an identifier query scores
+    zero against an item that is present. Plain ``FakeZotero.items()``
+    ignores ``q`` entirely and hands back the whole library, which exercises
+    the client-side matcher but never the search — so a call site that
+    forgets to pass a title looks fine there and duplicates in production.
+    """
+
+    def items(self, **kwargs):
+        if kwargs.get("qmode") != "titleCreatorYear":
+            return []
+        tokens = (kwargs.get("q") or "").lower().split()
+        if not tokens:
+            return []
+        out = []
+        for it in self._items:
+            haystack = (it.get("data", {}).get("title") or "").lower()
+            if all(t in haystack for t in tokens):
+                out.append(it)
+        return out
+
 
 class TestFindExistingItems:
     def test_doi_match(self, fake_zot):
@@ -511,6 +535,50 @@ class TestAddByDoiIfExists:
         assert "if_exists" in result
         assert fake_zot.created == []
 
+    def test_existing_doi_reused_when_search_is_identifier_blind(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The DOI path's check after the CrossRef fetch must pass a usable title.
+
+        A DOI-only check finds nothing against this fake. The CrossRef title
+        carries an <i> pair, which _crossref_to_item_data keeps because Zotero
+        renders it, so the title also has to be cleaned before it can match
+        the plain stored title.
+        """
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        z = BlindZot()
+        z._collections = [
+            {"key": "COLB0001", "data": {"name": "Target", "parentCollection": False}},
+        ]
+        z._items = [{
+            "key": "EXIST001",
+            "version": 5,
+            "data": {
+                "itemType": "journalArticle",
+                "title": "Growth of Escherichia coli & kin",
+                "DOI": DOI,
+                "collections": [],
+                "tags": [],
+            },
+        }]
+        _patch_clients(monkeypatch, z)
+        monkeypatch.setattr(
+            "requests.get",
+            lambda *a, **kw: _make_crossref_response(
+                title="Growth of <i>Escherichia coli</i> &amp; kin"
+            ),
+        )
+
+        result = server.add_by_doi(
+            doi=DOI, collections=["COLB0001"], if_exists="file", ctx=dummy_ctx,
+        )
+
+        assert z.created == []
+        assert ("COLB0001", "EXIST001") in z.addto_calls
+        assert "Already in library" in result
+
 
 # ---------------------------------------------------------------------------
 # add_by_url × if_exists (arXiv + webpage routing)
@@ -678,6 +746,55 @@ class TestAddByIsbnIfExists:
         assert "Already in library" in result
 
 
+    def test_existing_isbn_reused_when_search_is_identifier_blind(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The ISBN check after the Open Library lookup must pass its title.
+
+        Without it the second dedup pass — the one holding the identifier
+        lock, i.e. the one that actually guards the create — scores zero
+        against the real API and the book is shelved twice.
+        """
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        z = BlindZot()
+        z._collections = [
+            {"key": "COLB0001", "data": {"name": "Target", "parentCollection": False}},
+        ]
+        z._items.append({
+            "key": "BOOK0002",
+            "version": 4,
+            "data": {
+                "itemType": "book",
+                "title": "Structure and Interpretation of Computer Programs",
+                "ISBN": "0-262-51087-1",
+                "collections": [],
+                "tags": [],
+            },
+        })
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (z, z),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools.write._lookup_isbn_openlibrary",
+            lambda isbn, ctx: {
+                "title": "Structure and Interpretation of Computer Programs",
+                "creators": [], "date": "1985",
+            },
+        )
+
+        result = server.add_by_isbn(
+            isbn="9780262510875", collections=["COLB0001"],
+            if_exists="file", ctx=dummy_ctx,
+        )
+
+        assert z.created == []
+        assert ("COLB0001", "BOOK0002") in z.addto_calls
+        assert "Already in library" in result
+
+
 # ---------------------------------------------------------------------------
 # add_by_bibtex × if_exists (batch: mixed existing/new)
 # ---------------------------------------------------------------------------
@@ -708,6 +825,53 @@ class TestAddByBibtexIfExists:
         assert ("COLB0001", "EXIST001") in fake_zot.addto_calls
         assert "1 already existed" in result
         assert "reused existing" in result
+
+    def test_batch_import_reuses_when_search_is_identifier_blind(
+        self, monkeypatch, dummy_ctx
+    ):
+        """_maybe_reuse_existing must pass the entry's title.
+
+        This is the highest-volume dedup path in the package — a BibTeX or
+        CSL-JSON import can carry hundreds of entries — and against the real
+        API a DOI-only query answers "not present" for every one of them.
+        """
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        z = BlindZot()
+        z._collections = [
+            {"key": "COLB0001", "data": {"name": "Target", "parentCollection": False}},
+        ]
+        z._items = [{
+            "key": "EXIST001",
+            "version": 5,
+            "data": {
+                "itemType": "journalArticle",
+                "title": "Existing Paper",
+                "DOI": DOI,
+                "collections": [],
+                "tags": [],
+            },
+        }]
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (z, z),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf",
+            lambda *a, **kw: "skipped (test)",
+        )
+
+        bib = ("@article{exists, title={Existing Paper}, author={A, B}, "
+               "year={2024}, doi={" + DOI + "}}")
+        result = server.add_by_bibtex(
+            bibtex=bib, collections=["COLB0001"], if_exists="file",
+            ctx=dummy_ctx,
+        )
+
+        assert z.created == []
+        assert ("COLB0001", "EXIST001") in z.addto_calls
+        assert "Already in library" in result
 
     def test_skip_mode_reports_without_changes(self, monkeypatch, fake_zot, dummy_ctx):
         monkeypatch.setattr(
