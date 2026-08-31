@@ -13,7 +13,8 @@ the symptom is a silent duplicate rather than an error, so these tests are the
 only thing standing between the two.
 """
 
-import httpx
+import importlib
+
 import pytest
 from conftest import DummyContext
 from pyzotero.zotero import Zotero
@@ -21,7 +22,50 @@ from pyzotero.zotero_errors import TooManyRetriesError
 
 from zotero_mcp.tools import _helpers
 
-_REQ = httpx.Request("GET", "https://api.zotero.org/users/1/items")
+
+def _zotero():
+    """A web-API Zotero. Constructing one opens no socket."""
+    return Zotero(library_id="1", library_type="user", api_key="x" * 24)
+
+
+def _pyzotero_http():
+    """The HTTP library the installed pyzotero speaks.
+
+    pyzotero 1.15 moved from httpx to httpx2 (httpx 2.x, published under a
+    separate distribution name). The two are disjoint class hierarchies, and
+    pyzotero catches only its own::
+
+        try:
+            resp.raise_for_status()
+        except httpx2.HTTPError as exc:
+            error_handler(self, resp, exc)
+
+    ``httpx.HTTPStatusError`` is not an ``httpx2.HTTPError``, so a 429 built
+    from the wrong library escapes that clause uncaught: the retry loop never
+    sees the 429, no backoff is recorded, and TooManyRetriesError is never
+    raised. Every test below then fails as though the retry contract had
+    regressed, when all that is wrong is the fixture (#511).
+
+    Importing whichever library imports cleanly does not tell them apart —
+    both can be installed at once. httpx arrives transitively via mcp/httpx-sse
+    whatever pyzotero does, and FastMCP 4 brings httpx2 in alongside a pyzotero
+    that may still be on httpx. Ask pyzotero instead: the client it builds for
+    itself is an instance of the library it speaks, on either side of 1.15.
+    """
+    client = _zotero().client
+    module = importlib.import_module(type(client).__module__.partition(".")[0])
+    if not hasattr(module, "Response"):
+        raise RuntimeError(
+            "cannot tell which HTTP library the installed pyzotero uses: its "
+            f"client is a {type(client).__module__}.{type(client).__qualname__}, "
+            "and that module exposes no Response to build fixtures from"
+        )
+    return module
+
+
+_http = _pyzotero_http()
+
+_REQ = _http.Request("GET", "https://api.zotero.org/users/1/items")
 _ITEM = [{"key": "EXIST001", "version": 1,
           "data": {"itemType": "journalArticle", "DOI": "10.1234/test"}}]
 
@@ -36,13 +80,13 @@ def _429(backoff="1"):
     headers = {"Content-Type": "text/plain"}
     if backoff is not None:
         headers["Backoff"] = backoff
-    return httpx.Response(
+    return _http.Response(
         429, headers=headers, content=b"Too many requests. Slow down", request=_REQ,
     )
 
 
 def _200(items=None):
-    return httpx.Response(
+    return _http.Response(
         200, headers={"Content-Type": "application/json"},
         json=_ITEM if items is None else items, request=_REQ,
     )
@@ -50,7 +94,7 @@ def _200(items=None):
 
 def _client(responses):
     """A client whose transport replays `responses` in order."""
-    zot = Zotero(library_id="1", library_type="user", api_key="x" * 24)
+    zot = _zotero()
     seq = iter(responses)
     zot.client.get = lambda url, params=None, timeout=None, **kw: next(seq)
     zot._set_backoff = lambda *a, **kw: None  # don't sleep in tests
