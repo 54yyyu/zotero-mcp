@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from zotero_mcp import server
+from zotero_mcp.tools import _helpers
 from zotero_mcp.utils import clean_html
 from conftest import DummyContext, FakeZotero
 
@@ -133,6 +134,51 @@ class TestNormalizeArxivId:
         assert server._normalize_arxiv_id("not-an-id") is None
         assert server._normalize_arxiv_id("") is None
         assert server._normalize_arxiv_id(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _arxiv_identity
+# ---------------------------------------------------------------------------
+
+class TestArxivIdentity:
+    """The version-independent identity used for deduplication.
+
+    Distinct from _normalize_arxiv_id, which keeps the version because its
+    callers use the result to fetch a specific version from arXiv.
+    """
+
+    def test_strips_the_version(self):
+        assert _helpers._arxiv_identity("2401.00001v2") == "2401.00001"
+        assert _helpers._arxiv_identity("https://arxiv.org/abs/2401.00001v11") == "2401.00001"
+        assert _helpers._arxiv_identity("hep-ph/9901234v2") == "hep-ph/9901234"
+
+    def test_accepts_the_datacite_doi(self):
+        assert _helpers._arxiv_identity("10.48550/arXiv.2401.00001") == "2401.00001"
+        assert _helpers._arxiv_identity(
+            "https://doi.org/10.48550/arXiv.2401.00001v3"
+        ) == "2401.00001"
+
+    def test_every_spelling_of_one_paper_agrees(self):
+        spellings = [
+            "2401.00001",
+            "2401.00001v1",
+            "arXiv:2401.00001",
+            "http://arxiv.org/abs/2401.00001",
+            "https://arxiv.org/abs/2401.00001v2",
+            "https://arxiv.org/pdf/2401.00001v3.pdf",
+            "10.48550/arXiv.2401.00001",
+        ]
+        assert {_helpers._arxiv_identity(s) for s in spellings} == {"2401.00001"}
+
+    def test_distinct_papers_stay_distinct(self):
+        assert _helpers._arxiv_identity("2401.00001") != _helpers._arxiv_identity("2401.00002")
+
+    def test_non_arxiv_returns_none(self):
+        assert _helpers._arxiv_identity("10.1038/nature12373") is None
+        assert _helpers._arxiv_identity("https://example.com/foo") is None
+        assert _helpers._arxiv_identity("not-an-id") is None
+        assert _helpers._arxiv_identity("") is None
+        assert _helpers._arxiv_identity(None) is None
 
 
 # ---------------------------------------------------------------------------

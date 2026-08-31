@@ -810,11 +810,21 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
         def _matches(data):
             return _normalize_doi(data.get("DOI") or "") == doi
     elif arxiv_id:
-        query = arxiv_id
+        # Compare on the version-independent identity, and search on it too:
+        # quick-search is a substring match, so the bare id finds a stored
+        # 'arXiv:2401.00001v2' while the versioned form would miss a stored
+        # bare one.
+        ident = _arxiv_identity(arxiv_id) or arxiv_id
+        query = ident
         def _matches(data):
-            if _normalize_arxiv_id(data.get("url") or "") == arxiv_id:
-                return True
-            return f"arxiv:{arxiv_id}".lower() in (data.get("extra") or "").lower()
+            # Zotero stores an arXiv identity in up to four places depending
+            # on how the item arrived (connector, DOI add, arXiv add, manual).
+            # Checking only url+extra misses connector- and DOI-sourced items,
+            # which is how a re-add duplicates a paper already in the library.
+            for field in ("url", "archiveID", "DOI"):
+                if _arxiv_identity(data.get(field) or "") == ident:
+                    return True
+            return f"arxiv:{ident}".lower() in (data.get("extra") or "").lower()
     elif isbn:
         query = isbn
         def _matches(data):
@@ -1077,6 +1087,38 @@ def _normalize_arxiv_id(raw):
     if re.match(r"^[a-z\-]+/\d{7}(?:v\d+)?$", s, flags=re.IGNORECASE):
         return s
     return None
+
+
+# arXiv's DataCite DOIs are minted as 10.48550/arXiv.<id>, which is what
+# Zotero puts in the DOI field for a preprint imported from arXiv.
+_ARXIV_DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$",
+                           re.IGNORECASE)
+_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
+
+
+def _arxiv_identity(raw):
+    """The version-independent arXiv identity of an ID, URL, DOI or archiveID.
+
+    ``_normalize_arxiv_id`` deliberately keeps the ``v2`` suffix: callers use
+    its result to fetch a specific version from arXiv. Deduplication wants the
+    opposite — 2401.00001v1 and 2401.00001v2 are the same paper and must not
+    become two library items — so identity comparison goes through here
+    instead. This also accepts arXiv's DataCite DOI form, so an item added by
+    DOI is recognized by a later add of the same paper's arXiv ID.
+
+    Returns the bare, unversioned ID, or None if ``raw`` isn't an arXiv
+    identifier in any of those forms.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    m = _ARXIV_DOI_RE.match(s)
+    if m:
+        s = m.group(1)
+    ident = _normalize_arxiv_id(s)
+    if not ident:
+        return None
+    return _ARXIV_VERSION_RE.sub("", ident)
 
 
 # ---------------------------------------------------------------------------

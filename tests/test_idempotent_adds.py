@@ -159,6 +159,99 @@ class TestFindExistingItems:
         out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00002")
         assert [i["key"] for i in out] == ["ARXIV002"]
 
+    # -- arXiv identity across storage sites and versions ------------------
+    #
+    # Zotero records an arXiv identity in a different field depending on how
+    # the item arrived. Matching only url+extra misses the rest, so a re-add
+    # of a paper already in the library silently creates a duplicate.
+
+    def test_arxiv_match_via_archive_id(self, fake_zot):
+        """Browser-connector imports put the ID in archiveID, not url/extra."""
+        fake_zot._items.append({
+            "key": "ARXIV003",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "archiveID": "arXiv:2401.00003",
+                "url": "",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00003")
+        assert [i["key"] for i in out] == ["ARXIV003"]
+
+    def test_arxiv_match_via_datacite_doi(self, fake_zot):
+        """An item added by DOI carries only arXiv's 10.48550 DataCite DOI."""
+        fake_zot._items.append({
+            "key": "ARXIV004",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "DOI": "10.48550/arXiv.2401.00004",
+                "url": "",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00004")
+        assert [i["key"] for i in out] == ["ARXIV004"]
+
+    def test_arxiv_versioned_add_matches_bare_stored_id(self, fake_zot):
+        """Adding .../abs/2401.00005v2 must reuse the stored unversioned item."""
+        fake_zot._items.append({
+            "key": "ARXIV005",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00005",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00005v2")
+        assert [i["key"] for i in out] == ["ARXIV005"]
+
+    def test_arxiv_bare_add_matches_versioned_stored_id(self, fake_zot):
+        """And the reverse: a stored v1 is the same paper as a bare re-add."""
+        fake_zot._items.append({
+            "key": "ARXIV006",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00006v1",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00006")
+        assert [i["key"] for i in out] == ["ARXIV006"]
+
+    def test_arxiv_does_not_match_a_different_paper(self, fake_zot):
+        """The version-insensitive compare must not collapse distinct IDs."""
+        fake_zot._items.append({
+            "key": "ARXIV007",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00007",
+                "DOI": "10.48550/arXiv.2401.00007",
+                "archiveID": "arXiv:2401.00007",
+                "extra": "arXiv:2401.00007 [cs]",
+            },
+        })
+        assert _helpers.find_existing_items(fake_zot, arxiv_id="2401.00008") == []
+
+    def test_arxiv_ignores_a_non_arxiv_doi(self, fake_zot):
+        """A publisher DOI must not be read as an arXiv identity."""
+        fake_zot._items.append({
+            "key": "JOURNAL01",
+            "version": 1,
+            "data": {
+                "itemType": "journalArticle",
+                "DOI": "10.1038/nature12373",
+                "url": "",
+                "extra": "",
+            },
+        })
+        assert _helpers.find_existing_items(fake_zot, arxiv_id="2401.00009") == []
+
     def test_isbn_match_across_10_13_forms(self, fake_zot):
         # ISBN-10 0306406152 == ISBN-13 9780306406157
         fake_zot._items.append({
