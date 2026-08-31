@@ -182,6 +182,47 @@ class TestArxivIdentity:
 
 
 # ---------------------------------------------------------------------------
+# _title_search_query
+# ---------------------------------------------------------------------------
+
+class TestTitleSearchQuery:
+    """Normalization of a fetched title into a quick-search query.
+
+    Zotero's quick search ANDs whitespace-separated tokens, so anything the
+    source added that the stored title lacks — JATS tags, XML entities — is
+    a token that matches nothing and zeroes the whole lookup.
+    """
+
+    def test_strips_jats_markup(self):
+        assert _helpers._title_search_query(
+            "Growth of <i>Escherichia coli</i> at <sub>4</sub>C"
+        ) == "Growth of Escherichia coli at 4C"
+
+    def test_resolves_xml_entities(self):
+        assert _helpers._title_search_query("Ethics &amp; Society") == "Ethics & Society"
+        assert _helpers._title_search_query("A &lt; B") == "A < B"
+
+    def test_escaped_tags_survive_as_literal_text(self):
+        """'&lt;i&gt;' is text in a title, not markup — stripping order matters."""
+        assert _helpers._title_search_query("The &lt;i&gt; Element") == "The <i> Element"
+
+    def test_collapses_arxiv_wrap_whitespace(self):
+        assert _helpers._title_search_query(
+            "Chain-of-Thought Prompting Elicits Reasoning   in Large Language Models"
+        ) == "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"
+        assert _helpers._title_search_query("  padded  title \n here ") == "padded title here"
+
+    def test_a_clean_title_is_returned_unchanged(self):
+        assert _helpers._title_search_query("RL's Razor") == "RL's Razor"
+
+    def test_nothing_usable_returns_none(self):
+        assert _helpers._title_search_query("") is None
+        assert _helpers._title_search_query(None) is None
+        assert _helpers._title_search_query("   ") is None
+        assert _helpers._title_search_query("<i></i>") is None
+
+
+# ---------------------------------------------------------------------------
 # _resolve_collection_names
 # ---------------------------------------------------------------------------
 

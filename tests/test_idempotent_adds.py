@@ -343,6 +343,67 @@ class TestFindExistingItems:
         assert [i["key"] for i in out] == ["IDENT001"]
         assert z.queries == ["everything"]
 
+    def test_title_fallback_survives_crossref_jats_markup(self):
+        """A marked-up CrossRef title must not take the lookup to zero.
+
+        Zotero's quick search ANDs whitespace-separated tokens, so a literal
+        '<i>' or '&amp;' carried over from CrossRef's title[0] is a token
+        that matches nothing and the whole fallback returns empty against an
+        item whose stored title is clean. Measured against the live API:
+        the exact title hits, the same title with one <i> pair scores zero.
+        """
+        item = {
+            "key": "JATS001",
+            "version": 1,
+            "data": {
+                "itemType": "journalArticle",
+                "title": "Horizontal transfer in Escherichia coli & kin",
+                "DOI": "10.1234/jats.2024.001",
+                "url": "",
+                "extra": "",
+            },
+        }
+
+        class TokenAndingZotero(FakeZoteroIdem):
+            """Models quick search: every token must appear in the title."""
+
+            def items(self, **kwargs):
+                if kwargs.get("qmode") != "titleCreatorYear":
+                    return []
+                stored = item["data"]["title"].lower()
+                tokens = (kwargs.get("q") or "").lower().split()
+                return [item] if tokens and all(t in stored for t in tokens) else []
+
+        z = TokenAndingZotero()
+        raw = "Horizontal transfer in <i>Escherichia coli</i> &amp; kin"
+        # The raw CrossRef spelling matches nothing...
+        assert _helpers.find_existing_items(
+            z, doi="10.1234/jats.2024.001", title=None
+        ) == []
+        # ...but the normalized query finds it, and the DOI confirms it.
+        out = _helpers.find_existing_items(
+            z, doi="10.1234/jats.2024.001", title=raw
+        )
+        assert [i["key"] for i in out] == ["JATS001"]
+
+    def test_title_fallback_skipped_when_title_is_only_markup(self):
+        """Nothing usable left after stripping means no second query."""
+
+        class CountingZotero(FakeZoteroIdem):
+            def __init__(self):
+                super().__init__()
+                self.queries = []
+
+            def items(self, **kwargs):
+                self.queries.append(kwargs.get("qmode"))
+                return []
+
+        z = CountingZotero()
+        assert _helpers.find_existing_items(
+            z, doi="10.1234/nope", title="<i></i>   "
+        ) == []
+        assert z.queries == ["everything"]
+
     def test_isbn_match_across_10_13_forms(self, fake_zot):
         # ISBN-10 0306406152 == ISBN-13 9780306406157
         fake_zot._items.append({

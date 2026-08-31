@@ -2,6 +2,7 @@
 
 import contextlib
 import hashlib
+import html as _html
 import json
 import os
 import re
@@ -786,6 +787,37 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
+def _title_search_query(title):
+    """Reduce a freshly-fetched title to something quick search can match.
+
+    Zotero's quick search splits the query on whitespace and requires EVERY
+    token to match (measured: reordering the words of a title still finds
+    it, appending one junk word drops it to zero hits). That makes the
+    fallback query only as good as the title handed to it, and a title
+    arrives in the shape its *source* stores it, not the shape Zotero does.
+    CrossRef ships JATS markup and XML entities in ``title[0]`` — a real
+    ``<i>``, ``<sub>`` or ``&amp;`` in the query is a token that matches
+    nothing, so one italicised species name takes the whole lookup to zero
+    against an item whose stored title is clean. Tags are therefore stripped
+    and entities resolved before the query is built.
+
+    Runs of whitespace are collapsed as well. That one is free rather than
+    load-bearing — quick search tokenizes, so it already ignores them — but
+    arXiv's wrapped Atom titles reach us full of them and a query string
+    that reads like the title it is searching for is easier to debug.
+
+    Returns None when nothing usable survives, which the caller reads as
+    "no title supplied" and skips the fallback entirely.
+    """
+    if not title:
+        return None
+    # Strip tags before resolving entities: an escaped '&lt;i&gt;' is
+    # literal text in a title and must survive, which it would not if
+    # unescaping ran first and handed a real tag to the tag stripper.
+    cleaned = _html.unescape(_utils.clean_html(str(title)))
+    return " ".join(cleaned.split()) or None
+
+
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
                         title=None, ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
@@ -812,6 +844,16 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     decides, so this widens the net without loosening the test: a
     same-title-different-paper is rejected exactly as before. Callers that
     have already fetched metadata should pass it.
+
+    Be clear about what that costs. Because the identifier query almost
+    never matches against the Web API, "only on a miss" means "on nearly
+    every call": passing a title should be expected to cost two searches per
+    check, not one. It is still worth keeping the identifier query in front
+    rather than skipping it when a title is available, because the two cover
+    different things — ``qmode='everything'`` also searches child-attachment
+    full text, where a paper's own DOI genuinely does appear, and it finds an
+    item stored under a title that no longer matches the one just fetched.
+    The title query cannot do either.
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
@@ -898,13 +940,17 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
         return matches
 
     matches = _confirm(_search(query, "everything"))
-    if matches or not title:
+    if matches:
+        return matches
+
+    title_query = _title_search_query(title)
+    if not title_query:
         return matches
 
     # The identifier is not server-side searchable (see the docstring), so
     # fall back to the one field that is. The identifier comparison in
     # _confirm still decides which of these candidates is really the item.
-    return _confirm(_search(title, "titleCreatorYear"))
+    return _confirm(_search(title_query, "titleCreatorYear"))
 
 
 def _collection_not_found_message(zot, spec, paths) -> str:
