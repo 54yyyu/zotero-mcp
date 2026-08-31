@@ -428,6 +428,57 @@ class TestFindExistingItems:
         ) == []
         assert z.queries == ["everything"]
 
+    def test_search_window_reaches_past_fifty_candidates(self):
+        """A generic title must not push the real item out of the window.
+
+        Quick search matches each token as a substring and returns results
+        newest-first, so a short title pulls in far more candidates than it
+        looks like it should and the one being searched for — already in the
+        library, therefore not recently touched — sorts to the back. Measured
+        against a real 16.8k-item library, 'Stochastic Processes' matched 83
+        items and the book itself fell outside a 50-item window.
+        """
+        target = {
+            "key": "OLDBOOK1",
+            "version": 1,
+            "data": {
+                "itemType": "book",
+                "title": "Stochastic Processes",
+                "ISBN": "9788126517572",
+            },
+        }
+        # 82 noise items that all match the query, sorted ahead of the target
+        # because they were modified more recently; the target sits at 60.
+        noise = [
+            {"key": f"NOISE{i:03d}", "version": 1,
+             "data": {"itemType": "journalArticle",
+                      "title": f"Stochastic Processes and Other Matters {i}",
+                      "ISBN": ""}}
+            for i in range(82)
+        ]
+        ordered = noise[:60] + [target] + noise[60:]
+
+        class WindowedZotero(FakeZoteroIdem):
+            """Honours `limit` the way the API does, newest-first."""
+
+            def __init__(self):
+                super().__init__()
+                self.limits = []
+
+            def items(self, **kwargs):
+                self.limits.append(kwargs.get("limit"))
+                if kwargs.get("qmode") != "titleCreatorYear":
+                    return []
+                return ordered[:kwargs.get("limit")]
+
+        z = WindowedZotero()
+        out = _helpers.find_existing_items(
+            z, isbn="9788126517572", title="Stochastic Processes"
+        )
+        assert [i["key"] for i in out] == ["OLDBOOK1"]
+        # 100 is the API maximum; anything less loses the item at rank 60.
+        assert z.limits and all(lim == 100 for lim in z.limits)
+
     def test_isbn_match_across_10_13_forms(self, fake_zot):
         # ISBN-10 0306406152 == ISBN-13 9780306406157
         fake_zot._items.append({
