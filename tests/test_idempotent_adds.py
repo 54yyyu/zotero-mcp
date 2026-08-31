@@ -10,6 +10,7 @@ if_exists contract on the add_by_* family:
 - 'skip': report the existing item, change nothing.
 """
 
+import re
 from unittest.mock import MagicMock
 
 import pytest
@@ -416,8 +417,9 @@ class TestExistingItemReportsCitationKey:
     """The reuse report should name the key that ends up in a document.
 
     data.citationKey is already on the item the dedup search returned, so
-    this costs no extra request. Measured on a real library, 496 of 500
-    top-level items carried one.
+    this costs no extra request. Measured over the Web API on a real
+    library, 496 of 497 sampled top-level items carried one, and none
+    carried a key in Extra alone.
     """
 
     def _existing(self, data_extra):
@@ -441,3 +443,47 @@ class TestExistingItemReportsCitationKey:
         )
         assert "Citation key" not in out
         assert "Item key: `ITEM0001`" in out
+
+    def test_extra_citation_key_is_not_reported(self, fake_zot, dummy_ctx):
+        """A `Citation Key:` line in Extra is deliberately NOT a fallback.
+
+        citation_import writes the *source document's* key there, so it
+        routinely disagrees with the native field — 11 of 77 items carrying
+        both, on a 497-item sample — and BBT exports the native one. Reading
+        Extra here would report a key that never reaches the document.
+        """
+        out = write._handle_existing_item(
+            fake_zot,
+            self._existing({"extra": "Citation Key: CoaseFirmMarket1988"}),
+            [], None, "skip", matched_by="DOI 10.1234/x", ctx=dummy_ctx,
+        )
+        assert "Citation key" not in out
+        assert "CoaseFirmMarket1988" not in out
+
+    def test_native_key_wins_over_a_stale_extra_line(self, fake_zot, dummy_ctx):
+        """Both present and disagreeing: report what BBT exports."""
+        out = write._handle_existing_item(
+            fake_zot,
+            self._existing({
+                "citationKey": "Coase1988Firm",
+                "extra": "Citation Key: CoaseFirmMarket1988",
+            }),
+            [], None, "skip", matched_by="DOI 10.1234/x", ctx=dummy_ctx,
+        )
+        assert "Citation key: `Coase1988Firm`" in out
+        assert "CoaseFirmMarket1988" not in out
+
+    def test_reported_through_add_by_doi(self, monkeypatch, fake_zot, dummy_ctx):
+        """End to end through a real tool, not just the private helper.
+
+        Also guards add_from_file's ``Item key: `KEY``` extraction: the new
+        line must not sit where that regex would reach it first.
+        """
+        fake_zot._items[0]["data"]["citationKey"] = "Existing2024Paper"
+        _patch_clients(monkeypatch, fake_zot)
+
+        result = server.add_by_doi(doi=DOI, if_exists="skip", ctx=dummy_ctx)
+
+        assert "Item key: `EXIST001`" in result
+        assert "Citation key: `Existing2024Paper`" in result
+        assert re.search(r"Item key: `([^`]+)`", result).group(1) == "EXIST001"

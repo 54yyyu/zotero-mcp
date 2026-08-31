@@ -327,6 +327,19 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
     dedup search already returned the full item, so ``data.citationKey`` is
     in hand. An item without one just omits the line, so nothing depends on
     Better BibTeX being present.
+
+    Deliberately only ``data.citationKey``, never a ``Citation Key:`` line in
+    ``extra`` — the two disagree, and ``extra`` is the wrong one. On a
+    497-item sample both were present on 77 items and differed on 11 of
+    those; every difference checked against BBT's own export resolved to the
+    native field. Those ``extra`` lines are this package's own import
+    residue: ``citation_import`` preserves the *source document's* key there
+    (``Citation Key: CoaseFirmMarket1988`` beside a native
+    ``Coase1988Firm``), so reading them would report a key BBT does not
+    export. Nothing is lost by ignoring them — no sampled item carried a key
+    in ``extra`` alone. Note this differs from ``search_by_citation_key``,
+    which consults both *on purpose*, so an item stays findable by the key it
+    was imported under.
     """
     item = existing[0]
     item_key = item.get("key")
