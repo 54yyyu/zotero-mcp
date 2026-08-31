@@ -22,6 +22,7 @@ from . import fulltext_cache
 from . import search_semantics as _semantics
 from .config import load_config
 from .extract import (
+    ExtractedDoc,
     categorize_attachment,
     extract_file,
     normalize_attachment_priority,
@@ -65,6 +66,23 @@ class KeyGroupMap(NamedTuple):
 
     groups: dict[str, int]
     excluded_keys: set[str]
+
+
+@dataclass
+class FulltextExtraction:
+    """Extracted attachment text, plus how much of the document it covers.
+
+    ``page_count`` is the document's real length and ``truncated`` says the
+    page cap dropped pages from the tail — both straight from
+    :class:`~zotero_mcp.extract.ExtractedDoc`. They carry their defaults on
+    the cache paths, which are not page-capped and keep no page bookkeeping
+    (#448).
+    """
+
+    text: str
+    source: str
+    page_count: int | None = None
+    truncated: bool = False
 
 
 def _read_string_pref(prefs_path: Path, pref: str) -> str | None:
@@ -805,10 +823,15 @@ class LocalZoteroReader:
         except ValueError:
             return DEFAULT_PDF_MAX_PAGES
 
-    def _extract_text_from_file(self, file_path: Path) -> str:
-        """Extract text from an attachment file, or "" if nothing readable."""
-        doc = extract_file(file_path, max_pages=self._resolve_pdf_max_pages())
-        return doc.text if doc else ""
+    def _extract_doc_from_file(self, file_path: Path) -> ExtractedDoc | None:
+        """Parse an attachment file, or None if nothing readable came back.
+
+        Returns the whole document rather than its text: how long the source
+        is and whether the page cap cut it short are the parser's to report,
+        and a caller that has to re-derive them gets a second source of truth
+        (#448).
+        """
+        return extract_file(file_path, max_pages=self._resolve_pdf_max_pages())
 
     def _get_fulltext_meta_for_item(self, item_id: int):
         meta = []
@@ -997,10 +1020,10 @@ class LocalZoteroReader:
                 return result
         return None
 
-    def _extract_fulltext_for_item(
+    def extract_fulltext_detailed(
         self, item_id: int, item_key: str | None = None
-    ) -> tuple[str, str] | None:
-        """Attempt to extract fulltext and source from the item's best attachment.
+    ) -> FulltextExtraction | None:
+        """Extract fulltext from the item's best attachment, with page limits.
 
         Preference order:
         1. Our own extraction of the best attachment on disk, chosen by
@@ -1018,6 +1041,10 @@ class LocalZoteroReader:
         If the sqlite-recorded filename doesn't resolve on disk, scan the
         attachment's storage folder for a content-type-matching file before
         giving up (#291, #265).
+
+        ``page_count`` and ``truncated`` are whatever the parser reported, so
+        they are set on that path alone: both caches store flat text with no
+        page bookkeeping, and neither is page-capped to begin with (#448).
         """
         chosen = self._resolve_extraction_target(item_id)
 
@@ -1026,17 +1053,26 @@ class LocalZoteroReader:
             target, attachment_key = chosen
             hit = self._cache_lookup(target, attachment_key)
             if hit:
-                return hit
-            text = self._extract_text_from_file(target)
-            if text:
+                return FulltextExtraction(*hit)
+            doc = self._extract_doc_from_file(target)
+            if doc:
                 source = _source_for_path(target)
-                self._cache_store(target, attachment_key, item_key, text, source)
-                return (text, source)
+                self._cache_store(target, attachment_key, item_key, doc.text, source)
+                return FulltextExtraction(
+                    doc.text, source, doc.page_count, doc.truncated
+                )
 
         # 2. Zotero's own cache, for whatever step 1 could not read.
-        return self._zotero_ft_cache_fallback(item_id, chosen, item_key)
+        cached = self._zotero_ft_cache_fallback(item_id, chosen, item_key)
+        return FulltextExtraction(*cached) if cached else None
 
-        return None
+    def _extract_fulltext_for_item(
+        self, item_id: int, item_key: str | None = None
+    ) -> tuple[str, str] | None:
+        """``extract_fulltext_detailed`` as the ``(text, source)`` pair that the
+        indexing paths consume."""
+        extraction = self.extract_fulltext_detailed(item_id, item_key)
+        return (extraction.text, extraction.source) if extraction else None
 
     def close(self):
         """Close database connection."""

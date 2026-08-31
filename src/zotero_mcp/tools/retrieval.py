@@ -14,6 +14,7 @@ from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.config import load_config
+from zotero_mcp.extract import extract_file
 from zotero_mcp.tools import _helpers
 
 #: Pages of a PDF to surface when an agent reads a paper inline, if nothing
@@ -36,6 +37,28 @@ def _fulltext_display_max_pages() -> int:
     except Exception:
         return DEFAULT_FULLTEXT_DISPLAY_MAX
     return DEFAULT_FULLTEXT_DISPLAY_MAX if configured is None else configured
+
+
+def _fulltext_section_heading(
+    truncated: bool, page_count: int | None, max_pages: int, item_key: str
+) -> tuple[str, str]:
+    """Return the "Full Text" heading and any page-limit notice.
+
+    A capped read is byte-for-byte indistinguishable from a complete one, so
+    an agent summarizes and cites the first ten pages of a 442-page book as
+    if it had read the paper (#448). Name the range that was read instead,
+    and where to pick the document up again.
+    """
+    if not truncated:
+        return "## Full Text", ""
+    return (
+        f"## Full Text (pages 1-{max_pages} of {page_count} — TRUNCATED)",
+        f"> Only the first {max_pages} of {page_count} pages were extracted. "
+        f"Raise `semantic_search.extraction.fulltext_display_max_pages` in the "
+        f"zotero-mcp config to read more of the document in one call, or use "
+        f"zotero_read_pdf_pages(item_key='{item_key}', start_page={max_pages + 1}) "
+        f"to read on from where this stops.",
+    )
 
 
 @mcp.tool(
@@ -114,13 +137,16 @@ def get_item_metadata(
 @mcp.tool(
     name="zotero_get_item_fulltext",
     description=(
-        "Return the full extracted text of a Zotero item's primary "
+        "Return the extracted text of a Zotero item's primary "
         "attachment (PDF or EPUB). "
-        "WARNING: returns the entire paper (often 10K+ tokens). Use ONLY "
-        "when the user explicitly wants to READ the paper — not for "
+        "WARNING: returns most or all of the paper (often 10K+ tokens). Use "
+        "ONLY when the user explicitly wants to READ the paper — not for "
         "searching or browsing. For topic search use "
         "zotero_semantic_search; for metadata only use "
         "zotero_get_item_metadata. "
+        "PDFs are read up to fulltext_display_max_pages (10 by default); "
+        "when that cuts a document short the heading names the page range "
+        "and TRUNCATED — read on with zotero_read_pdf_pages. "
         "Avoid calling this on multiple papers in one conversation unless "
         "the user specifically asked to read several. "
         "item_key: 8-character Zotero item key. Normally the parent item — "
@@ -198,12 +224,17 @@ def get_item_fulltext(
                 ) as reader:
                     local_item = reader.get_item_by_key(item_key)
                     if local_item:
-                        extracted = reader.extract_fulltext_for_item(local_item.item_id)
-                        if extracted and extracted[0]:
-                            source = extracted[1] if len(extracted) > 1 else "file"
-                            ctx.info(f"Retrieved full text from local storage ({source})")
+                        extracted = reader.extract_fulltext_detailed(local_item.item_id)
+                        if extracted and extracted.text:
+                            ctx.info(f"Retrieved full text from local storage ({extracted.source})")
+                            heading, notice = _fulltext_section_heading(
+                                extracted.truncated, extracted.page_count, max_pages, item_key
+                            )
+                            body = "\n\n".join(
+                                part for part in (heading, notice, extracted.text) if part
+                            )
                             return _helpers._prepend_size_warning(
-                                f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}",
+                                f"{metadata}\n\n---\n\n{body}",
                                 "Consider using zotero_semantic_search to find specific content instead of reading full papers."
                             )
         except Exception as local_extract_error:
@@ -244,9 +275,23 @@ def get_item_fulltext(
 
                 if download.path and download.path.exists():
                     ctx.info(f"Downloaded file via {download.source} to {download.path}, converting to markdown")
-                    converted_text = _client.convert_to_markdown(download.path, max_pages=max_pages)
+                    # extract_file rather than convert_to_markdown: this path
+                    # applies the same page cap, so it needs the document's
+                    # page bookkeeping and not only its text (#448).
+                    doc = extract_file(download.path, max_pages=max_pages)
+                    if doc is None:
+                        heading, notice = "## Full Text", ""
+                        converted_text = f"Error converting file to markdown: {download.path.name}"
+                    else:
+                        heading, notice = _fulltext_section_heading(
+                            doc.truncated, doc.page_count, max_pages, item_key
+                        )
+                        converted_text = doc.text
+                    body = "\n\n".join(
+                        part for part in (heading, notice, converted_text) if part
+                    )
                     return _helpers._prepend_size_warning(
-                        f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}",
+                        f"{metadata}\n\n---\n\n{body}",
                         "Consider using zotero_semantic_search to find specific content instead of reading full papers."
                     )
 

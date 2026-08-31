@@ -247,3 +247,22 @@ def dummy_ctx():
 @pytest.fixture
 def fake_zot():
     return FakeZotero()
+
+
+def extracted_doc(text, *, page_count=1, source="pdf", truncated=False):
+    """Build an :class:`~zotero_mcp.extract.ExtractedDoc` for stubbing the
+    parser seam (``LocalZoteroReader._extract_doc_from_file``).
+
+    Tests that stub extraction are usually about attachment *selection*, so
+    they only care about the text; the page fields carry harmless defaults.
+    """
+    from zotero_mcp.extract import ExtractedDoc
+
+    return ExtractedDoc(
+        text=text,
+        pages=(text,),
+        page_numbers=(0,),
+        page_count=page_count,
+        source=source,
+        truncated=truncated,
+    )

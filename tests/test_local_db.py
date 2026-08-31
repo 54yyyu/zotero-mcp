@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+from conftest import extracted_doc
+
 from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY
 from zotero_mcp.local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader, ZoteroItem
 
@@ -25,9 +27,9 @@ class FakeLocalZoteroReader(LocalZoteroReader):
         """Return the injected fake path."""
         return self._fake_pdf_path
 
-    def _extract_text_from_file(self, file_path):
-        """Return the injected fake text instead of reading a real file."""
-        return self._fake_text
+    def _extract_doc_from_file(self, file_path):
+        """Return the injected fake document instead of reading a real file."""
+        return extracted_doc(self._fake_text)
 
 
 def test_extract_fulltext_preserves_long_text(tmp_path):
