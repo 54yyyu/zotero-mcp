@@ -900,8 +900,19 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
 
     def _search(q, qmode):
         try:
+            # 100 is the API maximum, and the window is load-bearing now that
+            # a title query is in play. Quick search matches each token as a
+            # SUBSTRING, so a short title pulls in far more than it looks
+            # like it should — 'Dependence' matches 91 items in a 16.8k
+            # library, 'Noise' 87. Results come back sorted by dateModified
+            # descending, and that ordering runs against us: the item being
+            # deduped against is by definition already in the library, so it
+            # is competing for the window with everything touched since.
+            # Measured at limit=50 a real book ('Stochastic Processes', 83
+            # matches) fell outside it and would have been duplicated; every
+            # over-50 title in that library fits under 100.
             return zot.items(
-                q=q, qmode=qmode, itemType="-attachment", limit=50
+                q=q, qmode=qmode, itemType="-attachment", limit=100
             )
         except (TooManyRetriesError, TooManyRequestsError):
             # A rate-limited search is deliberately not swallowed. Every other
