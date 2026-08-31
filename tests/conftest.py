@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pyzotero.zotero import Zotero
 
 # Always exercise the source tree that these tests live in, not whatever
 # `zotero_mcp` an editable install happens to resolve to. Without this, running
@@ -31,6 +32,28 @@ skip_on_windows = pytest.mark.skipif(
     sys.platform == "win32",
     reason="fixture hardcodes POSIX paths; the behaviour under test is not platform-specific",
 )
+
+
+def pyzotero_http_module():
+    """The HTTP library pyzotero builds its own client from.
+
+    pyzotero 1.15 swapped ``httpx`` for ``httpx2`` — httpx 2.x, published
+    under its own package name, with a disjoint class hierarchy. Anything a
+    test hands pyzotero, a client or a canned response, has to come from the
+    same one, or its ``except httpx2.HTTPError`` never fires and the error
+    handling under test is silently skipped (#511, #512).
+
+    Read off a client pyzotero constructs for itself rather than inferred from
+    a version number or an import name, so it stays correct across the whole
+    ``pyzotero>=1.13.5`` range the floor allows — and so a test asserting that
+    *our* client matches pyzotero's is not just restating how our code picks.
+    Constructing a Zotero performs no I/O.
+    """
+    zot = Zotero(library_id="0", library_type="user", api_key=None, local=True)
+    try:
+        return sys.modules[type(zot.client).__module__.partition(".")[0]]
+    finally:
+        zot.client.close()
 
 
 class DummyContext:
