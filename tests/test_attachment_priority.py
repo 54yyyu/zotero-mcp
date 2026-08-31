@@ -10,7 +10,7 @@ rest behaviour exactly so nobody's library changes under them on upgrade.
 from pathlib import Path
 
 import pytest
-from conftest import FakeZotero
+from conftest import FakeZotero, extracted_doc
 
 from zotero_mcp import client as client_module
 from zotero_mcp.extract import (
@@ -165,8 +165,8 @@ class _Reader(LocalZoteroReader):
     def _read_zotero_ft_cache(self, _attachment_key):
         return None
 
-    def _extract_text_from_file(self, file_path):
-        return f"text of {Path(file_path).name}"
+    def _extract_doc_from_file(self, file_path):
+        return extracted_doc(f"text of {Path(file_path).name}")
 
 
 @pytest.fixture

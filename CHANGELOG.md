@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_get_item_fulltext` says when a document was cut short.** Reads stop at `fulltext_display_max_pages` (10 by default), but the text returned for the first ten pages of a 442-page book was byte-for-byte indistinguishable from the text returned for a complete three-page note: same `## Full Text` heading, no marker anywhere, and a tool description that promised "the entire paper". An agent summarized and cited the excerpt as if it had read the whole thing. The parser already reports `page_count` and `truncated` on every extraction, so both capped paths — local storage and the last-resort download+parse — now carry them through to the heading: `## Full Text (pages 1-10 of 442 — TRUNCATED)`, followed by the config key to raise and the `zotero_read_pdf_pages` call that resumes at the first unread page. A read that fits under the cap is unchanged. Zotero's own `.zotero-ft-cache` and the transient fulltext cache are not page-capped and are never reported as truncated. `LocalZoteroReader`'s parser seam returns the whole `ExtractedDoc` instead of just its text, so page bookkeeping has one source of truth rather than being re-derived by callers (#448).
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
