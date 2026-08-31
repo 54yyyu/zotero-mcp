@@ -7,10 +7,12 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import httpx
@@ -162,17 +164,63 @@ def get_active_group_id() -> int:
     return 0
 
 
-def _make_local_http_client() -> httpx.Client:
-    """Return an httpx.Client pinned to HTTP/1.1 for the local Zotero server.
+@functools.lru_cache(maxsize=1)
+def _pyzotero_httpx() -> ModuleType:
+    """Return the HTTP library the installed pyzotero is built against.
+
+    pyzotero 1.15 swapped ``httpx`` for ``httpx2`` — httpx 2.x, published
+    under its own package name, with a disjoint class hierarchy. That matters
+    to anything we hand pyzotero, because it funnels every response through::
+
+        try:
+            resp.raise_for_status()
+        except httpx2.HTTPError as exc:
+            error_handler(self, resp, exc)
+
+    A response produced by an ``httpx`` client is not caught there, so
+    ``error_handler`` never runs: no server backoff is recorded, no 429 is
+    retried, and every error status reaches our call sites as a raw
+    ``httpx.HTTPStatusError`` instead of the typed pyzotero exception they are
+    written against (#512).
+
+    The floor in pyproject.toml is ``pyzotero>=1.13.5``, which spans both eras,
+    so resolve the module out of pyzotero rather than importing either name
+    directly. Cached because the answer cannot change within a process — and so
+    the fallback below warns once rather than on every client we build.
+    """
+    defining_module = sys.modules.get(zotero.Zotero.__module__)
+    for name in ("httpx2", "httpx"):
+        module = getattr(defining_module, name, None)
+        if module is not None:
+            return module
+    logger.warning(
+        "Could not determine which HTTP library pyzotero uses; falling back to "
+        "httpx %s. If pyzotero is built against a different one, errors from "
+        "the local Zotero API will bypass its typed error handling (#512).",
+        httpx.__version__,
+    )
+    return httpx
+
+
+def _make_local_http_client() -> Any:
+    """Return an HTTP client pinned to HTTP/1.1 for the local Zotero server.
 
     Zotero 8's local server (port 23119) only speaks HTTP/1.0. httpx defaults
     to attempting HTTP/2 negotiation, which the local server rejects with 502
     Bad Gateway — every tool call fails even though the MCP starts cleanly
     (#160). Forcing http1=True / http2=False on the transport keeps requests
     on HTTP/1.1 and the local API answers normally.
+
+    Local mode is the only path where we supply the client rather than letting
+    pyzotero build its own, so it is the only one that can get the library
+    wrong. Build it from :func:`_pyzotero_httpx` so the responses it produces
+    are the ones pyzotero's own error handling recognises (#512). Both
+    libraries spell these transport options identically, so the HTTP/1.1 pin
+    above crosses the switch unchanged.
     """
-    return httpx.Client(
-        transport=httpx.HTTPTransport(http1=True, http2=False),
+    http = _pyzotero_httpx()
+    return http.Client(
+        transport=http.HTTPTransport(http1=True, http2=False),
         follow_redirects=True,
     )
 
