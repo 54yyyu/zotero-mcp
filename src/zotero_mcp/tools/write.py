@@ -2607,8 +2607,12 @@ def add_by_isbn(
         # stay outside the lock — that is the whole point of the narrowing.
         with _helpers.identifier_lock("isbn", normalized):
             if if_exists != "duplicate":
+                # The Open Library / Google Books lookup above has run, so a
+                # title is in hand here. An ISBN is not server-side
+                # searchable, so without one this check finds nothing.
                 existing = _helpers.find_existing_items(
-                    read_zot, isbn=normalized, ctx=ctx
+                    read_zot, isbn=normalized,
+                    title=item_data.get("title"), ctx=ctx,
                 )
                 if existing:
                     return _handle_existing_item(

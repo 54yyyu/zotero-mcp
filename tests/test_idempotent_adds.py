@@ -594,3 +594,52 @@ class TestAddByBibtexIfExists:
         assert fake_zot.created == []
         assert fake_zot.addto_calls == []
         assert "skipped — already in library" in result
+
+
+class TestIsbnTitleFallback:
+    """ISBN has the same unsearchable-identifier problem as DOI and arXiv.
+
+    Measured against a real library: four items selected for having an ISBN,
+    searched by their own ISBN, returned zero hits each.
+    """
+
+    def test_isbn_found_via_title_when_identifier_search_cannot(self):
+        item = {
+            "key": "BOOKID01",
+            "version": 1,
+            "data": {
+                "itemType": "book",
+                "title": "Other Minds",
+                "ISBN": "9780306406157",
+            },
+        }
+
+        class IdentifierBlindZotero(FakeZoteroIdem):
+            def items(self, **kwargs):
+                q = (kwargs.get("q") or "").lower()
+                if kwargs.get("qmode") == "titleCreatorYear" and "other minds" in q:
+                    return [item]
+                return []
+
+        z = IdentifierBlindZotero()
+        assert _helpers.find_existing_items(z, isbn="9780306406157") == []
+        out = _helpers.find_existing_items(
+            z, isbn="9780306406157", title="Other Minds"
+        )
+        assert [i["key"] for i in out] == ["BOOKID01"]
+
+    def test_isbn_title_fallback_still_requires_the_isbn_to_match(self, fake_zot):
+        """Two different books can share a title; the ISBN still decides."""
+        fake_zot._items.append({
+            "key": "BOOKID02",
+            "version": 1,
+            "data": {
+                "itemType": "book",
+                "title": "Other Minds",
+                "ISBN": "9781234567897",
+            },
+        })
+        out = _helpers.find_existing_items(
+            fake_zot, isbn="9780306406157", title="Other Minds"
+        )
+        assert out == []
