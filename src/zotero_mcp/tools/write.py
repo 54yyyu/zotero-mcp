@@ -321,10 +321,18 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
 
     The report keeps the ``Item key: `KEY``` line that callers (and
     add_from_file's key extraction) rely on.
+
+    It also reports the citation key when the item has one, since that — not
+    the item key — is what goes into a document. It costs nothing here: the
+    dedup search already returned the full item, so ``data.citationKey`` is
+    in hand. An item without one just omits the line, so nothing depends on
+    Better BibTeX being present.
     """
     item = existing[0]
     item_key = item.get("key")
-    title = item.get("data", {}).get("title") or "(untitled)"
+    data = item.get("data") or {}
+    title = data.get("title") or "(untitled)"
+    citation_key = data.get("citationKey")
 
     note = ""
     if len(existing) > 1:
@@ -338,6 +346,8 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
         f"Already in library: **{title}** (`{item_key}`, matched by {matched_by})\n\n"
         f"Item key: `{item_key}`\n"
     )
+    if citation_key:
+        header += f"Citation key: `{citation_key}`\n"
 
     if if_exists == "skip":
         return header + "No changes made (if_exists='skip')." + note

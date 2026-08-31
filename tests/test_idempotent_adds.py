@@ -16,7 +16,7 @@ import pytest
 
 from conftest import DummyContext, FakeZotero, _FakeResponse
 from zotero_mcp import server
-from zotero_mcp.tools import _helpers
+from zotero_mcp.tools import _helpers, write
 
 
 DOI = "10.1234/test.2024.001"
@@ -410,3 +410,34 @@ class TestAddByBibtexIfExists:
         assert fake_zot.created == []
         assert fake_zot.addto_calls == []
         assert "skipped — already in library" in result
+
+
+class TestExistingItemReportsCitationKey:
+    """The reuse report should name the key that ends up in a document.
+
+    data.citationKey is already on the item the dedup search returned, so
+    this costs no extra request. Measured on a real library, 496 of 500
+    top-level items carried one.
+    """
+
+    def _existing(self, data_extra):
+        data = {"itemType": "preprint", "title": "A Paper"}
+        data.update(data_extra)
+        return [{"key": "ITEM0001", "version": 1, "data": data}]
+
+    def test_citation_key_is_reported_when_present(self, fake_zot, dummy_ctx):
+        out = write._handle_existing_item(
+            fake_zot, self._existing({"citationKey": "Shenfeld2025RLs"}),
+            [], None, "skip", matched_by="arXiv ID 2509.04259", ctx=dummy_ctx,
+        )
+        assert "Citation key: `Shenfeld2025RLs`" in out
+        assert "Item key: `ITEM0001`" in out
+
+    def test_no_line_when_the_item_has_no_citation_key(self, fake_zot, dummy_ctx):
+        """Better BibTeX may not be installed; the line simply doesn't appear."""
+        out = write._handle_existing_item(
+            fake_zot, self._existing({}), [], None, "skip",
+            matched_by="arXiv ID 2509.04259", ctx=dummy_ctx,
+        )
+        assert "Citation key" not in out
+        assert "Item key: `ITEM0001`" in out
