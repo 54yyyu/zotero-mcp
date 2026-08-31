@@ -252,6 +252,97 @@ class TestFindExistingItems:
         })
         assert _helpers.find_existing_items(fake_zot, arxiv_id="2401.00009") == []
 
+    # -- title fallback ----------------------------------------------------
+    #
+    # Zotero's `q` "searches titles and individual creator fields"; the API
+    # docs add that "searching of other fields will be possible in the
+    # future". So DOI/url/archiveID/extra are NOT searchable server side and
+    # an identifier query returns nothing for an item that IS present. The
+    # title is the one field the API does index, so it supplies the
+    # candidates; the identifier still decides.
+
+    def test_title_fallback_finds_item_identifier_search_cannot(self):
+        """The real-world failure: identifier query returns nothing."""
+        item = {
+            "key": "TITLE001",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "title": "RL's Razor",
+                "DOI": "10.48550/arXiv.2509.04259",
+                "url": "",
+                "extra": "",
+            },
+        }
+
+        class IdentifierBlindZotero(FakeZoteroIdem):
+            """Models the Web API: only a title/creator query matches."""
+
+            def items(self, **kwargs):
+                q = (kwargs.get("q") or "").lower()
+                if kwargs.get("qmode") == "titleCreatorYear" and "razor" in q:
+                    return [item]
+                return []
+
+        z = IdentifierBlindZotero()
+        # Without the title the identifier query finds nothing at all.
+        assert _helpers.find_existing_items(z, arxiv_id="2509.04259") == []
+        # With it, the item is found and confirmed by its DOI.
+        out = _helpers.find_existing_items(
+            z, arxiv_id="2509.04259", title="RL's Razor"
+        )
+        assert [i["key"] for i in out] == ["TITLE001"]
+
+    def test_title_fallback_still_requires_the_identifier_to_match(self, fake_zot):
+        """A same-title different-paper must NOT be treated as the same item.
+
+        The title only supplies candidates; the identifier decides. Without
+        this the fallback would merge unrelated papers that share a title.
+        """
+        fake_zot._items.append({
+            "key": "OTHER001",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "title": "Generalized Linear Models",
+                "DOI": "10.48550/arXiv.1111.11111",
+                "url": "",
+                "extra": "",
+            },
+        })
+        out = _helpers.find_existing_items(
+            fake_zot, arxiv_id="2222.22222", title="Generalized Linear Models"
+        )
+        assert out == []
+
+    def test_title_fallback_is_skipped_when_identifier_already_matched(self):
+        """No second query when the identifier query already confirmed."""
+        item = {
+            "key": "IDENT001",
+            "version": 1,
+            "data": {
+                "itemType": "preprint",
+                "url": "https://arxiv.org/abs/2401.00010",
+                "extra": "",
+            },
+        }
+
+        class CountingZotero(FakeZoteroIdem):
+            def __init__(self):
+                super().__init__()
+                self.queries = []
+
+            def items(self, **kwargs):
+                self.queries.append(kwargs.get("qmode"))
+                return [item]
+
+        z = CountingZotero()
+        out = _helpers.find_existing_items(
+            z, arxiv_id="2401.00010", title="Whatever"
+        )
+        assert [i["key"] for i in out] == ["IDENT001"]
+        assert z.queries == ["everything"]
+
     def test_isbn_match_across_10_13_forms(self, fake_zot):
         # ISBN-10 0306406152 == ISBN-13 9780306406157
         fake_zot._items.append({
