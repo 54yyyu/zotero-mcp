@@ -787,17 +787,31 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
 
 
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
-                        ctx=None) -> list[dict]:
+                        title=None, ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
 
     Exactly one of doi / arxiv_id / isbn / url should be given (already
     normalized via the corresponding ``_normalize_*`` helper, except url).
-    A server-side quick search (``q=<id>, qmode='everything',
-    itemType='-attachment'``) narrows candidates cheaply; a client-side
-    normalized comparison confirms real matches. Searching with the BARE
-    identifier means the substring quick-search also catches values stored
-    with prefixes ('https://doi.org/10...', 'arXiv:...'). The items endpoint
-    excludes the Trash, so a trashed copy never blocks a re-add.
+    ``title`` is optional and additive: see below.
+
+    A server-side quick search narrows candidates cheaply; a client-side
+    normalized comparison confirms real matches. The items endpoint excludes
+    the Trash, so a trashed copy never blocks a re-add.
+
+    **The identifier query alone cannot be relied on.** Zotero's ``q``
+    parameter "searches titles and individual creator fields", and the API
+    documentation notes that "searching of other fields will be possible in
+    the future" — so DOI, url, archiveID and extra are NOT searchable server
+    side. Against the Web API an identifier query therefore returns zero
+    candidates for an item that IS present, the caller reads that as "not in
+    the library", and ``if_exists='file'`` creates a duplicate.
+
+    So when ``title`` is given and the identifier query confirms nothing, a
+    second pass queries the title — which the API does index — and runs the
+    same identifier comparison over those candidates. The identifier still
+    decides, so this widens the net without loosening the test: a
+    same-title-different-paper is rejected exactly as before. Callers that
+    have already fetched metadata should pass it.
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
@@ -842,42 +856,55 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     else:
         return []
 
-    try:
-        candidates = zot.items(
-            q=query, qmode="everything", itemType="-attachment", limit=50
-        )
-    except (TooManyRetriesError, TooManyRequestsError):
-        # A rate-limited search is deliberately not swallowed. Every other
-        # failure here degrades to "no match" and the caller creates the item,
-        # which is the right trade for a genuinely failed search — but a
-        # throttled search hasn't answered the question, and reading it as "not
-        # present" silently creates duplicates of items that are. pyzotero
-        # >=1.13.5 has already retried and waited out the server's backoff by
-        # the time it raises, so there is nothing left to do but propagate.
-        raise
-    except Exception as e:
-        if ctx is not None:
-            ctx.warning(f"Existing-item search failed (treating as no match): {e}")
-        return []
+    def _search(q, qmode):
+        try:
+            return zot.items(
+                q=q, qmode=qmode, itemType="-attachment", limit=50
+            )
+        except (TooManyRetriesError, TooManyRequestsError):
+            # A rate-limited search is deliberately not swallowed. Every other
+            # failure here degrades to "no match" and the caller creates the
+            # item, which is the right trade for a genuinely failed search —
+            # but a throttled search hasn't answered the question, and reading
+            # it as "not present" silently creates duplicates of items that
+            # are. pyzotero >=1.13.5 has already retried and waited out the
+            # server's backoff by the time it raises, so there is nothing left
+            # to do but propagate.
+            raise
+        except Exception as e:
+            if ctx is not None:
+                ctx.warning(f"Existing-item search failed (treating as no match): {e}")
+            return None
 
-    matches = []
-    for item in candidates or []:
-        # Skip anything that isn't a well-formed item dict. The try above only
-        # wraps the call, not this iteration, so a malformed entry would raise
-        # here and abort the whole import instead of costing one dedup match.
-        # The known cause of that is fixed in pyzotero >=1.13.5, which this
-        # package now requires, but this stays as a backstop: nothing about the
-        # contract of a search result guarantees every entry is a dict.
-        if not isinstance(item, dict):
-            continue
-        data = item.get("data")
-        if not isinstance(data, dict):
-            continue
-        if data.get("itemType") in ("attachment", "note", "annotation"):
-            continue
-        if _matches(data):
-            matches.append(item)
-    return matches
+    def _confirm(candidates):
+        matches = []
+        for item in candidates or []:
+            # Skip anything that isn't a well-formed item dict. _search only
+            # wraps the call, not this iteration, so a malformed entry would
+            # raise here and abort the whole import instead of costing one
+            # dedup match. The known cause of that is fixed in pyzotero
+            # >=1.13.5, which this package now requires, but this stays as a
+            # backstop: nothing about the contract of a search result
+            # guarantees every entry is a dict.
+            if not isinstance(item, dict):
+                continue
+            data = item.get("data")
+            if not isinstance(data, dict):
+                continue
+            if data.get("itemType") in ("attachment", "note", "annotation"):
+                continue
+            if _matches(data):
+                matches.append(item)
+        return matches
+
+    matches = _confirm(_search(query, "everything"))
+    if matches or not title:
+        return matches
+
+    # The identifier is not server-side searchable (see the docstring), so
+    # fall back to the one field that is. The identifier comparison in
+    # _confirm still decides which of these candidates is really the item.
+    return _confirm(_search(title, "titleCreatorYear"))
 
 
 def _collection_not_found_message(zot, spec, paths) -> str:

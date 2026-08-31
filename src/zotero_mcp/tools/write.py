@@ -1700,8 +1700,13 @@ def add_by_doi(
             if if_exists != "duplicate" and pending:
                 still_pending: list[tuple[int, dict]] = []
                 for i, payload in pending:
+                    # CrossRef metadata is in hand here, so pass the title: a
+                    # DOI is not server-side searchable, and the identifier
+                    # query alone misses items already in the library.
                     existing = _helpers.find_existing_items(
-                        read_zot, doi=payload["doi"], ctx=ctx
+                        read_zot, doi=payload["doi"],
+                        title=(payload.get("item_data") or {}).get("title"),
+                        ctx=ctx,
                     )
                     if existing:
                         work_results[i] = _handle_existing_item(
@@ -2242,8 +2247,11 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     # note; the metadata fetch above sits between the first check and here.
     with _helpers.identifier_lock("arxiv", arxiv_id), zotero_api_lock():
         if if_exists != "duplicate":
+            # The title is known by now (fetched above), so pass it: the arXiv
+            # ID is not server-side searchable, and the identifier query alone
+            # misses items that are already in the library.
             existing = _helpers.find_existing_items(
-                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
+                read_zot or write_zot, arxiv_id=arxiv_id, title=title, ctx=ctx
             )
             if existing:
                 return _handle_existing_item(
