@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero-cli --json` no longer drops most of a search's results in local mode (#499).** The JSON path reuses the markdown path's selection verbatim — it reads the item keys back out of the rendered markdown and re-fetches them — so the two modes are meant to differ only in rendering. The re-fetch asked for `itemKey=<chunk>` with `limit=len(chunk)`, which is exactly right against the web API and wrong against the local one: the local API answers an `itemKey` filter with the requested items *plus* their children, and it lists the children first. A cap sized to the number of keys asked for therefore truncated the response before any parent appeared. Requesting a single key at `limit=1` returned that item's attachment and nothing else, leaving `found` holding only child keys, and the projection step — which drops keys it cannot resolve rather than faking them — returned nothing. On a live library a search that markdown mode answered with 14 items came back as `count: 6`, and single-key selections came back as `count: 0`; no error was raised in either case, so a caller reading only the JSON saw a smaller library than it has. The re-fetch is now paged through `_paginate` and filtered to the requested keys, which is what `zotero_export_bibliography` already does for the same quirk (#371). Web API users are unaffected and pay no extra request: that API filters `itemKey` correctly, so the first page comes back short of a full page and paging stops there.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
