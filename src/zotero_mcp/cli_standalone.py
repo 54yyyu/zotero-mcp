@@ -31,6 +31,7 @@ from zotero_mcp.cli import (
     obfuscate_config_for_display,
     setup_zotero_environment,
 )
+from zotero_mcp.utils import _paginate
 
 # ---------------------------------------------------------------------------
 # Context
@@ -139,6 +140,18 @@ def _fetch_projected(zot, keys: list[str], detail: str = "summary") -> list[dict
     -- so it is restored explicitly rather than left to whatever the API
     returns. Keys the fetch does not return (deleted between the two calls,
     or not visible to this client) are dropped rather than faked.
+
+    The fetch is paged rather than capped at ``len(chunk)``. The local API
+    answers an ``itemKey`` filter with the requested items *plus* their
+    children, and it lists the children first, so a cap sized to the number of
+    keys asked for truncates the response before the parents appear. A single
+    key -- ``limit=1`` -- came back as that item's attachment alone, leaving
+    ``found`` without the one key the caller wanted. Nothing raised: the caller
+    just saw a shorter list than markdown mode returns for the same query, or
+    ``count: 0`` when children filled the cap outright (#499). The same quirk
+    is already handled this way for ``zotero_export_bibliography`` (#371). Paging is a no-op against the web API, which filters correctly and
+    returns at most ``len(chunk)`` records: the first page comes back short and
+    the loop stops, so no extra request is made.
     """
     if not keys:
         return []
@@ -147,7 +160,7 @@ def _fetch_projected(zot, keys: list[str], detail: str = "summary") -> list[dict
     for i in range(0, len(keys), 50):
         chunk = keys[i:i + 50]
         try:
-            batch = zot.items(itemKey=",".join(chunk), limit=len(chunk))
+            batch = _paginate(zot.items, itemKey=",".join(chunk))
         except Exception:
             batch = []
         for item in batch or []:

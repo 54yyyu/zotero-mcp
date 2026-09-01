@@ -176,12 +176,52 @@ class TestFetchProjected:
         """itemKey takes at most 50 per request."""
         keys = [f"K{i:07d}" for i in range(120)]
         zot = MagicMock()
-        zot.items.side_effect = lambda itemKey, limit: [
+        zot.items.side_effect = lambda itemKey, start=0, limit=100: [
             _raw(k) for k in itemKey.split(",")
         ]
         got = _fetch_projected(zot, keys, "keys_only")
         assert len(got) == 120
         assert zot.items.call_count == 3
+
+    def test_local_api_children_do_not_crowd_out_the_parents(self):
+        """The local API answers an itemKey filter with the requested items
+        *plus* their children, and lists the children first. Sizing the request
+        to the number of keys asked for therefore truncated the response before
+        any parent appeared: `found` came back holding only child keys, and a
+        search markdown mode answers with eight items rendered as
+        `count: 0` (#499).
+
+        The fake honours `start`/`limit` so the pre-fix call -- one request
+        capped at len(keys) -- is expressible against it, and fails.
+        """
+        keys = ["AAAA1111", "BBBB2222"]
+        expanded = [
+            _raw("CHILD001", item_type="attachment"),
+            _raw("CHILD002", item_type="attachment"),
+            _raw("AAAA1111"),
+            _raw("CHILD003", item_type="note"),
+            _raw("BBBB2222"),
+        ]
+        zot = MagicMock()
+        zot.items.side_effect = (
+            lambda itemKey, start=0, limit=100: expanded[start:start + limit]
+        )
+        got = _fetch_projected(zot, keys, "keys_only")
+        assert [i["key"] for i in got] == keys
+
+    def test_a_web_api_selection_still_costs_one_request(self):
+        """The web API filters itemKey correctly and returns at most one record
+        per key, so the first page comes back short of a full page and paging
+        stops there. Fixing the local API's behaviour must not buy a second
+        round trip for everyone else."""
+        keys = ["AAAA1111", "BBBB2222"]
+        zot = MagicMock()
+        zot.items.side_effect = lambda itemKey, start=0, limit=100: (
+            [_raw(k) for k in itemKey.split(",")] if start == 0 else []
+        )
+        got = _fetch_projected(zot, keys, "keys_only")
+        assert [i["key"] for i in got] == keys
+        assert zot.items.call_count == 1
 
 
 # ---------------------------------------------------------------------------
