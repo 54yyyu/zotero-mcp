@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
 from dotenv import load_dotenv
 from pyzotero import zotero
 
@@ -162,17 +161,39 @@ def get_active_group_id() -> int:
     return 0
 
 
-def _make_local_http_client() -> httpx.Client:
-    """Return an httpx.Client pinned to HTTP/1.1 for the local Zotero server.
+def _pyzotero_http():
+    """The HTTP library pyzotero speaks: ``httpx2`` from 1.15, ``httpx`` before.
+
+    pyzotero classifies error responses by calling ``raise_for_status`` inside
+    ``except <its library>.HTTPError``. A client built from the *other* library
+    returns responses whose errors that clause does not catch, so every non-2xx
+    from the local API would escape as that library's raw ``HTTPStatusError``
+    instead of a ``ResourceNotFoundError``, ``PreConditionFailedError`` and so
+    on. The two libraries share the ``Client``/``HTTPTransport`` API, so the
+    only thing that has to match is which one we build from; pyzotero's own
+    import is the one place that choice is recorded.
+    """
+    from pyzotero import _client as pz_client
+
+    module = getattr(pz_client, "httpx2", None) or getattr(pz_client, "httpx", None)
+    if module is None:  # a future pyzotero; fall back to what it depended on so far
+        import httpx as module
+    return module
+
+
+def _make_local_http_client():
+    """Return an HTTP client pinned to HTTP/1.1 for the local Zotero server.
 
     Zotero 8's local server (port 23119) only speaks HTTP/1.0. httpx defaults
     to attempting HTTP/2 negotiation, which the local server rejects with 502
     Bad Gateway — every tool call fails even though the MCP starts cleanly
     (#160). Forcing http1=True / http2=False on the transport keeps requests
-    on HTTP/1.1 and the local API answers normally.
+    on HTTP/1.1 and the local API answers normally. Built from the library
+    pyzotero uses (see :func:`_pyzotero_http`).
     """
-    return httpx.Client(
-        transport=httpx.HTTPTransport(http1=True, http2=False),
+    http = _pyzotero_http()
+    return http.Client(
+        transport=http.HTTPTransport(http1=True, http2=False),
         follow_redirects=True,
     )
 
