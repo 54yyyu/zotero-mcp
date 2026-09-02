@@ -1130,7 +1130,8 @@ def main():
             else:
                 if result.get('success'):
                     print("✅ Update completed successfully!")
-                    print(f"Version: {result.get('current_version', 'Unknown')} → {result.get('latest_version', 'Unknown')}")
+                    installed = result.get('installed_version') or result.get('current_version', 'Unknown')
+                    print(f"Version: {result.get('current_version', 'Unknown')} → {installed}")
                     print(f"Method: {result.get('method', 'Unknown')}")
                     print(f"Message: {result.get('message', '')}")
 
