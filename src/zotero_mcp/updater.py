@@ -7,6 +7,7 @@ method and preserves all user configurations.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -142,6 +143,163 @@ def get_current_version() -> str | None:
             pass
 
     return None
+
+
+class ReceiptError(Exception):
+    """A uv tool receipt exists but cannot be read or understood."""
+
+
+def get_installed_version(python: str | os.PathLike[str] | None = None) -> str | None:
+    """Read the version that is installed on disk right now.
+
+    ``get_current_version`` answers from the already-imported module, so after
+    an install it still reports the version this process started with. A fresh
+    interpreter reads whatever the install step actually left behind. ``-E``
+    and a neutral working directory keep ``PYTHONPATH`` and the cwd from
+    shadowing the install without hiding the user site (``-I`` would, and a
+    ``pip install --user`` install lives there). Distribution metadata is read
+    rather than the package imported, so a release whose import is broken
+    still reports the version it installed (``verify_installation`` is where
+    the import is checked).
+
+    Args:
+        python: Interpreter of the environment that was updated. Defaults to
+            this process's interpreter, which is right for pip/pipx/conda and
+            for a uv tool invoked through its own console script.
+    """
+    try:
+        interpreter = str(python or sys.executable)
+        result = subprocess.run(
+            [
+                interpreter,
+                "-E",
+                "-c",
+                "import importlib.metadata as m; print(m.version('zotero-mcp-server'))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_neutral_cwd(interpreter),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    version = result.stdout.strip().splitlines()
+    return version[-1].strip() if version else None
+
+
+def _neutral_cwd(interpreter: str) -> str:
+    """A working directory with no Python packages in it: the interpreter's own.
+
+    ``python -c`` and ``python -m`` put the cwd on ``sys.path``, so a source
+    checkout in the cwd would shadow the install being measured.
+    """
+    return str(Path(interpreter).parent)
+
+
+def _uv_tool_dir() -> Path | None:
+    """Directory uv keeps its tool environments and receipts in."""
+    try:
+        result = subprocess.run(
+            ["uv", "tool", "dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip())
+
+
+def _uv_tool_python(tool_dir: Path | None = None) -> Path | None:
+    """Interpreter of the ``zotero-mcp-server`` uv tool environment, if present."""
+    tool_dir = tool_dir or _uv_tool_dir()
+    if tool_dir is None:
+        return None
+    env = tool_dir / "zotero-mcp-server"
+    for candidate in (env / "bin" / "python", env / "Scripts" / "python.exe"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _read_uv_tool_receipt() -> dict[str, Any] | None:
+    """Return the extras, version specifier and Python of the uv tool install.
+
+    uv records the requirement it was installed with in ``uv-receipt.toml`` and
+    resolves ``uv tool upgrade`` against it.
+
+    Returns ``None`` when there is no receipt. Raises :class:`ReceiptError`
+    when a receipt exists but cannot be read, so the caller never mistakes an
+    unreadable pin for the absence of one.
+    """
+    tool_dir = _uv_tool_dir()
+    if tool_dir is None:
+        raise ReceiptError("`uv tool dir` failed, so the receipt could not be located")
+    receipt_path = tool_dir / "zotero-mcp-server" / "uv-receipt.toml"
+    if not receipt_path.exists():
+        return None
+
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError as e:
+            raise ReceiptError(f"no TOML parser available to read {receipt_path}") from e
+
+    try:
+        with open(receipt_path, "rb") as f:
+            receipt = tomllib.load(f)
+    except Exception as e:
+        raise ReceiptError(f"could not read {receipt_path}: {e}") from e
+
+    tool = receipt.get("tool", {})
+    requirement = next(
+        (
+            r for r in tool.get("requirements", [])
+            if re.sub(r"[-_.]+", "-", str(r.get("name", ""))).lower() == "zotero-mcp-server"
+        ),
+        None,
+    )
+    if requirement is None:
+        raise ReceiptError(f"{receipt_path} has no zotero-mcp-server requirement")
+    return {
+        "extras": list(requirement.get("extras", [])),
+        "specifier": str(requirement.get("specifier", "")),
+        "python": tool.get("python") or None,
+    }
+
+
+def _is_exact_pin(specifier: str) -> bool:
+    """True for ``==X.Y.Z``: the one constraint ``uv tool upgrade`` can never move.
+
+    A range (``>=0.9,<1``) can still upgrade within its bounds, and a wildcard
+    (``==0.9.*``) within its prefix, so those are left to ``uv tool upgrade``
+    and are not overridden.
+    """
+    spec = specifier.strip()
+    return spec.startswith("==") and not spec.endswith(".*") and "," not in spec
+
+
+def _uv_tool_reinstall_command(receipt: dict[str, Any]) -> list[str]:
+    """Reinstall at ``@latest``, keeping the extras and Python the user chose.
+
+    ``@latest`` is uv's own escape from a pinned receipt (it says so in the
+    hint it prints), and it rewrites the receipt without the pin, so the next
+    ``uv tool upgrade`` works normally. A bare ``uv tool install --force
+    zotero-mcp-server`` would drop the extras and let uv pick a Python.
+    """
+    cmd = ["uv", "tool", "install", "--force"]
+    if receipt.get("python"):
+        cmd += ["--python", str(receipt["python"])]
+    extras = receipt.get("extras") or []
+    spec = "zotero-mcp-server" + (f"[{','.join(extras)}]" if extras else "")
+    cmd.append(f"{spec}@latest")
+    return cmd
 
 
 def get_latest_version() -> str | None:
@@ -332,17 +490,64 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
     try:
         if method == "uv":
             if _is_uv_tool_installation():
-                upgrade_result = subprocess.run(
-                    ["uv", "tool", "upgrade", "zotero-mcp-server"],
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-                if upgrade_result.returncode == 0:
-                    return True, "Updated successfully via uv tool"
+                before = get_current_version()
+                try:
+                    receipt = _read_uv_tool_receipt()
+                    receipt_error = None
+                except ReceiptError as e:
+                    receipt, receipt_error = None, str(e)
 
-                # Fall back to a force reinstall for uv tool installs.
-                cmd = ["uv", "tool", "install", "--force", package_name]
+                if receipt and _is_exact_pin(receipt["specifier"]):
+                    # `uv tool upgrade` resolves against the specifier recorded
+                    # at install time, so an exact pin can never move.
+                    if sys.platform == "win32":
+                        return False, _windows_reinstall_message(receipt)
+                    print(
+                        f"uv tool receipt pins zotero-mcp-server to '{receipt['specifier']}'; "
+                        "reinstalling at @latest instead of upgrading."
+                    )
+                    cmd = _uv_tool_reinstall_command(receipt)
+                else:
+                    upgrade_result = subprocess.run(
+                        ["uv", "tool", "upgrade", "zotero-mcp-server"],
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                    )
+                    if upgrade_result.returncode != 0:
+                        return False, f"Update failed: {upgrade_result.stderr}"
+
+                    # Exit 0 also covers "Nothing to upgrade". Only a changed
+                    # version on disk counts as an upgrade.
+                    after = get_installed_version(python=_uv_tool_python())
+                    if after is None:
+                        return False, (
+                            "`uv tool upgrade` ran but the installed version could not be read "
+                            "afterwards; run 'zotero-mcp version' to check"
+                        )
+                    if before is None or is_newer_version(before, after):
+                        return True, "Updated successfully via uv tool"
+
+                    # A no-op. Reinstalling at @latest discards whatever the
+                    # receipt says, so only do it when the receipt is known
+                    # and unconstrained.
+                    manual = "uv tool install --force 'zotero-mcp-server[all]@latest'"
+                    if receipt is None:
+                        why = receipt_error or "no uv tool receipt found for zotero-mcp-server"
+                        return False, (
+                            f"`uv tool upgrade` changed nothing and the uv tool receipt could not "
+                            f"be used ({why}); reinstall by hand, e.g. {manual}"
+                        )
+                    if receipt["specifier"]:
+                        return False, (
+                            f"`uv tool upgrade` changed nothing: the uv tool receipt constrains "
+                            f"zotero-mcp-server to '{receipt['specifier']}', which excludes newer "
+                            f"releases. Reinstall by hand with a wider constraint, e.g. {manual}"
+                        )
+                    if sys.platform == "win32":
+                        return False, _windows_reinstall_message(receipt)
+                    print("`uv tool upgrade` changed nothing; reinstalling at @latest.")
+                    cmd = _uv_tool_reinstall_command(receipt)
             else:
                 cmd = ["uv", "pip", "install", "--upgrade", package_name]
         elif method == "pip":
@@ -395,35 +600,60 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
         return False, f"Update error: {str(e)}"
 
 
-def verify_installation() -> tuple[bool, str]:
+def _windows_reinstall_message(receipt: dict[str, Any]) -> str:
+    """Explain why the reinstall is left to the user on Windows.
+
+    ``uv tool install --force`` deletes and recreates the tool environment,
+    and on Windows that environment holds the ``python.exe`` this updater is
+    running from, which cannot be deleted while it runs. Doing it from inside
+    would fail part-way and leave the environment broken.
+    """
+    manual = subprocess.list2cmdline(_uv_tool_reinstall_command(receipt))
+    return (
+        "`uv tool upgrade` cannot move a pinned uv tool, and reinstalling from inside the "
+        "running environment is not safe on Windows. Run this from a separate shell:\n  "
+        + manual
+    )
+
+
+def verify_installation(python: str | os.PathLike[str] | None = None) -> tuple[bool, str]:
     """
     Verify that the updated installation is working.
+
+    Args:
+        python: Interpreter of the environment that was updated; see
+            :func:`get_installed_version`.
 
     Returns:
         Tuple of (success, message)
     """
     try:
-        # Try to import the module
-        import zotero_mcp
-
-        # Try to get version
-        from zotero_mcp._version import __version__
-
-        # Try to run a basic command
+        # Run a basic command in a fresh interpreter, so it exercises the
+        # files the install step left behind rather than this process's
+        # already-imported module.
+        interpreter = str(python or sys.executable)
         result = subprocess.run(
-            [sys.executable, "-m", "zotero_mcp.cli", "version"],
+            [interpreter, "-E", "-m", "zotero_mcp.cli", "version"],
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=10,
+            cwd=_neutral_cwd(interpreter),
         )
 
         if result.returncode == 0:
-            return True, f"Installation verified successfully (version {__version__})"
+            return True, "Installation verified successfully"
         else:
             return False, f"Installation verification failed: {result.stderr}"
 
     except Exception as e:
         return False, f"Installation verification error: {str(e)}"
+
+
+def _probe_python(method: str) -> Path | None:
+    """Interpreter to read the post-update version from, for the given method."""
+    if method == "uv" and _is_uv_tool_installation():
+        return _uv_tool_python()
+    return None
 
 
 def update_zotero_mcp(check_only: bool = False,
@@ -444,6 +674,7 @@ def update_zotero_mcp(check_only: bool = False,
         "success": False,
         "current_version": None,
         "latest_version": None,
+        "installed_version": None,
         "method": None,
         "message": "",
         "needs_update": False
@@ -544,13 +775,51 @@ def update_zotero_mcp(check_only: bool = False,
 
         # Verify installation
         print("Verifying installation...")
-        verify_success, verify_message = verify_installation()
+        probe_python = _probe_python(detected_method)
+        verify_success, verify_message = verify_installation(python=probe_python)
 
         if not verify_success:
             result["message"] = f"Update completed but verification failed: {verify_message}"
             return result
 
         print(verify_message)
+
+        # The outcome is what is on disk now, not what PyPI said was latest.
+        # An install step can exit 0 without changing anything — `uv tool
+        # upgrade` under a pinned receipt does exactly that.
+        installed_version = get_installed_version(python=probe_python)
+        result["installed_version"] = installed_version
+
+        if not installed_version:
+            result["message"] = (
+                "Update ran but the installed version could not be read afterwards; "
+                "run 'zotero-mcp version' to check"
+            )
+            return result
+
+        installed = _normalize_version(installed_version)
+        is_latest = installed == _normalize_version(latest_version)
+        if is_newer_version(current_version, installed_version):
+            message = f"Successfully updated from {current_version} to {installed_version}"
+            if not is_latest:
+                message += f" (latest release is {latest_version})"
+        elif installed == _normalize_version(current_version):
+            if not is_latest:
+                result["message"] = (
+                    f"Update ran without error but version {installed_version} is still installed "
+                    f"(latest is {latest_version}). Check how zotero-mcp-server is pinned or "
+                    f"reinstall it by hand."
+                )
+                return result
+            message = f"Reinstalled version {installed_version}"
+        else:
+            if not (force and is_latest):
+                result["message"] = (
+                    f"Update left version {installed_version} installed, which is older than the "
+                    f"{current_version} that was there before (latest is {latest_version})"
+                )
+                return result
+            message = f"Replaced {current_version} with the older released version {installed_version}"
 
         # Cleanup backup
         try:
@@ -559,7 +828,7 @@ def update_zotero_mcp(check_only: bool = False,
             pass  # Not critical if cleanup fails
 
         result["success"] = True
-        result["message"] = f"Successfully updated from {current_version} to {latest_version}"
+        result["message"] = message
 
     except Exception as e:
         result["message"] = f"Update failed: {str(e)}"

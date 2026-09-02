@@ -13,13 +13,19 @@ the symptom is a silent duplicate rather than an error, so these tests are the
 only thing standing between the two.
 """
 
-import httpx
 import pytest
 from conftest import DummyContext
 from pyzotero.zotero import Zotero
 from pyzotero.zotero_errors import TooManyRetriesError
 
+from zotero_mcp.client import _pyzotero_http
 from zotero_mcp.tools import _helpers
+
+# Responses must come from the library pyzotero itself uses (httpx2 from 1.15,
+# httpx before): its retry loop catches only that library's HTTPError, so a
+# response from the other one escapes as a raw status error instead of
+# being retried.
+httpx = _pyzotero_http()
 
 _REQ = httpx.Request("GET", "https://api.zotero.org/users/1/items")
 _ITEM = [{"key": "EXIST001", "version": 1,

@@ -6,10 +6,14 @@ to attempting HTTP/2 negotiation, which the local server rejects with
 cleanly. The fix pins the local pyzotero client's transport to HTTP/1.1.
 """
 
-import httpx
 from pyzotero import zotero
 
 from zotero_mcp import client as zclient
+
+# The library pyzotero uses: httpx2 from 1.15, httpx before. The local
+# client must be built from the same one, or pyzotero cannot classify its
+# error responses.
+httpx = zclient._pyzotero_http()
 
 
 def test_make_local_http_client_pins_http1():
