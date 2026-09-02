@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **With pyzotero 1.15, every error response from the local Zotero API escaped as a raw `httpx.HTTPStatusError` instead of a pyzotero error.** pyzotero 1.15.0 replaced `httpx` with `httpx2`. For the local server we hand pyzotero our own client, pinned to HTTP/1.1 (#160), and that client was still an `httpx.Client`. pyzotero classifies error responses by calling `raise_for_status` inside `except httpx2.HTTPError`, which does not catch the `httpx` error the old client's responses raise — so a 404 was no longer a `ResourceNotFoundError`, a 412 no longer a `PreConditionFailedError`, and nothing downstream that catches pyzotero's errors saw them. The same mismatch is why the rate-limit tests, which fabricate `httpx.Response` objects, failed on every platform against 1.15.1: the 429 never reached pyzotero's retry loop. The local client is now built from whichever library pyzotero itself imports (`httpx2` from 1.15, `httpx` before — the two share the `Client`/`HTTPTransport` API), and the tests fabricate their responses from the same one, so both hold on either side of the switch. Verified against pyzotero 1.14.0 and 1.15.1.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
