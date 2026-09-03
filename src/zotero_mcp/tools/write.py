@@ -14,6 +14,7 @@ from typing import Literal, NamedTuple
 from urllib.parse import unquote, urlparse
 
 import requests
+from unidecode import unidecode
 
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
@@ -1148,6 +1149,82 @@ def manage_collections(
 # individual MCP tools — ``zotero_add_item`` is the single public facade that
 # detects the source shape and dispatches here. They stay importable (and
 # individually callable) for the CLI and for direct use.
+def _surname_key(name: str) -> str:
+    """Fold a surname so two sources' spellings of one person compare equal.
+
+    Accent-folded, because the disagreement is routinely exactly that: the
+    CrossRef record for 10.1006/bulm.1999.0141 deposits "SOLE" where the
+    article and its landing page both say "Sole".
+    """
+    return unidecode(name or "").casefold().strip()
+
+
+def _merge_page_authors(cr_creators: list[dict],
+                        page_authors: list[tuple[str, str]]) -> list[dict] | None:
+    """Reconcile CrossRef's creators with the ones the landing page lists.
+
+    Returns a replacement creator list, or ``None`` to leave CrossRef's
+    alone. Authorship is the one place a publisher's page can outrank the
+    registry: CrossRef serves what was deposited, and older deposits are
+    routinely truncated -- 10.1006/bulm.1999.0141 deposits one author for a
+    paper with four.
+
+    The rule is that the page names people CrossRef is *missing*, tested on
+    surnames rather than list length. Length alone is too easily inflated:
+    a page emitting both ``citation_author`` and ``dc.creator`` for the same
+    people yields two entries each whenever the two families punctuate a
+    name differently, and that would silently double an item's authors.
+
+    Where both sources know a person, CrossRef's entry is kept. Its
+    ``given``/``family`` split is authoritative; the page's is guessed from
+    whitespace by ``_split_name``, and is often initials-only. Recovering a
+    missing fourth author should not cost the other three their forenames.
+
+    Two shapes are declined outright:
+
+    * CrossRef holding a single-field creator -- a collaboration, whose
+      members the page will list individually. That is a different claim
+      about authorship, not a fuller one.
+    * CrossRef holding editors or translators. ``EmbeddedMetadata.authors``
+      folds ``citation_editor`` and ``dc.contributor`` in with the authors,
+      so on a book chapter the page's flat list cannot be reconciled with
+      CrossRef's typed one without promoting editors to authors. Teaching
+      the reader to keep those apart would lift this restriction and is a
+      change for its own commit.
+    """
+    if not page_authors:
+        return None
+    if any("name" in c for c in cr_creators):
+        return None
+    if any(c.get("creatorType") != "author" for c in cr_creators):
+        return None
+
+    cr_surnames = {_surname_key(c.get("lastName", "")) for c in cr_creators}
+    page_surnames = {_surname_key(last) for _, last in page_authors}
+    if not page_surnames > cr_surnames:
+        return None
+
+    # Keep CrossRef's entry for each person it already knew, in the page's
+    # order -- which is authorship order, and the thing a truncated record
+    # has lost. A surname held twice is popped in order rather than reused.
+    pool: dict[str, list[dict]] = {}
+    for creator in cr_creators:
+        pool.setdefault(_surname_key(creator.get("lastName", "")), []).append(creator)
+
+    merged = []
+    for first, last in page_authors:
+        known = pool.get(_surname_key(last))
+        if known:
+            merged.append(known.pop(0))
+        else:
+            merged.append({
+                "creatorType": "author",
+                "firstName": first,
+                "lastName": last,
+            })
+    return merged
+
+
 def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
                            supplemental: EmbeddedMetadata | None = None,
                            ) -> tuple[dict, str, str]:
@@ -1160,8 +1237,9 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
     ``type_note`` to warn about an unmapped CrossRef type.
 
     ``supplemental`` carries metadata read from the page the DOI was found
-    on, and fills *only* fields CrossRef left empty. CrossRef stays
-    authoritative where it says anything at all.
+    on. It fills fields CrossRef left empty, and -- only where the page
+    names people CrossRef is missing -- supplies the creator list. See
+    ``_merge_page_authors``.
     """
     # Determine Zotero item type. An unmapped type still becomes a
     # document, but the caller is told so — the fields a document has no
@@ -1237,9 +1315,13 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
             item_data[field] = value
 
     # Fill the gaps CrossRef left, from the page the DOI came from.
-    # Never overwrite: a value CrossRef supplied wins.
+    # CrossRef stays authoritative for every field it populated -- it is the
+    # registry of record for where a paper was published. Authorship is the
+    # single exception; see _merge_page_authors.
     if supplemental is not None:
         page_fields = {
+            "abstractNote": _utils.clean_html(supplemental.abstract,
+                                              collapse_whitespace=True),
             "title": supplemental.title,
             "publicationTitle": supplemental.publication,
             "bookTitle": supplemental.book_title,
@@ -1255,11 +1337,10 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         for field, value in page_fields.items():
             if value and field in item_data and not item_data[field]:
                 item_data[field] = value
-        if supplemental.authors and not item_data.get("creators"):
-            item_data["creators"] = [
-                {"creatorType": "author", "firstName": first, "lastName": last}
-                for first, last in supplemental.authors
-            ]
+        merged = _merge_page_authors(item_data.get("creators") or [],
+                                     supplemental.authors)
+        if merged is not None and "creators" in item_data:
+            item_data["creators"] = merged
 
     return item_data, zot_type, type_note
 
@@ -1284,26 +1365,38 @@ def _memoized_item_template_fn(write_zot):
     return template_fn
 
 
-def _resolve_thin_crossref_record(cr: dict, normalized: str, ctx: Context):
-    """Read the DOI's landing page when CrossRef's answer can't stand alone.
+#: What ``page_check`` may be. ``"always"`` reads the DOI's landing page
+#: whatever CrossRef returned; ``"thin_only"`` reads it just for records
+#: that cannot stand alone.
+_PAGE_CHECK_VALUES = ("always", "thin_only")
+
+
+def _resolve_page_metadata(cr: dict, normalized: str, ctx: Context,
+                           *, policy: str):
+    """Read the DOI's landing page to check CrossRef's answer against it.
 
     A publisher can register an article's DOI as a ``journal-issue``, whose
-    CrossRef record legitimately carries no title, authors, volume, issue or
-    pages — while the article's own landing page advertises all of them.
-    The url route hands its tags down as ``supplemental``; a caller passing a
-    bare DOI has no page to hand over, so we resolve the DOI ourselves.
+    record legitimately carries no title, authors, volume, issue or pages,
+    while the article's own page advertises all of them. More often the
+    record is merely stale: 10.1006/bulm.1999.0141 names one of the paper's
+    four authors and has no abstract, and nothing about it says so.
     Registry silence is not evidence of absence.
+
+    ``policy`` is the caller's, because only the caller knows how many
+    times it is about to ask. One bounded GET against a much better item is
+    the trade a user adding a single paper wants made; the same GET
+    repeated per DOI across an import is not. See ``add_by_doi``.
 
     Outbound HTTP: call it outside the Zotero API lock.
     """
     cr_type = cr.get("type", "")
-    if not _crossref_record_is_thin(cr, cr_type):
+    thin = _crossref_record_is_thin(cr, cr_type)
+    if policy == "thin_only" and not thin:
         return None
     landing = cr.get("URL") or f"https://doi.org/{normalized}"
-    ctx.info(
-        f"CrossRef record for {normalized} is {cr_type or 'untitled'} "
-        f"and carries no usable title; reading {landing}"
-    )
+    why = (f" (CrossRef record is {cr_type or 'untitled'} and carries no "
+           "usable title)") if thin else ""
+    ctx.info(f"Reading {landing} for {normalized}{why}")
     supplemental, _ = _fetch_embedded_metadata(landing, ctx)
     return supplemental
 
@@ -1515,8 +1608,8 @@ def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_
     Calling-thread only: ``template_fn`` may fetch (and cache) an item
     template under the Zotero API lock on a cache miss (#A3).
 
-    ``supplemental`` fills only the fields CrossRef left empty; see
-    ``_crossref_to_item_data``.
+    ``supplemental`` fills the fields CrossRef left empty, and can supply
+    the creator list; see ``_crossref_to_item_data``.
 
     ``cr`` is carried through in the payload as well as consumed here: the
     OA-PDF cascade's "arXiv (via CrossRef)" source reads the has-preprint
@@ -1565,13 +1658,25 @@ def add_by_doi(
     create_missing_collections: bool = False,
     *,
     supplemental: EmbeddedMetadata | None = None,
+    page_check: Literal["always", "thin_only"] = "always",
     ctx: Context
 ) -> str:
     """Add an item by DOI, from CrossRef.
 
     ``supplemental`` carries metadata read from the page the DOI was found
-    on, and fills *only* fields CrossRef left empty (see
+    on. It fills fields CrossRef left empty, and where the page names
+    authors CrossRef is missing it supplies the creator list (see
     ``_crossref_to_item_data``).
+
+    ``page_check`` decides whether to go and read that page when the caller
+    has not supplied one. ``"always"`` -- the default, and what a single
+    interactive add wants -- costs one bounded GET and catches a record
+    that looks complete but is not. ``"thin_only"`` restricts it to records
+    that cannot stand alone, and is what a caller adding many items should
+    pass: a 200-item import must not make 200 publisher requests. Passing
+    several DOIs to one call forces ``"thin_only"`` for that reason, but a
+    caller looping over single DOIs has to say so itself -- ``add_by_url``'s
+    multi-URL recursion and ``add_from_file`` both do.
     """
     # NOT decorated with @with_zotero_api_lock: the lock only needs to
     # cover the Zotero API calls, taken in short scoped blocks below and by
@@ -1609,6 +1714,8 @@ def add_by_doi(
 
         if if_exists not in _IF_EXISTS_VALUES:
             return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
+        if page_check not in _PAGE_CHECK_VALUES:
+            return f"Error: page_check must be one of {_PAGE_CHECK_VALUES}."
 
         # Resolve collection specs (keys/names/paths) BEFORE any network or
         # write work — a bad spec must not produce an unfiled item.
@@ -1663,11 +1770,15 @@ def add_by_doi(
                 work_results[i] = fetch_payload
                 continue
             # ``supplemental`` describes one specific page, so it cannot be
-            # handed to a batch. A thin CrossRef record still gets its own
-            # landing page read, per DOI, on either path.
+            # handed to a batch. Failing that the page is read here, under
+            # the caller's policy -- except that several DOIs in one call
+            # are a batch by definition and take "thin_only" regardless.
             page_meta = None if is_batch else supplemental
             if page_meta is None:
-                page_meta = _resolve_thin_crossref_record(fetch_payload, normalized, ctx)
+                page_meta = _resolve_page_metadata(
+                    fetch_payload, normalized, ctx,
+                    policy="thin_only" if is_batch else page_check,
+                )
             built = _build_one_doi_item_data(fetch_payload, normalized, template_fn,
                                              tags, coll_keys, page_meta)
             pending.append((i, built))
@@ -1920,6 +2031,7 @@ def add_by_url(
     if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
     create_missing_collections: bool = False,
     *,
+    page_check: Literal["always", "thin_only"] = "always",
     ctx: Context
 ) -> str:
     # NOT decorated with @with_zotero_api_lock: the DOI/arXiv branches
@@ -1941,11 +2053,13 @@ def add_by_url(
         canonical, duplicate_of = _dedupe_multi_tokens(tokens, _url_dedup_key)
         results: list[str] = [None] * len(tokens)
         for i in canonical:
+            # A URL batch is a batch even though it recurses one at a time:
+            # 200 doi.org links must not become 200 publisher requests.
             results[i] = add_by_url(
                 url=tokens[i], collections=collections, tags=tags,
                 attach_mode=attach_mode, if_exists=if_exists,
                 create_missing_collections=create_missing_collections,
-                ctx=ctx)
+                page_check="thin_only", ctx=ctx)
         for i, canon_i in duplicate_of.items():
             results[i] = _duplicate_of_message("URL", canon_i + 1)
         return _format_multi_result("URL", tokens, results)
@@ -1970,7 +2084,7 @@ def add_by_url(
             return add_by_doi(doi=url, collections=collections, tags=tags,
                               attach_mode=attach_mode, if_exists=if_exists,
                               create_missing_collections=create_missing_collections,
-                              ctx=ctx)
+                              page_check=page_check, ctx=ctx)
 
         # arXiv URL routing
         arxiv_id = _helpers._normalize_arxiv_id(url)
@@ -4350,8 +4464,11 @@ def add_from_file(
         # lands on it instead of on a fresh duplicate.
         if extracted_doi:
             ctx.info(f"Found DOI: {extracted_doi}")
+            # Directory imports are loops of this, so it takes the batch
+            # policy: the PDF in hand is already the thing being filed.
             result_msg = add_by_doi(doi=extracted_doi, collections=coll_keys,
-                                    tags=tags, if_exists=if_exists, ctx=ctx)
+                                    tags=tags, if_exists=if_exists,
+                                    page_check="thin_only", ctx=ctx)
             # Extract item key from result
             key_match = re.search(r'Item key: `([^`]+)`', result_msg)
             if key_match:
