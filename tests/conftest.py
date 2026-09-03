@@ -67,6 +67,19 @@ class FakeZotero:
     def items(self, **kwargs):
         return self._items
 
+    def top(self, **kwargs):
+        """Top-level items, as /items/top does: no child items.
+
+        A standalone attachment or note has no parent and so is top-level,
+        which is why this filters on parentItem rather than on itemType.
+        """
+        return [it for it in self._items
+                if not it.get("data", {}).get("parentItem")]
+
+    def num_items(self, **kwargs):
+        """Total top-level items, matching what top() pages."""
+        return len(self.top())
+
     def collections(self, **kwargs):
         return self._collections
 
@@ -158,6 +171,10 @@ class FakeZotero:
     def collection_items(self, key, **kwargs):
         return [it for it in self._items
                 if key in it.get("data", {}).get("collections", [])]
+
+    def collection_items_top(self, key, **kwargs):
+        return [it for it in self.collection_items(key, **kwargs)
+                if not it.get("data", {}).get("parentItem")]
 
     def file(self, key, **kwargs):
         return b""

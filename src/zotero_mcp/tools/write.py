@@ -3116,7 +3116,15 @@ def delete_item(
 # Duplicate detection — shared by find_duplicates and merge_duplicates
 # ---------------------------------------------------------------------------
 
-# Whole-library scan ceiling. Past this a caller wants collection_key instead.
+# Whole-library scan ceiling, counted in top-level items — the population the
+# grouping loop below actually compares. Past this a caller wants
+# collection_key instead.
+#
+# What this bounds is the cost of *fetching* the library: at page_size 100
+# the scan makes at most 51 requests and holds at most 5,100 item records,
+# and it did so before this ceiling was reinterpreted as top-level too.
+# It is not bounding the grouping itself, which is a single hash pass —
+# O(n), not the O(n²) the tool description used to claim.
 _DUP_SCAN_MAX_ITEMS = 5000
 
 # find_duplicates renders one compact line per item of already-grouped
@@ -3149,15 +3157,70 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     Both zotero_find_duplicates and zotero_merge_duplicates(auto=True) go
     through here, so "merge everything that qualifies" and "show me what
     qualifies" can never disagree about what a group is.
+
+    Two things about how the scan is bounded:
+
+    *Ask for the size before fetching it.* The over-size refusal used to be
+    reached by paging in _DUP_SCAN_MAX_ITEMS + 100 items and then measuring
+    the list, which costs ~51 requests to say "too large" — 163s against a
+    16,859-item library over the web API, 4.6s against the same library over
+    the local one. ``num_items()`` answers the same question in one request
+    (0.05s local), and answers it with the library's real size rather than
+    with 5,100, which was only where paging gave up.
+
+    *Page top-level items, not every item.* The grouping loop below discards
+    attachments, notes and annotations, but ``items()`` returns them, so they
+    consumed the budget: on that library they are 49.7% of ``/items``
+    (33,506 all, 16,859 top-level). ``top()`` excludes them, and loses
+    nothing — paging both endpoints and applying the itemType filter yields
+    the identical 16,850 groupable items, in 169 requests rather than 336.
+
+    The itemType filter below is still needed even so: a standalone
+    attachment or note has no parent and is therefore top-level, which is the
+    9-item gap between 16,859 and 16,850.
+
+    Reinterpreting the ceiling as top-level items does mean a library that was
+    refused before may now be scanned — roughly a doubling of the admitted
+    population at that 49.7% child share. It does not raise what the ceiling
+    costs: 51 requests and 5,100 records held is the worst case either way
+    (see _DUP_SCAN_MAX_ITEMS). Only the useful fraction of that fixed budget
+    changes.
     """
+    page_size = 100
+
+    # Only the whole-library scan gets a precheck, because only there is the
+    # cheap count the right population: num_items() counts /items/top, exactly
+    # what top() pages. num_collectionitems() counts a collection's items
+    # *including* children, so it is only an upper bound on the top-level
+    # count — it could not refuse on its own, and the paging guard below
+    # already handles the in-range case, so asking would be a wasted request.
+    if not collection_key:
+        try:
+            total = zot.num_items()
+        except Exception:
+            # The count is an optimisation, not a correctness requirement:
+            # the paging guard below still bounds the scan without it.
+            pass
+        else:
+            if total > _DUP_SCAN_MAX_ITEMS:
+                # Deliberately not shared with the paging guard's message
+                # below: this one reports the library's real top-level count,
+                # that one reports where paging stopped (always ceiling + 100).
+                # They say the same thing about a different number, so keep
+                # them apart rather than "fixing" them into agreement.
+                return {}, (
+                    f"Library has {total} top-level items — too large for "
+                    "duplicate scan. Please scope by collection_key to reduce "
+                    "the search."
+                )
+
     items = []
     start = 0
-    page_size = 100
     while True:
         if collection_key:
-            batch = zot.collection_items(collection_key, start=start, limit=page_size)
+            batch = zot.collection_items_top(collection_key, start=start, limit=page_size)
         else:
-            batch = zot.items(start=start, limit=page_size)
+            batch = zot.top(start=start, limit=page_size)
         if not batch:
             break
         items.extend(batch)
@@ -3168,9 +3231,13 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
             break
 
     if len(items) > _DUP_SCAN_MAX_ITEMS:
+        # Reached when the precheck was skipped (collection scan) or failed.
+        # len(items) is where paging stopped, not the real total — see the
+        # note on the precheck's message above.
         return {}, (
-            f"Library has {len(items)} items — too large for duplicate scan. "
-            "Please scope by collection_key to reduce the search."
+            f"Scan exceeded {_DUP_SCAN_MAX_ITEMS} top-level items — too large "
+            "for duplicate scan. Please scope by collection_key to reduce the "
+            "search."
         )
 
     groups: dict[str, list] = {}
@@ -3211,9 +3278,11 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
         "unattended. "
         "collection_key: optional 8-character key to restrict scanning "
         "to one collection; otherwise scans the whole active library. "
-        "LIBRARY SIZE CAP: refuses to scan a library with > 5,000 items "
-        "(the whole-library scan is O(n²) on titles) — on larger "
-        "libraries you MUST pass collection_key to narrow the scope. "
+        "LIBRARY SIZE CAP: refuses to scan a library with > 5,000 "
+        "TOP-LEVEL items — child attachments, notes and annotations do "
+        "not count towards it, so this ceiling is well below the item "
+        "total Zotero displays. On a larger library you MUST pass "
+        "collection_key to narrow the scope. "
         "limit: max groups per call (default 50, max 500). "
         "offset: 0-based index of the first group returned (default 0). "
         "Group order is stable, so page a library with more groups than "
