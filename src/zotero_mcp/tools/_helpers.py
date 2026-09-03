@@ -1188,6 +1188,16 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
                 ctx.info("Downloaded file too small, likely not a real PDF")
                 return None
 
+            # Content-Type is the server's claim about the bytes, not the
+            # bytes. Cloudflare interstitials and "PDF viewer" endpoints --
+            # exactly what a publisher's citation_pdf_url points at -- serve
+            # HTML under application/pdf, and without this they are attached
+            # as if they were the paper.
+            with open(filepath, "rb") as f:
+                if not f.read(5).startswith(b"%PDF"):
+                    ctx.info("Downloaded file is not a PDF (no %PDF header)")
+                    return None
+
             suffix = _webdav_first_attach(
                 write_zot,
                 filename,
@@ -1542,7 +1552,17 @@ def _attachment_filename_exists(write_zot, parent_key, filename):
 
 
 def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):
-    """Create a linked-URL attachment (bookmarks the PDF URL without downloading)."""
+    """Create a linked-URL attachment (bookmarks the PDF URL without downloading).
+
+    Scheme-checked, because this branch never fetches and so never reaches
+    ``_guarded_pdf_get``. Every URL that arrives here came from outside:
+    an aggregator's JSON, or -- since the publisher source was added -- a
+    ``citation_pdf_url`` meta tag on an arbitrary page. A "file:///etc/passwd"
+    in that tag would otherwise be written into the library verbatim.
+    """
+    if urlparse(pdf_url).scheme not in ("http", "https"):
+        ctx.info(f"Refusing to link a non-http(s) URL: {pdf_url}")
+        return False
     try:
         template = write_zot.item_template("attachment", "linked_url")
         template["url"] = pdf_url
@@ -1695,7 +1715,7 @@ class OaPdfRequiredError(Exception):
 
 
 def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
-                       attach_mode="auto"):
+                       attach_mode="auto", page_pdf_url=None):
     """Attempt to find and attach an open-access PDF for a DOI.
 
     attach_mode: 'auto' downloads and uploads the first working OA PDF;
@@ -1703,12 +1723,33 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
     'none' skips the OA lookup entirely; 'required' behaves like 'auto' but
     raises OaPdfRequiredError instead of returning a status string when no
     OA PDF could be attached.
+
+    page_pdf_url: the ``citation_pdf_url`` the article's own landing page
+    advertised, when one was read. Publishers running OJS, Atypon,
+    Silverchair, Highwire and Springer all publish it, and it is how the
+    browser connector finds a PDF the aggregators below have never heard
+    of. Tried first; see the source list.
     """
     if attach_mode == "none":
         return "skipped (attach_mode=none)"
 
-    sources = [
-        ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
+    # The publisher's page goes after Unpaywall, not before it.
+    #
+    # The case for first was that citation_pdf_url names the version of
+    # record. The case against is stronger: it is also the URL most likely
+    # to answer with an access-denied page, a cover sheet or a first-page
+    # preview -- a real PDF, of the right content type, above the size
+    # floor -- and the cascade returns on the first success, so a stub
+    # would win outright over the full text Unpaywall had. Losing a known
+    # open-access copy to a paywall stub is a worse failure than not having
+    # the publisher's pagination.
+    #
+    # Behind Unpaywall it still does the thing it was added for: for a
+    # paper no aggregator has indexed, it is the only source there is.
+    sources = [("Unpaywall", lambda: _try_unpaywall(doi, ctx))]
+    if page_pdf_url:
+        sources.append(("the publisher's page", lambda: page_pdf_url))
+    sources += [
         ("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)),
         ("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)),
         ("PubMed Central", lambda: _try_pmc(doi, ctx)),
@@ -1746,7 +1787,8 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
             "you may be able to access it through your university library or VPN"
         )
     else:
-        message = "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
+        checked = ", ".join(name for name, _ in sources)
+        message = f"no open-access PDF found (checked {checked})"
 
     if attach_mode == "required":
         raise OaPdfRequiredError(message)
