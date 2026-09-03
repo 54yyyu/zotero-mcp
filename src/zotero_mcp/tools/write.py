@@ -14,6 +14,7 @@ from typing import Literal, NamedTuple
 from urllib.parse import unquote, urlparse
 
 import requests
+from unidecode import unidecode
 
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
@@ -1148,6 +1149,82 @@ def manage_collections(
 # individual MCP tools — ``zotero_add_item`` is the single public facade that
 # detects the source shape and dispatches here. They stay importable (and
 # individually callable) for the CLI and for direct use.
+def _surname_key(name: str) -> str:
+    """Fold a surname so two sources' spellings of one person compare equal.
+
+    Accent-folded, because the disagreement is routinely exactly that: the
+    CrossRef record for 10.1006/bulm.1999.0141 deposits "SOLE" where the
+    article and its landing page both say "Sole".
+    """
+    return unidecode(name or "").casefold().strip()
+
+
+def _merge_page_authors(cr_creators: list[dict],
+                        page_authors: list[tuple[str, str]]) -> list[dict] | None:
+    """Reconcile CrossRef's creators with the ones the landing page lists.
+
+    Returns a replacement creator list, or ``None`` to leave CrossRef's
+    alone. Authorship is the one place a publisher's page can outrank the
+    registry: CrossRef serves what was deposited, and older deposits are
+    routinely truncated -- 10.1006/bulm.1999.0141 deposits one author for a
+    paper with four.
+
+    The rule is that the page names people CrossRef is *missing*, tested on
+    surnames rather than list length. Length alone is too easily inflated:
+    a page emitting both ``citation_author`` and ``dc.creator`` for the same
+    people yields two entries each whenever the two families punctuate a
+    name differently, and that would silently double an item's authors.
+
+    Where both sources know a person, CrossRef's entry is kept. Its
+    ``given``/``family`` split is authoritative; the page's is guessed from
+    whitespace by ``_split_name``, and is often initials-only. Recovering a
+    missing fourth author should not cost the other three their forenames.
+
+    Two shapes are declined outright:
+
+    * CrossRef holding a single-field creator -- a collaboration, whose
+      members the page will list individually. That is a different claim
+      about authorship, not a fuller one.
+    * CrossRef holding editors or translators. ``EmbeddedMetadata.authors``
+      folds ``citation_editor`` and ``dc.contributor`` in with the authors,
+      so on a book chapter the page's flat list cannot be reconciled with
+      CrossRef's typed one without promoting editors to authors. Teaching
+      the reader to keep those apart would lift this restriction and is a
+      change for its own commit.
+    """
+    if not page_authors:
+        return None
+    if any("name" in c for c in cr_creators):
+        return None
+    if any(c.get("creatorType") != "author" for c in cr_creators):
+        return None
+
+    cr_surnames = {_surname_key(c.get("lastName", "")) for c in cr_creators}
+    page_surnames = {_surname_key(last) for _, last in page_authors}
+    if not page_surnames > cr_surnames:
+        return None
+
+    # Keep CrossRef's entry for each person it already knew, in the page's
+    # order -- which is authorship order, and the thing a truncated record
+    # has lost. A surname held twice is popped in order rather than reused.
+    pool: dict[str, list[dict]] = {}
+    for creator in cr_creators:
+        pool.setdefault(_surname_key(creator.get("lastName", "")), []).append(creator)
+
+    merged = []
+    for first, last in page_authors:
+        known = pool.get(_surname_key(last))
+        if known:
+            merged.append(known.pop(0))
+        else:
+            merged.append({
+                "creatorType": "author",
+                "firstName": first,
+                "lastName": last,
+            })
+    return merged
+
+
 def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
                            supplemental: EmbeddedMetadata | None = None,
                            ) -> tuple[dict, str, str]:
@@ -1160,8 +1237,9 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
     ``type_note`` to warn about an unmapped CrossRef type.
 
     ``supplemental`` carries metadata read from the page the DOI was found
-    on, and fills *only* fields CrossRef left empty. CrossRef stays
-    authoritative where it says anything at all.
+    on. It fills fields CrossRef left empty, and -- only where the page
+    names people CrossRef is missing -- supplies the creator list. See
+    ``_merge_page_authors``.
     """
     # Determine Zotero item type. An unmapped type still becomes a
     # document, but the caller is told so — the fields a document has no
@@ -1237,9 +1315,13 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
             item_data[field] = value
 
     # Fill the gaps CrossRef left, from the page the DOI came from.
-    # Never overwrite: a value CrossRef supplied wins.
+    # CrossRef stays authoritative for every field it populated -- it is the
+    # registry of record for where a paper was published. Authorship is the
+    # single exception; see _merge_page_authors.
     if supplemental is not None:
         page_fields = {
+            "abstractNote": _utils.clean_html(supplemental.abstract,
+                                              collapse_whitespace=True),
             "title": supplemental.title,
             "publicationTitle": supplemental.publication,
             "bookTitle": supplemental.book_title,
@@ -1255,11 +1337,10 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         for field, value in page_fields.items():
             if value and field in item_data and not item_data[field]:
                 item_data[field] = value
-        if supplemental.authors and not item_data.get("creators"):
-            item_data["creators"] = [
-                {"creatorType": "author", "firstName": first, "lastName": last}
-                for first, last in supplemental.authors
-            ]
+        merged = _merge_page_authors(item_data.get("creators") or [],
+                                     supplemental.authors)
+        if merged is not None and "creators" in item_data:
+            item_data["creators"] = merged
 
     return item_data, zot_type, type_note
 
@@ -1515,8 +1596,8 @@ def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_
     Calling-thread only: ``template_fn`` may fetch (and cache) an item
     template under the Zotero API lock on a cache miss (#A3).
 
-    ``supplemental`` fills only the fields CrossRef left empty; see
-    ``_crossref_to_item_data``.
+    ``supplemental`` fills the fields CrossRef left empty, and can supply
+    the creator list; see ``_crossref_to_item_data``.
 
     ``cr`` is carried through in the payload as well as consumed here: the
     OA-PDF cascade's "arXiv (via CrossRef)" source reads the has-preprint
@@ -1570,7 +1651,8 @@ def add_by_doi(
     """Add an item by DOI, from CrossRef.
 
     ``supplemental`` carries metadata read from the page the DOI was found
-    on, and fills *only* fields CrossRef left empty (see
+    on. It fills fields CrossRef left empty, and where the page names
+    authors CrossRef is missing it supplies the creator list (see
     ``_crossref_to_item_data``).
     """
     # NOT decorated with @with_zotero_api_lock: the lock only needs to
