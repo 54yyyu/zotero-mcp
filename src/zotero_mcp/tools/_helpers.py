@@ -1138,7 +1138,9 @@ def _guarded_pdf_get(pdf_url, ctx):
         if not _url_resolves_to_public_host(current):
             ctx.info(f"PDF URL rejected by SSRF guard: {current}")
             return None
-        resp = requests.get(current, timeout=30, stream=True, allow_redirects=False)
+        resp = requests.get(current, timeout=30, stream=True,
+                            allow_redirects=False,
+                            headers={"User-Agent": _utils.USER_AGENT})
         if resp.status_code in _REDIRECT_STATUSES:
             location = resp.headers.get("Location")
             try:
