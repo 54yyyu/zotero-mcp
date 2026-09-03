@@ -1324,7 +1324,7 @@ _CROSSREF_FILTER_CHUNK = 50
 _CROSSREF_MAX_ATTEMPTS = 3
 
 _CROSSREF_HEADERS = {
-    "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
+    "User-Agent": _utils.USER_AGENT,
     "Accept": "application/json",
 }
 
@@ -1789,10 +1789,7 @@ def _fetch_embedded_metadata(
         resp = requests.get(
             url,
             headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (compatible; zotero-mcp/1.0; "
-                    "+https://github.com/54yyyu/zotero-mcp)"
-                ),
+                "User-Agent": _utils.USER_AGENT,
                 "Accept": "text/html,application/xhtml+xml",
             },
             timeout=_EMBEDDED_METADATA_TIMEOUT,
@@ -2381,7 +2378,7 @@ def _lookup_isbn_openlibrary(isbn, ctx):
         )
         resp = requests.get(
             url,
-            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            headers={"User-Agent": _utils.USER_AGENT},
             timeout=15,
         )
         if resp.status_code != 200:
@@ -2445,7 +2442,7 @@ def _lookup_isbn_google_books(isbn, ctx):
         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
         resp = requests.get(
             url,
-            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            headers={"User-Agent": _utils.USER_AGENT},
             timeout=15,
         )
         if resp.status_code != 200:
