@@ -1365,26 +1365,38 @@ def _memoized_item_template_fn(write_zot):
     return template_fn
 
 
-def _resolve_thin_crossref_record(cr: dict, normalized: str, ctx: Context):
-    """Read the DOI's landing page when CrossRef's answer can't stand alone.
+#: What ``page_check`` may be. ``"always"`` reads the DOI's landing page
+#: whatever CrossRef returned; ``"thin_only"`` reads it just for records
+#: that cannot stand alone.
+_PAGE_CHECK_VALUES = ("always", "thin_only")
+
+
+def _resolve_page_metadata(cr: dict, normalized: str, ctx: Context,
+                           *, policy: str):
+    """Read the DOI's landing page to check CrossRef's answer against it.
 
     A publisher can register an article's DOI as a ``journal-issue``, whose
-    CrossRef record legitimately carries no title, authors, volume, issue or
-    pages — while the article's own landing page advertises all of them.
-    The url route hands its tags down as ``supplemental``; a caller passing a
-    bare DOI has no page to hand over, so we resolve the DOI ourselves.
+    record legitimately carries no title, authors, volume, issue or pages,
+    while the article's own page advertises all of them. More often the
+    record is merely stale: 10.1006/bulm.1999.0141 names one of the paper's
+    four authors and has no abstract, and nothing about it says so.
     Registry silence is not evidence of absence.
+
+    ``policy`` is the caller's, because only the caller knows how many
+    times it is about to ask. One bounded GET against a much better item is
+    the trade a user adding a single paper wants made; the same GET
+    repeated per DOI across an import is not. See ``add_by_doi``.
 
     Outbound HTTP: call it outside the Zotero API lock.
     """
     cr_type = cr.get("type", "")
-    if not _crossref_record_is_thin(cr, cr_type):
+    thin = _crossref_record_is_thin(cr, cr_type)
+    if policy == "thin_only" and not thin:
         return None
     landing = cr.get("URL") or f"https://doi.org/{normalized}"
-    ctx.info(
-        f"CrossRef record for {normalized} is {cr_type or 'untitled'} "
-        f"and carries no usable title; reading {landing}"
-    )
+    why = (f" (CrossRef record is {cr_type or 'untitled'} and carries no "
+           "usable title)") if thin else ""
+    ctx.info(f"Reading {landing} for {normalized}{why}")
     supplemental, _ = _fetch_embedded_metadata(landing, ctx)
     return supplemental
 
@@ -1646,6 +1658,7 @@ def add_by_doi(
     create_missing_collections: bool = False,
     *,
     supplemental: EmbeddedMetadata | None = None,
+    page_check: Literal["always", "thin_only"] = "always",
     ctx: Context
 ) -> str:
     """Add an item by DOI, from CrossRef.
@@ -1654,6 +1667,16 @@ def add_by_doi(
     on. It fills fields CrossRef left empty, and where the page names
     authors CrossRef is missing it supplies the creator list (see
     ``_crossref_to_item_data``).
+
+    ``page_check`` decides whether to go and read that page when the caller
+    has not supplied one. ``"always"`` -- the default, and what a single
+    interactive add wants -- costs one bounded GET and catches a record
+    that looks complete but is not. ``"thin_only"`` restricts it to records
+    that cannot stand alone, and is what a caller adding many items should
+    pass: a 200-item import must not make 200 publisher requests. Passing
+    several DOIs to one call forces ``"thin_only"`` for that reason, but a
+    caller looping over single DOIs has to say so itself -- ``add_by_url``'s
+    multi-URL recursion and ``add_from_file`` both do.
     """
     # NOT decorated with @with_zotero_api_lock: the lock only needs to
     # cover the Zotero API calls, taken in short scoped blocks below and by
@@ -1691,6 +1714,8 @@ def add_by_doi(
 
         if if_exists not in _IF_EXISTS_VALUES:
             return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
+        if page_check not in _PAGE_CHECK_VALUES:
+            return f"Error: page_check must be one of {_PAGE_CHECK_VALUES}."
 
         # Resolve collection specs (keys/names/paths) BEFORE any network or
         # write work — a bad spec must not produce an unfiled item.
@@ -1745,11 +1770,15 @@ def add_by_doi(
                 work_results[i] = fetch_payload
                 continue
             # ``supplemental`` describes one specific page, so it cannot be
-            # handed to a batch. A thin CrossRef record still gets its own
-            # landing page read, per DOI, on either path.
+            # handed to a batch. Failing that the page is read here, under
+            # the caller's policy -- except that several DOIs in one call
+            # are a batch by definition and take "thin_only" regardless.
             page_meta = None if is_batch else supplemental
             if page_meta is None:
-                page_meta = _resolve_thin_crossref_record(fetch_payload, normalized, ctx)
+                page_meta = _resolve_page_metadata(
+                    fetch_payload, normalized, ctx,
+                    policy="thin_only" if is_batch else page_check,
+                )
             built = _build_one_doi_item_data(fetch_payload, normalized, template_fn,
                                              tags, coll_keys, page_meta)
             pending.append((i, built))
@@ -2002,6 +2031,7 @@ def add_by_url(
     if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
     create_missing_collections: bool = False,
     *,
+    page_check: Literal["always", "thin_only"] = "always",
     ctx: Context
 ) -> str:
     # NOT decorated with @with_zotero_api_lock: the DOI/arXiv branches
@@ -2023,11 +2053,13 @@ def add_by_url(
         canonical, duplicate_of = _dedupe_multi_tokens(tokens, _url_dedup_key)
         results: list[str] = [None] * len(tokens)
         for i in canonical:
+            # A URL batch is a batch even though it recurses one at a time:
+            # 200 doi.org links must not become 200 publisher requests.
             results[i] = add_by_url(
                 url=tokens[i], collections=collections, tags=tags,
                 attach_mode=attach_mode, if_exists=if_exists,
                 create_missing_collections=create_missing_collections,
-                ctx=ctx)
+                page_check="thin_only", ctx=ctx)
         for i, canon_i in duplicate_of.items():
             results[i] = _duplicate_of_message("URL", canon_i + 1)
         return _format_multi_result("URL", tokens, results)
@@ -2052,7 +2084,7 @@ def add_by_url(
             return add_by_doi(doi=url, collections=collections, tags=tags,
                               attach_mode=attach_mode, if_exists=if_exists,
                               create_missing_collections=create_missing_collections,
-                              ctx=ctx)
+                              page_check=page_check, ctx=ctx)
 
         # arXiv URL routing
         arxiv_id = _helpers._normalize_arxiv_id(url)
@@ -4432,8 +4464,11 @@ def add_from_file(
         # lands on it instead of on a fresh duplicate.
         if extracted_doi:
             ctx.info(f"Found DOI: {extracted_doi}")
+            # Directory imports are loops of this, so it takes the batch
+            # policy: the PDF in hand is already the thing being filed.
             result_msg = add_by_doi(doi=extracted_doi, collections=coll_keys,
-                                    tags=tags, if_exists=if_exists, ctx=ctx)
+                                    tags=tags, if_exists=if_exists,
+                                    page_check="thin_only", ctx=ctx)
             # Extract item key from result
             key_match = re.search(r'Item key: `([^`]+)`', result_msg)
             if key_match:
