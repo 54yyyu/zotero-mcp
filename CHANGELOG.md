@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`zotero_find_duplicates` refuses an over-size library in one request, and its 5,000-item ceiling now counts top-level items only.** The refusal used to come only after paging in 5,100 items, about 51 requests (163 s against a 16,859-item library over the Web API); `num_items()` now answers it in one. The scan also pages `/items/top` rather than `/items`, so child attachments, notes and annotations, which the grouping always discarded, no longer use up the budget, and the groups found are the same. A library with many attachments that was refused before may now be scanned, at the same worst-case cost of 51 requests and 5,100 records. Noticed while investigating #506.
+
 ### Fixed
 
 - **Duplicate detection agrees with itself** (#496). Duplicate grouping, the auto-merge DOI-conflict guard, the pre-add existence check and the semantic index's preprint filter now take their keys from `zotero_mcp.identifiers`, so DOIs match in canonical form (`10.1000/ABC`, `https://doi.org/10.1000/abc`) and titles fold the way Zotero's own duplicate finder folds them. A DOI field holding a placeholder such as `article` no longer groups every item that carries it, and re-adding a paper whose stored DOI differs only in case no longer creates a second copy.
