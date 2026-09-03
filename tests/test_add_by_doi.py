@@ -1076,9 +1076,10 @@ class TestCrossrefMetadataReachesTheCascade:
     def spy_attach(self, monkeypatch):
         calls = []
 
-        def _spy(write_zot, item_key, doi, ctx, crossref_metadata=None,
-                 attach_mode="auto"):
-            calls.append({"doi": doi, "crossref_metadata": crossref_metadata})
+        def _spy(write_zot, item_key, doi, ctx, **kwargs):
+            calls.append({"doi": doi,
+                          "crossref_metadata": kwargs.get("crossref_metadata"),
+                          "page_pdf_url": kwargs.get("page_pdf_url")})
             return "no OA PDF found"
 
         monkeypatch.setattr(
@@ -1318,3 +1319,69 @@ class TestHonestBatchCount:
 
         assert "# Added 1 of 2 DOIs" in result
         assert "1 already in library" in result
+
+
+class TestPagePdfUrlReachesTheCascade:
+    """A landing page that names its own PDF must have that reach the
+    attachment cascade, not stop at the metadata mapper."""
+
+    PAGE_WITH_PDF = (
+        "<html><head>"
+        '<meta name="citation_title" content="A Paper"/>'
+        '<meta name="citation_pdf_url" content="https://example.com/a.pdf"/>'
+        "</head><body></body></html>"
+    )
+
+    def test_supplemental_pdf_url_is_forwarded(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        from zotero_mcp.html_metadata import extract_embedded_metadata
+
+        calls = []
+
+        def _spy(write_zot, item_key, doi, ctx, **kwargs):
+            calls.append(kwargs.get("page_pdf_url"))
+            return "no OA PDF found"
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake_zot, fake_zot),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf", _spy
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            lambda *a, **kw: _make_crossref_response({"DOI": "10.1234/x"}),
+        )
+
+        write.add_by_doi(
+            doi="10.1234/x",
+            supplemental=extract_embedded_metadata(self.PAGE_WITH_PDF),
+            ctx=dummy_ctx,
+        )
+        assert calls == ["https://example.com/a.pdf"]
+
+    def test_no_page_means_no_page_pdf_url(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        calls = []
+
+        def _spy(write_zot, item_key, doi, ctx, **kwargs):
+            calls.append(kwargs.get("page_pdf_url"))
+            return "no OA PDF found"
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake_zot, fake_zot),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf", _spy
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            lambda *a, **kw: _make_crossref_response({"DOI": "10.1234/x"}),
+        )
+
+        write.add_by_doi(doi="10.1234/x", ctx=dummy_ctx)
+        assert calls == [None]

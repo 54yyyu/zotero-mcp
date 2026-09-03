@@ -399,3 +399,181 @@ class TestTryAttachOaPdf:
                                     crossref_metadata=None)
         assert "no open-access PDF found" in result
         assert len(zot.attachments) == 0
+
+
+class TestPublisherPagePdfUrl:
+    """``citation_pdf_url`` is how the browser connector finds a PDF.
+
+    The aggregators in the cascade answer "is there a copy of this
+    somewhere?". A publisher page answers "here is the version of record",
+    and it is the only source that knows about a paper the aggregators have
+    never indexed. The reader was already extracting the tag
+    (``html_metadata.EmbeddedMetadata.pdf_url``); nothing consumed it.
+    """
+
+    PDF = b"%PDF-1.4 " + b"x" * 2000
+
+    def _publisher_only(self, publisher_url):
+        """Every aggregator draws a blank; only the publisher has the PDF."""
+        def fake_get(url, **kwargs):
+            if url == publisher_url:
+                return _FakeHTTPResponse(
+                    200, content=self.PDF,
+                    headers={"Content-Type": "application/pdf"},
+                )
+            if "unpaywall.org" in url:
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": None, "oa_locations": []})
+            if "semanticscholar.org" in url:
+                return _FakeHTTPResponse(200, json_data={"openAccessPdf": None})
+            if "ncbi.nlm.nih.gov" in url:
+                return _FakeHTTPResponse(200, json_data={"records": []})
+            return _FakeHTTPResponse(404)
+        return fake_get
+
+    def test_page_pdf_is_attached_when_no_aggregator_has_it(
+        self, monkeypatch, dummy_ctx
+    ):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        url = "https://example.com/article/1/pdf"
+        monkeypatch.setattr(requests, "get", self._publisher_only(url))
+
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=url)
+
+        assert "PDF attached" in result
+        assert "publisher" in result
+        assert len(zot.attachments) == 1
+
+    def test_unpaywall_wins_when_it_has_a_copy(self, monkeypatch, dummy_ctx):
+        """Both have a copy. Unpaywall's is known-open-access; the
+        publisher's could be an access-denied stub, and the cascade returns
+        on the first success, so a stub would win outright."""
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        page_url = "https://example.com/article/1/pdf"
+
+        def fake_get(url, **kwargs):
+            if "unpaywall.org" in url:
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": {"url_for_pdf": "https://example.org/x.pdf"},
+                    "oa_locations": [],
+                })
+            if url in (page_url, "https://example.org/x.pdf"):
+                return _FakeHTTPResponse(
+                    200, content=self.PDF,
+                    headers={"Content-Type": "application/pdf"},
+                )
+            return _FakeHTTPResponse(404)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=page_url)
+        assert "Unpaywall" in result
+        assert "publisher" not in result
+
+    def test_a_paywalled_page_pdf_falls_through(self, monkeypatch, dummy_ctx):
+        """The publisher's copy is the one most likely to be paywalled, so
+        failing there must cost nothing but the attempt."""
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+
+        def fake_get(url, **kwargs):
+            if "example.com" in url:
+                # A paywall serves the login page, not the PDF.
+                return _FakeHTTPResponse(200, content=b"<html>Sign in</html>",
+                                         headers={"Content-Type": "text/html"})
+            if "unpaywall.org" in url:
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": {"url_for_pdf": "https://example.org/x.pdf"},
+                    "oa_locations": [],
+                })
+            if "example.org" in url:
+                return _FakeHTTPResponse(
+                    200, content=self.PDF,
+                    headers={"Content-Type": "application/pdf"},
+                )
+            return _FakeHTTPResponse(404)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = _try_attach_oa_pdf(
+            zot, "ITEM1", "10.1234/x", dummy_ctx,
+            page_pdf_url="https://example.com/article/1/pdf",
+        )
+        assert "PDF attached" in result
+        assert "Unpaywall" in result
+
+    def test_no_page_url_leaves_the_cascade_as_it_was(
+        self, monkeypatch, dummy_ctx
+    ):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get",
+                            self._publisher_only("https://example.com/unused.pdf"))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
+        assert "no open-access PDF found" in result
+        assert "publisher" not in result
+
+    def test_the_failure_message_is_derived_from_the_source_table(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The list used to be a hardcoded string beside the source table,
+        free to drift away from it -- and it had: the table said "PubMed
+        Central" and the sentence said "PMC".
+
+        This pins the table's spelling, which catches that specific drift.
+        It cannot prove derivation in general: a corrected hardcoded string
+        would satisfy it too, and the one source that would distinguish
+        them -- the publisher's page -- can never appear in this sentence,
+        because supplying its URL always populates found_urls and takes the
+        other branch.
+        """
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get",
+                            lambda url, **kw: _FakeHTTPResponse(404))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
+        assert "PubMed Central" in result, result
+        for expected in ("Unpaywall", "arXiv", "Semantic Scholar"):
+            assert expected in result, result
+
+
+class TestAThirdPartyUrlIsNotTrusted:
+    """`citation_pdf_url` is the first source in this cascade that comes
+    from arbitrary third-party HTML rather than a known API over a known
+    host. Two sinks had been relying on their inputs being curated."""
+
+    def test_a_non_http_url_is_never_linked(self, dummy_ctx):
+        """`attach_mode="linked_url"` never fetches, so it never reaches the
+        SSRF guard. A file:// in a meta tag would be written to the library
+        verbatim."""
+        zot = _AttachZotero()
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    attach_mode="linked_url",
+                                    page_pdf_url="file:///etc/passwd")
+        assert zot.created == [] or all(
+            i.get("url") != "file:///etc/passwd" for i in zot.created
+        )
+        assert "PDF linked" not in result
+
+    def test_html_served_as_application_pdf_is_not_attached(
+        self, monkeypatch, dummy_ctx
+    ):
+        """Content-Type is the server's claim about the bytes, not the
+        bytes. Interstitials and viewer endpoints serve HTML under
+        application/pdf."""
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+
+        def fake_get(url, **kwargs):
+            return _FakeHTTPResponse(
+                200,
+                content=b"<html>" + b"<p>Sign in</p>" * 200 + b"</html>",
+                headers={"Content-Type": "application/pdf"},
+            )
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url="https://example.com/a.pdf")
+        assert len(zot.attachments) == 0
+        assert "PDF attached" not in result

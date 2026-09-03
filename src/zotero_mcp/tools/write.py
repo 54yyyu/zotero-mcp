@@ -11,7 +11,7 @@ import tempfile
 import time as _time
 import xml.etree.ElementTree as ET
 from typing import Literal, NamedTuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
@@ -1528,7 +1528,8 @@ def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_
     )
     _apply_caller_tags_and_collections(item_data, tags, coll_keys)
     return {"item_data": item_data, "zot_type": zot_type, "doi": normalized,
-            "type_note": type_note, "cr": cr}
+            "type_note": type_note, "cr": cr,
+            "page_pdf_url": supplemental.pdf_url if supplemental else ""}
 
 
 def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
@@ -1718,6 +1719,9 @@ def add_by_doi(
                     attach_mode, ctx,
                     crossref_by_doi={payload["doi"]: payload["cr"]
                                      for _, payload in pending},
+                    page_pdf_by_doi={payload["doi"]: payload["page_pdf_url"]
+                                     for _, payload in pending
+                                     if payload["page_pdf_url"]},
                 )
                 if pending else []
             )
@@ -1823,7 +1827,13 @@ def _fetch_embedded_metadata(
         except LookupError:
             html = raw.decode("utf-8", errors="replace")
 
-        return extract_embedded_metadata(html), ""
+        meta = extract_embedded_metadata(html)
+        # citation_pdf_url is stored as deposited, and OJS/DSpace/EPrints
+        # all deposit it relative. Resolved against the post-redirect URL,
+        # which is the page it was actually read from.
+        if meta.pdf_url:
+            meta.pdf_url = urljoin(resp.url, meta.pdf_url)
+        return meta, ""
 
     except requests.exceptions.SSLError as e:
         # Seen in the wild on a university OJS host whose chain validates in
@@ -4993,6 +5003,7 @@ def _create_and_attach_batch(
     attach_mode: str,
     ctx: Context,
     crossref_by_doi: dict[str, dict] | None = None,
+    page_pdf_by_doi: dict[str, str] | None = None,
 ) -> list[dict]:
     """Create many Zotero items in POSTs of up to 50 and, for each with a
     DOI, try to attach an OA PDF (#A4).
@@ -5006,11 +5017,13 @@ def _create_and_attach_batch(
 
     ``crossref_by_doi`` maps normalized DOI to the CrossRef message that
     entry was built from, for the cascade's "arXiv (via CrossRef)" source.
-    Keyed by DOI rather than passed as a list parallel to ``item_datas``
+    ``page_pdf_by_doi`` maps it to the ``citation_pdf_url`` the article's
+    landing page advertised, for the cascade's publisher source. Both are
+    keyed by DOI rather than passed as lists parallel to ``item_datas``
     because the DOI is re-derived below anyway, and a parallel list is one
-    more thing that has to stay aligned across chunking. Optional: the
-    bibtex and CSL-JSON importers share this function and have no CrossRef
-    message, in which case that source simply finds nothing.
+    more thing that has to stay aligned across chunking. Both are optional:
+    the bibtex and CSL-JSON importers share this function and supply
+    neither, in which case those sources simply find nothing.
 
     Returns per-entry result dicts — ``{"ok": bool, "key": str|None, "doi":
     str|None, "pdf_status": str|None, "error": str|None, "title": str,
@@ -5099,6 +5112,7 @@ def _create_and_attach_batch(
                         write_zot, item_key, doi, ctx,
                         crossref_metadata=(crossref_by_doi or {}).get(doi),
                         attach_mode=attach_mode,
+                        page_pdf_url=(page_pdf_by_doi or {}).get(doi),
                     )
                 except _helpers.OaPdfRequiredError as e:
                     error = (
