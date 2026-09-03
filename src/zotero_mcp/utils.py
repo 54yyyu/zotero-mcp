@@ -358,6 +358,52 @@ def clean_html(raw_html: str, collapse_whitespace: bool = False) -> str:
     return clean_text
 
 
+#: Inline markup a Zotero field renders rather than shows literally. Anything
+#: outside this set is dropped, tags only — the text between them is kept.
+#: Mirrors the ``supportedMarkup`` list in Zotero's own "Crossref REST"
+#: translator, so a record mapped here looks like one saved from the browser.
+_SUPPORTED_MARKUP = frozenset({"i", "b", "sub", "sup", "span", "sc"})
+
+#: ``<scp>`` means small caps, which Zotero expresses as a styled span.
+_SMALL_CAPS_OPEN = '<span style="font-variant:small-caps;">'
+
+# ``\w`` is ASCII here, as it is in the JavaScript this ports: a tag name
+# is ASCII, and Python's Unicode ``\w`` would swallow "<bİa>" as one name
+# and drop a "<b>" the original keeps. This cannot reuse ``html_re``
+# above -- that pattern is non-greedy and matches across "<", so it cannot
+# express the original's "[^<>]*" semantics.
+_MARKUP_TAG_RE = re.compile(r"<(/?)(\w+)[^<>]*>", re.ASCII)
+_CDATA_RE = re.compile(r"<!\[CDATA\[([\s\S]*?)\]\]>")
+
+
+def strip_unsupported_markup(text: str) -> str:
+    """Drop markup Zotero would not render, keeping the inline subset.
+
+    CrossRef serves titles containing JATS and MathML — ``<mml:math>``,
+    ``<alt-title>``, CDATA sections — alongside the ordinary ``<i>`` and
+    ``<sub>`` that carry real meaning in a species name or a formula.
+    Stripping everything (``clean_html``) loses the meaning; keeping
+    everything puts raw MathML in the title bar.
+
+    This is a port of ``removeUnsupportedMarkup`` from Zotero's "Crossref
+    REST" translator, so a DOI added here reads like the same DOI saved
+    from the browser connector.
+    """
+    if not text:
+        return ""
+    text = _CDATA_RE.sub(r"\1", text)
+
+    def _replace(match):
+        closing, name = match.group(1), match.group(2).lower()
+        if name in _SUPPORTED_MARKUP:
+            return f"</{name}>" if closing else f"<{name}>"
+        if name == "scp":
+            return "</span>" if closing else _SMALL_CAPS_OPEN
+        return ""
+
+    return _MARKUP_TAG_RE.sub(_replace, text)
+
+
 #: Closing tags of line-level blocks. Dropped rather than turned into a
 #: newline: the *opening* tag of the next item already supplies one, and
 #: emitting both would put a blank line between every pair of list items.
@@ -373,6 +419,39 @@ _PARA_BREAK_RE = re.compile(
     r"</?(?:p|div|ul|ol|table|h[1-6]|blockquote|pre|section|article)\b[^>]*>",
     re.IGNORECASE,
 )
+
+
+#: The four XML predefined entities CrossRef escapes in deposited strings.
+_XML_ENTITIES = {"&amp;": "&", "&quot;": '"', "&lt;": "<", "&gt;": ">"}
+_XML_ENTITY_RE = re.compile("|".join(_XML_ENTITIES))
+
+#: C0/C1 control characters. Their presence in a CrossRef string is the
+#: signature of UTF-8 bytes decoded as Latin-1 and re-served as UTF-8 --
+#: an en dash arriving as "a<80><93>".
+_CONTROL_CHARS_RE = re.compile(r"[\u007F-\u009F]")
+_STRIP_CONTROLS_RE = re.compile(r"[\u0000-\u001F\u007F-\u009F]")
+
+
+def repair_crossref_string(text: str) -> str:
+    """Undo the two ways CrossRef mangles a deposited string.
+
+    A port of the per-field loop at the end of ``doSearch`` in Zotero's
+    "Crossref REST" translator: repair mojibake, then decode the XML
+    entities and drop the newlines the registry stores literally.
+
+    Both are ordinary rather than exotic. In a 1200-record sample, 1.25%
+    of titles carried an XML entity and 1.4% carried a newline -- a raw
+    newline in a title also breaks this package's own markdown headings.
+    """
+    if not isinstance(text, str):
+        return text
+    if _CONTROL_CHARS_RE.search(text):
+        try:
+            text = text.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            text = _STRIP_CONTROLS_RE.sub("", text)
+    return _XML_ENTITY_RE.sub(lambda m: _XML_ENTITIES[m.group(0)],
+                              text.replace("\n", ""))
 
 
 def html_to_text(raw_html: str) -> str:
@@ -493,3 +572,53 @@ def _generate_search_variants(query: str) -> list[str]:
         result = result[:MAX_SEARCH_VARIANTS]
 
     return result
+
+
+def capitalize_name(name):
+    """Title-case a name that a registry stored in capitals.
+
+    CrossRef records — especially those migrated from older publisher
+    systems — carry creator names as ``R SOLE`` or ``O'NEAL``. Zotero's
+    "Crossref REST" translator repairs these on the way in; without the
+    same repair a library ends up shouting.
+
+    Only wholly-uppercase or wholly-lowercase words are touched, which is
+    what protects names that are already correctly mixed:
+
+        >>> capitalize_name("R SOLE")
+        'R Sole'
+        >>> capitalize_name("O'NEAL")
+        "O'Neal"
+        >>> capitalize_name("John MacGregor O'NEILL")
+        "John MacGregor O'Neill"
+        >>> capitalize_name("O'neal")
+        "O'neal"
+
+    A port of ``Zotero.Utilities.capitalizeName``, including that last
+    case: ``O'neal`` is mixed-case, so it is left as the source had it
+    rather than being second-guessed.
+
+    Takes and returns whatever it is given: the original guards against an
+    absent given name, and mirroring that keeps a missing field missing
+    rather than turning it into ``"None"``.
+
+    One deliberate divergence. The original upper-cases the character
+    *before* the letter as well, so it maps symbols that happen to carry
+    case -- "x(circled a)y" becomes "X(circled A)Y" there and keeps the
+    symbol here. No author name is affected; do not "fix" it back.
+    """
+    if not isinstance(name, str):
+        return name
+    return " ".join(_capitalize_word(word) for word in name.split(" "))
+
+
+def _capitalize_word(word: str) -> str:
+    """Title-case one whitespace-free word, leaving mixed case alone."""
+    if word.upper() != word and word.lower() != word:
+        return word
+    out = []
+    prev_was_letter = False
+    for char in word.lower():
+        out.append(char.upper() if char.isalpha() and not prev_was_letter else char)
+        prev_was_letter = char.isalpha()
+    return "".join(out)
