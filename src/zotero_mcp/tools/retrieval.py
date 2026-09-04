@@ -296,6 +296,14 @@ def get_attachment_path(
 
         with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
             attachments = reader.get_attachment_paths(item_key)
+            if not attachments:
+                # item_key may be the attachment's OWN key (get_item_by_key
+                # excludes attachments, so the parent lookup yields nothing).
+                att = reader.get_attachment_by_key(item_key)
+                if att:
+                    resolved = reader._resolve_attachment_path(att["key"], att.get("zotero_path") or "")
+                    attachments = [{**att, "resolved_path": resolved,
+                                    "exists": bool(resolved and resolved.exists())}]
 
         if not attachments:
             return f"No attachments found for item `{item_key}`."

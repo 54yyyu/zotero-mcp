@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_get_attachment_path` accepts an attachment's own key.** Handed the key of a PDF attachment — which is exactly what `zotero_get_item_children` lists — it returned "No attachments found for item", because it only walked the parent's children via `get_item_by_key`, whose query excludes the 'attachment' item type (the #372 root cause again). It now falls back to `get_attachment_by_key` and resolves that single attachment; parent keys behave as before, and an unknown key still reports nothing.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
