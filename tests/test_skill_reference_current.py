@@ -110,15 +110,42 @@ class TestSkillAccuracy:
 
 def test_generator_is_executable_and_idempotent(tmp_path):
     """Running it twice must not produce a diff -- otherwise the staleness
-    test above would fail on every second commit."""
+    test above would fail on every second commit.
+
+    Generated into tmp_path, never over the checked-in copy: writing to the
+    tracked file left the working tree dirty after every test run, and on
+    Windows it rewrote the whole file in CRLF as it went.
+    """
+    out = tmp_path / "reference.md"
+
     first = subprocess.run(
-        [sys.executable, str(GENERATOR)], capture_output=True, text=True, cwd=REPO
+        [sys.executable, str(GENERATOR), str(out)],
+        capture_output=True, text=True, cwd=REPO,
     )
     assert first.returncode == 0, first.stderr
-    after_first = REFERENCE.read_text(encoding="utf-8")
+    after_first = out.read_bytes()
 
     second = subprocess.run(
-        [sys.executable, str(GENERATOR)], capture_output=True, text=True, cwd=REPO
+        [sys.executable, str(GENERATOR), str(out)],
+        capture_output=True, text=True, cwd=REPO,
     )
     assert second.returncode == 0, second.stderr
-    assert REFERENCE.read_text(encoding="utf-8") == after_first
+    assert out.read_bytes() == after_first
+
+
+def test_generator_writes_lf_line_endings(tmp_path):
+    """Compared on bytes, deliberately: read_text() turns CRLF into LF on the
+    way in, so a text comparison can never see the drift it is meant to catch.
+    """
+    out = tmp_path / "reference.md"
+    proc = subprocess.run(
+        [sys.executable, str(GENERATOR), str(out)],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert b"\r\n" not in out.read_bytes()
+
+
+def test_checked_in_reference_uses_lf_line_endings():
+    """The tracked copy is LF like the rest of the repo."""
+    assert b"\r\n" not in REFERENCE.read_bytes()

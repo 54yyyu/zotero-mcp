@@ -98,11 +98,20 @@ class TestDescribeAttachFailure:
 
 
 class TestAssertUploadCapable:
-    def test_rejects_local_client(self):
+    def test_rejects_unauthorized_local_client(self):
         zot = FakeZotero()
         zot.local = True
-        with pytest.raises(ValueError, match="local API"):
+        zot.local_api_key = None
+        with pytest.raises(ValueError, match="no writable Zotero backend"):
             _helpers._assert_upload_capable(zot)
+
+    def test_allows_authorized_local_client(self):
+        # Zotero 10 uploads through the local API once a key has been
+        # granted; only a keyless local client cannot.
+        zot = FakeZotero()
+        zot.local = True
+        zot.local_api_key = "LOCALKEY0"
+        _helpers._assert_upload_capable(zot)
 
     def test_allows_web_client(self):
         zot = FakeZotero()
@@ -164,10 +173,11 @@ class TestAttachAndVerify:
         assert ok is False
         assert zot.deleted == [{"key": "NEWATCH1", "version": 7}]
 
-    def test_local_client_fails_fast(self, dummy_ctx):
+    def test_unauthorized_local_client_fails_fast(self, dummy_ctx):
         zot = _AttachFake()
         zot.local = True
-        with pytest.raises(ValueError, match="local API"):
+        zot.local_api_key = None
+        with pytest.raises(ValueError, match="no writable Zotero backend"):
             _helpers._attach_and_verify(
                 zot, "paper.pdf", "/abs/paper.pdf", "ITEM1", dummy_ctx
             )

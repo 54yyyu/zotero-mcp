@@ -774,7 +774,12 @@ class LocalZoteroReader:
             return Path(decoded_path)
 
         # Linked file as absolute path: '/Users/me/papers/file.pdf'
-        if os.path.isabs(zotero_path):
+        #
+        # The leading-slash test is separate from isabs() on purpose: since
+        # Python 3.13 ntpath.isabs() calls "/Users/me/paper.pdf" relative, so a
+        # library synced from macOS or Linux and opened on Windows would
+        # resolve every linked file to None instead of to a path.
+        if zotero_path.startswith("/") or os.path.isabs(zotero_path):
             return Path(zotero_path)
 
         # Zotero 'attachments:' relative path — resolve against the linked

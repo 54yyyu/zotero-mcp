@@ -32,6 +32,9 @@ TOOL_BUDGETS = {
     "zotero_get_notes":                (119, 267),
     "zotero_manage_note":              (139, 312),
     "zotero_create_annotation":        (196, 439),
+    # tools/local_auth.py
+    "zotero_authorize_local_writes":   (115, 260),
+    "zotero_write_capabilities":       ( 70, 165),
     # tools/retrieval.py
     "zotero_get_tags":                 ( 85, 195),
     "zotero_get_item_children":        (138, 310),

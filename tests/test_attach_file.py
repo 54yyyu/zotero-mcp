@@ -395,6 +395,21 @@ class TestAttachFileLocal:
         )
         assert "absolute path" in result
 
+    @pytest.mark.parametrize(
+        "name", ["notes.docx", "draft.odt", "memo.rtf", "scan.djvu", "book.epub"]
+    )
+    def test_accepts_supplementary_types(self, name, monkeypatch, dummy_ctx):
+        """Not PDF-only: the supporting-document types are attachable too."""
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path=f"/Users/test/{name}", ctx=dummy_ctx
+        )
+        assert "Unsupported file type" not in result
+        assert fake.attachments[0]["files"][0][0] == name
+
     def test_rejects_bad_extension(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()
         _patch_write_client(monkeypatch, fake)

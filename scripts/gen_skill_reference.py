@@ -116,7 +116,16 @@ def build() -> str:
 
 
 if __name__ == "__main__":
+    # An explicit destination lets a caller (the test suite, most of all)
+    # generate without writing over the checked-in copy.
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else OUT
     text = build()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(text, encoding="utf-8")
-    print(f"wrote {OUT.relative_to(REPO)} ({len(text)} chars)")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # newline="\n" is load-bearing on Windows: write_text's default
+    # translates every "\n" to "\r\n", so a run of this script rewrote the
+    # tracked file in CRLF. The repo is LF throughout, and read_text()
+    # normalizes on the way back in, so nothing downstream reported the drift.
+    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    shown = out.relative_to(REPO) if out.is_relative_to(REPO) else out
+    print(f"wrote {shown} ({len(text)} chars)")

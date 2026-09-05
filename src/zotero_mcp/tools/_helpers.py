@@ -1,8 +1,10 @@
 """Shared private helpers used across tool modules."""
 
 import contextlib
+import copy
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import socket
@@ -12,10 +14,20 @@ from ipaddress import ip_address
 from urllib.parse import urljoin, urlparse
 
 import requests
-from pyzotero.zotero_errors import (
+
+# pyzotero.errors, not the pyzotero.zotero_errors back-compat shim: the shim
+# re-exports only the pre-1.14 names and its own maintainer note says not to
+# add new ones there, so the local-API classes are absent from it.
+from pyzotero.errors import (
+    CallDoesNotExistError,
+    LocalAPIDeniedError,
+    LocalAPIKeyRequiredError,
     PreConditionFailedError,
+    ServerIDMismatchError,
+    ServerIDRequiredError,
     TooManyRequestsError,
     TooManyRetriesError,
+    UnsupportedParamsError,
 )
 
 from zotero_mcp import client as _client
@@ -23,6 +35,21 @@ from zotero_mcp import utils as _utils
 from zotero_mcp.identifiers import normalize_doi
 from zotero_mcp.local_db import get_local_zotero_reader
 from zotero_mcp.utils import _paginate
+
+
+# ---------------------------------------------------------------------------
+# Config file
+# ---------------------------------------------------------------------------
+
+def _load_zotero_mcp_config() -> dict:
+    """Return the parsed ``~/.config/zotero-mcp/config.json``, or ``{}``.
+
+    Delegates to ``client`` so the file has a single owner — it now also holds
+    the local API key, which ``client`` reads without going through this
+    module (``_helpers`` imports ``client``, so it can't go the other way).
+    """
+    return _client.load_zotero_mcp_config()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -124,24 +151,393 @@ def apply_library_override(zot, override: dict | None) -> None:
         zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
 
 
-def _get_write_client(ctx):
-    """Return (read_client, write_client) for hybrid-mode operations.
+def write_unavailable_message(op_description: str = "write operations") -> str:
+    """Explain that nothing can be written, and how to fix it.
 
-    In web-only mode: both are the web client.
-    In local mode with web credentials: read from local, write to web.
-    In local-only mode: raises ValueError with clear message.
+    Ordered by what is actually wrong: if the running Zotero exposes the write
+    API, authorizing is one command away and comes first; if it doesn't, web
+    credentials are the only route and saying so up front saves the user from
+    chasing a feature their Zotero build doesn't have.
     """
-    read_zot = _client.get_zotero_client()
+    authorize = (
+        "  1. Local writes (Zotero 10 or newer): run `zotero-mcp authorize-local`, "
+        "or call the zotero_authorize_local_writes tool, then choose "
+        "\"Always Allow\" in the Zotero dialog."
+    )
+    web = (
+        "  2. Web API writes (any Zotero version): set ZOTERO_API_KEY and "
+        "ZOTERO_LIBRARY_ID to enable hybrid mode — local reads, cloud writes."
+    )
+    header = (
+        f"Cannot perform write operations in local-only mode: no writable "
+        f"Zotero backend is configured for {op_description}."
+    )
+    if _client.probe_local_server_id():
+        return f"{header}\n\nTwo options:\n{authorize}\n{web}"
+    return (
+        f"{header}\n\nThis Zotero build does not expose the local write API "
+        f"(that needs Zotero 10 or newer), so:\n"
+        f"{web.replace('  2.', '  -')}\n"
+        f"{authorize.replace('  1.', '  -')}"
+    )
+
+
+def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
+    """Return (read_client, write_client, mode) for a mutating operation.
+
+    Resolution order: web mode uses the web client for both; local mode
+    prefers the local API once a key has been granted; otherwise it falls back
+    to web credentials (hybrid mode); otherwise it raises.
+
+    In local mode the same client is returned for reads and writes on purpose.
+    Local object versions are scoped to the Zotero database that issued them
+    and have no relation to web API versions, so reading from one backend and
+    writing to the other is precisely the mismatch that forces hybrid mode to
+    re-fetch every item before touching it.
+    """
     if not _utils.is_local_mode():
-        return read_zot, read_zot
+        zot = _client.get_zotero_client()
+        return zot, zot, "web"
+
+    local_write_zot = _client.get_local_write_client()
+    if local_write_zot is not None:
+        # No apply_library_override here, unlike the web client below: the
+        # factory already read the override, and it maps a user library to
+        # users/0 — the only id the local API serves. Re-applying the override
+        # would write that mapping back to whatever id the switch-library tool
+        # reported (the SQLite libraryID, typically 1) and every write would
+        # go to a library that does not exist locally.
+        return local_write_zot, local_write_zot, "local"
+
     web_zot = _client.get_web_zotero_client()
     if web_zot is not None:
         apply_library_override(web_zot, _client.get_active_library())
-        return read_zot, web_zot
-    raise ValueError(
-        "Cannot perform write operations in local-only mode. "
-        "Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to enable hybrid mode."
+        return _client.get_zotero_client(), web_zot, "hybrid"
+
+    raise ValueError(write_unavailable_message(op_description))
+
+
+def _get_write_client(ctx):
+    """Return (read_client, write_client) for a mutating operation.
+
+    Thin wrapper kept for the write tools, which don't care which backend they
+    were handed. See resolve_write_client for the resolution order.
+    """
+    read_zot, write_zot, _mode = resolve_write_client(ctx)
+    return read_zot, write_zot
+
+
+# ---------------------------------------------------------------------------
+# Local/web write compatibility shims
+#
+# The local Zotero API does not implement /items/new, so item_template() (and
+# attachment_simple() / attachment_both(), which build on it) raise
+# CallDoesNotExistError against a local client. The helpers below take the web
+# path when it works and fall back to an equivalent local construction, so
+# call sites don't branch on which backend they got.
+# ---------------------------------------------------------------------------
+
+def _is_template_unavailable(exc: Exception) -> bool:
+    """True when *exc* is the local API's missing-/items/new failure."""
+    return isinstance(exc, CallDoesNotExistError) or "items/new" in str(exc)
+
+
+# Verbatim api.zotero.org/items/new responses. item_type_fields("attachment")
+# does not describe linkMode / contentType / charset, and note has no field
+# endpoint at all, so these two types are reproduced literally rather than
+# synthesized. Keeping them identical to the web response means the local and
+# web paths send the same payload.
+_ATTACHMENT_TEMPLATES: dict[str, dict] = {
+    "imported_file": {
+        "itemType": "attachment", "linkMode": "imported_file", "title": "",
+        "accessDate": "", "note": "", "tags": [], "collections": [],
+        "relations": {}, "contentType": "", "charset": "", "filename": "",
+        "md5": None, "mtime": None,
+    },
+    "imported_url": {
+        "itemType": "attachment", "linkMode": "imported_url", "title": "",
+        "accessDate": "", "url": "", "note": "", "tags": [], "collections": [],
+        "relations": {}, "contentType": "", "charset": "", "filename": "",
+        "md5": None, "mtime": None,
+    },
+    "linked_file": {
+        "itemType": "attachment", "linkMode": "linked_file", "title": "",
+        "accessDate": "", "note": "", "tags": [], "relations": {},
+        "contentType": "", "charset": "", "path": "",
+    },
+    "linked_url": {
+        "itemType": "attachment", "linkMode": "linked_url", "title": "",
+        "accessDate": "", "url": "", "note": "", "tags": [], "collections": [],
+        "relations": {}, "contentType": "", "charset": "",
+    },
+}
+
+_NOTE_TEMPLATE = {
+    "itemType": "note", "note": "", "tags": [], "collections": [], "relations": {},
+}
+
+# Synthesized templates are cached because item_type_fields() is a network
+# call taking an argument, so pyzotero's own template cache never covers it,
+# and the batch importers ask for one template per entry.
+_local_template_cache: dict[tuple, dict] = {}
+
+
+def _local_item_template(zot, item_type: str, link_mode: str | None = None) -> dict:
+    """Build an item template from endpoints the local API does implement."""
+    if item_type == "attachment":
+        template = _ATTACHMENT_TEMPLATES.get(link_mode or "imported_file")
+        if template is None:
+            raise ValueError(f"Unknown attachment link mode: {link_mode}")
+        return copy.deepcopy(template)
+    if item_type == "note":
+        return copy.deepcopy(_NOTE_TEMPLATE)
+
+    cache_key = (getattr(zot, "server_id", None) or zot.endpoint, item_type, link_mode)
+    if cache_key not in _local_template_cache:
+        fields = zot.item_type_fields(item_type)
+        template = {"itemType": item_type}
+        for entry in fields:
+            name = entry.get("field") if isinstance(entry, dict) else entry
+            if name:
+                template[name] = ""
+        # The web template lists creators/tags/collections/relations for every
+        # regular type; item_type_fields() covers none of them.
+        template["creators"] = []
+        template["tags"] = []
+        template["collections"] = []
+        template["relations"] = {}
+        _local_template_cache[cache_key] = template
+    return copy.deepcopy(_local_template_cache[cache_key])
+
+
+def item_template_for(zot, item_type: str, link_mode: str | None = None) -> dict:
+    """Return a new-item template, whichever backend *zot* talks to."""
+    try:
+        template = (
+            zot.item_template(item_type, linkmode=link_mode)
+            if link_mode
+            else zot.item_template(item_type)
+        )
+        return dict(template)
+    except Exception as exc:
+        if not _is_template_unavailable(exc):
+            raise
+        return _local_item_template(zot, item_type, link_mode)
+
+
+def attach_files(zot, pairs, parentid=None) -> dict:
+    """Attach files as child items. *pairs* is [(display_title, file_path)].
+
+    Mirrors ``attachment_both``'s signature and return value. Against a local
+    client that method is unavailable, so the attachment items are built here
+    and handed to ``upload_attachments``, which the local API does support.
+    Both routes end in the same ``Zupload.upload()``, so the returned
+    ``{"success": [...], "unchanged": [...], "failure": [...]}`` shape is the
+    same either way.
+    """
+    try:
+        return zot.attachment_both(pairs, parentid=parentid)
+    except Exception as exc:
+        if not _is_template_unavailable(exc):
+            raise
+        # Retrying is safe: attachment_both fetches the template before it
+        # creates anything, so this failure means nothing reached Zotero.
+        payload = []
+        for title, path in pairs:
+            attachment = copy.deepcopy(_ATTACHMENT_TEMPLATES["imported_file"])
+            attachment["title"] = title
+            # Zupload resolves filename against basedir to read the bytes, and
+            # strips it to a basename for the outgoing item, so a full path is
+            # what it wants here — the same thing attachment_both passes.
+            attachment["filename"] = os.path.abspath(path)
+            attachment["contentType"] = (
+                mimetypes.guess_type(path)[0] or "application/octet-stream"
+            )
+            payload.append(attachment)
+        return zot.upload_attachments(payload, parentid=parentid)
+
+
+def trash_item(zot, item) -> tuple[bool, str]:
+    """Move an item to the trash. Returns (succeeded, error detail).
+
+    pyzotero's delete_item() deletes permanently and update_item() strips the
+    ``deleted`` field, so the trash flag has to be PATCHed directly. Routing
+    through ``Zotero._write`` rather than ``zot.client.patch`` is what attaches
+    the Zotero-Server-ID and Zotero-API-Key headers a local write requires; the
+    fallback keeps older clients (and the test doubles that only provide
+    ``client.patch``) working. ``_write`` does no status checking of its own,
+    so failures are mapped here.
+    """
+    from pyzotero.zotero import build_url
+
+    key = item.get("key") or item.get("data", {}).get("key")
+    url = build_url(zot.endpoint, f"/{zot.library_type}/{zot.library_id}/items/{key}")
+    headers = {
+        "If-Unmodified-Since-Version": str(item["version"]),
+        # Required, not decorative: httpx does not infer a content type for a
+        # raw body, and the local API answers a PATCH that lacks one with
+        # "400 Empty request body". The web API tolerates its absence, which
+        # is why this went unnoticed for as long as writes were cloud-only.
+        "Content-Type": "application/json",
+    }
+    body = json.dumps({"deleted": 1})
+
+    writer = getattr(zot, "_write", None)
+    if callable(writer):
+        resp = writer("PATCH", url=url, headers=headers, content=body)
+    else:
+        resp = zot.client.patch(url=url, headers=headers, content=body)
+
+    if resp.status_code in (200, 204):
+        return True, ""
+    return False, describe_write_failure(resp, zot)
+
+
+# ---------------------------------------------------------------------------
+# Error messages
+#
+# The local API overloads 401/412/428, and pyzotero picks the specific
+# exception class by matching the response *body*, not the status. A local 401
+# whose body doesn't carry the expected phrase therefore arrives as a plain
+# UserNotAuthorisedError. Both helpers below key on the exception class OR the
+# status code together with the client being local, so an unmatched body still
+# produces the right advice.
+# ---------------------------------------------------------------------------
+
+_REAUTHORIZE = (
+    "Run `zotero-mcp authorize-local` (or call zotero_authorize_local_writes) "
+    "and choose \"Always Allow\"."
+)
+
+
+def _local_key_rejected_message() -> str:
+    """Explain a rejected local key, and stop it from blocking the fallback.
+
+    A 401 from the local API means the key is invalid, revoked, or consumed —
+    it will never work again. Dropping it here is what lets the next write
+    resolve somewhere useful: back to web credentials if the user has them,
+    instead of failing forever against a key we know is dead.
+    """
+    was_single_use = False
+    try:
+        # probe=False: this runs while formatting an error, and the answer
+        # doesn't depend on the capability probe. No network from here.
+        caps = _client.get_write_capabilities(probe=False)
+        was_single_use = caps.get("local_key_remember") is False
+        had_web_fallback = caps.get("has_web_credentials")
+        _client.clear_local_write_credentials()
+    except Exception:
+        had_web_fallback = False
+
+    detail = (
+        " That key was granted with \"Allow\", so it was only ever valid for one write."
+        if was_single_use
+        else ""
     )
+    recovery = (
+        " Web API credentials are configured, so the next write will use those; "
+        "re-authorize to go back to writing locally."
+        if had_web_fallback
+        else f" {_REAUTHORIZE}"
+    )
+    return (
+        "Zotero rejected the write: the local API key is missing, expired or "
+        "already used. A key granted with \"Allow\" rather than \"Always Allow\" "
+        "is single-use and is consumed by the first successful write."
+        + detail
+        + recovery
+    )
+
+
+def _server_id_mismatch_message() -> str:
+    # The key is bound to one Zotero database, so a mismatch means the stored
+    # one can never work again. Drop it rather than making the user guess.
+    try:
+        _client.clear_local_write_credentials()
+    except Exception:
+        pass
+    return (
+        "The stored local API key belongs to a different Zotero database "
+        "(a switched profile, or a restored backup). The stored credentials "
+        "have been cleared. " + _REAUTHORIZE
+    )
+
+
+def format_zotero_error(exc: Exception, zot=None) -> str:
+    """Turn a pyzotero exception into advice a user can act on."""
+    local = bool(getattr(zot, "local", False))
+    if isinstance(exc, LocalAPIKeyRequiredError):
+        return _local_key_rejected_message()
+    if isinstance(exc, LocalAPIDeniedError):
+        return (
+            "Zotero denied the local API authorization request. Re-run it and "
+            "choose \"Allow\" or \"Always Allow\" in the Zotero dialog."
+        )
+    if isinstance(exc, ServerIDMismatchError):
+        return _server_id_mismatch_message()
+    if isinstance(exc, ServerIDRequiredError):
+        return (
+            "Internal error: this write reached the local API without a "
+            "Zotero-Server-ID header. Please report it, naming the tool you "
+            f"called. ({exc})"
+        )
+    if isinstance(exc, TooManyRequestsError):
+        return (
+            "Zotero is rate-limiting requests (authorization prompts are "
+            f"capped at about 5 per minute). Wait a moment and retry. ({exc})"
+        )
+    if isinstance(exc, UnsupportedParamsError) and "Zotero-Server-ID" in str(exc):
+        return (
+            "This Zotero build does not expose the local write API — that "
+            "needs Zotero 10 or newer. Set ZOTERO_API_KEY and "
+            "ZOTERO_LIBRARY_ID to write through the web API instead."
+        )
+    if local and isinstance(exc, CallDoesNotExistError):
+        return (
+            "The local Zotero API does not implement this endpoint. Please "
+            f"report it, naming the tool you called. ({exc})"
+        )
+    return str(exc)
+
+
+def describe_write_failure(resp, zot=None) -> str:
+    """Describe a failed write response. Counterpart to format_zotero_error.
+
+    Needed because ``Zotero._write`` returns the raw response without raising:
+    pyzotero's status checking lives in the ``backoff_check`` decorator on the
+    public write methods, which this path deliberately bypasses.
+    """
+    status = getattr(resp, "status_code", None)
+    local = bool(getattr(zot, "local", False))
+    body = ""
+    try:
+        body = (resp.text or "")[:500]
+    except Exception:
+        pass
+
+    if local and status == 401:
+        return _local_key_rejected_message()
+    if local and status == 403:
+        return (
+            "Zotero refused the write (403). The local API may be disabled, or "
+            "authorization was denied. " + _REAUTHORIZE
+        )
+    if local and status == 412 and "Zotero-Server-ID" in body:
+        return _server_id_mismatch_message()
+    if status == 412:
+        return (
+            "The item changed in Zotero since it was read (412). Retry the "
+            "operation so it picks up the current version."
+        )
+    if local and status == 428:
+        return (
+            "Internal error: this write reached the local API without a "
+            "Zotero-Server-ID header (428). Please report it, naming the tool "
+            "you called."
+        )
+    if status == 429:
+        return "Zotero is rate-limiting requests (429). Wait a moment and retry."
+    return f"HTTP {status}: {body}"
 
 
 def _get_bibliography_client(ctx=None):
@@ -1223,6 +1619,11 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     Web API's file upload lands bytes in Zotero Storage, which a desktop
     client with File Syncing set to WebDAV never consults.
 
+    That reasoning is specific to the web API. An upload through the local API
+    hands the bytes to the running Zotero, which files them in its own storage
+    and syncs them to WebDAV itself, so pass ``write_zot`` and the workaround
+    steps aside.
+
     Returns ``""`` when WebDAV is not configured, when the attachment key
     cannot be extracted, or after a successful PUT with logging via ``ctx``
     (callers that don't surface the suffix can ignore the return value).
@@ -1232,6 +1633,9 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     branch.
     """
     from zotero_mcp import webdav as _webdav
+
+    if getattr(write_zot, "local", False):
+        return ""
 
     if not _webdav.is_webdav_configured():
         return ""
@@ -1312,10 +1716,17 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
     """
     from zotero_mcp import webdav as _webdav
 
+    # An upload through the local API hands the bytes to the running Zotero,
+    # which files them in its own storage and syncs them to WebDAV itself;
+    # the workaround below is a web-API-only concern. See
+    # ``_maybe_upload_to_webdav`` for the same reasoning on the other side.
+    if getattr(write_zot, "local", False):
+        return None
+
     if not _webdav.is_webdav_configured():
         return None
 
-    template = write_zot.item_template("attachment", linkmode="imported_file")
+    template = item_template_for(write_zot, "attachment", "imported_file")
     template["title"] = filename
     template["filename"] = filename
     template["parentItem"] = parent_key
@@ -1391,17 +1802,14 @@ def _describe_attach_failure(attach_result):
 def _assert_upload_capable(write_zot):
     """Raise ValueError if *write_zot* cannot upload file bytes.
 
-    Zotero's local HTTP API has no attachment/upload endpoints — the
-    template fetch that starts ``attachment_both()`` 404s against
-    ``localhost:23119`` (#403). Failing fast here beats a confusing
-    "No endpoint found" deep inside pyzotero.
+    An unauthorized local client cannot: writing to ``localhost:23119``
+    without a local API key fails deep inside pyzotero (#403), and failing
+    fast here beats a confusing "No endpoint found". A local client that
+    holds a key uploads fine on Zotero 10 — ``attach_files`` routes it past
+    the missing ``/items/new`` — so it is not rejected.
     """
-    if getattr(write_zot, "local", False):
-        raise ValueError(
-            "Cannot upload file bytes through Zotero's local API — it has no "
-            "attachment endpoints. Add ZOTERO_API_KEY and ZOTERO_LIBRARY_ID "
-            "to enable hybrid mode (local reads, web-API writes)."
-        )
+    if getattr(write_zot, "local", False) and not getattr(write_zot, "local_api_key", None):
+        raise ValueError(write_unavailable_message("file attachments"))
 
 
 def _two_step_attach(write_zot, filename, file_path, parent_key, ctx, content_type=None):
@@ -1415,7 +1823,7 @@ def _two_step_attach(write_zot, filename, file_path, parent_key, ctx, content_ty
     ``(None, reason)`` on failure, cleaning up the orphaned shell so a
     failed upload doesn't leave a fileless attachment behind.
     """
-    template = write_zot.item_template("attachment", linkmode="imported_file")
+    template = item_template_for(write_zot, "attachment", "imported_file")
     template["title"] = filename
     template["filename"] = filename
     template["parentItem"] = parent_key
@@ -1470,7 +1878,8 @@ def _attach_and_verify(
     """
     _assert_upload_capable(write_zot)
 
-    attach_result = write_zot.attachment_both(
+    attach_result = attach_files(
+        write_zot,
         [(filename, file_path)],
         parentid=parent_key,
     )
@@ -1481,7 +1890,7 @@ def _attach_and_verify(
         )
         return True, suffix, _extract_attachment_key(attach_result)
 
-    ctx.info(f"attachment_both failed ({reason}); retrying as create + upload")
+    ctx.info(f"attachment upload failed ({reason}); retrying as create + upload")
     attachment_key, fallback_reason = _two_step_attach(
         write_zot, filename, file_path, parent_key, ctx, content_type=content_type
     )
@@ -1544,7 +1953,7 @@ def _attachment_filename_exists(write_zot, parent_key, filename):
 def _attach_pdf_linked_url(write_zot, pdf_url, parent_key, ctx):
     """Create a linked-URL attachment (bookmarks the PDF URL without downloading)."""
     try:
-        template = write_zot.item_template("attachment", "linked_url")
+        template = item_template_for(write_zot, "attachment", "linked_url")
         template["url"] = pdf_url
         template["title"] = "PDF (linked URL)"
         template["contentType"] = "application/pdf"
