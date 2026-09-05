@@ -16,13 +16,16 @@ from zotero_mcp._app import mcp  # noqa: F401 — re-export
 
 # -- Re-export client helpers (used by tests as server.X) -------------------
 from zotero_mcp.client import (  # noqa: F401
+    authorize_local_api,
     clear_active_library,
     convert_to_markdown,
     format_item_metadata,
     generate_bibtex,
     get_active_library,
     get_attachment_details,
+    get_local_write_client,
     get_web_zotero_client,
+    get_write_capabilities,
     get_zotero_client,
     set_active_library,
 )
@@ -36,6 +39,13 @@ from zotero_mcp.tools._helpers import (  # noqa: F401
     _format_bbt_result,
     _format_citekey_result,
     _get_write_client,
+    resolve_write_client,
+    write_unavailable_message,
+    item_template_for,
+    attach_files,
+    trash_item,
+    format_zotero_error,
+    describe_write_failure,
     _handle_write_response,
     _normalize_arxiv_id,
     _normalize_doi,
@@ -69,6 +79,10 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,
     connector_fetch,
+)
+from zotero_mcp.tools.local_auth import (  # noqa: F401
+    authorize_local_writes,
+    write_capabilities,
 )
 from zotero_mcp.tools.read_pdf import (  # noqa: F401
     read_pdf_pages,

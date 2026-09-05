@@ -7,6 +7,7 @@ over research libraries.
 """
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -101,8 +102,65 @@ def _realtime_slice_size(max_parallel: int) -> int:
     return min(25 * max(1, max_parallel), 200)
 
 
+_WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WIN_STILL_ACTIVE = 259
+_WIN_ERROR_ACCESS_DENIED = 5
+
+
+@functools.lru_cache(maxsize=1)
+def _kernel32():
+    """kernel32 with the three entry points below given explicit signatures.
+
+    HANDLE must be declared: ctypes defaults a return type to C ``int``, which
+    truncates a 64-bit handle and leaks it.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    lib = ctypes.WinDLL("kernel32", use_last_error=True)
+    lib.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    lib.OpenProcess.restype = wintypes.HANDLE
+    lib.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    lib.GetExitCodeProcess.restype = wintypes.BOOL
+    lib.CloseHandle.argtypes = (wintypes.HANDLE,)
+    lib.CloseHandle.restype = wintypes.BOOL
+    return lib
+
+
+def _pid_is_alive_windows(pid: int) -> bool:
+    """Liveness check for Windows, where ``os.kill(pid, 0)`` is not a probe.
+
+    ``signal.CTRL_C_EVENT`` is 0, so ``os.kill(pid, 0)`` never asks whether
+    *pid* exists: it calls ``GenerateConsoleCtrlEvent`` and delivers a real
+    Ctrl+C to every process sharing this console — the test run itself, and
+    whatever shell launched it. ``OpenProcess`` answers the actual question
+    and sends nothing.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    lib = _kernel32()
+    handle = lib.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # Access denied means it exists but is owned by another user; that is
+        # the PermissionError branch below, so report it alive.
+        return ctypes.get_last_error() == _WIN_ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        if not lib.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True  # the handle opened, so the process object exists
+        return code.value == _WIN_STILL_ACTIVE
+    finally:
+        lib.CloseHandle(handle)
+
+
 def _pid_is_alive(pid: int) -> bool:
-    """Best-effort liveness check for a process id (POSIX ``kill(pid, 0)``)."""
+    """Best-effort liveness check for a process id."""
+    if sys.platform == "win32":
+        try:
+            return _pid_is_alive_windows(pid)
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

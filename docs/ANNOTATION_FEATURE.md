@@ -187,7 +187,10 @@ Works with both:
 - **Zotero Cloud Storage**: Downloads via Web API
 - **WebDAV Storage**: Downloads via local Zotero (port 23119)
 
-Annotations are always created via Web API (local API is read-only).
+Annotations are created through whichever backend can write: the local API on Zotero 10
+or newer once `zotero-mcp authorize-local` has been run, otherwise the Web API. The
+attachment is still downloaded from whichever source has the bytes, which is not
+necessarily the same backend.
 
 ---
 

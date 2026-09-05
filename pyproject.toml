@@ -19,6 +19,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    # 1.14.0 for local API write support: authorize_local(), the
+    # server_id/local_api_key constructor args, and the Zotero._write()
+    # dispatcher that attaches the headers a local write requires.
+    #
     # 1.13.5 retries a rate-limited read internally and raises
     # TooManyRetriesError once the backoff is exhausted (upstream
     # urschrei/pyzotero#352). Below it, every read method hands the HTTP 429
@@ -28,7 +32,7 @@ dependencies = [
     # load-bearing, not just preferred. (1.13.3 is also required, for sending
     # Path(filename).name as the stored-file filename — upstream #341, without
     # which every attach pays for the two-step fallback in _attach_and_verify.)
-    "pyzotero>=1.13.5",
+    "pyzotero>=1.15.1",
     "python-dotenv>=1.0.0",
     # PDF text extraction. Rust with prebuilt abi3 wheels for every platform
     # we support and no Python dependencies of its own. Pinned exactly while

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pyzotero.errors import CallDoesNotExistError
 
 # Always exercise the source tree that these tests live in, not whatever
 # `zotero_mcp` an editable install happens to resolve to. Without this, running
@@ -33,6 +34,36 @@ skip_on_windows = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_local_write_state(monkeypatch, tmp_path):
+    """Keep local-write config and capability probing out of the tests.
+
+    Two things would otherwise leak the developer's machine into the results:
+    the local API key is read from ~/.config/zotero-mcp/config.json, so anyone
+    who has authorized local writes would resolve a different write client
+    than CI does; and the capability probe makes a real request to
+    localhost:23119, so the outcome would depend on whether Zotero happens to
+    be running. Both are pinned here; tests that exercise them override.
+    """
+    import time
+
+    from zotero_mcp import client as _client
+
+    monkeypatch.setattr(_client, "ZOTERO_MCP_CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(_client, "_local_write_state", {})
+    # Seed the probe cache with a negative answer rather than stubbing the
+    # function, so tests can opt into either behaviour by editing the cache:
+    # clear() to exercise the probe itself, or write a server_id to pretend
+    # Zotero 10 is running.
+    monkeypatch.setattr(
+        _client,
+        "_local_probe_cache",
+        {"server_id": None, "checked_at": time.monotonic()},
+    )
+    for var in ("ZOTERO_LOCAL_API_KEY", "ZOTERO_LOCAL_SERVER_ID", "ZOTERO_LOCAL_WRITE"):
+        monkeypatch.delenv(var, raising=False)
+
+
 class DummyContext:
     """No-op MCP context for unit tests."""
 
@@ -49,12 +80,19 @@ class DummyContext:
 class FakeZotero:
     """Minimal pyzotero client stub. Extend per test file as needed."""
 
+    # pyzotero sets this on the instance; several helpers branch on it to tell
+    # a local client from a web one.
+    local = False
+    endpoint = "https://api.zotero.org"
+
     def __init__(self):
         self.created = []
         self.updated = []
         self._items = []
         self._collections = []
         self._children = {}
+        self.attached = []
+        self.uploaded = []
         self.library_id = "12345"
         self.library_type = "user"
 
@@ -91,7 +129,7 @@ class FakeZotero:
         # Simulate httpx.Response
         return _FakeResponse(204)
 
-    def item_template(self, item_type):
+    def item_template(self, item_type, linkmode=None):
         """Return a minimal Zotero item template."""
         base = {
             "itemType": item_type,
@@ -174,6 +212,62 @@ class FakeZotero:
     def num_collectionitems(self, key):
         return len(self.collection_items(key))
 
+    def attachment_both(self, pairs, parentid=None):
+        self.attached.append((list(pairs), parentid))
+        return {"success": [{"key": "ATT00001"}], "unchanged": [], "failure": []}
+
+    def upload_attachments(self, attachments, parentid=None, basedir=None):
+        self.uploaded.append((list(attachments), parentid))
+        return {"success": [{"key": "ATT00001"}], "unchanged": [], "failure": []}
+
+    def item_types(self):
+        return [{"itemType": "journalArticle", "localized": "Journal Article"}]
+
+    def item_type_fields(self, item_type):
+        return [{"field": "title"}, {"field": "date"}, {"field": "abstractNote"}]
+
+    def item_creator_types(self, item_type):
+        return [{"creatorType": "author", "localized": "Author"}]
+
+
+class FakeLocalZotero(FakeZotero):
+    """A FakeZotero that behaves like a client talking to the local API.
+
+    The local API has no /items/new, so pyzotero raises CallDoesNotExistError
+    from item_template() — and, transitively, from attachment_both(). Writes
+    go through _write(), which is what attaches the server-id and key headers.
+    """
+
+    local = True
+    endpoint = "http://localhost:23119/api"
+
+    def __init__(self, write_status=204):
+        super().__init__()
+        self.library_id = "0"
+        self.library_type = "users"
+        self.server_id = "test-server-id"
+        self.local_api_key = "test-key"
+        self.writes = []
+        self.authorized = []
+        self._write_status = write_status
+
+    def item_template(self, item_type, linkmode=None):
+        raise CallDoesNotExistError(
+            "The local Zotero API doesn't implement the /items/new template endpoint"
+        )
+
+    def attachment_both(self, pairs, parentid=None):
+        # Fails transitively through item_template, exactly as pyzotero does.
+        return self.item_template("attachment", "imported_file")
+
+    def _write(self, method, url, **kwargs):
+        self.writes.append((method, url, kwargs))
+        return _FakeResponse(self._write_status)
+
+    def authorize_local(self, app_name):
+        self.authorized.append(app_name)
+        return {"key": "granted-key", "remember": True}
+
 
 class _FakeResponse:
     """Minimal httpx.Response stub."""
@@ -247,3 +341,8 @@ def dummy_ctx():
 @pytest.fixture
 def fake_zot():
     return FakeZotero()
+
+
+@pytest.fixture
+def fake_local_zot():
+    return FakeLocalZotero()

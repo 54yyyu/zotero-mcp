@@ -3,13 +3,16 @@ Zotero client wrapper for MCP server.
 """
 
 import functools
+import json
 import logging
 import os
 import re
 import shutil
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,7 @@ from zotero_mcp.utils import (
     _paginate,
     format_creators,
     html_to_text,
+    is_local_mode,
     item_display_date,
     item_display_title,
 )
@@ -162,7 +166,21 @@ def get_active_group_id() -> int:
     return 0
 
 
-def _make_local_http_client() -> httpx.Client:
+# Timeouts for the injected local httpx client. pyzotero only passes an
+# explicit per-request timeout on its READ paths; Zotero._write() and
+# authorize_local() hand the request straight to self.client with no timeout
+# kwarg. pyzotero's own default client sets one at construction, but we supply
+# our own client (for the HTTP/1.1 pin below), so without these constants every
+# local write would inherit httpx's 5s default — and authorize_local() would
+# time out about five seconds into a modal dialog nobody could answer that fast.
+_LOCAL_READ_TIMEOUT = 30.0
+_LOCAL_WRITE_TIMEOUT = 120.0
+# Kept under FastMCP's ~60s client timeout so the MCP tool reports a real
+# outcome instead of the transport dying first.
+_LOCAL_AUTHORIZE_TIMEOUT = 55.0
+
+
+def _make_local_http_client(timeout: float = _LOCAL_READ_TIMEOUT) -> httpx.Client:
     """Return an httpx.Client pinned to HTTP/1.1 for the local Zotero server.
 
     Zotero 8's local server (port 23119) only speaks HTTP/1.0. httpx defaults
@@ -170,11 +188,42 @@ def _make_local_http_client() -> httpx.Client:
     Bad Gateway — every tool call fails even though the MCP starts cleanly
     (#160). Forcing http1=True / http2=False on the transport keeps requests
     on HTTP/1.1 and the local API answers normally.
+
+    The explicit timeout is load-bearing, not tidying: see the comment on the
+    constants above. Connect stays short because the server is on loopback —
+    if it isn't listening we want to know immediately, not in two minutes.
     """
     return httpx.Client(
         transport=httpx.HTTPTransport(http1=True, http2=False),
         follow_redirects=True,
+        timeout=httpx.Timeout(timeout, connect=5.0),
     )
+
+
+def _apply_default_headers(zot: zotero.Zotero) -> zotero.Zotero:
+    """Restore the pyzotero headers that supplying our own client drops.
+
+    pyzotero only calls default_headers() when it builds the httpx client
+    itself, so an injected client sends neither User-Agent nor
+    Zotero-API-Version: 3. Harmless while we only read; worth having once we
+    start writing.
+
+    Authorization is stripped deliberately. In hybrid mode this client is
+    built with the zotero.org API key, and default_headers() turns that into
+    `Authorization: Bearer <key>` — which would send a cloud credential to a
+    local HTTP server that has no use for it. Local writes authenticate with
+    Zotero-API-Key instead, attached per-request by pyzotero.
+    """
+    try:
+        headers = {
+            name: value
+            for name, value in zot.default_headers().items()
+            if name.lower() != "authorization"
+        }
+        zot.client.headers.update(headers)
+    except Exception:
+        pass
+    return zot
 
 
 @dataclass
@@ -227,13 +276,14 @@ def get_zotero_client() -> zotero.Zotero:
             "or use ZOTERO_LOCAL=true for local Zotero instance."
         )
 
-    return zotero.Zotero(
+    zot = zotero.Zotero(
         library_id=library_id,
         library_type=library_type,
         api_key=api_key,
         local=local,
         client=_make_local_http_client() if local else None,
     )
+    return _apply_default_headers(zot) if local else zot
 
 
 def get_local_zotero_client() -> zotero.Zotero | None:
@@ -251,12 +301,14 @@ def get_local_zotero_client() -> zotero.Zotero | None:
         # Create a local client - library_id 0 is the default for local.
         # HTTP/1.1-only transport for compatibility with Zotero 8's local
         # server (#160) — httpx default HTTP/2 negotiation returns 502.
-        client = zotero.Zotero(
-            library_id="0",
-            library_type="user",
-            api_key=None,
-            local=True,
-            client=_make_local_http_client(),
+        client = _apply_default_headers(
+            zotero.Zotero(
+                library_id="0",
+                library_type="user",
+                api_key=None,
+                local=True,
+                client=_make_local_http_client(),
+            )
         )
         # Test connection by making a simple request
         client.items(limit=1)
@@ -294,6 +346,340 @@ def is_local_zotero_available() -> bool:
     """Check if local Zotero instance is running and accessible."""
     client = get_local_zotero_client()
     return client is not None
+
+
+# ---------------------------------------------------------------------------
+# Local API write access (Zotero 10+)
+#
+# Writing through the local API needs two things the read path never sends: a
+# Zotero-Server-ID header identifying the Zotero database, and a local API key
+# the user grants through a dialog in the Zotero app. The key is unrelated to
+# a zotero.org API key and cannot be created ahead of time.
+# ---------------------------------------------------------------------------
+
+ZOTERO_MCP_CONFIG_PATH = Path.home() / ".config" / "zotero-mcp" / "config.json"
+
+LOCAL_API_KEY_ENV = "ZOTERO_LOCAL_API_KEY"
+LOCAL_SERVER_ID_ENV = "ZOTERO_LOCAL_SERVER_ID"
+LOCAL_WRITE_ENV = "ZOTERO_LOCAL_WRITE"
+DEFAULT_APP_NAME = "Zotero MCP"
+
+# Credentials granted during this process, before/instead of anything on disk.
+_local_write_state: dict[str, Any] = {}
+# Cached capability probe: {"server_id": str | None, "checked_at": float}
+_local_probe_cache: dict[str, Any] = {}
+# A negative probe is re-checked after this long, so upgrading or restarting
+# Zotero mid-session recovers without restarting the MCP server.
+_LOCAL_PROBE_NEGATIVE_TTL = 60.0
+
+# Deliberately NOT _zotero_api_lock. Authorization blocks until a human clicks
+# a button; holding the shared API lock that long would push every other tool
+# past its bounded 45s acquire. This lock exists only to stop two dialogs from
+# being opened at once, so it is always acquired non-blocking.
+_local_auth_lock = threading.Lock()
+
+
+class ZoteroAuthInProgressError(RuntimeError):
+    """Raised when an authorization dialog is already open."""
+
+
+def load_zotero_mcp_config() -> dict:
+    """Return the parsed ``~/.config/zotero-mcp/config.json``, or ``{}``.
+
+    Missing file or parse errors yield an empty dict so callers can use
+    ``.get(...)`` chains without guarding. Callers that intend to write the
+    file back must use ``_readable_config_for_update`` instead — an empty dict
+    here does not distinguish "no config" from "could not read it", and
+    rewriting on the latter would discard the user's other settings.
+    """
+    try:
+        return _readable_config_for_update()
+    except OSError:
+        return {}
+
+
+def _readable_config_for_update() -> dict:
+    """Parse the config file for a read-modify-write. Raises if unreadable.
+
+    A config that exists but cannot be parsed must not be silently replaced:
+    it also holds ``semantic_search`` and ``client_env``, and treating a
+    transient read failure or a hand-editing typo as "empty" would drop both.
+    """
+    if not ZOTERO_MCP_CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(ZOTERO_MCP_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except json.JSONDecodeError as e:
+        raise OSError(
+            f"{ZOTERO_MCP_CONFIG_PATH} is not valid JSON ({e}). Fix or remove "
+            "the file; refusing to overwrite it and lose the other settings."
+        ) from e
+
+
+def _local_write_enabled() -> bool:
+    """Honour the ZOTERO_LOCAL_WRITE kill switch. Unset or "auto" means on."""
+    raw = os.getenv(LOCAL_WRITE_ENV, "").strip().lower()
+    if not raw or raw == "auto":
+        return True
+    return raw in {"true", "yes", "1"}
+
+
+def probe_local_server_id(timeout: float = 3.0, force: bool = False) -> str | None:
+    """Return the local Zotero server ID, or None if this build has no writes.
+
+    Every local API response carries a Zotero-Server-ID header; a build that
+    predates local write support carries none. GET /api/ (the trailing slash
+    matters — bare /api is a 404) is the cheapest way to ask.
+
+    Never called at import or from the write path itself: only the capability
+    tool, the CLI, and the message shown when writes are unavailable.
+    """
+    cached_at = _local_probe_cache.get("checked_at")
+    if not force and cached_at is not None:
+        server_id = _local_probe_cache.get("server_id")
+        if server_id or (time.monotonic() - cached_at) < _LOCAL_PROBE_NEGATIVE_TTL:
+            return server_id
+
+    # Deliberately not ZOTERO_LOCAL_PORT: pyzotero hardcodes localhost:23119
+    # for local mode, so probing anywhere else could report "writes supported"
+    # for a server the writes will never reach.
+    server_id = None
+    try:
+        with _make_local_http_client(timeout) as http:
+            resp = http.get("http://localhost:23119/api/")
+            server_id = resp.headers.get("zotero-server-id")
+    except Exception:
+        server_id = None
+
+    _local_probe_cache["server_id"] = server_id
+    _local_probe_cache["checked_at"] = time.monotonic()
+    return server_id
+
+
+def get_local_write_credentials() -> tuple[str | None, str | None, str | None]:
+    """Return (api_key, server_id, source) for local writes.
+
+    Precedence: credentials granted in this process, then the environment,
+    then the config file. Source is "session", "env", "config" or None.
+    """
+    if key := _local_write_state.get("key"):
+        return key, _local_write_state.get("server_id"), "session"
+
+    if key := os.getenv(LOCAL_API_KEY_ENV, "").strip():
+        return key, os.getenv(LOCAL_SERVER_ID_ENV, "").strip() or None, "env"
+
+    stored = load_zotero_mcp_config().get("local_api") or {}
+    if key := stored.get("key"):
+        return key, stored.get("server_id"), "config"
+
+    return None, None, None
+
+
+def _local_key_remembered() -> bool | None:
+    """Whether the active key was granted with "Always Allow", if we know."""
+    _key, _server_id, source = get_local_write_credentials()
+    if source == "session":
+        return _local_write_state.get("remember")
+    if source == "config":
+        return (load_zotero_mcp_config().get("local_api") or {}).get("remember")
+    return None
+
+
+def _write_config(config: dict) -> None:
+    """Persist the config file, owner-only, replacing it atomically."""
+    ZOTERO_MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = ZOTERO_MCP_CONFIG_PATH.with_suffix(".json.tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+    # The file holds a credential — keep it owner-only. Best-effort; a no-op
+    # on platforms without POSIX permissions. Set before the rename so the
+    # key is never briefly world-readable at its final name.
+    try:
+        os.chmod(temp_path, 0o600)
+    except OSError:
+        pass
+    os.replace(temp_path, ZOTERO_MCP_CONFIG_PATH)
+
+
+def store_local_write_credentials(
+    key: str, server_id: str | None, remember: bool, app_name: str = DEFAULT_APP_NAME
+) -> Path | None:
+    """Cache credentials for this process and persist them. Returns the path.
+
+    Persisted under its own ``local_api`` section rather than ``client_env``,
+    which ``setup_helper._write_standalone_config`` rebuilds from scratch on
+    every ``zotero-mcp setup`` run and would silently drop the key.
+
+    Returns None if the file could not be written, including when it exists
+    but cannot be parsed — the session copy is still set, so the caller can
+    keep working and warn.
+    """
+    _local_write_state.update({"key": key, "server_id": server_id, "remember": remember})
+
+    try:
+        config = _readable_config_for_update()
+        config["local_api"] = {
+            "key": key,
+            "server_id": server_id,
+            "remember": remember,
+            "app_name": app_name,
+            "granted": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        _write_config(config)
+        return ZOTERO_MCP_CONFIG_PATH
+    except OSError:
+        return None
+
+
+def clear_local_write_credentials() -> bool:
+    """Forget the local API key. True if anything was actually cleared.
+
+    Covers the session copy as well as the stored one, so a key granted during
+    this run reports honestly instead of "nothing to remove". A key supplied
+    through the environment cannot be cleared from here — the caller is
+    expected to say so.
+    """
+    cleared = bool(_local_write_state)
+    _local_write_state.clear()
+
+    try:
+        config = _readable_config_for_update()
+    except OSError:
+        return cleared
+    if "local_api" not in config:
+        return cleared
+    del config["local_api"]
+    try:
+        _write_config(config)
+        return True
+    except OSError:
+        return cleared
+
+
+def get_local_write_client() -> zotero.Zotero | None:
+    """Return a local Zotero client authorized to write, or None.
+
+    None — never an exception — when local writes are switched off, when we
+    aren't in local mode, or when no key has been granted yet. Callers treat
+    that as "fall back to the web API".
+    """
+    if not _local_write_enabled() or not is_local_mode():
+        return None
+
+    key, server_id, _source = get_local_write_credentials()
+    if not key:
+        return None
+
+    override = _active_library_override
+    library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+    library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID")
+    # The local API addresses the user library as users/0 whatever the web
+    # user id is; a group keeps its real numeric id.
+    if not library_type.startswith("group"):
+        library_id = "0"
+    elif not library_id:
+        # A group with no id is a broken configuration, but this factory
+        # promises None rather than an exception — pyzotero would raise
+        # MissingCredentialsError, which no caller is catching.
+        return None
+
+    zot = zotero.Zotero(
+        library_id=library_id,
+        library_type=library_type,
+        api_key=None,
+        local=True,
+        client=_make_local_http_client(_LOCAL_WRITE_TIMEOUT),
+        # Supplying the cached id spares pyzotero a GET /api/ before the first
+        # write of every tool call, since each call builds a fresh client.
+        server_id=server_id or None,
+        local_api_key=key,
+    )
+    return _apply_default_headers(zot)
+
+
+def authorize_local_api(
+    app_name: str = DEFAULT_APP_NAME,
+    timeout: float = _LOCAL_AUTHORIZE_TIMEOUT,
+    persist: bool = True,
+) -> dict:
+    """Ask Zotero for a local API key. Blocks on a dialog in the Zotero app.
+
+    Returns pyzotero's response — a ``key`` and a ``remember`` flag — with the
+    server id added. ``remember`` is False when the user chose "Allow" rather
+    than "Always Allow", which makes the key valid for exactly one write.
+
+    Raises ZoteroAuthInProgressError if a dialog is already open, and lets
+    pyzotero's LocalAPIDeniedError / TooManyRequestsError / UnsupportedParams-
+    Error through for the caller to phrase.
+    """
+    if not _local_auth_lock.acquire(blocking=False):
+        raise ZoteroAuthInProgressError(
+            "A Zotero authorization dialog is already open. Answer it in "
+            "Zotero, then retry."
+        )
+    try:
+        zot = zotero.Zotero(
+            library_id="0",
+            library_type="user",
+            api_key=None,
+            local=True,
+            client=_make_local_http_client(timeout),
+        )
+        result = dict(zot.authorize_local(app_name))
+        result["server_id"] = zot.server_id
+        remember = bool(result.get("remember"))
+
+        # A single-use key is never written to disk. It is consumed by the
+        # first write, and a dead key on disk outranks working web credentials
+        # on every later run — which would turn one stray click on "Allow"
+        # into a permanently broken hybrid setup. Keeping it in the session
+        # still lets this process use it once, and still lets the 401 handler
+        # explain what happened.
+        if persist and remember:
+            result["stored_at"] = store_local_write_credentials(
+                result["key"], zot.server_id, remember, app_name
+            )
+        else:
+            _local_write_state.update(
+                {
+                    "key": result["key"],
+                    "server_id": zot.server_id,
+                    "remember": remember,
+                }
+            )
+        return result
+    finally:
+        _local_auth_lock.release()
+
+
+def get_write_capabilities(probe: bool = True) -> dict[str, Any]:
+    """Describe how (and whether) writes can reach Zotero right now."""
+    local_mode = is_local_mode()
+    key, server_id, source = get_local_write_credentials()
+    has_web = bool(os.getenv("ZOTERO_LIBRARY_ID") and os.getenv("ZOTERO_API_KEY"))
+    probed_id = probe_local_server_id() if (probe and local_mode) else None
+
+    if not local_mode:
+        mode = "web" if has_web else "none"
+    elif key and _local_write_enabled():
+        mode = "local"
+    elif has_web:
+        mode = "hybrid"
+    else:
+        mode = "none"
+
+    return {
+        "mode": mode,
+        "local_mode": local_mode,
+        "local_write_enabled": _local_write_enabled(),
+        "server_supports_local_writes": bool(probed_id),
+        "server_id": probed_id or server_id,
+        "has_local_key": bool(key),
+        "local_key_source": source,
+        "local_key_remember": _local_key_remembered(),
+        "has_web_credentials": has_web,
+    }
 
 
 def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) -> str:

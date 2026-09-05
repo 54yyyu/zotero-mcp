@@ -21,11 +21,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gemini gets a Batch API path, and `--batch` replaces the per-provider flags.** Asynchronous batch embedding runs at roughly half the realtime price, which on a library large enough to need it is the difference between a run you schedule and one you think twice about. It existed for OpenAI only, behind `--openai-batch`. Gemini now has the same path, and both are reached through one provider-neutral `--batch` (`--batch-provider openai|gemini` when the configured embedding model does not already settle it). `--openai-batch`, `--no-openai-batch`, `zotero-mcp openai-batch-status` and `openai-batch-import` all keep working as deprecated aliases, so anything scripted against 0.10.0 is unaffected. Underneath, the two providers now share one implementation: `batch_common` owns JSONL chunking, the run manifest, submission and status refresh, and each provider supplies only what genuinely differs through a `BatchAdapter` — request shaping, its SDK calls, and its status vocabulary. That vocabulary is the reason the manifest gained a normalized `state` beside the provider's raw `status`: OpenAI says `completed` where Gemini says `JOB_STATE_SUCCEEDED`, and import-eligibility should not be spelled twice. Manifests written before this release are backfilled on read, so a batch submitted by an older build still imports. Batch submissions are also now paced against an enqueued-token budget rather than fired all at once — the Tier 1 ceilings (3M tokens for OpenAI, 500k for Gemini) are what a large library actually hits first, so chunks beyond the budget are written to disk and submitted as earlier ones finish, and `--auto-loop` will poll, import and feed the queue until the run is done. Gemini's batch vectors are shaped identically to its realtime ones, prefix and task type included, so the two are interchangeable in one collection. Google marks the Gemini embeddings Batch API experimental; the setup wizard says so where it offers it.
 - **`update-db` can run several embedding requests at once, paced against the provider's token budget.** Set `semantic_search.embedding_config.max_parallel_requests` and indexing overlaps its three phases instead of running them in lockstep: one thread builds documents and works out which are new, that many workers embed, and the main thread commits vectors to ChromaDB. Previously each batch of 25 items blocked on a single embedding round-trip before the next batch was even prepared. Concurrency against a metered API needs pacing, and for embeddings it is tokens that bind rather than requests — at a 64 × ~500-token payload each request costs about 32K tokens, so a 1,000,000 TPM ceiling caps throughput near 31 requests a minute against a 3,000 RPM allowance. Requests are therefore metered against a token budget, `embedding_config.tokens_per_minute`, which halves on a 429 and creeps back up on success but never past what you configured. It is configured rather than inferred because a rate derived from the request cadence that was just throttled lets a single early 429 hold a multi-hour run far below the real ceiling, and because the provider's own `x-ratelimit-*-tokens` headers — which OpenAI does send, and which the limiter reads as a refill hint — only arrive with a response, leaving the start of a run unpaced and telling a provider that omits them nothing at all. `scripts/check_openai_ratelimits.py` reports what your key is actually allowed. Retries of throttled and 5xx requests are now shared by all three remote providers instead of being absent, `max_retries` bounds them, and `update-db -v` logs each request's worker thread, wire time and time spent waiting on the budget. Separately, truncation no longer runs the tiktoken encoder on text whose byte length already proves it fits, which is output-identical and removes what had been the CPU bottleneck of a large indexing run. None of this changes a default run: without `max_parallel_requests` the sequential path is unchanged, and no registered embedding-function name, stored config key or text-shaping rule moves, so existing collections keep working untouched.
 
+- **Local API write support (Zotero 10+)** (#471, #277). Zotero 10 added write endpoints
+  to the local API, so writes no longer have to go through the cloud. Items,
+  collections, tags, notes, annotations, trashing and file attachments all work against
+  a local-only library with no zotero.org account — which also sidesteps the Zotero
+  Storage quota that made attachment uploads fail with HTTP 413 (#399) and the
+  cloud-only attachments of #463. Nothing changes for anyone on an older Zotero: the
+  existing hybrid path stays as the fallback and is chosen automatically.
+- **`zotero-mcp authorize-local`** — request a local API key from Zotero, which prompts
+  the user with Allow / Always Allow / Deny. A remembered key is stored under its own
+  `local_api` section of `~/.config/zotero-mcp/config.json` with owner-only permissions.
+  A single-use key (plain "Allow") is deliberately never written to disk: it is consumed
+  by the first write, and a dead key on disk would outrank working web credentials on
+  every subsequent run. `--status`, `--revoke`, `--print` and `--no-save` cover the rest
+  of the lifecycle.
+- A local key that Zotero rejects is dropped automatically, so the next write falls back
+  to web credentials if the user has them rather than failing against a key that can
+  never work again.
+- **`zotero_authorize_local_writes`** and **`zotero_write_capabilities`** MCP tools, so a
+  client can obtain the key and diagnose a refused write without dropping to a shell.
+- New environment variables: `ZOTERO_LOCAL_API_KEY`, `ZOTERO_LOCAL_SERVER_ID`, and
+  `ZOTERO_LOCAL_WRITE` (set to `false` to keep writes on the web API regardless).
+- `zotero-mcp setup-info` now reports which write path is in effect.
+
 ### Changed
 
 - `tests/test_issue_455_toc_stdout_pollution.py` injects its stdout pollution through `sitecustomize` instead of `usercustomize`. `site.main()` runs `execsitecustomize()` unconditionally but gates `execusercustomize()` on `ENABLE_USER_SITE`, which every venv sets to False, so the test failed its own precondition — and therefore the whole test — for anyone running the suite from a venv rather than a system or conda interpreter. Several contributors reported it as a pre-existing failure on `main`. It now works there, and skips with a stated reason on any interpreter where the hook does not fire, rather than failing.
 
 - **`zotero_semantic_search` scopes to the active library by default (#163).** It previously searched every indexed library whenever `library_id` was omitted, which made it the one search tool whose unqualified behaviour differed from the rest — the same query meant "this library" through two tools and "all libraries" through the third. The default is now the active library, matching `zotero_search_items` and `zotero_advanced_search`, and global is reached the same way as on those two, with `search_all_libraries=True`. `library_id` still scopes to a specific library and is mutually exclusive with the new flag.
+
+- Bumped the `pyzotero` floor to `>=1.14.0` — the first release with `authorize_local()`,
+  the `server_id`/`local_api_key` constructor arguments, and the internal write
+  dispatcher that attaches the headers a local write requires.
+- Every write tool now resolves its backend through one path with one error message,
+  replacing the three divergent gateways that had drifted apart in `write.py`,
+  `annotations.py` and the inline checks in the two annotation-creation tools. When no
+  backend can write, the message names both remedies and leads with whichever one
+  actually applies to the running Zotero.
+- Attachment uploads made through the local API skip the WebDAV upload workaround. That
+  step exists because web-API uploads land in Zotero Storage, which a WebDAV-configured
+  desktop never reads; a local upload is already in local storage and Zotero syncs it.
+- Tool descriptions that claimed writes need "a web API key or hybrid mode" now name
+  both routes.
 
 ### Fixed
 
@@ -46,6 +83,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The check is also now the complete one rather than just `auto_update`: a config with `auto_update: true` and `update_frequency: "manual"`, or an interval that is not yet due, no longer pays for the import either.
 
 - **A semantic-search hit from another library could be found but not read (#163).** Results are hydrated through the pyzotero client, which is bound to exactly one library, so a hit from any other library 404'd and was reported as `Could not fetch full item data` instead of as a result — the index knew about the paper, and the tool could not show it. Foreign hits are now hydrated from `zotero.sqlite` directly, in one batched query, arriving with their library attribution attached; hits from the client's own library still go through the client, which is authoritative for them. This does not require a re-index: an index built before the `group_id` tagging landed carries no library attribution at all, so a foreign hit there cannot be recognised as foreign up front — those are tried against the client first and fall back to the local database when it cannot serve them.
+
+- The injected local HTTP client had no timeout and so inherited httpx's 5-second
+  default. Reads were unaffected (pyzotero passes its own per-request timeout on read
+  paths) but every write shared that budget, and it would have made the authorization
+  dialog impossible to answer in time. Reads, writes and authorization now get explicit,
+  separately-sized timeouts.
+- Trashing an item, note or annotation went out through a raw `client.patch` that
+  bypassed pyzotero's write dispatcher. Harmless against the web API, but it would have
+  sent a local write without the required headers.
+- The zotero.org API key is no longer sent to `localhost:23119`. In hybrid mode the
+  local read client is built with that key, and restoring pyzotero's default headers
+  would have turned it into an `Authorization: Bearer` aimed at the local server, which
+  has no use for it.
+- `zotero-mcp authorize-local --revoke` now reports honestly when it clears a key
+  granted during the running session, and warns when `ZOTERO_LOCAL_API_KEY` is still set
+  in the environment — which revoke cannot reach, and which would otherwise keep local
+  writes silently enabled.
+- The config file is written atomically, and a config that exists but cannot be parsed
+  is no longer silently replaced — doing so would have discarded the user's
+  `semantic_search` and `client_env` settings along with it.
+- POSIX absolute paths are recognised on Windows again. Python 3.13 changed
+  `ntpath.isabs()` so that `/Users/me/paper.pdf` counts as relative, which meant
+  `zotero_add_item` could not tell such a path was a file at all, and a library synced
+  from macOS or Linux resolved every linked-file attachment to nothing when opened on
+  Windows.
+- `scripts/gen_skill_reference.py` writes LF. `Path.write_text` translates newlines on
+  Windows, so running the generator there rewrote the whole checked-in reference in
+  CRLF; the staleness check compared decoded text, which normalizes CRLF away, so
+  nothing reported the drift.
+
 
 ## [0.10.0] - 2026-08-23
 

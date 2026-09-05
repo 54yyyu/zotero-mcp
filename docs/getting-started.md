@@ -221,9 +221,15 @@ If you encounter issues:
 
 ### Local Library Limitations
 
-Some functionality will not work for local libraries due to the distinct differences with [Zotero's local JS API](https://www.zotero.org/support/dev/client_coding/javascript_api). For instance, tagging and other library modifications might not work as expected with the local API connection.
+**On Zotero 10 or newer** the local API accepts writes. Run `zotero-mcp authorize-local`
+once, choose "Always Allow" in the dialog Zotero shows, and tagging, item edits, notes,
+collections and file attachments all work against the local library with no cloud
+account. See [Local write support](../README.md#local-write-support).
 
-**Workaround**: Even without web storage, a workaround for some of these functionalities might be to set up a web library, point the MCP at that, and then things like setting tags should work properly. We're thinking about better ways to work with local instances in future updates.
+**On Zotero 9 and older** the local API is read-only, so library modifications will not
+work over the local connection alone. Set `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID`
+alongside `ZOTERO_LOCAL=true` — the server then reads locally and writes through the web
+API ("hybrid mode"), which is what makes tagging and the rest behave as expected.
 
 ### Database Issues
 
