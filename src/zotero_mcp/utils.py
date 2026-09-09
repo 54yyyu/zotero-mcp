@@ -126,11 +126,12 @@ def format_creators(creators: list[dict[str, str] | str]) -> str:
     names = []
     for creator in creators:
         if isinstance(creator, str):
-            names.append(creator)
-        elif "firstName" in creator and "lastName" in creator:
-            names.append(f"{creator['lastName']}, {creator['firstName']}")
-        elif "name" in creator:
-            names.append(creator["name"])
+            name = creator
+        else:
+            parts = [creator.get("lastName"), creator.get("firstName")]
+            name = ", ".join(part for part in parts if part) or creator.get("name", "")
+        if name:
+            names.append(name)
     return "; ".join(names) if names else "No authors listed"
 
 
