@@ -2588,7 +2588,8 @@ class ZoteroSemanticSearch:
                 if stats.get("batch_pending"):
                     _report(
                         f"  {stats['batch_pending']} chunk(s) held back by the enqueued-token "
-                        "budget; they submit as running batches finish.\n"
+                        "budget; the next 'zotero-mcp batch-import' (or --auto-loop) submits them "
+                        "as running batches finish.\n"
                     )
                 if auto_loop and stats.get("batch_submitted"):
                     self.auto_loop_batch_pipeline(
@@ -3544,8 +3545,9 @@ class ZoteroSemanticSearch:
         Loops until every entry in the latest run's manifest is imported, or
         until no further progress is possible (everything left is terminal and
         nothing can be submitted). The on-disk manifest is consistent at every
-        step, so Ctrl-C or a crash resumes cleanly from the next
-        ``batch-import`` or ``--auto-loop``.
+        step, so after Ctrl-C or a crash a later ``batch-import`` imports what
+        completed and submits what is still pending; a new ``update-db --batch``
+        starts a fresh run instead.
 
         Must be called with the update lock already held (``update_database``
         holds it), hence ``_skip_lock`` on the imports below.

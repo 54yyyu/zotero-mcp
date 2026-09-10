@@ -384,11 +384,18 @@ def _print_batch_import(stats: dict, provider: str = "openai") -> None:
     print(f"- Batches seen: {stats.get('batches_seen', 0)}")
     print(f"- Batches imported: {stats.get('batches_imported', 0)}")
     print(f"- Batches skipped: {stats.get('batches_skipped', 0)}")
+    if stats.get("batches_submitted"):
+        print(f"- Pending chunks submitted: {stats['batches_submitted']}")
     print(f"- Imported items: {stats.get('imported_items', 0)}")
     print(f"- Added: {stats.get('added_items', 0)}")
     print(f"- Updated: {stats.get('updated_items', 0)}")
     print(f"- Failed rows: {stats.get('failed_items', 0)}")
     print(f"- Missing rows: {stats.get('missing_items', 0)}")
+    if stats.get("deferred"):
+        print(f"\n{stats['deferred']}")
+        print("Run 'zotero-mcp batch-status' to watch them, then 'zotero-mcp batch-import' again.")
+    elif stats.get("batches_submitted"):
+        print("\nRun 'zotero-mcp batch-import' again once the newly submitted batches complete.")
     if stats.get("errors"):
         print("\nWarnings/errors:")
         for error in stats["errors"][:20]:
@@ -520,7 +527,8 @@ def main():
                                       "configured embedding model)")
     update_db_parser.add_argument("--batch-max-tokens", type=int, default=None, metavar="N",
                                  help="Cap estimated tokens enqueued with the provider at once; "
-                                      "chunks beyond it are held back and submitted as earlier ones finish")
+                                      "chunks beyond it are held back; batch-import and --auto-loop "
+                                      "submit them as earlier ones finish")
     update_db_parser.add_argument("--batch-max-requests", type=int, default=None, metavar="N",
                                  help="Cap requests per uploaded batch file")
     update_db_parser.add_argument("--auto-loop", action="store_true",

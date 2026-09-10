@@ -565,3 +565,16 @@ def test_batch_import_refuses_to_submit_into_a_superseded_run(import_env):
     assert stats["batches_submitted"] == 0
     assert env.client.created_batches == created_before
     assert any("superseded" in str(e) for e in stats["errors"])
+
+
+def test_print_batch_import_reports_submitted_and_deferred(capsys):
+    from zotero_mcp.cli import _print_batch_import
+
+    _print_batch_import({"run_id": "r", "manifest_path": "m", "batches_seen": 3, "batches_imported": 0,
+                         "batches_skipped": 3, "batches_submitted": 2,
+                         "deferred": "2 pending chunk(s) submitted; the force-rebuild run imports once all batches complete"},
+                        "openai")
+    out = capsys.readouterr().out
+    assert "Pending chunks submitted: 2" in out
+    assert "imports once all batches complete" in out
+    assert "batch-import" in out
