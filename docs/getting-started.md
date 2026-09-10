@@ -85,11 +85,11 @@ To use Zotero MCP with Claude Desktop:
 
 This option is available through the ChatGPT web app. You must use [ChatGPT Developer mode](https://platform.openai.com/docs/guides/developer-mode) which may be restricted to a limited number of OpenAI platforms and apps. A paid subscription appears to be required.
 
-As of today, zotero-mcp is not available by default on as a web-based MCP, and it seems likely that many users will want to stick with a local MCP due to their large document libraries. Since ChatGPT does not support local MCPs natively through their desktop app (yet?) the way you can move forward is by tunneling.
+zotero-mcp is not available by default as a web-based MCP, and it seems likely that many users will want to stick with a local MCP due to their large document libraries. Since ChatGPT does not support local MCPs natively through their desktop app (yet?) the way you can move forward is by tunneling.
 
 **Use at your own risk**
 
-`zotero-mcp serve` has no authentication of its own. Treat the tunnel URL as a bearer token: anyone who has it can use every tool with whatever access the running server has, including writes when web API credentials are configured. Put ngrok's own authentication (or an authenticating reverse proxy) in front of the tunnel, and stop the tunnel when you are not using it. Even with the connection secured, whatever the AI service can read from your library is exposed to that service; judge that for your own situation before continuing.
+`zotero-mcp serve` has no authentication of its own. Treat the tunnel URL as a bearer token: anyone who has it can use every tool with whatever access the running server has, including writes when web API credentials are configured. The connector recipe below sends no credentials, so ngrok's basic auth would block it; what protects you is keeping the URL private, stopping the tunnel whenever you are not using it, and any ngrok traffic policy (IP or method restrictions) you can apply. If your ChatGPT account offers OAuth for connectors, prefer it over `No authentication`. Whatever the AI service can read from your library is exposed to that service; judge that for your own situation before continuing.
 
 ### Setting up a desktop tunnel for zotero-mcp
 
@@ -101,8 +101,9 @@ A tunnel makes your locally running `zotero-mcp` server securely available to a 
     ```bash
     # Make sure your Zotero environment variables are set first!
     # e.g., export ZOTERO_LOCAL=true
-    zotero-mcp serve --transport streamable-http --host 0.0.0.0 --port 8000
+    zotero-mcp serve --transport streamable-http --port 8000
     ```
+    Leave `--host` at its default (localhost): ngrok forwards to localhost, and binding `0.0.0.0` would also expose the server to your local network.
 
 Important: you should probably leave this terminal open in order to ensure tunnel traffic is successfully transiting to the server.
 
@@ -128,10 +129,10 @@ The setup is nearly identical for both.
     *   **Name**: Zotero MCP
     *   **Description**: Search and retrieve documents from a local Zotero library.
     *   **MCP Server URL**: This is the critical part. With the `streamable-http` transport the endpoint is `/mcp` (example: `https://<YOUR_NGROK_URL>.ngrok-free.app/mcp`). The steps below were last verified with the deprecated `sse` transport; if the connector does not accept the `/mcp` URL, start the server with `--transport sse` and use the `/sse/` form: combine your ngrok URL, the `/sse/` endpoint (with a trailing slash), and a unique `session_id`.
-        *   The trailing slash on `/sse/` is important to avoid a redirect.
+        *   If you use the `sse` fallback: the trailing slash on `/sse/` is important to avoid a redirect.
         *   The `session_id` must be a valid [UUIDv4](https://www.uuidgenerator.net/). While some clients might negotiate a session automatically, explicitly providing a unique ID is the most reliable method.
         *   Example URL: `https://<YOUR_NGROK_URL>.ngrok-free.app/sse/?session_id=<YOUR_UUID>`
-    *   **Authentication**: `No authentication` — the server has none; see "Use at your own risk" above and put ngrok's authentication in front of the tunnel.
+    *   **Authentication**: `No authentication` — the server has none, and this recipe sends no credentials; see "Use at your own risk" above.
     *   Tick the "I trust this application" checkbox.
 5.  Click **Create**. If you are successfully connecting you should see relevant communications logs in your tunnel and your server terminals. If this is successful, an important indication will be the listing of all zotero-mcp tools in the ChatGPT interface.
     *   *Important: our testing indicates that you need to turn all the "Edit" sliders to "Off" in the list of tools.* Otherwise the tool may not be enabled in Developer Mode.
