@@ -158,7 +158,7 @@ This would be one possible path to working with Zotero with chatbots other than 
 To set up Zotero MCP with Chorus.sh:
 
 1. **Find your installation path**:
-   - For uv: typically `/Users/USERNAME/.pyenv/versions/3.12.8/bin/zotero-mcp` on macOS
+   - For `uv tool install`: `~/.local/bin/zotero-mcp` on macOS and Linux
    - For other methods: use `zotero-mcp setup-info` to get the exact path and configuration details
 
 2. **Configure in Chorus.sh preferences**:
@@ -192,16 +192,7 @@ The `sse` transport is still accepted but deprecated.
 
 ## Available Tools
 
-When connected to Claude Desktop or another MCP client, you'll have access to these tools:
-
-- **zotero_search_items**: Search your library by title, creator, or content
-- **zotero_get_item_metadata**: Get detailed information about a specific item, including complete raw metadata via `format="json"`
-- **zotero_get_item_fulltext**: Get the full text content of an item
-- **zotero_get_collections**: List all collections in your library
-- **zotero_get_collection_items**: Get all items in a specific collection
-- **zotero_get_item_children**: Get child items (attachments, notes) for a specific item
-- **zotero_get_tags**: Get all tags used in your library
-- **zotero_get_recent**: Get recently added items to your library
+The full, current tool list is in the README under [Available Tools](../README.md#-available-tools). Search, metadata, full text, collections, tags, notes, annotations, PDF reading, adding and editing items, and semantic search are all covered; some groups are opt-in via `ZOTERO_MCP_TOOLSETS`.
 
 ## Example Queries
 
@@ -226,7 +217,7 @@ If you encounter issues:
 
 Some functionality will not work for local libraries due to the distinct differences with [Zotero's local JS API](https://www.zotero.org/support/dev/client_coding/javascript_api). For instance, tagging and other library modifications might not work as expected with the local API connection.
 
-**Workaround**: Even without web storage, a workaround for some of these functionalities might be to set up a web library, point the MCP at that, and then things like setting tags should work properly. We're thinking about better ways to work with local instances in future updates.
+Zotero's local API is read-only. Writes (tags, notes, collections, new items, edits) go through the web API, so keep `ZOTERO_LOCAL=true` and also set `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID`: reads stay local and fast, writes use the web API (hybrid mode). Without web credentials the write tools return an error rather than changing anything.
 
 ### Database Issues
 
@@ -236,6 +227,6 @@ Switching installs or install methods (sometimes to deal with failed installs), 
 zotero-mcp update-db --force-rebuild
 ```
 
-Other than time waiting for the rebuild, there is generally little to no risk involved in triggering the rebuild - so if you're experiencing database-related issues, it's worth trying this command.
+A forced rebuild deletes the whole ChromaDB collection and re-embeds every item in the active library from scratch. With OpenAI or Gemini embeddings that is billed again in full, and it takes as long as the first build. If the index also holds other libraries (or documents with no library attribution), the command refuses and asks for `--allow-mass-deletion`; passing that flag drops those documents permanently. Back up `~/.config/zotero-mcp/chroma_db/` first, and try a plain `zotero-mcp update-db` before rebuilding.
 
 For more help, try the [discussions](https://github.com/54yyyu/zotero-mcp/discussions).
