@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero-cli config` printed `OPENAI_API_KEY` and `GOOGLE_API_KEY` in full.** The mask list only named Zotero and WebDAV secrets. Any key ending in `_API_KEY`, `_PASSWORD`, `_TOKEN` or `_SECRET` is now masked by default (`--show-secrets` still reveals them), and `GEMINI_API_KEY` is included in the listing. The packaged agent skill tells agents to run `zotero-cli config` first, so the full keys were landing in agent transcripts.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
