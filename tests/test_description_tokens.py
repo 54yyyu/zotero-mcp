@@ -52,7 +52,9 @@ TOOL_BUDGETS = {
     "zotero_search_by_tag":            (115, 265),
     "zotero_search_by_citation_key":   (125, 280),
     "zotero_advanced_search":          (175, 400),
-    "zotero_semantic_search":          (130, 295),
+    # filters guidance widened (single-key example, $and, no year key);
+    # new baseline ~319 tokens, max clamped to the hard cap.
+    "zotero_semantic_search":          (214, 450),
     "zotero_update_search_database":   (130, 295),
     "zotero_get_search_database_status": ( 75, 170),
 }
