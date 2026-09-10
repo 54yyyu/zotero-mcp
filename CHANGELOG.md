@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`batch-import` now submits the chunks the enqueued-token throttle parked as pending.** Throttling is always on (the provider Tier-1 caps are the defaults), so any `update-db --batch` run larger than one budget's worth left chunks with no batch id, and only `--auto-loop` ever submitted them: a plain `batch-import` skipped them every time, the help text and the run summary said otherwise, and a throttled `--force-rebuild` run could never import (it demands every chunk complete) while the only way out, a new `update-db --batch`, re-billed the whole library. `batch-import` now imports what has completed, then submits what fits the run's budget, and says so ("Pending chunks submitted: N"); a force-rebuild run that is still waiting on batches reports that instead of failing. A run that has been superseded by a newer one is left alone, since the newer run already re-submitted its items.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
