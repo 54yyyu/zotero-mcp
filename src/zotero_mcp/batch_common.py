@@ -197,8 +197,16 @@ def _run_order_key(path: Path, manifest: dict[str, Any]) -> tuple[str, str]:
     "looked at most recently", which is how a superseded run used to talk its
     way back into being current. ``created_at`` is fixed-width ISO-8601 UTC, so
     it orders lexicographically; ``run_id`` (itself timestamp-prefixed) settles
-    ties between runs minted in the same microsecond, and between manifests
-    written by releases that stamped only whole seconds.
+    ties between runs stamped in the same microsecond.
+
+    One caveat, stated plainly: a manifest from a release that stamped whole
+    seconds (``…T10:00:00Z``) sorts *after* a microsecond stamp of that same
+    second (``…T10:00:00.000000Z``), because ``"Z" > "."`` — so a pre-upgrade
+    run would win a same-second race against a run submitted after the upgrade,
+    and ``run_id`` never gets to settle it, the two strings being unequal. This
+    is deterministic rather than arbitrary, and reaching it takes an upgrade
+    plus a resubmission within the same second; runs minutes apart — every real
+    pair — order correctly either way.
 
     A manifest missing either field falls back to the empty string / its run
     directory name, which ranks it below any run that carries them.

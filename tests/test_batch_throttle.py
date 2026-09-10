@@ -7,6 +7,7 @@ resolution, and auto-loop termination with a scripted fake provider.
 
 import contextlib
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -673,19 +674,33 @@ def test_run_order_is_by_created_at_then_run_id_and_survives_a_resave(tmp_path):
 
 
 def test_submission_timestamps_separate_runs_minted_in_the_same_second():
-    stamps = {batch_common._utc_now() for _ in range(2)}
-    assert all(len(stamp) == len("2026-09-10T10:00:00.000000Z") for stamp in stamps)
-    # Ordering is lexicographic, so the width must be fixed and the resolution
-    # finer than the second two runs can share.
-    assert batch_common._utc_now() < "2027-01-01T00:00:00.000000Z"
+    import time
+
+    # Two back-to-back calls land in the same microsecond about a third of the
+    # time, so wait for the clock to move rather than assume it has - real runs
+    # are never that close. What must hold is that the wait is far shorter than
+    # the second the two stamps share.
+    started = time.monotonic()
+    stamps = {batch_common._utc_now()}
+    while len(stamps) < 2:
+        stamps.add(batch_common._utc_now())
+        assert time.monotonic() - started < 0.5, "stamps within one second must already differ"
+
+    assert len(stamps) == 2
+    # Fixed width and microsecond resolution: the order is lexicographic.
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", stamp) for stamp in stamps)
+    earlier, later = sorted(stamps)
+    assert later > earlier
 
 
 def test_superseded_run_stays_refused_after_a_refusal_bumps_its_mtime(import_env):
     """Refusing an import re-saves the manifest; that must not promote the run.
 
-    Manifest files are ordered by mtime, and every import re-saves the manifest
-    it refreshed - so a run that was just refused would become the "newest" one
-    and the identical next command would submit its chunks after all.
+    Runs are ordered by ``created_at`` then ``run_id``, both stamped once at
+    submission, precisely so this cannot happen: under the file-mtime order
+    this used to have, every import re-saved the manifest it refreshed, so the
+    run just refused became the "newest" one and the identical next command
+    submitted its chunks after all.
     """
     env = import_env
     old, _ = _two_runs(env)
