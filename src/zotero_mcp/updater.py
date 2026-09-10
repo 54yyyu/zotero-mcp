@@ -121,7 +121,11 @@ def is_pipx_installation() -> bool:
 
 
 def get_current_version() -> str | None:
-    """Get the currently installed version of zotero-mcp."""
+    """Version of the running zotero-mcp, from the imported module rather than re-read from disk.
+
+    After an install it still reports the version this process started with;
+    ``get_installed_version`` reads what the install actually left behind.
+    """
     try:
         from zotero_mcp._version import __version__
         return __version__
@@ -501,7 +505,10 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
                     # `uv tool upgrade` resolves against the specifier recorded
                     # at install time, so an exact pin can never move.
                     if sys.platform == "win32":
-                        return False, _windows_reinstall_message(receipt)
+                        return False, _windows_reinstall_message(
+                            receipt,
+                            f"`uv tool upgrade` cannot move a uv tool pinned to '{receipt['specifier']}'",
+                        )
                     print(
                         f"uv tool receipt pins zotero-mcp-server to '{receipt['specifier']}'; "
                         "reinstalling at @latest instead of upgrading."
@@ -545,7 +552,7 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
                             f"releases. Reinstall by hand with a wider constraint, e.g. {manual}"
                         )
                     if sys.platform == "win32":
-                        return False, _windows_reinstall_message(receipt)
+                        return False, _windows_reinstall_message(receipt, "`uv tool upgrade` changed nothing")
                     print("`uv tool upgrade` changed nothing; reinstalling at @latest.")
                     cmd = _uv_tool_reinstall_command(receipt)
             else:
@@ -600,19 +607,20 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
         return False, f"Update error: {str(e)}"
 
 
-def _windows_reinstall_message(receipt: dict[str, Any]) -> str:
+def _windows_reinstall_message(receipt: dict[str, Any], reason: str) -> str:
     """Explain why the reinstall is left to the user on Windows.
 
     ``uv tool install --force`` deletes and recreates the tool environment,
     and on Windows that environment holds the ``python.exe`` this updater is
     running from, which cannot be deleted while it runs. Doing it from inside
-    would fail part-way and leave the environment broken.
+    would fail part-way and leave the environment broken. ``reason`` says why
+    a reinstall is needed at all, which differs between the pinned path and
+    the no-op path.
     """
     manual = subprocess.list2cmdline(_uv_tool_reinstall_command(receipt))
     return (
-        "`uv tool upgrade` cannot move a pinned uv tool, and reinstalling from inside the "
-        "running environment is not safe on Windows. Run this from a separate shell:\n  "
-        + manual
+        f"{reason}, and reinstalling from inside the running environment is not safe on "
+        "Windows. Run this from a separate shell:\n  " + manual
     )
 
 

@@ -416,6 +416,7 @@ class TestSecondReviewRound:
 
         assert ok is False
         assert "zotero-mcp-server[all]@latest" in message
+        assert "pinned to '==0.9.0'" in message
         assert calls == []
 
 
@@ -472,7 +473,7 @@ class TestThirdReviewRound:
         monkeypatch.setattr(updater.sys, "platform", "win32")
         receipt = {"extras": ["all"], "specifier": "==0.9.0", "python": r"C:\Users\First Last\py.exe"}
 
-        message = updater._windows_reinstall_message(receipt)
+        message = updater._windows_reinstall_message(receipt, "`uv tool upgrade` changed nothing")
 
         assert '"C:\\Users\\First Last\\py.exe"' in message
 
@@ -498,6 +499,8 @@ class TestThirdReviewRound:
 
         assert ok is False
         assert "zotero-mcp-server[all]@latest" in message
+        assert "changed nothing" in message
+        assert "pinned" not in message  # the receipt carries no pin
         assert calls == [["uv", "tool", "upgrade", "zotero-mcp-server"]]
 
     def test_tool_env_python_windows_layout(self, tmp_path):
