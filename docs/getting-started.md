@@ -16,12 +16,12 @@ The server needs to know how to connect to your Zotero library. There are two ma
 
 ### Option 1: Local Zotero (Recommended)
 
-If you're running Zotero 7 or newer on the same machine, you can connect to the local API:
+If you're running Zotero 7 or later on the same machine, you can connect to the local API:
 
-1. Enable the local API in Zotero's preferences:
+1. Allow local connections in Zotero's settings:
    - Open Zotero
-   - Go to Edit > Preferences > Advanced > API
-   - Check "Enable local API"
+   - Open Settings (Edit → Settings on Windows/Linux, Zotero → Settings on macOS) → Advanced → Miscellaneous
+   - Tick "Allow other applications on this computer to communicate with Zotero"
 
 2. Set the environment variable:
    ```bash
