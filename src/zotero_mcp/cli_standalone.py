@@ -178,7 +178,7 @@ def cmd_config(args):
     setup_zotero_environment()
     config = {
         k: v for k, v in os.environ.items()
-        if k.startswith("ZOTERO_") or k in ("OPENAI_API_KEY", "GOOGLE_API_KEY")
+        if k.startswith("ZOTERO_") or k in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY")
     }
     if not getattr(args, "show_secrets", False):
         config = obfuscate_config_for_display(config)

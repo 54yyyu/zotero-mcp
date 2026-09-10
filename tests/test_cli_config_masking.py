@@ -43,3 +43,31 @@ def test_input_is_not_mutated():
     config = {"OPENAI_API_KEY": "sk-openai-1234567890"}
     obfuscate_config_for_display(config)
     assert config["OPENAI_API_KEY"] == "sk-openai-1234567890"
+
+
+import argparse
+
+from zotero_mcp import cli_standalone
+
+
+def _run_config(monkeypatch, capsys, show_secrets):
+    monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-1234567890")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-gemini-1234567890")
+    monkeypatch.delenv("ZOTERO_API_KEY", raising=False)
+    cli_standalone.cmd_config(argparse.Namespace(show_secrets=show_secrets, json_out=False))
+    return capsys.readouterr().out
+
+
+def test_cli_config_masks_provider_keys_by_default(monkeypatch, capsys):
+    out = _run_config(monkeypatch, capsys, show_secrets=False)
+    assert "GEMINI_API_KEY=AIza" in out
+    assert "sk-openai-1234567890" not in out
+    assert "AIza-gemini-1234567890" not in out
+
+
+def test_cli_config_show_secrets_reveals_keys(monkeypatch, capsys):
+    out = _run_config(monkeypatch, capsys, show_secrets=True)
+    assert "OPENAI_API_KEY=sk-openai-1234567890" in out
+    assert "GEMINI_API_KEY=AIza-gemini-1234567890" in out
