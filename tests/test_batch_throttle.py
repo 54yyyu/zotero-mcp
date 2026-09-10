@@ -379,6 +379,51 @@ def test_auto_loop_reports_stall_when_nothing_can_progress(tmp_path, monkeypatch
     assert result["polls"] == 1  # no infinite loop
 
 
+def test_auto_loop_counts_chunks_the_import_submitted(tmp_path, monkeypatch):
+    """The import submits parked chunks itself now, so the loop must count those too.
+
+    Otherwise the run summary ("N pending chunks submitted") reports 0 for a
+    run whose chunks the import submitted.
+    """
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    provider_client = _FakeOpenAIClient()
+    monkeypatch.setattr(
+        semantic_search.openai_batch, "create_openai_client", lambda cfg: provider_client
+    )
+    search = semantic_search.ZoteroSemanticSearch(
+        chroma_client=_FakeChroma(), config_path=str(tmp_path / "config.json")
+    )
+    openai_batch.submit_embedding_batches(
+        records=_records(5),
+        model_name="text-embedding-3-small",
+        embedding_config={"api_key": "test"},
+        config_path=str(tmp_path / "config.json"),
+        client=provider_client,
+        max_enqueued_tokens=100,
+    )
+
+    def fake_import(self, provider, batch_ids=None, _skip_lock=False):
+        """Stand in for the real import: submit the parked chunks, import everything."""
+        m = openai_batch.find_manifest(config_path=str(tmp_path / "config.json"))
+        submitted = 0
+        for batch in m["batches"]:
+            if not batch.get("batch_id"):
+                batch_id = f"batch-{len(provider_client.created_batches) + 1}"
+                provider_client.created_batches.append(batch_id)
+                batch.update({"batch_id": batch_id, "status": "completed"})
+                submitted += 1
+            batch["imported_at"] = datetime.now().isoformat()
+        openai_batch.save_manifest(m)
+        return {"imported_items": 5, "batches_submitted": submitted}
+
+    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_import_batch", fake_import)
+
+    result = search.auto_loop_batch_pipeline("openai", poll_interval=0, max_enqueued_tokens=100)
+
+    assert result["polls"] == 1
+    assert result["submitted_chunks"] == 2  # both parked chunks, counted exactly once
+
+
 # ---------------------------------------------------------------------------
 # batch-import submits pending chunks (previously only --auto-loop did)
 # ---------------------------------------------------------------------------

@@ -3560,9 +3560,14 @@ class ZoteroSemanticSearch:
         aggregate = {"provider": provider, "polls": 0, "imported_items": 0, "submitted_chunks": 0}
 
         while True:
+            imported_submitted = 0
             try:
                 import_stats = self._import_batch(provider, _skip_lock=True)
                 aggregate["imported_items"] += import_stats.get("imported_items", 0)
+                # The import submits this run's parked chunks itself, so those
+                # count here too; otherwise the tally below reports 0 for
+                # chunks that were in fact submitted this poll.
+                imported_submitted = import_stats.get("batches_submitted", 0)
             except RuntimeError as e:
                 # Force-rebuild manifests are all-or-nothing, so _import_batch
                 # refuses until every chunk is importable. Expected mid-run.
@@ -3571,7 +3576,7 @@ class ZoteroSemanticSearch:
 
             manifest = module.find_manifest(config_path=self.config_path)
             client = adapter.create_client(self.chroma_client.embedding_config)
-            submitted = module.submit_pending_batches(
+            submitted = imported_submitted + module.submit_pending_batches(
                 manifest,
                 embedding_config=self.chroma_client.embedding_config,
                 max_enqueued_tokens=max_enqueued_tokens,
