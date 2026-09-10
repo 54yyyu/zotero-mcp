@@ -25,13 +25,18 @@ def obfuscate_sensitive_value(value, keep_chars=4):
     return value[:keep_chars] + "*" * (len(value) - keep_chars)
 
 
-def obfuscate_config_for_display(config):
-    """Create a copy of config with sensitive values obfuscated."""
-    if not isinstance(config, dict):
-        return config
+_SENSITIVE_SUFFIXES = ("_API_KEY", "_PASSWORD", "_TOKEN", "_SECRET")
 
-    obfuscated = config.copy()
-    sensitive_keys = [
+
+def _is_sensitive_key(key: str) -> bool:
+    """Explicitly known secrets, plus anything named like one.
+
+    The explicit list keeps the pre-existing behaviour for keys that don't
+    end in a secret-shaped suffix (LIBRARY_ID, WEBDAV_URL, WEBDAV_USERNAME);
+    the suffix rule catches provider keys such as OPENAI_API_KEY and
+    GOOGLE_API_KEY, which used to be printed in full.
+    """
+    explicit = {
         "ZOTERO_API_KEY",
         "ZOTERO_LIBRARY_ID",
         "ZOTERO_WEBDAV_URL",
@@ -42,12 +47,19 @@ def obfuscate_config_for_display(config):
         "WEBDAV_URL",
         "WEBDAV_USERNAME",
         "WEBDAV_PASSWORD",
-    ]
+    }
+    return key in explicit or key.upper().endswith(_SENSITIVE_SUFFIXES)
 
-    for key in sensitive_keys:
-        if key in obfuscated:
+
+def obfuscate_config_for_display(config):
+    """Create a copy of config with sensitive values obfuscated."""
+    if not isinstance(config, dict):
+        return config
+
+    obfuscated = config.copy()
+    for key in list(obfuscated):
+        if _is_sensitive_key(key):
             obfuscated[key] = obfuscate_sensitive_value(obfuscated[key])
-
     return obfuscated
 
 
