@@ -4,6 +4,9 @@ The mask list used to name only Zotero/WebDAV keys; OPENAI_API_KEY and
 GOOGLE_API_KEY were printed in full.
 """
 
+import argparse
+
+from zotero_mcp import cli_standalone
 from zotero_mcp.cli import obfuscate_config_for_display
 
 
@@ -43,11 +46,6 @@ def test_input_is_not_mutated():
     config = {"OPENAI_API_KEY": "sk-openai-1234567890"}
     obfuscate_config_for_display(config)
     assert config["OPENAI_API_KEY"] == "sk-openai-1234567890"
-
-
-import argparse
-
-from zotero_mcp import cli_standalone
 
 
 def _run_config(monkeypatch, capsys, show_secrets):
