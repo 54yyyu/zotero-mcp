@@ -5,6 +5,7 @@ Covers token estimation, token-aware record slicing, throttled submission
 resolution, and auto-loop termination with a scripted fake provider.
 """
 
+import contextlib
 import json
 import sys
 from datetime import datetime
@@ -376,3 +377,191 @@ def test_auto_loop_reports_stall_when_nothing_can_progress(tmp_path, monkeypatch
     result = search.auto_loop_batch_pipeline("openai", poll_interval=0, max_enqueued_tokens=100)
     assert "stalled" in result
     assert result["polls"] == 1  # no infinite loop
+
+
+# ---------------------------------------------------------------------------
+# batch-import submits pending chunks (previously only --auto-loop did)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOpenAIClientCompleting:
+    """Provider that accepts any submission and reports every batch completed."""
+
+    def __init__(self):
+        self.created_batches = []
+        client = self
+
+        class FakeFiles:
+            def create(self, file, purpose):
+                return SimpleNamespace(id=f"file-{len(client.created_batches) + 1}")
+
+        class FakeBatches:
+            def create(self, **kwargs):
+                batch_id = f"batch-{len(client.created_batches) + 1}"
+                client.created_batches.append(batch_id)
+                return SimpleNamespace(
+                    id=batch_id, status="validating", output_file_id=None, error_file_id=None,
+                    request_counts={"total": 1, "completed": 0, "failed": 0},
+                )
+
+            def retrieve(self, batch_id):
+                return SimpleNamespace(
+                    id=batch_id, status="completed", output_file_id=f"out-{batch_id}", error_file_id=None,
+                    request_counts={"total": 2, "completed": 2, "failed": 0},
+                )
+
+        self.files = FakeFiles()
+        self.batches = FakeBatches()
+
+
+class _FakeChromaForImport:
+    def __init__(self):
+        self.embedding_model = "openai"
+        self.embedding_config = {"model_name": "text-embedding-3-small", "api_key": "test"}
+        self.embedding_max_tokens = 8000
+        self.upserted = []
+        self.reset_calls = 0
+
+    def get_existing_ids(self, ids):
+        return set()
+
+    def upsert_embeddings(self, documents, metadatas, ids, embeddings):
+        self.upserted.extend(ids)
+
+    def reset_collection(self):
+        self.reset_calls += 1
+
+
+def _write_fake_outputs(manifest):
+    """Pretend every submitted batch's output file was downloaded already."""
+    for b in manifest["batches"]:
+        if not b.get("batch_id"):
+            continue
+        rp = Path(b["records_path"])
+        rows = [
+            {"custom_id": r["id"], "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2]}]}}}
+            for r in batch_common.read_jsonl(rp)
+        ]
+        rp.with_name(rp.stem + "-output.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+
+
+@pytest.fixture
+def import_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    client = _FakeOpenAIClientCompleting()
+    monkeypatch.setattr(openai_batch, "create_openai_client", lambda cfg: client)
+    monkeypatch.setattr(semantic_search, "_acquire_update_lock", lambda p: contextlib.nullcontext(True))
+    chroma = _FakeChromaForImport()
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=chroma, config_path=str(cfg))
+    promoted = []
+    monkeypatch.setattr(search, "_save_update_config", lambda **kw: promoted.append(kw))
+    return SimpleNamespace(search=search, client=client, chroma=chroma, cfg=str(cfg), promoted=promoted)
+
+
+def _throttled_run(env, force):
+    # 5 records, budget 100 tokens -> 3 chunks, only the first submitted.
+    manifest = openai_batch.submit_embedding_batches(
+        records=_records(5), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
+        config_path=env.cfg, client=env.client, max_enqueued_tokens=100, force_full_rebuild=force,
+    )
+    assert [b["status"] for b in manifest["batches"]] == ["validating", "pending", "pending"]
+    return manifest
+
+
+def test_batch_import_submits_pending_chunks(import_env):
+    # Chunks are 100, 100 and 50 tokens against a 100-token budget (verified
+    # 2026-09-10), so each import round frees room for exactly one more chunk.
+    env = import_env
+    manifest = _throttled_run(env, force=False)
+    _write_fake_outputs(manifest)
+
+    stats = env.search._import_batch("openai")
+
+    assert stats["batches_imported"] == 1
+    assert stats["batches_submitted"] == 1
+    assert env.client.created_batches == ["batch-1", "batch-2"]
+    assert env.promoted == [], "watermark must not be promoted while chunks are outstanding"
+
+    _write_fake_outputs(openai_batch.find_manifest(config_path=env.cfg))
+    stats = env.search._import_batch("openai")
+
+    assert stats["batches_imported"] == 1
+    assert stats["batches_submitted"] == 1
+    assert env.client.created_batches == ["batch-1", "batch-2", "batch-3"]
+    assert env.promoted == []
+
+    _write_fake_outputs(openai_batch.find_manifest(config_path=env.cfg))
+    stats = env.search._import_batch("openai")
+
+    assert stats["batches_imported"] == 1
+    assert stats["batches_submitted"] == 0
+    assert len(env.promoted) == 1, "all chunks imported -> watermark promoted once"
+
+
+def test_force_rebuild_batch_import_submits_pending_instead_of_refusing(import_env):
+    env = import_env
+    manifest = _throttled_run(env, force=True)
+    _write_fake_outputs(manifest)
+
+    stats = env.search._import_batch("openai")  # must not raise
+
+    assert stats["batches_imported"] == 0
+    assert stats["batches_submitted"] == 1
+    assert stats.get("deferred"), "the run is still incomplete; the stats must say so"
+    assert env.chroma.reset_calls == 0, "the collection is reset only when the whole run imports"
+    assert env.client.created_batches == ["batch-1", "batch-2"]
+
+    _write_fake_outputs(openai_batch.find_manifest(config_path=env.cfg))
+    stats = env.search._import_batch("openai")
+
+    assert stats["batches_imported"] == 0
+    assert stats["batches_submitted"] == 1
+    assert stats.get("deferred")
+    assert env.client.created_batches == ["batch-1", "batch-2", "batch-3"]
+
+    _write_fake_outputs(openai_batch.find_manifest(config_path=env.cfg))
+    stats = env.search._import_batch("openai")
+
+    assert stats["batches_imported"] == 3
+    assert stats["batches_submitted"] == 0
+    assert env.chroma.reset_calls == 1
+    assert len(env.promoted) == 1
+
+
+def test_force_rebuild_batch_import_still_refuses_when_nothing_can_be_submitted(import_env):
+    env = import_env
+    _throttled_run(env, force=True)
+    # Make the in-flight batch non-terminal so the budget stays consumed and
+    # the pending chunks cannot be submitted.
+    env.client.batches.retrieve = lambda batch_id: SimpleNamespace(
+        id=batch_id, status="in_progress", output_file_id=None, error_file_id=None,
+        request_counts={"total": 2, "completed": 0, "failed": 0},
+    )
+
+    with pytest.raises(RuntimeError, match="can only be imported after all batches complete"):
+        env.search._import_batch("openai")
+    assert env.client.created_batches == ["batch-1"]
+
+
+def test_batch_import_refuses_to_submit_into_a_superseded_run(import_env):
+    env = import_env
+    old = _throttled_run(env, force=False)
+    _write_fake_outputs(old)
+    # A later update-db --batch mints a newer run; the old run's pending
+    # chunks must not be submitted (the new run re-submitted everything).
+    import time
+    time.sleep(0.02)
+    newer = openai_batch.submit_embedding_batches(
+        records=_records(5), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
+        config_path=env.cfg, client=env.client, max_enqueued_tokens=None, force_full_rebuild=False,
+    )
+    assert newer["manifest_path"] != old["manifest_path"]
+    created_before = list(env.client.created_batches)
+
+    stats = env.search._import_batch("openai", batch_ids=["batch-1"])
+
+    assert stats["batches_submitted"] == 0
+    assert env.client.created_batches == created_before
+    assert any("superseded" in str(e) for e in stats["errors"])
