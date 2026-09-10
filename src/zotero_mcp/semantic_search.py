@@ -3263,9 +3263,11 @@ class ZoteroSemanticSearch:
         promoted only once a run imports completely), so submitting an older
         run's leftovers would pay for the same chunks twice.
 
-        ``newest_manifest_path`` must be captured before this import writes any
-        manifest: runs are ordered by manifest mtime, and saving this run's
-        manifest (which importing does) would make it look like the newest one.
+        ``newest_manifest_path`` comes from ``newest_run_path``, which ranks
+        runs by the ``created_at`` they were stamped with at submission. Manifest
+        mtime cannot answer this: refreshing or importing a run rewrites its
+        manifest, so an mtime ranking would call whichever run was last touched
+        the newest one — including this one, which would defeat the guard.
 
         Returns ``(submitted, reason)``; ``reason`` is set when nothing was
         submitted because the run is superseded.
@@ -3310,14 +3312,15 @@ class ZoteroSemanticSearch:
             batch_id=next(iter(selected_ids), None),
         )
         # Which run is the newest decides whether this one may still submit its
-        # parked chunks (see ``_submit_pending_chunks``). Runs are ordered by
-        # manifest mtime, so this has to be read before anything below saves a
-        # manifest. Without ``batch_ids`` the run just found *is* the newest.
-        newest_manifest_path = (
-            module.find_manifest(config_path=self.config_path).get("manifest_path")
-            if selected_ids
-            else manifest.get("manifest_path")
-        )
+        # parked chunks (see ``_submit_pending_chunks``). Ranked by the run's
+        # immutable ``created_at``, never by manifest mtime: refreshing or
+        # importing a run re-saves its manifest, so an mtime ranking would
+        # promote whichever run was looked at last — including a superseded one
+        # this very command just refused. Both paths ask the same oracle: with
+        # ``batch_ids`` the manifest found is whichever run holds those ids, and
+        # without them it is only the newest *by mtime*, which is not the same
+        # question.
+        newest_manifest_path = module.newest_run_path(config_path=self.config_path)
         manifest = module.refresh_manifest_status(
             manifest,
             embedding_config=self.chroma_client.embedding_config,

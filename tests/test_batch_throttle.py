@@ -612,6 +612,92 @@ def test_batch_import_refuses_to_submit_into_a_superseded_run(import_env):
     assert any("superseded" in str(e) for e in stats["errors"])
 
 
+def _set_created_at(manifest_path, value):
+    """Runs are minutes apart in reality; make the ordering explicit in tests."""
+    manifest = openai_batch.load_manifest(Path(manifest_path))
+    manifest["created_at"] = value
+    openai_batch.save_manifest(manifest)
+
+
+def _two_runs(env):
+    """An old throttled run plus a newer unthrottled one that supersedes it."""
+    old = _throttled_run(env, force=False)
+    _write_fake_outputs(old)
+    newer = openai_batch.submit_embedding_batches(
+        records=_records(5), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
+        config_path=env.cfg, client=env.client, max_enqueued_tokens=None, force_full_rebuild=False,
+    )
+    _set_created_at(old["manifest_path"], "2026-09-10T10:00:00Z")
+    _set_created_at(newer["manifest_path"], "2026-09-10T10:05:00Z")
+    return old, newer
+
+
+def test_newest_run_path_ranks_by_created_at_not_mtime(tmp_path):
+    cfg = str(tmp_path / "config.json")
+    assert openai_batch.newest_run_path(config_path=cfg) is None  # no runs yet
+
+    client = _FakeOpenAIClient()
+    kwargs = {
+        "records": _records(2), "model_name": "text-embedding-3-small",
+        "embedding_config": {"api_key": "t"}, "config_path": cfg, "client": client,
+    }
+    old = openai_batch.submit_embedding_batches(**kwargs)
+    newer = openai_batch.submit_embedding_batches(**kwargs)
+    _set_created_at(old["manifest_path"], "2026-09-10T10:00:00Z")
+    _set_created_at(newer["manifest_path"], "2026-09-10T10:05:00Z")
+
+    # Re-saving the old manifest (what a status refresh does) makes it the
+    # newest by mtime...
+    openai_batch.save_manifest(openai_batch.load_manifest(Path(old["manifest_path"])))
+    assert openai_batch.find_manifest(config_path=cfg)["manifest_path"] == old["manifest_path"]
+    # ...but not by the created_at its run was stamped with at submission.
+    assert openai_batch.newest_run_path(config_path=cfg) == newer["manifest_path"]
+
+
+def test_superseded_run_stays_refused_after_a_refusal_bumps_its_mtime(import_env):
+    """Refusing an import re-saves the manifest; that must not promote the run.
+
+    Manifest files are ordered by mtime, and every import re-saves the manifest
+    it refreshed - so a run that was just refused would become the "newest" one
+    and the identical next command would submit its chunks after all.
+    """
+    env = import_env
+    old, _ = _two_runs(env)
+    created_before = list(env.client.created_batches)
+
+    for attempt in (1, 2):
+        stats = env.search._import_batch("openai", batch_ids=["batch-1"])
+        assert stats["batches_submitted"] == 0, f"attempt {attempt} submitted into a superseded run"
+        assert any("superseded" in str(e) for e in stats["errors"])
+    assert env.client.created_batches == created_before
+    assert [b["status"] for b in openai_batch.load_manifest(Path(old["manifest_path"]))["batches"][1:]] == [
+        "pending", "pending",
+    ]
+
+
+def test_plain_batch_import_does_not_submit_into_a_run_a_status_check_touched(import_env):
+    """'batch-status' on an old run must not make a later plain import submit it.
+
+    ``find_manifest`` picks the newest manifest by mtime, so a status refresh of
+    an old run makes a plain ``batch-import`` land on it. It may import what
+    completed there, but its parked chunks belong to the superseded run.
+    """
+    env = import_env
+    old, _ = _two_runs(env)
+    created_before = list(env.client.created_batches)
+
+    openai_batch.refresh_manifest_status(
+        openai_batch.load_manifest(Path(old["manifest_path"])), {"api_key": "t"}, client=env.client
+    )
+    assert openai_batch.find_manifest(config_path=env.cfg)["manifest_path"] == old["manifest_path"]
+
+    stats = env.search._import_batch("openai")  # no batch ids: the plain path
+
+    assert stats["batches_submitted"] == 0
+    assert any("superseded" in str(e) for e in stats["errors"])
+    assert env.client.created_batches == created_before
+
+
 def test_print_batch_import_reports_submitted_and_deferred(capsys):
     from zotero_mcp.cli import _print_batch_import
 

@@ -181,6 +181,11 @@ def iter_manifests(config_path: str | None = None) -> list[Path]:
     return batch_common.iter_manifests(get_gemini_batch_root(config_path))
 
 
+def newest_run_path(config_path: str | None = None) -> str | None:
+    """Manifest path of the newest Gemini run, ranked by its ``created_at``."""
+    return batch_common.newest_run_path(get_gemini_batch_root(config_path))
+
+
 def find_manifest(config_path: str | None = None, batch_id: str | None = None) -> dict[str, Any]:
     """Find the newest manifest, or the manifest that contains a batch job name."""
     manifest = batch_common.find_manifest(

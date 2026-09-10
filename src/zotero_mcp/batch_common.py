@@ -185,6 +185,32 @@ def iter_manifests(root: Path) -> list[Path]:
     return sorted(root.glob("*/manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+def newest_run_path(root: Path) -> str | None:
+    """Manifest path of the newest run, ranked by the immutable ``created_at``.
+
+    File mtime says when a manifest was last *written*, not when its run was
+    created: a status refresh re-saves the manifest it is handed
+    (:func:`refresh_manifest_status`), and so does an import, so merely looking
+    at an old run would promote it to "newest" under an mtime ranking.
+    ``created_at`` is stamped once at submission and never rewritten, which is
+    what makes it the right key; mtime only breaks ties, since ``created_at``
+    has second resolution. A manifest with no ``created_at`` (pre-v2) ranks
+    below any that has one.
+
+    Returns ``None`` when this provider has no runs on disk.
+    """
+    newest_path: Path | None = None
+    newest_key: tuple[str, float] | None = None
+    for path in iter_manifests(root):
+        try:
+            key = (str(load_manifest(path).get("created_at") or ""), path.stat().st_mtime)
+        except (OSError, ValueError):
+            continue  # unreadable or half-written manifest: not a candidate
+        if newest_key is None or key > newest_key:
+            newest_key, newest_path = key, path
+    return None if newest_path is None else str(newest_path)
+
+
 def find_manifest(root: Path, batch_id: str | None = None, provider_label: str = "batch") -> dict[str, Any]:
     """Find the newest manifest, or the manifest that contains a batch ID."""
     for path in iter_manifests(root):
