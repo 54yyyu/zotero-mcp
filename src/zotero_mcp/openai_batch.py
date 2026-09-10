@@ -137,6 +137,11 @@ def newest_run_path(config_path: str | None = None) -> str | None:
     return batch_common.newest_run_path(get_openai_batch_root(config_path))
 
 
+def newest_manifest_for_group(config_path: str | None = None, group_id: int | None = None) -> dict[str, Any] | None:
+    """Newest OpenAI run submitted against ``group_id``, or ``None``."""
+    return batch_common.newest_manifest_for_group(get_openai_batch_root(config_path), group_id)
+
+
 def find_manifest(config_path: str | None = None, batch_id: str | None = None) -> dict[str, Any]:
     """Find the newest manifest, or the manifest that contains a batch ID."""
     manifest = batch_common.find_manifest(

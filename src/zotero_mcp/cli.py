@@ -571,7 +571,9 @@ def main():
     ):
         sp = subparsers.add_parser(name, help=helptext)
         sp.add_argument("--batch-id", action="append",
-                        help="Specific batch ID to import; can be repeated")
+                        help="Specific batch ID to import; can be repeated. Importing by id never "
+                             "submits pending chunks; run batch-import without ids to resume a "
+                             "throttled run")
         sp.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
                         help="Which provider's manifests to read (default: inferred from config)")
         sp.add_argument("--config-path", help="Path to semantic search configuration file")

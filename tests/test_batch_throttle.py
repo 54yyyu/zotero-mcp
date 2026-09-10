@@ -627,31 +627,57 @@ def _two_runs(env):
         records=_records(5), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
         config_path=env.cfg, client=env.client, max_enqueued_tokens=None, force_full_rebuild=False,
     )
-    _set_created_at(old["manifest_path"], "2026-09-10T10:00:00Z")
-    _set_created_at(newer["manifest_path"], "2026-09-10T10:05:00Z")
+    _set_created_at(old["manifest_path"], "2026-09-10T10:00:00.000000Z")
+    _set_created_at(newer["manifest_path"], "2026-09-10T10:05:00.000000Z")
     return old, newer
 
 
-def test_newest_run_path_ranks_by_created_at_not_mtime(tmp_path):
+def test_run_order_is_by_created_at_then_run_id_and_survives_a_resave(tmp_path):
+    """Ranking must use fields written once at submission, not file mtime.
+
+    Every status refresh and every import re-saves a manifest, so an mtime
+    order would make "newest run" mean "run looked at most recently".
+    """
     cfg = str(tmp_path / "config.json")
     assert openai_batch.newest_run_path(config_path=cfg) is None  # no runs yet
 
-    client = _FakeOpenAIClient()
+    client = _FakeOpenAIClientCompleting()
     kwargs = {
         "records": _records(2), "model_name": "text-embedding-3-small",
         "embedding_config": {"api_key": "t"}, "config_path": cfg, "client": client,
     }
-    old = openai_batch.submit_embedding_batches(**kwargs)
-    newer = openai_batch.submit_embedding_batches(**kwargs)
-    _set_created_at(old["manifest_path"], "2026-09-10T10:00:00Z")
-    _set_created_at(newer["manifest_path"], "2026-09-10T10:05:00Z")
+    first = openai_batch.submit_embedding_batches(**kwargs)
+    second = openai_batch.submit_embedding_batches(**kwargs)
+    # Identical created_at: the run id, not the clock, has to settle the order.
+    _set_created_at(first["manifest_path"], "2026-09-10T10:00:00.000000Z")
+    _set_created_at(second["manifest_path"], "2026-09-10T10:00:00.000000Z")
+    newest_run_id = max(first["run_id"], second["run_id"])
+    loser = first if first["run_id"] != newest_run_id else second
 
-    # Re-saving the old manifest (what a status refresh does) makes it the
-    # newest by mtime...
-    openai_batch.save_manifest(openai_batch.load_manifest(Path(old["manifest_path"])))
-    assert openai_batch.find_manifest(config_path=cfg)["manifest_path"] == old["manifest_path"]
-    # ...but not by the created_at its run was stamped with at submission.
-    assert openai_batch.newest_run_path(config_path=cfg) == newer["manifest_path"]
+    def newest():
+        return openai_batch.load_manifest(Path(openai_batch.newest_run_path(config_path=cfg)))["run_id"]
+
+    assert newest() == newest_run_id
+    assert openai_batch.find_manifest(config_path=cfg)["run_id"] == newest_run_id
+    assert [openai_batch.load_manifest(p)["run_id"] for p in openai_batch.iter_manifests(cfg)] == sorted(
+        [first["run_id"], second["run_id"]], reverse=True
+    )
+
+    # A status check on the run that lost re-saves its manifest...
+    openai_batch.refresh_manifest_status(
+        openai_batch.load_manifest(Path(loser["manifest_path"])), {"api_key": "t"}, client=client
+    )
+    # ...which must not promote it.
+    assert newest() == newest_run_id
+    assert openai_batch.find_manifest(config_path=cfg)["run_id"] == newest_run_id
+
+
+def test_submission_timestamps_separate_runs_minted_in_the_same_second():
+    stamps = {batch_common._utc_now() for _ in range(2)}
+    assert all(len(stamp) == len("2026-09-10T10:00:00.000000Z") for stamp in stamps)
+    # Ordering is lexicographic, so the width must be fixed and the resolution
+    # finer than the second two runs can share.
+    assert batch_common._utc_now() < "2027-01-01T00:00:00.000000Z"
 
 
 def test_superseded_run_stays_refused_after_a_refusal_bumps_its_mtime(import_env):
@@ -675,26 +701,134 @@ def test_superseded_run_stays_refused_after_a_refusal_bumps_its_mtime(import_env
     ]
 
 
-def test_plain_batch_import_does_not_submit_into_a_run_a_status_check_touched(import_env):
-    """'batch-status' on an old run must not make a later plain import submit it.
+def test_a_status_check_on_an_old_run_does_not_redirect_the_plain_import(import_env):
+    """'batch-status' on an old run must not hand the plain import that run.
 
-    ``find_manifest`` picks the newest manifest by mtime, so a status refresh of
-    an old run makes a plain ``batch-import`` land on it. It may import what
-    completed there, but its parked chunks belong to the superseded run.
+    A status refresh re-saves the manifest it read, which under an mtime order
+    made the old run the newest one - so the next plain ``batch-import`` landed
+    on it and submitted its parked chunks.
     """
     env = import_env
-    old, _ = _two_runs(env)
+    old, newer = _two_runs(env)
+    _write_fake_outputs(newer)
     created_before = list(env.client.created_batches)
 
     openai_batch.refresh_manifest_status(
         openai_batch.load_manifest(Path(old["manifest_path"])), {"api_key": "t"}, client=env.client
     )
-    assert openai_batch.find_manifest(config_path=env.cfg)["manifest_path"] == old["manifest_path"]
+    assert openai_batch.find_manifest(config_path=env.cfg)["run_id"] == newer["run_id"]
 
     stats = env.search._import_batch("openai")  # no batch ids: the plain path
 
+    assert stats["run_id"] == newer["run_id"], "the plain import must work on the current run"
     assert stats["batches_submitted"] == 0
-    assert any("superseded" in str(e) for e in stats["errors"])
+    assert env.client.created_batches == created_before
+    assert [b["status"] for b in openai_batch.load_manifest(Path(old["manifest_path"]))["batches"][1:]] == [
+        "pending", "pending",
+    ]
+
+
+def test_a_newer_run_for_another_library_does_not_supersede(import_env):
+    """Supersession is per library: another library's run covers none of these items."""
+    env = import_env
+    old = _throttled_run(env, force=False)  # group_id None: the personal library
+    openai_batch.submit_embedding_batches(
+        records=_records(5), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
+        config_path=env.cfg, client=env.client, max_enqueued_tokens=None, group_id=7,
+    )
+    created_before = list(env.client.created_batches)
+    old["batches"][0]["status"] = "completed"  # frees the enqueued-token headroom
+
+    superseded_by = env.search._superseded_by("openai", old)
+
+    assert superseded_by is None
+    assert env.search._submit_pending_chunks("openai", old, env.client, superseded_by) == 1
+    assert env.client.created_batches == created_before + ["batch-3"]
+
+
+def test_a_newer_incremental_run_does_not_supersede_a_force_rebuild_run(import_env):
+    """An incremental run re-embeds nothing a force-rebuild run was rebuilding."""
+    env = import_env
+    force_run = _throttled_run(env, force=True)
+    common = {
+        "records": _records(5), "model_name": "text-embedding-3-small",
+        "embedding_config": {"api_key": "t"}, "config_path": env.cfg,
+        "client": env.client, "max_enqueued_tokens": None,
+    }
+    openai_batch.submit_embedding_batches(**common, force_full_rebuild=False)
+    assert env.search._superseded_by("openai", force_run) is None
+
+    newer_force = openai_batch.submit_embedding_batches(**common, force_full_rebuild=True)
+    assert env.search._superseded_by("openai", force_run) == newer_force["run_id"]
+
+
+def test_a_superseded_completed_run_imports_without_promoting_the_watermark(import_env):
+    """The newer run was cut from the same watermark and owns advancing it."""
+    env = import_env
+    old = openai_batch.submit_embedding_batches(
+        records=_records(2), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
+        config_path=env.cfg, client=env.client, max_enqueued_tokens=None,
+    )
+    _write_fake_outputs(old)
+    openai_batch.submit_embedding_batches(
+        records=_records(5), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
+        config_path=env.cfg, client=env.client, max_enqueued_tokens=None,
+    )
+
+    stats = env.search._import_batch("openai", batch_ids=["batch-1"])
+
+    assert stats["batches_imported"] == 1  # the embeddings are still worth having
+    assert env.promoted == [], "a superseded run must not promote the sync watermark"
+    assert any("watermark" in str(e) for e in stats["errors"])
+
+
+def test_import_by_batch_id_never_submits_pending_chunks(import_env):
+    """Naming batch ids asks for those batches, not for the run to move on."""
+    env = import_env
+    manifest = _throttled_run(env, force=False)
+    _write_fake_outputs(manifest)
+    assert env.search._superseded_by("openai", manifest) is None  # it is the current run
+
+    stats = env.search._import_batch("openai", batch_ids=["batch-1"])
+
+    assert stats["batches_imported"] == 1
+    assert stats["batches_submitted"] == 0
+    assert env.client.created_batches == ["batch-1"]
+    assert [b["status"] for b in openai_batch.find_manifest(config_path=env.cfg)["batches"][1:]] == [
+        "pending", "pending",
+    ]
+
+
+def test_auto_loop_does_not_submit_into_a_superseded_run(import_env, monkeypatch):
+    """The loop submits through the same guard as every other path."""
+    env = import_env
+    old = _throttled_run(env, force=False)
+    # The one submitted chunk fails terminally, so its tokens stop counting and
+    # an unguarded loop would have room to submit the parked chunks.
+    old["batches"][0]["status"] = "failed"
+    openai_batch.save_manifest(old)
+    openai_batch.submit_embedding_batches(
+        records=_records(5), model_name="text-embedding-3-small", embedding_config={"api_key": "t"},
+        config_path=env.cfg, client=env.client, max_enqueued_tokens=None,
+    )
+    created_before = list(env.client.created_batches)
+
+    # The loop drives whatever find_manifest hands it; pin that to the
+    # superseded run so this exercises the guard, not the run ordering.
+    monkeypatch.setattr(
+        openai_batch, "find_manifest",
+        lambda config_path=None, batch_id=None: openai_batch.load_manifest(Path(old["manifest_path"])),
+    )
+    monkeypatch.setattr(
+        semantic_search.ZoteroSemanticSearch, "_import_batch",
+        lambda self, provider, batch_ids=None, _skip_lock=False: {"imported_items": 0},
+    )
+
+    result = env.search.auto_loop_batch_pipeline("openai", poll_interval=0, max_enqueued_tokens=100)
+
+    assert result["submitted_chunks"] == 0
+    assert result["polls"] == 1  # nothing can progress: it stops rather than spinning
+    assert "stalled" in result
     assert env.client.created_batches == created_before
 
 
