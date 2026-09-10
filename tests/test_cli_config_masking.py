@@ -5,6 +5,7 @@ GOOGLE_API_KEY were printed in full.
 """
 
 import argparse
+import json
 
 from zotero_mcp import cli_standalone
 from zotero_mcp.cli import obfuscate_config_for_display
@@ -48,13 +49,13 @@ def test_input_is_not_mutated():
     assert config["OPENAI_API_KEY"] == "sk-openai-1234567890"
 
 
-def _run_config(monkeypatch, capsys, show_secrets):
+def _run_config(monkeypatch, capsys, show_secrets, json_out=False):
     monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
     monkeypatch.setenv("ZOTERO_LOCAL", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-1234567890")
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-gemini-1234567890")
     monkeypatch.delenv("ZOTERO_API_KEY", raising=False)
-    cli_standalone.cmd_config(argparse.Namespace(show_secrets=show_secrets, json_out=False))
+    cli_standalone.cmd_config(argparse.Namespace(show_secrets=show_secrets, json_out=json_out))
     return capsys.readouterr().out
 
 
@@ -69,3 +70,34 @@ def test_cli_config_show_secrets_reveals_keys(monkeypatch, capsys):
     out = _run_config(monkeypatch, capsys, show_secrets=True)
     assert "OPENAI_API_KEY=sk-openai-1234567890" in out
     assert "GEMINI_API_KEY=AIza-gemini-1234567890" in out
+
+
+def test_explicit_mask_list_still_applies_without_a_secret_suffix():
+    config = {
+        "ZOTERO_LIBRARY_ID": "1234567",
+        "ZOTERO_WEBDAV_URL": "https://dav.example.invalid/zotero",
+        "ZOTERO_WEBDAV_USERNAME": "someone",
+        "API_KEY": "bare-key-1234567890",
+        "LIBRARY_ID": "7654321",
+        "WEBDAV_URL": "https://dav.example.invalid/other",
+        "WEBDAV_USERNAME": "someone-else",
+    }
+    shown = obfuscate_config_for_display(config)
+    for key, value in config.items():
+        assert shown[key] != value, key
+        assert shown[key].startswith(value[:4]), key
+
+
+def test_cli_config_json_masks_provider_keys(monkeypatch, capsys):
+    out = _run_config(monkeypatch, capsys, show_secrets=False, json_out=True)
+    envelope = json.loads(out)
+    settings = envelope["data"]["settings"]
+
+    for key, value in (
+        ("OPENAI_API_KEY", "sk-openai-1234567890"),
+        ("GEMINI_API_KEY", "AIza-gemini-1234567890"),
+    ):
+        shown = settings[key]
+        assert shown != value, key
+        assert shown.startswith(value[:4]), key
+        assert set(shown[4:]) == {"*"}, key
