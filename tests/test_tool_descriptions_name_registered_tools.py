@@ -39,7 +39,6 @@ def test_every_tool_name_in_a_description_is_registrable(shipped_tools):
                 continue
             offenders.append((tool.name, name))
 
-    assert offenders == [], (
-        "descriptions name tools that do not exist: "
-        + ", ".join(f"{tool} -> {name}" for tool, name in offenders)
+    assert offenders == [], "descriptions name tools that do not exist: " + ", ".join(
+        f"{tool} -> {name}" for tool, name in offenders
     )

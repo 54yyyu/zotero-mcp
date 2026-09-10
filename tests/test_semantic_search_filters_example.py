@@ -16,11 +16,30 @@ from zotero_mcp._app import mcp
 # Keys written per document in semantic_search.py (_build_metadata and the
 # chunk path). 'itemType' is accepted as an alias and renamed to 'item_type'.
 STORED_METADATA_KEYS = {
-    "item_key", "item_type", "itemType", "title", "date", "date_added",
-    "date_modified", "creators", "publication", "url", "doi", "tags",
-    "citation_key", "group_id", "has_fulltext", "fulltext_source",
-    "attachment_keys", "attachment_priority", "parent_item_key",
-    "chunk_index", "n_chunks", "char_start", "char_end", "page",
+    "item_key",
+    "item_type",
+    "itemType",
+    "title",
+    "date",
+    "date_added",
+    "date_modified",
+    "creators",
+    "publication",
+    "url",
+    "doi",
+    "tags",
+    "citation_key",
+    "group_id",
+    "has_fulltext",
+    "fulltext_source",
+    "attachment_keys",
+    "attachment_priority",
+    "parent_item_key",
+    "chunk_index",
+    "n_chunks",
+    "char_start",
+    "char_end",
+    "page",
 }
 
 EXAMPLE_RE = re.compile(r"e\.g\. (\{[^}]*\})")
