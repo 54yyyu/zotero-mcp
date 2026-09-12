@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed page read is reported as a failure, not returned as successful output (#528).** `read_pdf_pages` returned its errors as prose — `No PDF attachment found for item: …`, `Could not read PDF for item …`, and the range/key validation messages — which makes them indistinguishable from content. The `--json` envelope is built from that return value, so `zotero-cli --json read TESTKEY1 --start-page 2 --end-page 1` answered `{"ok": true, "data": {"text": "Error: end_page must be greater than or equal to start_page.", "chars": 60}}` and exited 0, and the MCP tool answered `isError: false` with the same string under `structuredContent`. A caller had to parse English to tell "here are the pages" from "there are no pages"; a pipeline consuming either could carry the error text forward as content. The failures are now raised as `PdfReadError`, a `ToolError` subclass carrying a stable `code`, so FastMCP marks the tool result as an error and `cli_standalone.main`'s existing handler turns it into an `ok: false` envelope with a nonzero exit — neither of those paths needed a change, which is the point: the tool was the only thing not using them. `error.code` is one of `empty_item_key`, `invalid_page_range`, `no_pdf_attachment`, `pdf_unreadable`, `page_out_of_range` or `page_limit_exceeded`, so a caller can branch on the failure without matching on the message. Message text is unchanged, and the successful read path returns exactly what it did before.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
