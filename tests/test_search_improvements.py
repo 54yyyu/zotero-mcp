@@ -85,7 +85,12 @@ class TestSearchWithVariants:
     """Test _search_with_variants helper."""
 
     def _make_zot(self, items_by_query):
-        """Create a fake zot that returns different items per query."""
+        """Create a fake zot that returns different items per query.
+
+        Both the /items and /items/top endpoints serve the same data: the
+        fake can't know which endpoint production code should pick, so both
+        are stubbed and endpoint choice is asserted separately below.
+        """
         zot = MagicMock()
         captured_params = {}
 
@@ -98,6 +103,7 @@ class TestSearchWithVariants:
 
         zot.add_parameters = fake_add_params
         zot.items = fake_items
+        zot.top = fake_items
         return zot
 
     def test_finds_via_original_query(self):
@@ -142,6 +148,7 @@ class TestSearchWithVariants:
             captured.update(kwargs)
 
         zot.add_parameters = capture
+        zot.top = MagicMock(return_value=[])
         zot.items = MagicMock(return_value=[])
 
         search_module._search_with_variants(
@@ -180,6 +187,42 @@ class TestSearchWithVariants:
 
         assert {item["key"] for item in result} == {"N1"}
 
+    def test_titlecreatoryear_queries_top_level_endpoint(self):
+        # The limit budget must be spent on top-level items. When /items is
+        # queried, child notes crowd real papers out of small result sets:
+        # the server fills the limit with child items that the note filter
+        # drops afterwards, so papers ranked just below the cutoff never
+        # arrive. /items/top never returns child items, so nothing the note
+        # filter drops can steal a slot.
+        paper = {"key": "P1", "data": {"itemType": "journalArticle", "title": "Paper"}}
+        zot = MagicMock()
+        captured = {}
+        zot.add_parameters = lambda **kw: captured.update(kw)
+        zot.top = MagicMock(return_value=[paper])
+        zot.items = MagicMock(return_value=[paper])
+
+        result = search_module._search_with_variants(zot, "Paper", "titleCreatorYear", 25)
+
+        assert [item["key"] for item in result] == ["P1"]
+        zot.top.assert_called()
+        zot.items.assert_not_called()
+
+    def test_everything_mode_queries_full_items_endpoint(self):
+        # 'everything' searches child-note content too, so it must keep
+        # hitting /items.
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        zot = MagicMock()
+        captured = {}
+        zot.add_parameters = lambda **kw: captured.update(kw)
+        zot.top = MagicMock(return_value=[note])
+        zot.items = MagicMock(return_value=[note])
+
+        result = search_module._search_with_variants(zot, "Paper", "everything", 25)
+
+        assert [item["key"] for item in result] == ["N1"]
+        zot.items.assert_called()
+        zot.top.assert_not_called()
+
 
 class TestSearchItemsCollectionKeyExcludesNotes:
     """search_items's collection_key path bypasses _search_with_variants
@@ -193,6 +236,7 @@ class TestSearchItemsCollectionKeyExcludesNotes:
         note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
         fake_zot = MagicMock()
         fake_zot.collection = MagicMock(return_value={"key": "COLL0001"})
+        fake_zot.collection_items_top = MagicMock(return_value=[paper, note])
         fake_zot.collection_items = MagicMock(return_value=[paper, note])
         monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
 
@@ -203,6 +247,34 @@ class TestSearchItemsCollectionKeyExcludesNotes:
 
         assert "P1" in result
         assert "N1" not in result
+        # Same slot-budget reasoning as _search_with_variants: the scoped
+        # search must page /items/top, not the child-item listing.
+        fake_zot.collection_items_top.assert_called()
+        fake_zot.collection_items.assert_not_called()
+
+    def test_collection_everything_mode_keeps_full_items_endpoint(self, monkeypatch):
+        # 'everything' searches child-note content — the collection path
+        # must keep hitting the full /items listing.
+        from zotero_mcp import server
+
+        paper = {"key": "P1", "data": {"itemType": "journalArticle", "title": "Paper"}}
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        fake_zot = MagicMock()
+        fake_zot.collection = MagicMock(return_value={"key": "COLL0001"})
+        fake_zot.collection_items_top = MagicMock(return_value=[paper, note])
+        fake_zot.collection_items = MagicMock(return_value=[paper, note])
+        monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
+
+        result = server.search_items(
+            query="Paper",
+            qmode="everything",
+            collection_key="COLL0001",
+            ctx=DummyContext(),
+        )
+
+        assert "N1" in result
+        fake_zot.collection_items.assert_called()
+        fake_zot.collection_items_top.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +298,7 @@ class TestFallbackCascade:
 
         fake_zot.add_parameters = fake_add_params
         fake_zot.items = fake_items
+        fake_zot.top = fake_items
         monkeypatch.setattr(_utils, "_generate_search_variants",
                             lambda q: [q])  # No variant expansion for these tests
         monkeypatch.setattr(search_module._client, "get_zotero_client",
