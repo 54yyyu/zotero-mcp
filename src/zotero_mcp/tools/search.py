@@ -182,7 +182,16 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
         zot.add_parameters(**params)
         try:
             t0 = _time.monotonic()
-            batch = zot.items()
+            # titleCreatorYear matches are always top-level items: a child
+            # note's hit is its content standing in for a missing title, and
+            # child attachments are excluded by itemType. Query /items/top so
+            # the server's limit budget is spent on top-level items; fetching
+            # /items first let child notes fill the budget and get dropped by
+            # the note filter below, crowding real papers out of small
+            # result sets. 'everything' keeps /items — content search is its
+            # purpose, and child notes are content.
+            fetch = zot.top if qmode == "titleCreatorYear" else zot.items
+            batch = fetch()
             elapsed = _time.monotonic() - t0
             _search_logger.debug(f"[SEARCH] variant='{variant}' qmode={qmode}: {len(batch)} results in {elapsed:.2f}s")
             for item in batch:
@@ -367,15 +376,25 @@ def search_items(
             scope_keys = _helpers.expand_collection_scope(
                 zot, collection_key, include_subcollections
             )
+            # Same reasoning as _search_with_variants: a titleCreatorYear
+            # match is a top-level item, so page the collection's /items/top
+            # and don't let child notes spend the limit budget only to be
+            # dropped by the note filter below. 'everything' keeps the full
+            # listing, where child-note content is a legitimate match.
+            _collection_fetch = zot.collection_items_top if qmode == "titleCreatorYear" else zot.collection_items
             items = []
             _seen: set[str] = set()
             for _scope_key in scope_keys:
                 # limit applies to the merged result, so each subcollection may
                 # still contribute up to it before deduplication.
                 for _item in _helpers._paginate(
-                    zot.collection_items, _scope_key,
-                    q=query, qmode=qmode, itemType=item_type,
-                    max_items=limit, **({"tag": tag} if tag else {}),
+                    _collection_fetch,
+                    _scope_key,
+                    q=query,
+                    qmode=qmode,
+                    itemType=item_type,
+                    max_items=limit,
+                    **({"tag": tag} if tag else {}),
                 ):
                     _key = _item.get("key")
                     if _key and _key in _seen:
