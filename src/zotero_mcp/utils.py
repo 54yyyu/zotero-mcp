@@ -36,6 +36,13 @@ def detect_install_flavor() -> str | None:
     conda, system site-packages) is most likely pip-managed, but we cannot
     prove it, so it is reported as unknown (``None``).
 
+    Both installers also leave a marker at the root of the environment they
+    create: ``uv-receipt.toml`` for uv, ``pipx_metadata.json`` for pipx. That
+    root is ``sys.prefix``, so the markers still identify the installer when
+    the environment lives somewhere else (``UV_TOOL_DIR``, ``PIPX_HOME``, a
+    relocated data directory), where the path test above would fall through
+    and the user would be shown ``pip`` first (#534).
+
     Returns:
         ``"uv"``, ``"pipx"``, or ``None`` when the flavor is undetermined.
     """
@@ -43,6 +50,11 @@ def detect_install_flavor() -> str | None:
     if "/uv/tools/" in path:
         return "uv"
     if "/pipx/venvs/" in path:
+        return "pipx"
+    prefix = sys.prefix
+    if os.path.isfile(os.path.join(prefix, "uv-receipt.toml")):
+        return "uv"
+    if os.path.isfile(os.path.join(prefix, "pipx_metadata.json")):
         return "pipx"
     return None
 

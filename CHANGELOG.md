@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `uv tool` or pipx install outside the default directories was told to `pip install` a missing extra (#534).** The installer was detected from the package's path alone (`.../uv/tools/...`, `.../pipx/venvs/...`), so an environment under a custom `UV_TOOL_DIR`, `PIPX_HOME` or relocated data directory fell through to the generic hint, which leads with `pip`. Detection now also checks for the marker each installer writes at the environment root, `uv-receipt.toml` or `pipx_metadata.json`, so those installs get the command that works for them.
+
 - **Better BibTeX and pdfannots diagnostics were printed to stdout, which broke `zotero-cli --json annotations list` and could corrupt the MCP stdio stream (#529).** When Better BibTeX rejected a cite-key search, the client printed `Error searching for cite keys: ...` before falling back to the Zotero API, so the command's stdout was that line followed by a valid envelope, and `json.loads`/`jq` failed on a lookup that had succeeded. The pdfannots helpers on the `zotero_get_annotations` path printed install and extraction messages the same way, and on the stdio transport stdout is the JSON-RPC channel. All of these now go through `logging`, which writes to stderr.
 
 - **`zotero-cli --json get children` with more than one parent key reported `count: 0` (#505).** Several keys render through the grouped children listing, whose `  - [KEY] Attachment: ...` lines matched none of the shapes the JSON path reads keys back from, so every child was dropped before the fetch. That shape is now recognised too, the same kind of fix #504 made for the single-parent listing.
