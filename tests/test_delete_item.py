@@ -1,6 +1,6 @@
 """Tests for zotero_delete_item — Trash wrapper for any item type (#227).
 
-zotero_delete_note handles notes; the Zotero Web API supports trashing any
+zotero_manage_note(action='delete') handles notes; the Zotero Web API supports trashing any
 item type via PATCH {"deleted": 1}. This test file covers the generic
 delete_item tool that wraps that mechanism for books, journalArticles,
 webpages, attachments, and so on.
@@ -105,7 +105,7 @@ class TestDeleteItemSuccess:
 
 class TestDeleteItemNotesSafety:
     def test_refuses_note_by_default(self, monkeypatch):
-        """Notes are redirected to zotero_delete_note for explicitness."""
+        """Notes are redirected to zotero_manage_note(action='delete') for explicitness."""
         fake = _FakeZoteroForDelete({"NOTE0001": _note_item()})
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
@@ -113,7 +113,7 @@ class TestDeleteItemNotesSafety:
         result = server.delete_item(item_key="NOTE0001", ctx=DummyContext())
 
         assert "is a note" in result
-        assert "zotero_delete_note" in result
+        assert "zotero_manage_note(action='delete')" in result
         assert fake.client.calls == []
 
     def test_allow_note_override(self, monkeypatch):

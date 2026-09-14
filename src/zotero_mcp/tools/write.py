@@ -3037,10 +3037,11 @@ def update_item(
     description=(
         "Move a Zotero item to the Trash. Works for any item type (book, "
         "journalArticle, webpage, attachment, etc.). For notes, use "
-        "zotero_delete_note — identical mechanism, constrained to notes "
-        "for safety. Trashed items are recoverable from Zotero's Trash — "
-        "empty the Trash in the Zotero UI for permanent deletion. "
-        "By default refuses to trash notes; set allow_note=True to override."
+        "zotero_manage_note(action='delete') — identical mechanism, "
+        "constrained to notes for safety. Trashed items are recoverable "
+        "from Zotero's Trash — empty the Trash in the Zotero UI for "
+        "permanent deletion. By default refuses to trash notes; set "
+        "allow_note=True to override."
     )
 )
 def delete_item(
@@ -3055,8 +3056,8 @@ def delete_item(
     Args:
         item_key: Zotero item key/ID to trash
         allow_note: If True, permits trashing note items. Default False
-            directs callers to zotero_delete_note for notes (which has the
-            same mechanism but is explicit about what it affects).
+            directs callers to zotero_manage_note(action='delete') for
+            notes (same mechanism, explicit about what it affects).
         ctx: MCP context
 
     Returns:
@@ -3080,8 +3081,9 @@ def delete_item(
 
         if item_type == "note" and not allow_note:
             return (
-                f"Error: Item {item_key} is a note. Use zotero_delete_note "
-                "for notes, or pass allow_note=True to override."
+                f"Error: Item {item_key} is a note. Use "
+                "zotero_manage_note(action='delete') for notes, or pass "
+                "allow_note=True to override."
             )
 
         # pyzotero's delete_item() permanently destroys items, and update_item()
@@ -4500,7 +4502,7 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         "attachment (uploads the file bytes). Use when the item is already "
         "in the library and you have its key — e.g. attaching a PDF you "
         "found for a reference. To create a NEW item from a file, use "
-        "zotero_add_from_file instead. "
+        "zotero_add_item(source=<file path>) instead. "
         "item_key: key of the existing REGULAR item. Passing an "
         "attachment/note key fails with a hint to use its parent. "
         "file_path: ABSOLUTE local path (.pdf, .epub, .djvu, .doc, .docx, "
@@ -5304,7 +5306,7 @@ def add_by_bibtex(
             for (idx, _), cr_result in zip(pending, created):
                 results[idx] = cr_result
 
-        return _format_batch_result("# zotero_add_by_bibtex", results)
+        return _format_batch_result("# zotero_add_item (BibTeX)", results)
 
     except Exception as e:
         ctx.error(f"Error adding by BibTeX: {e}")
@@ -5400,7 +5402,7 @@ def add_by_csl_json(
             for (idx, _), cr_result in zip(pending, created):
                 results[idx] = cr_result
 
-        return _format_batch_result("# zotero_add_by_csl_json", results)
+        return _format_batch_result("# zotero_add_item (CSL JSON)", results)
 
     except Exception as e:
         ctx.error(f"Error adding by CSL JSON: {e}")

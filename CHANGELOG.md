@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`zotero_get_attachment_path` accepts an attachment's own key.** Handed the key of a PDF attachment — which is exactly what `zotero_get_item_children` lists — it returned "No attachments found for item", because it only walked the parent's children via `get_item_by_key`, whose query excludes the 'attachment' item type (the #372 root cause again). It now falls back to `get_attachment_by_key` and resolves that single attachment; parent keys behave as before, and an unknown key still reports nothing.
 
+- **Tool descriptions and error text no longer name tools removed in 0.9.0.** `zotero_delete_item` sent callers to `zotero_delete_note`, `zotero_attach_file` to `zotero_add_from_file`, and BibTeX/CSL JSON results were headed `# zotero_add_by_bibtex` / `# zotero_add_by_csl_json`; all now name `zotero_manage_note` / `zotero_add_item`. The `zotero_semantic_search` `filters` example used a `year` key the index never stores together with a second key, which ChromaDB rejects ("Expected where to have exactly one operator"); it now shows a single stored key and explains `$and`. A test reads the shipped descriptions and fails if any names a tool that cannot be registered.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
