@@ -807,6 +807,56 @@ class TestAddByUrlEmbeddedMetadataIfExists:
         assert len(fake_zot.created) == 1
         assert "Successfully added" in result
 
+    def test_page_isbn_found_when_search_is_identifier_blind(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The ISBN check must pass the page's title, or the Web API finds nothing."""
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        z = BlindZot()
+        z._collections = [
+            {"key": "COLB0001", "data": {"name": "Target", "parentCollection": False}},
+        ]
+        z._items = [{
+            "key": "BOOK0001", "version": 4,
+            "data": {"itemType": "book", "title": "Algorithms", "ISBN": self.ISBN,
+                     "url": "https://elsewhere.example/algorithms", "collections": [], "tags": []},
+        }]
+        self._page(monkeypatch, z, {"title": "Algorithms", "isbn": self.ISBN})
+
+        result = server.add_by_url(url=self.URL, collections=["COLB0001"],
+                                   if_exists="file", ctx=dummy_ctx)
+
+        assert z.created == []
+        assert "matched by ISBN" in result
+        assert ("COLB0001", "BOOK0001") in z.addto_calls
+
+    def test_page_url_found_when_search_is_identifier_blind(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The URL re-check must pass the page's title too.
+
+        The check before the fetch has no title to pass, so against the Web
+        API it misses; this one runs with the page read, just before the
+        create.
+        """
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        z = BlindZot()
+        z._items = [{
+            "key": "PAGE0002", "version": 1,
+            "data": {"itemType": "journalArticle", "title": "Embedded Tags Paper",
+                     "url": self.URL, "collections": [], "tags": []},
+        }]
+        self._page(monkeypatch, z, {"title": "Embedded Tags Paper"})
+
+        result = server.add_by_url(url=self.URL, if_exists="file", ctx=dummy_ctx)
+
+        assert z.created == []
+        assert "matched by URL" in result
+
 
 # ---------------------------------------------------------------------------
 # add_by_isbn × if_exists

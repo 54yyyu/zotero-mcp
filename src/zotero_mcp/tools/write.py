@@ -2105,17 +2105,24 @@ def _add_from_embedded_metadata(
     """
     if if_exists != "duplicate":
         lookup_zot = read_zot or write_zot
+        # The page's title is in hand, so pass it: neither an ISBN nor a URL
+        # is server-side searchable, and the identifier query alone misses
+        # items already in the library.
         for token in re.split(r"[,;\s]+", meta.isbn or ""):
             isbn = _helpers._normalize_isbn(token) if token else None
             if not isbn:
                 continue
-            existing = _helpers.find_existing_items(lookup_zot, isbn=isbn, ctx=ctx)
+            existing = _helpers.find_existing_items(
+                lookup_zot, isbn=isbn, title=meta.title, ctx=ctx
+            )
             if existing:
                 return _handle_existing_item(
                     write_zot, existing, coll_keys, tags, if_exists,
                     matched_by=f"ISBN {isbn}", ctx=ctx,
                 )
-        existing = _helpers.find_existing_items(lookup_zot, url=url, ctx=ctx)
+        existing = _helpers.find_existing_items(
+            lookup_zot, url=url, title=meta.title, ctx=ctx
+        )
         if existing:
             return _handle_existing_item(
                 write_zot, existing, coll_keys, tags, if_exists,
