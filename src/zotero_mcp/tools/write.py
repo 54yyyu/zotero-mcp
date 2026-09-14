@@ -2,6 +2,7 @@
 
 import contextlib
 import difflib
+import functools
 import hashlib
 import json
 import os
@@ -447,11 +448,14 @@ def batch_update_tags(
             return "Error: After parsing, no valid tags were provided to add or remove"
 
         ctx.info(f"Batch updating tags for items matching '{query}'")
-        zot = _client.get_zotero_client()
 
-        # Use shared hybrid-mode helper for correct library override propagation
+        # One resolution for both roles. Taking the read client from here
+        # rather than building a separate one is what makes the
+        # `write_zot is not zot` check below mean "the backends differ" —
+        # otherwise it is always true and every item pays for a re-fetch it
+        # doesn't need.
         try:
-            _, write_zot = _helpers._get_write_client(ctx)
+            zot, write_zot = _helpers._get_write_client(ctx)
         except ValueError as e:
             return str(e)
 
@@ -539,8 +543,9 @@ def batch_update_tags(
                 try:
                     item_key = item.get("key", "unknown")
 
-                    # If writing via web API, re-fetch the item from web to get
-                    # the correct version number for the update
+                    # When reads and writes go to different backends, the
+                    # version numbers are unrelated — re-fetch from the write
+                    # side so the update carries a version it recognizes.
                     if write_zot is not zot:
                         def _set_tags(it):
                             it["data"]["tags"] = current_tags
@@ -592,7 +597,7 @@ def batch_update_tags(
 
     except Exception as e:
         ctx.error(f"Error in batch tag update: {str(e)}")
-        return f"Error in batch tag update: {str(e)}"
+        return f"Error in batch tag update: {_helpers.format_zotero_error(e)}"
 
 
 def _apply_extra_edits(
@@ -907,7 +912,7 @@ def create_collection(
                 keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
                 parent_key = keys[0] if keys else None
             except ValueError as e:
-                return f"Error resolving parent collection: {e}"
+                return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
 
         coll_data = {"name": name}
         if parent_key:
@@ -928,7 +933,7 @@ def create_collection(
 
     except Exception as e:
         ctx.error(f"Error creating collection: {e}")
-        return f"Error creating collection: {e}"
+        return f"Error creating collection: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -970,7 +975,7 @@ def delete_collection(
 
     except Exception as e:
         ctx.error(f"Error deleting collection: {e}")
-        return f"Error deleting collection: {e}"
+        return f"Error deleting collection: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -1049,7 +1054,7 @@ def search_collections(
 
     except Exception as e:
         ctx.error(f"Error searching collections: {e}")
-        return f"Error searching collections: {e}"
+        return f"Error searching collections: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -1142,7 +1147,7 @@ def manage_collections(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error managing collections: {e}")
-        return f"Error managing collections: {e}"
+        return f"Error managing collections: {_helpers.format_zotero_error(e)}"
 
 
 # Source-specific add implementations. These are no longer registered as
@@ -1378,7 +1383,7 @@ def _memoized_item_template_fn(write_zot):
     def template_fn(zot_type: str) -> dict:
         if zot_type not in cache:
             with zotero_api_lock():
-                cache[zot_type] = write_zot.item_template(zot_type)
+                cache[zot_type] = _helpers.item_template_for(write_zot, zot_type)
         return cache[zot_type]
 
     return template_fn
@@ -1507,7 +1512,7 @@ def _dedup_check_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists, c
 
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
-        return ("final", f"Error adding by DOI: {e}")
+        return ("final", f"Error adding by DOI: {_helpers.format_zotero_error(e)}")
 
 
 def _fetch_one_doi_metadata(normalized: str, ctx) -> tuple[str, dict | str]:
@@ -1537,7 +1542,7 @@ def _fetch_one_doi_metadata(normalized: str, ctx) -> tuple[str, dict | str]:
     except requests.RequestException as e:
         return ("final", f"Error fetching from CrossRef: {e}")
     except Exception as e:
-        return ("final", f"Error adding by DOI: {e}")
+        return ("final", f"Error adding by DOI: {_helpers.format_zotero_error(e)}")
 
 
 def _fetch_doi_metadata_batch(normalized_dois: list[str], ctx) -> dict[str, tuple[str, dict | str]]:
@@ -1874,7 +1879,7 @@ def add_by_doi(
 
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
-        return f"Error adding by DOI: {e}"
+        return f"Error adding by DOI: {_helpers.format_zotero_error(e)}"
 
 
 # CrossRef types that describe a *container* rather than a work. A DOI
@@ -1996,7 +2001,7 @@ def _add_from_embedded_metadata(
     else:
         zot_type = "webpage"
 
-    template = dict(write_zot.item_template(zot_type))
+    template = dict(_helpers.item_template_for(write_zot, zot_type))
     _set = _citation_import._set_if_in_template
 
     _set(template, "title", meta.title or url)
@@ -2191,7 +2196,7 @@ def add_by_url(
                     )
 
             ctx.info(f"Creating webpage item for: {url}")
-            template = write_zot.item_template("webpage")
+            template = _helpers.item_template_for(write_zot, "webpage")
             template["url"] = url
             template["title"] = url
             template["accessDate"] = ""
@@ -2228,7 +2233,7 @@ def add_by_url(
 
     except Exception as e:
         ctx.error(f"Error adding by URL: {e}")
-        return f"Error adding by URL: {e}"
+        return f"Error adding by URL: {_helpers.format_zotero_error(e)}"
 
 
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
@@ -2391,7 +2396,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                     matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
                 )
 
-        template = write_zot.item_template("preprint")
+        template = _helpers.item_template_for(write_zot, "preprint")
         template["title"] = title
         if authors:
             template["creators"] = authors
@@ -2707,7 +2712,7 @@ def add_by_isbn(
             )
 
         # Build Zotero book item
-        template = write_zot.item_template("book")
+        template = _helpers.item_template_for(write_zot, "book")
         item_data = dict(template)
         if meta.get("title"):
             item_data["title"] = meta["title"]
@@ -2770,7 +2775,7 @@ def add_by_isbn(
 
     except Exception as e:
         ctx.error(f"Error adding by ISBN: {e}")
-        return f"Error adding by ISBN: {e}"
+        return f"Error adding by ISBN: {_helpers.format_zotero_error(e)}"
 
 
 # Maps Zotero API field names to tool parameter names for user-facing messages
@@ -3015,7 +3020,7 @@ def update_item(
             old_item_type = data.get("itemType", "")
             if old_item_type != item_type:
                 try:
-                    new_template = write_zot.item_template(item_type)
+                    new_template = _helpers.item_template_for(write_zot, item_type)
                 except Exception as e:
                     return f"Error: invalid item_type '{item_type}': {e}"
 
@@ -3169,7 +3174,7 @@ def update_item(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error updating item: {e}")
-        return f"Error updating item: {e}"
+        return f"Error updating item: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -3227,31 +3232,19 @@ def delete_item(
             )
 
         # pyzotero's delete_item() permanently destroys items, and update_item()
-        # strips the "deleted" field. Send a direct PATCH with {"deleted": 1}
-        # to move the item to Zotero's Trash (recoverable by the user).
-        from pyzotero.zotero import build_url
-        url = build_url(
-            write_zot.endpoint,
-            f"/{write_zot.library_type}/{write_zot.library_id}/items/{item_key}",
-        )
-        resp = write_zot.client.patch(
-            url=url,
-            headers={"If-Unmodified-Since-Version": str(item["version"])},
-            content=json.dumps({"deleted": 1}),
-        )
-        if resp.status_code in (200, 204):
+        # strips the "deleted" field, so trashing is a direct PATCH with
+        # {"deleted": 1} — recoverable by the user.
+        ok, detail = _helpers.trash_item(write_zot, item)
+        if ok:
             return (
                 f"Successfully trashed item {item_key} "
                 f"(type={item_type}, recoverable from Zotero's Trash)"
             )
-        return (
-            f"Failed to trash item {item_key} (HTTP {resp.status_code}): "
-            f"{resp.text[:200]}"
-        )
+        return f"Failed to trash item {item_key}: {detail}"
 
     except Exception as e:
         ctx.error(f"Error trashing item: {str(e)}")
-        return f"Error trashing item: {str(e)}"
+        return f"Error trashing item: {_helpers.format_zotero_error(e)}"
 
 
 # ---------------------------------------------------------------------------
@@ -3455,7 +3448,7 @@ def find_duplicates(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error finding duplicates: {e}")
-        return f"Error finding duplicates: {e}"
+        return f"Error finding duplicates: {_helpers.format_zotero_error(e)}"
 
 
 # ---------------------------------------------------------------------------
@@ -3589,24 +3582,12 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
 def _trash_item(write_zot, item_key: str) -> tuple[bool, str]:
     """Move one item to Zotero's Trash (recoverable), not a permanent delete.
 
-    pyzotero's update_item() strips "deleted" and delete_item() destroys the
-    item, so this is a direct version-conditioned PATCH of {"deleted": 1}.
+    Thin key-taking wrapper over ``_helpers.trash_item``, which owns the
+    version-conditioned PATCH and routes it through pyzotero's write
+    dispatcher — the local API rejects a PATCH sent any other way.
     """
     try:
-        item = write_zot.item(item_key)
-        from pyzotero.zotero import build_url
-        url = build_url(
-            write_zot.endpoint,
-            f"/{write_zot.library_type}/{write_zot.library_id}/items/{item_key}",
-        )
-        resp = write_zot.client.patch(
-            url=url,
-            headers={"If-Unmodified-Since-Version": str(item["version"])},
-            content=json.dumps({"deleted": 1}),
-        )
-        if resp.status_code in (200, 204):
-            return True, ""
-        return False, f"HTTP {resp.status_code}"
+        return _helpers.trash_item(write_zot, write_zot.item(item_key))
     except Exception as e:
         return False, str(e)
 
@@ -3861,7 +3842,8 @@ def _render_auto_plan(qualifying, skipped, clipped, token, method, max_groups) -
         "AUTO NEEDS TWO CALLS: auto=True alone returns a plan plus a "
         "plan_token; executing needs confirm=True AND that token. "
         "confirm=True alone is refused, as is a stale token. "
-        "Needs a writable library (web API key/hybrid); fails local-only. "
+        "Needs a writable library: local writes (Zotero 10+) or a web "
+        "API key. "
         "Example: zotero_merge_duplicates(keeper_key='ABC12345', "
         "duplicate_keys=['XYZ98765']), then again with confirm=True. "
         "Auto: zotero_merge_duplicates(auto=True), then the same plus "
@@ -3960,7 +3942,7 @@ def merge_duplicates(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error merging duplicates: {e}")
-        return f"Error merging duplicates: {e}"
+        return f"Error merging duplicates: {_helpers.format_zotero_error(e)}"
 
 
 def _merge_duplicates_auto(
@@ -4409,7 +4391,7 @@ def get_pdf_outline(
         raise
     except Exception as e:
         ctx.error(f"Error extracting PDF outline: {e}")
-        return f"Error extracting PDF outline: {e}"
+        return f"Error extracting PDF outline: {_helpers.format_zotero_error(e)}"
 
 
 @with_zotero_api_lock
@@ -4505,7 +4487,7 @@ def add_from_file(
                 return f"DOI lookup succeeded but couldn't extract item key.\n\n{result_msg}"
         else:
             # Create a basic item
-            template = write_zot.item_template(item_type)
+            template = _helpers.item_template_for(write_zot, item_type)
             template["title"] = title or os.path.basename(file_path)
 
             tag_list = _helpers._normalize_str_list_input(tags, "tags")
@@ -4581,7 +4563,7 @@ def add_from_file(
 
     except Exception as e:
         ctx.error(f"Error adding from file: {e}")
-        return f"Error adding from file: {e}"
+        return f"Error adding from file: {_helpers.format_zotero_error(e)}"
 
 
 def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
@@ -4949,7 +4931,7 @@ def add_item_relation(
 
     except Exception as e:
         ctx.error(f"Error adding item relation: {e}")
-        return f"Error adding item relation: {e}"
+        return f"Error adding item relation: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -5061,7 +5043,7 @@ def remove_item_relation(
 
     except Exception as e:
         ctx.error(f"Error removing item relation: {e}")
-        return f"Error removing item relation: {e}"
+        return f"Error removing item relation: {_helpers.format_zotero_error(e)}"
 
 
 # ---------------------------------------------------------------------------
@@ -5401,7 +5383,7 @@ def add_by_bibtex(
         try:
             entries = _citation_import.parse_bibtex(bibtex)
         except Exception as e:
-            return f"Error parsing BibTeX: {e}"
+            return f"Error parsing BibTeX: {_helpers.format_zotero_error(e)}"
 
         if not entries:
             return "Error: No valid @entries found in the BibTeX input."
@@ -5425,7 +5407,7 @@ def add_by_bibtex(
         for entry in entries:
             try:
                 item_data = _citation_import.bibtex_entry_to_zotero(
-                    entry, write_zot.item_template
+                    entry, functools.partial(_helpers.item_template_for, write_zot)
                 )
             except Exception as e:
                 results.append({
@@ -5457,7 +5439,7 @@ def add_by_bibtex(
 
     except Exception as e:
         ctx.error(f"Error adding by BibTeX: {e}")
-        return f"Error adding by BibTeX: {e}"
+        return f"Error adding by BibTeX: {_helpers.format_zotero_error(e)}"
 
 
 def add_by_csl_json(
@@ -5521,7 +5503,7 @@ def add_by_csl_json(
         for entry in entries:
             try:
                 item_data = _citation_import.csl_json_to_zotero(
-                    entry, write_zot.item_template
+                    entry, functools.partial(_helpers.item_template_for, write_zot)
                 )
             except Exception as e:
                 results.append({
@@ -5553,7 +5535,7 @@ def add_by_csl_json(
 
     except Exception as e:
         ctx.error(f"Error adding by CSL JSON: {e}")
-        return f"Error adding by CSL JSON: {e}"
+        return f"Error adding by CSL JSON: {_helpers.format_zotero_error(e)}"
 
 
 # ---------------------------------------------------------------------------
@@ -5618,9 +5600,16 @@ def _looks_like_url(s: str) -> bool:
 
 
 def _looks_like_path(s: str) -> bool:
-    """True when *s* has the shape of a filesystem path (POSIX or Windows)."""
+    """True when *s* has the shape of a filesystem path (POSIX or Windows).
+
+    The leading-slash test is explicit rather than left to ``os.path.isabs``:
+    since Python 3.13 ``ntpath.isabs`` calls "/Users/me/paper.pdf" relative,
+    so on Windows a POSIX path would fall through to the "could not tell what
+    kind of source this is" error instead of being recognised as a file.
+    """
     return (
-        os.path.isabs(s)
+        s.startswith("/")
+        or os.path.isabs(s)
         or bool(re.match(r"^[A-Za-z]:[\\/]", s))
         or s.startswith(("~", "./", "../", ".\\", "..\\"))
     )

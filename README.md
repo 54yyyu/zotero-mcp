@@ -57,7 +57,10 @@
 - **Add papers by URL** (arXiv, DOI links, generic webpages) or from local files
 - Create and manage collections, update item metadata, batch-update tags
 - Find and merge duplicate items with dry-run preview
-- **Hybrid mode**: local reads + web API writes for local-mode users
+- **Local writes** (Zotero 10+): writes land in the running Zotero directly — no cloud
+  account, no sync round-trip, no Zotero Storage quota. See
+  [Local write support](#local-write-support)
+- **Hybrid mode**: local reads + web API writes, for anyone on an older Zotero
 
 ### 📊 Scite Citation Intelligence (optional `[scite]` extra)
 - **Citation tallies**: See how many papers support, contrast, or mention each item — the MCP version of the [Scite Zotero Plugin](https://github.com/scitedotai/scite-zotero-plugin)
@@ -65,9 +68,10 @@
 - No Scite account required — uses public API endpoints
 
 ### 🌐 Flexible Access Methods
-- Local mode for offline access (no API key needed)
-- Web API for cloud library access
-- Hybrid mode: read from local Zotero, write via web API
+- Local read-only: offline access to a running Zotero, no credentials at all
+- Local read-write (Zotero 10+): add one authorization and writes stay local too
+- Web API: cloud library access from anywhere
+- Hybrid: read from local Zotero, write via the web API
 
 ### ⌨️ Standalone CLI (`zotero-cli`)
 - Search, browse, and edit your library directly from the terminal — no AI assistant required
@@ -340,11 +344,16 @@ After installation, either:
    }
    ```
 
-   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely.
+   For **local reads**, `ZOTERO_LOCAL: "true"` is all you need — drop the
+   `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely.
 
-   The local API is fast but read-only, so the MCP server uses the Zotero web API for write operations.
+   For **writes** you have two routes. On Zotero 10 or newer, run
+   `zotero-mcp authorize-local` once and writes go straight to the running Zotero —
+   see [Local write support](#local-write-support). On any older Zotero the
+   local API is read-only, so keep the two variables below and the server writes
+   through the Zotero web API instead.
 
-   To enable **write mode**:
+   To enable **write mode through the web API**:
    - Keep `ZOTERO_LOCAL: "true"` — with API credentials set, the server runs in hybrid mode (fast local reads, web API writes)
    - Click [here](https://www.zotero.org/settings/security#applications) to generate a Zotero API key and replace `YOUR_API_KEY` with it
    - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
@@ -410,6 +419,57 @@ Then click "Save".
 
 Cherry Studio also provides a visual configuration method for general settings and tools selection.
 
+<a id="local-write-support"></a>
+
+## ✏️ Local write support (Zotero 10+)
+
+Zotero's local API was read-only for most of its life, which is why writes have always
+gone through the Zotero web API. Zotero 10 added local write endpoints, so on that
+version writes can stay entirely on your machine: no cloud account, no waiting for a
+sync round-trip, and no Zotero Storage quota to run into when attaching PDFs.
+
+Writes need a **local API key**. It has nothing to do with a zotero.org API key and
+can't be created in advance — Zotero grants it through a dialog:
+
+```bash
+zotero-mcp authorize-local
+```
+
+Zotero shows a prompt with three buttons. **Always Allow** grants a reusable key that
+is saved to `~/.config/zotero-mcp/config.json` (owner-only permissions) and picked up
+automatically from then on — that's the one you want. **Allow** grants a key valid for
+exactly one write; it is never saved to disk, since a consumed key sitting there would
+take priority over working web credentials on every later run. **Deny** grants nothing.
+
+If a key is ever rejected — consumed, revoked from Zotero's side, or belonging to a
+Zotero database you no longer have — the server drops it and falls back to web
+credentials if you have them, rather than failing against a key that cannot work again.
+
+An MCP client can do the same thing without dropping to a shell: the
+`zotero_authorize_local_writes` tool opens the same dialog, and
+`zotero_write_capabilities` reports which write path is currently available. If a write
+is refused, that second tool tells you whether the fix is authorizing or supplying web
+credentials.
+
+```bash
+zotero-mcp authorize-local --status    # what can write right now
+zotero-mcp authorize-local --revoke    # forget the stored key
+zotero-mcp authorize-local --print     # print it for ZOTERO_LOCAL_API_KEY instead
+```
+
+Nothing here is required. Without a local key the server behaves exactly as before:
+hybrid mode if web credentials are set, and a message explaining both options if not.
+Set `ZOTERO_LOCAL_WRITE=false` to keep writes on the web API even when a key exists.
+
+**Revoking.** `--revoke` removes the copy this server stores. Zotero keeps its own
+record of what it has authorized, cleared from **Settings → Advanced → Clear Write
+Authorizations**.
+
+**Requirements.** Zotero 10 or newer, with "Allow other applications on this computer
+to communicate with Zotero" enabled in Settings → Advanced. Older versions have no
+local write endpoints at all; `zotero-mcp authorize-local` detects this and says so
+rather than opening a dialog that can't help.
+
 ## 🔧 Advanced Configuration
 
 ### Using Web API Instead of Local API
@@ -427,6 +487,13 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 - `ZOTERO_API_KEY`: Your Zotero API key (for web API)
 - `ZOTERO_LIBRARY_ID`: Your Zotero library ID (for web API)
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
+- `ZOTERO_LOCAL_API_KEY`: Local API key for writes (Zotero 10+). Normally set for you by
+  `zotero-mcp authorize-local`; use the variable for containers and CI, where the config
+  file isn't convenient
+- `ZOTERO_LOCAL_SERVER_ID`: Pin the local Zotero database the key belongs to (optional —
+  discovered automatically)
+- `ZOTERO_LOCAL_WRITE`: `auto` (default) or `false` to force writes onto the web API even
+  when a local key exists
 - `ZOTERO_WEBDAV_URL`: Optional WebDAV folder URL for direct attachment downloads in remote mode
 - `ZOTERO_WEBDAV_USERNAME`: Optional WebDAV username
 - `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
@@ -893,6 +960,10 @@ Example (Claude Desktop / Claude Code):
 - `scite_enrich_item`: Get Scite citation tallies and retraction alerts for a paper
 - `scite_enrich_search`: Search your Zotero library with Scite-enriched results (tallies + alerts inline)
 - `scite_check_retractions`: Scan items for retractions and editorial notices
+
+### ✏️ Write Access Tools
+- `zotero_authorize_local_writes`: Request local write permission from Zotero (Zotero 10+) — opens a dialog in the Zotero app
+- `zotero_write_capabilities`: Report which write path is available (local / hybrid / web / none) and what to do about it
 
 ### 📦 Item & Collection Management Tools
 - `zotero_add_by_doi`: Add a paper by DOI with automatic metadata and open-access PDF attachment
