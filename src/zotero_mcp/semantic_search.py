@@ -518,6 +518,33 @@ def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
     return snippet, best_start
 
 
+def _drop_missing_documents(results: dict) -> int:
+    """Remove hits whose document text is gone, keeping the parallel lists aligned.
+
+    A server that stays up while documents are deleted from the collection by
+    another process (a CLI update, or the deletion pass) can get ids back from
+    its open handle whose documents are ``None``. The cross-encoder accepts
+    only strings, so one such hit failed every search until restart (#545).
+    A search should come back with fewer results instead. Returns how many
+    hits were dropped.
+    """
+    documents = (results.get("documents") or [[]])[0]
+    if not documents:
+        return 0
+    keep = [i for i, doc in enumerate(documents) if isinstance(doc, str)]
+    dropped = len(documents) - len(keep)
+    if dropped:
+        for key in ("ids", "distances", "documents", "metadatas"):
+            column = results.get(key)
+            if column and column[0]:
+                column[0] = [column[0][i] for i in keep]
+        logger.warning(
+            "Dropped %d semantic search hit(s) whose documents were removed from "
+            "the index while this server was running.", dropped,
+        )
+    return dropped
+
+
 class CrossEncoderReranker:
     """Optional cross-encoder re-ranker for semantic search results."""
 
@@ -3866,6 +3893,8 @@ class ZoteroSemanticSearch:
 
             # Perform semantic search
             results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)
+
+            _drop_missing_documents(results)
 
             # Re-rank results with cross-encoder if enabled. With chunking we
             # rerank ALL candidates (grouping to `limit` items happens in
