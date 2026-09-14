@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Scope is the DOI path only. `add_by_url`'s embedded-metadata branch creates items with no attachment at all and would benefit from the same URL, but `_add_from_embedded_metadata` runs under `@with_zotero_api_lock` on the stated grounds that it makes no third-party call, and adding a download inside it would hold the process-wide lock across a publisher fetch — the starvation #A5b exists to prevent. Doing it properly means restructuring that function to create under the lock and attach outside it, which is a separate change rather than a rider on this one.
 
+### Fixed
+
+- **Cross-library semantic hits are hydrated through a client scoped to their own library when the local database cannot serve them (#492).** The `zotero.sqlite` fallback that #487 added for foreign hits does not exist outside local mode, so a web-API user with group libraries got every cross-library hit back as a bare item key with a 404 — the bound client was asked for a key its library never held, and there was no second chance. Enrichment now falls through to a per-library pyzotero client, built from the same credentials and cached per `group_id`, so ten hits from one group cost one client and an unreachable library fails once rather than per hit. Local mode keeps the batched single-query sqlite path first and only reaches the scoped client for a key the snapshot could not serve, such as an item newer than the copy on disk. When a hit genuinely cannot be served — no credentials, or a key the credentials cannot see — the error now names the library and what is missing, instead of surfacing a 404 from a library that was never going to have the item.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
