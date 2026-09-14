@@ -223,9 +223,27 @@ class SqliteBackend:
     def collection_items(
         self, key: str, *, include_subcollections: bool = False
     ) -> list[dict] | None:
-        return self._reader.get_collection_items(
+        items = self._reader.get_collection_items(
             key, include_subcollections=include_subcollections, group_id=self._group_id
         )
+        if not items:
+            return items
+        # The API's /collections/<key>/items also returns the child attachments
+        # and notes of the items filed there, and callers depend on that:
+        # zotero_get_collection_items builds its "PDF / notes" summary from
+        # those children. collectionItems only records top-level items, so add
+        # the children here, still in a fixed number of queries. Annotations
+        # are not part of the API's answer and are left out.
+        seen = {item["key"] for item in items}
+        parents = [item["key"] for item in items if not item.get("data", {}).get("parentItem")]
+        children_by_parent = self._reader.get_children_of(parents, group_id=self._group_id)
+        for parent in parents:
+            for child in children_by_parent.get(parent, []):
+                if child["key"] in seen or child.get("data", {}).get("itemType") == "annotation":
+                    continue
+                seen.add(child["key"])
+                items.append(child)
+        return items
 
     # -- tags -------------------------------------------------------------
 
