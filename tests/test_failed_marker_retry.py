@@ -315,3 +315,53 @@ def test_extraction_summary_counts_failures_in_the_same_run(monkeypatch, capsys)
     _run_scan_no_text(monkeypatch, None, attachments=attachments)
     err = capsys.readouterr().err
     assert "1 item(s) had attachments that produced no text" in err
+
+
+# ---------------------------------------------------------------------------
+# #428: indexed fulltext must follow the item's attachments
+# ---------------------------------------------------------------------------
+
+def test_item_whose_attachments_were_removed_is_reindexed_metadata_only(monkeypatch):
+    """Text indexed from a PDF the user has since deleted must stop matching."""
+    stored = {
+        "has_fulltext": True,
+        "date_modified": DATE_MODIFIED,
+        "attachment_keys": "ATTKEY1",
+    }
+    items, reader, search = _run_scan_no_text(monkeypatch, stored, attachments=[])
+    assert [it["key"] for it in items] == ["ITEMKEY1"]
+    assert "has_fulltext" not in search._create_metadata(items[0])
+
+
+def test_replaced_attachment_is_reextracted(monkeypatch):
+    stored = {
+        "has_fulltext": True,
+        "date_modified": DATE_MODIFIED,
+        "attachment_keys": "OLDATT01",
+    }
+    attachments = [("NEWATT01", "storage:new.pdf", "application/pdf")]
+    items, reader = _run_scan(monkeypatch, stored, attachments=attachments)
+    assert len(items) == 1
+    assert reader.extract_calls == 1
+
+
+def test_unchanged_indexed_item_is_still_skipped(monkeypatch):
+    stored = {
+        "has_fulltext": True,
+        "date_modified": DATE_MODIFIED,
+        "attachment_keys": "ATTKEY1",
+    }
+    attachments = [("ATTKEY1", "storage:paper.pdf", "application/pdf")]
+    items, reader = _run_scan(monkeypatch, stored, attachments=attachments)
+    assert items == []
+    assert reader.extract_calls == 0
+
+
+def test_legacy_record_without_attachment_keys_is_not_reextracted(monkeypatch):
+    """Upgrading must not re-extract every document indexed before
+    attachment_keys was stored."""
+    stored = {"has_fulltext": True, "date_modified": DATE_MODIFIED}
+    attachments = [("ATTKEY1", "storage:paper.pdf", "application/pdf")]
+    items, reader = _run_scan(monkeypatch, stored, attachments=attachments)
+    assert items == []
+

@@ -1685,6 +1685,23 @@ class ZoteroSemanticSearch:
                                         # failure (legacy records without attachment_keys
                                         # retry once, then converge) — retry
                                         updated_existing += 1
+                                elif chroma_has_fulltext and not local_has_fulltext:
+                                    # Indexed with text, but every text-bearing
+                                    # attachment is gone. Re-index metadata-only
+                                    # so the passages from the deleted file stop
+                                    # matching searches (#428).
+                                    updated_existing += 1
+                                elif (
+                                    chroma_has_fulltext
+                                    and existing_metadata.get("attachment_keys") is not None
+                                    and existing_metadata.get("attachment_keys") != att_keys
+                                ):
+                                    # A different attachment set backs the text
+                                    # now, e.g. a replaced PDF (#428). Records
+                                    # written before attachment_keys existed are
+                                    # not compared, or every such index would
+                                    # re-extract in full on upgrade.
+                                    updated_existing += 1
                                 elif not chroma_has_fulltext and local_has_fulltext:
                                     # Document exists but lacks fulltext - we need to update it
                                     updated_existing += 1
@@ -2294,6 +2311,94 @@ class ZoteroSemanticSearch:
             max_enqueued_tokens=max_enqueued_tokens, max_requests=max_requests,
         )
 
+    def _run_deletion_pass(self, stats, current_library_keys, allow_mass_deletion):
+        """Delete indexed docs of the syncing library that Zotero no longer has.
+
+        Shared by the incremental and full-scan paths. It used to run only on
+        the incremental one, so a full scan (every local-mode update from the
+        MCP tool, which extracts fulltext) never removed deleted items, and
+        still promoted the watermark, which then gave the incremental path
+        nothing left to reconcile (#457). ``current_library_keys`` of None
+        means the key set could not be fetched; that records a skip reason,
+        and a skipped pass keeps the watermark where it was.
+        """
+        # Delete docs of THIS library that are no longer present in
+        # it. Scope is the run's group_id, applied DB-side: only docs
+        # positively attributed to the syncing library are deletion
+        # candidates, so another library's docs — and docs with no
+        # attribution at all — can never be deleted by this pass
+        # (#404 wiped every other library from the index). Chunk ids
+        # (``<key>#<n>``) map back to item keys so deletion works
+        # identically whether or not chunking is on.
+        try:
+            stored_ids = self.chroma_client.get_all_ids(
+                where={"group_id": int(self._run_group_id)}
+            )
+            stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
+            if current_library_keys is None:
+                # item_versions() failed: unknown is not "empty".
+                stats["deletion_skipped_reason"] = "item_versions_unavailable"
+            elif (
+                not current_library_keys
+                and stored_item_keys
+                and not allow_mass_deletion
+            ):
+                # HTTP-200-but-empty against a non-empty store is
+                # indistinguishable from an API fault, and wiping a
+                # small library this way would slip under any
+                # count-based guard. A user who really emptied the
+                # library opts in with --allow-mass-deletion.
+                logger.warning(
+                    f"item_versions() returned no items while {len(stored_item_keys)} "
+                    f"document(s) are indexed for library {self._active_library_key()}; "
+                    "treating this as an API fault and skipping deletion "
+                    "detection. If the library really is empty, rerun with "
+                    "--allow-mass-deletion."
+                )
+                stats["deletion_skipped_reason"] = "empty_item_versions"
+            else:
+                to_delete_keys = sorted(
+                    k for k in (stored_item_keys - current_library_keys) if k
+                )
+                if (
+                    to_delete_keys
+                    and not allow_mass_deletion
+                    and len(to_delete_keys) >= _MASS_DELETION_MIN_DOCS
+                    and len(to_delete_keys)
+                    >= _MASS_DELETION_MIN_FRACTION * len(stored_item_keys)
+                ):
+                    sample = ", ".join(to_delete_keys[:5])
+                    logger.warning(
+                        f"Deletion pass wants to remove {len(to_delete_keys)} of "
+                        f"{len(stored_item_keys)} indexed document(s) for library "
+                        f"{self._active_library_key()} ({sample}, ...). That volume "
+                        "usually means a truncated item_versions() response or a "
+                        "sync-scoping bug, not a real purge — skipping. If the "
+                        "deletions are intentional, rerun once with "
+                        "--allow-mass-deletion."
+                    )
+                    stats["deletion_skipped_reason"] = "mass_deletion_guard"
+                elif to_delete_keys:
+                    if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
+                        for k in to_delete_keys:
+                            # Scoped: a chunk set can carry mixed
+                            # group_ids (partial rewrite, key
+                            # collision); a bare parent-key delete
+                            # would broaden this scoped candidate
+                            # into an unscoped delete.
+                            self.chroma_client.delete_item_chunks(
+                                k, group_id=int(self._run_group_id)
+                            )
+                    else:
+                        self.chroma_client.delete_documents(to_delete_keys)
+                    stats["deleted_items"] = len(to_delete_keys)
+                    try:
+                        sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"Deletion pass failed: {e}")
+
     def update_database(
         self,
         force_full_rebuild: bool = False,
@@ -2595,82 +2700,7 @@ class ZoteroSemanticSearch:
                     since_version=last_sync_version,
                     include_fulltext=include_fulltext_via_api,
                 )
-                # Delete docs of THIS library that are no longer present in
-                # it. Scope is the run's group_id, applied DB-side: only docs
-                # positively attributed to the syncing library are deletion
-                # candidates, so another library's docs — and docs with no
-                # attribution at all — can never be deleted by this pass
-                # (#404 wiped every other library from the index). Chunk ids
-                # (``<key>#<n>``) map back to item keys so deletion works
-                # identically whether or not chunking is on.
-                try:
-                    stored_ids = self.chroma_client.get_all_ids(
-                        where={"group_id": int(self._run_group_id)}
-                    )
-                    stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
-                    if current_library_keys is None:
-                        # item_versions() failed: unknown is not "empty".
-                        stats["deletion_skipped_reason"] = "item_versions_unavailable"
-                    elif (
-                        not current_library_keys
-                        and stored_item_keys
-                        and not allow_mass_deletion
-                    ):
-                        # HTTP-200-but-empty against a non-empty store is
-                        # indistinguishable from an API fault, and wiping a
-                        # small library this way would slip under any
-                        # count-based guard. A user who really emptied the
-                        # library opts in with --allow-mass-deletion.
-                        logger.warning(
-                            f"item_versions() returned no items while {len(stored_item_keys)} "
-                            f"document(s) are indexed for library {self._active_library_key()}; "
-                            "treating this as an API fault and skipping deletion "
-                            "detection. If the library really is empty, rerun with "
-                            "--allow-mass-deletion."
-                        )
-                        stats["deletion_skipped_reason"] = "empty_item_versions"
-                    else:
-                        to_delete_keys = sorted(
-                            k for k in (stored_item_keys - current_library_keys) if k
-                        )
-                        if (
-                            to_delete_keys
-                            and not allow_mass_deletion
-                            and len(to_delete_keys) >= _MASS_DELETION_MIN_DOCS
-                            and len(to_delete_keys)
-                            >= _MASS_DELETION_MIN_FRACTION * len(stored_item_keys)
-                        ):
-                            sample = ", ".join(to_delete_keys[:5])
-                            logger.warning(
-                                f"Deletion pass wants to remove {len(to_delete_keys)} of "
-                                f"{len(stored_item_keys)} indexed document(s) for library "
-                                f"{self._active_library_key()} ({sample}, ...). That volume "
-                                "usually means a truncated item_versions() response or a "
-                                "sync-scoping bug, not a real purge — skipping. If the "
-                                "deletions are intentional, rerun once with "
-                                "--allow-mass-deletion."
-                            )
-                            stats["deletion_skipped_reason"] = "mass_deletion_guard"
-                        elif to_delete_keys:
-                            if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
-                                for k in to_delete_keys:
-                                    # Scoped: a chunk set can carry mixed
-                                    # group_ids (partial rewrite, key
-                                    # collision); a bare parent-key delete
-                                    # would broaden this scoped candidate
-                                    # into an unscoped delete.
-                                    self.chroma_client.delete_item_chunks(
-                                        k, group_id=int(self._run_group_id)
-                                    )
-                            else:
-                                self.chroma_client.delete_documents(to_delete_keys)
-                            stats["deleted_items"] = len(to_delete_keys)
-                            try:
-                                sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
-                            except Exception:
-                                pass
-                except Exception as e:
-                    logger.warning(f"Deletion pass failed: {e}")
+                self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
             else:
                 # Full scan: bootstrap or forced rebuild.
                 # Capture the library version BEFORE scanning so any changes
@@ -2699,6 +2729,21 @@ class ZoteroSemanticSearch:
                     target_sync_version = self._verify_local_snapshot_version(
                         target_sync_version
                     )
+                # A forced rebuild starts from an empty collection and a
+                # limited run is a test run; everything else reconciles
+                # deletions here too (#457).
+                if not force_full_rebuild and limit is None:
+                    try:
+                        current_library_keys = set(
+                            (self.zotero_client.item_versions() or {}).keys()
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to fetch current item_versions for deletion check: {e}; "
+                            "skipping deletion detection this run."
+                        )
+                        current_library_keys = None
+                    self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")

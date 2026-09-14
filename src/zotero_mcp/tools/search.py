@@ -1465,6 +1465,10 @@ def update_search_database(
             output.append(f"**Added:** {stats.get('added_items', 0)}")
             output.append(f"**Updated:** {stats.get('updated_items', 0)}")
             output.append(f"**Skipped:** {stats.get('skipped_items', 0)}")
+            if stats.get("deleted_items"):
+                output.append(f"**Deleted:** {stats['deleted_items']} (no longer in Zotero)")
+            if stats.get("deletion_skipped_reason"):
+                output.append(f"**Deletion check skipped:** {stats['deletion_skipped_reason']}")
             output.append(f"**Errors:** {stats.get('errors', 0)}")
             output.append(f"**Duration:** {stats.get('duration', 'Unknown')}")
 
