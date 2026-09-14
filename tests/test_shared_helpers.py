@@ -197,7 +197,20 @@ class TestTitleSearchQuery:
     def test_strips_jats_markup(self):
         assert _helpers._title_search_query(
             "Growth of <i>Escherichia coli</i> at <sub>4</sub>C"
-        ) == "Growth of Escherichia coli at 4C"
+        ) == "Growth of Escherichia coli at 4 C"
+
+    def test_markup_inside_a_word_splits_it(self):
+        """Every token must occur in the stored title, marked up or not.
+
+        Measured on the Web API: an item stored as 'DREAM<sub>(D)</sub>: …'
+        was not found by 'DREAM(D): …', because deleting the tags glues a
+        token the stored spelling does not contain. A space keeps each piece
+        a substring of both spellings.
+        """
+        query = _helpers._title_search_query("DREAM<sub>(D)</sub>: adaptive MCMC")
+        for stored in ("DREAM<sub>(D)</sub>: adaptive MCMC", "DREAM(D): adaptive MCMC"):
+            assert all(t.lower() in stored.lower() for t in query.split()), (
+                stored, query)
 
     def test_resolves_xml_entities(self):
         assert _helpers._title_search_query("Ethics &amp; Society") == "Ethics & Society"
@@ -206,6 +219,31 @@ class TestTitleSearchQuery:
     def test_escaped_tags_survive_as_literal_text(self):
         """'&lt;i&gt;' is text in a title, not markup — stripping order matters."""
         assert _helpers._title_search_query("The &lt;i&gt; Element") == "The <i> Element"
+
+    def test_strips_the_markup_the_crossref_mapping_keeps(self):
+        """The DOI path's title has been through the CrossRef repairs already.
+
+        strip_unsupported_markup keeps the markup Zotero renders, and spells
+        small caps as a styled span, so those tags still reach the query.
+        """
+        mapped = _utils.repair_crossref_string(_utils.strip_unsupported_markup(
+            "<scp>DNA</scp> repair in <i>E. coli</i> &amp; CO<sub>2</sub>"
+        ))
+        assert "<i>" in mapped and "<span" in mapped
+        assert _helpers._title_search_query(mapped) == "DNA repair in E. coli & CO 2"
+
+    def test_a_decoded_angle_bracket_is_not_a_tag(self):
+        """By the time the DOI path's title gets here, '&lt;' is already '<'.
+
+        A '<' not followed by a letter is text, so the words between it and
+        a later '>' stay in the query rather than being read as one tag.
+        """
+        mapped = _utils.repair_crossref_string(
+            "Effects of &lt;10 Hz stimulation on theta &gt; baseline"
+        )
+        assert _helpers._title_search_query(mapped) == (
+            "Effects of <10 Hz stimulation on theta > baseline"
+        )
 
     def test_collapses_arxiv_wrap_whitespace(self):
         assert _helpers._title_search_query(

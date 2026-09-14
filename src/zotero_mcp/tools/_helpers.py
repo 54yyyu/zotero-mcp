@@ -1183,6 +1183,14 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
+#: A tag, as far as a search query is concerned: '<' or '</' followed
+#: directly by a letter. Not ``clean_html``'s '<.*?>': CrossRef titles reach
+#: us entity-decoded (``utils.repair_crossref_string``), so a title about
+#: '&lt;10 Hz' arrives with a bare '<', and '<.*?>' would read everything up
+#: to the next '>' as one tag and delete the words in between.
+_TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+
+
 def _title_search_query(title):
     """Reduce a freshly-fetched title to something quick search can match.
 
@@ -1191,11 +1199,26 @@ def _title_search_query(title):
     it, appending one junk word drops it to zero hits). That makes the
     fallback query only as good as the title handed to it, and a title
     arrives in the shape its *source* stores it, not the shape Zotero does.
-    CrossRef ships JATS markup and XML entities in ``title[0]`` — a real
-    ``<i>``, ``<sub>`` or ``&amp;`` in the query is a token that matches
-    nothing, so one italicised species name takes the whole lookup to zero
-    against an item whose stored title is clean. Tags are therefore stripped
-    and entities resolved before the query is built.
+    A real ``<i>``, ``<sub>`` or ``&amp;`` in the query is a token that
+    matches nothing, so one italicised species name takes the whole lookup
+    to zero against an item whose stored title is clean. Tags are therefore
+    removed and entities resolved before the query is built.
+
+    A tag is replaced by a space, not deleted, because Zotero may have
+    stored the title with its markup or without it, and every token has to
+    occur in either. Deleting the tags in ``DREAM<sub>(D)</sub>:`` glues
+    ``DREAM(D):`` into one token, and measured against the Web API that
+    finds nothing for an item stored with the ``<sub>`` still in place.
+    Splitting there leaves ``DREAM``, ``(D)`` and ``:``, which occur in both.
+
+    The DOI path's title has already been through
+    ``utils.strip_unsupported_markup`` and ``utils.repair_crossref_string``,
+    and neither makes it a search key. The first deliberately keeps the
+    markup Zotero renders — ``<i>``, ``<b>``, ``<sub>``, ``<sup>``, and small
+    caps as a styled ``<span>`` — which is exactly the markup that zeroes a
+    query. The second repairs CrossRef deposits, and deletes newlines
+    outright where a query wants them as spaces. Titles from arXiv, Open
+    Library, a landing page or a BibTeX/CSL-JSON entry pass through neither.
 
     Runs of whitespace are collapsed as well. That one is free rather than
     load-bearing — quick search tokenizes, so it already ignores them — but
@@ -1210,7 +1233,7 @@ def _title_search_query(title):
     # Strip tags before resolving entities: an escaped '&lt;i&gt;' is
     # literal text in a title and must survive, which it would not if
     # unescaping ran first and handed a real tag to the tag stripper.
-    cleaned = _html.unescape(_utils.clean_html(str(title)))
+    cleaned = _html.unescape(_TITLE_TAG_RE.sub(" ", str(title)))
     return " ".join(cleaned.split()) or None
 
 

@@ -630,6 +630,49 @@ class TestAddByDoiIfExists:
         assert ("COLB0001", "EXIST001") in z.addto_calls
         assert "Already in library" in result
 
+    def test_existing_doi_reused_when_stored_title_keeps_its_markup(
+        self, monkeypatch, dummy_ctx
+    ):
+        """A tag inside a word must split the token, not glue it.
+
+        Stored and fetched titles both carry the <sub>. Deleting the tag
+        makes 'DREAM(D):' one token, which is not a substring of the stored
+        'DREAM<sub>(D)</sub>:', so the title query misses and the DOI is
+        re-created. Replacing the tag with a space keeps every token a
+        substring of both spellings.
+        """
+        class BlindZot(IdentifierBlindMixin, FakeZoteroIdem):
+            pass
+
+        title = "DREAM<sub>(D)</sub>: an adaptive MCMC algorithm"
+        z = BlindZot()
+        z._collections = [
+            {"key": "COLB0001", "data": {"name": "Target", "parentCollection": False}},
+        ]
+        z._items = [{
+            "key": "EXIST001",
+            "version": 5,
+            "data": {
+                "itemType": "journalArticle",
+                "title": title,
+                "DOI": DOI,
+                "collections": [],
+                "tags": [],
+            },
+        }]
+        _patch_clients(monkeypatch, z)
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response(title=title),
+        )
+
+        result = server.add_by_doi(
+            doi=DOI, collections=["COLB0001"], if_exists="file", ctx=dummy_ctx,
+        )
+
+        assert z.created == []
+        assert ("COLB0001", "EXIST001") in z.addto_calls
+        assert "Already in library" in result
+
 
 # ---------------------------------------------------------------------------
 # add_by_url × if_exists (arXiv + webpage routing)
