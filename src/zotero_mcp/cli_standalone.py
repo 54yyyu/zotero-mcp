@@ -1016,7 +1016,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Search every accessible library at once instead of "
                           "the active one, labelling each result with its "
                           "library (items, advanced and semantic modes). "
-                          "Requires ZOTERO_SEARCH_BACKEND=sqlite.")
+                          "Requires the SQLite backend (the default in local mode).")
     s_p.add_argument("--detail", choices=["keys_only", "summary", "full"],
                      default="summary",
                      help="How much of each item --json returns (no effect on "

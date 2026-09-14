@@ -388,3 +388,17 @@ def extracted_doc(text, *, page_count=1, source="pdf", truncated=False):
         source=source,
         truncated=truncated,
     )
+
+
+@pytest.fixture(autouse=True)
+def _api_read_backend_unless_chosen(monkeypatch):
+    """Pin the API read backend unless the environment already picks one.
+
+    SQLite is the default read backend in local mode. Unit tests fake local
+    mode against fake clients, and without this they would read the
+    developer's real zotero.sqlite. Tests that want SQLite set
+    ZOTERO_BACKEND / ZOTERO_SEARCH_BACKEND or patch get_search_backend.
+    """
+    if not os.environ.get("ZOTERO_BACKEND") and not os.environ.get("ZOTERO_SEARCH_BACKEND"):
+        monkeypatch.setenv("ZOTERO_BACKEND", "api")
+

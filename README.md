@@ -515,19 +515,34 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
   preferences (read from the profile's `prefs.js`) is tried first, then the
   default `~/Zotero` location.
 
-**Search backend:**
-- `ZOTERO_SEARCH_BACKEND=sqlite`: Route `zotero_search_items` and
-  `zotero_advanced_search` through direct SQL against `zotero.sqlite` instead of
-  fetching over the API and filtering in Python (default: `api`). Requires
-  `ZOTERO_LOCAL=true`, since it reads the database off disk. Substantially
-  faster on large libraries — an `advanced_search` that pages the whole library
-  over the API drops from minutes to well under a second. Any query the backend
-  doesn't cover falls back to the API path automatically, so the results are
-  either the same or better, never worse.
+**Read backend:**
+
+In local mode (`ZOTERO_LOCAL=true`) read tools answer straight from `zotero.sqlite`
+instead of paging the Zotero API. Measured on a 44,105-item library:
+
+| operation | SQLite | API |
+|---|---|---|
+| one item | 0.4 ms | 43.5 ms |
+| children of 25 items | 1.8 ms | 2,476 ms |
+| all tags | 110 ms | 103.9 s |
+
+Anything SQLite cannot express (a wildcard tag filter, a boolean `itemType`
+expression) is answered through the API for that call, so the results are never
+narrower than the API's. Writes always go through Zotero.
+
+- `ZOTERO_BACKEND=api`: read through the Zotero API even in local mode, as before
+  0.12.1. `ZOTERO_BACKEND=sqlite` forces SQLite; `ZOTERO_SEARCH_BACKEND` is
+  accepted as an older name for the same setting. Outside local mode the API is
+  always used.
+- `ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL`: Zotero keeps recent changes in a WAL file
+  next to `zotero.sqlite`, so reads use a private copy of the database plus that
+  file. The copy is refreshed when Zotero writes, at most once per this many
+  seconds (default `5`). `ZOTERO_MCP_DB_SNAPSHOT=0` reads the database in place
+  instead, which never copies but misses changes until Zotero checkpoints.
 
 **Global search across libraries:**
 
-With the SQLite backend enabled, `zotero_search_items`, `zotero_advanced_search`
+With the SQLite backend (the default in local mode), `zotero_search_items`, `zotero_advanced_search`
 and `zotero_semantic_search` accept `search_all_libraries=True` (`--all-libraries`
 on the CLI). One query then covers your personal library and every group library
 at once, and each result is labelled with the library it came from:
@@ -536,7 +551,7 @@ at once, and each result is labelled with the library it came from:
 **Library:** AI in entrepreneurship (groupID=6015547)
 ```
 
-This is deliberately gated on `ZOTERO_SEARCH_BACKEND=sqlite`. The Zotero API can
+This is deliberately limited to the SQLite backend. The Zotero API can
 only search one library per request, so without direct SQL the best anyone could
 do is replay a single-library search against each library in turn — a different
 and far slower operation. Rather than emulate global search badly, the tools

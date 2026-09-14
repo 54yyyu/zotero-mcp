@@ -211,7 +211,7 @@ class TestScanIsBounded:
 
         assert len(zot.calls) < 100
         assert "partial" in result.lower()
-        assert "ZOTERO_SEARCH_BACKEND=sqlite" in result
+        assert "SQLite backend" in result
 
     def test_empty_result_after_truncation_does_not_claim_the_library_is_empty(
         self, patched, monkeypatch

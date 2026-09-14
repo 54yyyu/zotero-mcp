@@ -343,7 +343,7 @@ def test_semantic_global_search_needs_the_sqlite_backend(monkeypatch, tmp_path):
         query="quantum", search_all_libraries=True, ctx=DummyContext()
     )
 
-    assert "ZOTERO_SEARCH_BACKEND=sqlite" in result
+    assert "SQLite backend" in result
     assert sem.calls == []
 
 

@@ -753,9 +753,9 @@ def global_search_error() -> str | None:
         return (
             "Error: global search requires the SQLite backend. The Zotero API "
             "cannot search across libraries in one query, so this is refused "
-            "rather than emulated by searching each library in turn. Set "
-            "ZOTERO_SEARCH_BACKEND=sqlite (with ZOTERO_LOCAL=true) and restart "
-            "the server, or search one library at a time with "
+            "rather than emulated by searching each library in turn. Run the "
+            "server in local mode (ZOTERO_LOCAL=true), where SQLite is the "
+            "default unless ZOTERO_BACKEND=api, or search one library at a time with "
             "zotero_switch_library."
         )
     reader = get_local_zotero_reader()

@@ -264,10 +264,18 @@ def get_search_backend() -> str:
     read port and the older search paths can never disagree about which
     backend is selected.
     """
-    for var in ("ZOTERO_BACKEND", "ZOTERO_SEARCH_BACKEND"):
-        if os.getenv(var, "").strip().lower() == "sqlite":
-            return "sqlite"
-    return "api"
+    chosen = {
+        os.getenv(var, "").strip().lower()
+        for var in ("ZOTERO_BACKEND", "ZOTERO_SEARCH_BACKEND")
+    }
+    if "sqlite" in chosen:
+        return "sqlite"
+    if "api" in chosen:
+        return "api"
+    # Unset: SQLite in local mode, where zotero.sqlite is on this machine and
+    # answers most reads orders of magnitude faster than the API (0.12.1).
+    # Callers still fall back to the API when the file cannot be read.
+    return "sqlite" if is_local_mode() else "api"
 
 
 def item_display_title(data: dict) -> str:

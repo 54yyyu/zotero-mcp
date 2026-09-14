@@ -33,12 +33,15 @@ ported tool already consume that shape. What changes here is how rows are
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from zotero_mcp import utils as _utils
 from pyzotero.zotero_errors import ResourceNotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 class UnsupportedByBackend(Exception):
@@ -522,6 +525,46 @@ class ApiBackend:
         )
 
 
+class FallbackBackend:
+    """SQLite first; the API answers only what SQLite cannot express.
+
+    ``UnsupportedByBackend`` is how SqliteBackend says "this query has no SQL
+    translation" (a wildcard tag filter, a boolean itemType expression, a sort
+    order it cannot produce). Those calls are re-asked of the API, per call,
+    so choosing SQLite never narrows what a tool can answer. Any other error
+    propagates unchanged: falling back on a genuine failure would hide it.
+    The API client is only built when a fallback actually happens.
+    """
+
+    def __init__(self, primary, api_factory):
+        self._primary = primary
+        self._api_factory = api_factory
+        self._api = None
+
+    @property
+    def name(self) -> str:
+        return self._primary.name
+
+    def _api_backend(self):
+        if self._api is None:
+            self._api = self._api_factory()
+        return self._api
+
+    def __getattr__(self, attr):
+        target = getattr(self._primary, attr)
+        if not callable(target):
+            return target
+
+        def call(*args, **kwargs):
+            try:
+                return target(*args, **kwargs)
+            except UnsupportedByBackend as exc:
+                logger.debug("SQLite cannot answer %s (%s); asking the API", attr, exc)
+                return getattr(self._api_backend(), attr)(*args, **kwargs)
+
+        return call
+
+
 # ---------------------------------------------------------------------------
 # Selection
 # ---------------------------------------------------------------------------
@@ -548,14 +591,15 @@ def get_library_backend(zot=None) -> LibraryBackend:
     ``zot`` is an already-built pyzotero client to reuse for the API
     backend; omitted, one is created on demand.
     """
+    from zotero_mcp import client as _client
+
     if configured_backend() == "sqlite":
         reader = _sqlite_reader()
         if reader is not None:
-            from zotero_mcp.client import get_active_group_id
-
-            return SqliteBackend(reader, get_active_group_id())
-
-    from zotero_mcp import client as _client
+            return FallbackBackend(
+                SqliteBackend(reader, _client.get_active_group_id()),
+                lambda: ApiBackend(zot if zot is not None else _client.get_zotero_client()),
+            )
 
     return ApiBackend(zot if zot is not None else _client.get_zotero_client())
 
