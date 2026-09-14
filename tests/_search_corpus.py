@@ -317,6 +317,17 @@ def build_api_items(
                     "tags": [{"tag": t} for t in item.tags],
                     "collections": list(item.collections),
                 },
+                # The ISO half of the stored date without Zotero's 00 padding,
+                # as the API's meta.parsedDate reports it (#551).
+                "meta": {"parsedDate": _parsed_date(item.date)} if item.date else {},
             }
         )
     return out
+
+
+def _parsed_date(stored: str) -> str:
+    iso = stored.split(" ", 1)[0]
+    parts = iso.split("-")
+    while len(parts) > 1 and parts[-1] == "00":
+        parts.pop()
+    return "-".join(parts)

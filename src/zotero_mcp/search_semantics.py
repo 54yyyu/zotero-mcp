@@ -30,6 +30,7 @@ is a fix, not a divergence, and belongs to each backend.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Iterable, Sequence
 
@@ -169,6 +170,40 @@ def _as_float(text: str) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+_YEAR_IN_TEXT = re.compile(r"\b(\d{4})\b")
+
+
+def date_range_key(parsed_date: str | None, display_date: str | None = "") -> str | None:
+    """The value a ``date`` range condition compares: ``YYYY-MM-DD``, 00-padded.
+
+    Zotero stores a date as ``"<ISO with 00 for missing parts> <display text>"``
+    and its own search compares ``SUBSTR(value, 1, 10)``, so the SQLite backend
+    orders ``2021-03-00`` and ``2024-00-00``. The web API returns only the
+    display half in ``data.date`` ("Nov/Dec 1990", "03/2021"), and comparing
+    that as text returned 1990 papers for "after 2024" (#551). It also returns
+    the ISO half, without the padding, as ``meta.parsedDate`` ("2021-03",
+    "2024"); padding it back yields exactly the value SQL compares.
+
+    Without a ``parsedDate`` the first four-digit year of the display text is
+    used, and ``0000`` (Zotero's own value for an unparseable date) when there
+    is none. An item with no date at all returns None, so it matches nothing,
+    as on the SQL side where it has no row.
+    """
+    parsed = str(parsed_date or "").strip()
+    if not parsed:
+        display = str(display_date or "").strip()
+        if not display:
+            return None
+        match = _YEAR_IN_TEXT.search(display)
+        parsed = match.group(1) if match else "0000"
+    parts = parsed.split("-")
+    if not parts[0].isdigit():
+        return None
+    parts = (parts + ["00", "00"])[:3]
+    year, month, day = parts
+    return f"{year.zfill(4)}-{month.zfill(2)}-{day.zfill(2)}"
 
 
 def compare(candidate: str, expected: str, operation: str) -> bool:

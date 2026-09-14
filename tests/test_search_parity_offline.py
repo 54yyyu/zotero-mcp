@@ -155,6 +155,18 @@ for _op in ["isGreaterThan", "isLessThan", "isBefore", "isAfter"]:
         ("dateModified", _op, "2024-03-01"),
     ]
 
+# Range operators on `date` compare the ISO half on both sides (#551). The
+# values avoid the exact years of the corpus's few non-multipart dates, where
+# the fixture (not Zotero, which always stores a multipart value) differs.
+for _op in ["isGreaterThan", "isLessThan", "isBefore", "isAfter"]:
+    for _value in ["1900", "2016-06-15", "2020-06-01", "2030"]:
+        CONDITION_CASES.append(("date", _op, _value))
+
+# `year` reads the ISO year on both sides, including display dates that do
+# not start with it ("October 1, 2016").
+for _value in ["2016", "2017", "2021"]:
+    CONDITION_CASES.append(("year", "is", _value))
+
 # Field-name aliases must resolve identically on both sides.
 for _alias in ["author", "authors", "creators", "tags", "itemtype", "doi"]:
     CONDITION_CASES.append((_alias, "contains", "a"))
@@ -232,26 +244,14 @@ def test_excluded_item_types_never_appear(monkeypatch, tmp_path):
 # The one divergence that is intentional
 # ---------------------------------------------------------------------------
 
-def test_year_on_multipart_dates_diverges_by_design(monkeypatch, tmp_path):
-    """SQL reads Zotero's ISO prefix; the API can only see the display text.
-
-    Zotero stores ``"2016-10-01 October 1, 2016"`` but exposes only
-    ``"October 1, 2016"`` over the API, so the API path's ``date[:4]`` yields
-    ``"Octo"`` where SQL's ``SUBSTR(value, 1, 4)`` yields ``"2016"``. The SQL
-    answer is the correct one — it is what Zotero itself does — so this is a
-    fix rather than a divergence to reconcile, and normalizing the two would
-    mean re-introducing the bug on the SQL side.
-
-    Asserted rather than skipped so that a change in either path is noticed.
-    """
+def test_year_on_multipart_dates_no_longer_diverges(monkeypatch, tmp_path):
+    """The API path used ``date[:4]`` of the display text, so "October 1, 2016"
+    gave "Octo". It now reads ``meta.parsedDate`` like SQL reads the ISO prefix
+    (#551), and what used to be the one intentional divergence is parity."""
     sql = _run(monkeypatch, tmp_path, "sqlite", conditions=_cond("year", "is", "2016"))
     api = _run(monkeypatch, tmp_path, "api", conditions=_cond("year", "is", "2016"))
-
-    assert "ACCENT01" in sql, "SQL should read the ISO prefix of a multipart date"
-    assert "ACCENT01" not in api, (
-        "the API path cannot see the ISO prefix; if this now passes, the "
-        "divergence has been fixed and this test should become a parity case"
-    )
+    assert "ACCENT01" in sql and "ACCENT01" in api
+    assert sql == api
 
 
 # ---------------------------------------------------------------------------
