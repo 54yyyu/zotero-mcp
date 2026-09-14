@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import skip_on_ci
+from conftest import extracted_doc, skip_on_ci
 from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY
 from zotero_mcp.local_db import LocalZoteroReader
 
@@ -71,7 +71,7 @@ def test_ft_cache_covers_an_attachment_whose_file_cannot_be_resolved(tmp_path):
     def _boom(_path):
         raise AssertionError("nothing resolvable to extract — must not be called")
 
-    reader._extract_text_from_file = _boom  # type: ignore[assignment]
+    reader._extract_doc_from_file = _boom  # type: ignore[assignment]
 
     result = reader._extract_fulltext_for_item(item_id=1)
     assert result is not None
@@ -96,8 +96,8 @@ def test_our_extraction_wins_over_the_ft_cache(tmp_path):
         storage_dir=storage,
     )
     reader._resolve_attachment_path = lambda _k, _p: pdf  # type: ignore[assignment]
-    reader._extract_text_from_file = (  # type: ignore[assignment]
-        lambda _path: "## Heading\n\nparsed markdown"
+    reader._extract_doc_from_file = (  # type: ignore[assignment]
+        lambda _path: extracted_doc("## Heading\n\nparsed markdown")
     )
 
     text, source = reader._extract_fulltext_for_item(item_id=1)
@@ -122,7 +122,7 @@ def test_ft_cache_rescues_a_file_that_fails_to_parse(tmp_path):
     )
     reader._resolve_attachment_path = lambda _k, _p: pdf  # type: ignore[assignment]
     # What extract_file does for an unreadable file: log and yield nothing.
-    reader._extract_text_from_file = lambda _path: ""  # type: ignore[assignment]
+    reader._extract_doc_from_file = lambda _path: None  # type: ignore[assignment]
 
     text, source = reader._extract_fulltext_for_item(item_id=1)
     assert source == "zotero-cache"
@@ -171,9 +171,9 @@ def test_storage_scan_recovers_from_renamed_pdf(tmp_path):
 
     def _fake_extract(path):
         captured["path"] = path
-        return "extracted via scan fallback"
+        return extracted_doc("extracted via scan fallback")
 
-    reader._extract_text_from_file = _fake_extract  # type: ignore[assignment]
+    reader._extract_doc_from_file = _fake_extract  # type: ignore[assignment]
 
     text, source = reader._extract_fulltext_for_item(item_id=1)
     assert text == "extracted via scan fallback"

@@ -12,6 +12,8 @@ the existing ``_extract_text_from_file`` fallback already handles it.
 
 from pathlib import Path
 
+from conftest import extracted_doc
+
 from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY, is_extractable
 from zotero_mcp.local_db import LocalZoteroReader
 
@@ -105,11 +107,11 @@ def test_extract_fulltext_prefers_pdf_over_textual(tmp_path):
     txt.write_text("plaintext fallback content")
 
     class _ReaderWithPdfText(_Reader):
-        def _extract_text_from_file(self, file_path):
+        def _extract_doc_from_file(self, file_path):
             # Asserting the suffix is the point of the test: the chooser must
             # hand us the PDF, not the .txt sitting alongside it.
             assert file_path.suffix == ".pdf"
-            return "PDF content extracted"
+            return extracted_doc("PDF content extracted")
 
     reader = _ReaderWithPdfText(
         attachments=[
