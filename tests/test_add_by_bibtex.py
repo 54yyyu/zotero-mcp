@@ -15,7 +15,11 @@ class FakeZoteroWithAttach(FakeZotero):
 
     def attachment_both(self, files, parentid=None, **kwargs):
         self.attachments.append({"files": files, "parentid": parentid})
-        return {"success": {"0": "ATCH0001"}, "successful": {}, "failed": {}}
+        # Shape matches pyzotero's Zupload.upload(): each status maps to a
+        # list of payload dicts carrying the registered attachment key. A
+        # create_items-shaped dict here reads as an upload that landed no
+        # file, which sends the caller down the two-step retry.
+        return {"success": [{"key": "ATCH0001"}], "unchanged": [], "failure": []}
 
 
 def _patch_hybrid(monkeypatch):
@@ -240,10 +244,14 @@ class TestFilePath:
         result = write.add_item(source=str(f), source_type="bibtex", ctx=dummy_ctx)
         assert "Unsupported file extension" in result
 
-    def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
+    def test_rejects_missing_file(self, monkeypatch, dummy_ctx, tmp_path):
         _patch_hybrid(monkeypatch)
+        # Absolute on whichever platform is running: a POSIX literal is not
+        # absolute on Windows, so the reader rejected it for its shape and
+        # the missing-file branch under test never ran.
+        missing = tmp_path / "no-such-file.bib"
         result = write.add_item(
-            source="/absolutely/no/such/file.bib",
+            source=str(missing),
             source_type="bibtex",
             ctx=dummy_ctx,
         )

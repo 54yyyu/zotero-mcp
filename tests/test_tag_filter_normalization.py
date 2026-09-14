@@ -7,6 +7,10 @@ which agents sometimes confuse with the filter shape). pyzotero's `tag=`
 parameter wants list[str] — the normalizer collapses all inputs to that.
 """
 
+import sys
+import types
+from pathlib import Path
+
 import pytest
 
 from zotero_mcp.tools._helpers import _normalize_tag_filter
@@ -97,6 +101,19 @@ class TestSearchItemsIntegration:
     raising a pydantic validation error AND actually pass the normalized
     list[str] through to pyzotero's ``tag=`` parameter."""
 
+    @pytest.fixture(autouse=True)
+    def fake_home(self, tmp_path, monkeypatch):
+        """Point Path.home() at a scratch directory for every test in this class.
+
+        The fake returns no items, so these calls walk the whole fallback
+        cascade, whose last step reads ``Path.home()/.config/zotero-mcp/
+        config.json`` and searches the index it names (#498).
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        return home
+
     def _patch(self, monkeypatch, fake):
         monkeypatch.setattr(
             "zotero_mcp.tools.search._client.get_zotero_client",
@@ -163,3 +180,31 @@ class TestSearchItemsIntegration:
 
         server.search_items(query="whatever", ctx=DummyContext())
         assert "tag" not in fake.last_params or not fake.last_params.get("tag")
+
+    def test_semantic_fallback_reads_the_sandbox_config(self, monkeypatch, fake_home):
+        """The cascade still reaches Strategy 4, but on the config this test wrote."""
+        config_path = fake_home / ".config" / "zotero-mcp" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("{}")
+
+        seen = []
+
+        class _NoResults:
+            def search(self, **_kwargs):
+                return {"results": []}
+
+        def _record(path):
+            seen.append(path)
+            return _NoResults()
+
+        stub = types.ModuleType("zotero_mcp.semantic_search")
+        stub.create_semantic_search = _record
+        monkeypatch.setitem(sys.modules, "zotero_mcp.semantic_search", stub)
+
+        from zotero_mcp import server
+        from conftest import DummyContext
+
+        self._patch(monkeypatch, _SearchableFake())
+        server.search_items(query="whatever", ctx=DummyContext())
+
+        assert seen == [str(config_path)]

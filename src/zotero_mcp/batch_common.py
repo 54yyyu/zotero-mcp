@@ -137,7 +137,13 @@ def _jsonable(value: Any) -> Any:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    """Fixed-width ISO-8601 UTC stamp, microseconds included.
+
+    The microseconds are load-bearing: ``created_at`` is what orders runs
+    (:func:`_run_order_key`), and two runs minted in the same second must not
+    compare equal.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def estimate_tokens(text: str, chars_per_token: float = 3.0) -> int:
@@ -181,14 +187,74 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
+def _run_order_key(path: Path, manifest: dict[str, Any]) -> tuple[str, str]:
+    """Sort key deciding which run is newer: submission time, then run id.
+
+    Both parts are written once, when the run is created, and never rewritten,
+    so no amount of re-saving can reorder runs — and re-saving is routine:
+    every status refresh and every import rewrites the manifest it was handed.
+    File mtime, the obvious alternative, would therefore make "newest" mean
+    "looked at most recently", which is how a superseded run used to talk its
+    way back into being current. ``created_at`` is fixed-width ISO-8601 UTC, so
+    it orders lexicographically; ``run_id`` (itself timestamp-prefixed) settles
+    ties between runs stamped in the same microsecond.
+
+    One caveat, stated plainly: a manifest from a release that stamped whole
+    seconds (``…T10:00:00Z``) sorts *after* a microsecond stamp of that same
+    second (``…T10:00:00.000000Z``), because ``"Z" > "."`` — so a pre-upgrade
+    run would win a same-second race against a run submitted after the upgrade,
+    and ``run_id`` never gets to settle it, the two strings being unequal. This
+    is deterministic rather than arbitrary, and reaching it takes an upgrade
+    plus a resubmission within the same second; runs minutes apart — every real
+    pair — order correctly either way.
+
+    A manifest missing either field falls back to the empty string / its run
+    directory name, which ranks it below any run that carries them.
+    """
+    return (
+        str(manifest.get("created_at") or ""),
+        str(manifest.get("run_id") or path.parent.name),
+    )
+
+
+def _sorted_manifests(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Every readable run manifest under ``root``, newest first."""
+    loaded: list[tuple[Path, dict[str, Any]]] = []
+    for path in root.glob("*/manifest.json"):
+        try:
+            loaded.append((path, load_manifest(path)))
+        except (OSError, ValueError):
+            continue  # unreadable or half-written manifest: not a candidate
+    loaded.sort(key=lambda item: _run_order_key(*item), reverse=True)
+    return loaded
+
+
 def iter_manifests(root: Path) -> list[Path]:
-    return sorted(root.glob("*/manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    """Run manifest paths under ``root``, newest first (:func:`_run_order_key`)."""
+    return [path for path, _ in _sorted_manifests(root)]
+
+
+def newest_run_path(root: Path) -> str | None:
+    """Manifest path of the newest run, or ``None`` when there are no runs."""
+    manifests = _sorted_manifests(root)
+    return str(manifests[0][0]) if manifests else None
+
+
+def newest_manifest_for_group(root: Path, group_id: int | None) -> dict[str, Any] | None:
+    """Newest run submitted against ``group_id``, or ``None`` if there is none.
+
+    Runs are per library, and so is superseding one: a newer run for a
+    different library re-embeds none of this one's items.
+    """
+    for _, manifest in _sorted_manifests(root):
+        if manifest.get("group_id") == group_id:
+            return manifest
+    return None
 
 
 def find_manifest(root: Path, batch_id: str | None = None, provider_label: str = "batch") -> dict[str, Any]:
     """Find the newest manifest, or the manifest that contains a batch ID."""
-    for path in iter_manifests(root):
-        manifest = load_manifest(path)
+    for _, manifest in _sorted_manifests(root):
         if batch_id is None:
             return manifest
         if any(batch.get("batch_id") == batch_id for batch in manifest.get("batches", [])):

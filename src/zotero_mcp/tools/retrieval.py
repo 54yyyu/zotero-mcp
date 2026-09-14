@@ -8,6 +8,9 @@ import tempfile
 import time as _time
 from typing import Literal
 
+from fastmcp.exceptions import ToolError
+from pyzotero.zotero_errors import ResourceNotFoundError
+
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -296,6 +299,14 @@ def get_attachment_path(
 
         with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
             attachments = reader.get_attachment_paths(item_key)
+            if not attachments:
+                # item_key may be the attachment's OWN key (get_item_by_key
+                # excludes attachments, so the parent lookup yields nothing).
+                att = reader.get_attachment_by_key(item_key)
+                if att:
+                    resolved = reader._resolve_attachment_path(att["key"], att.get("zotero_path") or "")
+                    attachments = [{**att, "resolved_path": resolved,
+                                    "exists": bool(resolved and resolved.exists())}]
 
         if not attachments:
             return f"No attachments found for item `{item_key}`."
@@ -1422,10 +1433,10 @@ def get_recent(
         if collection_key:
             try:
                 _col = zot.collection(collection_key)
-            except Exception:
+            except ResourceNotFoundError:
                 _col = None
             if not _col or _col.get("key") != collection_key:
-                return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
+                raise ToolError(f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys.")
             items = _utils._paginate(
                 zot.collection_items, collection_key,
                 sort="dateAdded", direction="desc", max_items=limit,
@@ -1451,9 +1462,11 @@ def get_recent(
 
         return "\n".join(output)
 
+    except ToolError:
+        raise
     except Exception as e:
         ctx.error(f"Error fetching recent items: {str(e)}")
-        return f"Error fetching recent items: {str(e)}"
+        raise ToolError(f"Error fetching recent items: {str(e)}") from e
 
 
 @mcp.tool(

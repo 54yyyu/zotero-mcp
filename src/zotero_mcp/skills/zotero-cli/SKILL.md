@@ -65,6 +65,7 @@ zotero-cli --json search "diffusion models" --limit 5 --detail keys_only \
 | `tag` | items you filed under a tag | `search --mode tag "to-read,important"` |
 | `advanced` | structured field conditions | `search --mode advanced --conditions '[...]'` |
 | `citekey` | a BibTeX citation key | `search --mode citekey smith2020` |
+| `notes` | text inside your notes, not item fields | `search --mode notes "research question"` |
 
 `semantic` needs the search index built (`zotero-cli db status` to check,
 `zotero-cli db update` to build). If it is empty, fall back to `items` and

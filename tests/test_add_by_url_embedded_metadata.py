@@ -332,23 +332,69 @@ class TestDoiRouteSelfSupplements:
         assert item["title"] == "DETERMINANTS OF PUBLIC TRUST"
         assert [c["lastName"] for c in item["creators"]] == ["Haning", "Hamzah"]
 
-    def test_complete_record_does_not_fetch_a_page(self, patched):
-        """The fetch is gated, not routine. A DOI whose CrossRef record
-        stands on its own must not pay for a page load."""
+    def _calls_for(self, doi_arg, **kwargs):
         calls = []
-        def _get(url, **kwargs):
+        def _get(url, **kw):
             calls.append(url)
-            return self._dispatch(self.FULL)(url, **kwargs)
+            return self._dispatch(self.FULL)(url, **kw)
 
         with patch("zotero_mcp.tools.write.requests.get", side_effect=_get), \
              patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
                    return_value="skipped"):
-            write.add_by_doi(doi="10.1234/full", ctx=DummyContext())
+            write.add_by_doi(doi=doi_arg, ctx=DummyContext(), **kwargs)
+        return calls
 
+    def test_a_single_add_checks_even_a_complete_looking_record(self, patched):
+        """Reverses an earlier rule that a complete-looking record must not
+        pay for a page load.
+
+        "Complete-looking" turned out not to mean complete. CrossRef's
+        record for 10.1006/bulm.1999.0141 has a title, a journal, a volume
+        and an author, and passes every thinness test here -- while naming
+        one of the article's four authors and carrying no abstract.
+        """
+        calls = self._calls_for("10.1234/full")
+        assert any("api.crossref.org" not in u for u in calls), (
+            f"the landing page was not read: {calls}"
+        )
+        assert patched.created[0]["title"] == "A Complete CrossRef Record", (
+            "CrossRef remains authoritative for every field it populated"
+        )
+
+    def test_page_check_thin_only_restores_the_old_rule(self, patched):
+        """What every caller adding more than one item passes."""
+        calls = self._calls_for("10.1234/full", page_check="thin_only")
         assert all("api.crossref.org" in u for u in calls), (
             f"expected only the CrossRef call, got {calls}"
         )
+
+    def test_a_failed_page_read_on_a_complete_record_costs_nothing(
+        self, patched
+    ):
+        """The page read is now routine, so its failure modes are routine
+        too. A publisher that times out must not fail an add that CrossRef
+        could already answer."""
+        import requests as _requests
+
+        def _get(url, **kwargs):
+            if "api.crossref.org" in url:
+                return self._dispatch(self.FULL)(url, **kwargs)
+            raise _requests.Timeout("publisher did not answer")
+
+        with patch("zotero_mcp.tools.write.requests.get", side_effect=_get), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            out = write.add_by_doi(doi="10.1234/full", ctx=DummyContext())
+
+        assert "Successfully added" in out
         assert patched.created[0]["title"] == "A Complete CrossRef Record"
+
+    def test_an_invalid_page_check_is_a_user_error_not_a_traceback(self, patched):
+        with patch("zotero_mcp.tools.write.requests.get",
+                   side_effect=self._dispatch(self.FULL)):
+            out = write.add_by_doi(doi="10.1234/full", page_check="sometimes",
+                                   ctx=DummyContext())
+        assert out.startswith("Error: page_check")
 
     def test_unreachable_landing_page_degrades(self, patched):
         """The page is best-effort. A publisher whose host will not answer
@@ -490,3 +536,59 @@ class TestThinRecordDetection:
         assert not write._crossref_record_is_thin(
             {"title": ["A Paper"]}, "journal-article"
         )
+
+
+class TestBatchCallersAreExemptFromThePageRead:
+    """The exemption has to hold for every shape of "many", not just for a
+    list handed to add_by_doi. Two callers loop over single items."""
+
+    FULL = TestDoiRouteSelfSupplements.FULL
+
+    def _dispatch(self):
+        def _get(url, **kwargs):
+            if "api.crossref.org" in url:
+                r = MagicMock()
+                r.status_code = 200
+                r.raise_for_status = MagicMock()
+                if url.rstrip("/").endswith("/works"):
+                    r.json.return_value = {"status": "ok", "message": {"items": [
+                        dict(self.FULL, DOI="10.1234/a"),
+                        dict(self.FULL, DOI="10.1234/b"),
+                    ]}}
+                else:
+                    r.json.return_value = {"status": "ok", "message": self.FULL}
+                return r
+            return _html_response(OJS_PAGE)
+        return _get
+
+    def _calls(self, run):
+        calls = []
+        def _get(url, **kwargs):
+            calls.append(url)
+            return self._dispatch()(url, **kwargs)
+        with patch("zotero_mcp.tools.write.requests.get", side_effect=_get), \
+             patch("zotero_mcp.tools._helpers._try_attach_oa_pdf",
+                   return_value="skipped"):
+            run()
+        return calls
+
+    def test_a_doi_list_reads_no_pages(self, patched):
+        calls = self._calls(lambda: write.add_by_doi(
+            doi=["10.1234/a", "10.1234/b"], attach_mode="none",
+            ctx=DummyContext()))
+        assert all("api.crossref.org" in u for u in calls), calls
+
+    def test_a_url_list_of_doi_links_reads_no_pages(self, patched):
+        """add_by_url recurses one URL at a time, so `is_batch` inside
+        add_by_doi is False on every iteration. The CHANGELOG advertises
+        mixed URL batches, so a 200-link import goes through here."""
+        calls = self._calls(lambda: write.add_by_url(
+            url=["https://doi.org/10.1234/a", "https://doi.org/10.1234/b"],
+            attach_mode="none", ctx=DummyContext()))
+        assert all("api.crossref.org" in u for u in calls), calls
+
+    def test_a_single_url_still_checks_its_page(self, patched):
+        calls = self._calls(lambda: write.add_by_url(
+            url="https://doi.org/10.1234/a", attach_mode="none",
+            ctx=DummyContext()))
+        assert any("api.crossref.org" not in u for u in calls), calls

@@ -29,7 +29,10 @@ Generated from the CLI's own argument parser by
 `scripts/gen_skill_reference.py` -- do not edit by hand.
 
 Every command also accepts `--json` (machine-readable envelope on stdout) and
-`-v` (diagnostics on stderr), before or after the command name. Run
+`-v` (diagnostics on stderr). Both are defined on the top-level parser and on
+each first-level command, so they may precede the command name or follow it,
+but not follow a sub-command: `get --json metadata KEY` parses and
+`get metadata --json KEY` does not. Run
 `zotero-cli --json-schema` for the output contract.
 
 """
@@ -68,7 +71,27 @@ def _render(name: str, parser, out: io.StringIO, depth: int = 2,
     if desc:
         out.write(f"\n{desc}\n")
 
-    lines = [ln for ln in (_format_action(a) for a in parser._actions) if ln]
+    # Options in a mutually exclusive group are rendered as one entry. Listing them
+    # flatly reads as "pass either, or both", which argparse rejects at parse time.
+    exclusive = {}
+    for group in getattr(parser, "_mutually_exclusive_groups", []):
+        members = [a for a in group._group_actions if _format_action(a)]
+        if len(members) > 1:
+            for a in members:
+                exclusive[id(a)] = members
+    lines, rendered = [], set()
+    for action in parser._actions:
+        members = exclusive.get(id(action))
+        if members is None:
+            line = _format_action(action)
+            if line:
+                lines.append(line)
+            continue
+        if id(members[0]) in rendered:
+            continue
+        rendered.add(id(members[0]))
+        names = " / ".join(f"`{m.option_strings[0]}`" for m in members)
+        lines.append(f" - {names} -- mutually exclusive")
     if lines:
         out.write("\n")
         out.write("\n".join(lines))
@@ -116,7 +139,16 @@ def build() -> str:
 
 
 if __name__ == "__main__":
+    # An explicit destination lets a caller (the test suite, most of all)
+    # generate without writing over the checked-in copy.
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else OUT
     text = build()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(text, encoding="utf-8")
-    print(f"wrote {OUT.relative_to(REPO)} ({len(text)} chars)")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # newline="\n" is load-bearing on Windows: write_text's default
+    # translates every "\n" to "\r\n", so a run of this script rewrote the
+    # tracked file in CRLF. The repo is LF throughout, and read_text()
+    # normalizes on the way back in, so nothing downstream reported the drift.
+    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    shown = out.relative_to(REPO) if out.is_relative_to(REPO) else out
+    print(f"wrote {shown} ({len(text)} chars)")

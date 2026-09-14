@@ -13,15 +13,24 @@ the symptom is a silent duplicate rather than an error, so these tests are the
 only thing standing between the two.
 """
 
-import httpx
 import pytest
-from conftest import DummyContext
+from conftest import DummyContext, pyzotero_http_module
 from pyzotero.zotero import Zotero
 from pyzotero.zotero_errors import TooManyRetriesError
 
 from zotero_mcp.tools import _helpers
 
-_REQ = httpx.Request("GET", "https://api.zotero.org/users/1/items")
+
+def _zotero():
+    """A web-API Zotero. Constructing one opens no socket."""
+    return Zotero(library_id="1", library_type="user", api_key="x" * 24)
+
+
+# Fixtures must come from the HTTP library pyzotero speaks (httpx2 on
+# >=1.15, httpx below it), or its error handling never sees them (#511).
+_http = pyzotero_http_module()
+
+_REQ = _http.Request("GET", "https://api.zotero.org/users/1/items")
 _ITEM = [{"key": "EXIST001", "version": 1,
           "data": {"itemType": "journalArticle", "DOI": "10.1234/test"}}]
 
@@ -36,13 +45,13 @@ def _429(backoff="1"):
     headers = {"Content-Type": "text/plain"}
     if backoff is not None:
         headers["Backoff"] = backoff
-    return httpx.Response(
+    return _http.Response(
         429, headers=headers, content=b"Too many requests. Slow down", request=_REQ,
     )
 
 
 def _200(items=None):
-    return httpx.Response(
+    return _http.Response(
         200, headers={"Content-Type": "application/json"},
         json=_ITEM if items is None else items, request=_REQ,
     )
@@ -50,7 +59,7 @@ def _200(items=None):
 
 def _client(responses):
     """A client whose transport replays `responses` in order."""
-    zot = Zotero(library_id="1", library_type="user", api_key="x" * 24)
+    zot = _zotero()
     seq = iter(responses)
     zot.client.get = lambda url, params=None, timeout=None, **kw: next(seq)
     zot._set_backoff = lambda *a, **kw: None  # don't sleep in tests

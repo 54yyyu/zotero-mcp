@@ -58,11 +58,17 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
                  rate_limit_rps: float | None = None,
                  max_parallel_requests: int | None = None,
                  max_retries: int | None = None,
-                 tokens_per_minute: float | None = None):
+                 tokens_per_minute: float | None = None,
+                 dimensions: int | None = None):
         import threading
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self._rate_lock = threading.Lock()
         self._last_request_ts: float = 0.0
+        # Optional Matryoshka dimension reduction (text-embedding-3-* only).
+        # When set, the API returns shorter vectors with near-lossless semantic
+        # quality, dramatically reducing ChromaDB storage (≈67% at 1024 vs
+        # 3072). None = use the model's default full dimensionality.
+        self.dimensions: int | None = int(dimensions) if dimensions else None
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
 
@@ -106,6 +112,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             # class wins the registry lookup (issue #382).
             "api_key_env_var": "OPENAI_API_KEY",
             "api_base": self.base_url,
+            "dimensions": getattr(self, "dimensions", None),
             **self._common_config(),
         }
 
@@ -127,6 +134,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             max_parallel_requests=config.get("max_parallel_requests"),
             max_retries=config.get("max_retries"),
             tokens_per_minute=config.get("tokens_per_minute"),
+            dimensions=config.get("dimensions"),
         )
 
     def _wait_for_rate_limit(self) -> None:
@@ -171,6 +179,14 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             "input": texts,
             "encoding_format": "float",
         }
+        # Pass dimensions only when explicitly set; some OpenAI-compatible
+        # backends (e.g. certain OpenRouter models) reject the parameter, so we
+        # omit it rather than risk a 400 on backends that don't support
+        # Matryoshka dimension reduction. Use getattr for __new__-constructed
+        # instances in tests that bypass __init__.
+        dims = getattr(self, "dimensions", None)
+        if dims:
+            request["dimensions"] = dims
 
         if raw_api is not None:
             raw = raw_api.create(**request)

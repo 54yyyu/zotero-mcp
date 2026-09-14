@@ -19,6 +19,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    # 1.14.0 for local API write support: authorize_local(), the
+    # server_id/local_api_key constructor args, and the Zotero._write()
+    # dispatcher that attaches the headers a local write requires.
+    #
     # 1.13.5 retries a rate-limited read internally and raises
     # TooManyRetriesError once the backoff is exhausted (upstream
     # urschrei/pyzotero#352). Below it, every read method hands the HTTP 429
@@ -28,7 +32,7 @@ dependencies = [
     # load-bearing, not just preferred. (1.13.3 is also required, for sending
     # Path(filename).name as the stored-file filename — upstream #341, without
     # which every attach pays for the two-step fallback in _attach_and_verify.)
-    "pyzotero>=1.13.5",
+    "pyzotero>=1.14.0",
     "python-dotenv>=1.0.0",
     # PDF text extraction. Rust with prebuilt abi3 wheels for every platform
     # we support and no Python dependencies of its own. Pinned exactly while
@@ -42,11 +46,18 @@ dependencies = [
     # 2026-07-28 MCP revision, drops ctx.sample/list_roots/elicit, and swaps
     # httpx for httpx2. It is still a beta (4.0.0b1) as of this pin.
     "fastmcp>=2.14.0,<4",
-    # client.py imports httpx directly rather than relying on it arriving
-    # transitively through fastmcp (which replaces it with httpx2 in v4).
+    # The client we hand the local Zotero API is built from whichever HTTP
+    # library the installed pyzotero is built against — httpx2 on >=1.15,
+    # httpx below it — because pyzotero only recognises errors from its own
+    # (#512). client.py still imports httpx directly, as the fallback for a
+    # pyzotero whose HTTP library can't be identified, and so that the
+    # dependency is declared rather than arriving transitively through
+    # fastmcp (which itself replaces it with httpx2 in v4).
     "httpx>=0.27",
     "unidecode>=1.3.0",
     "bibtexparser>=1.4,<2",
+    # updater.py reads the uv tool receipt (TOML); tomllib is stdlib from 3.11.
+    "tomli>=2.0.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

@@ -28,7 +28,7 @@ from zotero_mcp.embeddings.providers import (  # noqa: F401
     ensure_embedding_functions_registered,
 )
 from zotero_mcp.embeddings.registry import create_embedding_function, merge_env_config
-from zotero_mcp.utils import install_hint, suppress_stdout
+from zotero_mcp.utils import ensure_private_dir, install_hint, suppress_stdout
 
 try:
     import chromadb
@@ -67,7 +67,7 @@ class ChromaClient:
         if persist_directory is None:
             # Use user's config directory by default
             config_dir = Path.home() / ".config" / "zotero-mcp"
-            config_dir.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(config_dir)
             persist_directory = str(config_dir / "chroma_db")
 
         self.persist_directory = persist_directory

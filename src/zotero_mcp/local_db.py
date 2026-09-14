@@ -5,12 +5,16 @@ Provides direct SQLite access to Zotero's local database for faster semantic sea
 when running in local mode.
 """
 
+import atexit
 import json
 import logging
 import os
 import platform
 import re
+import shutil
 import sqlite3
+import tempfile
+import threading
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
@@ -89,6 +93,25 @@ def _read_string_pref(prefs_path: Path, pref: str) -> str | None:
         return json.loads(f'"{raw}"')
     except ValueError:
         return raw
+
+
+def _read_bool_pref(prefs_path: Path, pref: str) -> bool | None:
+    """Read a boolean preference from a Zotero prefs.js file.
+
+    Returns None if the file cannot be read or the preference is absent,
+    which for Zotero means the preference is still at its default.
+    """
+    try:
+        text = prefs_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.search(
+        r'user_pref\("' + re.escape(pref) + r'",\s*(true|false)\)',
+        text,
+    )
+    if not m:
+        return None
+    return m.group(1) == "true"
 
 
 def _zotero_profiles_dirs() -> list[Path]:
@@ -556,6 +579,94 @@ def row_to_api_item(
     return item
 
 
+#: Set to "0" to always read zotero.sqlite in place with ``immutable=1``, never
+#: from a WAL-inclusive copy. An escape hatch for very large databases, where
+#: each copy costs as much as the file is big.
+DB_SNAPSHOT_ENV_VAR = "ZOTERO_MCP_DB_SNAPSHOT"
+
+# One snapshot per database for the whole process, because readers are opened
+# per tool call: a copy per reader would copy the database on every call.
+_snapshot_lock = threading.Lock()
+_snapshots: dict[str, tuple[tuple, str]] = {}
+
+
+@atexit.register
+def _remove_snapshots() -> None:
+    """Delete this process's database copies; they hold the whole library."""
+    for _sig, snap in list(_snapshots.values()):
+        shutil.rmtree(os.path.dirname(snap), ignore_errors=True)
+    _snapshots.clear()
+
+
+def _file_signature(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _wal_snapshot_path(db_path: str) -> str | None:
+    """Path to a private copy of ``db_path`` that includes its WAL, or None.
+
+    Zotero keeps its database in WAL mode under an exclusive lock. A normal
+    read-only connection is refused while Zotero runs ("database is locked"),
+    and ``immutable=1`` gets past the lock by not reading the ``-wal`` file at
+    all, so every change since the last checkpoint is invisible: items added
+    today, their attachments, edits (#536). Copying the database together
+    with its WAL and opening the copy normally lets SQLite apply those frames.
+
+    Returns None when there is nothing in the WAL to apply (the in-place read
+    is already current), when snapshots are disabled, or when a copy could not
+    be made consistently; callers then read in place as before.
+
+    The copy is reused until either file's size or mtime changes. A file that
+    changes while it is being copied is retried, since a checkpoint running
+    mid-copy could pair a new main file with an old WAL. SQLite checks WAL
+    frame checksums on open, so a WAL copied while Zotero appended to it
+    yields the last complete transaction, never a torn one.
+    """
+    if os.environ.get(DB_SNAPSHOT_ENV_VAR, "").strip() == "0":
+        return None
+    source = os.path.realpath(db_path)
+    wal = source + "-wal"
+    wal_sig = _file_signature(wal)
+    if wal_sig is None or wal_sig[0] == 0:
+        return None
+
+    with _snapshot_lock:
+        for _attempt in range(3):
+            before = (_file_signature(source), _file_signature(wal))
+            cached = _snapshots.get(source)
+            if cached and cached[0] == before and os.path.exists(cached[1]):
+                return cached[1]
+            snap_dir = tempfile.mkdtemp(prefix="zotero_mcp_db_")
+            snap = os.path.join(snap_dir, "zotero.sqlite")
+            try:
+                shutil.copyfile(source, snap)
+                shutil.copyfile(wal, snap + "-wal")
+            except OSError as e:
+                shutil.rmtree(snap_dir, ignore_errors=True)
+                logger.warning(
+                    "Could not copy %s with its WAL (%s); reading it in place, "
+                    "which misses changes since Zotero's last checkpoint.", source, e,
+                )
+                return None
+            if (_file_signature(source), _file_signature(wal)) != before:
+                shutil.rmtree(snap_dir, ignore_errors=True)
+                continue
+            if cached:
+                # Best effort: an open connection elsewhere keeps its files
+                # alive on POSIX, and on Windows the directory is left behind.
+                shutil.rmtree(os.path.dirname(cached[1]), ignore_errors=True)
+            _snapshots[source] = (before, snap)
+            return snap
+    logger.warning(
+        "%s kept changing while it was being copied; reading it in place.", source
+    )
+    return None
+
+
 class LocalZoteroReader:
     """
     Direct SQLite reader for Zotero's local database.
@@ -676,12 +787,16 @@ class LocalZoteroReader:
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection, creating if needed."""
         if self._connection is None:
-            # Use immutable=1 to bypass locking entirely. Zotero uses rollback
-            # journal mode and holds a write lock while running, which blocks
-            # even read-only connections. immutable=1 skips all lock checks —
-            # safe here since we only read and tolerate slightly stale data.
-            uri = f"file:{self.db_path}?immutable=1"
-            self._connection = sqlite3.connect(uri, uri=True)
+            # Zotero runs the database in WAL mode and holds an exclusive lock
+            # while it is open, which refuses even read-only connections.
+            # immutable=1 skips the lock but also skips the -wal file, so when
+            # the WAL holds changes, read a copy that includes it (#536).
+            snapshot = _wal_snapshot_path(self.db_path)
+            if snapshot:
+                self._connection = sqlite3.connect(snapshot, check_same_thread=True)
+            else:
+                uri = f"file:{self.db_path}?immutable=1"
+                self._connection = sqlite3.connect(uri, uri=True)
             self._connection.row_factory = sqlite3.Row
             # Lets the search backend compare the same folded form of a string
             # that search_semantics.compare() produces in Python.
@@ -774,7 +889,12 @@ class LocalZoteroReader:
             return Path(decoded_path)
 
         # Linked file as absolute path: '/Users/me/papers/file.pdf'
-        if os.path.isabs(zotero_path):
+        #
+        # The leading-slash test is separate from isabs() on purpose: since
+        # Python 3.13 ntpath.isabs() calls "/Users/me/paper.pdf" relative, so a
+        # library synced from macOS or Linux and opened on Windows would
+        # resolve every linked file to None instead of to a path.
+        if zotero_path.startswith("/") or os.path.isabs(zotero_path):
             return Path(zotero_path)
 
         # Zotero 'attachments:' relative path — resolve against the linked
@@ -1178,8 +1298,9 @@ class LocalZoteroReader:
         Get the keys of every item in the database, regardless of type.
 
         Used to verify that the sqlite snapshot is not lagging behind the
-        Zotero API (an `immutable=1` read cannot see rows that are still
-        in an un-checkpointed WAL file).
+        Zotero API. Reads normally include the WAL (see
+        ``_wal_snapshot_path``), but fall back to an in-place ``immutable=1``
+        read that cannot see un-checkpointed rows when a copy is not possible.
         """
         conn = self._get_connection()
         rows = conn.execute("SELECT key FROM items").fetchall()

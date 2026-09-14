@@ -2,6 +2,7 @@
 Helper functions for PDF annotation extraction using pdfannots2json.
 """
 
+import logging
 import os
 import json
 import platform
@@ -9,6 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Constants
 PDFANNOTS_VERSION = "1.0.15"
@@ -59,7 +62,7 @@ def ensure_pdfannots_installed() -> bool:
         success = pdfannots_downloader.download_and_install()
         return success
     except Exception as e:
-        print(f"Error installing pdfannots2json: {e}")
+        logger.error(f"Error installing pdfannots2json: {e}")
         return False
 
 def extract_annotations_from_pdf(
@@ -83,7 +86,7 @@ def extract_annotations_from_pdf(
         List of annotation objects
     """
     if not ensure_pdfannots_installed():
-        print("Error: pdfannots2json is not installed")
+        logger.error("pdfannots2json is not installed")
         return []
 
     # Create temporary output directory if none provided
@@ -111,15 +114,14 @@ def extract_annotations_from_pdf(
         # hostile/oversized PDF can't wedge the worker indefinitely.
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
         annotations = json.loads(result.stdout)
-        print(f"Extracted {len(annotations)} annotations from PDF")
+        logger.info(f"Extracted {len(annotations)} annotations from PDF")
         return annotations
     except subprocess.TimeoutExpired:
-        print("Error: pdfannots2json timed out (PDF too large or unresponsive)")
+        logger.error("pdfannots2json timed out (PDF too large or unresponsive)")
         return []
     except subprocess.CalledProcessError as e:
-        print(f"Error extracting annotations: {e}")
-        print(f"stderr: {e.stderr}")
+        logger.error(f"Error extracting annotations: {e}; stderr: {e.stderr}")
         return []
     except json.JSONDecodeError:
-        print("Error parsing JSON output from pdfannots2json")
+        logger.error("Error parsing JSON output from pdfannots2json")
         return []

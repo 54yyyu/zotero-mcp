@@ -25,14 +25,20 @@ def obfuscate_sensitive_value(value, keep_chars=4):
     return value[:keep_chars] + "*" * (len(value) - keep_chars)
 
 
-def obfuscate_config_for_display(config):
-    """Create a copy of config with sensitive values obfuscated."""
-    if not isinstance(config, dict):
-        return config
+_SENSITIVE_SUFFIXES = ("_API_KEY", "_PASSWORD", "_TOKEN", "_SECRET")
 
-    obfuscated = config.copy()
-    sensitive_keys = [
+
+def _is_sensitive_key(key: str) -> bool:
+    """Explicitly known secrets, plus anything named like one.
+
+    The explicit list keeps the pre-existing behaviour for keys that don't
+    end in a secret-shaped suffix (LIBRARY_ID, WEBDAV_URL, WEBDAV_USERNAME);
+    the suffix rule catches provider keys such as OPENAI_API_KEY and
+    GOOGLE_API_KEY, which used to be printed in full.
+    """
+    explicit = {
         "ZOTERO_API_KEY",
+        "ZOTERO_LOCAL_API_KEY",
         "ZOTERO_LIBRARY_ID",
         "ZOTERO_WEBDAV_URL",
         "ZOTERO_WEBDAV_USERNAME",
@@ -42,12 +48,19 @@ def obfuscate_config_for_display(config):
         "WEBDAV_URL",
         "WEBDAV_USERNAME",
         "WEBDAV_PASSWORD",
-    ]
+    }
+    return key in explicit or key.upper().endswith(_SENSITIVE_SUFFIXES)
 
-    for key in sensitive_keys:
-        if key in obfuscated:
+
+def obfuscate_config_for_display(config):
+    """Create a copy of config with sensitive values obfuscated."""
+    if not isinstance(config, dict):
+        return config
+
+    obfuscated = config.copy()
+    for key in list(obfuscated):
+        if _is_sensitive_key(key):
             obfuscated[key] = obfuscate_sensitive_value(obfuscated[key])
-
     return obfuscated
 
 
@@ -115,7 +128,8 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
     """
     try:
         # Ensure config directory exists
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        from zotero_mcp.utils import ensure_private_dir
+        ensure_private_dir(config_path.parent)
 
         # Load existing config or create new one
         full_config = {}
@@ -384,11 +398,18 @@ def _print_batch_import(stats: dict, provider: str = "openai") -> None:
     print(f"- Batches seen: {stats.get('batches_seen', 0)}")
     print(f"- Batches imported: {stats.get('batches_imported', 0)}")
     print(f"- Batches skipped: {stats.get('batches_skipped', 0)}")
+    if stats.get("batches_submitted"):
+        print(f"- Pending chunks submitted: {stats['batches_submitted']}")
     print(f"- Imported items: {stats.get('imported_items', 0)}")
     print(f"- Added: {stats.get('added_items', 0)}")
     print(f"- Updated: {stats.get('updated_items', 0)}")
     print(f"- Failed rows: {stats.get('failed_items', 0)}")
     print(f"- Missing rows: {stats.get('missing_items', 0)}")
+    if stats.get("deferred"):
+        print(f"\n{stats['deferred']}")
+        print("Run 'zotero-mcp batch-status' to watch them, then 'zotero-mcp batch-import' again.")
+    elif stats.get("batches_submitted"):
+        print("\nRun 'zotero-mcp batch-import' again once the newly submitted batches complete.")
     if stats.get("errors"):
         print("\nWarnings/errors:")
         for error in stats["errors"][:20]:
@@ -429,6 +450,158 @@ def _normalize_help_args(argv: list[str]) -> list[str]:
     if len(argv) == 1:
         return ["--help"]
     return [*argv[1:], "--help"]
+
+
+def _print_write_capabilities(caps):
+    """Print the write configuration, key masked."""
+    labels = {
+        "local": "local API (writes go straight to the running Zotero)",
+        "hybrid": "hybrid (local reads, writes through the Zotero web API)",
+        "web": "web API",
+        "none": "none — writes are not possible",
+    }
+    print(f"Write mode:            {caps['mode']} — {labels[caps['mode']]}")
+    print(f"Local mode:            {'yes' if caps['local_mode'] else 'no'}")
+    if caps["local_mode"]:
+        supported = caps["server_supports_local_writes"]
+        print(f"Zotero supports local writes: "
+              f"{'yes' if supported else 'no (needs Zotero 10 or newer)'}")
+        if caps["server_id"]:
+            print(f"Server ID:             {caps['server_id']}")
+        if caps["has_local_key"]:
+            validity = {True: "reusable", False: "single-use", None: "unknown"}[
+                caps["local_key_remember"]
+            ]
+            print(f"Local API key:         held ({caps['local_key_source']}, {validity})")
+        else:
+            print("Local API key:         none")
+        if not caps["local_write_enabled"]:
+            print("Local writes:          disabled via ZOTERO_LOCAL_WRITE")
+    print(f"Web API credentials:   {'set' if caps['has_web_credentials'] else 'not set'}")
+
+
+def cmd_authorize_local(args):
+    """Grant this app write access to the local Zotero API. Returns an exit code."""
+    from pyzotero.errors import (
+        LocalAPIDeniedError,
+        TooManyRequestsError,
+        UnsupportedParamsError,
+    )
+
+    from zotero_mcp import client as _client
+
+    if args.status:
+        _print_write_capabilities(_client.get_write_capabilities())
+        return 0
+
+    if args.revoke:
+        if _client.clear_local_write_credentials():
+            print("Stored local API key removed.")
+        else:
+            print("No stored local API key to remove.")
+        # Revoke cannot reach into the environment of a process it doesn't
+        # own, so a key set there survives and writes keep going local.
+        # Saying nothing would make revoke look like it had failed.
+        if os.environ.get(_client.LOCAL_API_KEY_ENV):
+            print(
+                f"\nWarning: {_client.LOCAL_API_KEY_ENV} is still set in the "
+                "environment, so local writes remain enabled. Unset it to "
+                "finish revoking."
+            )
+        print(
+            "\nZotero keeps its own record of granted authorizations. To clear "
+            "those too, use Settings > Advanced > Clear Write Authorizations."
+        )
+        return 0
+
+    if not _client.is_local_mode():
+        print(
+            "ZOTERO_LOCAL is not enabled, so there is no local API to authorize. "
+            "Writes already go through the Zotero web API."
+        )
+        return 7
+
+    if not _client.probe_local_server_id():
+        print(
+            "The local Zotero API did not return a Zotero-Server-ID header.\n\n"
+            "Either Zotero is not running with 'Allow other applications on this "
+            "computer to communicate with Zotero' enabled (Settings > Advanced), "
+            "or this build predates local write support, which needs Zotero 10 "
+            "or newer. Until then, set ZOTERO_API_KEY and ZOTERO_LIBRARY_ID to "
+            "write through the web API."
+        )
+        return 5
+
+    app_name = args.app_name or _client.DEFAULT_APP_NAME
+    print(f"Requesting local API write access as \"{app_name}\".")
+    print()
+    print("Zotero will now show an authorization dialog — switch to it and answer:")
+    print("  Always Allow  a reusable key, saved for future sessions")
+    print("  Allow         a key valid for exactly ONE write")
+    print("  Deny          no access")
+    print()
+    print(f"Waiting up to {args.timeout:.0f}s...")
+    # Flush before blocking. Python buffers stdout whenever it isn't a TTY, so
+    # when this command is piped or captured the instructions above would
+    # otherwise not appear until the call returns — i.e. after the user has
+    # already answered the dialog they were being told to look for.
+    sys.stdout.flush()
+
+    try:
+        result = _client.authorize_local_api(
+            app_name=app_name, timeout=args.timeout, persist=not args.no_save
+        )
+    except LocalAPIDeniedError:
+        print("\nDenied. Nothing was changed. Re-run this command to try again.")
+        return 3
+    except TooManyRequestsError:
+        print(
+            "\nZotero is rate-limiting authorization prompts (about 5 per "
+            "minute). Wait a minute and re-run this command."
+        )
+        return 4
+    except UnsupportedParamsError as e:
+        print(f"\n{e}")
+        return 5
+    except Exception as e:
+        print(f"\nAuthorization failed: {e}")
+        return 1
+
+    print()
+    if not result.get("remember"):
+        # Not saved, deliberately: it dies with the first write, and a dead
+        # key on disk would outrank working web credentials on every run.
+        print(
+            "Granted: SINGLE-USE key, not saved. \"Allow\" was chosen rather "
+            "than \"Always Allow\", so it is consumed by one write — and this "
+            "command's own process is about to exit, so nothing will use it."
+        )
+        print(
+            "\nRe-run this command and choose \"Always Allow\" to get a key "
+            "that persists."
+        )
+        if args.print_key:
+            print(f"\nZOTERO_LOCAL_API_KEY={result['key']}")
+            print(f"ZOTERO_LOCAL_SERVER_ID={result.get('server_id')}")
+        return 0
+
+    print("Granted: reusable key.")
+    if args.no_save:
+        print("Not saved (--no-save): export it below to use it.")
+    elif result.get("stored_at"):
+        print(f"Saved to {result['stored_at']} (owner-only permissions).")
+    else:
+        print(
+            "Warning: the key could not be written to the config file. Export "
+            "it as ZOTERO_LOCAL_API_KEY to keep it across runs."
+        )
+
+    if args.print_key:
+        print(f"\nZOTERO_LOCAL_API_KEY={result['key']}")
+        print(f"ZOTERO_LOCAL_SERVER_ID={result.get('server_id')}")
+
+    print("\nWrites will now go directly to the running Zotero, not the cloud.")
+    return 0
 
 
 def main():
@@ -520,7 +693,8 @@ def main():
                                       "configured embedding model)")
     update_db_parser.add_argument("--batch-max-tokens", type=int, default=None, metavar="N",
                                  help="Cap estimated tokens enqueued with the provider at once; "
-                                      "chunks beyond it are held back and submitted as earlier ones finish")
+                                      "chunks beyond it are held back; batch-import and --auto-loop "
+                                      "submit them as earlier ones finish")
     update_db_parser.add_argument("--batch-max-requests", type=int, default=None, metavar="N",
                                  help="Cap requests per uploaded batch file")
     update_db_parser.add_argument("--auto-loop", action="store_true",
@@ -563,7 +737,9 @@ def main():
     ):
         sp = subparsers.add_parser(name, help=helptext)
         sp.add_argument("--batch-id", action="append",
-                        help="Specific batch ID to import; can be repeated")
+                        help="Specific batch ID to import; can be repeated. Importing by id never "
+                             "submits pending chunks; run batch-import without ids to resume a "
+                             "throttled run")
         sp.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
                         help="Which provider's manifests to read (default: inferred from config)")
         sp.add_argument("--config-path", help="Path to semantic search configuration file")
@@ -619,6 +795,24 @@ def main():
         "--force", action="store_true",
         help="Overwrite existing files. In a shared instructions file only the "
              "managed block changes. No backup is kept.")
+
+    # Local write authorization command
+    authorize_parser = subparsers.add_parser(
+        "authorize-local",
+        help="Grant this app write access to the local Zotero API (Zotero 10+)",
+    )
+    authorize_parser.add_argument("--app-name", default=None,
+                                  help="Name shown in the Zotero dialog")
+    authorize_parser.add_argument("--timeout", type=float, default=120.0,
+                                  help="Seconds to wait for the dialog (default: 120)")
+    authorize_parser.add_argument("--status", action="store_true",
+                                  help="Report the current write configuration and exit")
+    authorize_parser.add_argument("--revoke", action="store_true",
+                                  help="Forget the stored local API key and exit")
+    authorize_parser.add_argument("--print", dest="print_key", action="store_true",
+                                  help="Print the granted key (for ZOTERO_LOCAL_API_KEY)")
+    authorize_parser.add_argument("--no-save", action="store_true",
+                                  help="Do not persist the key to the config file")
 
     args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
 
@@ -680,6 +874,10 @@ def main():
         else:
             print(f"Zotero schema already current (version {after}).")
         sys.exit(0)
+
+    elif args.command == "authorize-local":
+        setup_zotero_environment()
+        sys.exit(cmd_authorize_local(args))
 
     elif args.command == "setup-info":
         # Setup Zotero environment variables
@@ -748,6 +946,22 @@ def main():
             }
             print(json.dumps(config_snippet, indent=2))
 
+        # Show how writes reach Zotero
+        print()
+        print("✏️  Write Access:")
+        try:
+            from zotero_mcp import client as _client_mod
+            caps = _client_mod.get_write_capabilities()
+            _print_write_capabilities(caps)
+            if caps["mode"] == "hybrid" and caps["server_supports_local_writes"]:
+                print("  💡 This Zotero supports local writes — run "
+                      "'zotero-mcp authorize-local' to skip the cloud round-trip.")
+            elif caps["mode"] == "none":
+                print("  💡 Run 'zotero-mcp authorize-local' (Zotero 10+), or set "
+                      "ZOTERO_API_KEY and ZOTERO_LIBRARY_ID.")
+        except Exception as e:
+            print(f"  Could not determine write access: {e}")
+
         # Show semantic search database info with detailed statistics
         print()
         print("🧠 Semantic Search Database:")
@@ -797,6 +1011,17 @@ def main():
         sys.exit(setup_main(args))
 
     elif args.command == "update-db":
+        # Reject conflicting flags before anything reads or writes the config:
+        # this is a usage error, and it should not depend on the embedding
+        # provider being installed or on a config existing at all.
+        if args.use_batch is not None and (args.openai_batch is not None or args.gemini_batch is not None):
+            print(
+                "Error: --batch/--no-batch cannot be combined with the deprecated "
+                "--openai-batch/--gemini-batch flags. Use --batch --batch-provider NAME.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         # Setup Zotero environment variables
         setup_zotero_environment()
 
@@ -827,13 +1052,6 @@ def main():
                 db_path=db_path,
                 extraction_workers=getattr(args, "extraction_workers", None),
             )
-            if args.use_batch is not None and (args.openai_batch is not None or args.gemini_batch is not None):
-                print(
-                    "Error: --batch/--no-batch cannot be combined with the deprecated "
-                    "--openai-batch/--gemini-batch flags. Use --batch --batch-provider NAME.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
             for flag, provider in (("--openai-batch", "openai"), ("--gemini-batch", "gemini")):
                 if getattr(args, f"{provider}_batch") is True and (
                     search.chroma_client.embedding_model != provider
@@ -1130,7 +1348,8 @@ def main():
             else:
                 if result.get('success'):
                     print("✅ Update completed successfully!")
-                    print(f"Version: {result.get('current_version', 'Unknown')} → {result.get('latest_version', 'Unknown')}")
+                    installed = result.get('installed_version') or result.get('current_version', 'Unknown')
+                    print(f"Version: {result.get('current_version', 'Unknown')} → {installed}")
                     print(f"Method: {result.get('method', 'Unknown')}")
                     print(f"Message: {result.get('message', '')}")
 

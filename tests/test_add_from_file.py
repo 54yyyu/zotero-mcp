@@ -1,5 +1,6 @@
 """Tests for the local-file source of zotero_add_item (write.add_from_file)."""
 
+import os
 import sys
 import types
 import pytest
@@ -22,7 +23,11 @@ class FakeZoteroForFile(FakeZotero):
 
     def attachment_both(self, files, parentid=None, **kwargs):
         self.attachments.append({"files": files, "parentid": parentid})
-        return {"success": {"0": "ATCH0001"}, "successful": {}, "failed": {}}
+        # Shape matches pyzotero's Zupload.upload(): each status maps to a
+        # list of payload dicts carrying the registered attachment key. A
+        # create_items-shaped dict here reads as an upload that landed no
+        # file, which sends the caller down the two-step retry.
+        return {"success": [{"key": "ATCH0001"}], "unchanged": [], "failure": []}
 
 
 class FakeFitzDocument:
@@ -91,7 +96,7 @@ def _patch_path_valid(monkeypatch):
     monkeypatch.setattr("os.path.exists", lambda p: True)
     monkeypatch.setattr("os.path.isfile", lambda p: True)
     monkeypatch.setattr("os.path.islink", lambda p: False)
-    monkeypatch.setattr("os.path.isabs", lambda p: p.startswith("/"))
+    monkeypatch.setattr("os.path.isabs", lambda p: str(p).startswith("/"))
 
 
 def _patch_hybrid_mode(monkeypatch, fake_write_zot):
@@ -143,7 +148,12 @@ class TestHappyPathNoDoi:
         # Should have called attachment_both
         assert len(fake_zot.attachments) == 1
         att = fake_zot.attachments[0]
-        assert att["files"][0] == ("paper.pdf", "/Users/test/Documents/paper.pdf")
+        # realpath rewrites a POSIX-style path on Windows, so resolve the
+        # expectation the same way the tool does.
+        assert att["files"][0] == (
+            "paper.pdf",
+            os.path.realpath("/Users/test/Documents/paper.pdf"),
+        )
         assert att["parentid"] is not None
 
     def test_uses_filename_as_title_when_none(self, monkeypatch, dummy_ctx):
@@ -193,7 +203,8 @@ class TestDoiFromMetadata:
         # Mock the add_by_doi function to verify delegation
         doi_called_with = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             doi_called_with["doi"] = doi
             doi_called_with["collections"] = collections
             doi_called_with["tags"] = tags
@@ -230,7 +241,8 @@ class TestDoiFromMetadata:
 
         doi_captured = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             doi_captured["doi"] = doi
             return "Added by DOI: Item key: `KEY0001`"
 
@@ -271,7 +283,8 @@ class TestDoiFromFirstPageText:
 
         doi_captured = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             doi_captured["doi"] = doi
             return "Added by DOI"
 
@@ -303,7 +316,8 @@ class TestDoiFromFirstPageText:
         # add_by_doi should NOT be called
         add_by_doi_called = False
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             nonlocal add_by_doi_called
             add_by_doi_called = True
             return "should not happen"
@@ -473,7 +487,7 @@ class TestNonAbsolutePath:
     def test_dot_relative_path_rejected(self, monkeypatch, dummy_ctx):
         fake_zot = FakeZoteroForFile()
         _patch_hybrid_mode(monkeypatch, fake_zot)
-        monkeypatch.setattr("os.path.isabs", lambda p: not p.startswith("."))
+        monkeypatch.setattr("os.path.isabs", lambda p: not str(p).startswith("."))
 
         result = write.add_item(
             source="./Documents/paper.pdf",
@@ -708,7 +722,9 @@ class TestAttachmentBoth:
         assert len(files_arg) == 1
         basename, full_path = files_arg[0]
         assert basename == "my_paper.pdf"
-        assert full_path == "/Users/test/Documents/my_paper.pdf"
+        # The tool resolves the path before attaching, and realpath rewrites a
+        # POSIX-style path on Windows — compare against the same resolution.
+        assert full_path == os.path.realpath("/Users/test/Documents/my_paper.pdf")
 
     def test_attachment_both_receives_parent_item_key(self, monkeypatch, dummy_ctx):
         """The parentid kwarg should be the key of the newly created item."""

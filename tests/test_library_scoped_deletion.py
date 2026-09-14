@@ -528,3 +528,57 @@ def test_get_all_ids_returning_nothing_deletes_nothing(monkeypatch, tmp_path):
 
     assert chroma.deleted == []
     assert stats["deleted_items"] == 0
+
+
+# ---------------------------------------------------------------------------
+# #457: the full-scan path reconciles deletions too
+# ---------------------------------------------------------------------------
+
+def test_full_scan_also_deletes_items_gone_from_zotero(monkeypatch, tmp_path):
+    """No stored watermark means a full scan. It used to have no deletion pass,
+    so an item deleted in Zotero stayed in search results indefinitely."""
+    chroma = RecordingChroma({
+        "PERS_LIVE": _personal_doc("PERS_LIVE"),
+        "PERS_DEAD": _personal_doc("PERS_DEAD"),
+        "GRP_LIVE": _group_doc("GRP_LIVE"),
+    })
+    zot = FakeZoteroClient(versions_state={"PERS_LIVE": 9})
+    search = _build_search(monkeypatch, zot, chroma, _write_config(tmp_path, {}))
+
+    stats = search.update_database()
+
+    assert stats["deleted_items"] == 1
+    assert chroma.deleted == ["PERS_DEAD"]
+    assert "GRP_LIVE" in chroma._docs
+
+
+def test_full_scan_that_cannot_list_the_library_keeps_the_watermark(monkeypatch, tmp_path):
+    chroma = RecordingChroma({"PERS_LIVE": _personal_doc("PERS_LIVE")})
+    zot = FakeZoteroClient(
+        versions_state={"PERS_LIVE": 9},
+        bare_versions_error=RuntimeError("503"),
+    )
+    config_path = _write_config(tmp_path, {})
+    search = _build_search(monkeypatch, zot, chroma, config_path)
+
+    stats = search.update_database()
+
+    assert stats["deletion_skipped_reason"] == "item_versions_unavailable"
+    saved = json.loads(open(config_path).read())["semantic_search"]
+    assert "0" not in (saved.get("last_sync_versions") or {})
+
+
+def test_force_rebuild_runs_no_deletion_pass(monkeypatch, tmp_path):
+    chroma = RecordingChroma({
+        "PERS_LIVE": _personal_doc("PERS_LIVE"),
+        "PERS_DEAD": _personal_doc("PERS_DEAD"),
+    })
+    zot = FakeZoteroClient(versions_state={"PERS_LIVE": 9})
+    search = _build_search(monkeypatch, zot, chroma, _write_config(tmp_path, {"0": 5}))
+
+    stats = search.update_database(force_full_rebuild=True)
+
+    assert chroma.reset_calls == 1
+    assert chroma.deleted == []
+    assert not stats.get("deleted_items")
+

@@ -1199,9 +1199,11 @@ def advanced_search(
         "search_all_libraries=True to cover every indexed library. "
         "query: the topic or concept; natural-language phrases work well. "
         "limit: max results (default 10). "
-        "filters: optional metadata filters as a dict (e.g. "
-        "{'itemType': 'journalArticle', 'year': '2023'}); also accepts a "
-        "JSON string. "
+        "filters: optional ChromaDB metadata filter, one key per dict (e.g. "
+        "{'item_type': 'journalArticle'}); also accepts a JSON string. Keys: "
+        "item_type, item_key, citation_key, doi, publication, tags, "
+        "has_fulltext. Combine keys with {'$and': [{...}, {...}]}. There is "
+        "no year filter: 'date' holds the raw Zotero date string. "
         "library_id: optional — scope to one library other than the active "
         "one: 0 or 'user' for personal, else a groupID (see "
         "zotero_list_libraries). search_all_libraries: search every indexed "
@@ -1463,6 +1465,10 @@ def update_search_database(
             output.append(f"**Added:** {stats.get('added_items', 0)}")
             output.append(f"**Updated:** {stats.get('updated_items', 0)}")
             output.append(f"**Skipped:** {stats.get('skipped_items', 0)}")
+            if stats.get("deleted_items"):
+                output.append(f"**Deleted:** {stats['deleted_items']} (no longer in Zotero)")
+            if stats.get("deletion_skipped_reason"):
+                output.append(f"**Deletion check skipped:** {stats['deletion_skipped_reason']}")
             output.append(f"**Errors:** {stats.get('errors', 0)}")
             output.append(f"**Duration:** {stats.get('duration', 'Unknown')}")
 

@@ -2,6 +2,7 @@
 Utility for downloading and installing the pdfannots2json tool.
 """
 
+import logging
 import os
 import platform
 import tempfile
@@ -9,6 +10,8 @@ import tarfile
 import zipfile
 import hashlib
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 # Constants
 CURRENT_VERSION = "1.0.15"
@@ -88,7 +91,7 @@ def _verify_archive_checksum(archive_path: str, url: str) -> bool:
     asset_name = os.path.basename(url)
     expected = EXPECTED_SHA256.get(asset_name)
     if not expected:
-        print(f"No pinned checksum available for {asset_name}")
+        logger.warning(f"No pinned checksum available for {asset_name}")
         return False
 
     hasher = hashlib.sha256()
@@ -98,7 +101,7 @@ def _verify_archive_checksum(archive_path: str, url: str) -> bool:
 
     actual = hasher.hexdigest()
     if actual != expected:
-        print(
+        logger.error(
             f"Checksum mismatch for {asset_name}. "
             f"Expected {expected}, got {actual}"
         )
@@ -139,10 +142,10 @@ def download_and_install():
     install_dir = get_install_dir()
     url = get_download_url()
     if not url:
-        print(f"No download URL available for {platform.system()} {platform.machine()}")
+        logger.warning(f"No download URL available for {platform.system()} {platform.machine()}")
         return False
 
-    print(f"Downloading pdfannots2json from {url}")
+    logger.info(f"Downloading pdfannots2json from {url}")
 
     try:
         # Create install directory if it doesn't exist
@@ -177,9 +180,9 @@ def download_and_install():
                 os.rename(legacy_exe, exe_path)
                 make_executable(exe_path)
 
-        print(f"Successfully installed pdfannots2json to {exe_path}")
+        logger.info(f"Successfully installed pdfannots2json to {exe_path}")
         return True
 
     except Exception as e:
-        print(f"Error downloading pdfannots2json: {e}")
+        logger.error(f"Error downloading pdfannots2json: {e}")
         return False

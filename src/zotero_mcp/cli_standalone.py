@@ -31,6 +31,7 @@ from zotero_mcp.cli import (
     obfuscate_config_for_display,
     setup_zotero_environment,
 )
+from zotero_mcp.utils import _paginate
 
 # ---------------------------------------------------------------------------
 # Context
@@ -114,18 +115,23 @@ def _keys_from_markdown(markdown: str) -> list[str]:
     ranking, the collection scoping -- instead of reimplementing it and
     drifting from what markdown mode returns. The two modes therefore always
     agree on *which* items matched; JSON only changes how they are rendered.
+    A detailed children listing writes a third shape, `   - Key: KEY`, and a
+    listing for several parents writes a fourth, `  - [KEY] Attachment: ...` (#505).
     """
     global _ITEM_KEY_RE
     if _ITEM_KEY_RE is None:
         import re
         _ITEM_KEY_RE = re.compile(
-            r"^\*\*Item Key:\*\*\s*`?([A-Z0-9]{8})`?\s*$|^- `([A-Z0-9]{8})`",
+            r"^\*\*Item Key:\*\*\s*`?([A-Z0-9]{8})`?\s*$"
+            r"|^- `([A-Z0-9]{8})`"
+            r"|^\s*- Key:\s*([A-Z0-9]{8})\s*$"
+            r"|^\s*- \[([A-Z0-9]{8})\] ",
             re.MULTILINE,
         )
     keys: list[str] = []
     seen: set[str] = set()
     for match in _ITEM_KEY_RE.finditer(markdown or ""):
-        key = match.group(1) or match.group(2)
+        key = match.group(1) or match.group(2) or match.group(3) or match.group(4)
         if key and key not in seen:
             seen.add(key)
             keys.append(key)
@@ -139,6 +145,18 @@ def _fetch_projected(zot, keys: list[str], detail: str = "summary") -> list[dict
     -- so it is restored explicitly rather than left to whatever the API
     returns. Keys the fetch does not return (deleted between the two calls,
     or not visible to this client) are dropped rather than faked.
+
+    The fetch is paged rather than capped at ``len(chunk)``. The local API
+    answers an ``itemKey`` filter with the requested items *plus* their
+    children, and it lists the children first, so a cap sized to the number of
+    keys asked for truncates the response before the parents appear. A single
+    key -- ``limit=1`` -- came back as that item's attachment alone, leaving
+    ``found`` without the one key the caller wanted. Nothing raised: the caller
+    just saw a shorter list than markdown mode returns for the same query, or
+    ``count: 0`` when children filled the cap outright (#499). The same quirk
+    is already handled this way for ``zotero_export_bibliography`` (#371). Paging is a no-op against the web API, which filters correctly and
+    returns at most ``len(chunk)`` records: the first page comes back short and
+    the loop stops, so no extra request is made.
     """
     if not keys:
         return []
@@ -147,7 +165,7 @@ def _fetch_projected(zot, keys: list[str], detail: str = "summary") -> list[dict
     for i in range(0, len(keys), 50):
         chunk = keys[i:i + 50]
         try:
-            batch = zot.items(itemKey=",".join(chunk), limit=len(chunk))
+            batch = _paginate(zot.items, itemKey=",".join(chunk))
         except Exception:
             batch = []
         for item in batch or []:
@@ -178,7 +196,7 @@ def cmd_config(args):
     setup_zotero_environment()
     config = {
         k: v for k, v in os.environ.items()
-        if k.startswith("ZOTERO_") or k in ("OPENAI_API_KEY", "GOOGLE_API_KEY")
+        if k.startswith("ZOTERO_") or k in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY")
     }
     if not getattr(args, "show_secrets", False):
         config = obfuscate_config_for_display(config)
@@ -533,6 +551,11 @@ def cmd_collections(args):
     if args.subcommand == "create":
         _out(args, "collections create", text=write_mod.create_collection(
             name=args.name, parent_collection=getattr(args, "parent", None), ctx=ctx,
+        ))
+    elif args.subcommand == "update":
+        _out(args, "collections update", text=write_mod.update_collection(
+            collection_key=args.collection_key, name=args.name,
+            parent_collection=args.parent, to_top_level=args.top_level, ctx=ctx,
         ))
     elif args.subcommand == "search":
         _out(args, "collections search", text=write_mod.search_collections(query=args.query, ctx=ctx))
@@ -1157,6 +1180,11 @@ def build_parser() -> argparse.ArgumentParser:
     ccs = col_sub.add_parser("create", help="Create a collection")
     ccs.add_argument("name")
     ccs.add_argument("--parent")
+    cus = col_sub.add_parser("update", help="Rename a collection or move it under another parent")
+    cus.add_argument("collection_key")
+    cus.add_argument("--name", help="New name")
+    cus.add_argument("--parent", help="Key or name of the new parent collection")
+    cus.add_argument("--top-level", action="store_true", help="Move out of any parent collection")
     css = col_sub.add_parser("search", help="Search collections by name")
     css.add_argument("query")
     cmg = col_sub.add_parser("manage", help="Add/remove items from collections")

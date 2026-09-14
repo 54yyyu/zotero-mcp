@@ -32,6 +32,9 @@ TOOL_BUDGETS = {
     "zotero_get_notes":                (119, 267),
     "zotero_manage_note":              (139, 312),
     "zotero_create_annotation":        (196, 439),
+    # tools/local_auth.py
+    "zotero_authorize_local_writes":   (115, 260),
+    "zotero_write_capabilities":       ( 70, 165),
     # tools/retrieval.py
     "zotero_get_tags":                 ( 85, 195),
     "zotero_get_item_children":        (138, 310),
@@ -40,6 +43,7 @@ TOOL_BUDGETS = {
     "zotero_update_item":              (190, 426),
     "zotero_batch_update":             (131, 294),
     "zotero_set_item_collections":     ( 98, 220),
+    "zotero_update_collection":        ( 84, 188),
     # Both rewritten for the paging/auto-merge work (#394, #395): the auto
     # mode's two-call confirmation and keeper heuristic are things a model has
     # to know before it calls, so they belong in the description. merge's max
@@ -52,7 +56,9 @@ TOOL_BUDGETS = {
     "zotero_search_by_tag":            (115, 265),
     "zotero_search_by_citation_key":   (125, 280),
     "zotero_advanced_search":          (175, 400),
-    "zotero_semantic_search":          (130, 295),
+    # filters guidance widened (single-key example, $and, no year key);
+    # new baseline ~319 tokens, max clamped to the hard cap.
+    "zotero_semantic_search":          (214, 450),
     "zotero_update_search_database":   (130, 295),
     "zotero_get_search_database_status": ( 75, 170),
 }

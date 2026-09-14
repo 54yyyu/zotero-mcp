@@ -3,11 +3,14 @@
 Use this document as instructions for Claude Co-Work. Copy/paste each section as a prompt, or give the whole document at once and ask Claude to work through it step by step.
 
 **Prerequisites:**
-- Zotero 8 is running on this computer
+- Zotero is running on this computer (Zotero 8 or newer; Zotero 10 or newer to exercise the local write path)
 - The local API is enabled in Zotero preferences ("Allow other applications on this computer to communicate with Zotero")
 - The modified zotero-mcp is installed (run `zotero-mcp version` in terminal to verify)
+- Run `zotero-mcp authorize-local --status` and note which write mode is reported — `local`, `hybrid` or `web`. Several checks below depend on it.
 
-**Important:** After each write operation, open Zotero and verify the change appeared. This confirms hybrid mode is working (local reads + web writes syncing back to local).
+**Important:** After each write operation, open Zotero and verify the change appeared.
+
+In **hybrid** mode this confirms the round-trip works (local reads, web writes syncing back to local). In **local** mode the change should appear in Zotero immediately, with no sync — if it only shows up after a sync, the write went to the cloud and the local path is not actually in use.
 
 **Test item tagging and cleanup rules:**
 
@@ -235,6 +238,63 @@ For example: /Users/eugenehawkin/Documents/some-paper.pdf
 **Verify:** Item created in Zotero. If the PDF contained a DOI, metadata should be auto-populated. The PDF should be attached to the item.
 
 *Skip this test if you don't have a convenient PDF file to test with.*
+
+---
+
+## Phase 7b: Local Write Path (Zotero 10+ only)
+
+Skip this phase on Zotero 9 or older — `zotero-mcp authorize-local --status` will report
+that the running Zotero has no local write API, and everything falls back to hybrid mode.
+
+To exercise the local path honestly, unset `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` for
+the run. With them set, a failure of the local path would silently fall back to the web
+API and the phase would pass without proving anything.
+
+### Test 7b.1: Authorization
+Run `zotero-mcp authorize-local` in a terminal.
+
+**Verify:** the dialog appears in Zotero and **stays up for more than five seconds
+without the command giving up** — a too-short client timeout would make the feature
+unusable. Choose "Always Allow". The command reports a reusable key and the path it was
+saved to. `zotero-mcp authorize-local --status` then reports write mode `local`.
+
+### Test 7b.2: Round trip with no cloud involved
+```
+Add the DOI 10.1038/nature12373 to my library, then update its title, then trash it.
+```
+**Verify:** each change appears in Zotero **immediately**, with no sync. Check Zotero's
+sync status — nothing should have been uploaded.
+
+### Test 7b.3: File attachment lands locally
+```
+Use zotero_add_from_file to import a local PDF.
+```
+**Verify:** the file exists under Zotero's own `storage/` directory. If WebDAV is
+configured, confirm no WebDAV upload was attempted — the desktop handles that itself for
+locally-stored files.
+
+### Test 7b.4: Single-use keys fail loudly
+Run `zotero-mcp authorize-local` again and choose plain **Allow** this time. Perform two
+writes.
+
+**Verify:** the first succeeds; the second fails with a message explaining that keys
+granted with "Allow" are single-use and telling you to re-authorize with "Always Allow".
+Not a bare 401.
+
+### Test 7b.5: Config survives setup
+Run `zotero-mcp setup` (accept the defaults), then `zotero-mcp authorize-local --status`.
+
+**Verify:** the stored key is still there. Setup rebuilds part of the config file, and
+the key lives in its own section so that rewrite cannot drop it.
+
+### Test 7b.6: Group libraries still address the right library
+Switch to a group library with `zotero_switch_library`, create an item and trash it.
+
+**Verify:** both land in the group, not in My Library.
+
+### Phase 7b Cleanup
+Restore `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` if you unset them. Trash any items
+created here (they should carry `_MCP-test-to-delete`).
 
 ---
 
