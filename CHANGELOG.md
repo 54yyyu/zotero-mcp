@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`recent_items` on the SQLite backend reads `items` in the cheaper order for the scope.** Ranking a large personal library walked the `(libraryID, key)` index and fetched every row by rowid, which @mronkko profiled at 94 ms on a 52k-of-90k-item library, against 31 ms for a plain table scan with an `itemTypeID` subquery. The query now filters on `itemTypeID` directly and uses a full scan when the library is at least a fifth of `items`, keeping the index for small scopes such as a group library inside a large database, where it is still faster. Both plans return the same items.
+
+
 ## [0.12.2] - 2026-09-14
 
 ### Fixed
