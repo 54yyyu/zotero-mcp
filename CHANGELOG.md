@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-09-14
+
+### Fixed
+
+- **`zotero_advanced_search` returned wrong items for date ranges on the API path (#551).** A `date` condition with `isAfter`, `isBefore`, `isGreaterThan` or `isLessThan` compared Zotero's display date as text, so "Nov/Dec 1990" sorted after "2024" and "papers since 2024" returned papers from 1990, while an item with no date matched "before 1900". This affected every web-mode install and local mode whenever the SQL path was not used. Range conditions now compare `meta.parsedDate` padded to `YYYY-MM-DD`, exactly the value Zotero's own SQL compares, never the display text; an item with no date matches no condition; and `year` reads the ISO year too, so "October 1, 2016" is a 2016 item on both backends. Date range and year cases are now part of the backend parity suite. Reported, with the fix design, by @mronkko.
+
+- **`zotero_get_tags` on the SQLite backend left out tags that exist only on trashed items (#552).** The API's `/tags` endpoint counts trashed items and the SQLite query excluded them, so the tag list differed depending on which backend answered. SQLite now lists them too, which keeps 0.12.1's change a pure speed-up. The live parity test for tags also gets its own timeout, since listing tags through the API takes about 99 s on a 44k-item library. Reported by @mronkko.
+
+
 ## [0.12.1] - 2026-09-14
 
 ### Added

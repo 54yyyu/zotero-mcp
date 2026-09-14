@@ -907,7 +907,12 @@ def advanced_search(
                         _helpers.collection_descendants(_all_collections, _value)
                     )
 
-        def _extract_values(data: dict[str, object], field: str) -> list[str]:
+        def _extract_values(
+            data: dict[str, object],
+            field: str,
+            operation: str | None = None,
+            meta: dict[str, object] | None = None,
+        ) -> list[str]:
             field_lower = field.lower()
 
             if field_lower in {"author", "authors", "creator", "creators"}:
@@ -950,9 +955,23 @@ def advanced_search(
                 # _matches_condition rejects outright).
                 return keys or [""]
 
+            if field_lower == "date":
+                display = str(data.get("date", "") or "").strip()
+                if operation in _semantics.RANGE_OPS:
+                    # Never the display text, which is free-form (#551).
+                    key = _semantics.date_range_key((meta or {}).get("parsedDate"), display)
+                    return [key] if key else []
+                # An item with no date satisfies no condition, as in SQL.
+                return [display] if display else []
+
             if field_lower == "year":
-                date_value = str(data.get("date", "")).strip()
-                return [date_value[:4]] if len(date_value) >= 4 else []
+                display = str(data.get("date", "") or "").strip()
+                if not display:
+                    return []
+                # The year of the ISO half, like SQL's SUBSTR(value, 1, 4);
+                # the display text often does not start with it.
+                key = _semantics.date_range_key((meta or {}).get("parsedDate"), display)
+                return [key[:4]] if key else []
 
             source_field = _semantics.FIELD_ALIASES.get(field_lower, field)
             raw_value = data.get(source_field, "")
@@ -960,9 +979,13 @@ def advanced_search(
                 return []
             return [str(raw_value).strip()]
 
-        def _matches_condition(data: dict[str, object], condition: dict[str, str]) -> bool:
-            values = _extract_values(data, condition["field"])
+        def _matches_condition(
+            data: dict[str, object],
+            condition: dict[str, str],
+            meta: dict[str, object] | None = None,
+        ) -> bool:
             operation = condition["operation"]
+            values = _extract_values(data, condition["field"], operation, meta)
             target = condition["value"]
 
             # Subtree membership, when asked for. Only is/isNot are membership
@@ -1059,7 +1082,8 @@ def advanced_search(
                     if data.get("itemType") in {"attachment", "note", "annotation"}:
                         continue
 
-                    checks = [_matches_condition(data, c) for c in parsed_conditions]
+                    meta = item.get("meta") or {}
+                    checks = [_matches_condition(data, c, meta) for c in parsed_conditions]
                     matched = all(checks) if join_mode == "all" else any(checks)
                     if matched:
                         results.append(item)
