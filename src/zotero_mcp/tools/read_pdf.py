@@ -4,6 +4,7 @@ import os
 import tempfile
 
 from fastmcp import Context
+from fastmcp.exceptions import ToolError
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
@@ -13,6 +14,32 @@ from zotero_mcp.extract import extract_pdf, pdf_page_count
 from zotero_mcp.tools import _helpers
 
 _TMPDIR_PREFIX = "zotero_pdf_"
+
+
+class PdfReadError(ToolError):
+    """A page read that did not produce pages.
+
+    This tool used to *return* its failures as prose -- "No PDF attachment
+    found for item: ...", "Could not read PDF for item ...". A return value is
+    indistinguishable from content, so every caller treated a failed read as a
+    successful one: ``zotero-cli --json read`` wrapped the message in an
+    ``ok: true`` envelope and exited 0, and the MCP tool answered with
+    ``isError: false``. A pipeline consuming either could not tell "here are
+    the pages" from "there are no pages" without parsing English.
+
+    Raising fixes both surfaces at once, because both already know how to
+    report an exception: FastMCP marks the tool result as an error, and
+    ``cli_standalone.main`` turns it into an ``ok: false`` envelope with a
+    nonzero exit code. Neither needed a change.
+
+    Subclasses ``ToolError`` so FastMCP treats it as a tool error rather than
+    an internal crash, and carries ``code`` so the envelope's ``error.code``
+    is a stable value a caller can branch on instead of the class name.
+    """
+
+    def __init__(self, message: str, code: str = "pdf_read_failed"):
+        super().__init__(message)
+        self.code = code
 
 
 def _cleanup_path(file_path: str) -> None:
@@ -166,16 +193,22 @@ def read_pdf_pages(
     """
     try:
         if not item_key or not item_key.strip():
-            return "Error: item_key cannot be empty."
+            raise PdfReadError("Error: item_key cannot be empty.", code="empty_item_key")
 
         if end_page is not None and end_page < start_page:
-            return "Error: end_page must be greater than or equal to start_page."
+            raise PdfReadError(
+                "Error: end_page must be greater than or equal to start_page.",
+                code="invalid_page_range",
+            )
 
         ctx.info(f"Reading PDF pages {start_page}-{end_page or start_page} for item {item_key}")
 
         result = _get_pdf_path(item_key, ctx)
         if result is None:
-            return f"No PDF attachment found for item: {item_key}"
+            raise PdfReadError(
+                f"No PDF attachment found for item: {item_key}",
+                code="no_pdf_attachment",
+            )
 
         pdf_path, title, is_temp = result
 
@@ -188,27 +221,42 @@ def read_pdf_pages(
             total_pages = pdf_page_count(pdf_path)
         except Exception as exc:
             _release()
-            return f"Could not read PDF for item {item_key}: {exc}"
+            raise PdfReadError(
+                f"Could not read PDF for item {item_key}: {exc}",
+                code="pdf_unreadable",
+            ) from exc
 
         actual_end = end_page if end_page is not None else start_page
 
         if start_page < 1 or start_page > total_pages:
             _release()
-            return f"Start page {start_page} is out of range. PDF has {total_pages} pages (1-{total_pages})."
+            raise PdfReadError(
+                f"Start page {start_page} is out of range. PDF has {total_pages} pages (1-{total_pages}).",
+                code="page_out_of_range",
+            )
         if end_page is not None and end_page > total_pages:
             _release()
-            return f"End page {end_page} is out of range. PDF has {total_pages} pages (1-{total_pages})."
+            raise PdfReadError(
+                f"End page {end_page} is out of range. PDF has {total_pages} pages (1-{total_pages}).",
+                code="page_out_of_range",
+            )
 
         requested = actual_end - start_page + 1
         if requested > 50:
             _release()
-            return f"Requested {requested} pages (max 50). Please narrow your page range."
+            raise PdfReadError(
+                f"Requested {requested} pages (max 50). Please narrow your page range.",
+                code="page_limit_exceeded",
+            )
 
         try:
             # extract_pdf takes 0-indexed pages; the tool's API is 1-indexed.
             doc = extract_pdf(pdf_path, pages=list(range(start_page - 1, actual_end)))
         except Exception as exc:
-            return f"Could not read PDF for item {item_key}: {exc}"
+            raise PdfReadError(
+                f"Could not read PDF for item {item_key}: {exc}",
+                code="pdf_unreadable",
+            ) from exc
         finally:
             _release()
 
@@ -234,6 +282,10 @@ def read_pdf_pages(
             "Consider using zotero_semantic_search to find specific content instead of reading full pages.",
         )
 
+    except PdfReadError:
+        # Already carries the specific code; re-wrapping it here would bury
+        # that under the generic one and repeat the message.
+        raise
     except Exception as e:
         ctx.error(f"Error reading PDF pages: {str(e)}")
-        return f"Error reading PDF pages: {str(e)}"
+        raise PdfReadError(f"Error reading PDF pages: {str(e)}") from e
