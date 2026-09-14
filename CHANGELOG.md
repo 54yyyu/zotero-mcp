@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-14
+
 ### Added
 
 - **In local mode, read tools answer from `zotero.sqlite` instead of the Zotero API, with the API as a per-call fallback.** Every read tool used to call pyzotero, so its access patterns were shaped by HTTP: one request per item, per page of 100, per parent's children. Reads now go through one read port with two implementations. The SQLite one answers from the database file in a fixed handful of queries, and is the default whenever `ZOTERO_LOCAL=true` and the database is readable. Measured on a 44,105-item library: one item 0.4 ms vs 43.5 ms, children of 25 items 1.8 ms vs 2,476 ms, all tags 110 ms vs 103.9 s. Anything SQLite cannot express, such as a wildcard tag filter or a boolean `itemType` expression, is re-asked of the API for that call, and `ZOTERO_BACKEND=api` restores the old behaviour. It also keeps read tools working with Zotero closed, makes global search (`search_all_libraries`) available by default in local mode, and fixes four bugs the port exposed: `search_items(collection_key=...)` reporting an existing collection as missing when Zotero was closed, `search_by_citation_key` missing keys outside a 25-result window, `items(itemKey=...)` returning child notes, and a redundant probe in `switch_library`. Readers held across tool calls reopen when Zotero writes, and the WAL snapshot of a large database is refreshed at most once per `ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL` seconds (default 5). Designed, built and measured by @mronkko (#502).
