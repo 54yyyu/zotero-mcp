@@ -11,6 +11,7 @@ can — but it does prove the client is sending what the spec describes.
 """
 
 import json
+import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -96,9 +97,22 @@ class _Handler(BaseHTTPRequestHandler):
         self._respond(204)
 
 
+class _StubServer(HTTPServer):
+    """HTTPServer without the reverse DNS lookup in server_bind.
+
+    HTTPServer.server_bind calls socket.getfqdn() on the bound address, which
+    on GitHub's macOS runners blocks past pytest-timeout's 30s before any test
+    code runs. The stub only needs the socket, so bind it the TCPServer way.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 @pytest.fixture
 def stub_zotero():
-    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    server = _StubServer(("127.0.0.1", 0), _Handler)
     server.requests = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
