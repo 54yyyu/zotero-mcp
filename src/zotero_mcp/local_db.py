@@ -2873,19 +2873,40 @@ class LocalZoteroReader:
                 " AND i.itemID IN (SELECT itemID FROM collectionItems WHERE collectionID = ?)"
             )
             collection_params = [collection_id]
-        rows = conn.execute(
-            self._FULL_ITEM_COLUMNS
-            + """ LEFT JOIN itemData title_data
+        # Choose the page first, then hydrate only it. Sorting the full
+        # hydration join (attachment/note/annotation/parent LEFT JOINs for
+        # every item in the library) and then taking LIMIT made this slower
+        # than the API on a 44k-item library (558 ms vs 269 ms); ranking bare
+        # itemIDs is one pass over `items`.
+        title_join = (
+            """ LEFT JOIN itemData title_data
                       ON title_data.itemID = i.itemID AND title_data.fieldID = 1
                   LEFT JOIN itemDataValues title_val ON title_val.valueID = title_data.valueID"""
-            + f""" WHERE i.libraryID IN ({lib_ph})
-                   AND del.itemID IS NULL
-                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
-                   {collection_sql}
-                   ORDER BY {sort_column} {direction.upper()} LIMIT ?""",
-            list(lib_ids) + collection_params + [limit],
+            if sort == "title" else ""
+        )
+        page = [
+            row[0]
+            for row in conn.execute(
+                f"""SELECT i.itemID FROM items i
+                    JOIN itemTypes it ON it.itemTypeID = i.itemTypeID{title_join}
+                    WHERE i.libraryID IN ({lib_ph})
+                      AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                      AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                      {collection_sql}
+                    ORDER BY {sort_column} {direction.upper()}, i.itemID {direction.upper()}
+                    LIMIT ?""",
+                list(lib_ids) + collection_params + [limit],
+            ).fetchall()
+        ]
+        if not page:
+            return []
+        id_ph = ",".join("?" * len(page))
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS + f" WHERE i.itemID IN ({id_ph})", page
         ).fetchall()
-        return self._build_full_items(conn, rows)
+        by_id = {row["itemID"]: row for row in rows}
+        ordered = [by_id[item_id] for item_id in page if item_id in by_id]
+        return self._build_full_items(conn, ordered)
 
     def get_related_items(
         self,
