@@ -16,12 +16,12 @@ The server needs to know how to connect to your Zotero library. There are two ma
 
 ### Option 1: Local Zotero (Recommended)
 
-If you're running Zotero 7 or newer on the same machine, you can connect to the local API:
+If you're running Zotero 7 or later on the same machine, you can connect to the local API:
 
-1. Enable the local API in Zotero's preferences:
+1. Allow local connections in Zotero's settings:
    - Open Zotero
-   - Go to Edit > Preferences > Advanced > API
-   - Check "Enable local API"
+   - Open Settings (Edit → Settings on Windows/Linux, Zotero → Settings on macOS) → Advanced → Miscellaneous
+   - Tick "Allow other applications on this computer to communicate with Zotero"
 
 2. Set the environment variable:
    ```bash
@@ -81,14 +81,15 @@ To use Zotero MCP with Claude Desktop:
 
 - The tool should be available automatically: if not, you might need to double check in the connections menu under Settings.
 
-## **New**: Integrating with OpenAI's ChatGPT
+## Integrating with OpenAI's ChatGPT
 
-This is a new (September 2025) option available through the ChatGPT web app. For the web app, you must use [ChatGPT Developer mode](https://platform.openai.com/docs/guides/developer-mode) which may be restricted to a limited number of OpenAI platforms and apps. A paid subscription appears to be required.
+This option is available through the ChatGPT web app. You must use [ChatGPT Developer mode](https://platform.openai.com/docs/guides/developer-mode) which may be restricted to a limited number of OpenAI platforms and apps. A paid subscription appears to be required.
 
-As of today, zotero-mcp is not available by default on as a web-based MCP, and it seems likely that many users will want to stick with a local MCP due to their large document libraries. Since ChatGPT does not support local MCPs natively through their desktop app (yet?) the way you can move forward is by tunneling.
+zotero-mcp is not available by default as a web-based MCP, and it seems likely that many users will want to stick with a local MCP due to their large document libraries. Since ChatGPT does not support local MCPs natively through their desktop app (yet?) the way you can move forward is by tunneling.
 
 **Use at your own risk**
-While we think that the risk to many individuals will be quite low (Zotero libraries are often composed of large numbers of publically-available documents), the risk of data loss or theft will be present. We are working on a way to secure the server connection (this should be available soon), but even with absolute security there is still the exposure to the AI itself, which we leave to the user to judge for themselves. Please consider your situation before continuing with this guide.
+
+`zotero-mcp serve` has no authentication of its own. Treat the tunnel URL as a bearer token: anyone who has it can use every tool with whatever access the running server has, including writes when web API credentials are configured. The connector recipe below sends no credentials, so ngrok's basic auth would block it; what protects you is keeping the URL private, stopping the tunnel whenever you are not using it, and any ngrok traffic policy (IP or method restrictions) you can apply. If your ChatGPT account offers OAuth for connectors, prefer it over `No authentication`. Whatever the AI service can read from your library is exposed to that service; judge that for your own situation before continuing.
 
 ### Setting up a desktop tunnel for zotero-mcp
 
@@ -96,12 +97,13 @@ A tunnel makes your locally running `zotero-mcp` server securely available to a 
 
 1.  **Install ngrok**: Follow the instructions on the [ngrok website](https://ngrok.com/download) to download and install it. Mac users can use `brew` and we have successfully tested this approach.
 
-2.  **Start the `zotero-mcp` server**: Before starting the tunnel, make sure your MCP server is running. For web-based clients, the `sse` transport is recommended. Open a terminal and run:
+2.  **Start the `zotero-mcp` server**: Before starting the tunnel, make sure your MCP server is running. For web-based clients use the `streamable-http` transport (`sse` still works but is deprecated and prints a warning). Open a terminal and run:
     ```bash
     # Make sure your Zotero environment variables are set first!
     # e.g., export ZOTERO_LOCAL=true
-    zotero-mcp serve --transport sse --host 0.0.0.0 --port 8000
+    zotero-mcp serve --transport streamable-http --port 8000
     ```
+    Leave `--host` at its default (localhost): ngrok forwards to localhost, and binding `0.0.0.0` would also expose the server to your local network.
 
 Important: you should probably leave this terminal open in order to ensure tunnel traffic is successfully transiting to the server.
 
@@ -126,11 +128,11 @@ The setup is nearly identical for both.
 4.  Fill in the details:
     *   **Name**: Zotero MCP
     *   **Description**: Search and retrieve documents from a local Zotero library.
-    *   **MCP Server URL**: This is the critical part. You need to combine your ngrok URL, the `/sse/` endpoint (with a trailing slash), and a unique `session_id`.
-        *   The trailing slash on `/sse/` is important to avoid a redirect.
+    *   **MCP Server URL**: This is the critical part. With the `streamable-http` transport the endpoint is `/mcp` (example: `https://<YOUR_NGROK_URL>.ngrok-free.app/mcp`). The steps below were last verified with the deprecated `sse` transport; if the connector does not accept the `/mcp` URL, start the server with `--transport sse` and use the `/sse/` form: combine your ngrok URL, the `/sse/` endpoint (with a trailing slash), and a unique `session_id`.
+        *   If you use the `sse` fallback: the trailing slash on `/sse/` is important to avoid a redirect.
         *   The `session_id` must be a valid [UUIDv4](https://www.uuidgenerator.net/). While some clients might negotiate a session automatically, explicitly providing a unique ID is the most reliable method.
         *   Example URL: `https://<YOUR_NGROK_URL>.ngrok-free.app/sse/?session_id=<YOUR_UUID>`
-    *   **Authentication**: `No authentication`
+    *   **Authentication**: `No authentication` — the server has none, and this recipe sends no credentials; see "Use at your own risk" above.
     *   Tick the "I trust this application" checkbox.
 5.  Click **Create**. If you are successfully connecting you should see relevant communications logs in your tunnel and your server terminals. If this is successful, an important indication will be the listing of all zotero-mcp tools in the ChatGPT interface.
     *   *Important: our testing indicates that you need to turn all the "Edit" sliders to "Off" in the list of tools.* Otherwise the tool may not be enabled in Developer Mode.
@@ -157,7 +159,7 @@ This would be one possible path to working with Zotero with chatbots other than 
 To set up Zotero MCP with Chorus.sh:
 
 1. **Find your installation path**:
-   - For uv: typically `/Users/USERNAME/.pyenv/versions/3.12.8/bin/zotero-mcp` on macOS
+   - For `uv tool install`: `~/.local/bin/zotero-mcp` on macOS and Linux
    - For other methods: use `zotero-mcp setup-info` to get the exact path and configuration details
 
 2. **Configure in Chorus.sh preferences**:
@@ -180,25 +182,18 @@ Zotero MCP works with any MCP-compatible client. You can start the server manual
 zotero-mcp serve --transport stdio
 ```
 
-For HTTP/SSE-based clients:
+For HTTP-based clients:
 
 ```bash
-zotero-mcp serve --transport sse --host localhost --port 8000
+zotero-mcp serve --transport streamable-http --host localhost --port 8000
 ```
+
+The `sse` transport is still accepted but deprecated.
 
 
 ## Available Tools
 
-When connected to Claude Desktop or another MCP client, you'll have access to these tools:
-
-- **zotero_search_items**: Search your library by title, creator, or content
-- **zotero_get_item_metadata**: Get detailed information about a specific item, including complete raw metadata via `format="json"`
-- **zotero_get_item_fulltext**: Get the full text content of an item
-- **zotero_get_collections**: List all collections in your library
-- **zotero_get_collection_items**: Get all items in a specific collection
-- **zotero_get_item_children**: Get child items (attachments, notes) for a specific item
-- **zotero_get_tags**: Get all tags used in your library
-- **zotero_get_recent**: Get recently added items to your library
+The full, current tool list is in the README under [Available Tools](../README.md#-available-tools). Search, metadata, full text, collections, tags, notes, annotations, PDF reading, adding and editing items, and semantic search are all covered; some groups are opt-in via `ZOTERO_MCP_TOOLSETS`.
 
 ## Example Queries
 
@@ -223,7 +218,7 @@ If you encounter issues:
 
 Some functionality will not work for local libraries due to the distinct differences with [Zotero's local JS API](https://www.zotero.org/support/dev/client_coding/javascript_api). For instance, tagging and other library modifications might not work as expected with the local API connection.
 
-**Workaround**: Even without web storage, a workaround for some of these functionalities might be to set up a web library, point the MCP at that, and then things like setting tags should work properly. We're thinking about better ways to work with local instances in future updates.
+Zotero's local API is read-only. Writes (tags, notes, collections, new items, edits) go through the web API, so keep `ZOTERO_LOCAL=true` and also set `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID`: reads stay local and fast, writes use the web API (hybrid mode). Without web credentials the write tools return an error rather than changing anything.
 
 ### Database Issues
 
@@ -233,6 +228,6 @@ Switching installs or install methods (sometimes to deal with failed installs), 
 zotero-mcp update-db --force-rebuild
 ```
 
-Other than time waiting for the rebuild, there is generally little to no risk involved in triggering the rebuild - so if you're experiencing database-related issues, it's worth trying this command.
+A forced rebuild deletes the whole ChromaDB collection and re-embeds every item in the active library from scratch. With OpenAI or Gemini embeddings that is billed again in full, and it takes as long as the first build. If the index also holds other libraries (or documents with no library attribution), the command refuses and asks for `--allow-mass-deletion`; passing that flag drops those documents permanently. Back up `~/.config/zotero-mcp/chroma_db/` first, and try a plain `zotero-mcp update-db` before rebuilding.
 
 For more help, try the [discussions](https://github.com/54yyyu/zotero-mcp/discussions).
