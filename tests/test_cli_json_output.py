@@ -10,6 +10,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import DummyContext, FakeZotero
 
 from zotero_mcp import cli_json
 from zotero_mcp.cli_standalone import (
@@ -19,6 +20,7 @@ from zotero_mcp.cli_standalone import (
     cmd_get,
     cmd_search,
 )
+from zotero_mcp.tools.retrieval import _format_children_detailed
 
 
 def _raw(key, item_type="journalArticle", title="A Paper", **fields):
@@ -150,6 +152,20 @@ class TestKeyExtraction:
     def test_prose_mentioning_no_keys_yields_none(self):
         assert _keys_from_markdown("No items found matching the criteria.") == []
         assert _keys_from_markdown("") == []
+
+    def test_reads_keys_from_a_detailed_children_listing(self):
+        zot = FakeZotero()
+        zot._items = [{"key": "PAR00001", "data": {"title": "Parent"}}]
+        zot._children = {
+            "PAR00001": [
+                {"key": "NOTE0001", "data": {"itemType": "note", "note": "hi"}},
+                {"key": "ATT00001", "data": {
+                    "itemType": "attachment", "contentType": "application/pdf",
+                }},
+            ],
+        }
+        md = _format_children_detailed(zot, "PAR00001", DummyContext())
+        assert _keys_from_markdown(md) == ["ATT00001", "NOTE0001"]
 
 
 class TestFetchProjected:
