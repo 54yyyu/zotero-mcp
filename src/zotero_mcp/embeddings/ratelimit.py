@@ -32,10 +32,17 @@ never past it.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# A wait at least this long is announced. Without it a paced run and a hung
+# one look identical from outside: no output, no CPU, no error (#548).
+_LONG_WAIT_LOG_SECONDS = 30.0
 
 # Ceiling for the exponential backoff used when a throttled request carries
 # no Retry-After hint.
@@ -96,9 +103,12 @@ class AdaptiveRateLimiter:
         # a time, but far short of a full minute's budget, so a thundering
         # herd of workers cannot exhaust it in a single instant — the exact
         # failure this bucket exists to prevent.
-        default_token_burst = (tpm / 4.0) if tpm is not None else 0.0
+        # An operator-supplied burst is honoured verbatim; a derived one has
+        # to follow the rate, or a decayed rate ends up dividing a capacity
+        # sized for the original budget (#548).
+        self._token_burst_explicit = token_burst is not None
         self._token_capacity = float(
-            token_burst if token_burst is not None else default_token_burst
+            token_burst if token_burst is not None else self._locked_derived_capacity()
         )
         self._token_bucket: float = self._token_capacity
         self._token_last_refill = self._clock()
@@ -130,6 +140,15 @@ class AdaptiveRateLimiter:
                 wait = max(wait, self._locked_take_tokens(float(estimated_tokens)))
 
         if wait > 0:
+            if wait >= _LONG_WAIT_LOG_SECONDS:
+                logger.warning(
+                    "Rate limiter waiting %.0fs for token budget "
+                    "(current allowance %.0f tokens/min). If this repeats, the "
+                    "configured tokens_per_minute is above what the account "
+                    "actually allows, or the account is out of quota.",
+                    wait,
+                    (self._tps or 0.0) * 60.0,
+                )
             self._sleep(wait)
             return wait
         return 0.0
@@ -152,6 +171,7 @@ class AdaptiveRateLimiter:
                 self._tps += max(self._tps * 0.05, 0.05)
                 if self._max_tps is not None:
                     self._tps = min(self._tps, self._max_tps)
+                self._locked_sync_token_capacity()
                 self._locked_apply_header_headroom(headers)
 
             self._consecutive_throttles = 0
@@ -181,6 +201,7 @@ class AdaptiveRateLimiter:
                 self._tps = max(self._min_tps, self._tps * 0.5)
                 if self._max_tps is not None:
                     self._tps = min(self._tps, self._max_tps)
+                self._locked_sync_token_capacity()
                 self._token_bucket = 0.0
                 self._token_last_refill = self._clock()
 
@@ -202,6 +223,29 @@ class AdaptiveRateLimiter:
             self._sleep(seconds)
 
     # -- internals; all assume ``self._lock`` is held by the caller --------
+
+    def _locked_derived_capacity(self) -> float:
+        """A quarter of the *current* per-minute budget, or 0 while unarmed."""
+        return (self._tps * 60.0 / 4.0) if self._tps is not None else 0.0
+
+    def _locked_sync_token_capacity(self) -> None:
+        """Keep a derived capacity proportional to the rate that drains it.
+
+        Capacity is documented as a quarter-minute of budget. Fixing it at the
+        initial rate while AIMD decays the rate decouples the two: the wait in
+        :meth:`_locked_take_tokens` is ``deficit / tps``, so a capacity sized
+        for the opening budget divided by a rate at its floor produces waits
+        measured in hours rather than seconds (#548). Recomputing here keeps
+        ``deficit <= capacity`` in step with ``tps``, which bounds any single
+        wait to the quarter-minute the design intends.
+
+        An explicitly configured ``token_burst`` is left alone, being an
+        operator's deliberate choice about burst size, not a derived value.
+        """
+        if self._token_burst_explicit:
+            return
+        self._token_capacity = self._locked_derived_capacity()
+        self._token_bucket = min(self._token_bucket, self._token_capacity)
 
     def _locked_take_request_token(self) -> float:
         now = self._clock()
