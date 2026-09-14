@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-13
+
 ### Added
 
 - **`zotero_update_collection` renames a collection or moves it under another parent (#517).** The collection keeps its key, subcollections and item membership, so renaming no longer means creating a new collection, refiling every item and deleting the old one. The parent can be given by key or name, `to_top_level=True` moves a collection out of any parent, and a move under the collection itself or one of its own subcollections is refused rather than sent to Zotero. Also available as `zotero-cli collections update KEY --name ... --parent ... --top-level`.
