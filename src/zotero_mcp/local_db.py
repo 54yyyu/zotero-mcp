@@ -3043,6 +3043,10 @@ class LocalZoteroReader:
 
         Measured at 221 ms for 17 302 tags against a 2.3 GB database; the
         same listing walked at 100 rows per OFFSET query took 14.9 s.
+
+        Tags on trashed items are included, because the API's ``/tags``
+        endpoint counts them and this replaced that call; leaving them out made
+        ``zotero_get_tags`` answer differently depending on the backend (#552).
         """
         conn = self._get_connection()
         lib_ids = self._resolve_scope_library_ids(group_id)
@@ -3059,7 +3063,6 @@ class LocalZoteroReader:
             JOIN itemTags itg ON itg.tagID = t.tagID
             JOIN items i ON i.itemID = itg.itemID
             WHERE i.libraryID IN ({lib_ph})
-              AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             ORDER BY t.name{limit_sql}
             """,
             list(lib_ids) + limit_params,

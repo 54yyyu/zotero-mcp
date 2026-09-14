@@ -130,7 +130,10 @@ def test_list_collections_agree(both_backends):
         assert from_sqlite[key] == from_api[key], f"collection {key} name diverged"
 
 
+@pytest.mark.timeout(600)
 def test_list_tags_agree(both_backends):
+    # The API side pages /tags 100 at a time: 181 requests and ~99 s on a
+    # 44k-item library, far past the suite-wide 30 s timeout (#552).
     """The 67x optimisation must list the same tags the OFFSET walk did."""
     sqlite_backend, api_backend = both_backends
     assert set(sqlite_backend.list_tags()) == set(api_backend.list_tags())
