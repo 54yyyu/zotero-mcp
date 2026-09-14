@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`zotero-cli --json get children` with more than one parent key reported `count: 0` (#505).** Several keys render through the grouped children listing, whose `  - [KEY] Attachment: ...` lines matched none of the shapes the JSON path reads keys back from, so every child was dropped before the fetch. That shape is now recognised too, the same kind of fix #504 made for the single-parent listing.
+
 - **Items with no text-bearing attachments were reported as "PDF extraction previously failed", and a rebuild made the count grow (#446).** Any item whose extraction pass produced no text was marked `has_fulltext="failed"`, including notes-only entries, webpage stubs and books with no file, which never had anything to extract. Every later run listed them as failed extractions, and `--force-rebuild` re-marked all of them, so the number went up (928 to 2273 in the report) while the rebuild itself said `0 errors`. Items with no text-bearing attachments now get no marker: they index metadata-only, count as up to date, and re-index when a first attachment appears. Legacy markers on such items are reported as metadata-only rather than as failures, and the run that does the extraction now says how many items had attachments that produced no text.
 
 - **`zotero-mcp update-db --batch --openai-batch` read the config and built the embedding client before rejecting the flag combination.** The conflict is a usage error, so it is now checked first, before anything reads or writes the config. The old order also made `tests/test_generic_batch_flags.py` depend on the developer's real config and on that config's embedding provider being installed.

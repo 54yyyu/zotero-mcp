@@ -115,7 +115,8 @@ def _keys_from_markdown(markdown: str) -> list[str]:
     ranking, the collection scoping -- instead of reimplementing it and
     drifting from what markdown mode returns. The two modes therefore always
     agree on *which* items matched; JSON only changes how they are rendered.
-    A detailed children listing writes a third shape, `   - Key: KEY`.
+    A detailed children listing writes a third shape, `   - Key: KEY`, and a
+    listing for several parents writes a fourth, `  - [KEY] Attachment: ...` (#505).
     """
     global _ITEM_KEY_RE
     if _ITEM_KEY_RE is None:
@@ -123,13 +124,14 @@ def _keys_from_markdown(markdown: str) -> list[str]:
         _ITEM_KEY_RE = re.compile(
             r"^\*\*Item Key:\*\*\s*`?([A-Z0-9]{8})`?\s*$"
             r"|^- `([A-Z0-9]{8})`"
-            r"|^\s*- Key:\s*([A-Z0-9]{8})\s*$",
+            r"|^\s*- Key:\s*([A-Z0-9]{8})\s*$"
+            r"|^\s*- \[([A-Z0-9]{8})\] ",
             re.MULTILINE,
         )
     keys: list[str] = []
     seen: set[str] = set()
     for match in _ITEM_KEY_RE.finditer(markdown or ""):
-        key = match.group(1) or match.group(2) or match.group(3)
+        key = match.group(1) or match.group(2) or match.group(3) or match.group(4)
         if key and key not in seen:
             seen.add(key)
             keys.append(key)

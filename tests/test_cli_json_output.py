@@ -168,6 +168,36 @@ class TestKeyExtraction:
         assert _keys_from_markdown(md) == ["ATT00001", "NOTE0001"]
 
 
+    def test_reads_keys_from_a_grouped_children_listing(self):
+        """Several parent keys render through _format_children_grouped, whose
+        `  - [KEY] Attachment: ...` lines no other alternative matched, so
+        `get children --json K1 K2` reported count 0 (#505)."""
+        from zotero_mcp.tools.retrieval import _format_children_grouped
+
+        class _Zot:
+            def items(self, itemKey=None, start=0, limit=100, **kwargs):
+                if start:
+                    return []
+                return [{"key": k, "data": {"title": f"Parent {k}"}}
+                        for k in itemKey.split(",")]
+
+            def children(self, key, start=0, limit=100, **kwargs):
+                if start:
+                    return []
+                return [
+                    {"key": f"ATT{key[-5:]}", "data": {
+                        "itemType": "attachment", "contentType": "application/pdf",
+                        "filename": f"{key}.pdf", "linkMode": "imported_file"}},
+                    {"key": f"NOT{key[-5:]}", "data": {
+                        "itemType": "note", "note": "<p>hi</p>"}},
+                ]
+
+        md = _format_children_grouped(_Zot(), ["PAR00001", "PAR00002"], DummyContext())
+        keys = _keys_from_markdown(md)
+        for child in ("ATT00001", "NOT00001", "ATT00002", "NOT00002"):
+            assert child in keys, (child, md)
+
+
 class TestFetchProjected:
     def test_result_order_follows_the_requested_order(self):
         """Rank order carries the answer for a search; the API returns
