@@ -128,6 +128,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
     batch_update_tags,
     create_collection,
     delete_collection,
+    update_collection,
     delete_item,
     find_duplicates,
     get_pdf_outline,

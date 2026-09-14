@@ -552,6 +552,11 @@ def cmd_collections(args):
         _out(args, "collections create", text=write_mod.create_collection(
             name=args.name, parent_collection=getattr(args, "parent", None), ctx=ctx,
         ))
+    elif args.subcommand == "update":
+        _out(args, "collections update", text=write_mod.update_collection(
+            collection_key=args.collection_key, name=args.name,
+            parent_collection=args.parent, to_top_level=args.top_level, ctx=ctx,
+        ))
     elif args.subcommand == "search":
         _out(args, "collections search", text=write_mod.search_collections(query=args.query, ctx=ctx))
     elif args.subcommand == "manage":
@@ -1175,6 +1180,11 @@ def build_parser() -> argparse.ArgumentParser:
     ccs = col_sub.add_parser("create", help="Create a collection")
     ccs.add_argument("name")
     ccs.add_argument("--parent")
+    cus = col_sub.add_parser("update", help="Rename a collection or move it under another parent")
+    cus.add_argument("collection_key")
+    cus.add_argument("--name", help="New name")
+    cus.add_argument("--parent", help="Key or name of the new parent collection")
+    cus.add_argument("--top-level", action="store_true", help="Move out of any parent collection")
     css = col_sub.add_parser("search", help="Search collections by name")
     css.add_argument("query")
     cmg = col_sub.add_parser("manage", help="Add/remove items from collections")

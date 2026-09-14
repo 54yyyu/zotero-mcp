@@ -206,6 +206,13 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `<name>`
  - `--parent`
 
+### `collections update`
+
+ - `<collection_key>`
+ - `--name` -- New name
+ - `--parent` -- Key or name of the new parent collection
+ - `--top-level` -- Move out of any parent collection
+
 ### `collections search`
 
  - `<query>`

@@ -979,6 +979,98 @@ def delete_collection(
 
 
 @mcp.tool(
+    name="zotero_update_collection",
+    description=(
+        "Rename a collection or move it under a different parent, keeping its "
+        "key, subcollections and item membership (#517). collection_key: the "
+        "8-character key of the collection to change. name: the new name, or "
+        "omit to keep it. parent_collection: key or name of the new parent; "
+        "a collection cannot be moved under itself or one of its own "
+        "subcollections. to_top_level=True moves it out of any parent. Pass "
+        "at least one change. Use zotero_search_collections to find keys. "
+        'Example: zotero_update_collection(collection_key="KMMQDFQ4", '
+        'name="AI & ML").'
+    )
+)
+@with_zotero_api_lock
+def update_collection(
+    collection_key: str,
+    name: str | None = None,
+    parent_collection: str | None = None,
+    to_top_level: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if name is not None and not name.strip():
+            return "Error: name cannot be empty."
+        if parent_collection and to_top_level:
+            return "Error: pass parent_collection or to_top_level=True, not both."
+        if name is None and not parent_collection and not to_top_level:
+            return "Error: nothing to change. Pass name, parent_collection or to_top_level=True."
+
+        try:
+            coll = write_zot.collection(collection_key)
+        except Exception as e:
+            return f"Collection not found: `{collection_key}` ({_helpers.format_zotero_error(e)})"
+
+        data = dict(coll.get("data", {}))
+        data.setdefault("key", coll.get("key", collection_key))
+        if "version" not in data and "version" in coll:
+            data["version"] = coll["version"]
+        old_name = data.get("name", collection_key)
+        changes = []
+
+        if name is not None and name != old_name:
+            data["name"] = name
+            changes.append(f"renamed to \"{name}\"")
+
+        if parent_collection:
+            parent_key = parent_collection
+            if not re.match(r"^[A-Z0-9]{8}$", parent_collection):
+                try:
+                    keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
+                except ValueError as e:
+                    return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
+                parent_key = keys[0] if keys else None
+                if not parent_key:
+                    return f"Error: parent collection not found: {parent_collection}"
+            # Zotero accepts a parent that is the collection itself or one of
+            # its descendants and the tree then disappears from the desktop
+            # client, so refuse the cycle here.
+            own_subtree = set(_helpers.expand_collection_scope(read_zot, collection_key, True))
+            own_subtree.add(collection_key)
+            if parent_key in own_subtree:
+                return (
+                    f"Error: cannot move `{collection_key}` under `{parent_key}`, "
+                    "which is the collection itself or one of its subcollections."
+                )
+            if data.get("parentCollection") != parent_key:
+                data["parentCollection"] = parent_key
+                changes.append(f"moved under `{parent_key}`")
+        elif to_top_level and data.get("parentCollection"):
+            data["parentCollection"] = False
+            changes.append("moved to the top level")
+
+        if not changes:
+            return f"No change: collection \"{old_name}\" (`{collection_key}`) already matches."
+
+        resp = write_zot.update_collection(data)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Updated collection \"{old_name}\" (`{collection_key}`): " + "; ".join(changes)
+        return f"Failed to update collection `{collection_key}`: {resp}"
+
+    except Exception as e:
+        ctx.error(f"Error updating collection: {e}")
+        return f"Error updating collection: {_helpers.format_zotero_error(e)}"
+
+
+@mcp.tool(
     name="zotero_search_collections",
     description=(
         "Search collections by name in the active library and return their "

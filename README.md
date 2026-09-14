@@ -977,6 +977,7 @@ All add tools take a `collections` parameter accepting collection keys, names, o
 - `zotero_attach_file`: Attach a local file or a PDF URL to an existing item by key (no new item created; returns the attachment key; idempotent per filename and content hash)
 - `zotero_set_item_parent`: Set, change, or clear an item's parent (`parent_key=null` makes it top-level)
 - `zotero_create_collection`: Create a new collection (folder/project) in your library
+- `zotero_update_collection`: Rename a collection or move it under another parent (keeps its key, subcollections and items)
 - `zotero_search_collections`: Search for collections by name to find their keys
 - `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
 - `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
