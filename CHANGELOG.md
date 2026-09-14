@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tool descriptions and error text no longer name tools removed in 0.9.0.** `zotero_delete_item` sent callers to `zotero_delete_note`, `zotero_attach_file` to `zotero_add_from_file`, and BibTeX/CSL JSON results were headed `# zotero_add_by_bibtex` / `# zotero_add_by_csl_json`; all now name `zotero_manage_note` / `zotero_add_item`. The `zotero_semantic_search` `filters` example used a `year` key the index never stores together with a second key, which ChromaDB rejects ("Expected where to have exactly one operator"); it now shows a single stored key and explains `$and`. A test reads the shipped descriptions and fails if any names a tool that cannot be registered.
 
+- **`zotero-cli config` printed `OPENAI_API_KEY` and `GOOGLE_API_KEY` in full.** The mask list only named Zotero and WebDAV secrets. Any key ending in `_API_KEY`, `_PASSWORD`, `_TOKEN` or `_SECRET` is now masked by default (`--show-secrets` still reveals them), and `GEMINI_API_KEY` is included in the listing. The packaged agent skill tells agents to run `zotero-cli config` first, so the full keys were landing in agent transcripts.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
