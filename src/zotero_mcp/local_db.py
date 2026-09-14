@@ -909,6 +909,9 @@ class LocalZoteroReader:
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
+        # (library ids) -> whether a full scan beats the (libraryID, key)
+        # index for them; valid for the lifetime of one connection.
+        self._scan_choice: dict[tuple[int, ...], bool] = {}
         self._library_labels: dict[int, tuple[int, str]] | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
         self.attachment_priority: tuple[str, ...] = normalize_attachment_priority(
@@ -1402,6 +1405,7 @@ class LocalZoteroReader:
         if self._connection:
             self._connection.close()
             self._connection = None
+        self._scan_choice = {}
 
     def __enter__(self):
         return self
@@ -2838,6 +2842,26 @@ class LocalZoteroReader:
                 return item
         return None
 
+    #: Share of `items` above which a full scan beats the (libraryID, key)
+    #: index for a library-filtered ranking query. Measured crossover on a
+    #: 90k-row database is around 10-15%; 20% keeps small scopes on the index.
+    _SCAN_SHARE_THRESHOLD = 0.2
+
+    def _scope_prefers_scan(self, conn: sqlite3.Connection, lib_ids) -> bool:
+        """Whether reading `items` in full is cheaper than the libraryID index."""
+        cache_key = tuple(sorted(lib_ids))
+        cached = self._scan_choice.get(cache_key)
+        if cached is not None:
+            return cached
+        lib_ph = ",".join("?" * len(cache_key))
+        in_scope = conn.execute(
+            f"SELECT COUNT(*) FROM items WHERE libraryID IN ({lib_ph})", cache_key
+        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+        choice = bool(total) and in_scope / total >= self._SCAN_SHARE_THRESHOLD
+        self._scan_choice[cache_key] = choice
+        return choice
+
     def get_recent_items(
         self,
         *,
@@ -2878,20 +2902,35 @@ class LocalZoteroReader:
         # every item in the library) and then taking LIMIT made this slower
         # than the API on a 44k-item library (558 ms vs 269 ms); ranking bare
         # itemIDs is one pass over `items`.
+        #
+        # How that pass reads `items` matters as much. SQLite picks the
+        # (libraryID, key) index for the libraryID filter, then fetches every
+        # row by rowid to read itemTypeID and dateAdded. For a scope that is
+        # most of the table that is slower than reading the table in order:
+        # profiled by @mronkko on a 52k-of-90k personal library at 94 ms as
+        # written vs 31 ms with NOT INDEXED and an itemTypeID subquery. For a
+        # small scope the index still wins (3 ms vs 4 ms for a 3k group
+        # library in a 90k database), so the scan is chosen per scope.
         title_join = (
             """ LEFT JOIN itemData title_data
                       ON title_data.itemID = i.itemID AND title_data.fieldID = 1
                   LEFT JOIN itemDataValues title_val ON title_val.valueID = title_data.valueID"""
             if sort == "title" else ""
         )
+        items_source = (
+            "items i NOT INDEXED"
+            if not collection_key and self._scope_prefers_scan(conn, lib_ids)
+            else "items i"
+        )
         page = [
             row[0]
             for row in conn.execute(
-                f"""SELECT i.itemID FROM items i
-                    JOIN itemTypes it ON it.itemTypeID = i.itemTypeID{title_join}
+                f"""SELECT i.itemID FROM {items_source}{title_join}
                     WHERE i.libraryID IN ({lib_ph})
                       AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-                      AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                      AND i.itemTypeID NOT IN (
+                          SELECT itemTypeID FROM itemTypes
+                          WHERE typeName IN ('attachment', 'note', 'annotation'))
                       {collection_sql}
                     ORDER BY {sort_column} {direction.upper()}, i.itemID {direction.upper()}
                     LIMIT ?""",
