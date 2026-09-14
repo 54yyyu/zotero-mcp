@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The test suite was red on a clean checkout against pyzotero >=1.15 (#511).** pyzotero 1.15 moved off httpx onto httpx2 — httpx 2.x, published under a separate distribution name, and a disjoint class hierarchy. `tests/test_rate_limit_guard.py` did `import httpx`, which resolves to the httpx 0.28 that `mcp`/`httpx-sse` pull in regardless of pyzotero, and built its 429 fixtures as `httpx.Response`. pyzotero's `_post_check` catches only `httpx2.HTTPError`, so those responses escaped it uncaught: the retry loop never saw the 429, `error_handler` never recorded the backoff, and `TooManyRetriesError` was never raised. Five tests failed — three leaking `HTTPStatusError` where they expect a retry or the typed error, two degrading to `[]` because `find_existing_items`' generic `except Exception` caught the leaked error instead of the typed clause above it. Since CI installs bare `pyzotero` against a floor with no ceiling and there is no lockfile, it resolves whatever is newest, so every PR opened after 1.15.0 reached PyPI showed the same five red checks. The fixtures are now built from whatever HTTP library the installed pyzotero speaks — asked of pyzotero rather than guessed at import time, since both libraries can be installed at once — which keeps the declared `pyzotero>=1.13.5` range green rather than narrowing it. Nothing the tests pin actually changed: 1.15.1 still retries a rate-limited read three times and still waits out a server-supplied backoff. The same mismatch has a *runtime* consequence on the local-API path, where our own httpx 0.28 client bypasses pyzotero's error handling for real; that is #512 and is not addressed here.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
