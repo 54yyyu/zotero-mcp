@@ -392,7 +392,7 @@ def warmup_reranker(config_path: str | None = None) -> bool:
         return False
     model = cfg.get("model", _DEFAULT_RERANKER_CONFIG["model"])
     try:
-        get_cached_reranker(model)
+        get_cached_reranker(model, cfg)
         return True
     except Exception as e:
         logger.warning(f"Reranker warmup failed for '{model}': {e}")
@@ -627,6 +627,134 @@ class CrossEncoderReranker:
         return [(i, float(scores[i])) for i in ranked[:top_k]]
 
 
+# Hosted rerank endpoints. All four speak the same shape — a query, a list of
+# documents, a cut-off, and a response of ``{index, relevance_score}`` — so one
+# client covers them and switching vendors is a config edit. Only the URL, the
+# key variable and the spelling of the cut-off differ.
+_RERANK_PROVIDERS: dict[str, dict[str, str]] = {
+    "voyage": {
+        "url": "https://api.voyageai.com/v1/rerank",
+        "key_env": "VOYAGE_API_KEY",
+        "top_field": "top_k",
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/rerank",
+        "key_env": "OPENROUTER_API_KEY",
+        "top_field": "top_n",
+    },
+    "cohere": {
+        "url": "https://api.cohere.com/v2/rerank",
+        "key_env": "COHERE_API_KEY",
+        "top_field": "top_n",
+    },
+    "contextual": {
+        "url": "https://api.contextual.ai/v1/rerank",
+        "key_env": "CONTEXTUAL_API_KEY",
+        "top_field": "top_n",
+    },
+}
+
+
+class APIReranker:
+    """Re-rank through a hosted cross-encoder instead of a local model.
+
+    Interface-compatible with :class:`CrossEncoderReranker`, so the search path
+    does not care which one it holds. Exists because the strong local
+    cross-encoders need a GPU to be interactive — on CPU they add seconds to
+    every query, while these endpoints answer in 200-600ms.
+
+    A failed call degrades to the retriever's own order rather than raising:
+    losing the re-ranking is a worse search, but losing the search entirely
+    because a network call timed out is a broken tool.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        provider: str,
+        base_url: str | None = None,
+        api_key_env: str | None = None,
+        instruction: str | None = None,
+        timeout: float = 30.0,
+    ):
+        preset = _RERANK_PROVIDERS.get(provider, {})
+        if not preset and not (base_url and api_key_env):
+            raise ValueError(
+                f"Unknown rerank provider '{provider}'. Use one of "
+                f"{', '.join(sorted(_RERANK_PROVIDERS))}, or set both "
+                "reranker.base_url and reranker.api_key_env."
+            )
+        self.provider = provider
+        self.model_name = model_name
+        self.url = base_url or preset["url"]
+        self.top_field = preset.get("top_field", "top_n")
+        self.key_env = api_key_env or preset.get("key_env", "")
+        self.instruction = instruction
+        self.timeout = timeout
+
+        self.api_key = os.getenv(self.key_env) if self.key_env else None
+        if not self.api_key:
+            raise ValueError(
+                f"Rerank provider '{provider}' needs {self.key_env} in the "
+                "environment; it is unset."
+            )
+
+    def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
+        """Indices of the top_k documents, most relevant first."""
+        return [idx for idx, _ in self.rerank_with_scores(query, documents, top_k)]
+
+    def rerank_with_scores(
+        self, query: str, documents: list[str], top_k: int
+    ) -> list[tuple[int, float]]:
+        """``(index, relevance_score)`` pairs from the hosted reranker."""
+        import requests
+
+        if not documents:
+            return []
+        cutoff = max(1, min(top_k, len(documents)))
+        payload: dict[str, Any] = {
+            "model": self.model_name,
+            "query": query,
+            "documents": documents,
+            self.top_field: cutoff,
+        }
+        # Instruction-following rerankers (Voyage rerank-3, Contextual's
+        # -instruct line) take steering here; others ignore an unknown field,
+        # so it is only sent when configured.
+        if self.instruction:
+            payload["instruction"] = self.instruction
+
+        try:
+            response = requests.post(
+                self.url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            results = response.json().get("results", [])
+            ranked = [
+                (int(r["index"]), float(r.get("relevance_score", 0.0)))
+                for r in results
+                if isinstance(r, dict) and "index" in r
+            ]
+            if ranked:
+                return ranked[:top_k]
+            logger.warning(
+                f"Rerank via {self.provider}/{self.model_name} returned no "
+                "results; keeping retrieval order."
+            )
+        except Exception as e:
+            logger.warning(
+                f"Rerank via {self.provider}/{self.model_name} failed ({e}); "
+                "keeping retrieval order."
+            )
+        return [(i, 0.0) for i in range(min(top_k, len(documents)))]
+
+
 # Process-wide reranker cache (issue #283).
 #
 # The MCP search path builds a fresh ``ZoteroSemanticSearch`` per request, so a
@@ -639,18 +767,39 @@ _RERANKER_CACHE: dict[str, CrossEncoderReranker] = {}
 _RERANKER_CACHE_LOCK = threading.Lock()
 
 
-def get_cached_reranker(model_name: str) -> CrossEncoderReranker:
-    """Return a process-wide cached reranker, loading it once per ``model_name``."""
-    cached = _RERANKER_CACHE.get(model_name)
+def get_cached_reranker(
+    model_name: str, config: dict[str, Any] | None = None
+) -> "CrossEncoderReranker | APIReranker":
+    """Return a process-wide cached reranker, built once per configuration.
+
+    ``config`` is the ``reranker`` block. When it names a ``provider`` the
+    reranker is a hosted :class:`APIReranker`; otherwise it is the local
+    cross-encoder, as before. The cache key includes the provider so switching
+    vendors mid-process cannot hand back the previous one.
+    """
+    provider = (config or {}).get("provider") or ""
+    cache_key = f"{provider}:{model_name}" if provider else model_name
+    cached = _RERANKER_CACHE.get(cache_key)
     if cached is not None:
         return cached
     with _RERANKER_CACHE_LOCK:
         # Re-check under the lock: another thread may have loaded it while we
         # waited, and the model load is far too expensive to repeat.
-        cached = _RERANKER_CACHE.get(model_name)
+        cached = _RERANKER_CACHE.get(cache_key)
         if cached is None:
-            cached = CrossEncoderReranker(model_name=model_name)
-            _RERANKER_CACHE[model_name] = cached
+            if provider:
+                cfg = config or {}
+                cached = APIReranker(
+                    model_name=model_name,
+                    provider=provider,
+                    base_url=cfg.get("base_url"),
+                    api_key_env=cfg.get("api_key_env"),
+                    instruction=cfg.get("instruction"),
+                    timeout=float(cfg.get("timeout", 30.0)),
+                )
+            else:
+                cached = CrossEncoderReranker(model_name=model_name)
+            _RERANKER_CACHE[cache_key] = cached
         return cached
 
 
@@ -793,7 +942,13 @@ class ZoteroSemanticSearch:
             return None
         if self._reranker is None:
             model = self._reranker_config.get("model", _DEFAULT_RERANKER_CONFIG["model"])
-            self._reranker = get_cached_reranker(model)
+            try:
+                self._reranker = get_cached_reranker(model, self._reranker_config)
+            except Exception as e:
+                # A missing API key or unknown provider must not take the whole
+                # search down — degrade to no re-ranking and say why once.
+                logger.warning(f"Reranker unavailable ({e}); searching without it.")
+                return None
         return self._reranker
 
     def _load_update_config(self) -> dict[str, Any]:
