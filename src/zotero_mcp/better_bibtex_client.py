@@ -3,12 +3,15 @@ Helper for accessing Zotero via Better BibTeX JSON-RPC API.
 Provides direct access to Zotero's annotations without requiring PDF extraction.
 """
 
+import logging
 import json
 import os
 import re
 from typing import Any
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class BetterBibTexError(Exception):
@@ -189,7 +192,7 @@ class ZoteroBetterBibTexAPI:
         try:
             return self._make_request("item.attachments", [citekey, library_id])
         except Exception as e:
-            print(f"Warning: Could not get attachments: {e}")
+            logger.warning(f"Could not get attachments: {e}")
             return []
 
     def get_annotations_from_attachment(self, attachment: dict[str, Any]) -> list[dict[str, Any]]:
@@ -243,7 +246,7 @@ class ZoteroBetterBibTexAPI:
             return cite_key_results
 
         except Exception as e:
-            print(f"Error searching for cite keys: {e}")
+            logger.warning(f"Error searching for cite keys: {e}")
             return []
 
     def export_bibtex(self, item_key: str, library_id: int = 1) -> str:
@@ -399,7 +402,7 @@ def process_annotation(annotation: dict[str, Any], attachment: dict[str, Any], f
         return result
 
     except Exception as e:
-        print(f"Error processing annotation: {e}")
+        logger.warning(f"Error processing annotation: {e}")
         return {}
 
 def format_annotation_markdown(annotation: dict[str, Any]) -> str:
