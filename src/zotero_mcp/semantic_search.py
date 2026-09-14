@@ -78,6 +78,30 @@ def _batch_adapter(provider: str):
     return _batch_module(provider).ADAPTER
 
 
+def _is_superseded(current: dict[str, Any], newest: dict[str, Any] | None) -> bool:
+    """Has ``newest`` taken over the items ``current`` was submitted for?
+
+    Only when it has may the older run's parked chunks be abandoned and its
+    sync watermark withheld. Three conditions, all necessary:
+
+    * **A different run.** Compared by ``run_id``, never by manifest path: the
+      same run reached through a differently spelled config path must not
+      supersede itself.
+    * **The same library.** A newer run for another ``group_id`` re-embeds none
+      of this run's items, so it supersedes nothing here.
+    * **Coverage.** A newer force-rebuild run re-embeds the whole library and
+      therefore covers anything older. A newer incremental run covers an older
+      incremental one (both were cut from the same sync watermark, which only a
+      complete import advances) but *not* an older force-rebuild run, whose
+      items it never touched.
+    """
+    if not newest or newest.get("run_id") == current.get("run_id"):
+        return False
+    if newest.get("group_id") != current.get("group_id"):
+        return False
+    return bool(newest.get("force_full_rebuild")) or not current.get("force_full_rebuild")
+
+
 def _report(message: str) -> None:
     """Write a progress message to stderr, never failing the caller.
 
@@ -2646,7 +2670,8 @@ class ZoteroSemanticSearch:
                 if stats.get("batch_pending"):
                     _report(
                         f"  {stats['batch_pending']} chunk(s) held back by the enqueued-token "
-                        "budget; they submit as running batches finish.\n"
+                        "budget; the next 'zotero-mcp batch-import' (or --auto-loop) submits them "
+                        "as running batches finish.\n"
                     )
                 if auto_loop and stats.get("batch_submitted"):
                     self.auto_loop_batch_pipeline(
@@ -3303,6 +3328,53 @@ class ZoteroSemanticSearch:
         """Refresh and return Gemini Batch API status for the latest run or selected batches."""
         return self._get_batch_status("gemini", batch_ids)
 
+    def _superseded_by(self, provider: str, manifest: dict[str, Any]) -> str | None:
+        """Run id of the newer run that has taken over this run's items, if any.
+
+        "Newer" is the newest run *for the same library*, ranked by the
+        immutable ``created_at``/``run_id`` order rather than by manifest mtime
+        (which a status refresh or an import would bump, letting a superseded
+        run pass itself off as current).
+        """
+        module = _batch_module(provider)
+        newest = module.newest_manifest_for_group(
+            config_path=self.config_path, group_id=manifest.get("group_id")
+        )
+        return str(newest.get("run_id")) if _is_superseded(manifest, newest) else None
+
+    def _submit_pending_chunks(
+        self,
+        provider: str,
+        manifest: dict[str, Any],
+        client: Any,
+        superseded_by: str | None,
+        max_enqueued_tokens: int | None = None,
+    ) -> int:
+        """Submit this run's throttle-parked chunks; returns how many went out.
+
+        The enqueued-token throttle parks overflow chunks as ``pending`` with no
+        batch id. Only the auto-loop used to submit them, so a plain
+        ``batch-import`` left them parked forever. Every submission of a parked
+        chunk goes through here, so the one rule that must not be broken holds
+        everywhere: a run that a newer one has superseded (``superseded_by``,
+        from :meth:`_superseded_by`) submits nothing, because the newer run has
+        already re-submitted those items and paying twice is real money.
+
+        ``max_enqueued_tokens`` defaults to the budget recorded in the manifest,
+        so a resumed run keeps the budget it was submitted with; a manifest
+        predating that field submits nothing, which is safe. Submitted entries
+        are updated in place, so every list the caller derived from
+        ``manifest["batches"]`` sees the new batch ids.
+        """
+        if superseded_by:
+            return 0
+        module = _batch_module(provider)
+        return module.submit_pending_batches(
+            manifest,
+            embedding_config=self.chroma_client.embedding_config,
+            max_enqueued_tokens=max_enqueued_tokens,
+            client=client,
+        )
 
     def _import_batch(
         self,
@@ -3323,6 +3395,11 @@ class ZoteroSemanticSearch:
             config_path=self.config_path,
             batch_id=next(iter(selected_ids), None),
         )
+        # Whether a newer run has taken this one's items over decides two
+        # things below: no more chunks may be submitted for it, and its sync
+        # watermark must stay where it is. Settled once here, before the
+        # refresh, so every decision in this import agrees.
+        superseded_by = self._superseded_by(provider, manifest)
         manifest = module.refresh_manifest_status(
             manifest,
             embedding_config=self.chroma_client.embedding_config,
@@ -3341,18 +3418,6 @@ class ZoteroSemanticSearch:
             raise ValueError(f"No matching {label} batches found in the local manifest")
         if manifest.get("force_full_rebuild") and selected_ids and len(batches) != len(all_batches):
             raise RuntimeError(f"Force-rebuild {label} batch runs must be imported as a complete run")
-        if manifest.get("force_full_rebuild"):
-            incomplete = [
-                batch.get("batch_id") or "(pending)"
-                for batch in all_batches
-                if not batch.get("imported_at")
-                and batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES
-            ]
-            if incomplete:
-                raise RuntimeError(
-                    f"Force-rebuild {label} batch runs can only be imported after all batches complete: "
-                    + ", ".join(incomplete)
-                )
 
         stats = {
             "provider": provider,
@@ -3361,6 +3426,7 @@ class ZoteroSemanticSearch:
             "batches_seen": len(batches),
             "batches_imported": 0,
             "batches_skipped": 0,
+            "batches_submitted": 0,
             "imported_items": 0,
             "added_items": 0,
             "updated_items": 0,
@@ -3368,6 +3434,13 @@ class ZoteroSemanticSearch:
             "missing_items": 0,
             "errors": [],
         }
+        if superseded_by:
+            # One entry, recorded once, covering both consequences.
+            stats["errors"].append({"error": (
+                f"run {manifest.get('run_id')} is superseded by run {superseded_by}: its pending "
+                "chunks are not submitted and its sync watermark is not promoted, because the "
+                "newer run covers the same items"
+            )})
 
         lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
         lock_cm = contextlib.nullcontext(True) if _skip_lock else _acquire_update_lock(lock_path)
@@ -3377,6 +3450,43 @@ class ZoteroSemanticSearch:
             raise RuntimeError(f"Another semantic-search update is already running (lock held at {lock_path})")
 
         try:
+            client = adapter.create_client(self.chroma_client.embedding_config)
+
+            if manifest.get("force_full_rebuild"):
+                def _incomplete() -> list[str]:
+                    return [
+                        batch.get("batch_id") or "(pending)"
+                        for batch in all_batches
+                        if not batch.get("imported_at")
+                        and batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES
+                    ]
+
+                if _incomplete():
+                    # A force-rebuild run imports all-or-nothing. Before
+                    # refusing, submit whatever the throttle parked: that is
+                    # the progress the user is waiting for, not an error. The
+                    # submission runs under the update lock (unlike the refusal
+                    # it replaces), since it writes the manifest.
+                    submitted = 0
+                    if not selected_ids:
+                        submitted = self._submit_pending_chunks(provider, manifest, client, superseded_by)
+                        stats["batches_submitted"] += submitted
+                    still_incomplete = _incomplete()
+                    if still_incomplete and submitted:
+                        stats["deferred"] = (
+                            f"{submitted} pending chunk(s) submitted; the force-rebuild run imports once "
+                            f"all batches complete (waiting on: {', '.join(still_incomplete)})"
+                        )
+                        return stats
+                    if still_incomplete:
+                        message = (
+                            f"Force-rebuild {label} batch runs can only be imported after all batches complete: "
+                            + ", ".join(still_incomplete)
+                        )
+                        if superseded_by:
+                            message += f" (run {superseded_by} has since superseded this one)"
+                        raise RuntimeError(message)
+
             already_imported = any(batch.get("imported_at") for batch in all_batches)
             if (
                 manifest.get("force_full_rebuild")
@@ -3385,14 +3495,13 @@ class ZoteroSemanticSearch:
             ):
                 self.chroma_client.reset_collection()
 
-            client = adapter.create_client(self.chroma_client.embedding_config)
             for batch in batches:
                 if batch.get("imported_at"):
                     stats["batches_skipped"] += 1
                     continue
                 if not batch.get("batch_id"):
-                    # A pending chunk parked by the enqueued-token throttle;
-                    # the auto-loop or a later import submits it.
+                    # Parked by the enqueued-token throttle; submitted below,
+                    # after this pass imports what has completed.
                     stats["batches_skipped"] += 1
                     continue
                 if batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES:
@@ -3478,15 +3587,38 @@ class ZoteroSemanticSearch:
                 stats["batches_imported"] += 1
 
             module.save_manifest(manifest)
-            if all(batch.get("imported_at") for batch in all_batches):
-                self.update_config["last_update"] = datetime.now().isoformat()
-                # Promote the watermark of the library the batch was submitted
-                # against, not whichever library happens to be active now.
-                manifest_group_id = manifest.get("group_id")
-                self._save_update_config(
-                    last_sync_version=manifest.get("target_sync_version"),
-                    library_key=None if manifest_group_id is None else str(manifest_group_id),
+
+            if not selected_ids:
+                # Importing the completed batches freed enqueued-token headroom,
+                # so this is where the chunks the throttle parked get their turn.
+                # An import of named batch ids never does this: the user asked
+                # for those batches, not for the run to be carried forward.
+                stats["batches_submitted"] += self._submit_pending_chunks(
+                    provider, manifest, client, superseded_by
                 )
+
+            # Newly submitted chunks have no ``imported_at``, so the watermark
+            # stays where it is until the whole run has landed.
+            if all(batch.get("imported_at") for batch in all_batches):
+                if superseded_by:
+                    # The newer run was cut from this same watermark and will
+                    # advance it when it lands; doing it here would skip
+                    # whatever changed between the two runs.
+                    logger.debug(
+                        "Run %s imported completely but is superseded by %s; "
+                        "leaving the sync watermark to the newer run",
+                        manifest.get("run_id"),
+                        superseded_by,
+                    )
+                else:
+                    self.update_config["last_update"] = datetime.now().isoformat()
+                    # Promote the watermark of the library the batch was submitted
+                    # against, not whichever library happens to be active now.
+                    manifest_group_id = manifest.get("group_id")
+                    self._save_update_config(
+                        last_sync_version=manifest.get("target_sync_version"),
+                        library_key=None if manifest_group_id is None else str(manifest_group_id),
+                    )
             return stats
         finally:
             lock_cm.__exit__(None, None, None)
@@ -3511,8 +3643,9 @@ class ZoteroSemanticSearch:
         Loops until every entry in the latest run's manifest is imported, or
         until no further progress is possible (everything left is terminal and
         nothing can be submitted). The on-disk manifest is consistent at every
-        step, so Ctrl-C or a crash resumes cleanly from the next
-        ``batch-import`` or ``--auto-loop``.
+        step, so after Ctrl-C or a crash a later ``batch-import`` imports what
+        completed and submits what is still pending; a new ``update-db --batch``
+        starts a fresh run instead.
 
         Must be called with the update lock already held (``update_database``
         holds it), hence ``_skip_lock`` on the imports below.
@@ -3525,9 +3658,14 @@ class ZoteroSemanticSearch:
         aggregate = {"provider": provider, "polls": 0, "imported_items": 0, "submitted_chunks": 0}
 
         while True:
+            imported_submitted = 0
             try:
                 import_stats = self._import_batch(provider, _skip_lock=True)
                 aggregate["imported_items"] += import_stats.get("imported_items", 0)
+                # The import submits this run's parked chunks itself, so those
+                # count here too; otherwise the tally below reports 0 for
+                # chunks that were in fact submitted this poll.
+                imported_submitted = import_stats.get("batches_submitted", 0)
             except RuntimeError as e:
                 # Force-rebuild manifests are all-or-nothing, so _import_batch
                 # refuses until every chunk is importable. Expected mid-run.
@@ -3536,11 +3674,18 @@ class ZoteroSemanticSearch:
 
             manifest = module.find_manifest(config_path=self.config_path)
             client = adapter.create_client(self.chroma_client.embedding_config)
-            submitted = module.submit_pending_batches(
-                manifest,
-                embedding_config=self.chroma_client.embedding_config,
-                max_enqueued_tokens=max_enqueued_tokens,
-                client=client,
+            # Through _submit_pending_chunks, not straight to the provider
+            # module: the loop must obey the same supersession rule as every
+            # other submission path.
+            superseded_by = self._superseded_by(provider, manifest)
+            if superseded_by:
+                logger.debug(
+                    "auto-loop: run %s is superseded by %s; its pending chunks stay parked",
+                    manifest.get("run_id"),
+                    superseded_by,
+                )
+            submitted = imported_submitted + self._submit_pending_chunks(
+                provider, manifest, client, superseded_by, max_enqueued_tokens=max_enqueued_tokens
             )
             aggregate["submitted_chunks"] += submitted
 
