@@ -1285,6 +1285,36 @@ class ZoteroSemanticSearch:
 
         return stats
 
+    #: Characters of abstract carried into every passage header. Enough to
+    #: identify the study and its design; short enough that the header cannot
+    #: crowd out the passage it is meant to contextualise.
+    CHUNK_CONTEXT_ABSTRACT_CHARS = 500
+
+    def _chunk_context_header(self, item: dict[str, Any]) -> str:
+        """A compact "which study is this" header for passages after the first.
+
+        Returns title, year, creators and the opening of the abstract — the
+        minimum needed for a cross-encoder or embedding to place a mid-document
+        passage in its paper. Empty string when the item has no title (e.g.
+        annotations), so callers can skip prepending entirely.
+        """
+        data = item.get("data", {})
+        if data.get("itemType") == "annotation":
+            return ""
+        title = (data.get("title") or "").strip()
+        if not title:
+            return ""
+
+        parts = [title]
+        if year := (data.get("date") or "")[:4]:
+            if year.isdigit():
+                parts[0] = f"{title} ({year})"
+        if creators := format_creators(data.get("creators", [])):
+            parts.append(creators)
+        if abstract := (data.get("abstractNote") or "").strip():
+            parts.append(abstract[: self.CHUNK_CONTEXT_ABSTRACT_CHARS])
+        return "\n".join(parts)
+
     def _create_document_text(self, item: dict[str, Any]) -> str:
         """
         Create searchable text from a Zotero item.
@@ -3114,6 +3144,13 @@ class ZoteroSemanticSearch:
                         continue
                     n_chunks = len(passages)
                     section_marks = _section_offsets(doc_text)
+                    # Passage 0 already opens with the item's structured text;
+                    # every later passage is a bare window of the PDF with no
+                    # indication of which study it belongs to. Prepending a
+                    # compact header restores that context for the embedding,
+                    # so a sentence from page 14 is scored as part of *this*
+                    # paper rather than as an anonymous fragment.
+                    ctx_header = self._chunk_context_header(item)
                     for ci, (chunk_text, c0, c1) in enumerate(passages):
                         cmeta = dict(metadata)
                         cmeta["parent_item_key"] = item_key
@@ -3127,7 +3164,11 @@ class ZoteroSemanticSearch:
                         section = _section_at(section_marks, c0)
                         if section is not None:
                             cmeta["section"] = section
-                        documents.append(self.chroma_client.truncate_text(chunk_text))
+                        embed_text = (
+                            f"{ctx_header}\n\n{chunk_text}"
+                            if ci and ctx_header else chunk_text
+                        )
+                        documents.append(self.chroma_client.truncate_text(embed_text))
                         metadatas.append(cmeta)
                         ids.append(f"{item_key}#{ci}")
                 else:
