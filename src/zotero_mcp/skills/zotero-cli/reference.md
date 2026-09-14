@@ -4,7 +4,10 @@ Generated from the CLI's own argument parser by
 `scripts/gen_skill_reference.py` -- do not edit by hand.
 
 Every command also accepts `--json` (machine-readable envelope on stdout) and
-`-v` (diagnostics on stderr), before or after the command name. Run
+`-v` (diagnostics on stderr). Both are defined on the top-level parser and on
+each first-level command, so they may precede the command name or follow it,
+but not follow a sub-command: `get --json metadata KEY` parses and
+`get metadata --json KEY` does not. Run
 `zotero-cli --json-schema` for the output contract.
 
 
@@ -272,8 +275,7 @@ Every command also accepts `--json` (machine-readable envelope on stdout) and
  - `--allow-mass-deletion`
  - `--config-path`
  - `--db-path`
- - `--openai-batch`
- - `--no-openai-batch`
+ - `--openai-batch` / `--no-openai-batch` -- mutually exclusive
 
 ### `db batch-status`
 
