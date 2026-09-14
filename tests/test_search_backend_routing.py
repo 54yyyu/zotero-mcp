@@ -161,7 +161,7 @@ def test_global_search_is_refused_without_the_sqlite_backend(monkeypatch):
 
     result = server.search_items(query="Quantum", search_all_libraries=True, ctx=DummyContext())
 
-    assert "ZOTERO_SEARCH_BACKEND=sqlite" in result
+    assert "SQLite backend" in result
     assert "Quantum Networks" not in result
 
 

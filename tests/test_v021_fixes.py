@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import DummyContext, FakeZotero
+from zotero_mcp.library import ApiBackend as _ApiBackend
 from zotero_mcp.tools import _helpers
 from zotero_mcp.tools.annotations import (
     _batch_resolve_grandparent_titles,
@@ -111,7 +112,7 @@ class TestGrandparentResolution:
         zot = self._make_zot(items_lookup)
         ctx = DummyContext()
 
-        result = _batch_resolve_grandparent_titles(zot, {ATTACH_KEY}, ctx)
+        result = _batch_resolve_grandparent_titles(_ApiBackend(zot), {ATTACH_KEY}, ctx)
 
         assert result[ATTACH_KEY] == "Real Paper Title"
 
@@ -132,7 +133,7 @@ class TestGrandparentResolution:
         zot = self._make_zot(items_lookup)
         ctx = DummyContext()
 
-        result = _batch_resolve_grandparent_titles(zot, {ATTACH_KEY}, ctx)
+        result = _batch_resolve_grandparent_titles(_ApiBackend(zot), {ATTACH_KEY}, ctx)
 
         assert result[ATTACH_KEY] == "Snapshot"
 
@@ -152,7 +153,7 @@ class TestGrandparentResolution:
         zot = self._make_zot(items_lookup)
         ctx = DummyContext()
 
-        result = _batch_resolve_grandparent_titles(zot, {PARENT_KEY}, ctx)
+        result = _batch_resolve_grandparent_titles(_ApiBackend(zot), {PARENT_KEY}, ctx)
 
         # Not an attachment -> no two-hop -> falls back to own title
         assert result[PARENT_KEY] == "My Article Title"

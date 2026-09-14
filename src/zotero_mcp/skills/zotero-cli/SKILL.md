@@ -79,8 +79,8 @@ a group library, add `--all-libraries`:
 zotero-cli search "Cladder-Micus" --all-libraries
 ```
 
-Each result is then labelled `**Library:** <name>`. It needs the server running
-with `ZOTERO_SEARCH_BACKEND=sqlite` and errors clearly if it is not, so try it
+Each result is then labelled `**Library:** <name>`. It needs the SQLite backend,
+the default in local mode, and errors clearly if it is not in use, so try it
 once and fall back to per-library searches if it is refused. Tag filters work
 with it; `--collection` does not, because a collection lives inside one library.
 

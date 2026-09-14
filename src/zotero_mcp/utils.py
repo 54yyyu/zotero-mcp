@@ -248,16 +248,34 @@ def _paginate(zot_method, *args, max_items=None, **kwargs):
 
 
 def get_search_backend() -> str:
-    """Return the configured metadata search backend: ``"sqlite"`` or ``"api"``.
+    """Return the configured read backend: ``"sqlite"`` or ``"api"``.
 
-    Controlled by ``ZOTERO_SEARCH_BACKEND`` (#167); any value other than
-    ``"sqlite"`` — including unset — falls back to ``"api"``, the pyzotero-based
-    path every deployment already uses. The ``sqlite`` backend additionally
-    requires local mode and a readable ``zotero.sqlite``; callers fall back to
-    ``"api"`` at the query site when that's not the case.
+    ``ZOTERO_BACKEND`` is the setting. ``ZOTERO_SEARCH_BACKEND`` is still
+    honoured as an alias: it selected the SQLite path back when only search
+    used it (#167), and existing deployments set it. Either one naming
+    ``sqlite`` selects SQLite; anything else — including unset — leaves the
+    pyzotero path every deployment already uses.
+
+    Configuration only. The SQLite backend additionally needs local mode and
+    a readable ``zotero.sqlite``, which callers check at the query site and
+    fall back to ``"api"`` when it is missing.
+
+    :func:`zotero_mcp.library.configured_backend` delegates here, so the
+    read port and the older search paths can never disagree about which
+    backend is selected.
     """
-    value = os.getenv("ZOTERO_SEARCH_BACKEND", "").strip().lower()
-    return "sqlite" if value == "sqlite" else "api"
+    chosen = {
+        os.getenv(var, "").strip().lower()
+        for var in ("ZOTERO_BACKEND", "ZOTERO_SEARCH_BACKEND")
+    }
+    if "sqlite" in chosen:
+        return "sqlite"
+    if "api" in chosen:
+        return "api"
+    # Unset: SQLite in local mode, where zotero.sqlite is on this machine and
+    # answers most reads orders of magnitude faster than the API (0.12.1).
+    # Callers still fall back to the API when the file cannot be read.
+    return "sqlite" if is_local_mode() else "api"
 
 
 def item_display_title(data: dict) -> str:

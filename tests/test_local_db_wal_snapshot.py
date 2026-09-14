@@ -20,6 +20,7 @@ from zotero_mcp.local_db import LocalZoteroReader
 def _fresh_snapshot_cache(monkeypatch):
     monkeypatch.setattr(local_db, "_snapshots", {})
     monkeypatch.delenv(local_db.DB_SNAPSHOT_ENV_VAR, raising=False)
+    monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "0")
 
 
 @pytest.fixture
@@ -108,3 +109,58 @@ def test_a_failed_copy_falls_back_to_the_in_place_read(zotero_like_db, monkeypat
     monkeypatch.setattr(local_db.shutil, "copyfile", _refuse)
     assert local_db._wal_snapshot_path(str(path)) is None
     assert _keys(path) == {"OLDITEM1"}
+
+
+def test_long_lived_reader_sees_writes_made_after_it_connected(zotero_like_db):
+    """The SQLite library backend keeps one reader per thread for the life of
+    the process; without a refresh it answered from its first snapshot forever."""
+    path, writer = zotero_like_db
+    reader = LocalZoteroReader(db_path=str(path))
+    try:
+        assert reader.get_all_item_keys() == {"OLDITEM1", "NEWITEM1"}
+        writer.execute("INSERT INTO items (key) VALUES ('LATEITEM')")
+        writer.commit()
+        assert reader.refresh_if_stale() is True
+        assert "LATEITEM" in reader.get_all_item_keys()
+        assert reader.refresh_if_stale() is False
+    finally:
+        reader.close()
+
+
+def test_snapshot_is_not_recopied_inside_the_min_interval(zotero_like_db, monkeypatch):
+    path, writer = zotero_like_db
+    monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "30")
+    clock = [1000.0]
+    monkeypatch.setattr(local_db.time, "monotonic", lambda: clock[0])
+
+    first = local_db._wal_snapshot_path(str(path))
+    writer.execute("INSERT INTO items (key) VALUES ('BURST001')")
+    writer.commit()
+
+    clock[0] += 10
+    assert local_db._wal_snapshot_path(str(path)) == first
+    clock[0] += 25
+    assert local_db._wal_snapshot_path(str(path)) != first
+
+
+def test_backend_reader_is_refreshed_when_reused(monkeypatch):
+    from zotero_mcp import library
+
+    class _Reader:
+        refreshed = 0
+
+        def refresh_if_stale(self):
+            _Reader.refreshed += 1
+            return False
+
+    made = []
+    monkeypatch.setattr("zotero_mcp.local_db.get_local_zotero_reader", lambda: made.append(1) or _Reader())
+    library.reset_sqlite_reader()
+    try:
+        first = library._sqlite_reader()
+        second = library._sqlite_reader()
+        assert first is second and len(made) == 1
+        assert _Reader.refreshed == 1
+    finally:
+        library._thread_state.reader = None
+

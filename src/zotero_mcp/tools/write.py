@@ -19,6 +19,7 @@ from unidecode import unidecode
 
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import schema as _schema
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -1101,19 +1102,14 @@ def search_collections(
     ctx: Context
 ) -> str:
     try:
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
         ctx.info(f"Searching collections for '{query}'")
 
-        collections = _helpers._paginate(zot.collections)
-        trashed_keys: set[str] = set()
-        if include_trashed:
-            trashed = _helpers.fetch_trashed_collections(zot)
-            existing_keys = {c.get("key") for c in collections}
-            for coll in trashed:
-                key = coll.get("key")
-                if key and key not in existing_keys:
-                    trashed_keys.add(key)
-                    collections.append(coll)
+        collections = backend.list_collections(include_trashed=include_trashed)
+        trashed_keys = {
+            c["key"] for c in collections
+            if c.get("key") and c.get("data", {}).get("deleted")
+        }
         if not collections:
             return "No collections found in your Zotero library."
 
@@ -1126,6 +1122,13 @@ def search_collections(
         if not matching:
             return f"No collections found matching '{query}'"
 
+        # The whole listing is already here, so a parent's name is a dict
+        # lookup rather than one API call per matching collection.
+        names_by_key = {
+            c["key"]: c.get("data", {}).get("name", "")
+            for c in collections if c.get("key")
+        }
+
         lines = [f"# Collections matching '{query}'", ""]
         for i, coll in enumerate(matching, 1):
             name = coll["data"].get("name", "Unnamed")
@@ -1135,10 +1138,10 @@ def search_collections(
             lines.append(f"## {i}. {name}{trash_marker}")
             lines.append(f"**Key:** `{key}`")
             if parent_key:
-                try:
-                    parent = zot.collection(parent_key)
-                    lines.append(f"**Parent:** {parent['data'].get('name', parent_key)}")
-                except Exception:
+                parent = names_by_key.get(parent_key)
+                if parent:
+                    lines.append(f"**Parent:** {parent}")
+                else:
                     lines.append(f"**Parent key:** {parent_key}")
             lines.append("")
 
@@ -1928,8 +1931,13 @@ def add_by_doi(
             if if_exists != "duplicate" and pending:
                 still_pending: list[tuple[int, dict]] = []
                 for i, payload in pending:
+                    # CrossRef metadata is in hand here, so pass the title: a
+                    # DOI is not server-side searchable, and the identifier
+                    # query alone misses items already in the library.
                     existing = _helpers.find_existing_items(
-                        read_zot, doi=payload["doi"], ctx=ctx
+                        read_zot, doi=payload["doi"],
+                        title=payload["item_data"].get("title"),
+                        ctx=ctx,
                     )
                     if existing:
                         work_results[i] = _handle_existing_item(
@@ -2100,17 +2108,24 @@ def _add_from_embedded_metadata(
     """
     if if_exists != "duplicate":
         lookup_zot = read_zot or write_zot
+        # The page's title is in hand, so pass it: neither an ISBN nor a URL
+        # is server-side searchable, and the identifier query alone misses
+        # items already in the library.
         for token in re.split(r"[,;\s]+", meta.isbn or ""):
             isbn = _helpers._normalize_isbn(token) if token else None
             if not isbn:
                 continue
-            existing = _helpers.find_existing_items(lookup_zot, isbn=isbn, ctx=ctx)
+            existing = _helpers.find_existing_items(
+                lookup_zot, isbn=isbn, title=meta.title, ctx=ctx
+            )
             if existing:
                 return _handle_existing_item(
                     write_zot, existing, coll_keys, tags, if_exists,
                     matched_by=f"ISBN {isbn}", ctx=ctx,
                 )
-        existing = _helpers.find_existing_items(lookup_zot, url=url, ctx=ctx)
+        existing = _helpers.find_existing_items(
+            lookup_zot, url=url, title=meta.title, ctx=ctx
+        )
         if existing:
             return _handle_existing_item(
                 write_zot, existing, coll_keys, tags, if_exists,
@@ -2514,8 +2529,11 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     # note; the metadata fetch above sits between the first check and here.
     with _helpers.identifier_lock("arxiv", arxiv_id), zotero_api_lock():
         if if_exists != "duplicate":
+            # The title is known by now (fetched above), so pass it: the arXiv
+            # ID is not server-side searchable, and the identifier query alone
+            # misses items that are already in the library.
             existing = _helpers.find_existing_items(
-                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
+                read_zot or write_zot, arxiv_id=arxiv_id, title=title, ctx=ctx
             )
             if existing:
                 return _handle_existing_item(
@@ -2871,8 +2889,12 @@ def add_by_isbn(
         # stay outside the lock — that is the whole point of the narrowing.
         with _helpers.identifier_lock("isbn", normalized):
             if if_exists != "duplicate":
+                # Open Library / Google Books metadata is in hand by now, so
+                # pass the title: an ISBN is not server-side searchable, and
+                # the identifier query alone misses books already shelved.
                 existing = _helpers.find_existing_items(
-                    read_zot, isbn=normalized, ctx=ctx
+                    read_zot, isbn=normalized,
+                    title=item_data.get("title"), ctx=ctx,
                 )
                 if existing:
                     return _handle_existing_item(
@@ -4419,17 +4441,14 @@ def get_pdf_outline(
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with zotero_api_lock():
-                zot = _client.get_zotero_client()
+                backend = _library.get_library_backend()
 
                 attachment_key = None
                 filename = "document.pdf"
 
                 # The key may name the PDF attachment itself — attachments have
                 # no children, so the parent scan below would find nothing (#372).
-                try:
-                    item = zot.item(item_key)
-                except Exception:
-                    item = None
+                item = backend.get_item(item_key)
                 data = item.get("data", {}) if isinstance(item, dict) else {}
                 if (
                     data.get("itemType") == "attachment"
@@ -4438,7 +4457,7 @@ def get_pdf_outline(
                     attachment_key = item.get("key") or data.get("key") or item_key
                     filename = data.get("filename") or f"{attachment_key}.pdf"
                 else:
-                    for child in _helpers._paginate(zot.children, item_key):
+                    for child in backend.get_children([item_key]).get(item_key, []):
                         child_data = child.get("data", {})
                         if child_data.get("contentType") == "application/pdf":
                             attachment_key = child["key"]
@@ -4448,26 +4467,33 @@ def get_pdf_outline(
                 if not attachment_key:
                     return f"No PDF attachment found for item `{item_key}`."
 
-                # Download via the multi-source downloader so WebDAV- and
-                # local-storage-backed attachments work, not just Zotero cloud.
-                local_mode = _utils.is_local_mode()
-                download = _client.download_attachment_file(
-                    attachment_key,
-                    tmpdir,
-                    os.path.basename(filename),
-                    local_client=(
-                        zot if local_mode else _client.get_local_zotero_client()
-                    ),
-                    web_client=None if local_mode else zot,
-                )
-                pdf_path = download.path
+                # A file already in Zotero's own storage needs no download at
+                # all — and is the only option with Zotero closed.
+                download_errors: list[str] = []
+                pdf_path = _library.attachment_path_for(attachment_key)
+                if pdf_path is None:
+                    # Otherwise fall back to the multi-source downloader so
+                    # WebDAV- and cloud-backed attachments still work.
+                    zot = _client.get_zotero_client()
+                    local_mode = _utils.is_local_mode()
+                    download = _client.download_attachment_file(
+                        attachment_key,
+                        tmpdir,
+                        os.path.basename(filename),
+                        local_client=(
+                            zot if local_mode else _client.get_local_zotero_client()
+                        ),
+                        web_client=None if local_mode else zot,
+                    )
+                    pdf_path = download.path
+                    download_errors = download.errors
                 if (
                     not pdf_path
                     or not pdf_path.exists()
                     or pdf_path.stat().st_size == 0
                 ):
                     detail = (
-                        f" ({'; '.join(download.errors)})" if download.errors else ""
+                        f" ({'; '.join(download_errors)})" if download_errors else ""
                     )
                     return (
                         f"Could not download PDF for attachment "
@@ -5390,7 +5416,14 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
     doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
     if not doi:
         return None
-    existing = _helpers.find_existing_items(read_zot, doi=doi, ctx=ctx)
+    # The entry's title comes along as a search key, not as a match rule:
+    # a DOI is not server-side searchable, so without it the lookup misses
+    # items that are already here and the batch re-creates every one of
+    # them. The DOI still decides (see find_existing_items), so "entries
+    # without a DOI always create" above is unaffected.
+    existing = _helpers.find_existing_items(
+        read_zot, doi=doi, title=item_data.get("title"), ctx=ctx
+    )
     if not existing:
         return None
 

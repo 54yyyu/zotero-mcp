@@ -96,11 +96,17 @@ class TestGetItemChildrenPagination:
 
 class TestItemHasPdfPagination:
     def test_detects_pdf_past_first_api_page(self):
+        """Paging now happens in ApiBackend.get_children, which pre-fetches
+        every child before _item_has_pdf inspects them — so the guarantee
+        this test exists for is asserted through that seam."""
+        from zotero_mcp.library import ApiBackend
+
         zot = PagedChildrenZotero()
         pdf = _pdf("PDF00001")
         zot._children = {"PAR00001": _children_with_pdf_last(pdf)}
 
-        assert discovery._item_has_pdf(zot, _parent("PAR00001")) is True
+        children = ApiBackend(zot).get_children(["PAR00001"])
+        assert discovery._item_has_pdf(children, _parent("PAR00001")) is True
 
 
 class TestGetPdfOutlinePagination:

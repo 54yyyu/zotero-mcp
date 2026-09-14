@@ -55,7 +55,12 @@ def sql_reader(local_zot):
     if the caller hasn't already set it.
     """
     if local_zot is None:
-        return None
+        # `yield`, not `return`: a bare return in a generator fixture raises
+        # StopIteration, which pytest reports as "sql_reader did not yield a
+        # value" — every dependent test ERRORs instead of skipping, exactly
+        # when Zotero desktop is closed.
+        yield None
+        return
     os.environ.setdefault("ZOTERO_LOCAL", "true")
     from zotero_mcp.local_db import get_local_zotero_reader
 
