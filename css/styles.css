@@ -442,3 +442,7 @@ td.num { font-family: var(--f-mono); text-align: right; white-space: nowrap; }
   .code pre { padding-right: 18px; padding-bottom: 46px; }
   .copy, .install .code .copy, .code:has(.code-label) .copy { top: auto; bottom: 9px; }
 }
+
+/* compact release rows: headline only */
+.release:not(.lead) { padding: 18px 0; align-items: baseline; }
+.release:not(.lead) h3 { font-size: 1.15rem; margin-bottom: 0; }

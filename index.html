@@ -101,71 +101,39 @@
     <div class="wrap">
       <div class="section-head">
         <div><span class="kicker">Recent releases</span><h2>What&rsquo;s new</h2></div>
-        <p>Zotero MCP ships often. These are the changes from the last few releases that matter most for day-to-day use.</p>
       </div>
 
       <div class="releases">
         <article class="release lead">
-          <div class="release-tag">0.12.1<small>Sep 2026</small></div>
+          <div class="release-tag">0.12<small>Sep 2026</small></div>
           <div>
             <h3>Local reads come straight from <span class="hl c-yellow">zotero.sqlite</span></h3>
-            <p>In local mode, read tools now query Zotero&rsquo;s database directly instead of paging through the Zotero API. If a query can&rsquo;t be expressed in SQLite, that one call goes through the API, so results are never narrower than before. Writes still go through Zotero.</p>
+            <p>No more paging through the Zotero API in local mode.</p>
             <dl class="bench">
               <div><dt>One item</dt><dd><span class="fast">0.4 ms</span><span class="slow">API: 43.5 ms</span></dd></div>
               <div><dt>Children of 25 items</dt><dd><span class="fast">1.8 ms</span><span class="slow">API: 2,476 ms</span></dd></div>
               <div><dt>All tags</dt><dd><span class="fast">110 ms</span><span class="slow">API: 103.9 s</span></dd></div>
             </dl>
-            <p class="fine">Measured on a 44,105-item library. Set <code>ZOTERO_BACKEND=api</code> to keep reading through the API. 0.12.2 and 0.12.3 fixed advanced-search date ranges, tag counts, and <code>recent_items</code> speed on large libraries.</p>
+            <p class="fine">Measured on a 44,105-item library.</p>
           </div>
         </article>
 
         <article class="release">
-          <div class="release-tag">0.12.0<small>Sep 2026</small></div>
-          <div>
-            <h3>Rename and move collections</h3>
-            <ul>
-              <li><code>zotero_update_collection</code> renames a collection or moves it under another parent. It keeps its key, subcollections, and items.</li>
-              <li>The open-access PDF search now also checks the PDF link the article&rsquo;s own landing page lists.</li>
-              <li>Items added by DOI now match what Zotero&rsquo;s browser connector would save.</li>
-            </ul>
-          </div>
+          <div class="release-tag">0.11<small>Aug 2026</small></div>
+          <div><h3>Local writes on Zotero 10, and search across every library</h3></div>
         </article>
 
         <article class="release">
-          <div class="release-tag">0.11.0<small>Aug 2026</small></div>
-          <div>
-            <h3>Local writes on Zotero 10, and search across every library</h3>
-            <ul>
-              <li>Run <code>zotero-mcp authorize-local</code> once and writes go straight to the running Zotero app. No cloud account or Zotero Storage quota needed.</li>
-              <li><code>search_all_libraries</code> searches your personal library and every group library in one query.</li>
-              <li>Add a whole list of DOIs, URLs, or ISBNs in one call, and embed with Gemini&rsquo;s Batch API.</li>
-            </ul>
-          </div>
+          <div class="release-tag">0.10<small>Aug 2026</small></div>
+          <div><h3>An agent skill, and JSON output from <code>zotero-cli</code></h3></div>
         </article>
 
         <article class="release">
-          <div class="release-tag">0.10.0<small>Aug 2026</small></div>
-          <div>
-            <h3>An agent skill, and JSON output from <code>zotero-cli</code></h3>
-            <ul>
-              <li><code>zotero-mcp install-skill</code> detects Claude Code, Cursor, Windsurf, Gemini CLI, and <code>AGENTS.md</code> harnesses and installs the skill for each.</li>
-              <li><code>--json</code> on every <code>zotero-cli</code> command returns one stable object per call.</li>
-            </ul>
-          </div>
-        </article>
-
-        <article class="release">
-          <div class="release-tag">0.9.0<small>Aug 2026</small></div>
-          <div>
-            <h3>A smaller tool list</h3>
-            <ul>
-              <li>Fifteen tools were merged into six. <code>zotero_add_item</code> works out whether it was given a DOI, URL, ISBN, BibTeX, CSL JSON, or a file.</li>
-              <li>Optional features are grouped, and <code>ZOTERO_MCP_TOOLSETS</code> turns groups on or off.</li>
-            </ul>
-          </div>
+          <div class="release-tag">0.9<small>Aug 2026</small></div>
+          <div><h3>Fifteen tools merged into six</h3></div>
         </article>
       </div>
-      <p class="fine"><a href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md">Read the full changelog on GitHub</a></p>
+      <p class="fine"><a href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md">Full changelog</a></p>
     </div>
   </section>
 
