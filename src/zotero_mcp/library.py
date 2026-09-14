@@ -134,6 +134,10 @@ def _sqlite_reader():
 
         reader = get_local_zotero_reader()
         _thread_state.reader = reader
+    elif hasattr(reader, "refresh_if_stale"):
+        # Kept for the life of the thread, so it has to notice when Zotero
+        # has written since it connected.
+        reader.refresh_if_stale()
     return reader
 
 

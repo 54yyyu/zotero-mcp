@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
@@ -602,16 +603,31 @@ def row_to_api_item(
 #: each copy costs as much as the file is big.
 DB_SNAPSHOT_ENV_VAR = "ZOTERO_MCP_DB_SNAPSHOT"
 
+#: Minimum seconds between two copies of the same database. A changed WAL
+#: inside this window keeps serving the current copy, so a burst of writes
+#: from Zotero costs one copy, not one per write. Matters for multi-GB
+#: databases read through the SQLite backend; "0" refreshes on every change.
+DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR = "ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL"
+_DEFAULT_SNAPSHOT_MIN_INTERVAL = 5.0
+
+
+def _snapshot_min_interval() -> float:
+    raw = os.environ.get(DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else _DEFAULT_SNAPSHOT_MIN_INTERVAL
+    except ValueError:
+        return _DEFAULT_SNAPSHOT_MIN_INTERVAL
+
 # One snapshot per database for the whole process, because readers are opened
 # per tool call: a copy per reader would copy the database on every call.
 _snapshot_lock = threading.Lock()
-_snapshots: dict[str, tuple[tuple, str]] = {}
+_snapshots: dict[str, tuple[tuple, str, float]] = {}
 
 
 @atexit.register
 def _remove_snapshots() -> None:
     """Delete this process's database copies; they hold the whole library."""
-    for _sig, snap in list(_snapshots.values()):
+    for _sig, snap, _made_at in list(_snapshots.values()):
         shutil.rmtree(os.path.dirname(snap), ignore_errors=True)
     _snapshots.clear()
 
@@ -656,8 +672,13 @@ def _wal_snapshot_path(db_path: str) -> str | None:
         for _attempt in range(3):
             before = (_file_signature(source), _file_signature(wal))
             cached = _snapshots.get(source)
-            if cached and cached[0] == before and os.path.exists(cached[1]):
-                return cached[1]
+            if cached and os.path.exists(cached[1]):
+                if cached[0] == before:
+                    return cached[1]
+                if time.monotonic() - cached[2] < _snapshot_min_interval():
+                    # Changed, but copied too recently to copy again; the
+                    # next read after the interval picks the change up.
+                    return cached[1]
             snap_dir = tempfile.mkdtemp(prefix="zotero_mcp_db_")
             snap = os.path.join(snap_dir, "zotero.sqlite")
             try:
@@ -677,7 +698,7 @@ def _wal_snapshot_path(db_path: str) -> str | None:
                 # Best effort: an open connection elsewhere keeps its files
                 # alive on POSIX, and on Windows the directory is left behind.
                 shutil.rmtree(os.path.dirname(cached[1]), ignore_errors=True)
-            _snapshots[source] = (before, snap)
+            _snapshots[source] = (before, snap, time.monotonic())
             return snap
     logger.warning(
         "%s kept changing while it was being copied; reading it in place.", source
@@ -955,6 +976,34 @@ class LocalZoteroReader:
             "or configure the path by running `zotero-mcp setup`."
         )
 
+    def _read_target(self) -> tuple:
+        """What a new connection would read: a WAL snapshot, or the file in place.
+
+        The in-place form carries the file's signature because an
+        ``immutable=1`` connection may keep serving pages it cached before
+        Zotero checkpointed into the file.
+        """
+        snapshot = _wal_snapshot_path(self.db_path)
+        if snapshot:
+            return ("snapshot", snapshot)
+        return ("inplace", _file_signature(os.path.realpath(self.db_path)))
+
+    def refresh_if_stale(self) -> bool:
+        """Drop the open connection if the database has changed under it.
+
+        A reader kept across tool calls (the SQLite library backend keeps one
+        per thread) otherwise answers from whatever it opened first, for the
+        life of the process: items added later never appear. Returns True
+        when the connection was dropped; the next query reopens it.
+        """
+        if self._connection is None:
+            return False
+        if self._read_target() == getattr(self, "_connection_target", None):
+            return False
+        self.close()
+        self._library_labels = None
+        return True
+
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection, creating if needed."""
         if self._connection is None:
@@ -962,9 +1011,10 @@ class LocalZoteroReader:
             # while it is open, which refuses even read-only connections.
             # immutable=1 skips the lock but also skips the -wal file, so when
             # the WAL holds changes, read a copy that includes it (#536).
-            snapshot = _wal_snapshot_path(self.db_path)
-            if snapshot:
-                self._connection = sqlite3.connect(snapshot, check_same_thread=True)
+            target = self._read_target()
+            self._connection_target = target
+            if target[0] == "snapshot":
+                self._connection = sqlite3.connect(target[1], check_same_thread=True)
             else:
                 uri = f"file:{self.db_path}?immutable=1"
                 self._connection = sqlite3.connect(uri, uri=True)
