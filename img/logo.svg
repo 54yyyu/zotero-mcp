@@ -1,17 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-  <defs>
-    <linearGradient id="zGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#b91c1c"/>
-      <stop offset="100%" style="stop-color:#be123c"/>
-    </linearGradient>
-  </defs>
-  <!-- Rounded square background -->
-  <rect x="2" y="2" width="36" height="36" rx="8" fill="url(#zGradient)"/>
-  <!-- Minimalist Z letterform - balanced -->
-  <path d="M10 11 h18 l-18 18 h18"
-        fill="none"
-        stroke="white"
-        stroke-width="3.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"/>
+  <rect x="1" y="1" width="38" height="38" rx="9" fill="#c42332"/>
+  <rect x="9" y="26.5" width="22" height="5" rx="1" fill="#ffd400" opacity=".9"/>
+  <path d="M11 10.5h18L11 29.5h18" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
