@@ -1174,36 +1174,39 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
     item_data = dict(template)
 
     # Map fields
+    #
+    # CrossRef splits a title at its colon, registering the halves as
+    # "title" and "subtitle"; taking title[0] alone silently truncates.
+    # It also serves JATS/MathML markup inside both halves. Zotero's own
+    # "Crossref REST" translator rejoins and sanitises, in that order.
     title_list = cr.get("title", [])
-    if title_list and "title" in item_data:
-        item_data["title"] = title_list[0]
+    # ``title_list[0]`` and not just a non-empty list: CrossRef does deposit
+    # ``"title": [""]``. Merging a subtitle onto that produced ": A Review",
+    # which is truthy, which then blocked the landing-page title from filling
+    # the gap below -- turning an empty title into a wrong one.
+    if title_list and title_list[0] and "title" in item_data:
+        title = title_list[0]
+        subtitle = (cr.get("subtitle") or [""])[0]
+        if subtitle and subtitle.lower() not in title.lower():
+            if not title.endswith(":"):
+                title += ":"
+            title += " " + subtitle
+        item_data["title"] = _utils.strip_unsupported_markup(title)
 
-    # Creators
+    # Creators. A single-field name (``name``, no ``family``) is a corporate
+    # or otherwise unsplittable creator; Zotero passes those through as
+    # deposited, and so do we -- "NASA" is not a shouted "Nasa".
     creators = []
-    for author in cr.get("author", []):
-        if "family" in author:
-            creators.append({
-                "creatorType": "author",
-                "firstName": author.get("given", ""),
-                "lastName": author["family"],
-            })
-        elif "name" in author:
-            creators.append({
-                "creatorType": "author",
-                "name": author["name"],
-            })
-    for editor in cr.get("editor", []):
-        if "family" in editor:
-            creators.append({
-                "creatorType": "editor",
-                "firstName": editor.get("given", ""),
-                "lastName": editor["family"],
-            })
-        elif "name" in editor:
-            creators.append({
-                "creatorType": "editor",
-                "name": editor["name"],
-            })
+    for role in ("author", "editor"):
+        for person in cr.get(role, []):
+            if "family" in person:
+                creators.append({
+                    "creatorType": role,
+                    "firstName": _utils.capitalize_name(person.get("given", "")),
+                    "lastName": _utils.capitalize_name(person["family"]),
+                })
+            elif "name" in person:
+                creators.append({"creatorType": role, "name": person["name"]})
     if creators:
         item_data["creators"] = creators
 
@@ -1236,6 +1239,20 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         if field in item_data and value:
             item_data[field] = value
 
+    # Finally, the repairs that apply to every deposited string: mojibake
+    # and XML entities. Zotero's translator runs this as a per-field pass
+    # over the finished item, and it runs here before the page metadata is
+    # merged in, because a publisher's own page is not CrossRef and does
+    # not carry CrossRef's deposit damage.
+    #
+    # ``abstractNote`` is excluded and keeps its ``clean_html`` treatment
+    # below. Zotero renders an abstract's inline markup; here it is fed to
+    # the embedding model in semantic_search, which reads "<i>" as tokens
+    # rather than as emphasis, so plain text is the more useful form.
+    for field, value in item_data.items():
+        if field != "abstractNote":
+            item_data[field] = _utils.repair_crossref_string(value)
+
     # Fill the gaps CrossRef left, from the page the DOI came from.
     # Never overwrite: a value CrossRef supplied wins.
     if supplemental is not None:
@@ -1257,7 +1274,9 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
                 item_data[field] = value
         if supplemental.authors and not item_data.get("creators"):
             item_data["creators"] = [
-                {"creatorType": "author", "firstName": first, "lastName": last}
+                {"creatorType": "author",
+                 "firstName": _utils.capitalize_name(first),
+                 "lastName": _utils.capitalize_name(last)}
                 for first, last in supplemental.authors
             ]
 

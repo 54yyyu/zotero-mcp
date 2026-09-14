@@ -1318,3 +1318,145 @@ class TestHonestBatchCount:
 
         assert "# Added 1 of 2 DOIs" in result
         assert "1 already in library" in result
+
+
+class TestCrossrefRecordRepairs:
+    """CrossRef's answer needs the same repairs Zotero's own translator makes.
+
+    Each repair below was checked against a live record:
+
+      shouted names  10.1006/bulm.1999.0141 deposits
+                     ``{given: "R", family: "SOLE"}``; Zotero renders the
+                     same DOI as ``{firstName: "R", lastName: "Sole"}``.
+      split titles   10.1108/01409171011011571 deposits title "Procedural
+                     justice, participation and power distance" and
+                     subtitle "Information sharing in Chinese firms".
+                     (10.1006/bulm.1999.0141 does NOT split -- its colon is
+                     inside title[0] -- so it is not evidence for this one.)
+      empty titles   10.1016/s1049-3867(05)80079-9 deposits ``title: [""]``.
+
+    The registry stores what the publisher deposited; a library should not
+    inherit the damage.
+    """
+
+    def _add(self, monkeypatch, fake_zot, dummy_ctx, msg):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake_zot, fake_zot),
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response(msg)
+        )
+        write.add_item(source="10.1234/test.2024.001", source_type="doi",
+                       ctx=dummy_ctx)
+        return fake_zot.created[0]
+
+    def test_shouted_creator_name_is_repaired(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"author": [{"given": "R", "family": "SOLE"}]})
+        assert item["creators"][0]["lastName"] == "Sole"
+
+    def test_mixed_case_creator_name_is_left_alone(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """The repair must not "correct" a name that was already right."""
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"author": [{"given": "Javier", "family": "MacGregor"}]})
+        assert item["creators"][0]["lastName"] == "MacGregor"
+
+    def test_single_field_creator_is_deposited_verbatim(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """A corporate creator has no given/family split. NASA is not Nasa."""
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"author": [{"name": "NASA"}]})
+        assert item["creators"][0]["name"] == "NASA"
+
+    def test_editors_are_repaired_too(self, monkeypatch, fake_zot, dummy_ctx):
+        item = self._add(
+            monkeypatch, fake_zot, dummy_ctx,
+            {"author": [], "editor": [{"given": "ANNA", "family": "SMITH"}]},
+        )
+        editor = item["creators"][0]
+        assert editor["creatorType"] == "editor"
+        assert (editor["firstName"], editor["lastName"]) == ("Anna", "Smith")
+
+    def test_subtitle_is_joined_onto_the_title(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """CrossRef registers the half after the colon separately; taking
+        title[0] alone truncates the title mid-sentence."""
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"title": ["Controlling chaos in ecology"],
+                          "subtitle": ["from deterministic to individual-based models"]})
+        assert item["title"] == (
+            "Controlling chaos in ecology: "
+            "from deterministic to individual-based models"
+        )
+
+    def test_existing_colon_is_not_doubled(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"title": ["Adaptive therapy:"], "subtitle": ["a review"]})
+        assert item["title"] == "Adaptive therapy: a review"
+
+    def test_subtitle_already_present_in_title_is_not_repeated(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"title": ["Adaptive therapy: a review"],
+                          "subtitle": ["A Review"]})
+        assert item["title"] == "Adaptive therapy: a review"
+
+    def test_an_empty_title_is_left_empty_for_the_page_to_fill(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """CrossRef deposits ``title: [""]``. Merging a subtitle onto that
+        yields ": A Review", which is truthy, which would then block the
+        landing-page title from filling the gap -- turning a missing title
+        into a wrong one."""
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"title": [""], "subtitle": ["A Review"]})
+        assert item["title"] == ""
+
+    def test_authors_come_before_editors(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """The one real regression risk in collapsing two creator blocks
+        into a loop."""
+        item = self._add(monkeypatch, fake_zot, dummy_ctx, {
+            "author": [{"given": "Ada", "family": "Lovelace"}],
+            "editor": [{"given": "Bob", "family": "Editor"}],
+        })
+        assert [(c["creatorType"], c["lastName"]) for c in item["creators"]] == [
+            ("author", "Lovelace"), ("editor", "Editor")
+        ]
+
+    def test_deposited_entities_are_decoded(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"title": ["Anatomy &amp; Physiology"]})
+        assert item["title"] == "Anatomy & Physiology"
+
+    def test_a_deposited_newline_does_not_reach_the_item(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        item = self._add(monkeypatch, fake_zot, dummy_ctx,
+                         {"title": ["Reversal in Yeast\nPromoters"]})
+        assert "\n" not in item["title"]
+
+    def test_mathml_is_dropped_but_italics_survive(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """A species name in italics carries meaning; MathML in a title bar
+        does not."""
+        item = self._add(
+            monkeypatch, fake_zot, dummy_ctx,
+            {"title": ["Growth of <i>E. coli</i> at "
+                       "<mml:math><mml:mi>T</mml:mi></mml:math>"]},
+        )
+        assert item["title"] == "Growth of <i>E. coli</i> at T"
