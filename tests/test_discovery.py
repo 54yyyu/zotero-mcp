@@ -237,6 +237,11 @@ class FakeZoteroCoverage(FakeZoteroDiscovery):
     def collection_items(self, key, start=0, limit=100, **kwargs):
         return self._items[start : start + limit]
 
+    def collection(self, key, **kwargs):
+        # Real pyzotero has this; the coverage scan now confirms a
+        # collection exists before listing it, so the fake needs it too.
+        return {"key": key, "data": {"name": f"Collection {key}"}}
+
     def items(self, start=None, limit=None, **kwargs):
         if start is not None:
             return self._items[start : start + (limit or 100)]
