@@ -42,8 +42,13 @@ dependencies = [
     # 2026-07-28 MCP revision, drops ctx.sample/list_roots/elicit, and swaps
     # httpx for httpx2. It is still a beta (4.0.0b1) as of this pin.
     "fastmcp>=2.14.0,<4",
-    # client.py imports httpx directly rather than relying on it arriving
-    # transitively through fastmcp (which replaces it with httpx2 in v4).
+    # The client we hand the local Zotero API is built from whichever HTTP
+    # library the installed pyzotero is built against — httpx2 on >=1.15,
+    # httpx below it — because pyzotero only recognises errors from its own
+    # (#512). client.py still imports httpx directly, as the fallback for a
+    # pyzotero whose HTTP library can't be identified, and so that the
+    # dependency is declared rather than arriving transitively through
+    # fastmcp (which itself replaces it with httpx2 in v4).
     "httpx>=0.27",
     "unidecode>=1.3.0",
     "bibtexparser>=1.4,<2",

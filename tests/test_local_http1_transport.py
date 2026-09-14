@@ -4,21 +4,28 @@ Zotero 8's local server (port 23119) only speaks HTTP/1.0. httpx defaults
 to attempting HTTP/2 negotiation, which the local server rejects with
 **502 Bad Gateway** — every tool call fails even though the MCP starts
 cleanly. The fix pins the local pyzotero client's transport to HTTP/1.1.
+
+The client and transport classes are taken from ``pyzotero_http_module()``
+rather than from a bare ``import httpx``: pyzotero 1.15 moved to ``httpx2``,
+and a local client built from the other library bypasses pyzotero's error
+handling entirely (#512). The HTTP/1.1 pin is spelled the same way in both.
 """
 
-import httpx
+from conftest import pyzotero_http_module
 from pyzotero import zotero
 
 from zotero_mcp import client as zclient
 
+http = pyzotero_http_module()
+
 
 def test_make_local_http_client_pins_http1():
-    """The helper must return an httpx.Client whose transport is HTTP/1.1 only."""
+    """The helper must return a Client whose transport is HTTP/1.1 only."""
     c = zclient._make_local_http_client()
     try:
-        assert isinstance(c, httpx.Client)
+        assert isinstance(c, http.Client)
         transport = c._transport
-        assert isinstance(transport, httpx.HTTPTransport)
+        assert isinstance(transport, http.HTTPTransport)
         # _pool is httpcore.ConnectionPool; http1/http2 are stored on it.
         pool = transport._pool
         assert pool._http1 is True
@@ -52,8 +59,8 @@ def test_get_local_zotero_client_uses_http1_transport(monkeypatch):
     assert client is not None
     assert captured["kwargs"].get("local") is True
     passed = captured["kwargs"].get("client")
-    assert isinstance(passed, httpx.Client)
-    assert isinstance(passed._transport, httpx.HTTPTransport)
+    assert isinstance(passed, http.Client)
+    assert isinstance(passed._transport, http.HTTPTransport)
     assert passed._transport._pool._http2 is False
 
     # Restore for hygiene.
@@ -83,7 +90,7 @@ def test_get_zotero_client_uses_http1_only_when_local(monkeypatch):
 
     zclient.get_zotero_client()
     local_client = captured["kwargs"].get("client")
-    assert isinstance(local_client, httpx.Client)
+    assert isinstance(local_client, http.Client)
     assert local_client._transport._pool._http2 is False
 
     captured.clear()
