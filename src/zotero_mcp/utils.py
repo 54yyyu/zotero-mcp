@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import sys
@@ -26,6 +27,45 @@ USER_AGENT = "zotero-mcp/1.0 (+https://github.com/54yyyu/zotero-mcp)"
 
 # Distribution name on PyPI, used to build install/upgrade hints.
 PACKAGE_NAME = "zotero-mcp-server"
+
+
+_logger = logging.getLogger(__name__)
+_warned_open_dirs: set[str] = set()
+
+
+def ensure_private_dir(path) -> None:
+    """Create *path* owner-only, and say so if an existing one is not.
+
+    ``~/.config/zotero-mcp`` holds ``config.json`` (API keys) and ``chroma_db``
+    (the indexed metadata and full text of the library). ``mkdir`` inherits the
+    umask, which commonly makes it ``0755``, so any local account could read the
+    index (#401). A directory created here is ``0700``, which also shuts other
+    users out of everything inside it whatever mode those files get.
+
+    An existing directory is left alone: its mode may be deliberate, and
+    tightening it silently on every run would be a surprise. If other users
+    can read it, a warning says how to fix it, once per process. No-op for
+    permissions on platforms without POSIX modes.
+    """
+    from pathlib import Path
+
+    path = Path(path)
+    existed = path.is_dir()
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "posix":
+        return
+    try:
+        if not existed:
+            os.chmod(path, 0o700)
+        elif path.stat().st_mode & 0o077 and str(path) not in _warned_open_dirs:
+            _warned_open_dirs.add(str(path))
+            _logger.warning(
+                "%s is readable by other users on this machine and holds your "
+                "Zotero index and credentials; run `chmod 700 %s` to restrict it.",
+                path, path,
+            )
+    except OSError:
+        pass
 
 
 def detect_install_flavor() -> str | None:

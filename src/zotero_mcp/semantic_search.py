@@ -46,7 +46,7 @@ from .config_light import (  # noqa: F401
 from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
-from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
+from .utils import _paginate, ensure_private_dir, format_creators, is_local_mode, suppress_stdout
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ def _acquire_update_lock(lock_path: Path):
         yield True
         return
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(lock_path.parent)
     fd = None
     try:
         fd = open(lock_path, "w")
@@ -1009,7 +1009,7 @@ class ZoteroSemanticSearch:
             return
 
         config_dir = Path(self.config_path).parent
-        config_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(config_dir)
 
         # Load existing config or create new one
         full_config = {}
@@ -1062,7 +1062,7 @@ class ZoteroSemanticSearch:
         if not self.config_path:
             return
         config_dir = Path(self.config_path).parent
-        config_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(config_dir)
         full_config = {}
         if os.path.exists(self.config_path):
             try:

@@ -128,7 +128,8 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
     """
     try:
         # Ensure config directory exists
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        from zotero_mcp.utils import ensure_private_dir
+        ensure_private_dir(config_path.parent)
 
         # Load existing config or create new one
         full_config = {}

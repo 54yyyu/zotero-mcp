@@ -455,7 +455,8 @@ def restore_configurations(backup_dir: Path) -> bool:
     if semantic_backup.exists():
         try:
             semantic_config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-            semantic_config_path.parent.mkdir(parents=True, exist_ok=True)
+            from zotero_mcp.utils import ensure_private_dir
+            ensure_private_dir(semantic_config_path.parent)
             shutil.copy2(semantic_backup, semantic_config_path)
             print(f"Restored semantic search config")
         except Exception as e:

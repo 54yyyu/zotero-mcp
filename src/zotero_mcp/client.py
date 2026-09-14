@@ -536,7 +536,9 @@ def _local_key_remembered() -> bool | None:
 
 def _write_config(config: dict) -> None:
     """Persist the config file, owner-only, replacing it atomically."""
-    ZOTERO_MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    from zotero_mcp.utils import ensure_private_dir
+
+    ensure_private_dir(ZOTERO_MCP_CONFIG_PATH.parent)
     temp_path = ZOTERO_MCP_CONFIG_PATH.with_suffix(".json.tmp")
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
