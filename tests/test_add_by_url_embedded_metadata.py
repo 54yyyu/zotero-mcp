@@ -490,3 +490,4 @@ class TestThinRecordDetection:
         assert not write._crossref_record_is_thin(
             {"title": ["A Paper"]}, "journal-article"
         )
+

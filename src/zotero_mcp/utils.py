@@ -8,6 +8,22 @@ from unidecode import unidecode
 
 html_re = re.compile(r"<.*?>")
 
+#: How this client identifies itself to third-party services.
+#:
+#: Deliberately not "Mozilla/5.0 (compatible; ...)". SpringerLink's WAF
+#: challenges a Mozilla-prefixed UA when the connection behind it is not a
+#: browser's, and served a short challenge page instead of the article --
+#: measured 2026-09-03 on link.springer.com/article/10.1006/bulm.1999.0141,
+#: where the honest form below was served the full page and its citation_*
+#: tags while every Mozilla-prefixed form, including a verbatim Chrome UA,
+#: was not. Whether other publishers behave the same way is untested.
+#:
+#: Lives here rather than in the tools layer so that every module can reach
+#: it without an import cycle. Several outbound clients still send no UA at
+#: all (OpenAlex, Unpaywall, Semantic Scholar, PMC, arXiv, scite, GitHub);
+#: converting those is worth doing and is not done here.
+USER_AGENT = "zotero-mcp/1.0 (+https://github.com/54yyyu/zotero-mcp)"
+
 # Distribution name on PyPI, used to build install/upgrade hints.
 PACKAGE_NAME = "zotero-mcp-server"
 
