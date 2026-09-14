@@ -331,6 +331,76 @@ class TestAddByUrlIfExists:
         assert "Already in library" in result
 
 
+class TestAddByUrlEmbeddedMetadataIfExists:
+    """The embedded-metadata branch of add_by_url created items with no
+    identifier check and no re-check after the page fetch (#515)."""
+
+    URL = "https://publisher.example/book/1"
+    ISBN = "9780262033848"
+
+    def _page(self, monkeypatch, fake_zot, meta, on_fetch=None):
+        from zotero_mcp.html_metadata import EmbeddedMetadata
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake_zot, fake_zot),
+        )
+
+        def _fetch(url, ctx):
+            if on_fetch:
+                on_fetch()
+            return EmbeddedMetadata(**meta), ""
+
+        monkeypatch.setattr("zotero_mcp.tools.write._fetch_embedded_metadata", _fetch)
+
+    def test_page_isbn_matches_an_item_saved_under_another_url(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        fake_zot._items.append({
+            "key": "BOOK0001", "version": 4,
+            "data": {"itemType": "book", "title": "Algorithms", "ISBN": self.ISBN,
+                     "url": "https://elsewhere.example/algorithms", "collections": [], "tags": []},
+        })
+        self._page(monkeypatch, fake_zot, {"title": "Algorithms", "isbn": self.ISBN})
+
+        result = server.add_by_url(url=self.URL, collections=["COLB0001"],
+                                   if_exists="file", ctx=dummy_ctx)
+
+        assert fake_zot.created == []
+        assert "matched by ISBN" in result
+        assert ("COLB0001", "BOOK0001") in fake_zot.addto_calls
+
+    def test_item_created_during_the_fetch_is_reused(self, monkeypatch, fake_zot, dummy_ctx):
+        """The pre-fetch URL check can miss an item a parallel add creates
+        while the page is being read; the re-check under the lock catches it."""
+        def _parallel_add():
+            fake_zot._items.append({
+                "key": "RACE0001", "version": 1,
+                "data": {"itemType": "journalArticle", "title": "Raced",
+                         "url": self.URL, "collections": [], "tags": []},
+            })
+
+        self._page(monkeypatch, fake_zot, {"title": "Raced"}, on_fetch=_parallel_add)
+
+        result = server.add_by_url(url=self.URL, if_exists="file", ctx=dummy_ctx)
+
+        assert fake_zot.created == []
+        assert "Already in library" in result
+
+    def test_duplicate_default_still_creates(self, monkeypatch, fake_zot, dummy_ctx):
+        fake_zot._items.append({
+            "key": "BOOK0001", "version": 4,
+            "data": {"itemType": "book", "title": "Algorithms", "ISBN": self.ISBN,
+                     "url": "https://elsewhere.example/algorithms", "collections": [], "tags": []},
+        })
+        self._page(monkeypatch, fake_zot, {"title": "Algorithms", "isbn": self.ISBN})
+
+        result = server.add_by_url(url=self.URL, ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 1
+        assert "Successfully added" in result
+
+
 # ---------------------------------------------------------------------------
 # add_by_isbn × if_exists
 # ---------------------------------------------------------------------------

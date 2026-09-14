@@ -2084,8 +2084,39 @@ def _add_from_embedded_metadata(
     tags,
     write_zot,
     ctx: Context,
+    *,
+    read_zot=None,
+    if_exists: str = "duplicate",
 ) -> str:
-    """Create an item from a page's own citation meta tags."""
+    """Create an item from a page's own citation meta tags.
+
+    With ``if_exists`` other than ``"duplicate"``, an existing item is looked
+    for first: by the ISBN the page declares, then by the page URL. The URL
+    was already checked before the page was fetched, but a parallel add can
+    create the item during the fetch; the caller holds the URL's identifier
+    lock and this function holds the API lock, so this re-check and the
+    create below are atomic (#486, #515). A page that declares a DOI never
+    reaches here, it goes through add_by_doi and its DOI check.
+    """
+    if if_exists != "duplicate":
+        lookup_zot = read_zot or write_zot
+        for token in re.split(r"[,;\s]+", meta.isbn or ""):
+            isbn = _helpers._normalize_isbn(token) if token else None
+            if not isbn:
+                continue
+            existing = _helpers.find_existing_items(lookup_zot, isbn=isbn, ctx=ctx)
+            if existing:
+                return _handle_existing_item(
+                    write_zot, existing, coll_keys, tags, if_exists,
+                    matched_by=f"ISBN {isbn}", ctx=ctx,
+                )
+        existing = _helpers.find_existing_items(lookup_zot, url=url, ctx=ctx)
+        if existing:
+            return _handle_existing_item(
+                write_zot, existing, coll_keys, tags, if_exists,
+                matched_by=f"URL {url}", ctx=ctx,
+            )
+
     if meta.looks_like_article():
         zot_type = "journalArticle"
     elif meta.looks_like_chapter():
@@ -2266,9 +2297,13 @@ def add_by_url(
             )
 
         if embedded is not None and embedded.is_usable():
-            return _add_from_embedded_metadata(
-                url, embedded, coll_keys, tags, write_zot, ctx,
-            )
+            # Identifier lock outside, API lock inside (the callee is
+            # decorated), the same order as the webpage branch below.
+            with _helpers.identifier_lock("url", url):
+                return _add_from_embedded_metadata(
+                    url, embedded, coll_keys, tags, write_zot, ctx,
+                    read_zot=read_zot, if_exists=if_exists,
+                )
 
         if embedded is not None and not embedded.is_usable():
             embed_problem = "the page carries no citation metadata"
