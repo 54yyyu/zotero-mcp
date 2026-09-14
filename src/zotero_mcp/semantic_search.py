@@ -536,27 +536,78 @@ _SECTION_HEADING_RE = re.compile(
 )
 
 
-def _section_offsets(text: str) -> list[tuple[int, str]]:
+# A chapter or part heading ends whatever section preceded it. Without this a
+# label runs forward until the next *recognised* heading, and since chapter
+# titles are not recognised, every chapter after the first in an edited volume
+# or monograph inherits the tail of the one before it, usually "References",
+# because chapter bibliographies are the last thing this parser recognises.
+# That is the mislabelling the module set out to avoid.
+#
+# A false positive here only clears a label, never invents one, so the pattern
+# can afford to be generous: any line that opens with Chapter/Part/Book and a
+# number, numeral or spelled-out ordinal, with or without a title after it.
+_SECTION_RESET_RE = re.compile(
+    r"""
+    ^[ \t]*(?:
+        # A chapter, part or book heading, numbered any of the usual ways.
+        (?:chapter|part|book)[ \t]+
+        (?:\d{1,3}|[ivxlc]{1,7}|one|two|three|four|five|six|seven|eight|nine|
+           ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|
+           eighteen|nineteen|twenty)
+        \b[^\n]{0,80}
+      |
+        # An all-capitals line short enough to be a heading rather than
+        # prose. Extracted PDFs lose styling, so case and length are what is
+        # left to go on; requiring two letters and no lowercase keeps ordinary
+        # sentences, wrapped fragments and bare numbers out. Case-sensitive
+        # even though the pattern as a whole is not, since case is the signal.
+        (?-i:
+            (?=[^\na-z]{5,70}[ \t]*$)
+            (?=[^\n]*[A-Z][^\n]*[A-Z])
+            [A-Z0-9][^\na-z]{4,69}
+        )
+    )
+    [ \t]*$
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+
+
+def _section_offsets(text: str) -> list[tuple[int, str | None]]:
     """Offsets of recognised section headings in *text*, in document order.
+
+    A ``None`` label marks a chapter or part boundary, which ends the previous
+    section without starting a named one.
 
     Computed once per document and shared by all of its passages: scanning the
     whole text per chunk would be quadratic in a long paper.
     """
-    marks: list[tuple[int, str]] = []
-    for match in _SECTION_HEADING_RE.finditer(text or ""):
+    text = text or ""
+    marks: list[tuple[int, str | None]] = []
+    for match in _SECTION_HEADING_RE.finditer(text):
         heading = match.group(1).strip()
         for pattern, label in _SECTION_ALIASES:
             if re.fullmatch(pattern, heading, re.IGNORECASE):
                 marks.append((match.start(), label))
                 break
+    # A recognised heading may also look like an unrecognised one (a line
+    # reading "METHODS" matches both), and the label must win over the reset.
+    named = {offset for offset, _ in marks}
+    marks.extend(
+        (match.start(), None)
+        for match in _SECTION_RESET_RE.finditer(text)
+        if match.start() not in named
+    )
+    marks.sort(key=lambda mark: mark[0])
     return marks
 
 
-def _section_at(marks: list[tuple[int, str]], offset: int) -> str | None:
+def _section_at(marks: list[tuple[int, str | None]], offset: int) -> str | None:
     """The section label in force at *offset*, or None when unknown.
 
-    None is returned for anything before the first recognised heading — front
-    matter, and every document whose headings this parser did not recognise.
+    None is returned before the first recognised heading (front matter, and
+    every document whose headings this parser did not recognise) and after a
+    chapter boundary that has not yet been followed by one.
     """
     label: str | None = None
     for start, name in marks:
