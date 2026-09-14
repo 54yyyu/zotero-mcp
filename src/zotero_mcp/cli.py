@@ -797,6 +797,17 @@ def main():
         sys.exit(setup_main(args))
 
     elif args.command == "update-db":
+        # Reject conflicting flags before anything reads or writes the config:
+        # this is a usage error, and it should not depend on the embedding
+        # provider being installed or on a config existing at all.
+        if args.use_batch is not None and (args.openai_batch is not None or args.gemini_batch is not None):
+            print(
+                "Error: --batch/--no-batch cannot be combined with the deprecated "
+                "--openai-batch/--gemini-batch flags. Use --batch --batch-provider NAME.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         # Setup Zotero environment variables
         setup_zotero_environment()
 
@@ -827,13 +838,6 @@ def main():
                 db_path=db_path,
                 extraction_workers=getattr(args, "extraction_workers", None),
             )
-            if args.use_batch is not None and (args.openai_batch is not None or args.gemini_batch is not None):
-                print(
-                    "Error: --batch/--no-batch cannot be combined with the deprecated "
-                    "--openai-batch/--gemini-batch flags. Use --batch --batch-provider NAME.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
             for flag, provider in (("--openai-batch", "openai"), ("--gemini-batch", "gemini")):
                 if getattr(args, f"{provider}_batch") is True and (
                     search.chroma_client.embedding_model != provider
