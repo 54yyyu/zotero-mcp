@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A single-DOI add now reads the article's landing page, where before it only did so for a CrossRef record that could not stand alone.** This supersedes the last sentence of the `zotero_add_by_url` entry in 0.11.0 ("The fetch is gated on that condition, so a DOI whose CrossRef record is complete never pays for it"), which was true as shipped and is no longer. The gate was sound given what "complete" was taken to mean, and 10.1006/bulm.1999.0141 is the counterexample: a title, a journal, a volume, pages and an author, passing every thinness test — while naming one of the paper's four authors and carrying no abstract. Nothing in the record says so, so the only way to find out is to look. The cost is one bounded GET (512 KB cap, 15 s timeout, outside the Zotero API lock) and every failure mode degrades to the record CrossRef gave us.
+
+  **Callers adding more than one item are exempt**, because the cost is per item. Passing several DOIs to one call is exempt automatically; a caller that loops over single items has to say so, and `add_by_doi`/`add_by_url` take `page_check="thin_only"` for that. Two such callers exist and both pass it: `add_by_url`'s multi-URL recursion — which handles the mixed DOI/arXiv/webpage batches this project advertises, one URL at a time, so it would otherwise have turned a 200-link import into 200 publisher requests — and `add_from_file`, whose directory mode is a loop over single PDFs.
+
 ### Fixed
 
 - **`zotero-mcp update-db --batch --openai-batch` read the config and built the embedding client before rejecting the flag combination.** The conflict is a usage error, so it is now checked first, before anything reads or writes the config. The old order also made `tests/test_generic_batch_flags.py` depend on the developer's real config and on that config's embedding provider being installed.

@@ -193,7 +193,8 @@ class TestDoiFromMetadata:
         # Mock the add_by_doi function to verify delegation
         doi_called_with = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             doi_called_with["doi"] = doi
             doi_called_with["collections"] = collections
             doi_called_with["tags"] = tags
@@ -230,7 +231,8 @@ class TestDoiFromMetadata:
 
         doi_captured = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             doi_captured["doi"] = doi
             return "Added by DOI: Item key: `KEY0001`"
 
@@ -271,7 +273,8 @@ class TestDoiFromFirstPageText:
 
         doi_captured = {}
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             doi_captured["doi"] = doi
             return "Added by DOI"
 
@@ -303,7 +306,8 @@ class TestDoiFromFirstPageText:
         # add_by_doi should NOT be called
         add_by_doi_called = False
 
-        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate", *, ctx):
+        def mock_add_by_doi(doi, collections=None, tags=None, if_exists="duplicate",
+                            *, ctx, **kwargs):
             nonlocal add_by_doi_called
             add_by_doi_called = True
             return "should not happen"
