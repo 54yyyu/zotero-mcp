@@ -1757,7 +1757,7 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
     try:
         _webdav.upload_attachment_to_webdav(attachment_key=attachment_key, file_path=file_path)
         ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
-        return f" (uploaded to WebDAV as {attachment_key}.zip)"
+        return f" (uploaded to WebDAV as {attachment_key}.zip)" + _cloud_only_note(write_zot)
     except Exception as e:
         ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
         # A failed PUT leaves the shell with no file bytes — an orphan that
@@ -1878,6 +1878,46 @@ def _two_step_attach(write_zot, filename, file_path, parent_key, ctx, content_ty
         return None, str(e)
 
 
+def _zotero_file_sync_disabled() -> bool:
+    """True when every Zotero profile on this machine has file syncing off.
+
+    A profile whose prefs.js does not mention the preference is at Zotero's
+    default, which syncs files, so one such profile is enough to say no.
+    """
+    from zotero_mcp.local_db import _profile_prefs_files, _read_bool_pref
+
+    prefs_files = _profile_prefs_files()
+    if not prefs_files:
+        return False
+    return all(
+        _read_bool_pref(p, "extensions.zotero.sync.storage.enabled") is False
+        for p in prefs_files
+    )
+
+
+def _cloud_only_note(write_zot) -> str:
+    """Suffix for an upload that will never reach this computer's storage.
+
+    In hybrid mode the file goes to cloud storage (Zotero's or WebDAV) and
+    the desktop client downloads it on its next file sync. With file syncing
+    turned off that never happens: the attachment row is valid but the file
+    is missing locally, and every local tool that resolves the path fails
+    later, far from the success message that hid it (#463). A local write
+    (Zotero 10) hands the bytes to Zotero itself, so it needs no note.
+    """
+    if getattr(write_zot, "local", False) or not _utils.is_local_mode():
+        return ""
+    if not _zotero_file_sync_disabled():
+        return ""
+    return (
+        " (NOTE: the file was uploaded to cloud storage, but file syncing is "
+        "off in Zotero, so it will not reach this computer's Zotero storage "
+        "and local tools cannot read it. Turn file syncing on, or on Zotero 10 "
+        "run `zotero-mcp authorize-local` so uploads go straight to the local "
+        "library.)"
+    )
+
+
 def _attach_and_verify(
     write_zot, filename, file_path, parent_key, ctx, content_type=None
 ):
@@ -1900,7 +1940,7 @@ def _attach_and_verify(
         suffix = _maybe_upload_to_webdav(
             attach_result, file_path, ctx, write_zot=write_zot
         )
-        return True, suffix, _extract_attachment_key(attach_result)
+        return True, suffix + _cloud_only_note(write_zot), _extract_attachment_key(attach_result)
 
     ctx.info(f"attachment upload failed ({reason}); retrying as create + upload")
     attachment_key, fallback_reason = _two_step_attach(
@@ -1912,7 +1952,7 @@ def _attach_and_verify(
     suffix = _maybe_upload_to_webdav(
         {"success": [{"key": attachment_key}]}, file_path, ctx, write_zot=write_zot
     )
-    return True, suffix, attachment_key
+    return True, suffix + _cloud_only_note(write_zot), attachment_key
 
 
 def _file_md5(path):

@@ -95,6 +95,25 @@ def _read_string_pref(prefs_path: Path, pref: str) -> str | None:
         return raw
 
 
+def _read_bool_pref(prefs_path: Path, pref: str) -> bool | None:
+    """Read a boolean preference from a Zotero prefs.js file.
+
+    Returns None if the file cannot be read or the preference is absent,
+    which for Zotero means the preference is still at its default.
+    """
+    try:
+        text = prefs_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.search(
+        r'user_pref\("' + re.escape(pref) + r'",\s*(true|false)\)',
+        text,
+    )
+    if not m:
+        return None
+    return m.group(1) == "true"
+
+
 def _zotero_profiles_dirs() -> list[Path]:
     """Return OS-specific directories that may contain Zotero profiles."""
     system = platform.system()
