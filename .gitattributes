@@ -1,0 +1,4 @@
+# The packaged agent skill is installed verbatim into other harnesses, and
+# tests/test_skill_reference_current.py checks the tracked reference is LF.
+# Without this, a Windows checkout with core.autocrlf rewrites it to CRLF.
+src/zotero_mcp/skills/** text eol=lf
