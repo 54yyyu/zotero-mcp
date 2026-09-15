@@ -216,11 +216,11 @@ class TestSpecReader:
 
 
 class TestBatch:
-    def _run(self, tmp_path, capsys, specs, create, json_out=True, dry_run=False):
+    def _run(self, tmp_path, capsys, specs, outcomes, json_out=True, dry_run=False):
         path = tmp_path / "specs.jsonl"
         path.write_text("\n".join(json.dumps(s) for s in specs))
         annotations = MagicMock()
-        annotations.create_annotation.side_effect = create
+        annotations.create_annotations.side_effect = outcomes
         args = _args(subcommand="batch", attachment_key="ATT00001", file=str(path),
                      dry_run=dry_run, json_out=json_out)
         env, tools = _with_tools(annotations)
@@ -232,48 +232,51 @@ class TestBatch:
                 code = exc.code
         return annotations, capsys.readouterr().out, code
 
-    def test_every_spec_is_attempted_and_reported(self, tmp_path, capsys):
-        replies = iter([
-            "Successfully created highlight annotation\n\n**Annotation Key:** AAAA1111",
-            "Error: Could not find text on page 9",
-            "Successfully created area annotation\n\n**Annotation Key:** BBBB2222",
-        ])
+    def test_specs_are_grouped_by_attachment_and_reported_in_order(self, tmp_path, capsys):
+        def outcomes(key, specs, **kwargs):
+            if key == "ATT00001":
+                return [
+                    {"index": 1, "page": 1, "type": "highlight", "ok": True, "annotation_key": "AAAA1111"},
+                    {"index": 2, "page": 9, "type": "highlight", "ok": False,
+                     "error": "Error: Could not find text on page 9"},
+                ]
+            return [{"index": 1, "page": 3, "type": "area", "ok": True, "annotation_key": "BBBB2222"}]
+
         specs = [
             {"page": 1, "text": "one", "color": "red", "tags": ["t"]},
-            {"page": 9, "text": "missing"},
             {"page": 3, "rect": "0.1,0.1,0.5,0.2", "attachment_key": "OTHER001"},
+            {"page": 9, "text": "missing"},
         ]
-        annotations, out, code = self._run(tmp_path, capsys, specs, lambda **_: next(replies))
+        annotations, out, code = self._run(tmp_path, capsys, specs, outcomes)
 
         assert code == 1  # one failure
-        payload = json.loads(out)
-        assert payload["ok"] is True
-        data = payload["data"]
-        assert (data["succeeded"], data["failed"], data["dry_run"]) == (2, 1, False)
-        assert [r["ok"] for r in data["results"]] == [True, False, True]
-        assert data["results"][0]["annotation_key"] == "AAAA1111"
-        assert data["results"][2]["type"] == "area"
-        assert "Could not find" in data["results"][1]["error"]
-
-        calls = [c.kwargs for c in annotations.create_annotation.call_args_list]
-        assert calls[0]["color"] == "#ff6666" and calls[0]["attachment_key"] == "ATT00001"
-        assert calls[1]["color"] == "#ffd400"  # default
-        assert calls[2]["rect"] == [0.1, 0.1, 0.5, 0.2] and calls[2]["attachment_key"] == "OTHER001"
-
-    def test_bad_page_fails_that_spec_only(self, tmp_path, capsys):
-        ok = "Successfully created\n\n**Annotation Key:** CCCC3333"
-        annotations, out, code = self._run(
-            tmp_path, capsys, [{"page": "two", "text": "x"}, {"page": 2, "text": "y"}],
-            lambda **_: ok)
         data = json.loads(out)["data"]
-        assert [r["ok"] for r in data["results"]] == [False, True]
-        assert annotations.create_annotation.call_count == 1
-        assert code == 1
+        assert (data["succeeded"], data["failed"], data["dry_run"]) == (2, 1, False)
+        assert [(r["index"], r["ok"]) for r in data["results"]] == [(1, True), (2, True), (3, False)]
+        assert data["results"][1]["annotation_key"] == "BBBB2222"
+        assert "Could not find" in data["results"][2]["error"]
+
+        calls = {c.args[0]: c.args[1] for c in annotations.create_annotations.call_args_list}
+        assert [s["page"] for s in calls["ATT00001"]] == [1, 9]
+        assert calls["ATT00001"][0]["color"] == "#ff6666"
+        assert calls["OTHER001"][0]["rect"] == [0.1, 0.1, 0.5, 0.2]
+        assert annotations.create_annotations.call_count == 2
+
+    def test_dry_run_is_passed_through(self, tmp_path, capsys):
+        outcome = [{"index": 1, "page": 2, "type": "highlight", "ok": True,
+                    "page_found": 3, "matched_text": "the words"}]
+        annotations, out, code = self._run(
+            tmp_path, capsys, [{"page": 2, "text": "the words"}],
+            lambda key, specs, **kwargs: outcome, json_out=False, dry_run=True)
+        assert annotations.create_annotations.call_args.kwargs["dry_run"] is True
+        assert code == 0
+        assert "(found on p3): the words" in out and "Located 1/1" in out
 
     def test_all_succeeded_exits_zero_with_a_summary(self, tmp_path, capsys):
-        ok = "Successfully created\n\n**Annotation Key:** DDDD4444"
+        outcome = [{"index": 1, "page": 1, "type": "highlight", "ok": True, "annotation_key": "DDDD4444"}]
         _annotations, out, code = self._run(
-            tmp_path, capsys, [{"page": 1, "text": "x"}], lambda **_: ok, json_out=False)
+            tmp_path, capsys, [{"page": 1, "text": "x"}],
+            lambda key, specs, **kwargs: outcome, json_out=False)
         assert code == 0
         assert "Created 1/1" in out and "DDDD4444" in out
 
@@ -386,25 +389,108 @@ class TestHighlightClipping:
         assert "Recurrent" not in covered and "examples" not in covered
         assert "sequential" in covered
 
-    def test_preview_reports_readable_matches_without_writing(self, prose_pdf, monkeypatch):
+    def test_dry_run_reports_readable_matches_without_writing(self, prose_pdf, monkeypatch):
         from zotero_mcp.tools import annotations
 
-        def fake_fetch(_key, tmpdir, *, ctx):
-            return prose_pdf, "prose.pdf", None
-
-        monkeypatch.setattr(annotations, "_fetch_pdf_attachment", fake_fetch)
-        results = annotations.preview_highlights("ATT00001", [
+        monkeypatch.setattr(annotations, "_fetch_attachment_file",
+                            lambda _key, _tmp, **_kw: (prose_pdf, "prose.pdf", "pdf", None))
+        monkeypatch.setattr(annotations, "_get_note_write_client",
+                            lambda _op: pytest.fail("a dry run must not need write access"))
+        results = annotations.create_annotations("ATT00001", [
             {"page": 1, "text": "sequential nature precludes"},
             {"page": 1, "text": "a sentence that is not in this document at all"},
             {"page": 1, "rect": [0.1, 0.1, 0.2, 0.2]},
-            {"page": 1, "text": "x", "attachment_key": "OTHER001"},
-        ], ctx=MagicMock())
+        ], ctx=MagicMock(), dry_run=True)
 
         assert results[0]["ok"] and results[0]["matched_text"] == "sequential nature precludes"
-        assert results[0]["page_found"] == 1 and results[0]["lines"] == 1
-        assert not results[1]["ok"]
-        assert results[2] == {"index": 3, "page": 1, "ok": True, "type": "area"}
-        assert not results[3]["ok"] and "different attachment" in results[3]["error"]
+        assert results[0]["page_found"] == 1
+        assert not results[1]["ok"] and "Could not find text" in results[1]["error"]
+        assert results[2]["ok"] and results[2]["type"] == "area"
+        assert not any("annotation_key" in r for r in results)
+
+
+class TestCreateAnnotations:
+    """One fetch of the PDF and one write per 50 annotations, however many specs."""
+
+    @pytest.fixture
+    def writer(self, prose_pdf, monkeypatch):
+        from zotero_mcp.tools import annotations
+
+        fake = MagicMock()
+        fake.create_items.side_effect = lambda items: {
+            "success": {str(i): f"KEY{len(fake.create_items.call_args_list):02d}{i:02d}"
+                        for i in range(len(items))},
+            "failed": {},
+        }
+        fetches = []
+
+        def fetch(key, tmpdir, **kwargs):
+            fetches.append(key)
+            return prose_pdf, "prose.pdf", "pdf", None
+
+        monkeypatch.setattr(annotations, "_fetch_attachment_file", fetch)
+        monkeypatch.setattr(annotations, "_get_note_write_client", lambda _op: (fake, None))
+        return annotations, fake, fetches
+
+    def test_placed_specs_are_written_in_one_request(self, writer):
+        annotations, fake, fetches = writer
+        results = annotations.create_annotations("ATT00001", [
+            {"page": 1, "text": "sequential nature precludes", "color": "#2ea8e5", "tags": ["x"]},
+            {"page": 1, "text": "nowhere in this document at all, not even close"},
+            {"page": 1, "rect": [0.1, 0.1, 0.2, 0.2], "comment": "box"},
+            {"page": 0, "text": "bad page"},
+        ], ctx=MagicMock())
+
+        assert fetches == ["ATT00001"]
+        assert fake.create_items.call_count == 1
+        payloads = fake.create_items.call_args.args[0]
+        assert [p["annotationType"] for p in payloads] == ["highlight", "image"]
+        assert payloads[0]["annotationColor"] == "#2ea8e5" and payloads[0]["tags"] == [{"tag": "x"}]
+        assert payloads[1]["annotationComment"] == "box"
+        assert [r["ok"] for r in results] == [True, False, True, False]
+        assert results[0]["annotation_key"] == "KEY0100" and results[2]["annotation_key"] == "KEY0101"
+        assert "positive integer" in results[3]["error"]
+
+    def test_annotation_type_is_the_first_annotation_property(self, writer):
+        """Zotero's local API answers 400 "annotationType must be set before
+        other annotation properties" when any annotation* key precedes it.
+        Every payload in the first live batch was refused this way."""
+        annotations, fake, _fetches = writer
+        annotations.create_annotations("ATT00001", [
+            {"page": 1, "text": "sequential nature precludes", "comment": "c", "color": "#ff6666"},
+            {"page": 1, "rect": [0.1, 0.1, 0.2, 0.2], "comment": "c"},
+        ], ctx=MagicMock())
+        for payload in fake.create_items.call_args.args[0]:
+            annotation_keys = [k for k in payload if k.startswith("annotation")]
+            assert annotation_keys[0] == "annotationType", annotation_keys
+
+    def test_more_than_fifty_are_chunked(self, writer):
+        annotations, fake, _fetches = writer
+        specs = [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1]}] * 51
+        results = annotations.create_annotations("ATT00001", specs, ctx=MagicMock())
+        assert [len(c.args[0]) for c in fake.create_items.call_args_list] == [50, 1]
+        assert all(r["ok"] for r in results)
+
+    def test_a_refused_item_fails_only_itself(self, writer):
+        annotations, fake, _fetches = writer
+        fake.create_items.side_effect = lambda items: {
+            "success": {"0": "GOOD0001"}, "failed": {"1": {"code": 400, "message": "bad color"}},
+        }
+        results = annotations.create_annotations("ATT00001", [
+            {"page": 1, "rect": [0.1, 0.1, 0.1, 0.1]},
+            {"page": 1, "rect": [0.2, 0.2, 0.1, 0.1], "color": "not-a-color"},
+        ], ctx=MagicMock())
+        assert results[0]["ok"] and not results[1]["ok"]
+        assert "bad color" in results[1]["error"]
+
+    def test_no_write_access_fails_every_spec_with_the_reason(self, prose_pdf, monkeypatch):
+        from zotero_mcp.tools import annotations
+
+        monkeypatch.setattr(annotations, "_get_note_write_client",
+                            lambda _op: (None, "Error: Cannot perform write operations"))
+        results = annotations.create_annotations(
+            "ATT00001", [{"page": 1, "text": "a"}, {"page": 1, "text": "b"}], ctx=MagicMock())
+        assert [r["error"] for r in results] == ["Error: Cannot perform write operations"] * 2
 
 
 # ---------------------------------------------------------------------------

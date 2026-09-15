@@ -502,48 +502,37 @@ def _read_annotation_specs(source: str) -> list[dict]:
 def _annotations_batch(args, annotations, ctx) -> None:
     """`annotations batch`: create (or with --dry-run, locate) many annotations.
 
-    One process for the whole batch instead of one per annotation; interpreter
-    startup was most of the ~1.2 s each separate `annotations create` cost.
-    Every spec is attempted even when an earlier one fails, and the result
-    lists each outcome, so a caller can retry just the failures. The exit code
-    is 1 when any spec failed.
+    Specs are grouped by attachment, and each group is one call: the PDF is
+    fetched once and the annotations are written together. Every spec is
+    attempted even when others fail, each outcome is listed so a caller can
+    retry just the failures, and the exit code is 1 when any spec failed.
     """
-    import re
     import time
 
     specs = _read_annotation_specs(args.file)
     started = time.monotonic()
 
-    if args.dry_run:
-        results = annotations.preview_highlights(args.attachment_key, specs, ctx=ctx)
-    else:
-        key_re = re.compile(r"\*\*Annotation Key:\*\*\s*([A-Z0-9]{8})")
-        results = []
-        for index, spec in enumerate(specs, start=1):
-            entry = {"index": index, "page": spec.get("page")}
-            results.append(entry)
+    groups: dict[str, list[int]] = {}
+    for position, spec in enumerate(specs):
+        groups.setdefault(spec.get("attachment_key") or args.attachment_key, []).append(position)
+        if spec.get("rect") is not None:
             try:
-                page = spec.get("page")
-                if not isinstance(page, int) or page < 1:
-                    raise _cli_json.CliError("page must be a positive integer", code="bad_page")
-                message = annotations.create_annotation(
-                    attachment_key=spec.get("attachment_key") or args.attachment_key,
-                    page=page,
-                    text=spec.get("text"),
-                    rect=_parse_rect(spec["rect"]) if spec.get("rect") is not None else None,
-                    comment=spec.get("comment"),
-                    color=_resolve_color(spec.get("color") or ZOTERO_COLORS["yellow"]),
-                    tags=spec.get("tags"),
-                    ctx=ctx,
-                )
-            except Exception as exc:
-                message = f"Error: {exc}"
-            match = key_re.search(message)
-            if match and not _reports_failure(message):
-                entry.update(ok=True, annotation_key=match.group(1),
-                             type="area" if spec.get("rect") is not None else "highlight")
-            else:
-                entry.update(ok=False, error=_cli_vocabulary(message.strip()))
+                spec["rect"] = _parse_rect(spec["rect"])
+            except _cli_json.CliError:
+                pass  # left as given; the tool reports the malformed rect for this spec
+        if spec.get("color"):
+            spec["color"] = _resolve_color(spec["color"])
+
+    results: list[dict] = [{}] * len(specs)
+    for attachment_key, positions in groups.items():
+        outcomes = annotations.create_annotations(
+            attachment_key, [specs[p] for p in positions], ctx=ctx,
+            dry_run=args.dry_run, allow_epub=True,
+        )
+        for position, outcome in zip(positions, outcomes):
+            results[position] = {**outcome, "index": position + 1}
+            if not outcome["ok"]:
+                results[position]["error"] = _cli_vocabulary(outcome["error"].strip())
 
     failed = [r for r in results if not r["ok"]]
     seconds = round(time.monotonic() - started, 2)
@@ -561,11 +550,10 @@ def _annotations_batch(args, annotations, ctx) -> None:
             where = f"#{r['index']} p{r['page']}"
             if not r["ok"]:
                 print(f"FAIL  {where}: {r['error']}")
-                if r.get("best_match"):
-                    print(f"      best match ({r['best_score']:.0%}): {r['best_match'][:150]}")
             elif args.dry_run and r["type"] == "highlight":
-                moved = f" (found on p{r['page_found']})" if r["page_found"] != r["page"] else ""
-                print(f"ok    {where}{moved}, {r['lines']} line(s): {r['matched_text'][:120]}")
+                found = r.get("page_found") or r.get("chapter_found")
+                moved = f" (found on p{found})" if found not in (None, r["page"]) else ""
+                print(f"ok    {where}{moved}: {r.get('matched_text', '')[:120]}")
             elif args.dry_run:
                 print(f"ok    {where} area")
             else:

@@ -1492,11 +1492,6 @@ def _create_highlight_annotation(
     """
     Create a highlight annotation on a PDF or EPUB attachment.
 
-    This tool handles multiple storage configurations:
-    - Zotero Cloud Storage: Downloads file via Web API
-    - WebDAV Storage: Downloads file via local Zotero or direct WebDAV access
-    - Annotations are always created via the Web API (required for write operations)
-
     Args:
         attachment_key: Attachment key (e.g., "NHZFE5A7")
         page: For PDF: 1-indexed page number. For EPUB: 1-indexed chapter number.
@@ -1508,221 +1503,27 @@ def _create_highlight_annotation(
     Returns:
         Confirmation message with the new annotation key
     """
+    spec = {"page": page, "text": text, "comment": comment, "color": color, "tags": tags}
+    (result,) = create_annotations(attachment_key, [spec], ctx=ctx, allow_epub=True)
+    if not result["ok"]:
+        return result["error"]
 
-    from zotero_mcp.pdf_utils import (
-        find_text_position,
-        get_page_label,
-        build_annotation_position,
-        verify_pdf_attachment,
-    )
-
-    try:
-        ctx.info(f"Creating annotation on attachment {attachment_key}, page {page}")
-
-        # Two different jobs here: somewhere to write the annotation, and
-        # somewhere to fetch the attachment's bytes from. They are not always
-        # the same backend, so resolve them separately.
-        metadata_client, err = _get_note_write_client("creating annotations")
-        if err:
-            return err
-
-        local_client = _client.get_local_zotero_client()
-        web_client = _client.get_web_zotero_client()
-        if web_client:
-            _helpers.apply_library_override(web_client, _client.get_active_library())
-
-        # Verify the attachment exists and is a PDF
-        try:
-            attachment = metadata_client.item(attachment_key)
-            attachment_data = attachment.get("data", {})
-
-            if attachment_data.get("itemType") != "attachment":
-                return f"Error: Item {attachment_key} is not an attachment"
-
-            content_type = attachment_data.get("contentType", "")
-            supported_types = {
-                "application/pdf": "pdf",
-                "application/epub+zip": "epub",
-            }
-            if content_type not in supported_types:
-                return f"Error: Attachment {attachment_key} is not a PDF or EPUB (type: {content_type})"
-
-            file_type = supported_types[content_type]
-            filename = attachment_data.get("filename", f"{attachment_key}.{file_type}")
-
-        except Exception as e:
-            return f"Error: No attachment found with key: {attachment_key} ({e})"
-
-        # Download the PDF to a temporary location
-        # Strategy: Try multiple sources in order of likelihood to succeed
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path, error_message = _download_attachment_for_processing(
-                attachment_key,
-                filename,
-                tmpdir,
-                local_client=local_client,
-                web_client=web_client,
-                ctx=ctx,
-            )
-            if error_message:
-                return error_message
-
-            # Verify the file is valid
-            if file_type == "pdf":
-                if not verify_pdf_attachment(file_path):
-                    return f"Error: Downloaded file is not a valid PDF"
-            else:  # epub
-                from zotero_mcp.epub_utils import verify_epub_attachment
-                if not verify_epub_attachment(file_path):
-                    return f"Error: Downloaded file is not a valid EPUB"
-
-            # Search for the text and get position data
-            search_preview = text[:50] + "..." if len(text) > 50 else text
-            location_type = "page" if file_type == "pdf" else "chapter"
-            ctx.info(f"Searching for text in {location_type} {page}: '{search_preview}'")
-
-            if file_type == "pdf":
-                position_data = find_text_position(file_path, page, text)
-            else:  # epub
-                from zotero_mcp.epub_utils import find_text_in_epub
-                position_data = find_text_in_epub(file_path, page, text)
-
-            if "error" in position_data:
-                # Build debug info message
-                debug_lines = [
-                    f"Error: {position_data['error']}",
-                    f"",
-                    f"Text searched: \"{text[:100]}{'...' if len(text) > 100 else ''}\"",
-                ]
-
-                best_score = position_data.get("best_score", 0)
-                best_match = position_data.get("best_match")
-
-                # Add "Did you mean" suggestion if we found a reasonable match
-                if best_score >= 0.5 and best_match:
-                    debug_lines.append("")
-                    debug_lines.append("=" * 50)
-                    debug_lines.append(f"DID YOU MEAN (score: {best_score:.0%}):")
-                    debug_lines.append("")
-                    # Show a useful preview - first 150 chars of the match
-                    suggestion = best_match[:150].strip()
-                    if len(best_match) > 150:
-                        suggestion += "..."
-                    debug_lines.append(f'  "{suggestion}"')
-                    debug_lines.append("")
-                    if position_data.get("page_found"):
-                        debug_lines.append(f"  (Found on page {position_data['page_found']})")
-                    debug_lines.append("=" * 50)
-                    debug_lines.append("")
-                    debug_lines.append("TIP: Copy the exact text from the PDF instead of paraphrasing.")
-                elif best_score > 0:
-                    debug_lines.append(f"")
-                    debug_lines.append(f"Debug info:")
-                    debug_lines.append(f"  Best match score: {best_score:.2f} (too low for suggestion)")
-                    if best_match:
-                        preview = best_match[:80]
-                        debug_lines.append(f"  Best match text: \"{preview}...\"")
-                    # Handle both PDF (page_found) and EPUB (chapter_found)
-                    found_location = position_data.get("page_found") or position_data.get("chapter_found")
-                    if found_location:
-                        debug_lines.append(f"  Found in {location_type}: {found_location}")
-
-                # Handle both PDF (pages_searched) and EPUB (chapters_searched)
-                searched = position_data.get("pages_searched") or position_data.get("chapters_searched")
-                if searched:
-                    debug_lines.append(f"  {location_type.title()}s searched: {searched}")
-
-                if best_score < 0.5:
-                    debug_lines.extend([
-                        "",
-                        "Tips:",
-                        f"- Copy the exact text from the {file_type.upper()} (don't paraphrase)",
-                        "- Try a shorter, unique phrase from the beginning",
-                        f"- Check that the {location_type} number is correct",
-                    ])
-
-                return "\n".join(debug_lines)
-
-            # Build annotation data based on file type
-            if file_type == "pdf":
-                # Get page label (might differ from page number in some PDFs)
-                page_label = get_page_label(file_path, page)
-
-                # Build annotation position JSON for PDF
-                annotation_position = build_annotation_position(
-                    position_data["pageIndex"],
-                    position_data["rects"]
-                )
-                sort_index = position_data["sort_index"]
-            else:  # epub
-                # For EPUB: leave pageLabel EMPTY for proper navigation
-                # Zotero's manual EPUB annotations have empty pageLabel and it works
-                page_label = ""  # Empty, not chapter number!
-                annotation_position = position_data["annotation_position"]
-                # EPUB sort index format: "spine_index|character_offset"
-                # Use actual character position from CFI generation
-                chapter = position_data.get("chapter_found", page)
-                char_position = position_data.get("char_position", chapter * 1000)
-                sort_index = f"{chapter:05d}|{char_position:08d}"
-
-            tag_list = (
-                _helpers._normalize_str_list_input(tags, "tags")
-                if tags is not None else []
-            )
-
-            annotation_data = {
-                "itemType": "annotation",
-                "parentItem": attachment_key,
-                "annotationType": "highlight",
-                "annotationText": text,
-                "annotationComment": comment or "",
-                "annotationColor": color,
-                "annotationSortIndex": sort_index,
-                "annotationPosition": annotation_position,
-                "tags": [{"tag": t} for t in tag_list],
-            }
-            # Only add pageLabel if not empty (EPUB should not have it)
-            if page_label:
-                annotation_data["annotationPageLabel"] = page_label
-
-            ctx.info("Creating annotation...")
-
-            result = metadata_client.create_items([annotation_data])
-
-            # Check if creation was successful
-            if "success" in result and result["success"]:
-                successful = result["success"]
-                if len(successful) > 0:
-                    annotation_key = list(successful.values())[0]
-                    location_label = "Page" if file_type == "pdf" else "Chapter"
-                    response = [
-                        f"Successfully created highlight annotation",
-                        f"",
-                        f"**Annotation Key:** {annotation_key}",
-                        f"**{location_label}:** {page_label}",
-                    ]
-                    # For EPUB, show if text was found in different chapter than requested
-                    if file_type == "epub":
-                        chapter_found = position_data.get("chapter_found", page)
-                        if chapter_found != page:
-                            response.append(f"**Note:** Text was found in chapter {chapter_found} (you specified {page})")
-                        chapter_href = position_data.get("chapter_href", "")
-                        if chapter_href:
-                            response.append(f"**Section:** {chapter_href}")
-                    response.append(f"**Text:** \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
-                    if comment:
-                        response.append(f"**Comment:** {comment}")
-                    response.append(f"**Color:** {color}")
-                    return "\n".join(response)
-                else:
-                    return f"Annotation creation response was successful but no key was returned: {result}"
-            else:
-                failed_info = result.get("failed", {})
-                return f"Failed to create annotation: {failed_info}"
-
-    except Exception as e:
-        ctx.error(f"Error creating annotation: {str(e)}")
-        return f"Error creating annotation: {_helpers.format_zotero_error(e)}"
+    location = "Chapter" if result["file_type"] == "epub" else "Page"
+    response = [
+        "Successfully created highlight annotation",
+        "",
+        f"**Annotation Key:** {result['annotation_key']}",
+        f"**{location}:** {result['page_label']}",
+    ]
+    if result.get("chapter_found") not in (None, page):
+        response.append(
+            f"**Note:** Text was found in chapter {result['chapter_found']} (you specified {page})"
+        )
+    response.append(f"**Text:** \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
+    if comment:
+        response.append(f"**Comment:** {comment}")
+    response.append(f"**Color:** {color}")
+    return "\n".join(response)
 
 
 def create_area_annotation(
@@ -1755,128 +1556,329 @@ def create_area_annotation(
     Returns:
         Confirmation message with the new annotation key
     """
-    from math import isfinite
+    error = _rect_error(x, y, width, height)
+    if error:
+        return error
 
+    spec = {"page": page, "rect": [x, y, width, height], "comment": comment,
+            "color": color, "tags": tags}
+    (result,) = create_annotations(attachment_key, [spec], ctx=ctx)
+    if not result["ok"]:
+        return result["error"]
+
+    response = [
+        "Successfully created area annotation",
+        "",
+        f"**Annotation Key:** {result['annotation_key']}",
+        f"**Page:** {result['page_label']}",
+        f"**Rect (normalized):** x={x:.4f}, y={y:.4f}, width={width:.4f}, height={height:.4f}",
+        f"**Color:** {color}",
+    ]
+    if comment:
+        response.append(f"**Comment:** {comment}")
+    return "\n".join(response)
+
+
+#: Annotations sent per create_items call; the Zotero API takes 50 items a request.
+_CREATE_BATCH_SIZE = 50
+_PDF_ONLY = {"application/pdf": "pdf"}
+_PDF_OR_EPUB = {"application/pdf": "pdf", "application/epub+zip": "epub"}
+
+
+@with_zotero_api_lock
+def create_annotations(
+    attachment_key: str,
+    specs: list[dict],
+    *,
+    ctx: Context,
+    dry_run: bool = False,
+    allow_epub: bool = False,
+) -> list[dict]:
+    """Create highlights and area boxes on one attachment, written together.
+
+    Each spec is ``{"page", "text"}`` for a highlight or
+    ``{"page", "rect": [x, y, width, height]}`` for an area box, with optional
+    ``comment``, ``color`` and ``tags``.
+
+    Work that belongs to the attachment happens once: reading its metadata,
+    fetching and verifying the file, reading page labels. Annotations are
+    then written up to 50 per request. Creating them one call at a time had
+    repeated all of that per annotation.
+
+    With ``dry_run`` nothing is written and no write access is needed; each
+    placed highlight reports ``matched_text``, the words its rects cover, so a
+    caller can check placement first.
+
+    Returns:
+        One dict per spec, in order: ``index`` (1-based), ``page``, ``type``,
+        ``ok``, and either ``error`` or ``annotation_key`` (not in a dry run),
+        ``page_label``, ``file_type`` and, for highlights, ``page_found``
+        (PDF) or ``chapter_found`` (EPUB).
+    """
+    from zotero_mcp.pdf_utils import verify_pdf_attachment
+
+    results = [
+        {"index": index, "page": spec.get("page"), "ok": False,
+         "type": "area" if spec.get("rect") is not None else "highlight"}
+        for index, spec in enumerate(specs, start=1)
+    ]
+
+    def fail_all(message: str) -> list[dict]:
+        for result in results:
+            result["error"] = message
+        return results
+
+    try:
+        write_client = None
+        if not dry_run:
+            write_client, err = _get_note_write_client("creating annotations")
+            if err:
+                return fail_all(err)
+
+        pending: list[tuple[dict, dict]] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path, _filename, file_type, error = _fetch_attachment_file(
+                attachment_key, tmpdir, ctx=ctx, meta_client=write_client,
+                content_types=_PDF_OR_EPUB if allow_epub else _PDF_ONLY,
+            )
+            if error:
+                return fail_all(error)
+            if file_type == "pdf":
+                valid = verify_pdf_attachment(file_path)
+            else:
+                from zotero_mcp.epub_utils import verify_epub_attachment
+                valid = verify_epub_attachment(file_path)
+            if not valid:
+                return fail_all(f"Error: Downloaded file is not a valid {file_type.upper()}")
+
+            page_labels: dict[int, str] = {}
+            for result, spec in zip(results, specs):
+                result["file_type"] = file_type
+                try:
+                    payload, details = _annotation_payload(
+                        file_path, file_type, attachment_key, spec, page_labels,
+                        with_text=dry_run,
+                    )
+                except Exception as e:
+                    payload, details = None, {"error": f"Error creating annotation: {e}"}
+                result.update(details)
+                if payload is not None:
+                    pending.append((result, payload))
+
+        if dry_run:
+            for result, _payload in pending:
+                result["ok"] = True
+            return results
+
+        for start in range(0, len(pending), _CREATE_BATCH_SIZE):
+            chunk = pending[start:start + _CREATE_BATCH_SIZE]
+            ctx.info(f"Creating {len(chunk)} annotation(s)...")
+            response = write_client.create_items([payload for _result, payload in chunk])
+            success = response.get("success") or {}
+            failed = response.get("failed") or {}
+            for offset, (result, _payload) in enumerate(chunk):
+                key = success.get(str(offset))
+                if key:
+                    result.update(ok=True, annotation_key=key)
+                else:
+                    reason = failed.get(str(offset)) or failed or response
+                    result["error"] = f"Failed to create annotation: {reason}"
+        return results
+
+    except Exception as e:
+        ctx.error(f"Error creating annotations: {str(e)}")
+        message = f"Error creating annotation: {_helpers.format_zotero_error(e)}"
+        for result in results:
+            if not result["ok"] and "error" not in result:
+                result["error"] = message
+        return results
+
+
+def _annotation_payload(
+    file_path: str,
+    file_type: str,
+    attachment_key: str,
+    spec: dict,
+    page_labels: dict[int, str],
+    *,
+    with_text: bool = False,
+) -> tuple[dict | None, dict]:
+    """Zotero annotation data for one spec, and what to report about it.
+
+    Returns:
+        (payload, details). ``payload`` is None when the spec cannot be
+        placed, and ``details`` then carries ``error``. ``page_labels`` caches
+        labels across the specs of one file.
+    """
     from zotero_mcp.pdf_utils import (
         build_annotation_position,
         build_area_position_data,
+        find_text_position,
         get_page_label,
-        verify_pdf_attachment,
+        text_in_rects,
     )
 
-    try:
-        ctx.info(f"Creating area annotation on attachment {attachment_key}, page {page}")
+    page = spec.get("page")
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        return None, {"error": "Error: page must be a positive integer"}
 
-        values = {"x": x, "y": y, "width": width, "height": height}
-        for name, value in values.items():
-            if not isinstance(value, (int, float)) or not isfinite(value):
-                return f"Error: {name} must be a finite number"
+    text, rect = spec.get("text"), spec.get("rect")
+    if rect is not None and text:
+        return None, {"error": "Error: pass either text (highlight) or rect (area box), not both"}
 
-        if x < 0 or x > 1:
-            return "Error: x must be between 0 and 1"
-        if y < 0 or y > 1:
-            return "Error: y must be between 0 and 1"
-        if width <= 0 or width > 1:
-            return "Error: width must be greater than 0 and at most 1"
-        if height <= 0 or height > 1:
-            return "Error: height must be greater than 0 and at most 1"
-        if x + width > 1:
-            return "Error: Rectangle must fit within the page width (x + width must be <= 1)"
-        if y + height > 1:
-            return "Error: Rectangle must fit within the page height (y + height must be <= 1)"
+    tags = spec.get("tags")
+    tag_list = _helpers._normalize_str_list_input(tags, "tags") if tags is not None else []
 
-        write_client, err = _get_note_write_client("creating annotations")
-        if err:
-            return err
+    def annotation(annotation_type: str, **fields) -> dict:
+        # Zotero refuses the item unless annotationType precedes every other
+        # annotation property ("annotationType must be set before other
+        # annotation properties"), so this key order is load-bearing.
+        return {
+            "itemType": "annotation",
+            "parentItem": attachment_key,
+            "annotationType": annotation_type,
+            **fields,
+            "annotationComment": spec.get("comment") or "",
+            "annotationColor": spec.get("color") or "#ffd400",
+            "tags": [{"tag": t} for t in tag_list],
+        }
 
-        local_client = _client.get_local_zotero_client()
-        web_client = _client.get_web_zotero_client()
-        if web_client:
-            _helpers.apply_library_override(web_client, _client.get_active_library())
+    def label_of(number: int) -> str:
+        if number not in page_labels:
+            page_labels[number] = get_page_label(file_path, number)
+        return page_labels[number]
 
-        try:
-            attachment = write_client.item(attachment_key)
-            attachment_data = attachment.get("data", {})
+    if rect is not None:
+        if file_type != "pdf":
+            return None, {"error": "Error: area annotations need a PDF attachment"}
+        box = _helpers._normalize_float_list_input(rect, 4, "rect")
+        if box is None:
+            return None, {"error": (
+                "Error: rect must be exactly four numbers, [x, y, width, height], "
+                f"normalized to 0-1. Got: {rect!r}"
+            )}
+        error = _rect_error(*box)
+        if error:
+            return None, {"error": error}
+        position = build_area_position_data(file_path, page, *box)
+        if "error" in position:
+            return None, {"error": f"Error: {position['error']}"}
+        label = label_of(page)
+        payload = annotation(
+            "image",
+            annotationSortIndex=position["sort_index"],
+            annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
+            annotationPageLabel=label,
+        )
+        return payload, {"page_label": label}
 
-            if attachment_data.get("itemType") != "attachment":
-                return f"Error: Item {attachment_key} is not an attachment"
+    if not text:
+        return None, {"error": "Error: nothing to annotate. Pass text (highlight) or rect (area box)."}
 
-            content_type = attachment_data.get("contentType", "")
-            if content_type != "application/pdf":
-                return f"Error: Attachment {attachment_key} is not a PDF attachment (type: {content_type})"
+    if file_type == "epub":
+        from zotero_mcp.epub_utils import find_text_in_epub
 
-            filename = attachment_data.get("filename", f"{attachment_key}.pdf")
-        except Exception as e:
-            return f"Error: No attachment found with key: {attachment_key} ({e})"
+        position = find_text_in_epub(file_path, page, text)
+        if "error" in position:
+            return None, {"error": _describe_text_miss(position, text, file_type)}
+        chapter = position.get("chapter_found", page)
+        char_position = position.get("char_position", chapter * 1000)
+        # EPUB sort index is "spine index|character offset"; Zotero's own
+        # EPUB annotations leave pageLabel empty, and navigation needs that.
+        payload = annotation(
+            "highlight",
+            annotationText=text,
+            annotationSortIndex=f"{chapter:05d}|{char_position:08d}",
+            annotationPosition=position["annotation_position"],
+        )
+        details = {"page_label": "", "chapter_found": chapter}
+        if with_text:
+            details["matched_text"] = position.get("matched_text", text)
+        return payload, details
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path, error_message = _download_attachment_for_processing(
-                attachment_key,
-                filename,
-                tmpdir,
-                local_client=local_client,
-                web_client=web_client,
-                ctx=ctx,
-            )
-            if error_message:
-                return error_message
+    position = find_text_position(file_path, page, text)
+    if "error" in position:
+        return None, {"error": _describe_text_miss(position, text, file_type)}
+    # The text may sit on a neighbouring page; label the page it was found on.
+    page_found = position["pageIndex"] + 1
+    label = label_of(page_found)
+    payload = annotation(
+        "highlight",
+        annotationText=text,
+        annotationSortIndex=position["sort_index"],
+        annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
+        annotationPageLabel=label,
+    )
+    details = {"page_label": label, "page_found": page_found}
+    if with_text:
+        details["matched_text"] = text_in_rects(file_path, position["pageIndex"], position["rects"])
+    return payload, details
 
-            if not verify_pdf_attachment(file_path):
-                return "Error: Downloaded file is not a valid PDF"
 
-            position_data = build_area_position_data(file_path, page, x, y, width, height)
-            if "error" in position_data:
-                return f"Error: {position_data['error']}"
+def _rect_error(x, y, width, height) -> str | None:
+    """The first problem with a normalized [x, y, width, height] box, or None."""
+    from math import isfinite
 
-            page_label = get_page_label(file_path, page)
-            annotation_position = build_annotation_position(
-                position_data["pageIndex"],
-                position_data["rects"],
-            )
+    for name, value in {"x": x, "y": y, "width": width, "height": height}.items():
+        if not isinstance(value, (int, float)) or not isfinite(value):
+            return f"Error: {name} must be a finite number"
+    if x < 0 or x > 1:
+        return "Error: x must be between 0 and 1"
+    if y < 0 or y > 1:
+        return "Error: y must be between 0 and 1"
+    if width <= 0 or width > 1:
+        return "Error: width must be greater than 0 and at most 1"
+    if height <= 0 or height > 1:
+        return "Error: height must be greater than 0 and at most 1"
+    if x + width > 1:
+        return "Error: Rectangle must fit within the page width (x + width must be <= 1)"
+    if y + height > 1:
+        return "Error: Rectangle must fit within the page height (y + height must be <= 1)"
+    return None
 
-            tag_list = (
-                _helpers._normalize_str_list_input(tags, "tags")
-                if tags is not None else []
-            )
 
-            annotation_data = {
-                "itemType": "annotation",
-                "parentItem": attachment_key,
-                "annotationType": "image",
-                "annotationComment": comment or "",
-                "annotationColor": color,
-                "annotationSortIndex": position_data["sort_index"],
-                "annotationPosition": annotation_position,
-                "annotationPageLabel": page_label,
-                "tags": [{"tag": t} for t in tag_list],
-            }
+def _describe_text_miss(position_data: dict, text: str, file_type: str) -> str:
+    """Why a highlight's text was not found, with the nearest match if any."""
+    location_type = "page" if file_type == "pdf" else "chapter"
+    lines = [
+        f"Error: {position_data['error']}",
+        "",
+        f"Text searched: \"{text[:100]}{'...' if len(text) > 100 else ''}\"",
+    ]
 
-            ctx.info("Creating area annotation via Web API...")
-            result = write_client.create_items([annotation_data])
+    best_score = position_data.get("best_score", 0)
+    best_match = position_data.get("best_match")
 
-            if "success" in result and result["success"]:
-                successful = result["success"]
-                if successful:
-                    annotation_key = next(iter(successful.values()))
-                    response = [
-                        "Successfully created area annotation",
-                        "",
-                        f"**Annotation Key:** {annotation_key}",
-                        f"**Page:** {page_label}",
-                        f"**Rect (normalized):** x={x:.4f}, y={y:.4f}, width={width:.4f}, height={height:.4f}",
-                        f"**Color:** {color}",
-                    ]
-                    if comment:
-                        response.append(f"**Comment:** {comment}")
-                    return "\n".join(response)
-                return f"Annotation creation response was successful but no key was returned: {result}"
+    if best_score >= 0.5 and best_match:
+        suggestion = best_match[:150].strip()
+        if len(best_match) > 150:
+            suggestion += "..."
+        lines.extend(["", "=" * 50, f"DID YOU MEAN (score: {best_score:.0%}):", "",
+                      f'  "{suggestion}"', ""])
+        if position_data.get("page_found"):
+            lines.append(f"  (Found on page {position_data['page_found']})")
+        lines.extend(["=" * 50, "", "TIP: Copy the exact text from the PDF instead of paraphrasing."])
+    elif best_score > 0:
+        lines.extend(["", "Debug info:", f"  Best match score: {best_score:.2f} (too low for suggestion)"])
+        if best_match:
+            lines.append(f"  Best match text: \"{best_match[:80]}...\"")
+        found_location = position_data.get("page_found") or position_data.get("chapter_found")
+        if found_location:
+            lines.append(f"  Found in {location_type}: {found_location}")
 
-            failed_info = result.get("failed", {})
-            return f"Failed to create annotation: {failed_info}"
+    searched = position_data.get("pages_searched") or position_data.get("chapters_searched")
+    if searched:
+        lines.append(f"  {location_type.title()}s searched: {searched}")
 
-    except Exception as e:
-        ctx.error(f"Error creating area annotation: {str(e)}")
-        return f"Error creating area annotation: {_helpers.format_zotero_error(e)}"
+    if best_score < 0.5:
+        lines.extend([
+            "",
+            "Tips:",
+            f"- Copy the exact text from the {file_type.upper()} (don't paraphrase)",
+            "- Try a shorter, unique phrase from the beginning",
+            f"- Check that the {location_type} number is correct",
+        ])
+    return "\n".join(lines)
 
 
 def _format_page_layout(
@@ -1980,7 +1982,7 @@ def detect_layouts(
 
     layouts = []
     with tempfile.TemporaryDirectory() as tmpdir:
-        file_path, filename, error_message = _fetch_pdf_attachment(attachment_key, tmpdir, ctx=ctx)
+        file_path, filename, _file_type, error_message = _fetch_attachment_file(attachment_key, tmpdir, ctx=ctx)
         if error_message:
             return [], filename, error_message
 
@@ -1996,27 +1998,33 @@ def detect_layouts(
     return layouts, filename, None
 
 
-def _fetch_pdf_attachment(
+def _fetch_attachment_file(
     attachment_key: str,
     tmpdir: str,
     *,
     ctx: Context,
-) -> tuple[str | None, str, str | None]:
-    """Resolve a PDF attachment and put a readable copy of it in ``tmpdir``.
+    meta_client=None,
+    content_types: dict[str, str] = _PDF_ONLY,
+) -> tuple[str | None, str, str, str | None]:
+    """Resolve a PDF (or EPUB) attachment and put a readable copy in ``tmpdir``.
+
+    ``meta_client`` is where the attachment's metadata is read; a writer
+    passes its write client, so a hybrid setup checks the library it is about
+    to write to. ``content_types`` maps accepted MIME types to file types.
 
     Returns:
-        (file_path, filename, error). ``error`` is a user-facing message and
-        ``file_path`` is None when the attachment is missing, not a PDF, or
-        could not be fetched.
+        (file_path, filename, file_type, error). ``error`` is a user-facing
+        message and ``file_path`` is None when the attachment is missing, of
+        the wrong type, or could not be fetched.
     """
     local_client = _client.get_local_zotero_client()
     web_client = _client.get_web_zotero_client()
     if web_client:
         _helpers.apply_library_override(web_client, _client.get_active_library())
 
-    meta_client = web_client or local_client
+    meta_client = meta_client or web_client or local_client
     if meta_client is None:
-        return None, "", (
+        return None, "", "", (
             "Error: No Zotero client configured.\n\n"
             "Configure either local Zotero (with 'Allow other applications "
             "on this computer to communicate with Zotero' enabled) or Web "
@@ -2024,16 +2032,19 @@ def _fetch_pdf_attachment(
         )
 
     try:
-        attachment = meta_client.item(attachment_key)
-        attachment_data = attachment.get("data", {})
+        attachment_data = meta_client.item(attachment_key).get("data", {})
         if attachment_data.get("itemType") != "attachment":
-            return None, "", f"Error: Item {attachment_key} is not an attachment"
+            return None, "", "", f"Error: Item {attachment_key} is not an attachment"
         content_type = attachment_data.get("contentType", "")
-        if content_type != "application/pdf":
-            return None, "", f"Error: Attachment {attachment_key} is not a PDF attachment (type: {content_type})"
-        filename = attachment_data.get("filename", f"{attachment_key}.pdf")
+        file_type = content_types.get(content_type)
+        if file_type is None:
+            wanted = "a PDF attachment" if content_types is _PDF_ONLY else "a PDF or EPUB"
+            return None, "", "", (
+                f"Error: Attachment {attachment_key} is not {wanted} (type: {content_type})"
+            )
+        filename = attachment_data.get("filename", f"{attachment_key}.{file_type}")
     except Exception as e:
-        return None, "", f"Error: No attachment found with key: {attachment_key} ({e})"
+        return None, "", "", f"Error: No attachment found with key: {attachment_key} ({e})"
 
     file_path, error_message = _download_attachment_for_processing(
         attachment_key,
@@ -2044,72 +2055,8 @@ def _fetch_pdf_attachment(
         ctx=ctx,
     )
     if error_message:
-        return None, filename, error_message
-    return file_path, filename, None
-
-
-def preview_highlights(
-    attachment_key: str,
-    specs: list[dict],
-    *,
-    ctx: Context,
-) -> list[dict]:
-    """Where each highlight of a batch would land, without writing anything.
-
-    Locating text is the part of creating a highlight that goes wrong: a
-    paraphrase, a line-break hyphen, the wrong page. Running only that step
-    over a whole batch, against one fetched copy of the PDF, lets a caller fix
-    every miss before the first write instead of discovering them one failed
-    create at a time.
-
-    Area specs (``rect``) have nothing to locate and are reported as ready.
-    Specs naming another attachment in ``attachment_key`` are reported as not
-    previewed rather than silently checked against the wrong PDF.
-
-    Returns:
-        One dict per spec, in order: ``index`` (1-based), ``page``, ``ok``,
-        and either ``page_found``/``lines``/``matched_text`` or ``error``
-        (plus ``best_match``/``best_score`` when a near miss was found).
-    """
-    from zotero_mcp.pdf_utils import find_text_position, text_in_rects
-
-    results = []
-    with tempfile.TemporaryDirectory() as tmpdir:
-        file_path, _filename, error_message = _fetch_pdf_attachment(attachment_key, tmpdir, ctx=ctx)
-        for index, spec in enumerate(specs, start=1):
-            page = spec.get("page")
-            entry: dict[str, Any] = {"index": index, "page": page}
-            results.append(entry)
-            if error_message:
-                entry.update(ok=False, error=error_message)
-                continue
-            if spec.get("attachment_key") not in (None, attachment_key):
-                entry.update(ok=False, error="Not previewed: names a different attachment")
-                continue
-            if not isinstance(page, int) or page < 1:
-                entry.update(ok=False, error="page must be a positive integer")
-                continue
-            if spec.get("rect") is not None:
-                entry.update(ok=True, type="area")
-                continue
-            if not spec.get("text"):
-                entry.update(ok=False, error="needs text (highlight) or rect (area box)")
-                continue
-            found = find_text_position(file_path, page, spec["text"])
-            if "error" in found:
-                entry.update(ok=False, error=found["error"])
-                if found.get("best_match"):
-                    entry.update(best_match=found["best_match"],
-                                 best_score=round(found.get("best_score", 0), 2))
-                continue
-            entry.update(
-                ok=True,
-                type="highlight",
-                page_found=found["pageIndex"] + 1,
-                lines=len(found["rects"]),
-                matched_text=text_in_rects(file_path, found["pageIndex"], found["rects"]),
-            )
-    return results
+        return None, filename, file_type, error_message
+    return file_path, filename, file_type, None
 
 
 @mcp.tool(
