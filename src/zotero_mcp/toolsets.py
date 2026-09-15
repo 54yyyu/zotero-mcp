@@ -88,6 +88,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
     # who actually belong to group libraries.
     "libraries": frozenset(
         {
+            "zotero_copy_items_between_libraries",
             "zotero_list_libraries",
             "zotero_switch_library",
         }
