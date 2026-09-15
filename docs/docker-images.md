@@ -1,6 +1,24 @@
 # Docker Images and GHCR Publishing
 
-This project publishes Docker images to GitHub Container Registry (GHCR) via `.github/workflows/docker.yml`.
+This project publishes multi-arch Docker images to GitHub Container Registry (GHCR) via `.github/workflows/docker.yml`:
+
+- `ghcr.io/<owner>/zotero-mcp:<tag>-core` - lightweight install (no optional extras)
+- `ghcr.io/<owner>/zotero-mcp:<tag>-all` - full install with `[semantic,pdf,scite]`
+- Unsuffixed tags (for example `:latest`, `:vX.Y.Z`) point to the `all` flavor
+
+```bash
+# Default MCP server mode (stdio)
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest
+
+# MCP server mode with explicit transport
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest serve --transport streamable-http --host 0.0.0.0 --port 8000
+
+# Standalone CLI mode
+docker run --rm -e ZOTERO_APP=cli ghcr.io/<owner>/zotero-mcp:latest search "machine learning"
+
+# Persist config + ChromaDB across runs
+docker run --rm -v zotero-mcp-data:/home/app/.config/zotero-mcp --env-file .env ghcr.io/<owner>/zotero-mcp:latest
+```
 
 ## Flavors
 
