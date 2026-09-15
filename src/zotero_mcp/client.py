@@ -1158,9 +1158,14 @@ def download_attachment_file(
     local_client: zotero.Zotero | None = None,
     web_client: zotero.Zotero | None = None,
     enable_webdav: bool = True,
+    in_place: bool = False,
 ) -> AttachmentDownloadResult:
     """
     Download an attachment using the best available source.
+
+    ``in_place=True`` returns a file already in local storage by its own path
+    instead of copying it. Only for callers that read the file and never
+    modify or delete it; anything else must take the copy (#372).
 
     The fallback order is:
     1. local Zotero storage, resolved straight off the local SQLite DB
@@ -1202,30 +1207,22 @@ def download_attachment_file(
                 return None
 
             with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
-                attachment = reader.get_attachment_by_key(attachment_key)
-                if attachment is None:
-                    return None
+                resolved = reader.resolve_attachment_file(attachment_key)
+            if not (resolved and resolved.stat().st_size > 0):
+                return None
 
-                resolved = reader._resolve_attachment_path(
-                    attachment_key, attachment["zotero_path"] or ""
-                )
-                if not (resolved and resolved.exists()):
-                    # Recorded filename drifted on disk — scan the folder (#291)
-                    resolved = reader._scan_storage_for_attachment(
-                        attachment_key, attachment["content_type"]
-                    )
-                if not (resolved and resolved.exists() and resolved.stat().st_size > 0):
-                    return None
+            if in_place:
+                return AttachmentDownloadResult(path=resolved, source="Local storage", errors=errors)
 
-                # Copy rather than hand back the library path: callers treat
-                # the returned file as a scratch copy and delete it, which on
-                # a linked file would destroy the user's original (#372).
-                shutil.copyfile(resolved, target_path)
-                return AttachmentDownloadResult(
-                    path=target_path,
-                    source="Local storage",
-                    errors=errors,
-                )
+            # Copy rather than hand back the library path: callers treat the
+            # returned file as a scratch copy and delete it, which on a linked
+            # file would destroy the user's original (#372).
+            shutil.copyfile(resolved, target_path)
+            return AttachmentDownloadResult(
+                path=target_path,
+                source="Local storage",
+                errors=errors,
+            )
         except Exception as exc:
             errors.append(f"Local storage: {exc}")
             _cleanup_target()

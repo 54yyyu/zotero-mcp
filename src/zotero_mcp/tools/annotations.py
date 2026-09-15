@@ -123,6 +123,8 @@ def _download_attachment_for_processing(
         filename,
         local_client=local_client,
         web_client=web_client,
+        # Annotation and layout code only read the file.
+        in_place=True,
     )
     if download.path and download.path.exists():
         ctx.info(f"Attachment downloaded via {download.source}")
@@ -464,11 +466,13 @@ def get_annotations(
                         for attachment in pdf_attachments:
                             with tempfile.TemporaryDirectory() as tmpdir:
                                 att_key = attachment.get("key", "")
-                                file_path = os.path.join(tmpdir, f"{att_key}.pdf")
+                                # pdfannots only reads the PDF (its output goes
+                                # to tmpdir), so a file on disk is used in place.
                                 local_pdf = _library.attachment_path_for(att_key)
                                 if local_pdf is not None:
-                                    shutil.copyfile(local_pdf, file_path)
+                                    file_path = str(local_pdf)
                                 else:
+                                    file_path = os.path.join(tmpdir, f"{att_key}.pdf")
                                     _api_client().dump(
                                         att_key,
                                         filename=os.path.basename(file_path),
@@ -1615,8 +1619,6 @@ def create_annotations(
         ``page_label``, ``file_type`` and, for highlights, ``page_found``
         (PDF) or ``chapter_found`` (EPUB).
     """
-    from zotero_mcp.pdf_utils import verify_pdf_attachment
-
     results = [
         {"index": index, "page": spec.get("page"), "ok": False,
          "type": "area" if spec.get("rect") is not None else "highlight"}
@@ -1643,27 +1645,42 @@ def create_annotations(
             )
             if error:
                 return fail_all(error)
+            # A PDF is opened once and shared by every spec; opening it is
+            # also the check that the file is a PDF at all.
             if file_type == "pdf":
-                valid = verify_pdf_attachment(file_path)
+                import fitz
+
+                try:
+                    source = fitz.open(file_path)
+                    valid = bool(source.is_pdf)
+                except Exception:
+                    source, valid = None, False
             else:
                 from zotero_mcp.epub_utils import verify_epub_attachment
-                valid = verify_epub_attachment(file_path)
+
+                source, valid = file_path, verify_epub_attachment(file_path)
             if not valid:
+                if file_type == "pdf" and source is not None:
+                    source.close()
                 return fail_all(f"Error: Downloaded file is not a valid {file_type.upper()}")
 
-            page_labels: dict[int, str] = {}
-            for result, spec in zip(results, specs):
-                result["file_type"] = file_type
-                try:
-                    payload, details = _annotation_payload(
-                        file_path, file_type, attachment_key, spec, page_labels,
-                        with_text=dry_run,
-                    )
-                except Exception as e:
-                    payload, details = None, {"error": f"Error creating annotation: {e}"}
-                result.update(details)
-                if payload is not None:
-                    pending.append((result, payload))
+            try:
+                page_labels: dict[int, str] = {}
+                for result, spec in zip(results, specs):
+                    result["file_type"] = file_type
+                    try:
+                        payload, details = _annotation_payload(
+                            source, file_type, attachment_key, spec, page_labels,
+                            with_text=dry_run,
+                        )
+                    except Exception as e:
+                        payload, details = None, {"error": f"Error creating annotation: {e}"}
+                    result.update(details)
+                    if payload is not None:
+                        pending.append((result, payload))
+            finally:
+                if file_type == "pdf":
+                    source.close()
 
         if dry_run:
             for result, _payload in pending:
@@ -1695,7 +1712,7 @@ def create_annotations(
 
 
 def _annotation_payload(
-    file_path: str,
+    source,
     file_type: str,
     attachment_key: str,
     spec: dict,
@@ -1704,6 +1721,8 @@ def _annotation_payload(
     with_text: bool = False,
 ) -> tuple[dict | None, dict]:
     """Zotero annotation data for one spec, and what to report about it.
+
+    ``source`` is the open PDF document, or the EPUB's path.
 
     Returns:
         (payload, details). ``payload`` is None when the spec cannot be
@@ -1745,7 +1764,7 @@ def _annotation_payload(
 
     def label_of(number: int) -> str:
         if number not in page_labels:
-            page_labels[number] = get_page_label(file_path, number)
+            page_labels[number] = get_page_label(source, number)
         return page_labels[number]
 
     if rect is not None:
@@ -1760,7 +1779,7 @@ def _annotation_payload(
         error = _rect_error(*box)
         if error:
             return None, {"error": error}
-        position = build_area_position_data(file_path, page, *box)
+        position = build_area_position_data(source, page, *box)
         if "error" in position:
             return None, {"error": f"Error: {position['error']}"}
         label = label_of(page)
@@ -1778,7 +1797,7 @@ def _annotation_payload(
     if file_type == "epub":
         from zotero_mcp.epub_utils import find_text_in_epub
 
-        position = find_text_in_epub(file_path, page, text)
+        position = find_text_in_epub(source, page, text)
         if "error" in position:
             return None, {"error": _describe_text_miss(position, text, file_type)}
         chapter = position.get("chapter_found", page)
@@ -1796,7 +1815,7 @@ def _annotation_payload(
             details["matched_text"] = position.get("matched_text", text)
         return payload, details
 
-    position = find_text_position(file_path, page, text)
+    position = find_text_position(source, page, text)
     if "error" in position:
         return None, {"error": _describe_text_miss(position, text, file_type)}
     # The text may sit on a neighbouring page; label the page it was found on.
@@ -1811,7 +1830,7 @@ def _annotation_payload(
     )
     details = {"page_label": label, "page_found": page_found}
     if with_text:
-        details["matched_text"] = text_in_rects(file_path, position["pageIndex"], position["rects"])
+        details["matched_text"] = text_in_rects(source, position["pageIndex"], position["rects"])
     return payload, details
 
 
@@ -1977,8 +1996,10 @@ def detect_layouts(
         plus a 1-indexed ``page``. On failure ``error`` is the message and
         ``layouts`` is empty.
     """
+    from contextlib import ExitStack
+
     from zotero_mcp import pdf_layout
-    from zotero_mcp.extract import pdf_page_count
+    from zotero_mcp.pdf_utils import open_pdf
 
     layouts = []
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1986,14 +2007,23 @@ def detect_layouts(
         if error_message:
             return [], filename, error_message
 
-        if pages is None:
-            pages = list(range(1, pdf_page_count(file_path) + 1))
-        for page in pages:
-            ctx.info(f"Detecting regions on page {page}...")
-            layout = pdf_layout.detect_page_regions(file_path, page)
-            if "error" in layout:
-                return [], filename, f"Error: {layout['error']}"
-            layouts.append({**layout, "page": page})
+        # One open document for every page, rather than reopening per page.
+        # A file that will not open is handed over by path instead, so
+        # detection reports it ("Could not open PDF") rather than raising.
+        with ExitStack() as stack:
+            try:
+                source = stack.enter_context(open_pdf(file_path))
+                page_count = len(source)
+            except Exception:
+                source, page_count = file_path, 1
+            if pages is None:
+                pages = list(range(1, page_count + 1))
+            for page in pages:
+                ctx.info(f"Detecting regions on page {page}...")
+                layout = pdf_layout.detect_page_regions(source, page)
+                if "error" in layout:
+                    return [], filename, f"Error: {layout['error']}"
+                layouts.append({**layout, "page": page})
 
     return layouts, filename, None
 

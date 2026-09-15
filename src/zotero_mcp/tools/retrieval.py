@@ -280,6 +280,7 @@ def get_item_fulltext(
                     attachment.filename or f"{attachment.key}.pdf",
                     local_client=_client.get_local_zotero_client(),
                     web_client=None if _utils.is_local_mode() else zot,
+                    in_place=True,  # only read, then converted
                 )
 
                 if download.path and download.path.exists():

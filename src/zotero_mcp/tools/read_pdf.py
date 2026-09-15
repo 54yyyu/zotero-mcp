@@ -112,23 +112,16 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
                 # would wrongly report "No PDF attachment found" (#372).
                 attachment = reader.get_attachment_by_key(item_key)
                 if attachment and "pdf" in (attachment["content_type"] or "").lower():
-                    resolved = reader._resolve_attachment_path(
-                        item_key, attachment["zotero_path"] or ""
-                    )
-                    if not (resolved and resolved.exists()):
-                        # Recorded filename drifted on disk — scan the folder (#291)
-                        resolved = reader._scan_storage_for_attachment(
-                            item_key, attachment["content_type"]
-                        )
-                    if resolved and resolved.exists():
+                    resolved = reader.resolve_attachment_file(item_key)
+                    if resolved:
                         return str(resolved), attachment["title"] or item_key, False
 
                 local_item = reader.get_item_by_key(item_key)
                 if local_item:
-                    for att_key, path, ctype in reader._iter_parent_attachments(local_item.item_id):
+                    for att_key, _path, ctype in reader._iter_parent_attachments(local_item.item_id):
                         if ctype == "application/pdf":
-                            resolved = reader._resolve_attachment_path(att_key, path or "")
-                            if resolved and resolved.exists():
+                            resolved = reader.resolve_attachment_file(att_key)
+                            if resolved:
                                 return str(resolved), local_item.title or item_key, False
     except Exception:
         pass

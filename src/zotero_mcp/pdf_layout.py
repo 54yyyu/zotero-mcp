@@ -21,8 +21,10 @@ unruled table header rows may fall outside the box.
 
 from __future__ import annotations
 
+import os
 import re
 
+from zotero_mcp.pdf_utils import page_label, page_range_error
 from zotero_mcp.utils import install_hint
 
 # Region filtering / merging thresholds (normalized page units)
@@ -40,6 +42,7 @@ LAYOUT_EQUATION_MIN_MATH_SHARE = 0.6  # share of a text block's characters set i
 LAYOUT_EQUATION_LINE_GAP = 0.012    # pieces of one display equation sit closer than this
 LAYOUT_EQUATION_PIECE_GAP = 0.02    # side-by-side pieces of one display; below a column gutter
 LAYOUT_NESTED_SHARE = 0.9           # a box this much inside a kept box is a fragment of it
+LAYOUT_RULE_MIN_ROWS = 2            # text rows a rule-bounded table must hold (else a heading band)
 LAYOUT_EQUATION_MIN_WIDTH = 0.05    # an unnumbered display narrower than this is a stray symbol
 
 # Source priority when de-duplicating overlapping detections
@@ -191,24 +194,27 @@ def _merge_candidate_regions(
             continue
         kept.append({"source": region["source"], "bbox": list(region["bbox"])})
 
-    # 2. De-duplicate, keeping the highest-priority source and, within one
-    #    source, the larger box (e.g. a table found by both find_tables and
-    #    cluster_drawings keeps the "table" source). A box lying almost
-    #    entirely inside a kept one is a fragment of it -- the rule band of
-    #    one table row, a drawing within a table -- not a region of its own.
+    # 2. De-duplicate. Boxes are visited largest first, and one that nearly
+    #    coincides with a kept box, or lies almost entirely inside it, is a
+    #    fragment of that region -- the rule band of one table row, a partial
+    #    table inside the drawing that frames it -- not a region of its own.
+    #    The outer box is kept, since it holds the whole thing, and takes the
+    #    stronger source of the two (a drawing framing a table is a table).
+    priority = _LAYOUT_SOURCE_PRIORITY.get
     deduped: list[dict] = []
-    for region in sorted(
-        kept,
-        key=lambda r: (_LAYOUT_SOURCE_PRIORITY.get(r["source"], 0), r["bbox"][2] * r["bbox"][3]),
-        reverse=True,
-    ):
-        if any(
-            _bbox_iou(region["bbox"], existing["bbox"]) > dedup_iou
-            or _share_inside(region["bbox"], existing["bbox"]) >= LAYOUT_NESTED_SHARE
-            for existing in deduped
-        ):
-            continue
-        deduped.append(region)
+    for region in sorted(kept, key=lambda r: r["bbox"][2] * r["bbox"][3], reverse=True):
+        outer = next(
+            (
+                existing for existing in deduped
+                if _bbox_iou(region["bbox"], existing["bbox"]) > dedup_iou
+                or _share_inside(region["bbox"], existing["bbox"]) >= LAYOUT_NESTED_SHARE
+            ),
+            None,
+        )
+        if outer is None:
+            deduped.append(region)
+        elif priority(region["source"], 0) > priority(outer["source"], 0):
+            outer["source"] = region["source"]
 
     # 3. Merge overlapping / near-adjacent image and drawing fragments
     #    to a fixed point. Tables do not participate in merging.
@@ -253,8 +259,9 @@ def _associate_captions_with_regions(
     - vertical proximity (hard cutoff at max_distance)
     - horizontal x-range overlap (hard cutoff at min_overlap — this is the
       guard that keeps two-column layouts from cross-attaching)
-    - type prior: figure captions conventionally sit below figures, table
-      captions above tables (a score bonus, not a hard rule)
+    - type prior: figure captions conventionally sit below figures (a score
+      bonus, not a hard rule); table captions sit above or below by venue,
+      so they get none
 
     Each caption attaches to at most one region and vice versa (best score
     wins, greedy assignment).
@@ -302,11 +309,10 @@ def _associate_captions_with_regions(
                 continue
 
             proximity = 1.0 - (vertical_gap / max_distance)
-            prior = 0.0
-            if caption["kind"] == "figure" and position == "below":
-                prior = 1.0
-            elif caption["kind"] == "table" and position == "above":
-                prior = 1.0
+            # Figure captions sit below figures almost universally. Table
+            # captions go above or below depending on the venue, so for
+            # tables proximity alone decides.
+            prior = 1.0 if caption["kind"] == "figure" and position == "below" else 0.0
 
             score = proximity * 0.5 + overlap * 0.3 + prior * 0.2
             candidates.append((score, c_idx, r_idx))
@@ -547,7 +553,7 @@ def _absorb_uncaptioned_panels(
     return [region for idx, region in enumerate(result) if idx not in absorbed]
 
 
-def detect_page_regions(pdf_path: str, page_num: int) -> dict:
+def detect_page_regions(pdf, page_num: int) -> dict:
     """
     Detect candidate figure/table regions on a PDF page.
 
@@ -561,7 +567,7 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
     - captions: text blocks matching "Figure N:" / "Table N:" patterns
 
     Args:
-        pdf_path: Path to the PDF file
+        pdf: Path to the PDF file, or an open PyMuPDF document
         page_num: 1-indexed page number
 
     Returns:
@@ -586,202 +592,204 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
         On failure:
             {"error": str}
     """
+    if not isinstance(pdf, (str, os.PathLike)):
+        return _page_regions(pdf, page_num)
+
     try:
         import fitz
     except ImportError:
         raise ImportError(
             f"PDF layout detection requires PyMuPDF. {install_hint('pdf')}"
         )
-
     try:
-        doc = fitz.open(pdf_path)
+        doc = fitz.open(pdf)
     except Exception as e:
         return {"error": f"Could not open PDF: {e}"}
-
     try:
-        if not doc.is_pdf:
-            return {"error": "File is not a valid PDF"}
+        return _page_regions(doc, page_num)
+    finally:
+        doc.close()
 
-        target_index = page_num - 1
-        total_pages = len(doc)
-        if target_index < 0 or target_index >= total_pages:
-            return {
-                "error": f"Page {page_num} out of range (PDF has {total_pages} pages)",
-            }
 
-        page = doc[target_index]
-        page_width = page.rect.width
-        page_height = page.rect.height
-        if page_width <= 0 or page_height <= 0:
-            return {"error": f"Page {page_num} has invalid dimensions"}
+def _page_regions(doc, page_num: int) -> dict:
+    """detect_page_regions on an open document."""
+    if not doc.is_pdf:
+        return {"error": "File is not a valid PDF"}
 
-        def normalize_bbox(x0: float, y0: float, x1: float, y1: float) -> list[float]:
-            """Convert page coordinates to clamped normalized [x, y, w, h]."""
-            x = min(max(x0 / page_width, 0.0), 1.0)
-            y = min(max(y0 / page_height, 0.0), 1.0)
-            w = min(max((x1 - x0) / page_width, 0.0), 1.0 - x)
-            h = min(max((y1 - y0) / page_height, 0.0), 1.0 - y)
-            return [x, y, w, h]
+    range_error = page_range_error(doc, page_num)
+    if range_error:
+        return {"error": range_error}
+    target_index = page_num - 1
 
-        warnings: list[str] = []
-        raw_regions: list[dict] = []
+    page = doc[target_index]
+    page_width = page.rect.width
+    page_height = page.rect.height
+    if page_width <= 0 or page_height <= 0:
+        return {"error": f"Page {page_num} has invalid dimensions"}
 
-        # --- Raster images ---
+    def normalize_bbox(x0: float, y0: float, x1: float, y1: float) -> list[float]:
+        """Convert page coordinates to clamped normalized [x, y, w, h]."""
+        x = min(max(x0 / page_width, 0.0), 1.0)
+        y = min(max(y0 / page_height, 0.0), 1.0)
+        w = min(max((x1 - x0) / page_width, 0.0), 1.0 - x)
+        h = min(max((y1 - y0) / page_height, 0.0), 1.0 - y)
+        return [x, y, w, h]
+
+    warnings: list[str] = []
+    raw_regions: list[dict] = []
+
+    # --- Raster images ---
+    try:
+        for info in page.get_image_info():
+            x0, y0, x1, y1 = info["bbox"]
+            raw_regions.append(
+                {"source": "image", "bbox": normalize_bbox(x0, y0, x1, y1)}
+            )
+    except Exception:
+        pass
+
+    # --- Vector graphics (clustered) ---
+    if hasattr(page, "cluster_drawings"):
         try:
-            for info in page.get_image_info():
-                x0, y0, x1, y1 = info["bbox"]
+            for rect in page.cluster_drawings():
                 raw_regions.append(
-                    {"source": "image", "bbox": normalize_bbox(x0, y0, x1, y1)}
+                    {
+                        "source": "drawing",
+                        "bbox": normalize_bbox(rect.x0, rect.y0, rect.x1, rect.y1),
+                    }
                 )
         except Exception:
             pass
+    else:
+        warnings.append(
+            "Vector graphics detection requires pymupdf>=1.24.2; "
+            "showing raster images and tables only."
+        )
 
-        # --- Vector graphics (clustered) ---
-        if hasattr(page, "cluster_drawings"):
-            try:
-                for rect in page.cluster_drawings():
-                    raw_regions.append(
-                        {
-                            "source": "drawing",
-                            "bbox": normalize_bbox(rect.x0, rect.y0, rect.x1, rect.y1),
-                        }
-                    )
-            except Exception:
-                pass
-        else:
-            warnings.append(
-                "Vector graphics detection requires pymupdf>=1.24.2; "
-                "showing raster images and tables only."
-            )
-
-        # --- Tables ---
+    # --- Tables ---
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        drawings = []
+    # find_tables() is the slowest step here and finds only grids, which
+    # need vertical strokes. A page whose drawings are all horizontal
+    # rules (or that has none) cannot hold one, so it skips the call; its
+    # rule-only tables are found below.
+    if any(drawing["rect"].height > 2 for drawing in drawings):
         try:
-            drawings = page.get_drawings()
-        except Exception:
-            drawings = []
-        # find_tables() is the slowest step here and finds only grids, which
-        # need vertical strokes. A page whose drawings are all horizontal
-        # rules (or that has none) cannot hold one, so it skips the call; its
-        # rule-only tables are found below.
-        if any(drawing["rect"].height > 2 for drawing in drawings):
-            try:
-                # PyMuPDF prints an advert for pymupdf_layout to stdout on its
-                # first find_tables() call, which corrupts `zotero-cli --json`.
-                import contextlib
-                import io
+            # PyMuPDF prints an advert for pymupdf_layout to stdout on its
+            # first find_tables() call, which corrupts `zotero-cli --json`.
+            import contextlib
+            import io
 
-                with contextlib.redirect_stdout(io.StringIO()):
-                    found_tables = page.find_tables().tables
-                for table in found_tables:
-                    x0, y0, x1, y1 = table.bbox
-                    raw_regions.append(
-                        {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
-                    )
-            except Exception:
-                pass
-
-        # --- Tables drawn with horizontal rules only (find_tables misses these) ---
-        try:
-            for x0, y0, x1, y1 in _ruled_table_boxes(drawings, page_width, page_height):
+            with contextlib.redirect_stdout(io.StringIO()):
+                found_tables = page.find_tables().tables
+            for table in found_tables:
+                x0, y0, x1, y1 = table.bbox
                 raw_regions.append(
                     {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
                 )
         except Exception:
             pass
 
-        # --- Text blocks (for captions and scanned-page detection) ---
-        text_blocks: list[dict] = []
-        try:
-            for block in page.get_text("blocks"):
-                x0, y0, x1, y1, block_text, _block_no, block_type = block[:7]
-                if block_type == 0 and block_text.strip():
-                    text_blocks.append(
-                        {
-                            "bbox": normalize_bbox(x0, y0, x1, y1),
-                            "text": block_text.strip(),
-                        }
-                    )
-        except Exception:
-            pass
-
-        # Scanned page: a page-covering image with no text layer is a scan,
-        # not an annotatable figure
-        full_page_images = [
-            r
-            for r in raw_regions
-            if r["source"] == "image"
-            and r["bbox"][2] * r["bbox"][3] > LAYOUT_MAX_REGION_AREA
-        ]
-        if full_page_images and not text_blocks:
-            warnings.append(
-                "Page appears to be a full-page scan — region detection and "
-                "captions are unavailable."
-            )
-            return {
-                "pageIndex": target_index,
-                "pageLabel": _page_label_or_default(page, page_num),
-                "regions": [],
-                "warnings": warnings,
+    # --- Tables drawn with horizontal rules only (find_tables misses these) ---
+    try:
+        ruled = _ruled_table_boxes(drawings, page_width, page_height)
+        words = page.get_text("words") if ruled else []
+        for x0, y0, x1, y1 in ruled:
+            # Rules around a single line are a heading band (an
+            # algorithm's title bar, say), not a table.
+            rows = {
+                round((w[1] + w[3]) / 6)
+                for w in words
+                if x0 - 2 <= w[0] and w[2] <= x1 + 2 and y0 < (w[1] + w[3]) / 2 < y1
             }
+            if len(rows) >= LAYOUT_RULE_MIN_ROWS:
+                raw_regions.append(
+                    {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
+                )
+    except Exception:
+        pass
 
-        # --- Captions ---
-        captions: list[dict] = []
-        for block in text_blocks:
-            parsed = _parse_caption_block(block["text"])
-            if parsed:
-                captions.append({**parsed, "bbox": block["bbox"]})
+    # --- Text blocks (for captions and scanned-page detection) ---
+    text_blocks: list[dict] = []
+    try:
+        for block in page.get_text("blocks"):
+            x0, y0, x1, y1, block_text, _block_no, block_type = block[:7]
+            if block_type == 0 and block_text.strip():
+                text_blocks.append(
+                    {
+                        "bbox": normalize_bbox(x0, y0, x1, y1),
+                        "text": block_text.strip(),
+                    }
+                )
+    except Exception:
+        pass
 
-        # --- Pipeline: filter/merge/dedupe, then attach captions ---
-        regions = _merge_candidate_regions(raw_regions)
-        regions = _associate_captions_with_regions(regions, captions)
-        regions = _absorb_uncaptioned_panels(regions, captions)
-
-        # --- Display equations: added after filtering, since a one-line
-        #     equation is far below LAYOUT_MIN_REGION_AREA ---
-        try:
-            equations, _inline_math = scan_math(page)
-        except Exception:
-            equations = []
-        for equation in equations:
-            bbox = normalize_bbox(*equation["bbox"])
-            cx, cy = bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2
-            if any(
-                r["bbox"][0] <= cx <= r["bbox"][0] + r["bbox"][2]
-                and r["bbox"][1] <= cy <= r["bbox"][1] + r["bbox"][3]
-                for r in regions
-            ):
-                continue  # math inside a table or figure belongs to that region
-            label = f"Equation {equation['label']}" if equation["label"] else "Equation"
-            regions.append({
-                "source": "equation",
-                "bbox": bbox,
-                "caption_label": label,
-                "caption_text": label,
-                "confidence": "high" if equation["label"] else "medium",
-            })
-        regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
-
-        for idx, region in enumerate(regions, start=1):
-            region["region_id"] = idx
-            region["bbox"] = [round(value, 4) for value in region["bbox"]]
-
+    # Scanned page: a page-covering image with no text layer is a scan,
+    # not an annotatable figure
+    full_page_images = [
+        r
+        for r in raw_regions
+        if r["source"] == "image"
+        and r["bbox"][2] * r["bbox"][3] > LAYOUT_MAX_REGION_AREA
+    ]
+    if full_page_images and not text_blocks:
+        warnings.append(
+            "Page appears to be a full-page scan — region detection and "
+            "captions are unavailable."
+        )
         return {
             "pageIndex": target_index,
-            "pageLabel": _page_label_or_default(page, page_num),
-            "regions": regions,
+            "pageLabel": page_label(page, page_num),
+            "regions": [],
             "warnings": warnings,
         }
 
-    finally:
-        doc.close()
+    # --- Captions ---
+    captions: list[dict] = []
+    for block in text_blocks:
+        parsed = _parse_caption_block(block["text"])
+        if parsed:
+            captions.append({**parsed, "bbox": block["bbox"]})
 
+    # --- Pipeline: filter/merge/dedupe, then attach captions ---
+    regions = _merge_candidate_regions(raw_regions)
+    regions = _associate_captions_with_regions(regions, captions)
+    regions = _absorb_uncaptioned_panels(regions, captions)
 
-def _page_label_or_default(page, page_num: int) -> str:
-    """Return the page's printed label, falling back to the 1-indexed number."""
+    # --- Display equations: added after filtering, since a one-line
+    #     equation is far below LAYOUT_MIN_REGION_AREA ---
     try:
-        label = page.get_label()
-        if label:
-            return label
+        equations, _inline_math = scan_math(page)
     except Exception:
-        pass
-    return str(page_num)
+        equations = []
+    for equation in equations:
+        bbox = normalize_bbox(*equation["bbox"])
+        cx, cy = bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2
+        if any(
+            r["bbox"][0] <= cx <= r["bbox"][0] + r["bbox"][2]
+            and r["bbox"][1] <= cy <= r["bbox"][1] + r["bbox"][3]
+            for r in regions
+        ):
+            continue  # math inside a table or figure belongs to that region
+        label = f"Equation {equation['label']}" if equation["label"] else "Equation"
+        regions.append({
+            "source": "equation",
+            "bbox": bbox,
+            "caption_label": label,
+            "caption_text": label,
+            "confidence": "high" if equation["label"] else "medium",
+        })
+    regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
+
+    for idx, region in enumerate(regions, start=1):
+        region["region_id"] = idx
+        region["bbox"] = [round(value, 4) for value in region["bbox"]]
+
+    return {
+        "pageIndex": target_index,
+        "pageLabel": page_label(page, page_num),
+        "regions": regions,
+        "warnings": warnings,
+    }

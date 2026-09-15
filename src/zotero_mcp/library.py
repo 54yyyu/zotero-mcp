@@ -618,12 +618,9 @@ def attachment_path_for(key: str) -> Path | None:
     # lists a *parent's* attachments, so on its own this always returned None
     # for them and every outline read copied or downloaded a file that was
     # already on disk.
-    attachment = reader.get_attachment_by_key(key)
-    if attachment is not None:
-        resolved = reader._resolve_attachment_path(key, attachment["zotero_path"] or "")
-        if not (resolved and resolved.exists()):
-            resolved = reader._scan_storage_for_attachment(key, attachment["content_type"])
-        return Path(resolved) if resolved and resolved.exists() else None
+    path = reader.resolve_attachment_file(key)
+    if path is not None:
+        return Path(path)
     for entry in reader.get_attachment_paths(key):
         resolved = entry.get("resolved_path")
         if resolved and entry.get("exists"):
