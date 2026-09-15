@@ -2707,6 +2707,7 @@ class LocalZoteroReader:
         *,
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
         include_trashed: bool = True,
+        library_id: int | None = None,
     ) -> dict[str, dict]:
         """Complete records for `keys`, keyed by item key.
 
@@ -2720,7 +2721,10 @@ class LocalZoteroReader:
         if not keys:
             return {}
         conn = self._get_connection()
-        lib_ids = self._resolve_scope_library_ids(group_id)
+        if library_id is not None:
+            lib_ids = [library_id]
+        else:
+            lib_ids = self._resolve_scope_library_ids(group_id)
         if not lib_ids:
             return {}
         lib_ph = ",".join("?" * len(lib_ids))
@@ -2739,6 +2743,7 @@ class LocalZoteroReader:
         *,
         item_type: str | None = None,
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        library_id: int | None = None,
     ) -> dict[str, list[dict]]:
         """Children of every given parent, keyed by parent key, in one pass.
 
@@ -2756,7 +2761,10 @@ class LocalZoteroReader:
         if not parent_keys:
             return {}
         conn = self._get_connection()
-        lib_ids = self._resolve_scope_library_ids(group_id)
+        if library_id is not None:
+            lib_ids = [library_id]
+        else:
+            lib_ids = self._resolve_scope_library_ids(group_id)
         if not lib_ids:
             return {}
         lib_ph = ",".join("?" * len(lib_ids))

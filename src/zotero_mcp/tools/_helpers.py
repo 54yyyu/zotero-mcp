@@ -12,6 +12,7 @@ import socket
 import tempfile
 import threading
 from ipaddress import ip_address
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -796,6 +797,98 @@ def _parse_library_id_param(value: int | str | None) -> int | None:
                 f"Invalid library_id: {value!r}. Use an integer groupID, 0, or 'user'."
             ) from None
     return int(value)
+
+
+def _resolve_library_spec(
+    library_id: int | str | None,
+    library_type: str | None = None,
+) -> tuple[str, str, int | None]:
+    """Resolve a library specification into (library_id_str, library_type_str, group_id).
+
+    If library_id is None, returns the active library configuration.
+    Normalizes 'user'/'group'/'feed'.
+    """
+    if library_id is None and library_type is None:
+        override = _client.get_active_library()
+        if override:
+            lib_id = override.get("library_id") or "0"
+            raw_type = override.get("library_type") or "user"
+        else:
+            lib_id = os.getenv("ZOTERO_LIBRARY_ID") or "0"
+            raw_type = os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+        norm_type = "user" if raw_type in ("user", "users") else ("feed" if raw_type in ("feed", "feeds") else "group")
+        group_id = _client.get_active_group_id()
+        return str(lib_id), norm_type, group_id
+
+    resolved_type = (library_type or "").strip().lower() if library_type else None
+    if resolved_type in ("feed", "feeds"):
+        try:
+            feed_id = int(str(library_id).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid feed library_id: {library_id!r}. Must be an integer library ID.") from None
+        return str(feed_id), "feed", None
+
+    if str(library_id).strip().lower() in ("0", "user", "personal"):
+        user_id = os.getenv("ZOTERO_LIBRARY_ID", "0") if not _utils.is_local_mode() else "0"
+        return user_id, "user", 0
+
+    if resolved_type in ("user", "users"):
+        return str(library_id).strip(), "user", 0
+
+    # Default to group if numeric ID is provided
+    try:
+        gid = int(str(library_id).strip())
+        return str(gid), "group", gid
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid library_id: {library_id!r}. Use an integer groupID, 0, or 'user'."
+        ) from None
+
+
+def _sanitize_item_for_creation(
+    source_data: dict,
+    target_write_zot: Any,
+    copy_tags: bool = True,
+) -> dict:
+    """Prepare a source item's data dict for creation in the destination library.
+
+    Strips read-only and library-specific fields (key, version, collections,
+    relations, dateAdded, dateModified, deleted, parentItem), fetches the
+    template for the itemType, and copies over valid metadata fields.
+    """
+    from zotero_mcp import schema as _schema
+
+    item_type = source_data.get("itemType")
+    if not item_type:
+        raise ValueError("Source item is missing 'itemType'.")
+
+    template = item_template_for(target_write_zot, item_type)
+    payload = copy.deepcopy(template)
+
+    excluded_keys = {
+        "key", "version", "dateAdded", "dateModified",
+        "collections", "relations", "deleted", "parentItem"
+    }
+    for k in excluded_keys:
+        payload.pop(k, None)
+
+    valid_fields = _schema.valid_fields(item_type)
+    for key, value in source_data.items():
+        if key in excluded_keys:
+            continue
+        if key in payload or (valid_fields and key in valid_fields):
+            payload[key] = copy.deepcopy(value)
+
+    if "creators" in source_data and "creators" in payload:
+        payload["creators"] = copy.deepcopy(source_data["creators"])
+
+    if copy_tags and "tags" in source_data:
+        payload["tags"] = copy.deepcopy(source_data["tags"])
+    elif not copy_tags:
+        payload["tags"] = []
+
+    return payload
+
 
 
 def _normalize_float_list_input(value, length, field_name="value"):
