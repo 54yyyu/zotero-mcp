@@ -1,18 +1,25 @@
 # Getting Started with Zotero MCP
 
-This guide will walk you through the setup and basic usage of the Zotero MCP server, which allows AI assistants like Claude to interact with your Zotero library.
+This guide walks you through installing Zotero MCP and connecting it to your AI assistant. For every setting, see [Configuration](configuration.md); for problems, see [Troubleshooting](troubleshooting.md).
+
+**Requirements**
+- Python 3.10+
+- Zotero 7+ (for local API with full-text access)
+- An MCP-compatible client (e.g., Claude Desktop, ChatGPT Developer Mode, Cherry Studio, Chorus)
 
 ## Installation
 
-First, install the Zotero MCP server using pip:
-
 ```bash
-pip install zotero-mcp-server
+uv tool install zotero-mcp-server   # recommended
+pip install zotero-mcp-server       # or with pip
+pipx install zotero-mcp-server      # or with pipx
 ```
 
-## Configuration
+Optional extras (`semantic`, `pdf`, `scite`, `all`) are listed in the [README](../README.md#optional-extras). If you are new to the command line, the community-built [Zotero MCP Setup](https://github.com/ehawkin/zotero-mcp-setup) has a macOS GUI installer (DMG), one-click install scripts for Mac and Windows, and a step-by-step guide.
 
-The server needs to know how to connect to your Zotero library. There are two main ways to do this:
+## Configure Zotero
+
+The server needs to know how to connect to your Zotero library. There are two main ways to do this.
 
 ### Option 1: Local Zotero (Recommended)
 
@@ -23,10 +30,14 @@ If you're running Zotero 7 or later on the same machine, you can connect to the 
    - Open Settings (Edit → Settings on Windows/Linux, Zotero → Settings on macOS) → Advanced → Miscellaneous
    - Tick "Allow other applications on this computer to communicate with Zotero"
 
+   ![Zotero local API](zotero-local-api.png)
+
 2. Set the environment variable:
    ```bash
    export ZOTERO_LOCAL=true
    ```
+
+For **writes** you have two routes. On Zotero 10 or newer, run `zotero-mcp authorize-local` once and writes go straight to the running Zotero — see [Local write support](configuration.md#local-write-support). On any older Zotero the local API is read-only, so also set the web API variables below and the server writes through the Zotero web API instead ("hybrid mode": fast local reads, web API writes).
 
 ### Option 2: Zotero Web API
 
@@ -47,39 +58,53 @@ If you want to connect to your Zotero library via the web API:
    export ZOTERO_LIBRARY_TYPE=user  # or 'group' for group libraries
    ```
 
-## Integrating with Claude Desktop
+## Integrating with Claude Desktop and Claude Code
 
-To use Zotero MCP with Claude Desktop:
+1. **Auto-configure** (recommended):
+   ```bash
+   zotero-mcp setup
+   ```
 
-1. Make sure you have Claude Desktop installed
-2. Open your Claude Desktop configuration:
+   `zotero-mcp setup` probes every known location of `claude_desktop_config.json`, writes to each one it finds, and prints the absolute path(s) it wrote so you can confirm it matched the build you actually run.
+
+2. **Manual configuration**: for Claude Desktop, open its configuration file:
    - On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - On Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
    Some Claude Desktop builds store the file elsewhere, for example
    `%LOCALAPPDATA%\Claude-3p\claude_desktop_config.json` on Windows or
    `~/Library/Application Support/Claude-3p/claude_desktop_config.json` on macOS.
-   `zotero-mcp setup` probes all of these locations, writes to every
-   `claude_desktop_config.json` it finds, and prints the absolute path(s) it
-   wrote so you can confirm it matched the build you actually run.
 
-3. Add the Zotero MCP server to the configuration:
+   For Claude Code, add the server to `~/.claude.json`. The entry is the same for both:
    ```json
    {
      "mcpServers": {
        "zotero": {
          "command": "zotero-mcp",
          "env": {
-           "ZOTERO_LOCAL": "true"
+           "ZOTERO_LOCAL": "true",
+           "ZOTERO_API_KEY": "YOUR_API_KEY",
+           "ZOTERO_LIBRARY_ID": "YOUR_LIBRARY_ID"
          }
        }
      }
    }
    ```
 
-4. Restart Claude Desktop
+   For **local reads**, `ZOTERO_LOCAL: "true"` is all you need — drop the `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely. Keep them only for web API writes on a Zotero older than 10 (for a group library, also set `ZOTERO_LIBRARY_TYPE: "group"`).
 
-- The tool should be available automatically: if not, you might need to double check in the connections menu under Settings.
+   > **Important Note**: Environment variables set in the shell you run `claude` in will override these values.
+
+   > **Tip:** If Claude Desktop reports it can't find the `zotero-mcp` command, use the
+   > absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) —
+   > GUI apps don't always inherit your shell `PATH`.
+
+3. **Use it**:
+   1. Start Zotero desktop (make sure the local API is enabled)
+   2. Launch Claude Desktop / Claude Code
+   3. In Claude Desktop, the Zotero tools appear in the tools interface (if not, check the connections menu under Settings). In Claude Code, run `/mcp` and make sure the Zotero server is connected.
+
+If your agent has a shell (Claude Code, Cursor, Codex …), you can use `zotero-cli` through an agent skill instead of the MCP server, at a fraction of the context cost: `zotero-mcp install-skill`. See [CLI and agent skill](cli.md).
 
 ## Integrating with OpenAI's ChatGPT
 
@@ -151,6 +176,29 @@ The process is the same as above, but you create the connector within the contex
 2.  When configuring a custom GPT, go to the **Tools** section and choose to add an MCP connector.
 3.  Follow the same steps as in the `ChatGPT.com setup` to configure the connector URL and other details.
 
+## Integrating with Cherry Studio
+
+Go to Settings -> MCP Servers -> Edit MCP Configuration, and add the following:
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "name": "zotero",
+      "type": "stdio",
+      "isActive": true,
+      "command": "zotero-mcp",
+      "args": [],
+      "env": {
+        "ZOTERO_LOCAL": "true"
+      }
+    }
+  }
+}
+```
+
+Then click "Save". Cherry Studio also provides a visual configuration method for general settings and tools selection.
+
 ## Integrating with Chorus.sh
 
 [Chorus.sh](https://chorus.sh) is a popular multi-chatbot interface that configures MCP servers through an online preferences form rather than config files.
@@ -174,6 +222,16 @@ To set up Zotero MCP with Chorus.sh:
 
 Many other MCP consumers use similar configuration approaches with command path, arguments, and environment variables.
 
+## Integrating with Autohand Code
+
+After installing Zotero MCP, add a local read-only server with:
+
+```bash
+autohand mcp add zotero env ZOTERO_LOCAL=true zotero-mcp
+```
+
+Add `--scope project` after `add` to keep the server configuration in the current project. For hybrid or web API access, add the credentials described above to the `env` command. See [Autohand Code](https://github.com/autohandai/code-cli/) for current installation and CLI details.
+
 ## Using with Other MCP Clients
 
 Zotero MCP works with any MCP-compatible client. You can start the server manually:
@@ -190,50 +248,23 @@ zotero-mcp serve --transport streamable-http --host localhost --port 8000
 
 The `sse` transport is still accepted but deprecated.
 
-
 ## Available Tools
 
-The full, current tool list is in the README under [Available Tools](../README.md#-available-tools). Search, metadata, full text, collections, tags, notes, annotations, PDF reading, adding and editing items, and semantic search are all covered; some groups are opt-in via `ZOTERO_MCP_TOOLSETS`.
+The full, current tool list is in [Tools](tools.md). Search, metadata, full text, collections, tags, notes, annotations, PDF reading, adding and editing items, and semantic search are all covered; some groups are opt-in via `ZOTERO_MCP_TOOLSETS`.
 
 ## Example Queries
 
-Once connected, you can ask Claude questions like:
+Once connected, you can ask things like:
 
-- "Search my Zotero library for papers about machine learning"
-- "Find articles by Smith in my Zotero library"
-- "Show me my most recent additions to Zotero"
-- "What collections do I have in my Zotero library?"
-- "Get the full text of paper XYZ from my Zotero library"
+- "Search my library for papers on machine learning"
+- "Find recent articles I've added about climate change"
+- "Summarize the key findings from my paper on quantum computing"
+- "Extract all PDF annotations from my paper on neural networks"
+- "Search my notes and annotations for mentions of 'reinforcement learning'"
+- "Show me papers tagged '#Arm' excluding those with '#Crypt' in my library"
+- "Export the BibTeX citation for papers on machine learning"
+- "Highlight the main claims in this paper and box its key figures"
+- **"Find papers conceptually similar to deep learning in computer vision"** *(semantic search)*
+- **"Papers that discuss topics similar to this abstract: [paste text]"** *(semantic search)*
 
-## Troubleshooting
-
-If you encounter issues:
-
-- Make sure Zotero is running (for local API)
-- Check that your API key has the correct permissions
-- Verify your library ID and type
-- Look for error messages in the Claude Desktop logs or MCP server output
-
-### Local Library Limitations
-
-**On Zotero 10 or newer** the local API accepts writes. Run `zotero-mcp authorize-local`
-once, choose "Always Allow" in the dialog Zotero shows, and tagging, item edits, notes,
-collections and file attachments all work against the local library with no cloud
-account. See [Local write support](../README.md#local-write-support).
-
-**On Zotero 9 and older** the local API is read-only, so library modifications will not
-work over the local connection alone. Set `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID`
-alongside `ZOTERO_LOCAL=true` — the server then reads locally and writes through the web
-API ("hybrid mode"), which is what makes tagging and the rest behave as expected.
-
-### Database Issues
-
-Switching installs or install methods (sometimes to deal with failed installs), as well as toggling between search options, can sometimes lead to database problems. These can frequently be solved with:
-
-```bash
-zotero-mcp update-db --force-rebuild
-```
-
-A forced rebuild deletes the whole ChromaDB collection and re-embeds every item in the active library from scratch. With OpenAI or Gemini embeddings that is billed again in full, and it takes as long as the first build. If the index also holds other libraries (or documents with no library attribution), the command refuses and asks for `--allow-mass-deletion`; passing that flag drops those documents permanently. Back up `~/.config/zotero-mcp/chroma_db/` first, and try a plain `zotero-mcp update-db` before rebuilding.
-
-For more help, try the [discussions](https://github.com/54yyyu/zotero-mcp/discussions).
+Something not working? See [Troubleshooting](troubleshooting.md).
