@@ -153,6 +153,24 @@ def get_active_library() -> dict[str, str]:
     return dict(_active_library_override)
 
 
+@contextmanager
+def temporary_active_library(library_id: str, library_type: str):
+    """Context manager to temporarily override the active library.
+
+    Restores the previous active library state (or clears it if there was none)
+    when exiting the context.
+    """
+    previous = get_active_library()
+    set_active_library(library_id, library_type)
+    try:
+        yield
+    finally:
+        if previous:
+            set_active_library(previous["library_id"], previous["library_type"])
+        else:
+            clear_active_library()
+
+
 def get_active_group_id() -> int:
     """group_id (0 = personal, else Zotero groupID) of the library
     ``get_zotero_client()`` is currently scoped to."""
