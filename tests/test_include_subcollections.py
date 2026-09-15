@@ -93,11 +93,6 @@ class _FakeZotero:
         self.collection_items_calls.append(key)
         return [_item(k, _collections_for(k)) for k in ITEMS_BY_COLLECTION.get(key, [])]
 
-    def collection_items_top(self, key, *args, **kwargs):
-        # /items/top serves the same fixture; titleCreatorYear searches page
-        # this endpoint now, so it must record into the same call log.
-        return self.collection_items(key, *args, **kwargs)
-
     def add_parameters(self, **kwargs):
         pass
 
