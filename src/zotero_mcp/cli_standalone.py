@@ -1101,12 +1101,41 @@ def _parse_pages(value):
 
 
 def cmd_read(args):
-    """Read a page range out of an item's PDF."""
+    """Read a page range out of an item's PDF, as text or as page images."""
+    rect = _parse_rect(getattr(args, "rect", None))
+    as_image = getattr(args, "format", "text") == "image"
+    if rect is not None and not as_image:
+        raise _cli_json.CliError("--rect needs --format image", code="bad_rect")
     setup_zotero_environment()
     from zotero_mcp.tools import read_pdf as read_pdf_mod
-    text = read_pdf_mod.read_pdf_pages(
-        item_key=args.item_key, start_page=args.start_page,
-        end_page=args.end_page, ctx=_ctx(args),
+
+    if as_image:
+        import os
+        import tempfile
+
+        header, pages = read_pdf_mod.render_pdf_pages(
+            args.item_key, args.start_page, args.end_page, rect=rect, ctx=_ctx(args),
+        )
+        out_dir = getattr(args, "out", None) or tempfile.mkdtemp(prefix="zotero_pages_")
+        os.makedirs(out_dir, exist_ok=True)
+        images = []
+        for page in pages:
+            suffix = "-region" if rect is not None else ""
+            path = os.path.join(out_dir, f"{args.item_key}-p{page['page']}{suffix}.png")
+            with open(path, "wb") as handle:
+                handle.write(page["png"])
+            images.append({"page": page["page"], "path": path,
+                           "width": page["width"], "height": page["height"]})
+        if _json_mode(args):
+            _cli_json.emit("read", {"item_key": args.item_key, "format": "image", "images": images})
+        else:
+            print(header + "\n")
+            for image in images:
+                print(f"p{image['page']}: {image['path']} ({image['width']}x{image['height']})")
+        return
+
+    text = read_pdf_mod.read_pdf_text(
+        args.item_key, args.start_page, args.end_page, ctx=_ctx(args), surface="cli",
     )
     _out(args, "read",
          data={"item_key": args.item_key, "start_page": args.start_page,
@@ -1571,6 +1600,12 @@ def build_parser() -> argparse.ArgumentParser:
     rd_p.add_argument("--start-page", type=int, required=True)
     rd_p.add_argument("--end-page", type=int, default=None,
                       help="Defaults to --start-page (a single page)")
+    rd_p.add_argument("--format", choices=["text", "image"], default="text",
+                      help="image writes PNG page images (up to 10 pages) for math, figures and tables")
+    rd_p.add_argument("--rect", help="With --format image: crop the start page to x,y,width,height "
+                                     "(normalized 0-1), e.g. from `zotero-cli layout`")
+    rd_p.add_argument("--out", help="With --format image: directory for the PNG files "
+                                    "(default: a new temporary directory)")
 
     # attach
     at_p = sub.add_parser("attach", help="Attach a file or link a URL to an item")

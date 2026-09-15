@@ -483,3 +483,262 @@ def test_table_captions_do_not_absorb_panels():
     table = {"source": "table", "bbox": [0.1, 0.3, 0.4, 0.15], "caption_label": "Table 2"}
     other = {"source": "image", "bbox": [0.55, 0.3, 0.3, 0.15], "caption_label": None}
     assert len(_absorb_uncaptioned_panels([table, other], [caption])) == 2
+
+
+# ---------------------------------------------------------------------------
+# Math detection
+# ---------------------------------------------------------------------------
+
+class _FakeMathPage:
+    """Just enough of a fitz page for scan_math: fonts, text blocks, size."""
+
+    def __init__(self, fonts, blocks, width=612, height=792):
+        self._fonts = fonts
+        self._blocks = blocks
+        self.rect = fitz.Rect(0, 0, width, height)
+        self.text_extractions = 0
+
+    def get_fonts(self):
+        return [(1, "pfb", "Type1", name, "F1", "") for name in self._fonts]
+
+    def get_text(self, kind, flags=0):
+        self.text_extractions += 1
+        return {"blocks": self._blocks}
+
+
+def _block(*lines):
+    return {"lines": [{"bbox": bbox, "spans": [{"text": t, "font": f} for t, f in spans]}
+                      for bbox, spans in lines]}
+
+
+class TestScanMath:
+    def test_pages_without_math_fonts_are_skipped_before_extracting_text(self):
+        from zotero_mcp.pdf_layout import scan_math
+
+        page = _FakeMathPage(["NimbusRomNo9L-Regu"], [])
+        assert scan_math(page) == ([], 0)
+        assert page.text_extractions == 0
+
+    def test_split_display_joins_into_one_numbered_equation(self):
+        """AIAYN's Eq. (1): the fraction's denominator is its own block, and
+        the equation number sits in a third."""
+        from zotero_mcp.pdf_layout import scan_math
+
+        page = _FakeMathPage(["ABCDEF+CMMI10", "CMR10", "CMSY10", "NimbusRomNo9L-Regu"], [
+            _block(((72, 100, 540, 112), [("We compute the matrix of outputs as ", "NimbusRomNo9L-Regu"),
+                                          ("Q", "CMMI10"), (", K", "CMMI10")])),
+            _block(((220, 400, 377, 412), [("Attention(", "CMR10"), ("Q, K, V", "CMMI10"),
+                                           (") = softmax(", "CMR10"), ("QK", "CMMI10")])),
+            _block(((358, 407, 390, 420), [("√", "CMSY10"), ("dk", "CMMI10")]),
+                   ((493, 407, 504, 419), [("(1)", "NimbusRomNo9L-Regu")])),
+        ])
+        equations, inline = scan_math(page)
+        assert len(equations) == 1
+        assert equations[0]["label"] == "(1)"
+        x0, y0, x1, y1 = equations[0]["bbox"]
+        assert x0 < 220 and x1 > 390 and y0 < 400 and y1 > 420
+        assert inline == 3  # "Q" and ", K" in the prose block
+
+    def test_displays_in_different_columns_stay_apart(self):
+        from zotero_mcp.pdf_layout import scan_math
+
+        page = _FakeMathPage(["CMMI10"], [
+            _block(((60, 300, 280, 312), [("x = y + z", "CMMI10")])),
+            _block(((330, 300, 550, 312), [("a = b + c", "CMMI10")])),
+        ])
+        equations, _ = scan_math(page)
+        assert len(equations) == 2
+
+    def test_numbers_go_to_the_display_in_their_own_column(self):
+        """Two columns can put displays on one band; the right column's
+        equation was labelled with the left column's number."""
+        from zotero_mcp.pdf_layout import scan_math
+
+        page = _FakeMathPage(["CMMI10"], [
+            _block(((60, 500, 250, 512), [("p = x Q", "CMMI10")]),
+                   ((268, 500, 282, 512), [("(14)", "Times")])),
+            _block(((320, 500, 520, 512), [("s = y + x", "CMMI10")]),
+                   ((536, 500, 550, 512), [("(17)", "Times")])),
+        ])
+        equations, _ = scan_math(page)
+        assert sorted((eq["bbox"][0] < 300, eq["label"]) for eq in equations) == [
+            (False, "(17)"), (True, "(14)"),
+        ]
+
+    def test_math_heavy_prose_is_not_a_display(self):
+        from zotero_mcp.pdf_layout import scan_math
+
+        page = _FakeMathPage(["CMMI10", "Times"], [
+            _block(((72, 100, 540, 112), [("where ", "Times"), ("d", "CMMI10"),
+                                          (" is the representation dimension of every layer", "Times")])),
+        ])
+        assert scan_math(page) == ([], 1)
+
+
+def test_fragments_nested_in_a_table_are_dropped():
+    """EGNN's Table 1 has a rule under every row; each band detected as a
+    table of its own inside the real one."""
+    from zotero_mcp.pdf_layout import _merge_candidate_regions
+
+    regions = _merge_candidate_regions([
+        {"source": "table", "bbox": [0.108, 0.104, 0.76, 0.025]},
+        {"source": "table", "bbox": [0.091, 0.073, 0.794, 0.129]},
+        {"source": "drawing", "bbox": [0.2, 0.08, 0.3, 0.05]},
+        {"source": "image", "bbox": [0.1, 0.5, 0.3, 0.2]},
+    ])
+    assert [(r["source"], r["bbox"]) for r in regions] == [
+        ("table", [0.091, 0.073, 0.794, 0.129]),
+        ("image", [0.1, 0.5, 0.3, 0.2]),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Reading pages as text with flags, or as images
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def two_page_pdf(tmp_path, monkeypatch):
+    from zotero_mcp.tools import read_pdf
+
+    doc = fitz.open()
+    for i in range(2):
+        page = doc.new_page(width=612, height=792)
+        page.insert_text((72, 100), f"Page {i + 1} prose.", fontsize=11)
+    path = str(tmp_path / "two.pdf")
+    doc.save(path)
+    doc.close()
+    monkeypatch.setattr(read_pdf, "_get_pdf_path", lambda _key, _ctx: (path, "Paper", False))
+    return path
+
+
+class TestReadFlags:
+    def _extracted(self, pages):
+        return argparse.Namespace(page_numbers=tuple(range(len(pages))), pages=pages, needs_ocr=())
+
+    def test_flags_name_equations_captions_and_inline_math(self, two_page_pdf, monkeypatch):
+        from zotero_mcp import pdf_layout
+        from zotero_mcp.tools import read_pdf
+
+        scans = iter([
+            ([{"bbox": (0, 0, 1, 1), "label": "(1)"}, {"bbox": (0, 0, 1, 1), "label": None}], 40),
+            ([], 3),
+        ])
+        monkeypatch.setattr(pdf_layout, "scan_math", lambda _page: next(scans))
+        flags = read_pdf._garbled_content_flags(two_page_pdf, self._extracted([
+            "Some prose.\nFigure 2: (left) a diagram.",
+            "Table 3: Variations on the model.\nTable 3 rows (A) vary heads.",
+        ]))
+        assert flags == {
+            0: "> **Garbled in this text:** Equation (1), 1 unnumbered equation, Figure 2, inline math",
+            1: "> **Garbled in this text:** Table 3",
+        }
+
+    def test_unreadable_file_means_no_flags_not_a_failed_read(self):
+        from zotero_mcp.tools import read_pdf
+
+        assert read_pdf._garbled_content_flags("/nonexistent.pdf", self._extracted(["x"])) == {}
+
+    @pytest.mark.parametrize("surface,advice", [
+        ("mcp", "format='image'"),
+        ("cli", "zotero-cli read KEY00001 --start-page N --format image"),
+    ])
+    def test_advice_matches_the_surface(self, two_page_pdf, monkeypatch, surface, advice):
+        from zotero_mcp import pdf_layout
+        from zotero_mcp.tools import read_pdf
+
+        monkeypatch.setattr(pdf_layout, "scan_math",
+                            lambda _page: ([{"bbox": (0, 0, 1, 1), "label": "(2)"}], 0))
+        text = read_pdf.read_pdf_text("KEY00001", 1, 2, ctx=MagicMock(), surface=surface)
+        assert "> **Garbled in this text:** Equation (2)" in text
+        assert advice in text
+
+    def test_clean_pages_carry_no_advice(self, two_page_pdf):
+        from zotero_mcp.tools import read_pdf
+
+        text = read_pdf.read_pdf_text("KEY00001", 1, 2, ctx=MagicMock())
+        assert "Garbled" not in text and "format='image'" not in text
+
+
+class TestRenderPages:
+    def test_pages_render_to_png_within_the_size_cap(self, two_page_pdf):
+        from zotero_mcp.tools import read_pdf
+
+        header, pages = read_pdf.render_pdf_pages("KEY00001", 1, 5, ctx=MagicMock())
+        assert [p["page"] for p in pages] == [1, 2]
+        assert "past the last page" in header
+        for page in pages:
+            assert page["png"].startswith(b"\x89PNG")
+            assert max(page["width"], page["height"]) <= read_pdf._IMAGE_MAX_EDGE
+
+    def test_rect_zooms_into_one_region(self, two_page_pdf):
+        from zotero_mcp.tools import read_pdf
+
+        _header, full = read_pdf.render_pdf_pages("KEY00001", 1, ctx=MagicMock())
+        header, crop = read_pdf.render_pdf_pages("KEY00001", 1, rect="[0.1, 0.1, 0.4, 0.05]", ctx=MagicMock())
+        assert len(crop) == 1 and "Region [0.1000, 0.1000, 0.4000, 0.0500] of page 1" in header
+        # 40% of the page width, rendered larger than that share of the full page.
+        assert crop[0]["width"] > 0.4 * full[0]["width"] * 1.5
+
+    @pytest.mark.parametrize("kwargs,code", [
+        (dict(rect=[0.5, 0.5, 0.6, 0.1]), "bad_rect"),
+        (dict(rect="nope"), "bad_rect"),
+        (dict(rect=[0.1, 0.1, 0.2, 0.2], end_page=2), "invalid_page_range"),
+    ])
+    def test_bad_requests_fail_with_a_code(self, two_page_pdf, kwargs, code):
+        from zotero_mcp.tools import read_pdf
+
+        with pytest.raises(read_pdf.PdfReadError) as exc:
+            read_pdf.render_pdf_pages("KEY00001", 1, ctx=MagicMock(), **kwargs)
+        assert exc.value.code == code
+
+    def test_image_reads_are_capped_at_ten_pages(self, tmp_path, monkeypatch):
+        from zotero_mcp.tools import read_pdf
+
+        doc = fitz.open()
+        for _ in range(12):
+            doc.new_page()
+        path = str(tmp_path / "long.pdf")
+        doc.save(path)
+        doc.close()
+        monkeypatch.setattr(read_pdf, "_get_pdf_path", lambda _k, _c: (path, "Long", False))
+        with pytest.raises(read_pdf.PdfReadError) as exc:
+            read_pdf.render_pdf_pages("KEY00001", 1, 12, ctx=MagicMock())
+        assert exc.value.code == "page_limit_exceeded"
+
+    def test_mcp_tool_returns_header_then_images(self, two_page_pdf):
+        from fastmcp.utilities.types import Image
+
+        from zotero_mcp.tools import read_pdf
+
+        result = read_pdf.read_pdf_pages("KEY00001", 1, 2, format="image", ctx=MagicMock())
+        assert isinstance(result[0], str) and result[0].startswith("# Pages 1-2 of Paper")
+        assert [type(part) for part in result[1:]] == [Image, Image]
+
+    def test_mcp_tool_rejects_unknown_formats(self, two_page_pdf):
+        from zotero_mcp.tools import read_pdf
+
+        with pytest.raises(read_pdf.PdfReadError) as exc:
+            read_pdf.read_pdf_pages("KEY00001", 1, format="pdf", ctx=MagicMock())
+        assert exc.value.code == "bad_format"
+
+
+class TestCliReadImages:
+    def test_images_are_written_and_listed(self, tmp_path, capsys, monkeypatch):
+        from zotero_mcp.tools import read_pdf
+
+        monkeypatch.setattr(read_pdf, "render_pdf_pages", lambda *a, **k: (
+            "# Pages 4-4 of Paper", [{"page": 4, "png": b"\x89PNGdata", "width": 10, "height": 20}]))
+        args = _args(item_key="KEY00001", start_page=4, end_page=None, format="image",
+                     rect="0.1,0.2,0.3,0.4", out=str(tmp_path), json_out=True)
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            cli_standalone.cmd_read(args)
+        image = json.loads(capsys.readouterr().out)["data"]["images"][0]
+        assert image["path"] == os.path.join(str(tmp_path), "KEY00001-p4-region.png")
+        with open(image["path"], "rb") as handle:
+            assert handle.read() == b"\x89PNGdata"
+
+    def test_rect_without_image_format_is_a_usage_error(self):
+        with pytest.raises(CliError) as exc:
+            cli_standalone.cmd_read(_args(item_key="K", start_page=1, end_page=None,
+                                          format="text", rect="0.1,0.1,0.2,0.2", out=None))
+        assert exc.value.code == "bad_rect"

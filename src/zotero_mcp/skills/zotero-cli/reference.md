@@ -334,6 +334,9 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `<item_key>`
  - `--start-page` -- **required**
  - `--end-page` -- Defaults to --start-page (a single page)
+ - `--format` -- one of `text`, `image` -- default `text` -- image writes PNG page images (up to 10 pages) for math, figures and tables
+ - `--rect` -- With --format image: crop the start page to x,y,width,height (normalized 0-1), e.g. from `zotero-cli layout`
+ - `--out` -- With --format image: directory for the PNG files (default: a new temporary directory)
 
 ## `attach`
 

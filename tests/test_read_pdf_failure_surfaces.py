@@ -95,8 +95,8 @@ def test_a_successful_read_is_still_a_success(monkeypatch, capsys):
     """The fix must not turn the happy path into an error."""
     monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
     monkeypatch.setattr(
-        read_pdf_tools, "read_pdf_pages",
-        lambda **_kwargs: "## Page 1\n\nBody text.",
+        read_pdf_tools, "read_pdf_text",
+        lambda *_args, **_kwargs: "## Page 1\n\nBody text.",
     )
     monkeypatch.delenv("ZOTERO_CLI_DEBUG", raising=False)
     monkeypatch.setattr(

@@ -36,6 +36,11 @@ LAYOUT_RULE_MIN_COUNT = 3           # top, middle and bottom rule of a booktabs 
 LAYOUT_RULE_MIN_WIDTH = 0.15        # a table rule spans at least 15% of the page width
 LAYOUT_RULE_SPAN_TOLERANCE = 0.02   # rules of one table share left/right edges within 2%
 LAYOUT_RULE_MAX_GAP = 0.12          # max vertical gap between consecutive rules of one table
+LAYOUT_EQUATION_MIN_MATH_SHARE = 0.6  # share of a text block's characters set in math fonts
+LAYOUT_EQUATION_LINE_GAP = 0.012    # pieces of one display equation sit closer than this
+LAYOUT_EQUATION_PIECE_GAP = 0.02    # side-by-side pieces of one display; below a column gutter
+LAYOUT_NESTED_SHARE = 0.9           # a box this much inside a kept box is a fragment of it
+LAYOUT_EQUATION_MIN_WIDTH = 0.05    # an unnumbered display narrower than this is a stray symbol
 
 # Source priority when de-duplicating overlapping detections
 _LAYOUT_SOURCE_PRIORITY = {"table": 3, "image": 2, "drawing": 1, "merged": 0}
@@ -96,6 +101,18 @@ def _bbox_iou(box_a: list[float], box_b: list[float]) -> float:
     if union <= 0:
         return 0.0
     return intersection / union
+
+
+def _share_inside(inner: list[float], outer: list[float]) -> float:
+    """Fraction of ``inner``'s area that lies inside ``outer`` (both [x, y, w, h])."""
+    x0 = max(inner[0], outer[0])
+    y0 = max(inner[1], outer[1])
+    x1 = min(inner[0] + inner[2], outer[0] + outer[2])
+    y1 = min(inner[1] + inner[3], outer[1] + outer[3])
+    area = inner[2] * inner[3]
+    if area <= 0 or x1 <= x0 or y1 <= y0:
+        return 0.0
+    return (x1 - x0) * (y1 - y0) / area
 
 
 def _bbox_union(box_a: list[float], box_b: list[float]) -> list[float]:
@@ -174,17 +191,20 @@ def _merge_candidate_regions(
             continue
         kept.append({"source": region["source"], "bbox": list(region["bbox"])})
 
-    # 2. De-duplicate near-identical detections, keeping the
-    #    highest-priority source (e.g. a table found by both find_tables
-    #    and cluster_drawings keeps the "table" source)
+    # 2. De-duplicate, keeping the highest-priority source and, within one
+    #    source, the larger box (e.g. a table found by both find_tables and
+    #    cluster_drawings keeps the "table" source). A box lying almost
+    #    entirely inside a kept one is a fragment of it -- the rule band of
+    #    one table row, a drawing within a table -- not a region of its own.
     deduped: list[dict] = []
     for region in sorted(
         kept,
-        key=lambda r: _LAYOUT_SOURCE_PRIORITY.get(r["source"], 0),
+        key=lambda r: (_LAYOUT_SOURCE_PRIORITY.get(r["source"], 0), r["bbox"][2] * r["bbox"][3]),
         reverse=True,
     ):
         if any(
             _bbox_iou(region["bbox"], existing["bbox"]) > dedup_iou
+            or _share_inside(region["bbox"], existing["bbox"]) >= LAYOUT_NESTED_SHARE
             for existing in deduped
         ):
             continue
@@ -313,6 +333,114 @@ def _associate_captions_with_regions(
             result[r_idx]["confidence"] = "medium"
 
     return result
+
+
+# Fonts that set math. TeX's roman fonts (CMR, CMBX) also appear in formulas,
+# for digits and operators, but set ordinary text too, so they only count
+# towards a line that already carries a real math font.
+_MATH_FONT_RE = re.compile(
+    r"^(?:[A-Z]{6}\+)?(?:CMMI|CMSY|CMEX|CMBSY|CMMIB|MSBM|MSAM|EUFM|EUSM|RSFS|"
+    r"LMMath|LatinModernMath|STIX\w*Math|Cambria-?Math|XITSMath|MTSY|MTEX|MathematicalPi)",
+    re.IGNORECASE,
+)
+_TEX_ROMAN_FONT_RE = re.compile(r"^(?:[A-Z]{6}\+)?(?:CMR|CMBX|LMRoman)", re.IGNORECASE)
+_EQUATION_NUMBER_RE = re.compile(r"^\(\d+[a-z]?\)$")
+
+
+def scan_math(page) -> tuple[list[dict], int]:
+    """
+    Display equations on a page, and how much inline math the rest carries.
+
+    Text extraction garbles math (a square root becomes "p", subscripts fall
+    onto the baseline), so a reader of extracted text needs to know where it
+    cannot be trusted. Fonts say so reliably for LaTeX- and Word-produced PDFs:
+    a text block set mostly in math fonts is a display equation.
+
+    Pieces of one display (a fraction's denominator, the second line of an
+    aligned pair) come out as separate blocks and are joined; an equation
+    number "(3)" on the same band labels the result.
+
+    Pages whose font list has no math font are skipped without extracting
+    text, which keeps this cheap for prose-only pages.
+
+    Returns:
+        (equations, inline_math_chars). Each equation is
+        {"bbox": (x0, y0, x1, y1) in page coordinates, "label": "(1)" | None}.
+    """
+    if not any(_MATH_FONT_RE.match(font[3] or "") for font in page.get_fonts()):
+        return [], 0
+
+    boxes: list[list[float]] = []
+    numbers: list[tuple[tuple, str]] = []
+    inline_math_chars = 0
+    for block in page.get_text("dict", flags=0)["blocks"]:
+        body = None
+        total = mathy = real_math = 0
+        for line in block.get("lines", []):
+            text = "".join(span["text"] for span in line["spans"]).strip()
+            if _EQUATION_NUMBER_RE.match(text):
+                numbers.append((line["bbox"], text))
+                continue
+            for span in line["spans"]:
+                count = len(span["text"].replace(" ", ""))
+                total += count
+                if _MATH_FONT_RE.match(span["font"]):
+                    real_math += count
+                    mathy += count
+                elif _TEX_ROMAN_FONT_RE.match(span["font"]):
+                    mathy += count
+            x0, y0, x1, y1 = line["bbox"]
+            body = [x0, y0, x1, y1] if body is None else [
+                min(body[0], x0), min(body[1], y0), max(body[2], x1), max(body[3], y1)
+            ]
+        if body is not None and real_math and total >= 2 and mathy >= LAYOUT_EQUATION_MIN_MATH_SHARE * total:
+            boxes.append(body)
+        else:
+            inline_math_chars += real_math
+
+    # Join pieces to a fixed point. A display splits both ways: a fraction
+    # stacks blocks vertically, and a long line breaks into side-by-side
+    # blocks. The horizontal allowance is narrower than a column gutter, so
+    # equations in the two columns of a page stay apart.
+    v_gap = LAYOUT_EQUATION_LINE_GAP * page.rect.height
+    h_gap = LAYOUT_EQUATION_PIECE_GAP * page.rect.width
+    merged: list[list[float]] = []
+    for box in sorted(boxes, key=lambda b: (b[1], b[0])):
+        merged.append(box)
+        joined = True
+        while joined:
+            joined = False
+            current = merged[-1]
+            for idx in range(len(merged) - 1):
+                other = merged[idx]
+                if (current[1] - other[3] <= v_gap and other[1] - current[3] <= v_gap
+                        and current[0] - other[2] <= h_gap and other[0] - current[2] <= h_gap):
+                    merged[-1] = [min(current[0], other[0]), min(current[1], other[1]),
+                                  max(current[2], other[2]), max(current[3], other[3])]
+                    del merged[idx]
+                    joined = True
+                    break
+
+    # An equation number sits on the display's band, to its right, at the
+    # column's margin. Two columns can put displays on one band, so take the
+    # nearest number on that side and use each number once.
+    equations = []
+    used_numbers: set[int] = set()
+    for x0, y0, x1, y1 in merged:
+        candidates = [
+            (max(nx0 - x1, 0.0), idx, text)
+            for idx, ((nx0, ny0, _nx1, ny1), text) in enumerate(numbers)
+            if idx not in used_numbers and ny0 < y1 + 2 and ny1 > y0 - 2 and nx0 >= x0
+        ]
+        label = None
+        if candidates:
+            _distance, idx, label = min(candidates)
+            used_numbers.add(idx)
+        if label is None and (x1 - x0) < LAYOUT_EQUATION_MIN_WIDTH * page.rect.width:
+            continue  # a stray symbol, not a display
+        pad = 2.0
+        equations.append({"bbox": (x0 - pad, y0 - pad, x1 + pad, y1 + pad), "label": label})
+    return equations, inline_math_chars
 
 
 def _ruled_table_boxes(
@@ -528,24 +656,33 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
 
         # --- Tables ---
         try:
-            # PyMuPDF prints an advert for pymupdf_layout to stdout on its
-            # first find_tables() call, which corrupts `zotero-cli --json`.
-            import contextlib
-            import io
-
-            with contextlib.redirect_stdout(io.StringIO()):
-                found_tables = page.find_tables().tables
-            for table in found_tables:
-                x0, y0, x1, y1 = table.bbox
-                raw_regions.append(
-                    {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
-                )
+            drawings = page.get_drawings()
         except Exception:
-            pass
+            drawings = []
+        # find_tables() is the slowest step here and finds only grids, which
+        # need vertical strokes. A page whose drawings are all horizontal
+        # rules (or that has none) cannot hold one, so it skips the call; its
+        # rule-only tables are found below.
+        if any(drawing["rect"].height > 2 for drawing in drawings):
+            try:
+                # PyMuPDF prints an advert for pymupdf_layout to stdout on its
+                # first find_tables() call, which corrupts `zotero-cli --json`.
+                import contextlib
+                import io
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    found_tables = page.find_tables().tables
+                for table in found_tables:
+                    x0, y0, x1, y1 = table.bbox
+                    raw_regions.append(
+                        {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
+                    )
+            except Exception:
+                pass
 
         # --- Tables drawn with horizontal rules only (find_tables misses these) ---
         try:
-            for x0, y0, x1, y1 in _ruled_table_boxes(page.get_drawings(), page_width, page_height):
+            for x0, y0, x1, y1 in _ruled_table_boxes(drawings, page_width, page_height):
                 raw_regions.append(
                     {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
                 )
@@ -598,6 +735,31 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
         regions = _merge_candidate_regions(raw_regions)
         regions = _associate_captions_with_regions(regions, captions)
         regions = _absorb_uncaptioned_panels(regions, captions)
+
+        # --- Display equations: added after filtering, since a one-line
+        #     equation is far below LAYOUT_MIN_REGION_AREA ---
+        try:
+            equations, _inline_math = scan_math(page)
+        except Exception:
+            equations = []
+        for equation in equations:
+            bbox = normalize_bbox(*equation["bbox"])
+            cx, cy = bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2
+            if any(
+                r["bbox"][0] <= cx <= r["bbox"][0] + r["bbox"][2]
+                and r["bbox"][1] <= cy <= r["bbox"][1] + r["bbox"][3]
+                for r in regions
+            ):
+                continue  # math inside a table or figure belongs to that region
+            label = f"Equation {equation['label']}" if equation["label"] else "Equation"
+            regions.append({
+                "source": "equation",
+                "bbox": bbox,
+                "caption_label": label,
+                "caption_text": label,
+                "confidence": "high" if equation["label"] else "medium",
+            })
+        regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
         for idx, region in enumerate(regions, start=1):
             region["region_id"] = idx

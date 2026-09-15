@@ -2,8 +2,11 @@
 
 import os
 import tempfile
+from contextlib import contextmanager
+from typing import Literal
 
 from fastmcp import Context
+from fastmcp.utilities.types import Image
 from fastmcp.exceptions import ToolError
 
 from zotero_mcp import client as _client
@@ -170,70 +173,117 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
     return None
 
 
+#: Most pages one text read returns.
+_TEXT_MAX_PAGES = 50
+#: Most pages one image read returns. A page image costs a vision model a few
+#: thousand tokens, so an image read is for the pages that need one.
+_IMAGE_MAX_PAGES = 10
+#: Long edge of a rendered image in pixels. Vision models downscale anything
+#: larger, so rendering past it only makes the response heavier.
+_IMAGE_MAX_EDGE = 1568
+#: Cap on magnification, so a crop of a few words is not blown up to mush.
+_IMAGE_MAX_ZOOM = 4.0
+#: Inline math characters on a page before its text is flagged as garbled.
+#: A few variable names survive extraction; dense notation does not.
+_INLINE_MATH_FLAG = 25
+
+_IMAGE_HINTS = {
+    "mcp": (
+        "*Flagged pages have math, figures or tables that text extraction garbles. "
+        "Read them with format='image'; add rect=[x, y, width, height] from "
+        "zotero_get_page_layout to zoom into one of them.*"
+    ),
+    "cli": (
+        "*Flagged pages have math, figures or tables that text extraction garbles. "
+        "View them with `zotero-cli read {item_key} --start-page N --format image`; add "
+        "--rect x,y,width,height from `zotero-cli layout ATTACHMENT_KEY` to zoom into one of them.*"
+    ),
+}
+
+
 @mcp.tool(
     name="zotero_read_pdf_pages",
     description="Read specific page range(s) from a PDF attachment of a Zotero item. "
     "Use this when you know which pages to read — for example after getting the PDF "
     "outline via zotero_get_pdf_outline. Pages are 1-indexed. "
-    "Returns Markdown with the page's heading structure preserved.",
+    "format='text' (default) returns Markdown with the heading structure preserved and "
+    "flags pages whose equations, figures or tables the text garbles. "
+    "format='image' returns the pages as PNG images (up to 10) so those can be read "
+    "exactly; rect=[x, y, width, height] (normalized 0-1, e.g. from "
+    "zotero_get_page_layout) returns just that region of start_page, zoomed in.",
+    # Text or a list of text and images, so no single structured schema fits.
+    output_schema=None,
 )
 def read_pdf_pages(
     item_key: str,
     start_page: int,
     end_page: int | None = None,
+    format: Literal["text", "image"] = "text",
+    rect: list[float] | str | None = None,
     *,
     ctx: Context,
-) -> str:
-    """Extract and return text from a specific page range of a PDF.
+) -> str | list:
+    """Read a page range of an item's PDF as Markdown, or as page images.
 
     Args:
         item_key: Zotero item key/ID of the paper or its PDF attachment.
         start_page: First page to read (1-indexed).
         end_page: Last page to read (1-indexed). If omitted, reads only start_page.
+        format: "text" for Markdown, "image" for PNG page images.
+        rect: With format="image", crop start_page to [x, y, width, height].
         ctx: MCP context.
-
-    Returns:
-        Markdown-formatted page content with metadata header.
     """
+    if format == "image":
+        header, pages = render_pdf_pages(item_key, start_page, end_page, rect=rect, ctx=ctx)
+        return [header, *(Image(data=page["png"], format="png") for page in pages)]
+    if format != "text":
+        raise PdfReadError(f"format must be 'text' or 'image', got {format!r}", code="bad_format")
+    return read_pdf_text(item_key, start_page, end_page, ctx=ctx)
+
+
+@contextmanager
+def _page_range(
+    item_key: str,
+    start_page: int,
+    end_page: int | None,
+    *,
+    max_pages: int,
+    ctx: Context,
+):
+    """Validate a page range against an item's PDF.
+
+    Yields ``(pdf_path, title, total_pages, end_page, clamped_note)`` and
+    removes a downloaded working copy afterwards, never a file in the user's
+    library. The range is checked before anything is resolved (#528).
+    """
+    if not item_key or not item_key.strip():
+        raise PdfReadError("Error: item_key cannot be empty.", code="empty_item_key")
+    if end_page is not None and end_page < start_page:
+        raise PdfReadError(
+            "Error: end_page must be greater than or equal to start_page.",
+            code="invalid_page_range",
+        )
+
+    ctx.info(f"Reading PDF pages {start_page}-{end_page or start_page} for item {item_key}")
+
+    result = _get_pdf_path(item_key, ctx)
+    if result is None:
+        raise PdfReadError(
+            f"No PDF attachment found for item: {item_key}",
+            code="no_pdf_attachment",
+        )
+    pdf_path, title, is_temp = result
+
     try:
-        if not item_key or not item_key.strip():
-            raise PdfReadError("Error: item_key cannot be empty.", code="empty_item_key")
-
-        if end_page is not None and end_page < start_page:
-            raise PdfReadError(
-                "Error: end_page must be greater than or equal to start_page.",
-                code="invalid_page_range",
-            )
-
-        ctx.info(f"Reading PDF pages {start_page}-{end_page or start_page} for item {item_key}")
-
-        result = _get_pdf_path(item_key, ctx)
-        if result is None:
-            raise PdfReadError(
-                f"No PDF attachment found for item: {item_key}",
-                code="no_pdf_attachment",
-            )
-
-        pdf_path, title, is_temp = result
-
-        def _release() -> None:
-            """Drop the working copy, but never a file in the user's library."""
-            if is_temp:
-                _cleanup_path(pdf_path)
-
         try:
             total_pages = pdf_page_count(pdf_path)
         except Exception as exc:
-            _release()
             raise PdfReadError(
                 f"Could not read PDF for item {item_key}: {exc}",
                 code="pdf_unreadable",
             ) from exc
 
-        actual_end = end_page if end_page is not None else start_page
-
         if start_page < 1 or start_page > total_pages:
-            _release()
             raise PdfReadError(
                 f"Start page {start_page} is out of range. PDF has {total_pages} pages (1-{total_pages}).",
                 code="page_out_of_range",
@@ -241,6 +291,7 @@ def read_pdf_pages(
         # A caller rarely knows the page count before the first read, and
         # "read to the end" is the usual intent behind an end page that is too
         # large. Clamp and say so instead of failing the whole read.
+        actual_end = end_page if end_page is not None else start_page
         clamped_note = None
         if actual_end > total_pages:
             clamped_note = (
@@ -250,23 +301,44 @@ def read_pdf_pages(
             actual_end = total_pages
 
         requested = actual_end - start_page + 1
-        if requested > 50:
-            _release()
+        if requested > max_pages:
             raise PdfReadError(
-                f"Requested {requested} pages (max 50). Please narrow your page range.",
+                f"Requested {requested} pages (max {max_pages}). Please narrow your page range.",
                 code="page_limit_exceeded",
             )
 
-        try:
-            # extract_pdf takes 0-indexed pages; the tool's API is 1-indexed.
-            doc = extract_pdf(pdf_path, pages=list(range(start_page - 1, actual_end)))
-        except Exception as exc:
-            raise PdfReadError(
-                f"Could not read PDF for item {item_key}: {exc}",
-                code="pdf_unreadable",
-            ) from exc
-        finally:
-            _release()
+        yield pdf_path, title, total_pages, actual_end, clamped_note
+    finally:
+        if is_temp:
+            _cleanup_path(pdf_path)
+
+
+def read_pdf_text(
+    item_key: str,
+    start_page: int,
+    end_page: int | None = None,
+    *,
+    ctx: Context,
+    surface: Literal["mcp", "cli"] = "mcp",
+) -> str:
+    """Markdown for a page range, with pages the text garbles flagged.
+
+    ``surface`` picks whether the closing advice names the MCP tool's image
+    format or the zotero-cli flag.
+    """
+    try:
+        with _page_range(item_key, start_page, end_page,
+                         max_pages=_TEXT_MAX_PAGES, ctx=ctx) as (pdf_path, title, total_pages,
+                                                                 actual_end, clamped_note):
+            try:
+                # extract_pdf takes 0-indexed pages; the tool's API is 1-indexed.
+                doc = extract_pdf(pdf_path, pages=list(range(start_page - 1, actual_end)))
+            except Exception as exc:
+                raise PdfReadError(
+                    f"Could not read PDF for item {item_key}: {exc}",
+                    code="pdf_unreadable",
+                ) from exc
+            flags = _garbled_content_flags(pdf_path, doc)
 
         output = [
             f"# PDF Pages {start_page}-{actual_end} of {title}",
@@ -287,6 +359,10 @@ def read_pdf_pages(
             else:
                 output.append("*[No extractable text on this page]*")
             output.append("")
+            if page_index in flags:
+                output.extend([flags[page_index], ""])
+        if flags:
+            output.append(_IMAGE_HINTS[surface].format(item_key=item_key))
         return _helpers._prepend_size_warning(
             "\n".join(output),
             "Consider using zotero_semantic_search to find specific content instead of reading full pages.",
@@ -299,3 +375,120 @@ def read_pdf_pages(
     except Exception as e:
         ctx.error(f"Error reading PDF pages: {str(e)}")
         raise PdfReadError(f"Error reading PDF pages: {str(e)}") from e
+
+
+def _garbled_content_flags(pdf_path: str, doc) -> dict[int, str]:
+    """A note per page (0-indexed) naming what its extracted text cannot carry.
+
+    Display equations and dense inline math come from the page's fonts
+    (``pdf_layout.scan_math``); figures and tables from their captions in the
+    extracted Markdown, which is already in hand. A page with none of these
+    gets no note. Best effort: without PyMuPDF, or on a file it cannot open,
+    the read simply carries no flags.
+    """
+    try:
+        import fitz
+
+        from zotero_mcp.pdf_layout import _parse_caption_block, scan_math
+
+        pdf = fitz.open(pdf_path)
+    except Exception:
+        return {}
+
+    flags: dict[int, str] = {}
+    try:
+        for page_index, markdown in zip(doc.page_numbers, doc.pages):
+            equations, inline_math = scan_math(pdf[page_index])
+            numbered = [eq["label"] for eq in equations if eq["label"]]
+            unnumbered = len(equations) - len(numbered)
+            items = []
+            if numbered:
+                items.append(("Equation " if len(numbered) == 1 else "Equations ") + ", ".join(numbered))
+            if unnumbered:
+                items.append(f"{unnumbered} unnumbered equation{'s' if unnumbered > 1 else ''}")
+            for line in markdown.splitlines():
+                caption = _parse_caption_block(line.strip().lstrip("#*_ ").strip())
+                if caption and caption["label"] not in items:
+                    items.append(caption["label"])
+            if inline_math >= _INLINE_MATH_FLAG:
+                items.append("inline math")
+            if items:
+                flags[page_index] = f"> **Garbled in this text:** {', '.join(items)}"
+    except Exception:
+        return {}
+    finally:
+        pdf.close()
+    return flags
+
+
+def render_pdf_pages(
+    item_key: str,
+    start_page: int,
+    end_page: int | None = None,
+    *,
+    rect: list[float] | str | None = None,
+    ctx: Context,
+) -> tuple[str, list[dict]]:
+    """Render a page range, or one region of ``start_page``, to PNG.
+
+    Returns:
+        (header, pages): a Markdown header naming what was rendered, and one
+        ``{"page", "png", "width", "height"}`` per image.
+    """
+    box = None
+    if rect is not None:
+        box = _helpers._normalize_float_list_input(rect, 4, "rect")
+        if (
+            box is None
+            or not all(0 <= value <= 1 for value in box)
+            or box[2] <= 0 or box[3] <= 0
+            or box[0] + box[2] > 1.0001 or box[1] + box[3] > 1.0001
+        ):
+            raise PdfReadError(
+                f"rect must be [x, y, width, height] within the page, normalized to 0-1; got {rect!r}",
+                code="bad_rect",
+            )
+        if end_page not in (None, start_page):
+            raise PdfReadError(
+                "rect crops a single page; omit end_page or set it to start_page.",
+                code="invalid_page_range",
+            )
+    try:
+        import fitz
+    except ImportError as exc:
+        raise PdfReadError(
+            f"Rendering pages requires PyMuPDF. {_utils.install_hint('pdf')}",
+            code="missing_dependency",
+        ) from exc
+
+    with _page_range(item_key, start_page, end_page,
+                     max_pages=_IMAGE_MAX_PAGES, ctx=ctx) as (pdf_path, title, total_pages,
+                                                              actual_end, clamped_note):
+        pdf = fitz.open(pdf_path)
+        try:
+            pages = []
+            for number in range(start_page, actual_end + 1):
+                page = pdf[number - 1]
+                clip = page.rect
+                if box is not None:
+                    x, y, w, h = box
+                    clip = fitz.Rect(
+                        clip.x0 + x * clip.width, clip.y0 + y * clip.height,
+                        clip.x0 + (x + w) * clip.width, clip.y0 + (y + h) * clip.height,
+                    )
+                zoom = min(_IMAGE_MAX_EDGE / max(clip.width, clip.height), _IMAGE_MAX_ZOOM)
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
+                pages.append({"page": number, "png": pixmap.tobytes("png"),
+                              "width": pixmap.width, "height": pixmap.height})
+        finally:
+            pdf.close()
+
+    what = (
+        f"Region [{', '.join(f'{v:.4f}' for v in box)}] of page {start_page}"
+        if box is not None else f"Pages {start_page}-{actual_end}"
+    )
+    header = [f"# {what} of {title}", f"**Item Key:** {item_key}",
+              f"**Total pages in PDF:** {total_pages}"]
+    if clamped_note:
+        header.append(clamped_note)
+    return "\n".join(header), pages

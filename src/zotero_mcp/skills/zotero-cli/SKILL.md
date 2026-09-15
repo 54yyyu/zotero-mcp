@@ -135,15 +135,20 @@ zotero-cli read ITEM_KEY --start-page 1 --end-page 99     # end page clamps to t
 zotero-cli path ATTACHMENT_KEY                            # the PDF file on disk
 ```
 
-Extracted text is reliable for prose and unreliable for math and tables:
-symbols drop out and table cells run together. If you can view PDFs or
-images, open the file `path` prints for pages with equations, tables or
-figures instead of trusting the extracted text there.
+Extracted text is reliable for prose and unreliable for math, figures and
+tables: symbols drop out and table cells run together. `read` flags each
+page where that happens ("Garbled in this text: Equation (1), Table 2").
+For those pages, look at the page itself if you can view images:
+
+```bash
+zotero-cli read ITEM_KEY --start-page 4 --format image                         # PNG per page, up to 10
+zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05   # zoom into one region
+```
 
 To annotate, plan everything, check it, then write it in one run:
 
-1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure and table boxes
-   with their captions and a paste-ready `rect_arg`.
+1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure, table and
+   equation boxes with their captions and a paste-ready `rect_arg`.
 2. Write one JSON object per line: `{"page": 4, "text": "exact words",
    "comment": "...", "color": "yellow"}` for a highlight, or
    `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box. Copy

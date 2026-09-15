@@ -2266,8 +2266,9 @@ def update_annotation(
 @mcp.tool(
     name="zotero_delete_annotation",
     description=(
-        "Move a Zotero annotation to the Trash. Trashed annotations are recoverable "
-        "from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."
+        "Permanently delete a Zotero annotation. This cannot be undone. Annotations "
+        "are deleted outright, as Zotero's own PDF reader does: a trashed annotation "
+        "stays visible in the reader with no way to remove it there."
     )
 )
 def delete_annotation(
@@ -2276,7 +2277,7 @@ def delete_annotation(
     ctx: Context
 ) -> str:
     try:
-        ctx.info(f"Trashing annotation {annotation_key}")
+        ctx.info(f"Deleting annotation {annotation_key}")
 
         zot, err = _get_note_write_client("deleting annotations")
         if err:
@@ -2294,14 +2295,10 @@ def delete_annotation(
                 f"(itemType={data.get('itemType')})"
             )
 
-        ok, detail = _helpers.trash_item(zot, item)
-        if ok:
-            return (
-                f"Successfully trashed annotation {annotation_key} "
-                "(recoverable from Zotero's Trash)"
-            )
-        return f"Failed to trash annotation {annotation_key}: {detail}"
+        # pyzotero raises on a refused write and returns True otherwise.
+        zot.delete_item(item)
+        return f"Successfully deleted annotation {annotation_key}"
 
     except Exception as e:
-        ctx.error(f"Error trashing annotation: {str(e)}")
-        return f"Error trashing annotation: {_helpers.format_zotero_error(e)}"
+        ctx.error(f"Error deleting annotation: {str(e)}")
+        return f"Error deleting annotation: {_helpers.format_zotero_error(e)}"
