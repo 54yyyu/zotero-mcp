@@ -5,7 +5,7 @@ import os
 import shutil
 import tempfile
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 import requests
 
@@ -1884,8 +1884,13 @@ def _format_page_layout(
     attachment_key: str,
     page: int,
     filename: str,
+    hint_style: Literal["mcp", "cli"] = "mcp",
 ) -> str:
-    """Render detect_page_regions output as markdown for the LLM."""
+    """Render detect_page_regions output as markdown for the LLM.
+
+    ``hint_style`` picks how the closing example is written: as an MCP tool
+    call, or as the zotero-cli command a shell user can paste.
+    """
     regions = layout["regions"]
     warnings = layout.get("warnings", [])
     page_label = layout.get("pageLabel", str(page))
@@ -1928,18 +1933,183 @@ def _format_page_layout(
         )
 
     first_x, first_y, first_w, first_h = regions[0]["bbox"]
-    lines.extend([
-        "",
-        "To annotate a region, pass its bbox to zotero_create_annotation "
-        "as rect — e.g. for region 1:",
-        "```",
-        f"zotero_create_annotation(attachment_key='{attachment_key}', "
-        f"page={page}, rect=[{first_x:.4f}, {first_y:.4f}, "
-        f"{first_w:.4f}, {first_h:.4f}], comment='...')",
-        "```",
-    ])
+    if hint_style == "cli":
+        lines.extend([
+            "",
+            "To box a region, pass its bbox as --rect — e.g. for region 1:",
+            "```",
+            f"zotero-cli annotations create --attachment-key {attachment_key} "
+            f"--page {page} --rect {first_x:.4f},{first_y:.4f},{first_w:.4f},{first_h:.4f} "
+            "--comment '...'",
+            "```",
+        ])
+    elif hint_style == "mcp":
+        lines.extend([
+            "",
+            "To annotate a region, pass its bbox to zotero_create_annotation "
+            "as rect — e.g. for region 1:",
+            "```",
+            f"zotero_create_annotation(attachment_key='{attachment_key}', "
+            f"page={page}, rect=[{first_x:.4f}, {first_y:.4f}, "
+            f"{first_w:.4f}, {first_h:.4f}], comment='...')",
+            "```",
+        ])
 
     return "\n".join(lines)
+
+
+def detect_layouts(
+    attachment_key: str,
+    pages: list[int] | None,
+    *,
+    ctx: Context,
+) -> tuple[list[dict], str, str | None]:
+    """Detect figure/table regions on several pages of one PDF attachment.
+
+    The attachment is fetched once for all pages. ``pages=None`` means every
+    page. Shared by the MCP tool (one page) and ``zotero-cli layout`` (any
+    number of pages).
+
+    Returns:
+        (layouts, filename, error). Each layout is detect_page_regions output
+        plus a 1-indexed ``page``. On failure ``error`` is the message and
+        ``layouts`` is empty.
+    """
+    from zotero_mcp import pdf_layout
+    from zotero_mcp.extract import pdf_page_count
+
+    layouts = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path, filename, error_message = _fetch_pdf_attachment(attachment_key, tmpdir, ctx=ctx)
+        if error_message:
+            return [], filename, error_message
+
+        if pages is None:
+            pages = list(range(1, pdf_page_count(file_path) + 1))
+        for page in pages:
+            ctx.info(f"Detecting regions on page {page}...")
+            layout = pdf_layout.detect_page_regions(file_path, page)
+            if "error" in layout:
+                return [], filename, f"Error: {layout['error']}"
+            layouts.append({**layout, "page": page})
+
+    return layouts, filename, None
+
+
+def _fetch_pdf_attachment(
+    attachment_key: str,
+    tmpdir: str,
+    *,
+    ctx: Context,
+) -> tuple[str | None, str, str | None]:
+    """Resolve a PDF attachment and put a readable copy of it in ``tmpdir``.
+
+    Returns:
+        (file_path, filename, error). ``error`` is a user-facing message and
+        ``file_path`` is None when the attachment is missing, not a PDF, or
+        could not be fetched.
+    """
+    local_client = _client.get_local_zotero_client()
+    web_client = _client.get_web_zotero_client()
+    if web_client:
+        _helpers.apply_library_override(web_client, _client.get_active_library())
+
+    meta_client = web_client or local_client
+    if meta_client is None:
+        return None, "", (
+            "Error: No Zotero client configured.\n\n"
+            "Configure either local Zotero (with 'Allow other applications "
+            "on this computer to communicate with Zotero' enabled) or Web "
+            "API credentials:\n" + _WEB_API_ENV_VARS
+        )
+
+    try:
+        attachment = meta_client.item(attachment_key)
+        attachment_data = attachment.get("data", {})
+        if attachment_data.get("itemType") != "attachment":
+            return None, "", f"Error: Item {attachment_key} is not an attachment"
+        content_type = attachment_data.get("contentType", "")
+        if content_type != "application/pdf":
+            return None, "", f"Error: Attachment {attachment_key} is not a PDF attachment (type: {content_type})"
+        filename = attachment_data.get("filename", f"{attachment_key}.pdf")
+    except Exception as e:
+        return None, "", f"Error: No attachment found with key: {attachment_key} ({e})"
+
+    file_path, error_message = _download_attachment_for_processing(
+        attachment_key,
+        filename,
+        tmpdir,
+        local_client=local_client,
+        web_client=web_client,
+        ctx=ctx,
+    )
+    if error_message:
+        return None, filename, error_message
+    return file_path, filename, None
+
+
+def preview_highlights(
+    attachment_key: str,
+    specs: list[dict],
+    *,
+    ctx: Context,
+) -> list[dict]:
+    """Where each highlight of a batch would land, without writing anything.
+
+    Locating text is the part of creating a highlight that goes wrong: a
+    paraphrase, a line-break hyphen, the wrong page. Running only that step
+    over a whole batch, against one fetched copy of the PDF, lets a caller fix
+    every miss before the first write instead of discovering them one failed
+    create at a time.
+
+    Area specs (``rect``) have nothing to locate and are reported as ready.
+    Specs naming another attachment in ``attachment_key`` are reported as not
+    previewed rather than silently checked against the wrong PDF.
+
+    Returns:
+        One dict per spec, in order: ``index`` (1-based), ``page``, ``ok``,
+        and either ``page_found``/``lines``/``matched_text`` or ``error``
+        (plus ``best_match``/``best_score`` when a near miss was found).
+    """
+    from zotero_mcp.pdf_utils import find_text_position, text_in_rects
+
+    results = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path, _filename, error_message = _fetch_pdf_attachment(attachment_key, tmpdir, ctx=ctx)
+        for index, spec in enumerate(specs, start=1):
+            page = spec.get("page")
+            entry: dict[str, Any] = {"index": index, "page": page}
+            results.append(entry)
+            if error_message:
+                entry.update(ok=False, error=error_message)
+                continue
+            if spec.get("attachment_key") not in (None, attachment_key):
+                entry.update(ok=False, error="Not previewed: names a different attachment")
+                continue
+            if not isinstance(page, int) or page < 1:
+                entry.update(ok=False, error="page must be a positive integer")
+                continue
+            if spec.get("rect") is not None:
+                entry.update(ok=True, type="area")
+                continue
+            if not spec.get("text"):
+                entry.update(ok=False, error="needs text (highlight) or rect (area box)")
+                continue
+            found = find_text_position(file_path, page, spec["text"])
+            if "error" in found:
+                entry.update(ok=False, error=found["error"])
+                if found.get("best_match"):
+                    entry.update(best_match=found["best_match"],
+                                 best_score=round(found.get("best_score", 0), 2))
+                continue
+            entry.update(
+                ok=True,
+                type="highlight",
+                page_found=found["pageIndex"] + 1,
+                lines=len(found["rects"]),
+                matched_text=text_in_rects(file_path, found["pageIndex"], found["rects"]),
+            )
+    return results
 
 
 @mcp.tool(
@@ -1983,63 +2153,17 @@ def get_page_layout(
     Returns:
         Markdown table of detected regions with normalized bounding boxes
     """
-    from zotero_mcp import pdf_layout
-
     try:
         ctx.info(f"Detecting page layout on attachment {attachment_key}, page {page}")
 
         if not isinstance(page, int) or page < 1:
             return "Error: page must be a positive 1-indexed page number"
 
-        local_client = _client.get_local_zotero_client()
-        web_client = _client.get_web_zotero_client()
+        layouts, filename, error_message = detect_layouts(attachment_key, [page], ctx=ctx)
+        if error_message:
+            return error_message
 
-        if web_client:
-            _helpers.apply_library_override(web_client, _client.get_active_library())
-
-        meta_client = web_client or local_client
-        if meta_client is None:
-            return (
-                "Error: No Zotero client configured.\n\n"
-                "Configure either local Zotero (with 'Allow other applications "
-                "on this computer to communicate with Zotero' enabled) or Web "
-                "API credentials:\n" + _WEB_API_ENV_VARS
-            )
-
-        try:
-            attachment = meta_client.item(attachment_key)
-            attachment_data = attachment.get("data", {})
-
-            if attachment_data.get("itemType") != "attachment":
-                return f"Error: Item {attachment_key} is not an attachment"
-
-            content_type = attachment_data.get("contentType", "")
-            if content_type != "application/pdf":
-                return f"Error: Attachment {attachment_key} is not a PDF attachment (type: {content_type})"
-
-            filename = attachment_data.get("filename", f"{attachment_key}.pdf")
-        except Exception as e:
-            return f"Error: No attachment found with key: {attachment_key} ({e})"
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path, error_message = _download_attachment_for_processing(
-                attachment_key,
-                filename,
-                tmpdir,
-                local_client=local_client,
-                web_client=web_client,
-                ctx=ctx,
-            )
-            if error_message:
-                return error_message
-
-            ctx.info(f"Detecting regions on page {page}...")
-            layout = pdf_layout.detect_page_regions(file_path, page)
-
-        if "error" in layout:
-            return f"Error: {layout['error']}"
-
-        return _format_page_layout(layout, attachment_key, page, filename)
+        return _format_page_layout(layouts[0], attachment_key, page, filename)
 
     except Exception as e:
         ctx.error(f"Error detecting page layout: {str(e)}")

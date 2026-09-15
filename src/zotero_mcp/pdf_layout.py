@@ -32,6 +32,10 @@ LAYOUT_MERGE_GAP = 0.02             # merge fragments closer than 2% of page siz
 LAYOUT_DEDUP_IOU = 0.8              # near-identical regions are duplicates
 LAYOUT_CAPTION_MAX_DISTANCE = 0.15  # max caption-to-region vertical gap
 LAYOUT_CAPTION_MIN_OVERLAP = 0.3    # min horizontal overlap ratio (column guard)
+LAYOUT_RULE_MIN_COUNT = 3           # top, middle and bottom rule of a booktabs table
+LAYOUT_RULE_MIN_WIDTH = 0.15        # a table rule spans at least 15% of the page width
+LAYOUT_RULE_SPAN_TOLERANCE = 0.02   # rules of one table share left/right edges within 2%
+LAYOUT_RULE_MAX_GAP = 0.12          # max vertical gap between consecutive rules of one table
 
 # Source priority when de-duplicating overlapping detections
 _LAYOUT_SOURCE_PRIORITY = {"table": 3, "image": 2, "drawing": 1, "merged": 0}
@@ -311,6 +315,110 @@ def _associate_captions_with_regions(
     return result
 
 
+def _ruled_table_boxes(
+    drawings: list[dict],
+    page_width: float,
+    page_height: float,
+    *,
+    min_rules: int = LAYOUT_RULE_MIN_COUNT,
+    min_width: float = LAYOUT_RULE_MIN_WIDTH,
+    span_tolerance: float = LAYOUT_RULE_SPAN_TOLERANCE,
+    max_gap: float = LAYOUT_RULE_MAX_GAP,
+) -> list[tuple[float, float, float, float]]:
+    """
+    Find tables drawn with horizontal rules only (booktabs style).
+
+    find_tables() needs a grid, and most papers typeset tables with a top,
+    middle and bottom rule and no vertical lines at all, so it finds nothing.
+    Those rules are still unmistakable: several horizontal lines with the same
+    left and right edge, stacked close together. The table is the box from the
+    first rule to the last.
+
+    Partial rules (cmidrule under a column group) have a different span and
+    are ignored; a lone footnote rule never reaches min_rules.
+
+    Returns:
+        (x0, y0, x1, y1) boxes in page coordinates.
+    """
+    rules = []
+    for drawing in drawings:
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        if rect.height > 2 or rect.width < page_width * min_width:
+            continue
+        rules.append((rect.x0, rect.x1, (rect.y0 + rect.y1) / 2))
+    rules.sort(key=lambda rule: rule[2])
+
+    groups: list[list] = []  # [x0, x1, [y, ...]]
+    for x0, x1, y in rules:
+        for group in groups:
+            same_span = (
+                abs(group[0] - x0) <= span_tolerance * page_width
+                and abs(group[1] - x1) <= span_tolerance * page_width
+            )
+            if same_span and y - group[2][-1] <= max_gap * page_height:
+                # PDFs often draw a rule twice; count it once.
+                if y - group[2][-1] > 0.5:
+                    group[2].append(y)
+                break
+        else:
+            groups.append([x0, x1, [y]])
+
+    return [
+        (group[0], group[2][0], group[1], group[2][-1])
+        for group in groups
+        if len(group[2]) >= min_rules
+    ]
+
+
+def _absorb_uncaptioned_panels(
+    regions: list[dict],
+    captions: list[dict],
+    *,
+    max_distance: float = LAYOUT_CAPTION_MAX_DISTANCE,
+) -> list[dict]:
+    """
+    Fold side-by-side panels of one figure into the region that won its caption.
+
+    A figure made of two panels ("(left) ... (right) ...") detects as two
+    regions too far apart to merge, and caption association gives the caption
+    to only one of them. The other is reported as a separate, captionless,
+    low-confidence region, so annotating "Figure 2" boxes half of it.
+
+    A captionless region is absorbed when it sits above the same figure
+    caption, inside the caption's horizontal extent (the column guard), and
+    shares most of its vertical band with the captioned region.
+    """
+    by_label = {caption["label"]: caption for caption in captions}
+    result = [dict(region) for region in regions]
+    absorbed: set[int] = set()
+
+    for idx, region in enumerate(result):
+        caption = by_label.get(region.get("caption_label"))
+        if caption is None or caption["kind"] != "figure":
+            continue
+        c_x, c_y, c_w, _c_h = caption["bbox"]
+        for other_idx, other in enumerate(result):
+            if other_idx == idx or other_idx in absorbed or other.get("caption_label"):
+                continue
+            o_x, o_y, o_w, o_h = other["bbox"]
+            gap = c_y - (o_y + o_h)
+            if gap < 0 or gap > max_distance:
+                continue
+            if o_x < c_x - 0.01 or o_x + o_w > c_x + c_w + 0.01:
+                continue
+            r_x, r_y, r_w, r_h = region["bbox"]
+            shared = min(r_y + r_h, o_y + o_h) - max(r_y, o_y)
+            if shared < 0.5 * min(r_h, o_h):
+                continue
+            region["bbox"] = _bbox_union(region["bbox"], other["bbox"])
+            region["source"] = "merged"
+            absorbed.add(other_idx)
+
+    return [region for idx, region in enumerate(result) if idx not in absorbed]
+
+
 def detect_page_regions(pdf_path: str, page_num: int) -> dict:
     """
     Detect candidate figure/table regions on a PDF page.
@@ -420,8 +528,24 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
 
         # --- Tables ---
         try:
-            for table in page.find_tables().tables:
+            # PyMuPDF prints an advert for pymupdf_layout to stdout on its
+            # first find_tables() call, which corrupts `zotero-cli --json`.
+            import contextlib
+            import io
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                found_tables = page.find_tables().tables
+            for table in found_tables:
                 x0, y0, x1, y1 = table.bbox
+                raw_regions.append(
+                    {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
+                )
+        except Exception:
+            pass
+
+        # --- Tables drawn with horizontal rules only (find_tables misses these) ---
+        try:
+            for x0, y0, x1, y1 in _ruled_table_boxes(page.get_drawings(), page_width, page_height):
                 raw_regions.append(
                     {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
                 )
@@ -473,6 +597,7 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
         # --- Pipeline: filter/merge/dedupe, then attach captions ---
         regions = _merge_candidate_regions(raw_regions)
         regions = _associate_captions_with_regions(regions, captions)
+        regions = _absorb_uncaptioned_panels(regions, captions)
 
         for idx, region in enumerate(regions, start=1):
             region["region_id"] = idx

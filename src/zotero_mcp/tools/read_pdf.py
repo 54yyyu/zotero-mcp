@@ -238,12 +238,16 @@ def read_pdf_pages(
                 f"Start page {start_page} is out of range. PDF has {total_pages} pages (1-{total_pages}).",
                 code="page_out_of_range",
             )
-        if end_page is not None and end_page > total_pages:
-            _release()
-            raise PdfReadError(
-                f"End page {end_page} is out of range. PDF has {total_pages} pages (1-{total_pages}).",
-                code="page_out_of_range",
+        # A caller rarely knows the page count before the first read, and
+        # "read to the end" is the usual intent behind an end page that is too
+        # large. Clamp and say so instead of failing the whole read.
+        clamped_note = None
+        if actual_end > total_pages:
+            clamped_note = (
+                f"*End page {actual_end} is past the last page; "
+                f"read through page {total_pages}.*"
             )
+            actual_end = total_pages
 
         requested = actual_end - start_page + 1
         if requested > 50:
@@ -270,6 +274,8 @@ def read_pdf_pages(
             f"**Total pages in PDF:** {total_pages}",
             "",
         ]
+        if clamped_note:
+            output.extend([clamped_note, ""])
 
         for page_index, markdown in zip(doc.page_numbers, doc.pages):
             output.append(f"## Page {page_index + 1}")

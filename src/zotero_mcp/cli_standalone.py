@@ -88,10 +88,59 @@ def _out(args, command: str, *, data=None, text: str | None = None) -> None:
     branch on `ok`, and never has to guess whether a field was extracted
     reliably.
     """
+    if text is not None:
+        text = _cli_vocabulary(text)
+    if data is None and text is not None and _reports_failure(text):
+        # Most tools return their failures as prose rather than raising. Left
+        # alone, that prose became an `ok: true` envelope with exit code 0, so
+        # a caller that checked `ok` believed a failed write had worked.
+        if _json_mode(args):
+            _cli_json.emit_error(command, text.strip(), code="tool_error")
+        else:
+            print(text, file=sys.stderr)
+        sys.exit(1)
     if _json_mode(args):
         _cli_json.emit(command, data if data is not None else {"text": text or ""})
     else:
         print(text if text is not None else "")
+
+
+_FAILURE_RE = None
+
+
+def _reports_failure(text: str) -> bool:
+    """Whether a tool's prose result is a failure report.
+
+    Tools that fail without raising lead with one of a few fixed phrasings
+    ("Error: ...", "Error creating ...", "Failed to ...", "Could not ...",
+    "Cannot ..."). Only the opening words count: a success message may quote
+    an error further down, and must stay a success.
+    """
+    global _FAILURE_RE
+    if _FAILURE_RE is None:
+        import re
+        _FAILURE_RE = re.compile(r"^[\s#*>]*(Error\b|Failed to\b|Could not\b|Cannot\b)")
+    return bool(_FAILURE_RE.match(text))
+
+
+# MCP tool names that tool output mentions in its advice, and the command that
+# does the same thing here. Advice naming a tool the CLI user cannot call is a
+# dead end.
+_CLI_EQUIVALENTS = {
+    "zotero_semantic_search": "`zotero-cli search --mode semantic`",
+    "zotero_search_items": "`zotero-cli search`",
+    "zotero_read_pdf_pages": "`zotero-cli read`",
+    "zotero_get_pdf_outline": "`zotero-cli outline`",
+    "zotero_get_page_layout": "`zotero-cli layout`",
+    "zotero_get_item_children": "`zotero-cli get children`",
+}
+
+
+def _cli_vocabulary(text: str) -> str:
+    for tool_name, command in _CLI_EQUIVALENTS.items():
+        if tool_name in text:
+            text = text.replace(tool_name, command)
+    return text
 
 
 def _items_for_json(items, detail: str = "summary") -> dict:
@@ -385,9 +434,14 @@ def cmd_annotations(args):
     elif args.subcommand == "create":
         _out(args, "annotations create", text=annotations.create_annotation(
             attachment_key=args.attachment_key, page=args.page,
-            text=args.text, comment=getattr(args, "comment", None),
-            color=args.color, ctx=ctx,
+            text=getattr(args, "text", None),
+            rect=_parse_rect(getattr(args, "rect", None)),
+            comment=getattr(args, "comment", None),
+            color=_resolve_color(args.color),
+            tags=_split_csv(getattr(args, "tags", None)), ctx=ctx,
         ))
+    elif args.subcommand == "batch":
+        _annotations_batch(args, annotations, ctx)
     elif args.subcommand == "update":
         _out(args, "annotations update", text=annotations.update_annotation(
             annotation_key=args.annotation_key, text=getattr(args, "text", None),
@@ -409,6 +463,163 @@ def cmd_annotations(args):
         sys.exit(1)
 
 
+def _read_annotation_specs(source: str) -> list[dict]:
+    """Annotation specs from a file or stdin: JSON Lines, or one JSON array."""
+    if source == "-":
+        raw = sys.stdin.read()
+    else:
+        try:
+            with open(source, encoding="utf-8") as handle:
+                raw = handle.read()
+        except OSError as exc:
+            raise _cli_json.CliError(f"Cannot read {source}: {exc}", code="bad_file") from exc
+
+    stripped = raw.strip()
+    if not stripped:
+        raise _cli_json.CliError("No annotations given", code="empty_batch")
+
+    if stripped.startswith("["):
+        try:
+            specs = json.loads(stripped)
+        except ValueError as exc:
+            raise _cli_json.CliError(f"Invalid JSON array: {exc}", code="bad_json") from exc
+    else:
+        specs = []
+        for line_no, line in enumerate(stripped.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                specs.append(json.loads(line))
+            except ValueError as exc:
+                raise _cli_json.CliError(f"Line {line_no} is not valid JSON: {exc}",
+                                         code="bad_json") from exc
+
+    if not isinstance(specs, list) or not all(isinstance(s, dict) for s in specs):
+        raise _cli_json.CliError("Each annotation must be a JSON object", code="bad_json")
+    return specs
+
+
+def _annotations_batch(args, annotations, ctx) -> None:
+    """`annotations batch`: create (or with --dry-run, locate) many annotations.
+
+    One process for the whole batch instead of one per annotation; interpreter
+    startup was most of the ~1.2 s each separate `annotations create` cost.
+    Every spec is attempted even when an earlier one fails, and the result
+    lists each outcome, so a caller can retry just the failures. The exit code
+    is 1 when any spec failed.
+    """
+    import re
+    import time
+
+    specs = _read_annotation_specs(args.file)
+    started = time.monotonic()
+
+    if args.dry_run:
+        results = annotations.preview_highlights(args.attachment_key, specs, ctx=ctx)
+    else:
+        key_re = re.compile(r"\*\*Annotation Key:\*\*\s*([A-Z0-9]{8})")
+        results = []
+        for index, spec in enumerate(specs, start=1):
+            entry = {"index": index, "page": spec.get("page")}
+            results.append(entry)
+            try:
+                page = spec.get("page")
+                if not isinstance(page, int) or page < 1:
+                    raise _cli_json.CliError("page must be a positive integer", code="bad_page")
+                message = annotations.create_annotation(
+                    attachment_key=spec.get("attachment_key") or args.attachment_key,
+                    page=page,
+                    text=spec.get("text"),
+                    rect=_parse_rect(spec["rect"]) if spec.get("rect") is not None else None,
+                    comment=spec.get("comment"),
+                    color=_resolve_color(spec.get("color") or ZOTERO_COLORS["yellow"]),
+                    tags=spec.get("tags"),
+                    ctx=ctx,
+                )
+            except Exception as exc:
+                message = f"Error: {exc}"
+            match = key_re.search(message)
+            if match and not _reports_failure(message):
+                entry.update(ok=True, annotation_key=match.group(1),
+                             type="area" if spec.get("rect") is not None else "highlight")
+            else:
+                entry.update(ok=False, error=_cli_vocabulary(message.strip()))
+
+    failed = [r for r in results if not r["ok"]]
+    seconds = round(time.monotonic() - started, 2)
+
+    if _json_mode(args):
+        _cli_json.emit("annotations batch", {
+            "dry_run": bool(args.dry_run),
+            "succeeded": len(results) - len(failed),
+            "failed": len(failed),
+            "seconds": seconds,
+            "results": results,
+        })
+    else:
+        for r in results:
+            where = f"#{r['index']} p{r['page']}"
+            if not r["ok"]:
+                print(f"FAIL  {where}: {r['error']}")
+                if r.get("best_match"):
+                    print(f"      best match ({r['best_score']:.0%}): {r['best_match'][:150]}")
+            elif args.dry_run and r["type"] == "highlight":
+                moved = f" (found on p{r['page_found']})" if r["page_found"] != r["page"] else ""
+                print(f"ok    {where}{moved}, {r['lines']} line(s): {r['matched_text'][:120]}")
+            elif args.dry_run:
+                print(f"ok    {where} area")
+            else:
+                print(f"ok    {where} {r['type']} {r['annotation_key']}")
+        verb = "Located" if args.dry_run else "Created"
+        print(f"\n{verb} {len(results) - len(failed)}/{len(results)} in {seconds}s"
+              + (f"; {len(failed)} failed" if failed else ""))
+
+    if failed:
+        sys.exit(1)
+
+
+def cmd_layout(args):
+    """Figure and table boxes on one or more pages of a PDF attachment."""
+    setup_zotero_environment()
+    _s, _r, annotations, _w, _c = _import_tools()
+    pages = _parse_pages(args.pages)
+    layouts, filename, error = annotations.detect_layouts(args.attachment_key, pages, ctx=_ctx(args))
+    if error:
+        _out(args, "layout", text=error)
+        return
+
+    if _json_mode(args):
+        regions = []
+        for layout in layouts:
+            for region in layout["regions"]:
+                x, y, w, h = region["bbox"]
+                regions.append({
+                    "page": layout["page"],
+                    "bbox": region["bbox"],
+                    "source": region["source"],
+                    "caption_label": region["caption_label"],
+                    "caption_text": region["caption_text"],
+                    "confidence": region["confidence"],
+                    "rect_arg": f"{x:.4f},{y:.4f},{w:.4f},{h:.4f}",
+                })
+        warnings = [f"p{layout['page']}: {w}" for layout in layouts for w in layout.get("warnings", [])]
+        _cli_json.emit("layout", {"attachment_key": args.attachment_key, "filename": filename,
+                                  "pages_scanned": [layout["page"] for layout in layouts],
+                                  "regions": regions, "warnings": warnings})
+        return
+
+    with_regions = [layout for layout in layouts if layout["regions"]]
+    if not with_regions:
+        print(f"No figure/table regions detected on the {len(layouts)} page(s) scanned.")
+        return
+    for layout in with_regions:
+        # One paste-ready example is enough; repeating it per page buries the tables.
+        style = "cli" if layout is with_regions[-1] else "none"
+        print(annotations._format_page_layout(layout, args.attachment_key, layout["page"],
+                                              filename, hint_style=style))
+        print()
+
+
 def cmd_notes(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
@@ -422,7 +633,13 @@ def cmd_notes(args):
             truncate=not args.full, raw_html=args.raw_html, ctx=ctx,
         )
         if json_mode:
-            keys = _keys_from_markdown(result)
+            # get_notes writes each note's key as `**Key:** KEY`, not the
+            # `**Item Key:**` line _keys_from_markdown reads, so that found
+            # nothing and every `--json notes list` came back empty.
+            import re
+            keys = list(dict.fromkeys(
+                re.findall(r"^\*\*Key:\*\*\s*`?([A-Z0-9]{8})`?\s*$", result, re.MULTILINE)
+            ))
             fetched = _read_backend().get_items(keys)
             notes = []
             for key in keys:
@@ -812,6 +1029,77 @@ def _split_csv(value):
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+#: The eight colors of Zotero's own annotation palette, by the names its
+#: reader uses. Accepting names spares a caller from memorising hex codes and
+#: keeps annotations on colors Zotero can filter by.
+ZOTERO_COLORS = {
+    "yellow": "#ffd400",
+    "red": "#ff6666",
+    "green": "#5fb236",
+    "blue": "#2ea8e5",
+    "purple": "#a28ae5",
+    "magenta": "#e56eee",
+    "orange": "#f19837",
+    "gray": "#aaaaaa",
+}
+
+
+def _resolve_color(value):
+    """A Zotero color name -> its hex; anything else passes through."""
+    if value is None:
+        return None
+    return ZOTERO_COLORS.get(str(value).strip().lower(), value)
+
+
+def _parse_rect(value):
+    """`x,y,w,h` or `[x, y, w, h]` -> list of four floats.
+
+    Raises CliError on anything else, so a typo is reported as a usage error
+    before a PDF is fetched.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = [p for p in str(value).strip().strip("[]").replace(" ", "").split(",") if p]
+    try:
+        rect = [float(p) for p in parts]
+    except (TypeError, ValueError):
+        rect = []
+    if len(rect) != 4:
+        raise _cli_json.CliError(
+            f"--rect must be four numbers x,y,width,height (normalized 0-1), got {value!r}",
+            code="bad_rect",
+        )
+    return rect
+
+
+def _parse_pages(value):
+    """`all` -> None (every page); `3`, `3-6`, `1,4,6-9` -> sorted page list."""
+    if value is None or str(value).strip().lower() == "all":
+        return None
+    pages = set()
+    try:
+        for part in str(value).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                lo, hi = (int(x) for x in part.split("-", 1))
+                pages.update(range(lo, hi + 1))
+            else:
+                pages.add(int(part))
+    except ValueError:
+        pages = set()
+    if not pages or min(pages) < 1:
+        raise _cli_json.CliError(
+            f"--pages must be all, N, N-M, or a comma list of those, got {value!r}",
+            code="bad_pages",
+        )
+    return sorted(pages)
+
+
 def cmd_read(args):
     """Read a page range out of an item's PDF."""
     setup_zotero_environment()
@@ -1073,12 +1361,30 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--remove-tags", help="Comma-separated tags to remove")
     ad = a_sub.add_parser("delete", help="Delete an annotation")
     ad.add_argument("annotation_key")
-    ac = a_sub.add_parser("create", help="Create an annotation on a PDF/EPUB")
+    ac = a_sub.add_parser("create", help="Create a highlight (--text) or an area box (--rect)")
     ac.add_argument("--attachment-key", required=True)
     ac.add_argument("--page", required=True, type=int)
-    ac.add_argument("--text", required=True)
+    ac.add_argument("--text", help="Exact text to highlight")
+    ac.add_argument("--rect", help="Area box x,y,width,height, normalized 0-1; "
+                                   "`zotero-cli layout` prints boxes for figures and tables")
     ac.add_argument("--comment")
-    ac.add_argument("--color", default="#ffd400")
+    ac.add_argument("--color", default="#ffd400",
+                    help=f"Hex, or a Zotero color name: {', '.join(ZOTERO_COLORS)}")
+    ac.add_argument("--tags", help="Comma-separated tags")
+    ab = a_sub.add_parser("batch", help="Create many annotations from JSON Lines in one run")
+    ab.add_argument("--attachment-key", required=True,
+                    help="Attachment for lines that do not name their own")
+    ab.add_argument("--file", default="-",
+                    help="JSON Lines (or a JSON array) of {page, text|rect, comment, color, tags}; "
+                         "- reads stdin")
+    ab.add_argument("--dry-run", action="store_true",
+                    help="Locate every highlight and report what it would cover, without writing")
+
+    # layout -- figure/table boxes to aim area annotations at
+    ly_p = sub.add_parser("layout", help="Find figure and table boxes on PDF pages")
+    ly_p.add_argument("attachment_key")
+    ly_p.add_argument("--pages", default="all",
+                      help="Pages to scan: all (default), 3, 3-6, or 1,4,6-9")
 
     # notes
     n_p = sub.add_parser("notes", help="Manage notes", aliases=["n"])
@@ -1348,6 +1654,7 @@ _CMD_MAP = {
     "db": cmd_db,
     "library": cmd_library,
     "outline": cmd_outline,
+    "layout": cmd_layout,
     "read": cmd_read,
     "attach": cmd_attach,
     "delete": cmd_delete,

@@ -141,20 +141,28 @@ def _extract_page_spans(page) -> list[dict[str, Any]]:
     Args:
         page: PyMuPDF page object
 
+    Each span also carries its characters with their own boxes, and the line
+    it sits on. A match rarely starts or ends on a span boundary -- a span is
+    usually most of a line -- so without the characters a highlight covers
+    every word the matched text shares a span with.
+
     Returns:
-        List of dicts with 'text' and 'bbox' keys
+        List of dicts with 'text', 'bbox', 'chars' and 'line' keys
     """
-    blocks = page.get_text("dict", flags=11)["blocks"]
+    blocks = page.get_text("rawdict", flags=11)["blocks"]
     spans = []
 
-    for block in blocks:
+    for block_no, block in enumerate(blocks):
         if "lines" not in block:
             continue
-        for line in block["lines"]:
+        for line_no, line in enumerate(block["lines"]):
             for span in line["spans"]:
+                chars = span.get("chars") or []
                 spans.append({
-                    "text": span["text"],
+                    "text": "".join(c["c"] for c in chars) if chars else span.get("text", ""),
                     "bbox": span["bbox"],
+                    "chars": chars,
+                    "line": (block_no, line_no),
                 })
 
     return spans
@@ -203,18 +211,72 @@ def _get_spans_in_range(
         span_positions: Index from _build_normalized_text_index
         spans: Original span list
 
+    Spans cut by either end of the range are clipped to the characters inside
+    it, and pieces on the same line are joined into one box, so the highlight
+    covers the matched text and nothing else.
+
     Returns:
         Tuple of (list of bboxes, list of original text strings)
     """
-    bboxes = []
-    texts = []
+    pieces = []  # (line, bbox, text)
 
     for norm_start, norm_end, span_idx in span_positions:
-        if norm_start < end_pos and norm_end > start_pos:
-            bboxes.append(spans[span_idx]["bbox"])
-            texts.append(spans[span_idx]["text"])
+        if not (norm_start < end_pos and norm_end > start_pos):
+            continue
+        span = spans[span_idx]
+        bbox, text = span["bbox"], span["text"]
+        if norm_start < start_pos or norm_end > end_pos:
+            clipped = _clip_span(span, start_pos - norm_start, end_pos - norm_start)
+            if clipped is not None:
+                bbox, text = clipped
+        pieces.append((span.get("line"), tuple(bbox), text))
+
+    bboxes: list = []
+    texts: list[str] = []
+    previous_line = object()
+    for line, bbox, text in pieces:
+        if line is not None and line == previous_line:
+            x0, y0, x1, y1 = bboxes[-1]
+            bboxes[-1] = (min(x0, bbox[0]), min(y0, bbox[1]), max(x1, bbox[2]), max(y1, bbox[3]))
+            texts[-1] += text
+        else:
+            bboxes.append(bbox)
+            texts.append(text)
+        previous_line = line
 
     return bboxes, texts
+
+
+def _clip_span(span: dict, lo: int, hi: int) -> tuple[tuple, str] | None:
+    """
+    Box and text of the characters of a span inside [lo, hi).
+
+    ``lo`` and ``hi`` are offsets into the span's *normalized* text. Each
+    character is normalized on its own to find where it lands there; that
+    reproduces the span-level normalization exactly, because every rule in
+    normalize_for_matching either maps one character (dashes, quotes,
+    ligatures, case) or deletes whitespace.
+
+    Returns None when the span has no character data, so the caller keeps the
+    whole-span box rather than dropping the piece.
+    """
+    chars = span.get("chars") or []
+    offset = 0
+    first = last = None
+    box = None
+    for idx, char in enumerate(chars):
+        width = len(normalize_for_matching(char["c"]))
+        if width and offset < hi and offset + width > lo:
+            x0, y0, x1, y1 = char["bbox"]
+            box = (x0, y0, x1, y1) if box is None else (
+                min(box[0], x0), min(box[1], y0), max(box[2], x1), max(box[3], y1)
+            )
+            first = idx if first is None else first
+            last = idx
+        offset += width
+    if box is None:
+        return None
+    return box, "".join(c["c"] for c in chars[first:last + 1])
 
 
 # =============================================================================
@@ -828,6 +890,39 @@ def verify_pdf_attachment(pdf_path: str) -> bool:
         return is_pdf
     except Exception:
         return False
+
+
+def text_in_rects(pdf_path: str, page_index: int, rects: list[list[float]]) -> str:
+    """
+    Readable text inside annotation rects, as a person would see it highlighted.
+
+    The matcher works on text extracted without inter-word spaces, so its
+    ``matched_text`` runs words together ("theTransformeristhe..."). This reads
+    the page again under each final rect, with normal spacing and ligatures
+    expanded, which is what a preview should show.
+
+    Args:
+        pdf_path: Path to the PDF file
+        page_index: 0-indexed page number
+        rects: Rects in Zotero (PDF user space) coordinates
+
+    Returns:
+        The text of all rects joined by spaces
+    """
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    try:
+        page = doc[page_index]
+        to_page = page.transformation_matrix
+        parts = []
+        for x0, y0, x1, y1 in rects:
+            box = fitz.Rect(x0, y0, x1, y1) * to_page
+            box.normalize()
+            parts.append(page.get_textbox(box))
+        return normalize_text(" ".join(parts))
+    finally:
+        doc.close()
 
 
 def build_annotation_position(page_index: int, rects: list[list[float]]) -> str:

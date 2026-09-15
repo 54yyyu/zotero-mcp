@@ -180,19 +180,22 @@ class TestErrors:
         assert "1-1" in str(exc.value)
         assert exc.value.code == "page_out_of_range"
 
-    def test_end_page_out_of_range(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_extract(monkeypatch, ["p1"] * 3, total=3)
+    def test_end_page_past_the_last_page_is_clamped(self, monkeypatch, dummy_ctx, fake_zot):
+        """A caller rarely knows the page count before its first read, and an
+        end page that is too large means "to the end". Failing the whole read
+        over it cost a retry for nothing."""
+        _patch_extract(monkeypatch, ["p1", "p2", "p3"], total=3)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
             lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
         )
 
-        with pytest.raises(PdfReadError) as exc:
-            server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=10, ctx=dummy_ctx)
+        result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=10, ctx=dummy_ctx)
 
-        assert "out of range" in str(exc.value)
-        assert "1-3" in str(exc.value)
-        assert exc.value.code == "page_out_of_range"
+        assert "# PDF Pages 2-3" in result
+        assert "End page 10 is past the last page; read through page 3." in result
+        assert "## Page 3" in result
+        assert "## Page 4" not in result
 
     def test_too_many_pages(self, monkeypatch, dummy_ctx, fake_zot):
         _patch_extract(monkeypatch, ["p"] * 100, total=100)
@@ -238,8 +241,6 @@ class TestErrors:
             dict(item_key="", start_page=1),
             dict(item_key="ITEM01", start_page=5, end_page=3),
             dict(item_key="ITEM01", start_page=9),
-            dict(item_key="ITEM01", start_page=1, end_page=99),
-            dict(item_key="ITEM01", start_page=1, end_page=50),
         ]
         for kwargs in failures:
             with pytest.raises(PdfReadError):

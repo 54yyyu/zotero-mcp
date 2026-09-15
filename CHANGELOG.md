@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Found by using `zotero-cli` to read "Attention Is All You Need" and annotate it end to end.
+
+### Added
+
+- **`zotero-cli annotations batch`** creates many highlights and area boxes from JSON Lines (or a JSON array) in one process. 48 separate `annotations create` calls took 58 s, most of it interpreter startup. Every spec is attempted, each outcome is listed, and the exit code is 1 if any failed. `--dry-run` locates every highlight against one copy of the PDF and prints the words it would cover, so misses are fixed before anything is written.
+- **`zotero-cli layout ATTACHMENT_KEY [--pages 3-9]`** lists figure and table boxes with captions and a paste-ready `--rect` value. Layout detection was only reachable as an MCP tool.
+- `zotero-cli annotations create` takes `--rect x,y,w,h` for area boxes and `--tags`, and `--color` (here and in `batch`) accepts Zotero's color names (`yellow`, `blue`, ...).
+- The zotero-cli skill has a "Reading and annotating a paper" section.
+
+### Changed
+
+- `zotero_read_pdf_pages` / `zotero-cli read` read through the last page when the end page is past it, and say so, instead of failing.
+- Advice in `zotero-cli` output names CLI commands instead of MCP tools (`zotero-cli search --mode semantic`, not `zotero_semantic_search`).
+
+### Fixed
+
+- **`zotero-cli --json` reported failed writes as `ok: true`.** Most tools return failures as prose, and the CLI wrapped that prose in a success envelope with exit code 0, so an agent checking `ok` believed a refused annotation write had worked. Output that opens with a failure report (`Error...`, `Failed to...`, `Could not...`, `Cannot...`) is now an `ok: false` envelope with code `tool_error`, and exits 1 in both output modes.
+- **Highlights covered more than the requested text.** Passages over 100 characters and fuzzy matches were boxed span by span, and a span is usually most of a line, so a highlight spilled onto the words before and after it. Matches are now clipped to the matched characters.
+- **Layout detection missed tables drawn with horizontal rules only** (booktabs style, the norm in papers), because `find_tables()` needs a grid. Groups of three or more rules with the same span are now detected as tables. **Figures made of side-by-side panels** were reported as two regions with the caption on one; captionless panels in the same band above a figure caption now join the captioned region.
+- **`zotero-cli --json notes list` always returned `count: 0`.** It read note keys from the listing with the item-key pattern (`**Item Key:**`), but notes are listed as `**Key:**`, so nothing matched.
+- **PyMuPDF's "Consider using the pymupdf_layout package" notice went to stdout** on the first layout detection, corrupting `--json` output and the MCP server's stdio stream. It is suppressed.
+
 ## [0.12.3] - 2026-09-14
 
 ### Added
