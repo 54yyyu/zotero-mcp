@@ -106,9 +106,22 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
  - `--attachment-key` -- **required**
  - `--page` -- **required**
- - `--text` -- **required**
+ - `--text` -- Exact text to highlight
+ - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables
  - `--comment`
- - `--color` -- default `#ffd400`
+ - `--color` -- default `#ffd400` -- Hex, or a Zotero color name: yellow, red, green, blue, purple, magenta, orange, gray
+ - `--tags` -- Comma-separated tags
+
+### `annotations batch`
+
+ - `--attachment-key` -- **required** -- Attachment for lines that do not name their own
+ - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect, comment, color, tags}; - reads stdin
+ - `--dry-run` -- Locate every highlight and report what it would cover, without writing
+
+## `layout`
+
+ - `<attachment_key>`
+ - `--pages` -- default `all` -- Pages to scan: all (default), 3, 3-6, or 1,4,6-9
 
 ## `notes (alias: n)`
 
@@ -321,6 +334,9 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `<item_key>`
  - `--start-page` -- **required**
  - `--end-page` -- Defaults to --start-page (a single page)
+ - `--format` -- one of `text`, `image` -- default `text` -- image writes PNG page images (up to 10 pages) for math, figures and tables
+ - `--rect` -- With --format image: crop the start page to x,y,width,height (normalized 0-1), e.g. from `zotero-cli layout`
+ - `--out` -- With --format image: directory for the PNG files (default: a new temporary directory)
 
 ## `attach`
 

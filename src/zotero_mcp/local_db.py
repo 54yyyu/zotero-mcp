@@ -1865,6 +1865,21 @@ class LocalZoteroReader:
             })
         return out
 
+    def resolve_attachment_file(self, attachment_key: str) -> Path | None:
+        """The file on disk for an attachment addressed by its own key, or None.
+
+        Resolves the stored path, and scans the attachment's storage folder
+        when the recorded filename no longer matches the file (#291). None
+        when the key is not a live attachment or its file is not on disk.
+        """
+        attachment = self.get_attachment_by_key(attachment_key)
+        if attachment is None:
+            return None
+        resolved = self._resolve_attachment_path(attachment_key, attachment["zotero_path"] or "")
+        if not (resolved and resolved.exists()):
+            resolved = self._scan_storage_for_attachment(attachment_key, attachment["content_type"])
+        return resolved if resolved and resolved.exists() else None
+
     def get_attachment_by_key(self, attachment_key: str) -> dict | None:
         """Return the attachment row addressed by its OWN key.
 

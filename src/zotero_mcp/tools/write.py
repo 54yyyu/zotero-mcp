@@ -4467,26 +4467,24 @@ def get_pdf_outline(
                 if not attachment_key:
                     return f"No PDF attachment found for item `{item_key}`."
 
-                # A file already in Zotero's own storage needs no download at
-                # all — and is the only option with Zotero closed.
-                download_errors: list[str] = []
-                pdf_path = _library.attachment_path_for(attachment_key)
-                if pdf_path is None:
-                    # Otherwise fall back to the multi-source downloader so
-                    # WebDAV- and cloud-backed attachments still work.
-                    zot = _client.get_zotero_client()
-                    local_mode = _utils.is_local_mode()
-                    download = _client.download_attachment_file(
-                        attachment_key,
-                        tmpdir,
-                        os.path.basename(filename),
-                        local_client=(
-                            zot if local_mode else _client.get_local_zotero_client()
-                        ),
-                        web_client=None if local_mode else zot,
-                    )
-                    pdf_path = download.path
-                    download_errors = download.errors
+                # The multi-source downloader reads a file already in Zotero's
+                # own storage in place (the only option with Zotero closed) and
+                # otherwise fetches it, so WebDAV- and cloud-backed attachments
+                # still work. The outline is only read, never modified.
+                zot = _client.get_zotero_client()
+                local_mode = _utils.is_local_mode()
+                download = _client.download_attachment_file(
+                    attachment_key,
+                    tmpdir,
+                    os.path.basename(filename),
+                    local_client=(
+                        zot if local_mode else _client.get_local_zotero_client()
+                    ),
+                    web_client=None if local_mode else zot,
+                    in_place=True,
+                )
+                pdf_path = download.path
+                download_errors = download.errors
                 if (
                     not pdf_path
                     or not pdf_path.exists()

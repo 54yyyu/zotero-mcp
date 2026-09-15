@@ -167,55 +167,40 @@ def test_update_annotation_missing_key(monkeypatch):
     assert fake.updated == []
 
 
-class FakePatchResponse:
-    def __init__(self, status_code=204, text=""):
-        self.status_code = status_code
-        self.text = text
-
-
-class FakeHttpxClient:
-    def __init__(self, status_code=204, text=""):
-        self._status_code = status_code
-        self._text = text
-        self.calls = []
-
-    def patch(self, url, headers, content):
-        self.calls.append({"url": url, "headers": headers, "content": content})
-        return FakePatchResponse(self._status_code, self._text)
-
-
 class FakeZoteroForAnnotationDelete:
-    def __init__(self, items, patch_status=204):
+    """pyzotero's delete_item returns True, or raises when the write is refused."""
+
+    def __init__(self, items, error=None):
         self._items = items
-        self.endpoint = "https://api.zotero.org"
-        self.library_type = "users"
-        self.library_id = "12345"
-        self.client = FakeHttpxClient(status_code=patch_status)
+        self._error = error
+        self.deleted = []
 
     def item(self, key):
         if key not in self._items:
             raise KeyError(key)
         return self._items[key]
 
+    def delete_item(self, payload, last_modified=None):
+        if self._error is not None:
+            raise self._error
+        self.deleted.append(payload)
+        return True
 
-def test_delete_annotation_trashes_via_patch(monkeypatch):
-    fake = FakeZoteroForAnnotationDelete(
-        {"ANNO0001": _annotation_item("ANNO0001")}
-    )
-    # Version lives at item top level in the delete path.
-    fake._items["ANNO0001"]["version"] = 42
+
+def test_delete_annotation_deletes_permanently(monkeypatch):
+    """Trashing is not enough for annotations: Zotero's reader keeps drawing a
+    trashed annotation and offers no way to remove it, so re-annotating a
+    paper left the old and new sets overlapping on the page."""
+    item = _annotation_item("ANNO0001")
+    fake = FakeZoteroForAnnotationDelete({"ANNO0001": item})
     _patch_client(monkeypatch, fake)
 
     result = server.delete_annotation(
         annotation_key="ANNO0001", ctx=DummyContext()
     )
 
-    assert "Successfully trashed" in result
-    assert len(fake.client.calls) == 1
-    call = fake.client.calls[0]
-    assert "ANNO0001" in call["url"]
-    assert call["headers"]["If-Unmodified-Since-Version"] == "42"
-    assert '"deleted": 1' in call["content"]
+    assert result == "Successfully deleted annotation ANNO0001"
+    assert fake.deleted == [item]
 
 
 def test_delete_annotation_rejects_non_annotation(monkeypatch):
@@ -232,7 +217,7 @@ def test_delete_annotation_rejects_non_annotation(monkeypatch):
     )
 
     assert "is not an annotation" in result
-    assert fake.client.calls == []
+    assert fake.deleted == []
 
 
 def test_delete_annotation_missing_key(monkeypatch):
@@ -244,20 +229,20 @@ def test_delete_annotation_missing_key(monkeypatch):
     )
 
     assert "No item found" in result
-    assert fake.client.calls == []
+    assert fake.deleted == []
 
 
 def test_delete_annotation_http_error(monkeypatch):
     fake = FakeZoteroForAnnotationDelete(
-        {"ANNO0001": _annotation_item("ANNO0001")}, patch_status=412
+        {"ANNO0001": _annotation_item("ANNO0001")},
+        error=RuntimeError("412 Precondition failed"),
     )
-    fake._items["ANNO0001"]["version"] = 5
-    fake.client._text = "Precondition failed"
     _patch_client(monkeypatch, fake)
 
     result = server.delete_annotation(
         annotation_key="ANNO0001", ctx=DummyContext()
     )
 
-    assert "Failed to trash" in result
-    assert "412" in result
+    assert result.startswith("Error deleting annotation")
+    assert "Precondition failed" in result
+    assert fake.deleted == []

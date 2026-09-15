@@ -117,9 +117,12 @@ LIGATURE_REPLACEMENTS = {...}     # fi, fl, ff → expanded
 #### Public API
 | Function | Purpose |
 |----------|---------|
+| `open_pdf()` | Open a PDF once and share the document across the helpers below (each accepts a path or an open document) |
 | `find_text_position()` | Main entry point for text search |
-| `get_page_label()` | Get PDF page label (e.g., "i", "ii") |
-| `verify_pdf_attachment()` | Check if file is valid PDF |
+| `get_page_label()` / `page_label()` | Get a PDF page label (e.g., "i", "ii") by page number or from a page |
+| `page_range_error()` | Error for a page outside the document, or None |
+| `build_area_position_data()` | Position data for an area (image) annotation |
+| `text_in_rects()` | Readable text under final highlight rects (dry-run previews) |
 | `build_annotation_position()` | Create Zotero position JSON |
 
 ---

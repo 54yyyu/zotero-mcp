@@ -614,6 +614,13 @@ def attachment_path_for(key: str) -> Path | None:
     reader = _sqlite_reader()
     if reader is None:
         return None
+    # Both callers pass the attachment's own key. get_attachment_paths() only
+    # lists a *parent's* attachments, so on its own this always returned None
+    # for them and every outline read copied or downloaded a file that was
+    # already on disk.
+    path = reader.resolve_attachment_file(key)
+    if path is not None:
+        return Path(path)
     for entry in reader.get_attachment_paths(key):
         resolved = entry.get("resolved_path")
         if resolved and entry.get("exists"):

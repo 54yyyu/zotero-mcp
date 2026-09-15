@@ -92,14 +92,14 @@ class TestDispatch:
         args = _args(item_key="K1", start_page=3, end_page=7)
         called = {}
 
-        def fake(item_key, start_page, end_page=None, *, ctx=None):
-            called.update(start_page=start_page, end_page=end_page)
+        def fake(item_key, start_page, end_page=None, *, ctx=None, surface=None):
+            called.update(start_page=start_page, end_page=end_page, surface=surface)
             return "page text"
 
-        monkeypatch.setattr(read_pdf_mod, "read_pdf_pages", fake)
+        monkeypatch.setattr(read_pdf_mod, "read_pdf_text", fake)
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
             cli_standalone.cmd_read(args)
-        assert called == {"start_page": 3, "end_page": 7}
+        assert called == {"start_page": 3, "end_page": 7, "surface": "cli"}
 
     def test_delete_item_defaults_to_refusing_notes(self):
         args = _args(subcommand="item", item_key="K1", allow_note=False)

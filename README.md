@@ -966,7 +966,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_notes`: Retrieve notes from your Zotero library; pass `query` to search note and annotation text instead of listing
 - `zotero_create_annotation`: Create a highlight (`text=`) or an area annotation (`rect=[x, y, width, height]`)
 - `zotero_manage_note`: Create, update, or delete a note via `action="create"|"update"|"delete"` (beta feature)
-- `zotero_get_page_layout`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement — its reported `bbox` can be passed straight to `zotero_create_annotation(rect=...)`
+- `zotero_get_page_layout`: Detect figure, table and display-equation regions on a PDF page (with captions or equation numbers and normalized coordinates) for accurate area annotation placement — its reported `bbox` can be passed straight to `zotero_create_annotation(rect=...)`
 
 ### 📊 Scite Citation Intelligence Tools
 

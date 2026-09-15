@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-09-14
+
+Found by using `zotero-cli` to read "Attention Is All You Need" and annotate it end to end.
+
+### Added
+
+- **`zotero-cli annotations batch`** creates many highlights and area boxes from JSON Lines (or a JSON array). 48 separate `annotations create` calls took 58 s. A batch reads the attachment's metadata and fetches the PDF once, then writes the annotations 50 per request, so its cost barely grows with the number of annotations. Every spec is attempted, each outcome is listed, and the exit code is 1 if any failed. `--dry-run` needs no write access and prints the words each highlight would cover, so misses are fixed before anything is written.
+- **`zotero-cli layout ATTACHMENT_KEY [--pages 3-9]`** lists figure and table boxes with captions and a paste-ready `--rect` value. Layout detection was only reachable as an MCP tool.
+- `zotero-cli annotations create` takes `--rect x,y,w,h` for area boxes and `--tags`, and `--color` (here and in `batch`) accepts Zotero's color names (`yellow`, `blue`, ...).
+- **`zotero_read_pdf_pages` / `zotero-cli read` flag what the extracted text garbles and can return the page instead.** Text extraction drops math symbols and runs table cells together, and nothing told the reader. Each page now ends with a note naming its display equations, figures, tables and dense inline math ("Garbled in this text: Equation (1), Table 2"), found from the page's fonts and captions in a few milliseconds. `format='image'` (`--format image` on the CLI, which writes PNG files) returns up to 10 pages as images sized for vision models, and `rect` crops one region of a page at higher magnification. This extends the existing tool rather than adding one.
+- **Layout detection finds display equations**, labelled with their number ("Equation (3)"), so equations can be boxed like figures and tables.
+- The zotero-cli skill has a "Reading and annotating a paper" section.
+
+### Changed
+
+- **PDF reads open each file once and use files in local storage in place.** Creating annotations, layout detection over several pages, the PDF outline, full text and PDF annotation extraction each copied the attachment out of Zotero's storage and reopened it per step; a file on disk is now read where it is (read-only callers only), and one open document serves a whole call. Resolving an attachment's file on disk, previously written out in three places, is one `LocalZoteroReader.resolve_attachment_file`, which also brings the filename-drift fallback (#291) to PDFs found through their parent item. Fuzzy text matching skips windows that cannot beat the best match (same results, measured identical on 108 real queries), EPUB attachments are verified from their zip structure instead of a full parse, and unused matcher parameters are gone.
+- **`zotero_delete_annotation` deletes permanently instead of moving the annotation to the Trash.** Zotero's PDF reader keeps drawing a trashed annotation and offers no way to remove it there, so re-annotating a paper left the old and new annotations overlapping on the page. Zotero's own reader deletes annotations outright; the tool now does the same.
+- `zotero_read_pdf_pages` / `zotero-cli read` read through the last page when the end page is past it, and say so, instead of failing.
+- Advice in `zotero-cli` output names CLI commands instead of MCP tools (`zotero-cli search --mode semantic`, not `zotero_semantic_search`).
+
+### Fixed
+
+- **`zotero-cli --json` reported failed writes as `ok: true`.** Most tools return failures as prose, and the CLI wrapped that prose in a success envelope with exit code 0, so an agent checking `ok` believed a refused annotation write had worked. Output that opens with a failure report (`Error...`, `Failed to...`, `Could not...`, `Cannot...`) is now an `ok: false` envelope with code `tool_error`, and exits 1 in both output modes.
+- **Highlights covered more than the requested text.** Passages over 100 characters and fuzzy matches were boxed span by span, and a span is usually most of a line, so a highlight spilled onto the words before and after it. Matches are now clipped to the matched characters.
+- **Layout detection missed tables drawn with horizontal rules only** (booktabs style, the norm in papers), because `find_tables()` needs a grid. Groups of three or more rules with the same span are now detected as tables. **Figures made of side-by-side panels** were reported as two regions with the caption on one; captionless panels in the same band above a figure caption now join the captioned region.
+- **The PDF outline tool copied or downloaded PDFs that were already on disk.** `library.attachment_path_for` looked the key up as a parent item, and both of its callers pass an attachment key, so it never found the local file.
+- **Layout detection reported fragments as regions of their own** (the rule band of one table row, a partial table inside the drawing that frames it). The outer box is now kept and takes the stronger source. Detection is also about three times faster: `find_tables()` is skipped on pages with no vertical strokes, which cannot hold a grid, and several pages share one open document.
+- **Table captions were attached to the wrong table** when a venue puts them below tables: a "captions sit above tables" bonus pulled each caption onto the next table down. Table captions now go by distance alone.
+- **Rules around an algorithm's title bar were reported as tables.** A rule-bounded table must now hold at least two rows of text.
+- **A highlight found on a neighbouring page was labelled with the requested page.** It now carries the label of the page it was found on.
+- **`zotero-cli --json notes list` always returned `count: 0`.** It read note keys from the listing with the item-key pattern (`**Item Key:**`), but notes are listed as `**Key:**`, so nothing matched.
+- **PyMuPDF's "Consider using the pymupdf_layout package" notice went to stdout** on the first layout detection, corrupting `--json` output and the MCP server's stdio stream. It is suppressed.
+
 ## [0.12.3] - 2026-09-14
 
 ### Added
