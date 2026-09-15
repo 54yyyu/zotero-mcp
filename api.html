@@ -19,7 +19,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><img src="img/logo.svg" alt="" width="28" height="28">Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.12.3</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.12.4</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./">Overview</a>
       <a href="installation.html">Install &amp; setup</a>
@@ -37,7 +37,7 @@
 <main id="main">
   <div class="doc-hero">
     <div class="wrap">
-      <span class="kicker">Reference &middot; v0.12.3</span>
+      <span class="kicker">Reference &middot; v0.12.4</span>
       <h1>Tools, settings, and commands</h1>
       <p>Everything the MCP server and <code>zotero-cli</code> offer. Tools marked with a group name only appear when that group is turned on.</p>
     </div>
@@ -117,7 +117,7 @@
           <tbody>
             <tr><td><code>zotero_get_item_metadata</code></td><td>An item&rsquo;s metadata as <code>markdown</code>, <code>json</code>, or <code>bibtex</code></td></tr>
             <tr><td><code>zotero_get_item_fulltext</code></td><td>Extracted text of the item&rsquo;s main attachment, and says when the text was cut short</td></tr>
-            <tr><td><code>zotero_read_pdf_pages</code></td><td>Read specific pages of a PDF</td></tr>
+            <tr><td><code>zotero_read_pdf_pages</code></td><td>Read specific pages of a PDF as text, with garbled math, figures and tables flagged, or as page images (<code>format='image'</code>)</td></tr>
             <tr><td><code>zotero_get_pdf_outline</code><span class="badge on">pdf-geometry</span></td><td>A PDF&rsquo;s table of contents, with page numbers</td></tr>
             <tr><td><code>zotero_get_item_children</code></td><td>Attachments and notes for one item or many</td></tr>
             <tr><td><code>zotero_get_attachment_path</code></td><td>Where an item&rsquo;s attachment files are on disk (local mode)</td></tr>
@@ -133,8 +133,8 @@
             <tr><td><code>zotero_get_annotations</code></td><td>Highlights and comments on PDF and EPUB attachments, as text or <code>json</code></td></tr>
             <tr><td><code>zotero_create_annotation</code></td><td>Highlight text (<code>text=</code>) or draw a box over a figure or table (<code>rect=</code>)</td></tr>
             <tr><td><code>zotero_update_annotation</code></td><td>Edit an annotation&rsquo;s text, comment, color, or tags</td></tr>
-            <tr><td><code>zotero_delete_annotation</code></td><td>Move an annotation to the Trash</td></tr>
-            <tr><td><code>zotero_get_page_layout</code><span class="badge on">pdf-geometry</span></td><td>Find figures and tables on a page, with box coordinates to pass to <code>rect=</code></td></tr>
+            <tr><td><code>zotero_delete_annotation</code></td><td>Permanently delete an annotation (Zotero&rsquo;s reader cannot remove trashed ones)</td></tr>
+            <tr><td><code>zotero_get_page_layout</code><span class="badge on">pdf-geometry</span></td><td>Find figures, tables and equations on a page, with box coordinates to pass to <code>rect=</code></td></tr>
             <tr><td><code>zotero_get_notes</code></td><td>List notes, or search note and annotation text with <code>query</code></td></tr>
             <tr><td><code>zotero_manage_note</code></td><td>Create, update, or trash a note</td></tr>
             <tr><td><code>zotero_synthesize_annotations</code></td><td>Gather highlights, comments, and notes into a per-paper summary</td></tr>
@@ -261,6 +261,7 @@
 <span class="line"><span class="pr">$ </span>zotero-cli get metadata ABC123 --format bibtex</span>
 <span class="line"><span class="pr">$ </span>zotero-cli outline ABC123</span>
 <span class="line"><span class="pr">$ </span>zotero-cli read ABC123 --start-page 42 --end-page 55</span>
+<span class="line"><span class="pr">$ </span>zotero-cli read ABC123 --start-page 44 --format image</span>
 <span class="line"></span>
 <span class="line"><span class="cm"># notes and annotations</span></span>
 <span class="line"><span class="pr">$ </span>zotero-cli notes create --item-key ABC123 --text "My note" --tags "idea"</span>
@@ -284,7 +285,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.12.3 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.12.4 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>

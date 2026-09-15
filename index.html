@@ -22,7 +22,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><img src="img/logo.svg" alt="" width="28" height="28">Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.12.3</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.12.4</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="installation.html">Install &amp; setup</a>
@@ -42,7 +42,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <a class="news reveal" href="#whats-new"><b>0.12</b>Local reads now come straight from zotero.sqlite</a>
+        <a class="news reveal" href="#whats-new"><b>0.12.4</b>Read and annotate a paper end to end</a>
         <h1 class="reveal">Chat with your <span class="hl c-yellow">research library</span> in Claude, ChatGPT, and more.</h1>
         <div class="reveal">
           <p class="lede">Zotero MCP connects your Zotero library to AI assistants. Search it, read it, annotate it, and add to it, from the desktop app or the web API.</p>
@@ -105,6 +105,19 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.12.4<small>Sep 2026</small></div>
+          <div>
+            <h3>Read and <span class="hl c-yellow">annotate</span> a paper end to end</h3>
+            <p>Reads flag the equations, figures and tables that text extraction garbles, and can return the page as an image. Highlights land on exactly the words asked for, and a whole reading plan is written in one batch.</p>
+            <dl class="bench">
+              <div><dt>37 annotations</dt><dd><span class="fast">2.3 s</span><span class="slow">before: 58 s</span></dd></div>
+              <div><dt>Layout, per page</dt><dd><span class="fast">24&ndash;44 ms</span><span class="slow">before: 70&ndash;110 ms</span></dd></div>
+            </dl>
+            <p class="fine">Measured on &ldquo;Attention Is All You Need&rdquo; and two math-heavy papers, Zotero 10 local API.</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.12<small>Sep 2026</small></div>
           <div>
             <h3>Local reads come straight from <span class="hl c-yellow">zotero.sqlite</span></h3>
@@ -307,7 +320,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.12.3 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.12.4 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
