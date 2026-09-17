@@ -7,14 +7,18 @@ optional parallelism across sub-batches, adaptive rate limiting and retries.
 HuggingFace stays on the plain base — it runs a local model, so there is no
 request to pace.
 
-``BaseEmbeddingFunction`` holds only the two method bodies that were already
+``BaseEmbeddingFunction`` holds the two method bodies that were already
 byte-identical across the concrete providers when they lived in
-``chroma_client.py``:
+``chroma_client.py``, plus ChromaDB's batch query entry point:
 
-- ``embed_query`` -> ``self.__call__([text])[0]``. OpenAI, HuggingFace and
-  Ollama each carried their own copy of exactly this. Gemini still overrides
-  it, because its query path uses a different task type (v1) or prompt prefix
-  (v2) than its document path.
+- ``embed_query_text`` -> ``self.__call__([text])[0]``, one query string to one
+  vector. OpenAI, HuggingFace and Ollama each carried their own copy of exactly
+  this. ``RemoteEmbeddingFunction`` overrides it to route the request through
+  the limiter, and Gemini's query path differs from its document path — a
+  different task type (v1), a different prompt prefix (v2) — which it expresses
+  through ``_prepare_query``.
+- ``embed_query``, which is ChromaDB's ``EmbeddingFunction`` protocol method:
+  a sequence in, a list of vectors out, mapped onto ``embed_query_text``.
 - a character-ratio ``truncate``. Gemini and Ollama each carried their own copy
   at 4 chars/token. OpenAI overrides it with tiktoken and HuggingFace with the
   model's own tokenizer.
@@ -92,11 +96,32 @@ class BaseEmbeddingFunction(EmbeddingFunction):
     #: Characters per token, for the estimate-based :meth:`truncate` below.
     chars_per_token = 4
 
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string via the document path.
+    def embed_query(self, input: Documents) -> Embeddings:
+        """Embed query texts — ChromaDB's ``EmbeddingFunction`` contract.
+
+        The parameter name ``input`` is load-bearing: ChromaDB calls this by
+        keyword, including on the embedding function it rebuilds from a
+        persisted collection's config. Maps :meth:`embed_query_text` over the
+        input, one request per query string, as ``ChromaClient.search``
+        already did.
+
+        Do NOT delegate to ``super().embed_query``: it does not exist on
+        chromadb < 1.1, which is inside our supported range.
+        """
+        if isinstance(input, str):
+            # A string is iterable, so without this the comprehension below
+            # would embed it one character at a time and return nonsense.
+            raise TypeError(
+                "embed_query() takes a sequence of query texts, not a single "
+                "string; use embed_query_text() to embed one string."
+            )
+        return [self.embed_query_text(text) for text in input]
+
+    def embed_query_text(self, text: str) -> list[float]:
+        """Embed one query string via the document path.
 
         Correct for any provider that does not tune queries and documents
-        differently; Gemini overrides this.
+        differently; :class:`RemoteEmbeddingFunction` overrides it.
         """
         return self.__call__([text])[0]
 
@@ -129,7 +154,7 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
     - ``default_tokens_per_minute`` — the provider's published TPM ceiling,
       used to arm the limiter's token bucket when nothing else supplies one.
     - ``max_parallel_requests_default`` / ``max_retries_default``.
-    - ``truncate_queries`` — whether :meth:`embed_query` truncates before
+    - ``truncate_queries`` — whether :meth:`embed_query_text` truncates before
       preparing the text. Only Gemini needs this, because its query path
       bypasses the indexing pipeline's own truncation.
     """
@@ -287,11 +312,12 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             embeddings.extend(chunk or [])
         return embeddings
 
-    def embed_query(self, text: str) -> list[float]:
+    def embed_query_text(self, text: str) -> list[float]:
         """Embed one query string through the same limiter and retry path.
 
         Never uses the thread pool — there is only one request — but a query
         that hits a 429 is still retried like any document sub-batch.
+        ``embed_query`` on the base class maps this over a batch.
         """
         if self.truncate_queries:
             text = self.truncate(text, getattr(self, "max_input_tokens", 8000))

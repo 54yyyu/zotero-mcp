@@ -84,13 +84,13 @@ def test_parallel_matches_sequential(ollama_available, count_requests_post):
 @pytest.mark.timeout(60)
 def test_rate_limiter_paces_requests(ollama_available):
     """rate_limit_rps=2 with burst=max(4, max_parallel_requests)=4: the first
-    4 embed_query calls spend burst tokens immediately, calls 5-6 must wait
+    4 embed_query_text calls spend burst tokens immediately, calls 5-6 must wait
     on the token bucket. Six calls should take at least ~1s total."""
     ef = OllamaEmbeddingFunction(model_name=MODEL, base_url=ollama_available, rate_limit_rps=2)
 
     start = time.monotonic()
     for _ in range(6):
-        vec = ef.embed_query("ping")
+        vec = ef.embed_query_text("ping")
         assert len(vec) == DIM
     elapsed = time.monotonic() - start
 
@@ -98,9 +98,9 @@ def test_rate_limiter_paces_requests(ollama_available):
 
 
 @pytest.mark.timeout(30)
-def test_embed_query_returns_768_floats(ollama_available):
+def test_embed_query_text_returns_768_floats(ollama_available):
     ef = OllamaEmbeddingFunction(model_name=MODEL, base_url=ollama_available)
-    vec = ef.embed_query("a live embedding query")
+    vec = ef.embed_query_text("a live embedding query")
     assert len(vec) == DIM
     assert all(isinstance(x, float) for x in vec)
 
@@ -119,8 +119,8 @@ def test_config_round_trip(ollama_available, cosine_similarity):
     assert rebuilt.max_parallel_requests == ef.max_parallel_requests
 
     text = "config round trip probe text"
-    v1 = ef.embed_query(text)
-    v2 = rebuilt.embed_query(text)
+    v1 = ef.embed_query_text(text)
+    v2 = rebuilt.embed_query_text(text)
     assert cosine_similarity(v1, v2) >= 0.999
 
 
@@ -132,7 +132,7 @@ def test_unknown_model_fails_fast(ollama_available):
 
     start = time.monotonic()
     with pytest.raises(requests.HTTPError):
-        ef.embed_query("hello")
+        ef.embed_query_text("hello")
     elapsed = time.monotonic() - start
 
     assert elapsed < 5.0, f"expected fail-fast (no retry storm), took {elapsed:.3f}s"

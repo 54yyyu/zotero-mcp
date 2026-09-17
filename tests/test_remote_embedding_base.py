@@ -10,7 +10,7 @@ FakeClock) so nothing here actually waits. Coverage:
    completion order, the sequential fallback, and sequential/parallel output parity.
 3. Retries: recovery, exhaustion, non-retryable fast-fail, and retry_after handling.
 4. _embed_batch's two return shapes (bare list vs. (vectors, headers)).
-5. embed_query's routing, and truncate-before-prepare ordering.
+5. embed_query_text's routing, and truncate-before-prepare ordering.
 6. _prepare_document application.
 7. _common_config()'s round-trip, and the __new__-without-__init__ design property.
 8. _init_common's tokens_per_minute precedence: argument > env var > class default.
@@ -412,11 +412,11 @@ def test_embed_batch_returning_tuple_reaches_limiter_on_success():
     assert limiter.on_success_calls == [headers]
 
 
-# -- 5. embed_query ---------------------------------------------------------------
+# -- 5. embed_query_text ----------------------------------------------------------
 
 
-def test_embed_query_uses_prepare_query_not_prepare_document_and_unwraps_result():
-    """embed_query routes through _prepare_query (never _prepare_document) and
+def test_embed_query_text_uses_prepare_query_not_prepare_document_and_unwraps_result():
+    """embed_query_text routes through _prepare_query (never _prepare_document) and
     _embed_batch(..., is_query=True), returning a single vector rather than a list of
     one."""
     ef = _make_ef(
@@ -424,7 +424,7 @@ def test_embed_query_uses_prepare_query_not_prepare_document_and_unwraps_result(
         prepare_query_impl=lambda text: text + "-QUERY",
         embed_batch_impl=lambda texts, is_query: [[42.0]],
     )
-    result = ef.embed_query("hello")
+    result = ef.embed_query_text("hello")
 
     assert ef.calls[-1]["texts"] == ["hello-QUERY"]
     assert ef.calls[-1]["is_query"] is True
@@ -432,7 +432,7 @@ def test_embed_query_uses_prepare_query_not_prepare_document_and_unwraps_result(
     assert result != [[42.0]]
 
 
-def test_embed_query_truncates_before_prepare_query_when_enabled():
+def test_embed_query_text_truncates_before_prepare_query_when_enabled():
     """With truncate_queries=True, the text is truncated BEFORE _prepare_query runs: the
     marker _prepare_query prepends survives intact at the front, and the body behind it is
     the part that gets cut."""
@@ -443,13 +443,13 @@ def test_embed_query_truncates_before_prepare_query_when_enabled():
         prepare_query_impl=lambda text: "MARK:" + text,
         embed_batch_impl=lambda texts, is_query: [[0.0]],
     )
-    ef.embed_query(body)
+    ef.embed_query_text(body)
 
     sent = ef.calls[-1]["texts"][0]
     assert sent == "MARK:" + "x" * 20
 
 
-def test_embed_query_does_not_truncate_when_disabled():
+def test_embed_query_text_does_not_truncate_when_disabled():
     """truncate_queries=False (the default) means no truncation happens before
     _prepare_query."""
     body = "x" * 30
@@ -459,7 +459,7 @@ def test_embed_query_does_not_truncate_when_disabled():
         prepare_query_impl=lambda text: "MARK:" + text,
         embed_batch_impl=lambda texts, is_query: [[0.0]],
     )
-    ef.embed_query(body)
+    ef.embed_query_text(body)
 
     sent = ef.calls[-1]["texts"][0]
     assert sent == "MARK:" + body

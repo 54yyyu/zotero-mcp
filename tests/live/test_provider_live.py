@@ -60,9 +60,9 @@ class _ProviderLiveTests:
         return create_embedding_function(self.PROVIDER, config)
 
     @pytest.mark.timeout(60)
-    def test_embed_query_returns_expected_dim(self, production_config):
+    def test_embed_query_text_returns_expected_dim(self, production_config):
         ef = self._build_ef(production_config)
-        vec = ef.embed_query("live provider smoke test query")
+        vec = ef.embed_query_text("live provider smoke test query")
         assert len(vec) > 0
         # Keyed to the model actually configured, not to whichever one the
         # author happened to run: these tests exist to exercise *this*
@@ -72,14 +72,14 @@ class _ProviderLiveTests:
         if expected is not None:
             assert len(vec) == expected
         # A second call must be consistent in dimensionality.
-        vec2 = ef.embed_query("a different short probe")
+        vec2 = ef.embed_query_text("a different short probe")
         assert len(vec2) == len(vec)
 
     @pytest.mark.timeout(60)
     def test_document_and_query_embeddings_same_dim(self, production_config):
         ef = self._build_ef(production_config)
         doc_vectors = ef(DOCS[:2])
-        query_vector = ef.embed_query(DOCS[0])
+        query_vector = ef.embed_query_text(DOCS[0])
         assert len(doc_vectors) == 2
         dims = {len(v) for v in doc_vectors} | {len(query_vector)}
         assert len(dims) == 1
@@ -108,8 +108,8 @@ class _ProviderLiveTests:
         rebuilt = type(ef).build_from_config(cfg)
 
         text = "config round trip probe text"
-        v1 = ef.embed_query(text)
-        v2 = rebuilt.embed_query(text)
+        v1 = ef.embed_query_text(text)
+        v2 = rebuilt.embed_query_text(text)
         assert cosine_similarity(v1, v2) >= 0.999
 
 
