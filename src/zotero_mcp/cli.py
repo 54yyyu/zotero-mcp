@@ -663,7 +663,7 @@ def main():
     update_db_parser.add_argument("--force-rebuild", action="store_true",
                                  help="Force complete rebuild of the database")
     update_db_parser.add_argument("--limit", type=int,
-                                 help="Limit number of items to process (for testing)")
+                                 help="Limit number of items to process (for testing; does not advance the sync watermark)")
     update_db_parser.add_argument("--fulltext", action="store_true",
                                  help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
     update_db_parser.add_argument("--allow-mass-deletion", action="store_true",

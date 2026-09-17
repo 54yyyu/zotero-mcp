@@ -2772,6 +2772,13 @@ class ZoteroSemanticSearch:
                         current_library_keys = None
                     self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
 
+            if limit is not None:
+                # A limited run may index only a subset; promoting would strand
+                # the rest (cf. #292). After a forced rebuild the old watermark is
+                # just as wrong, because the collection it described is gone:
+                # zero sends the next run back through a full scan.
+                target_sync_version = 0 if force_full_rebuild else None
+
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
 
