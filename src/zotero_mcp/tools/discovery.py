@@ -34,7 +34,10 @@ def _doi_in_library(backend, doi: str) -> bool:
             return False
     norm = doi.strip().lower()
     for item in results or []:
-        item_doi = str(item.get("data", {}).get("DOI", "")).strip().lower()
+        raw_doi = str(item.get("data", {}).get("DOI", ""))
+        # Zotero often stores the DOI as a doi.org URL (that is what the connector
+        # writes), while the OpenAlex side is already bare, so normalise both.
+        item_doi = (_helpers._normalize_doi(raw_doi) or raw_doi).strip().lower()
         if item_doi and item_doi == norm:
             return True
     return False

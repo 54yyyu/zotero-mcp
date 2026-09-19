@@ -188,6 +188,40 @@ def test_library_membership_flagging(monkeypatch):
     assert "1 already in library" in out
 
 
+def test_library_membership_matches_url_form_doi_stored_in_zotero(monkeypatch):
+    """Zotero often stores the DOI as a doi.org URL, which is what the connector
+    writes; the OpenAlex side is always normalised, so both sides must be."""
+    zot = _make_zot(monkeypatch)
+    zot._by_doi["10.1234/refa"] = [
+        {"key": "URLDOI01", "data": {"itemType": "journalArticle", "DOI": "https://doi.org/10.1234/refa"}}
+    ]
+
+    source = {
+        "id": "https://openalex.org/W1",
+        "title": "Source Paper",
+        "referenced_works": ["https://openalex.org/W10", "https://openalex.org/W11"],
+        "cited_by_api_url": "https://api.openalex.org/works?filter=cites:W1",
+    }
+    ref_results = {
+        "results": [
+            _work("https://openalex.org/W10", "Ref A", 2010, "10.1234/refa", 5, ["Alice"]),
+            _work("https://openalex.org/W11", "Ref B", 2012, "10.1234/refb", 9, ["Bob"]),
+        ]
+    }
+
+    def handler(url, params):
+        if url.endswith("/works/https://doi.org/10.1234/x"):
+            return FakeResponse(200, source)
+        if url.endswith("/works") and "openalex_id" in params.get("filter", ""):
+            return FakeResponse(200, ref_results)
+        return FakeResponse(404, {})
+
+    _patch_requests(monkeypatch, handler)
+
+    out = discovery.find_related_papers("10.1234/x", direction="references", ctx=DummyContext())
+    assert "1 already in library" in out
+
+
 # --- find_related_papers: no DOI error path -------------------------------
 
 
