@@ -186,20 +186,11 @@ def test_citations_fall_back_to_cites_filter_without_api_url(monkeypatch):
     assert "Citer High" in out and "Citer Low" in out
     assert out.index("Citer High") < out.index("Citer Low")
 
-
-def test_citations_without_api_url_or_work_id_stays_empty(monkeypatch):
-    _make_zot(monkeypatch)
-
-    source = {"title": "Source Paper", "referenced_works": []}
-
-    def handler(url, params):
-        if url.endswith("/works/https://doi.org/10.1234/x"):
-            return FakeResponse(200, source)
-        return FakeResponse(404, {})
-
-    _patch_requests(monkeypatch, handler)
-
+    # Nothing to name the work with: no query is invented, and the answer stays empty.
+    seen.clear()
+    source.pop("id")
     out = discovery.find_related_papers("10.1234/x", direction="citations", ctx=DummyContext())
+    assert not seen
     assert "0 citations" in out
 
 
