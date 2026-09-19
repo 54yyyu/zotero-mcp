@@ -58,10 +58,22 @@ def _200(items=None):
 
 
 def _client(responses):
-    """A client whose transport replays `responses` in order."""
+    """A client whose transport replays `responses` in order.
+
+    pyzotero >=1.15.2 routes every request through ``client.request()``,
+    attaching the default headers per request (its "Send the default headers
+    with each request" change); earlier versions called ``client.get()``
+    directly. Mock whichever the installed version speaks — only one of the
+    two is ever called, and both replay the same sequence.
+    """
     zot = _zotero()
     seq = iter(responses)
-    zot.client.get = lambda url, params=None, timeout=None, **kw: next(seq)
+
+    def replay(*args, **kw):
+        return next(seq)
+
+    zot.client.request = replay
+    zot.client.get = replay
     zot._set_backoff = lambda *a, **kw: None  # don't sleep in tests
     return zot
 

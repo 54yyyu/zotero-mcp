@@ -181,7 +181,13 @@ class TestGetLocalWriteClient:
         assert zot.local_api_key == "k"
         # Cached so the first write of each call doesn't re-probe.
         assert zot.server_id == "srv-9"
-        assert zot.endpoint == "http://localhost:23119/api"
+        # pyzotero switched the local endpoint's host to 127.0.0.1 in 1.15.2
+        # (loopback by IP sidesteps proxy setups that intercept "localhost");
+        # <=1.15.1 reports localhost. Both are supported, so pin the shape.
+        assert zot.endpoint in (
+            "http://localhost:23119/api",
+            "http://127.0.0.1:23119/api",
+        )
 
     def test_user_library_is_always_users_zero(self, local_mode, monkeypatch):
         """The local API addresses the user library as users/0, whatever the

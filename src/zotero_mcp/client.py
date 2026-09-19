@@ -489,13 +489,15 @@ def probe_local_server_id(timeout: float = 3.0, force: bool = False) -> str | No
         if server_id or (time.monotonic() - cached_at) < _LOCAL_PROBE_NEGATIVE_TTL:
             return server_id
 
-    # Deliberately not ZOTERO_LOCAL_PORT: pyzotero hardcodes localhost:23119
-    # for local mode, so probing anywhere else could report "writes supported"
-    # for a server the writes will never reach.
+    # Deliberately not ZOTERO_LOCAL_PORT: pyzotero hardcodes port 23119 for
+    # local mode, so probing anywhere else could report "writes supported"
+    # for a server the writes will never reach. And 127.0.0.1 rather than
+    # localhost, mirroring pyzotero >=1.15.2: naming the IP keeps the probe
+    # off HTTP proxies configured to intercept "localhost".
     server_id = None
     try:
         with _make_local_http_client(timeout) as http:
-            resp = http.get("http://localhost:23119/api/")
+            resp = http.get("http://127.0.0.1:23119/api/")
             server_id = resp.headers.get("zotero-server-id")
     except Exception:
         server_id = None
