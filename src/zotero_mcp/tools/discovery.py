@@ -201,8 +201,16 @@ def find_related_papers(
 
         if want_cites:
             cited_by_url = work.get("cited_by_api_url")
+            cite_params: dict = {"per-page": min(limit, 50)}
+            if not cited_by_url:
+                # OpenAlex no longer returns `cited_by_api_url` on work records, so the
+                # citing works have to be queried through the `cites:` filter instead.
+                work_id = _short_id(work.get("id"))
+                if work_id:
+                    cited_by_url = f"{_OPENALEX_BASE}/works"
+                    cite_params["filter"] = f"cites:{work_id}"
             if cited_by_url:
-                data = _openalex_get(cited_by_url, {"per-page": min(limit, 50)})
+                data = _openalex_get(cited_by_url, cite_params)
                 results = (data or {}).get("results", []) or []
                 citations = [_work_summary(w) for w in results]
                 citations.sort(key=lambda p: p["cited_by"], reverse=True)
