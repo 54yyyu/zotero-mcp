@@ -32,6 +32,7 @@ __all__ = [
     "arxiv_identity",
     "arxiv_identity_from_extra",
     "normalize_title_for_matching",
+    "metadata_match_keys",
 ]
 
 #: A well-formed DOI: the ``10.NNNN`` registrant prefix plus a suffix.
@@ -263,3 +264,43 @@ def normalize_title_for_matching(title):
         out.append(" " if cat[0] in "PSZ" or ch.isspace() else ch)
     s = " ".join("".join(out).casefold().split())
     return _LEADING_ARTICLE_RE.sub("", s)
+
+
+def _fields_of(item_like) -> dict:
+    """pyzotero item {"data": {...}}, bare data dict, or an object such as local_db.ZoteroItem
+    (attributes doi, title, extra; no url/ISBN/archiveID)."""
+    if isinstance(item_like, dict):
+        data = item_like.get("data")
+        return data if isinstance(data, dict) else item_like
+    fields = {}
+    for name, attrs in (
+        ("DOI", ("doi", "DOI")),
+        ("ISBN", ("isbn", "ISBN")),
+        ("title", ("title",)),
+        ("url", ("url",)),
+        ("archiveID", ("archive_id", "archiveID")),
+        ("extra", ("extra",)),
+    ):
+        for attr in attrs:
+            if v := getattr(item_like, attr, None):
+                fields[name] = v
+                break
+    return fields
+
+
+def metadata_match_keys(item_like) -> frozenset[tuple[str, str]]:
+    """Every (kind, value) this item could match under. Kinds: doi, arxiv, isbn, title.
+    Which kinds decide is the caller's policy."""
+    f = _fields_of(item_like)
+    keys: set[tuple[str, str]] = set()
+    if d := doi_match_key(f.get("DOI")):
+        keys.add(("doi", d))
+    for field in ("url", "archiveID", "DOI"):
+        if a := arxiv_identity(f.get(field)):
+            keys.add(("arxiv", a))
+    if a := arxiv_identity_from_extra(f.get("extra")):
+        keys.add(("arxiv", a))
+    keys.update(("isbn", i) for i in isbn_match_keys(f.get("ISBN")))
+    if t := normalize_title_for_matching(f.get("title")):
+        keys.add(("title", t))
+    return frozenset(keys)
