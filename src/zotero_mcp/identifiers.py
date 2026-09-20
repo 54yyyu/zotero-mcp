@@ -237,9 +237,15 @@ def arxiv_identity_from_extra(extra):
     return arxiv_identity(m.group(1)) if m else None
 
 
-#: An HTML/XML start or end tag, e.g. ``<i>`` or ``</sub>``. Stripped before
-#: entities are unescaped, so an escaped tag like ``&lt;i&gt;`` survives the
-#: strip and is unescaped into literal ``<i>`` text, not removed.
+#: An HTML/XML start or end tag, e.g. ``<i>`` or ``</sub>``: '<' or '</'
+#: followed directly by a letter. Not ``clean_html``'s '<.*?>': CrossRef
+#: titles reach us entity-decoded (``utils.repair_crossref_string``), so a
+#: title about '&lt;10 Hz' arrives with a bare '<', and '<.*?>' would read
+#: everything up to the next '>' as one tag and delete the words in between.
+#: Both callers — title matching here and ``_helpers._title_search_query`` —
+#: strip tags before entities are unescaped, so an escaped tag like
+#: ``&lt;i&gt;`` survives the strip and is unescaped into literal ``<i>``
+#: text, not removed.
 _TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
 
 _LEADING_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+")
