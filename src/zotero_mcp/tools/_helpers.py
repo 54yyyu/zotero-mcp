@@ -1288,8 +1288,13 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
         # doi_match_key case-folds both sides so a stored DOI in a different
         # case (Zotero preserves whatever case an item arrived with; DOIs are
         # case-insensitive for resolution) still matches. The ``or
-        # doi.lower()`` fallback keeps today's behaviour for a `doi` that
-        # doi_match_key rejects (malformed) rather than matching nothing.
+        # doi.lower()`` fallback does not widen anything — a malformed `doi`
+        # matches no stored DOI with it or without it. Its job is to keep
+        # ``want`` from being None, which is what a malformed `doi` would
+        # otherwise leave it as: every candidate whose DOI field is empty or
+        # equally unparseable keys to None too, so the comparison below would
+        # report unrelated items as the existing copy, and an
+        # ``if_exists='update'`` add would overwrite one of them.
         want = doi_match_key(doi) or doi.lower()
         def _matches(data):
             return doi_match_key(data.get("DOI")) == want

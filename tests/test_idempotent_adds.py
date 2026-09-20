@@ -136,6 +136,34 @@ class TestFindExistingItems:
     def test_doi_no_match(self, fake_zot):
         assert _helpers.find_existing_items(fake_zot, doi="10.9999/other") == []
 
+    def test_unparseable_query_doi_matches_nothing_rather_than_everything(
+        self, fake_zot
+    ):
+        """A `doi` that does not parse must find no item at all.
+
+        The comparison is ``doi_match_key(stored) == want`` with ``want =
+        doi_match_key(doi) or doi.lower()``. Drop the fallback and a
+        malformed query DOI leaves ``want`` as None — which is exactly what
+        an empty DOI field and an unparseable one key to, so every such item
+        in the library compares equal and is returned as "the item that is
+        already here". Nothing here is a real match, and the caller acts on
+        what comes back: an ``if_exists='update'`` add would then write the
+        new metadata over an unrelated paper.
+        """
+        fake_zot._items.append({
+            "key": "NODOI001",
+            "version": 1,
+            "data": {"itemType": "journalArticle", "title": "Unrelated Paper"},
+        })
+        fake_zot._items.append({
+            "key": "GARBAGE1",
+            "version": 1,
+            "data": {"itemType": "journalArticle", "title": "Placeholder DOI",
+                     "DOI": "n/a"},
+        })
+
+        assert _helpers.find_existing_items(fake_zot, doi="10.1/x") == []
+
     def test_doi_match_is_case_insensitive(self, fake_zot):
         """#496: DOIs are case-insensitive for resolution, but Zotero stores
         whatever case an item arrived with. Re-adding the same DOI in a
