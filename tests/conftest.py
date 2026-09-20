@@ -21,6 +21,37 @@ if _SRC.is_dir():
     for _name in [n for n in sys.modules if n == "zotero_mcp" or n.startswith("zotero_mcp.")]:
         del sys.modules[_name]
 
+# Reaching a module's old (shimmed) path from inside this repo is an error for the whole suite.
+# `MovedModuleWarning` is the only signal a *lazy*, function-level import of an old path leaves
+# behind -- it resolves through the shim and nothing else fails -- and pyproject's
+# `filterwarnings = ["ignore::DeprecationWarning"]` hides it, so it has to be turned into an error
+# deliberately. Set ZOTERO_MCP_ALLOW_SHIM_PATHS=1 to get the plain warning back (e.g. when running
+# a third-party test that legitimately imports a deprecated path).
+#
+# It is armed here, from pytest's own filter list, rather than with
+# `-W error::zotero_mcp._shim.MovedModuleWarning`: the interpreter resolves a `-W` category at
+# startup, by importing `zotero_mcp._shim` and binding *that* class object into `warnings.filters`.
+# The purge above then throws that module away, and the class the re-imported module defines is a
+# different object, which the startup filter can no longer match -- the flag looks armed, matches
+# nothing, and the `ignore::DeprecationWarning` above swallows the warning. See
+# `tests/test_shim.py::test_the_suites_own_configuration_turns_a_shim_access_into_an_error`.
+SHIM_PATH_GATE_ENV_VAR = "ZOTERO_MCP_ALLOW_SHIM_PATHS"
+SHIM_PATHS_ARE_ERRORS = os.environ.get(SHIM_PATH_GATE_ENV_VAR, "").strip() != "1"
+
+
+def pytest_configure(config):
+    """Arm the shim-path gate (see above) for collection and every test.
+
+    Appending to the `filterwarnings` ini list puts this filter *after*
+    pyproject's `ignore::DeprecationWarning`, and pytest applies that list in
+    reverse-precedence order, so the error wins. A `-W` argument passed to
+    *pytest* still overrides it, and pytest resolves those late enough for the
+    category to be the same class object this suite uses.
+    """
+    if SHIM_PATHS_ARE_ERRORS:
+        config.addinivalue_line("filterwarnings", "error::zotero_mcp._shim.MovedModuleWarning")
+
+
 # config.py:19 and client.py:408 compute Path.home()/.config/zotero-mcp/... at import time, before any
 # fixture runs, so HOME is isolated here. Prevents update_database() flocking the developer's real
 # update.lock (a running zotero-mcp holds it; 51 tests failed that way on 2026-09-20) and tests reading

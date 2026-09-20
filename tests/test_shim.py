@@ -21,6 +21,7 @@ import warnings
 from pathlib import Path
 
 import pytest
+from conftest import SHIM_PATH_GATE_ENV_VAR, SHIM_PATHS_ARE_ERRORS
 
 from zotero_mcp._shim import MovedModuleWarning, forwarder
 
@@ -201,11 +202,19 @@ def test_importtime_of_a_forwarder_only_module_shows_no_heavy_imports(tmp_path):
 
 
 def test_dash_W_error_flag_turns_the_warning_into_an_error(tmp_path):
-    """pyproject filters DeprecationWarning globally, so MovedModuleWarning
-    subclasses it and gives later PRs an opt-in gate:
-    `-W error::zotero_mcp._shim.MovedModuleWarning`. Prove the switch works
-    end-to-end in a subprocess, independent of pytest's own warning
-    filters."""
+    """`MovedModuleWarning` is addressable as a warning category by its own
+    dotted name, so a *downstream* caller can promote it to an error with
+    `-W error::zotero_mcp._shim.MovedModuleWarning` -- which is the whole
+    point of giving the deprecation its own subclass rather than raising a
+    bare DeprecationWarning.
+
+    This is a plain interpreter, where the class the flag binds at startup
+    stays the class the shim warns with. It is *not* how this suite gates
+    itself: `tests/conftest.py` purges `zotero_mcp*` from `sys.modules`,
+    which invalidates a startup-bound category, so the gate is armed from
+    conftest instead. See
+    `test_the_suites_own_configuration_turns_a_shim_access_into_an_error`.
+    """
     (tmp_path / "target_mod_6.py").write_text("VALUE = 1\n")
     (tmp_path / "old_mod_6.py").write_text(
         "from zotero_mcp._shim import forwarder\n__getattr__ = forwarder(__name__, 'target_mod_6')\n"
@@ -228,3 +237,37 @@ def test_dash_W_error_flag_turns_the_warning_into_an_error(tmp_path):
     )
     assert proc.returncode != 0, "the -W error switch must turn the access into a failure"
     assert "MovedModuleWarning" in proc.stderr
+
+
+@pytest.mark.skipif(
+    not SHIM_PATHS_ARE_ERRORS,
+    reason=f"the shim-path gate is disabled by {SHIM_PATH_GATE_ENV_VAR}=1",
+)
+def test_the_suites_own_configuration_turns_a_shim_access_into_an_error(tmp_path, monkeypatch):
+    """The gate `tests/conftest.py` arms must actually bite, under the filters
+    this suite really runs with.
+
+    This is a regression test for an *inert* gate, so it deliberately touches
+    no warning filters of its own: no ``pytest.warns``, no
+    ``catch_warnings`` -- just an attribute access on a real shim module,
+    asserting the ambient configuration turns it into an exception. Arming the
+    same filter through the interpreter's ``-W`` flag passes every "is the
+    filter registered?" check and still fails here, because ``-W`` binds the
+    category class at interpreter startup, `conftest`'s ``sys.modules`` purge
+    then discards that class, and the re-imported module's class is a
+    different object the registered filter cannot match -- after which
+    pyproject's ``ignore::DeprecationWarning`` swallows the warning and the
+    suite goes green having tested nothing.
+    """
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "target_mod_7.py").write_text("VALUE = 'from target'\n")
+    (tmp_path / "old_mod_7.py").write_text(
+        "from zotero_mcp._shim import forwarder\n__getattr__ = forwarder(__name__, 'target_mod_7')\n"
+    )
+    try:
+        import old_mod_7
+
+        with pytest.raises(MovedModuleWarning):
+            old_mod_7.VALUE
+    finally:
+        _purge("old_mod_7", "target_mod_7")
