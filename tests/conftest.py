@@ -1,7 +1,10 @@
 """Shared test fixtures for Zotero MCP tests."""
 
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -18,7 +21,6 @@ if _SRC.is_dir():
     for _name in [n for n in sys.modules if n == "zotero_mcp" or n.startswith("zotero_mcp.")]:
         del sys.modules[_name]
 
-import atexit, shutil, tempfile
 # config.py:19 and client.py:408 compute Path.home()/.config/zotero-mcp/... at import time, before any
 # fixture runs, so HOME is isolated here. Prevents update_database() flocking the developer's real
 # update.lock (a running zotero-mcp holds it; 51 tests failed that way on 2026-09-20) and tests reading
