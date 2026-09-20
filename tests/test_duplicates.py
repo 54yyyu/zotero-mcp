@@ -1115,7 +1115,10 @@ class TestGroupingInvariants:
 
         assert "Found 1 duplicate groups" in result
         assert result.count("## Group:") == 1
-        # Pins today's raw-lowercased-DOI key format, not a canonicalized one.
+        # The key both sides must agree on. Before the rewrite this was the
+        # raw DOI field lowercased; now it is `doi_match_key`'s canonical
+        # form. For this input the two coincide, which is exactly why the
+        # assertion can be written once and hold on both sides of the change.
         assert "## Group: doi:10.1000/abc" in result
         assert "CASE1" in result
         assert "CASE2" in result
@@ -1311,3 +1314,114 @@ class TestCanonicalGroupingKeys:
         result = server.find_duplicates(method="doi", ctx=dummy_ctx)
 
         assert result == "No duplicates found."
+
+
+# ---------------------------------------------------------------------------
+# #496 (PR 1, T1.5): what the shared title rule changes for method="title"
+# ---------------------------------------------------------------------------
+
+class TestTitleRuleChangesAutoMerge:
+    """Under `method="title"` / `"both"`, auto-merge groups on
+    `identifiers.normalize_title_for_matching` — Zotero's own
+    `duplicates.js normalizeString` rule — so the set of pairs it merges
+    moves in BOTH directions, not just outwards.
+
+    Pairs that differ only by a diacritic, by punctuation that folds to a
+    space, or by HTML markup and entities are now one group. A pair whose
+    titles agreed only because the old rule DELETED punctuation rather than
+    replacing it with a space ("Micro-Level" -> "microlevel") is no longer
+    one group. The DOI guarantee — that a widened group is a group whose
+    members' DOIs are equal after canonicalization — holds under
+    `method="doi"`, which is auto mode's default; it does not describe the
+    title rule, and these tests are here so that is written down rather
+    than discovered.
+
+    Nothing here escapes the two-call gate: auto mode still produces a plan
+    and refuses to act without the caller echoing its token back.
+    """
+
+    def test_auto_merge_title_method_merges_diacritic_variants(
+        self, monkeypatch, dummy_ctx
+    ):
+        """"Café Society" and "Cafe Society" are one work. The old rule kept
+        the combining accent (``é`` is a word character, so stripping
+        non-word characters left it in place) and saw two titles.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("D1", "Café Society", date_added="2020-01-01"),
+            _make_item("D2", "Cafe Society", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### title:cafe society" in plan
+        assert "**KEEP** `D1`" in plan
+        assert "- trash `D2`" in plan
+        # Still a plan, not an act.
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+        assert "plan_token=" in plan
+
+    def test_auto_merge_title_method_merges_markup_and_entity_variants(
+        self, monkeypatch, dummy_ctx
+    ):
+        """Zotero stores rich-text titles with markup, and imported records
+        arrive with HTML entities. All three spellings of one title are one
+        group; the old rule turned ``&amp;`` into the word "amp" and ``<i>``
+        into the letters "i", so all three disagreed.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("E1", "Trust &amp; Power", date_added="2020-01-01"),
+            _make_item("E2", "Trust & Power", date_added="2021-01-01"),
+            _make_item("E3", "<i>Trust</i> & Power", date_added="2022-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### title:trust power" in plan
+        assert "**KEEP** `E1`" in plan
+        assert "- trash `E2`" in plan
+        assert "- trash `E3`" in plan
+        assert "**Would trash 2 item(s)**" in plan
+        assert fake.client.patch_calls == []
+
+    def test_auto_merge_title_method_no_longer_merges_glued_word_variants(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The direction that narrows, and the reason it is an improvement.
+
+        The old rule DELETED punctuation, so "Micro-Level Study" collapsed to
+        "microlevel study" and matched "MicroLevel Study" — but by the same
+        token it did NOT match "Micro Level Study", which is the spelling a
+        real duplicate is far likelier to use. Replacing punctuation with a
+        space (what Zotero's own duplicate detection does) reverses both: the
+        spaced variant matches and the glued one does not.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("G1", "Micro-Level Study", date_added="2020-01-01"),
+            _make_item("G2", "MicroLevel Study", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert plan == "No duplicates found."
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+
+    def test_auto_merge_title_method_merges_the_spaced_variant_instead(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The other half of the trade the previous test describes."""
+        _auto_fake(monkeypatch, [
+            _make_item("G1", "Micro-Level Study", date_added="2020-01-01"),
+            _make_item("G3", "Micro Level Study", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### title:micro level study" in plan
+        assert "**KEEP** `G1`" in plan
+        assert "- trash `G3`" in plan
