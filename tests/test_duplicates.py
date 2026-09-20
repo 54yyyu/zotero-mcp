@@ -1300,6 +1300,37 @@ class TestCanonicalGroupingKeys:
         assert "**KEEP** `C1`" in plan
         assert "- trash `C2`" in plan
 
+    def test_conflicting_doi_guard_keeps_unparseable_dois_apart(
+        self, monkeypatch, dummy_ctx
+    ):
+        """Two DIFFERENT non-DOI placeholders are still a DOI conflict.
+
+        The guard keys each member's DOI as ``doi_match_key(raw) or
+        raw.lower()``. Canonicalisation is what the rewrite added; the
+        ``or raw.lower()`` fallback is what stops it from erasing the
+        conflict. `n/a` and `TBD` both canonicalise to None, so without the
+        fallback the set of DOIs in this group collapses to ``{None}`` — one
+        element — and the guard concludes the members agree on a DOI and
+        auto-merges two unrelated works, trashing one of them. Canonical
+        keys must not make a group's DOIs look equal just because neither
+        of them parses.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("GB1", "List of Contributors", doi="n/a",
+                       date_added="2020-01-01"),
+            _make_item("GB2", "List of Contributors", doi="TBD",
+                       date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in plan
+        assert "carry different DOIs" in plan
+        assert "GB1" in plan
+        assert "GB2" in plan
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+
     def test_garbage_doi_never_forms_a_group(self, monkeypatch, dummy_ctx):
         """Two items whose DOI field holds `n/a` are not duplicates of each
         other. Keying on the raw lowercased field made every such item in a
