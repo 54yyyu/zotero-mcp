@@ -3,13 +3,19 @@
 Upstream #496: four places in the codebase each answered "are these the
 same work?" differently. ``doi_match_key`` and ``normalize_title_for_matching``
 are the first two primitives of the single stdlib-only home for that
-normalisation; later tasks add ISBN/arXiv movers and ``metadata_match_keys``
-on top.
+normalisation; this file also covers the ISBN and arXiv movers
+(``isbn_match_keys``, ``arxiv_identity``); a later task adds
+``metadata_match_keys`` on top.
 """
 
 import pytest
 
-from zotero_mcp.identifiers import doi_match_key, normalize_title_for_matching
+from zotero_mcp.identifiers import (
+    arxiv_identity,
+    doi_match_key,
+    isbn_match_keys,
+    normalize_title_for_matching,
+)
 
 
 @pytest.mark.parametrize(
@@ -41,3 +47,26 @@ def test_doi_match_key(raw, expected):
 )
 def test_normalize_title_for_matching(raw, expected):
     assert normalize_title_for_matching(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("0-306-40615-2", {"9780306406157"}),
+        ("0306406153", set()),  # deliberately bad checksum
+    ],
+)
+def test_isbn_match_keys(raw, expected):
+    assert isbn_match_keys(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2101.00001v2", "2101.00001"),
+        ("10.48550/arXiv.2101.00001", "2101.00001"),
+        ("hep-ph/9901234v3", "hep-ph/9901234"),
+    ],
+)
+def test_arxiv_identity(raw, expected):
+    assert arxiv_identity(raw) == expected

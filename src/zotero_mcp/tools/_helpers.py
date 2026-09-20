@@ -33,7 +33,16 @@ from pyzotero.errors import (
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
-from zotero_mcp.identifiers import normalize_doi
+from zotero_mcp.identifiers import (  # noqa: F401 — re-exported for existing callers/tests
+    _TITLE_TAG_RE,
+    _isbn10_checksum_valid,
+    _isbn10_to_isbn13,
+    _isbn13_checksum_valid,
+    arxiv_identity,
+    normalize_arxiv_id,
+    normalize_doi,
+    normalize_isbn,
+)
 from zotero_mcp.local_db import get_local_zotero_reader
 from zotero_mcp.utils import _paginate
 
@@ -1183,14 +1192,6 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
-#: A tag, as far as a search query is concerned: '<' or '</' followed
-#: directly by a letter. Not ``clean_html``'s '<.*?>': CrossRef titles reach
-#: us entity-decoded (``utils.repair_crossref_string``), so a title about
-#: '&lt;10 Hz' arrives with a bare '<', and '<.*?>' would read everything up
-#: to the next '>' as one tag and delete the words in between.
-_TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
-
-
 def _title_search_query(title):
     """Reduce a freshly-fetched title to something quick search can match.
 
@@ -1512,120 +1513,12 @@ def identifier_lock(kind, raw):
                     del _identifier_locks[key]
 
 
-def _normalize_isbn(raw):
-    """Normalize an ISBN string and validate the checksum.
-
-    Accepts ISBN-10, ISBN-13, and prefixed/URL forms (isbn:, https://isbndb.com/...).
-    Strips hyphens, spaces, and any prefix. Returns the canonical digits-only
-    form (13-digit preferred — ISBN-10 inputs are converted to ISBN-13).
-    Returns None on invalid input or failing checksum.
-    """
-    if not raw:
-        return None
-    s = str(raw).strip()
-    if s.lower().startswith("isbn:"):
-        s = s[5:].strip()
-    if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
-        s = s[5:].strip()
-    if s.lower().startswith("http://") or s.lower().startswith("https://"):
-        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])",
-                      s, flags=re.IGNORECASE)
-        if not m:
-            return None
-        s = m.group(1)
-    digits = re.sub(r"[\s\-]", "", s)
-    if re.match(r"^\d{9}[\dXx]$", digits):
-        if not _isbn10_checksum_valid(digits):
-            return None
-        return _isbn10_to_isbn13(digits)
-    if re.match(r"^97[89]\d{10}$", digits):
-        if not _isbn13_checksum_valid(digits):
-            return None
-        return digits
-    return None
-
-
-def _isbn10_checksum_valid(s):
-    total = 0
-    for i, ch in enumerate(s):
-        v = 10 if ch in ("X", "x") else int(ch)
-        total += v * (10 - i)
-    return total % 11 == 0
-
-
-def _isbn13_checksum_valid(s):
-    total = 0
-    for i, ch in enumerate(s):
-        v = int(ch)
-        total += v if i % 2 == 0 else v * 3
-    return total % 10 == 0
-
-
-def _isbn10_to_isbn13(isbn10):
-    core = "978" + isbn10[:9]
-    total = 0
-    for i, ch in enumerate(core):
-        total += int(ch) * (1 if i % 2 == 0 else 3)
-    check = (10 - total % 10) % 10
-    return core + str(check)
-
-
-_ARXIV_LEGACY_RE = r"[a-z][a-z\-]*(?:\.[a-z][a-z\-]*)?/\d{7}(?:v\d+)?"
-
-
-def _normalize_arxiv_id(raw):
-    """Normalize an arXiv ID from various input formats."""
-    if not raw:
-        return None
-    s = raw.strip()
-    if s.lower().startswith("arxiv:"):
-        s = s[6:].strip()
-    if s.lower().startswith("http://") or s.lower().startswith("https://"):
-        m = re.search(
-            r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|"
-            + _ARXIV_LEGACY_RE + r")(?:\.pdf)?",
-            s, flags=re.IGNORECASE,
-        )
-        if not m:
-            return None
-        s = m.group(1)
-    if re.match(r"^[0-9]{4}\.[0-9]{4,5}(?:v\d+)?$", s):
-        return s
-    if re.match(rf"^{_ARXIV_LEGACY_RE}$", s, flags=re.IGNORECASE):
-        return s
-    return None
-
-
-# arXiv's DataCite DOIs are minted as 10.48550/arXiv.<id>, which is what
-# Zotero puts in the DOI field for a preprint imported from arXiv.
-_ARXIV_DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$",
-                           re.IGNORECASE)
-_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
-
-
-def _arxiv_identity(raw):
-    """The version-independent arXiv identity of an ID, URL, DOI or archiveID.
-
-    ``_normalize_arxiv_id`` deliberately keeps the ``v2`` suffix: callers use
-    its result to fetch a specific version from arXiv. Deduplication wants the
-    opposite — 2401.00001v1 and 2401.00001v2 are the same paper and must not
-    become two library items — so identity comparison goes through here
-    instead. This also accepts arXiv's DataCite DOI form, so an item added by
-    DOI is recognized by a later add of the same paper's arXiv ID.
-
-    Returns the bare, unversioned ID, or None if ``raw`` isn't an arXiv
-    identifier in any of those forms.
-    """
-    if not raw:
-        return None
-    s = str(raw).strip()
-    m = _ARXIV_DOI_RE.match(s)
-    if m:
-        s = m.group(1)
-    ident = _normalize_arxiv_id(s)
-    if not ident:
-        return None
-    return _ARXIV_VERSION_RE.sub("", ident)
+#: Compatibility aliases. The implementations moved to the public,
+#: stdlib-only :mod:`zotero_mcp.identifiers` so consumers can import them
+#: without pulling in the tool layer. Existing callers keep working.
+_normalize_isbn = normalize_isbn
+_normalize_arxiv_id = normalize_arxiv_id
+_arxiv_identity = arxiv_identity
 
 
 # ---------------------------------------------------------------------------

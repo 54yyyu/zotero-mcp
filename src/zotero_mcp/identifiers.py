@@ -23,7 +23,16 @@ import html
 import re
 import unicodedata
 
-__all__ = ["normalize_doi", "doi_match_key", "normalize_title_for_matching"]
+__all__ = [
+    "normalize_doi",
+    "doi_match_key",
+    "normalize_isbn",
+    "isbn_match_keys",
+    "normalize_arxiv_id",
+    "arxiv_identity",
+    "arxiv_identity_from_extra",
+    "normalize_title_for_matching",
+]
 
 #: A well-formed DOI: the ``10.NNNN`` registrant prefix plus a suffix.
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
@@ -92,6 +101,139 @@ def doi_match_key(raw):
     """
     doi = normalize_doi(raw)
     return doi.lower() if doi else None
+
+
+def normalize_isbn(raw):
+    """Normalize an ISBN string and validate the checksum.
+
+    Accepts ISBN-10, ISBN-13, and prefixed/URL forms (isbn:, https://isbndb.com/...).
+    Strips hyphens, spaces, and any prefix. Returns the canonical digits-only
+    form (13-digit preferred — ISBN-10 inputs are converted to ISBN-13).
+    Returns None on invalid input or failing checksum.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.lower().startswith("isbn:"):
+        s = s[5:].strip()
+    if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
+        s = s[5:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])",
+                      s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        s = m.group(1)
+    digits = re.sub(r"[\s\-]", "", s)
+    if re.match(r"^\d{9}[\dXx]$", digits):
+        if not _isbn10_checksum_valid(digits):
+            return None
+        return _isbn10_to_isbn13(digits)
+    if re.match(r"^97[89]\d{10}$", digits):
+        if not _isbn13_checksum_valid(digits):
+            return None
+        return digits
+    return None
+
+
+def _isbn10_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = 10 if ch in ("X", "x") else int(ch)
+        total += v * (10 - i)
+    return total % 11 == 0
+
+
+def _isbn13_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = int(ch)
+        total += v if i % 2 == 0 else v * 3
+    return total % 10 == 0
+
+
+def _isbn10_to_isbn13(isbn10):
+    core = "978" + isbn10[:9]
+    total = 0
+    for i, ch in enumerate(core):
+        total += int(ch) * (1 if i % 2 == 0 else 3)
+    check = (10 - total % 10) % 10
+    return core + str(check)
+
+
+def isbn_match_keys(raw):
+    """Every valid ISBN in a Zotero ISBN field (space/comma/semicolon separated), as ISBN-13."""
+    if not raw:
+        return frozenset()
+    return frozenset(n for tok in re.split(r"[,;\s]+", str(raw)) if tok and (n := normalize_isbn(tok)))
+
+
+_ARXIV_LEGACY_RE = r"[a-z][a-z\-]*(?:\.[a-z][a-z\-]*)?/\d{7}(?:v\d+)?"
+
+
+def normalize_arxiv_id(raw):
+    """Normalize an arXiv ID from various input formats."""
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.lower().startswith("arxiv:"):
+        s = s[6:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(
+            r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|"
+            + _ARXIV_LEGACY_RE + r")(?:\.pdf)?",
+            s, flags=re.IGNORECASE,
+        )
+        if not m:
+            return None
+        s = m.group(1)
+    if re.match(r"^[0-9]{4}\.[0-9]{4,5}(?:v\d+)?$", s):
+        return s
+    if re.match(rf"^{_ARXIV_LEGACY_RE}$", s, flags=re.IGNORECASE):
+        return s
+    return None
+
+
+# arXiv's DataCite DOIs are minted as 10.48550/arXiv.<id>, which is what
+# Zotero puts in the DOI field for a preprint imported from arXiv.
+_ARXIV_DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$",
+                           re.IGNORECASE)
+_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
+
+
+def arxiv_identity(raw):
+    """The version-independent arXiv identity of an ID, URL, DOI or archiveID.
+
+    ``normalize_arxiv_id`` deliberately keeps the ``v2`` suffix: callers use
+    its result to fetch a specific version from arXiv. Deduplication wants the
+    opposite — 2401.00001v1 and 2401.00001v2 are the same paper and must not
+    become two library items — so identity comparison goes through here
+    instead. This also accepts arXiv's DataCite DOI form, so an item added by
+    DOI is recognized by a later add of the same paper's arXiv ID.
+
+    Returns the bare, unversioned ID, or None if ``raw`` isn't an arXiv
+    identifier in any of those forms.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    m = _ARXIV_DOI_RE.match(s)
+    if m:
+        s = m.group(1)
+    ident = normalize_arxiv_id(s)
+    if not ident:
+        return None
+    return _ARXIV_VERSION_RE.sub("", ident)
+
+
+#: Matches an ``arXiv:<id>`` line in a Zotero item's Extra field.
+_ARXIV_EXTRA_RE = re.compile(r"^\s*arxiv:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
+
+
+def arxiv_identity_from_extra(extra):
+    """arXiv identity parsed from an ``arXiv:<id>`` line in an Extra field, or ``None``."""
+    m = _ARXIV_EXTRA_RE.search(extra or "")
+    return arxiv_identity(m.group(1)) if m else None
 
 
 #: An HTML/XML start or end tag, e.g. ``<i>`` or ``</sub>``. Stripped before
