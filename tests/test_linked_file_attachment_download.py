@@ -57,6 +57,15 @@ def make_zotero_db(path, *, stored_path):
     )
     conn.execute("CREATE TABLE deletedItems (itemID INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT)")
+    # Not needed by the paths this file exercises (an attachment's own title
+    # resolves by name, with no mapping lookup), but every fixture that
+    # builds itemData carries it (#570) so the next test to reach a
+    # base-resolving path does not fail mysteriously.
+    conn.execute(
+        "CREATE TABLE baseFieldMappingsCombined ("
+        "itemTypeID INT, baseFieldID INT, fieldID INT, "
+        "PRIMARY KEY (itemTypeID, baseFieldID, fieldID))"
+    )
     conn.execute(
         "CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT)"
     )

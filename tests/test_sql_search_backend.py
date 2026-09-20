@@ -590,3 +590,213 @@ def test_advanced_search_sql_unknown_group_returns_none(tmp_path):
     finally:
         reader.close()
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# base-field-mapped titles (#570) — deterministic, offline coverage for
+# _base_field_resolved_join. tests/live/test_sqlite_base_field_titles.py
+# exercises the same fix against a real library's actual case/email/statute
+# items, but that suite only runs opt-in and only if the tester's own
+# library happens to have one; this fixture guarantees the shape exists
+# every run, in CI included.
+# ---------------------------------------------------------------------------
+
+_CASE_ITEM_TYPE_ID = 4
+_CASE_NAME_FIELD_ID = 100
+_DATE_FIELD_ID = 13
+_DATE_DECIDED_FIELD_ID = 101
+
+
+#: get_recent_items hydrates its page through _FULL_ITEM_COLUMNS, which reads
+#: beyond the search corpus's schema (see test_recent_items_scan_choice.py's
+#: identically-purposed _HYDRATION_SCHEMA).
+_HYDRATION_SCHEMA = """
+ALTER TABLE items ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE itemNotes ADD COLUMN title TEXT;
+CREATE TABLE itemAttachments (
+    itemID INTEGER PRIMARY KEY, parentItemID INTEGER, linkMode INTEGER,
+    contentType TEXT, path TEXT
+);
+CREATE TABLE itemAnnotations (
+    itemID INTEGER PRIMARY KEY, parentItemID INTEGER, type INTEGER, text TEXT,
+    comment TEXT, color TEXT, pageLabel TEXT, sortIndex TEXT, position TEXT
+);
+CREATE TABLE relationPredicates (predicateID INTEGER PRIMARY KEY, predicate TEXT);
+CREATE TABLE itemRelations (itemID INTEGER, predicateID INTEGER, object TEXT);
+"""
+
+
+def _build_db_with_case_item(db_path: Path) -> None:
+    """A minimal fixture with one item whose title lives in `caseName`, not
+    `title` — the same shape as Zotero's real `case`/`statute`/`email`
+    types (baseFieldMappingsCombined), which is what broke #570.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_search_corpus.SCHEMA)
+    conn.executescript(_HYDRATION_SCHEMA)
+
+    conn.execute("INSERT INTO libraries VALUES (1, 'user', 1, 1)")
+    conn.executemany(
+        "INSERT INTO itemTypes (itemTypeID, typeName) VALUES (?, ?)",
+        [(1, "journalArticle"), (_CASE_ITEM_TYPE_ID, "case")],
+    )
+    conn.executemany(
+        "INSERT INTO fields (fieldID, fieldName) VALUES (?, ?)",
+        [(1, "title"), (_CASE_NAME_FIELD_ID, "caseName"),
+         (_DATE_FIELD_ID, "date"), (_DATE_DECIDED_FIELD_ID, "dateDecided")],
+    )
+    # The mappings themselves: for itemTypeID=case, base field "title"
+    # (fieldID 1) actually lives under fieldID 100 ("caseName") and base field
+    # "date" under fieldID 101 ("dateDecided") — exactly what
+    # Zotero.ItemFields.getFieldIDFromTypeAndBase looks up at read time.
+    conn.executemany(
+        "INSERT INTO baseFieldMappingsCombined (itemTypeID, baseFieldID, fieldID) "
+        "VALUES (?, ?, ?)",
+        [
+            (_CASE_ITEM_TYPE_ID, 1, _CASE_NAME_FIELD_ID),
+            (_CASE_ITEM_TYPE_ID, _DATE_FIELD_ID, _DATE_DECIDED_FIELD_ID),
+        ],
+    )
+
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded, dateModified) "
+        "VALUES (1, 'CASEITM1', ?, 1, '2024-01-01 00:00:00', '2024-01-01 00:00:00')",
+        (_CASE_ITEM_TYPE_ID,),
+    )
+    conn.execute(
+        "INSERT INTO itemDataValues (valueID, value) VALUES (1, 'Marbury v. Madison')"
+    )
+    conn.execute(
+        "INSERT INTO itemData (itemID, fieldID, valueID) VALUES (1, ?, 1)",
+        (_CASE_NAME_FIELD_ID,),
+    )
+    # The case's date, in Zotero's multipart storage form, under `dateDecided`
+    # rather than `date`. The API-parity corpus deliberately omits this (see
+    # _search_corpus.CORPUS), so date resolution is covered here instead.
+    conn.execute(
+        "INSERT INTO itemDataValues (valueID, value) "
+        "VALUES (3, '1803-02-24 February 24, 1803')"
+    )
+    conn.execute(
+        "INSERT INTO itemData (itemID, fieldID, valueID) VALUES (1, ?, 3)",
+        (_DATE_DECIDED_FIELD_ID,),
+    )
+
+    # A plain-title item sorting alphabetically *before* the case item's real
+    # title. This is what makes test_get_recent_items_... below meaningful:
+    # SQLite's default NULL ordering puts NULLs first in ASC, so the old
+    # hardcoded-fieldID=1 join (title_val.value NULL for the case item) would
+    # have put CASEITM1 first regardless of its real title — the same wrong
+    # answer a case-insensitive reader would need this fixture to catch.
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded, dateModified) "
+        "VALUES (2, 'PLAINITM', 1, 1, '2024-01-01 00:00:00', '2024-01-01 00:00:00')"
+    )
+    conn.execute("INSERT INTO itemDataValues (valueID, value) VALUES (2, 'Alpha Paper')")
+    conn.execute("INSERT INTO itemData (itemID, fieldID, valueID) VALUES (2, 1, 2)")
+
+    conn.commit()
+    conn.close()
+
+
+def _case_item_reader(tmp_path) -> LocalZoteroReader:
+    db_path = tmp_path / "zotero.sqlite"
+    _build_db_with_case_item(db_path)
+    return LocalZoteroReader(db_path=str(db_path))
+
+
+def test_search_items_sql_finds_title_mapped_to_a_type_specific_field(tmp_path):
+    reader = _case_item_reader(tmp_path)
+    try:
+        result = reader.search_items_sql("Marbury", item_type="case", group_id=0)
+    finally:
+        reader.close()
+    assert result is not None
+    assert {r["key"] for r in result} == {"CASEITM1"}
+
+
+def test_hydrated_row_resolves_title_mapped_to_a_type_specific_field(tmp_path):
+    from zotero_mcp.utils import item_display_title
+
+    reader = _case_item_reader(tmp_path)
+    try:
+        hydrated = reader.get_items_by_keys(["CASEITM1"])
+    finally:
+        reader.close()
+    assert item_display_title(hydrated["CASEITM1"]["data"]) == "Marbury v. Madison"
+
+
+def test_get_recent_items_sorts_by_title_mapped_to_a_type_specific_field(tmp_path):
+    """get_recent_items(sort="title") has the same hardcoded-fieldID=1 join
+    _base_field_resolved_join fixed in the hydration template — see the
+    comment on `title_join` in get_recent_items. Sorting ascending by title
+    must place PLAINITM ("Alpha Paper") before CASEITM1 ("Marbury v.
+    Madison"); the pre-fix join left CASEITM1's title NULL, which SQLite
+    sorts first in ASC regardless of the real title.
+    """
+    reader = _case_item_reader(tmp_path)
+    try:
+        result = reader.get_recent_items(sort="title", direction="asc", group_id=0)
+    finally:
+        reader.close()
+    assert result is not None
+    assert [item["key"] for item in result] == ["PLAINITM", "CASEITM1"]
+
+
+# --- conditions, not just projections -------------------------------------
+#
+# advanced_search_sql used to hydrate through a base-resolved SELECT while
+# matching through a WHERE that hardcoded fieldID 1 / f.fieldName='date'. The
+# result was a statement that contradicted itself: the row it returned showed
+# a title the condition had just failed to match on. These pin the WHERE side.
+
+
+def _advanced(reader, field, operation, value):
+    return reader.advanced_search_sql(
+        [{"field": field, "operation": operation, "value": value}], group_id=0
+    )
+
+
+def test_advanced_search_matches_title_mapped_to_a_type_specific_field(tmp_path):
+    reader = _case_item_reader(tmp_path)
+    try:
+        result = _advanced(reader, "title", "contains", "Marbury")
+    finally:
+        reader.close()
+    assert result is not None, "backend declined the query; nothing was tested"
+    assert {r["key"] for r in result} == {"CASEITM1"}
+
+
+def test_advanced_search_matches_date_mapped_to_a_type_specific_field(tmp_path):
+    """A case's date is `dateDecided`; the display half must still match."""
+    reader = _case_item_reader(tmp_path)
+    try:
+        result = _advanced(reader, "date", "contains", "February")
+    finally:
+        reader.close()
+    assert result is not None, "backend declined the query; nothing was tested"
+    assert {r["key"] for r in result} == {"CASEITM1"}
+
+
+def test_advanced_search_year_reads_the_iso_half_of_a_mapped_date(tmp_path):
+    """`year` reads SUBSTR(value, 1, 4) of the RAW multipart value — which for
+    a case lives under `dateDecided`, not `date`."""
+    reader = _case_item_reader(tmp_path)
+    try:
+        result = _advanced(reader, "year", "is", "1803")
+    finally:
+        reader.close()
+    assert result is not None, "backend declined the query; nothing was tested"
+    assert {r["key"] for r in result} == {"CASEITM1"}
+
+
+def test_hydrated_row_resolves_date_mapped_to_a_type_specific_field(tmp_path):
+    """The projection strips Zotero's ISO prefix from the resolved column, so
+    a mapped date renders like any other — not "1803-02-24 February...".
+    """
+    reader = _case_item_reader(tmp_path)
+    try:
+        hydrated = reader.get_items_by_keys(["CASEITM1"])
+    finally:
+        reader.close()
+    assert hydrated["CASEITM1"]["data"]["date"] == "February 24, 1803"

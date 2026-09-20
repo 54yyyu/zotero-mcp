@@ -238,6 +238,14 @@ def _create_feed_db(db_path: Path) -> None:
             firstName TEXT,
             lastName TEXT
         );
+        -- Real Zotero schema table. get_feed_items resolves its title through
+        -- baseFieldMappingsCombined now (#570), so the fixture needs it even
+        -- though no feed item type remaps a title. Empty is the correct
+        -- "nothing remapped here", not a stub.
+        CREATE TABLE baseFieldMappingsCombined (
+            itemTypeID INT, baseFieldID INT, fieldID INT,
+            PRIMARY KEY (itemTypeID, baseFieldID, fieldID)
+        );
         """
     )
     conn.executemany(

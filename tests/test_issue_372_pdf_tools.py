@@ -80,6 +80,14 @@ def make_zotero_db(path, *, stored_filename="paper.pdf"):
     conn.execute("INSERT INTO itemData VALUES (2, 1, 11)")
     conn.execute("CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT)")
     conn.execute("INSERT INTO fields VALUES (1, 'title')")
+    # get_items_with_text resolves title through baseFieldMappingsCombined
+    # (#570). Attachments themselves never remap a title, so this stays empty
+    # — but the table has to exist for the join to run.
+    conn.execute(
+        "CREATE TABLE baseFieldMappingsCombined ("
+        "itemTypeID INT, baseFieldID INT, fieldID INT, "
+        "PRIMARY KEY (itemTypeID, baseFieldID, fieldID))"
+    )
     conn.execute("CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)")
     conn.execute("CREATE TABLE itemCreators (itemID INT, creatorID INT)")
     conn.execute(

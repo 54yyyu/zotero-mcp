@@ -51,6 +51,13 @@ def make_zotero_db(path, keys):
     conn.execute(
         "CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT)"
     )
+    # get_items_with_text resolves title per item type through this table
+    # (#570). Empty: no type in this fixture remaps anything.
+    conn.execute(
+        "CREATE TABLE baseFieldMappingsCombined ("
+        "itemTypeID INT, baseFieldID INT, fieldID INT, "
+        "PRIMARY KEY (itemTypeID, baseFieldID, fieldID))"
+    )
     conn.execute(
         "CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT)"
     )
