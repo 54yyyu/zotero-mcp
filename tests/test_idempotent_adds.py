@@ -136,6 +136,23 @@ class TestFindExistingItems:
     def test_doi_no_match(self, fake_zot):
         assert _helpers.find_existing_items(fake_zot, doi="10.9999/other") == []
 
+    def test_doi_match_is_case_insensitive(self, fake_zot):
+        """#496: DOIs are case-insensitive for resolution, but Zotero stores
+        whatever case an item arrived with. Re-adding the same DOI in a
+        different case must reuse the stored item, not create a duplicate."""
+        fake_zot._items[0]["data"]["DOI"] = DOI.upper()
+        out = _helpers.find_existing_items(fake_zot, doi=DOI.lower())
+        assert [i["key"] for i in out] == ["EXIST001"]
+
+    def test_doi_match_url_form_query_against_bare_stored(self, fake_zot):
+        """The prefixed-stored/bare-query direction is covered above; this
+        pins the reverse — a URL-form query DOI against a bare stored one —
+        and cases the two differently so it cannot pass on case-sensitivity
+        alone."""
+        fake_zot._items[0]["data"]["DOI"] = DOI.lower()
+        out = _helpers.find_existing_items(fake_zot, doi=f"https://doi.org/{DOI.upper()}")
+        assert [i["key"] for i in out] == ["EXIST001"]
+
     def test_malformed_entries_are_skipped(self, fake_zot, monkeypatch):
         """A live batch import got an int back inside the items() list. The
         try/except upstream only wraps the call, not this iteration, so the
@@ -547,6 +564,20 @@ class TestAddByDoiIfExists:
         assert fake_zot.addto_calls == addto_after_first   # nothing re-filed
         assert len(fake_zot.updated) == updates_after_first  # no tag rewrite
         assert "already in ['COLB0001']" in result
+
+    def test_file_mode_reuses_doi_stored_in_a_different_case(self, monkeypatch, fake_zot, dummy_ctx):
+        """#496: re-adding 10.1234/TEST.2024.001 beside a stored
+        10.1234/test.2024.001 (or vice versa) must reuse the existing item.
+        Before the fix, phase 1's dedup check compared DOIs case-sensitively
+        and silently created a duplicate."""
+        fake_zot._items[0]["data"]["DOI"] = DOI.upper()
+        _patch_clients(monkeypatch, fake_zot)
+
+        result = server.add_by_doi(doi=DOI, collections=["COLB0001"], if_exists="file", ctx=dummy_ctx)
+
+        assert fake_zot.created == []
+        assert ("COLB0001", "EXIST001") in fake_zot.addto_calls
+        assert "Already in library" in result
 
     def test_skip_mode_touches_nothing(self, monkeypatch, fake_zot, dummy_ctx):
         _patch_clients(monkeypatch, fake_zot)

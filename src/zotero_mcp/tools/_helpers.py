@@ -39,6 +39,8 @@ from zotero_mcp.identifiers import (  # noqa: F401 — re-exported for existing 
     _isbn10_to_isbn13,
     _isbn13_checksum_valid,
     arxiv_identity,
+    doi_match_key,
+    isbn_match_keys,
     normalize_arxiv_id,
     normalize_doi,
     normalize_isbn,
@@ -1283,14 +1285,20 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     """
     if doi:
         query = doi
+        # doi_match_key case-folds both sides so a stored DOI in a different
+        # case (Zotero preserves whatever case an item arrived with; DOIs are
+        # case-insensitive for resolution) still matches. The ``or
+        # doi.lower()`` fallback keeps today's behaviour for a `doi` that
+        # doi_match_key rejects (malformed) rather than matching nothing.
+        want = doi_match_key(doi) or doi.lower()
         def _matches(data):
-            return _normalize_doi(data.get("DOI") or "") == doi
+            return doi_match_key(data.get("DOI")) == want
     elif arxiv_id:
         # Compare on the version-independent identity, and search on it too:
         # quick-search is a substring match, so the bare id finds a stored
         # 'arXiv:2401.00001v2' while the versioned form would miss a stored
         # bare one.
-        ident = _arxiv_identity(arxiv_id) or arxiv_id
+        ident = arxiv_identity(arxiv_id) or arxiv_id
         query = ident
         def _matches(data):
             # Zotero stores an arXiv identity in up to four places depending
@@ -1298,19 +1306,13 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             # Checking only url+extra misses connector- and DOI-sourced items,
             # which is how a re-add duplicates a paper already in the library.
             for field in ("url", "archiveID", "DOI"):
-                if _arxiv_identity(data.get(field) or "") == ident:
+                if arxiv_identity(data.get(field) or "") == ident:
                     return True
             return f"arxiv:{ident}".lower() in (data.get("extra") or "").lower()
     elif isbn:
         query = isbn
         def _matches(data):
-            # Zotero's ISBN field may hold several space-separated values,
-            # in 10- or 13-digit form; compare each normalized to ISBN-13.
-            raw = data.get("ISBN") or ""
-            for token in re.split(r"[,;\s]+", raw):
-                if token and _normalize_isbn(token) == isbn:
-                    return True
-            return False
+            return isbn in isbn_match_keys(data.get("ISBN"))
     elif url:
         query = url
         def _matches(data):
