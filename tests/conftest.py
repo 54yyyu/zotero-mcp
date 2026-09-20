@@ -57,6 +57,23 @@ def pyzotero_http_module():
         zot.client.close()
 
 
+def pyzotero_local_endpoint():
+    """The base URL pyzotero itself builds for a local client.
+
+    pyzotero 1.15.2 moved the local API off ``localhost`` onto
+    ``127.0.0.1``.
+    We pass ``local=True`` and never set the endpoint ourselves, so reading it
+    back off pyzotero keeps the assertion on *our* choice — that this client
+    addresses the local API rather than the web one — instead of restating a
+    host upstream is free to change again.
+    """
+    zot = Zotero(library_id="0", library_type="user", api_key=None, local=True)
+    try:
+        return zot.endpoint
+    finally:
+        zot.client.close()
+
+
 @pytest.fixture(autouse=True)
 def isolate_local_write_state(monkeypatch, tmp_path):
     """Keep local-write config and capability probing out of the tests.

@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from conftest import pyzotero_local_endpoint
 from pyzotero.errors import LocalAPIDeniedError, TooManyRequestsError
 
 from zotero_mcp import client as _client
@@ -181,7 +182,7 @@ class TestGetLocalWriteClient:
         assert zot.local_api_key == "k"
         # Cached so the first write of each call doesn't re-probe.
         assert zot.server_id == "srv-9"
-        assert zot.endpoint == "http://localhost:23119/api"
+        assert zot.endpoint == pyzotero_local_endpoint()
 
     def test_user_library_is_always_users_zero(self, local_mode, monkeypatch):
         """The local API addresses the user library as users/0, whatever the
