@@ -99,9 +99,14 @@ def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
 
     assert result.path == webdav_path
     assert result.source == "WebDAV"
-    assert result.errors == [
-        "Local Zotero: not available",
-    ]
+    assert webdav_path.read_bytes() == b"%PDF-1.4"
+    # The local-API attempt is deterministic (it comes from _FailingZotero's
+    # own message, not the machine), so it must show up as a tried-and-failed
+    # step before WebDAV engaged. Whether *local storage* (the SQLite-backed
+    # probe ahead of it) also contributes an entry depends on ZOTERO_LOCAL and
+    # whether this machine has a real Zotero database — that's environment
+    # noise, not what this test is about, so it is deliberately not asserted.
+    assert "Local Zotero: not available" in result.errors
 
 
 @skip_on_ci

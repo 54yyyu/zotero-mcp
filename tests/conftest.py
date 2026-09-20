@@ -18,6 +18,24 @@ if _SRC.is_dir():
     for _name in [n for n in sys.modules if n == "zotero_mcp" or n.startswith("zotero_mcp.")]:
         del sys.modules[_name]
 
+import atexit, shutil, tempfile
+# config.py:19 and client.py:408 compute Path.home()/.config/zotero-mcp/... at import time, before any
+# fixture runs, so HOME is isolated here. Prevents update_database() flocking the developer's real
+# update.lock (a running zotero-mcp holds it; 51 tests failed that way on 2026-09-20) and tests reading
+# the real config.json. Live tests need the real home and are gated by the same variable.
+LIVE_TESTS_ENV_VAR = "ZOTERO_MCP_LIVE_TESTS"
+if os.environ.get(LIVE_TESTS_ENV_VAR, "").strip() != "1":
+    _TEST_HOME = tempfile.mkdtemp(prefix="zotero-mcp-tests-home-")
+    os.environ["HOME"] = _TEST_HOME
+    os.environ["USERPROFILE"] = _TEST_HOME   # Path.home() on Windows
+    atexit.register(shutil.rmtree, _TEST_HOME, True)
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"   # tests live at several depths; never derive from their own __file__
+
+@pytest.fixture
+def fixtures_dir() -> Path:
+    return FIXTURES_DIR
+
 # Marker for tests that use tmp_path and fail on GitHub Actions
 skip_on_ci = pytest.mark.skipif(
     os.environ.get("CI") == "true",
