@@ -15,7 +15,7 @@ This file scans the tree for exactly that: any quoted ``"zotero_mcp...."``
 string or ``from``/``import`` statement whose dotted path is a shim's old
 path (or a deeper attribute reached through it). It fails loudly, listing
 every hit as ``file:line: old -> use new``, so a move PR can't leave a
-stale reference behind.
+stale reference behind. It does not scan itself -- see ``_test_files``.
 """
 
 import re
@@ -26,15 +26,18 @@ import pytest
 # Old dotted path -> new dotted path. Each move PR appends its own row(s)
 # here as part of moving a module; this map is the single source of truth
 # both guard tests below check against. Empty in PR 0 (scaffolding) because
-# nothing has moved yet — the two tests below are still exercised, they
-# just have nothing to flag until later PRs add rows.
+# nothing has moved yet: with no rows, the two whole-tree guards below scan
+# nothing at all and pass vacuously. What keeps the scan itself honest until
+# PR 1 adds a row is `test_whole_tree_scan_finds_and_formats_real_hits`,
+# which runs it over the real tree against a synthetic row.
 SHIMS: dict[str, str] = {}
 
 # This file lives at the top level of tests/ (never inside a subpackage —
 # see the module docstring in tests/conftest.py for why tests/ has no
 # __init__.py), so parents[1] is the repo root. If this file is ever moved
 # into a subdirectory of tests/, this needs to become parents[2].
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_GUARD_FILE = Path(__file__).resolve()
+_REPO_ROOT = _GUARD_FILE.parents[1]
 _SRC_ROOT = _REPO_ROOT / "src"
 
 _QUOTED_PATH_RE = re.compile(r"""(['"])(zotero_mcp(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\1""")
@@ -161,6 +164,35 @@ def _find_violations(files: list[Path], shims: dict[str, str], repo_root: Path, 
     return messages
 
 
+def _test_files() -> list[Path]:
+    """Every file under `tests/` the guard scans — that is, all of them
+    except this one.
+
+    This file is exempt because it *is* the map: `SHIMS`, the unit tests
+    below and the docstrings all quote old paths deliberately, and the
+    scanner cannot tell those apart from a stale reference. Without the
+    exemption, the PR that adds the first row could not add it — a
+    ``zotero_mcp.client`` row matches 7 lines of this file on its own, a
+    ``zotero_mcp.cli`` row 16. Nothing else is exempt: a real reference in
+    any other test file must still fail the build.
+    """
+    return [f for f in sorted((_REPO_ROOT / "tests").rglob("*.py")) if f.resolve() != _GUARD_FILE]
+
+
+def _source_files(shims: dict[str, str]) -> list[Path]:
+    """Every production module the guard scans.
+
+    `_shim.py` and the shim stub file for each row (the file implementing
+    the old dotted path itself, which legitimately mentions both the old
+    and new paths to build the forwarder) are excluded.
+    """
+    return [
+        f
+        for f in sorted((_SRC_ROOT / "zotero_mcp").rglob("*.py"))
+        if f.name != "_shim.py" and _module_dotted_path(f, _SRC_ROOT) not in shims
+    ]
+
+
 def test_no_test_patches_or_imports_a_shim_path():
     """No test file may patch or import a shim's old dotted path.
 
@@ -169,8 +201,7 @@ def test_no_test_patches_or_imports_a_shim_path():
     patches an attribute nothing calls anymore — so this must fail the
     build instead of silently testing nothing.
     """
-    files = sorted((_REPO_ROOT / "tests").rglob("*.py"))
-    violations = _find_violations(files, SHIMS, _REPO_ROOT, _SRC_ROOT)
+    violations = _find_violations(_test_files(), SHIMS, _REPO_ROOT, _SRC_ROOT)
     assert not violations, "tests reference a shim's old path; update to the new path:\n" + "\n".join(violations)
 
 
@@ -178,19 +209,80 @@ def test_no_source_module_imports_a_shim_path():
     """No production module may import or reference a shim's old dotted
     path either — internal callers must use the new location directly,
     since the shim only exists to keep *external* callers working.
-
-    The shim stub file for a given `SHIMS` row (the file implementing the
-    old dotted path itself, which legitimately mentions both the old and
-    new paths to build the forwarder) is excluded.
     """
-    zotero_mcp_root = _SRC_ROOT / "zotero_mcp"
-    files = [
-        f
-        for f in sorted(zotero_mcp_root.rglob("*.py"))
-        if f.name != "_shim.py" and _module_dotted_path(f, _SRC_ROOT) not in SHIMS
-    ]
-    violations = _find_violations(files, SHIMS, _REPO_ROOT, _SRC_ROOT)
+    violations = _find_violations(_source_files(SHIMS), SHIMS, _REPO_ROOT, _SRC_ROOT)
     assert not violations, "source references a shim's old path; update to the new path:\n" + "\n".join(violations)
+
+
+# A row that is not in `SHIMS` and whose old path is still all over the real
+# tree — `zotero_mcp.utils` is PR 9's move, the last one in the series. It
+# stands in for a real row so the whole-tree scan can be exercised while
+# `SHIMS` is empty.
+_SYNTHETIC_ROW = {"zotero_mcp.utils": "zotero_mcp.formatting.display"}
+_VIOLATION_RE = re.compile(
+    r"^(?P<file>[^:]+\.py):(?P<line>\d+): zotero_mcp\.utils -> use zotero_mcp\.formatting\.display$"
+)
+
+
+def test_whole_tree_scan_finds_and_formats_real_hits():
+    """The whole-tree scan must actually read the tree and report hits.
+
+    With `SHIMS` empty, `_find_violations` returns immediately and the two
+    guards above read **no files at all** — they pass without touching a
+    single line of the tree, and would go on passing if the file walk, the
+    line scanner or the message format broke. This runs the same scan over
+    the same real files against `_SYNTHETIC_ROW`, so the machinery is
+    proven before PR 1 adds the first real row.
+
+    The count is deliberately not asserted: it drifts every time a module
+    moves. What is asserted is that hits exist in both trees, that every
+    message has the ``file:line: old -> use new`` shape a move-PR author
+    has to act on, and that the file and line each one names really do
+    hold a reference to the old path.
+    """
+    files = _test_files() + _source_files(_SYNTHETIC_ROW)
+    messages = _find_violations(files, _SYNTHETIC_ROW, _REPO_ROOT, _SRC_ROOT)
+
+    assert messages, (
+        f"scanning {len(files)} real files for {list(_SYNTHETIC_ROW)[0]} found nothing; "
+        "the whole-tree scan is not reading the tree"
+    )
+
+    malformed = [m for m in messages if not _VIOLATION_RE.match(m)]
+    assert not malformed, "violations must read 'file:line: old -> use new':\n" + "\n".join(malformed)
+
+    assert any(m.startswith("src/") for m in messages), "no source-tree hits"
+    assert any(m.startswith("tests/") for m in messages), "no test-tree hits"
+
+    for message in messages:
+        found = _VIOLATION_RE.match(message)
+        line = (_REPO_ROOT / found["file"]).read_text(encoding="utf-8").splitlines()[int(found["line"]) - 1]
+        # Checked in two halves, not as the literal dotted path: a legitimate
+        # hit can spell it across the line (`from zotero_mcp import utils`).
+        assert "zotero_mcp" in line and "utils" in line, (
+            f"{message} points at a line that does not reference the old path: {line!r}"
+        )
+
+
+def test_the_guard_file_is_the_only_exempt_test_file():
+    """The self-exemption must cover this file and nothing else.
+
+    `SHIMS`, the fixtures below and the docstrings quote old paths on
+    purpose, so this file has to be out of scope — but a blanket exemption
+    (a whole directory, a filename pattern) would quietly stop scanning
+    real test files, which is the failure this whole module exists to
+    prevent.
+    """
+    scanned = _test_files()
+    all_test_files = sorted((_REPO_ROOT / "tests").rglob("*.py"))
+
+    assert [f for f in all_test_files if f not in scanned] == [_GUARD_FILE], (
+        "exactly one test file may be exempt from the scan"
+    )
+    assert _find_violations([_GUARD_FILE], {"zotero_mcp.client": "zotero_mcp.backends.api"}, _REPO_ROOT, _SRC_ROOT), (
+        "this file no longer quotes any old path, so the exemption is load-bearing for nothing -- "
+        "drop it and scan this file like the rest"
+    )
 
 
 class TestShimMatchPlainModule:
