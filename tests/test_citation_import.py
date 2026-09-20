@@ -1,9 +1,9 @@
 """Unit tests for zotero_mcp.citation_import (parse + converters)."""
 
 import json
-from pathlib import Path
 
 import pytest
+from conftest import FIXTURES_DIR
 
 from zotero_mcp.citation_import import (
     CSL_TYPE_MAP,
@@ -19,11 +19,9 @@ from zotero_mcp.citation_import import (
 )
 from zotero_mcp.schema import valid_fields
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
 
 def load_fixture(name: str) -> dict:
-    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
 def schema_template(item_type: str) -> dict:
