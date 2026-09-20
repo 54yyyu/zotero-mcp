@@ -183,7 +183,8 @@ ZOTERO_MCP_LIVE_TESTS=1 python -m pytest tests/live -q    # real HOME, real cred
 
 The same conftest also inserts this checkout's `src/` at the front of `sys.path` and purges `zotero_mcp*`
 from `sys.modules`, so the suite exercises the tree it lives in rather than whatever an editable install
-resolves to.
+resolves to. That purge is also why the shim gate is armed from `conftest` and not from a `-W` flag —
+see [§5](#the-movedmodulewarning-gate).
 
 ## 5. Shims
 
@@ -196,16 +197,23 @@ from zotero_mcp._shim import forwarder
 __getattr__ = forwarder("zotero_mcp.client", "zotero_mcp.backends.api")
 ```
 
-`forwarder(old, new, removed_in="0.14.0")` returns a module-level `__getattr__`. Three properties matter:
+`forwarder(old, new, removed_in="0.14.0")` returns a module-level `__getattr__`. Four properties matter:
 
 - **Importing the old path costs nothing.** Nothing is imported until a name is actually used, so a stale
   `import zotero_mcp.client` does not drag the new module — or its dependencies — into a cold interpreter.
 - **Each *use* warns**, at the caller's line, with `MovedModuleWarning` (a `DeprecationWarning` subclass).
   Because `pyproject.toml` sets `filterwarnings = ["ignore::DeprecationWarning"]`, the warning is invisible in
-  a normal test run; the guard is `pytest -W error::zotero_mcp._shim.MovedModuleWarning`.
+  a normal run; in the test suite it is an **error**, armed by `tests/conftest.py` (see
+  [the gate](#the-movedmodulewarning-gate) below).
 - **Patching a name on a shim does not reach the new module.** `monkeypatch.setattr("zotero_mcp.client.get_zotero_client", ...)`
   sets an attribute on the shim module object; callers inside `backends/api.py` look the name up on their own
   module and never see it. That is the whole reason `tests/test_module_layout.py` exists.
+- **`from <old path> import *` forwards nothing, silently.** A star-import (and `dir()`) reads the module's
+  own `__dict__` and its `__all__`, neither of which a `__getattr__` contributes to — and the dunder guard
+  makes `__all__` itself unreachable — so the caller binds only the shim file's own globals (`forwarder`),
+  gets none of the moved names and no `MovedModuleWarning`, then fails later with a `NameError`. Nothing
+  in-tree star-imports, but an external caller that does gets no deprecation notice at all: worth a release
+  note when a widely imported module moves.
 
 `new` may also be a `{name: module_path}` map, for a module that was split across several new homes.
 
@@ -213,6 +221,18 @@ __getattr__ = forwarder("zotero_mcp.client", "zotero_mcp.backends.api")
 guards: no test file may patch or import a shim's old path, and no production module may either. The old
 paths are for *external* callers only. Add a module's row to `SHIMS` in the same commit that adds its
 forwarder; the guards then fail with `file:line: old -> use new` for every internal reference left behind.
+
+**`tests/test_module_layout.py` does not scan itself; every other file under `tests/` is in scope.** The map,
+the unit-test fixtures below it and the docstrings all quote old paths deliberately, and the scanner cannot
+tell those from a stale reference — a `zotero_mcp.client` row matches 7 lines of that file, a `zotero_mcp.cli`
+row 16, so without the exemption no PR could add its own row. The exemption is exactly one file:
+`test_the_guard_file_is_the_only_exempt_test_file` asserts that, and that the file would be flagged if it
+were scanned. Keep a real reference out of it — if you need to demonstrate one, write it in a unit-test
+fixture with a row that is not in `SHIMS`, as the tests there do.
+
+**With `SHIMS` empty the two whole-tree guards read no files at all** and pass vacuously, so until PR 1 adds
+a row the scan itself is proven by `test_whole_tree_scan_finds_and_formats_real_hits`, which runs it over the
+real tree against a synthetic `zotero_mcp.utils` row and checks the hits and their formatting.
 
 **A row whose old path becomes a real package matches by prefix, minus the real submodules.** When a flat
 module becomes a package of the same name — the `cli` case, where `zotero_mcp.cli` -> `zotero_mcp.cli.manage`
@@ -232,6 +252,24 @@ Exempting only the row's own `new` submodule would flag every other real submodu
 probe deliberately exempts all of them. The cost is that a moved *function* whose name happens to collide
 with a real submodule would slip through; do not create that collision (see the naming rule in
 [§2](#2-naming-rules)).
+
+### The `MovedModuleWarning` gate
+
+`tests/conftest.py` turns `MovedModuleWarning` into an **error for the whole suite**, by appending
+`error::zotero_mcp._shim.MovedModuleWarning` to pytest's `filterwarnings` list in `pytest_configure` (which
+puts it after, and so ahead of, pyproject's `ignore::DeprecationWarning`). Nothing in this repo may reach a
+shimmed path, so the suite fails closed: any access — including a function-level lazy import that no static
+guard can see — raises. `ZOTERO_MCP_ALLOW_SHIM_PATHS=1` puts it back to a plain warning.
+
+**Do not arm this with the interpreter's `-W` flag.** `python -W error::zotero_mcp._shim.MovedModuleWarning -m
+pytest` looks like it works and does nothing: Python resolves the category at startup by importing
+`zotero_mcp._shim` and binds *that* class object into `warnings.filters`, `conftest` then purges `zotero_mcp*`
+from `sys.modules` (so the suite tests this checkout, not an editable install), and the class the re-imported
+module defines is a different object the startup filter cannot match — after which `ignore::DeprecationWarning`
+swallows the warning and the suite goes green having tested nothing. The same flag is fine in a plain
+interpreter, where nothing purges the module, which is how a downstream caller would use it.
+`tests/test_shim.py::test_the_suites_own_configuration_turns_a_shim_access_into_an_error` accesses a real
+forwarded name under the suite's ambient filters and asserts it raises, so the gate cannot go inert unnoticed.
 
 ### Shim table
 
@@ -336,7 +374,7 @@ failing anything, and the check that catches it.
 
 | # | What can go wrong silently | How to catch it |
 |---|---|---|
-| 1 | A function-level lazy import still names the old path (there are ~95 of them in `src/`). It resolves through the shim, so nothing fails until the shim is removed — and `pyproject.toml` filters the warning. | `pytest -W error::zotero_mcp._shim.MovedModuleWarning`; `python -W error::zotero_mcp._shim.MovedModuleWarning -c "import zotero_mcp.server, zotero_mcp.cli.manage, zotero_mcp.cli.standalone"`; `test_no_source_module_imports_a_shim_path`. |
+| 1 | A function-level lazy import still names the old path (there are ~95 of them in `src/`). It resolves through the shim, so nothing fails until the shim is removed — and `pyproject.toml` filters the warning. | A plain `python -m pytest`: `tests/conftest.py` makes `MovedModuleWarning` an error, so the access fails the test that reaches it ([§5](#the-movedmodulewarning-gate) — do **not** use `python -W error::...`, which is inert under the suite). Statically: `test_no_source_module_imports_a_shim_path`, plus `grep -rn "<old path>" src` for a path built by string concatenation. |
 | 2 | A `monkeypatch.setattr("<old path>.<name>", ...)` left behind. It lands on the shim, so the test exercises the real implementation or a stale fake, and passes for the wrong reason. | `test_no_test_patches_or_imports_a_shim_path`; count the new-path occurrences with `grep -c` and check the total against the old-path census taken before the move. |
 | 3 | A `__file__`-relative lookup now sits at the wrong depth (`skill_install.py` resolving `skills/`, `utils.py` resolving the install root). Works in-tree, breaks from the wheel. | `tests/test_skill_install.py`, `tests/test_install_hint.py`; `uv build --wheel` then `unzip -l` the result; run `zotero-mcp install-skill --list-targets` from the installed tool, not the checkout. |
 | 4 | A subpackage `__init__.py` imports something heavy, re-creating the 1.45 s regression and defeating the `#485` startup gates. | `pytest tests/test_lightweight_imports.py`; the heavy-dependency probe in [§6](#how-to-measure) must exit `0` with `heavy=[]` for every package but `tools`. |

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Architecture
 
-- **[docs/architecture.md](docs/architecture.md) states the target package layout and the naming, test-layout and import-cost rules** the package is being reorganised towards, alongside the scaffolding that reorganisation needs: `_shim.forwarder` for leaving a lazy deprecation forwarder at a moved module's old path, `tests/test_module_layout.py` to catch internal code still reaching for one, HOME isolation in `tests/conftest.py` so a running `zotero-mcp` cannot hold `update.lock` against the suite, and a shared `FIXTURES_DIR`. No module has moved: the tree is still flat and the document's shim table is empty.
+- **[docs/architecture.md](docs/architecture.md) states the target package layout and the naming, test-layout and import-cost rules** the package is being reorganised towards, alongside the scaffolding that reorganisation needs: `_shim.forwarder` for leaving a lazy deprecation forwarder at a moved module's old path, `tests/test_module_layout.py` to catch internal code still reaching for one, a suite-wide gate that turns `MovedModuleWarning` into an error so that a *lazy* import of an old path — which no static scan can see — fails the test that reaches it (armed from `tests/conftest.py`, since the interpreter's `-W` flag cannot survive that file's `sys.modules` purge; `ZOTERO_MCP_ALLOW_SHIM_PATHS=1` turns it off), HOME isolation in `tests/conftest.py` so a running `zotero-mcp` cannot hold `update.lock` against the suite, and a shared `FIXTURES_DIR`. No module has moved: the tree is still flat and the document's shim table is empty.
 
 ### Fixed
 
