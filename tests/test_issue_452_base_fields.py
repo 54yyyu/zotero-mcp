@@ -64,7 +64,13 @@ def _article():
 
 class TestResolvers:
     @pytest.mark.parametrize("item,expected", [
-        (_case(), "DSG Retail Limited v The Information Commissioner"),
+        # Deliberately changed when composed display titles landed (#575).
+        # This fixture has a `court` and no `reporter`, and Zotero's
+        # updateDisplayTitle appends one or the other to a case's name
+        # (item.js:972-1005), so the client itself renders the court here.
+        # #452's point — that the name comes from `caseName` rather than
+        # `title` — is unaffected and still asserted by the prefix.
+        (_case(), "DSG Retail Limited v The Information Commissioner (Upper Tribunal)"),
         (_statute(), "Data Protection Act 2018"),
         (_email(), "Re: the tribunal decision"),
         (_article(), "Attention Is All You Need"),

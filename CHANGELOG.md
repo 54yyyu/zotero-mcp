@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Annotations, cases, letters and interviews no longer render as "Untitled".** `item_display_title` found a title by *reading a field*, but Zotero stores none for these types — it composes one, in `Zotero.Item.prototype.updateDisplayTitle`. An annotation now shows its highlighted text and comment (`“Sample 7: employees evaluated reward expectations…” -if you ask a question…`, each component capped at 50 characters exactly as Zotero caps it); an image or ink annotation shows its type name; an untitled letter or interview shows its participants (`[Letter to Thoreau]`). Every string matches the desktop client verbatim, down to its inconsistent capitalisation. In the reporting library this was 461 annotations rendering as a column of `## Untitled` through `zotero://items/{key}`, with the text present and correct in the record the whole time (#575).
+- **A case's name now carries its reporter or court**, as Zotero renders it: `Marbury v. Madison (5 U.S. 137)`, falling back to the court when there is no reporter. This changes existing output for cases that have either field. The civil-law form for a case with no name at all is deliberately not implemented — it depends on `Zotero.Date.multipartToSQL`, whose output could not be verified against the Zotero source (#575).
+- **Annotation type 6 ("text") is no longer reported as an empty string.** Zotero added `ANNOTATION_TYPE_TEXT = 6` after `_ANNOTATION_TYPES` was written, so those annotations came back with `"annotationType": ""` — surfacing as `- [KEY] : ...` from `zotero_get_item_children` and as an empty `"type"` in the CLI's JSON output (#575).
+
 ## [0.12.4] - 2026-09-14
 
 Found by using `zotero-cli` to read "Attention Is All You Need" and annotate it end to end.
