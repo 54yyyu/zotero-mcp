@@ -44,9 +44,22 @@ def pytest_configure(config):
 
     Appending to the `filterwarnings` ini list puts this filter *after*
     pyproject's `ignore::DeprecationWarning`, and pytest applies that list in
-    reverse-precedence order, so the error wins. A `-W` argument passed to
-    *pytest* still overrides it, and pytest resolves those late enough for the
-    category to be the same class object this suite uses.
+    reverse-precedence order, so the error wins. This line is also parsed for
+    the first time *here*, after the purge above, which is what makes its
+    category the live class.
+
+    A `-W` argument that names the category does **not** turn the gate off,
+    not even when passed to pytest rather than the interpreter:
+    `pytest -W ignore::zotero_mcp._shim.MovedModuleWarning` leaves the access
+    raising. Pytest resolves a command-line filter before the purge above runs
+    and caches the parsed tuple (`parse_warning_filter` is `lru_cache`d, so it
+    never re-resolves), leaving its category the class the purge discarded --
+    measured as a different `id()` from the class the suite warns with, the
+    same identity trap the interpreter flag falls into. Only a filter that
+    does not name the class -- `-W ignore`, `-W ignore::DeprecationWarning` --
+    overrides the gate, and that is loud rather than silent: the regression
+    test named above fails as soon as one is in play. The supported off-switch
+    is ZOTERO_MCP_ALLOW_SHIM_PATHS=1.
     """
     if SHIM_PATHS_ARE_ERRORS:
         config.addinivalue_line("filterwarnings", "error::zotero_mcp._shim.MovedModuleWarning")
