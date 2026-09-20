@@ -122,7 +122,7 @@ Website: [stevenyuyy.com/zotero-mcp](https://stevenyuyy.com/zotero-mcp/) · [Cha
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome. Run the tests with `uv run pytest tests/`. A live integration test plan, meant to be run by Claude against a real library, is in [docs/integration-test-plan.md](https://github.com/54yyyu/zotero-mcp/blob/main/docs/integration-test-plan.md).
+Issues and pull requests are welcome. Run the tests with `uv run pytest tests/`. Where code goes and why — the package map, naming rules, test layout and import-cost budget — is in [docs/architecture.md](https://github.com/54yyyu/zotero-mcp/blob/main/docs/architecture.md). A live integration test plan, meant to be run by Claude against a real library, is in [docs/integration-test-plan.md](https://github.com/54yyyu/zotero-mcp/blob/main/docs/integration-test-plan.md).
 
 ## ☕ Support
 
