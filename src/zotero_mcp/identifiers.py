@@ -19,9 +19,11 @@ and tests are unaffected.
 
 from __future__ import annotations
 
+import html
 import re
+import unicodedata
 
-__all__ = ["normalize_doi"]
+__all__ = ["normalize_doi", "doi_match_key", "normalize_title_for_matching"]
 
 #: A well-formed DOI: the ``10.NNNN`` registrant prefix plus a suffix.
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
@@ -79,3 +81,43 @@ def normalize_doi(raw):
     if DOI_RE.match(s):
         return s
     return None
+
+
+def doi_match_key(raw):
+    """Case-folded canonical DOI for equality tests, or ``None``.
+
+    ``normalize_doi`` stays case-preserving because some consumers echo a
+    DOI back to the user; this is the case-folded counterpart for callers
+    that only need to answer "is this the same DOI?".
+    """
+    doi = normalize_doi(raw)
+    return doi.lower() if doi else None
+
+
+#: An HTML/XML start or end tag, e.g. ``<i>`` or ``</sub>``. Stripped before
+#: entities are unescaped, so an escaped tag like ``&lt;i&gt;`` survives the
+#: strip and is unescaped into literal ``<i>`` text, not removed.
+_TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+
+_LEADING_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+")
+
+
+def normalize_title_for_matching(title):
+    """Fold a title down to a whitespace-normalised, case-folded key.
+
+    Strips markup tags, unescapes HTML entities, decomposes accents
+    (NFKD) and drops combining marks, maps punctuation/symbol/separator
+    characters to spaces, collapses whitespace, case-folds, and drops a
+    single leading English article. Returns ``""`` for falsy input.
+    """
+    if not title:
+        return ""
+    s = unicodedata.normalize("NFKD", html.unescape(_TITLE_TAG_RE.sub(" ", str(title))))
+    out = []
+    for ch in s:
+        cat = unicodedata.category(ch)
+        if cat[0] == "M":
+            continue
+        out.append(" " if cat[0] in "PSZ" or ch.isspace() else ch)
+    s = " ".join("".join(out).casefold().split())
+    return _LEADING_ARTICLE_RE.sub("", s)
