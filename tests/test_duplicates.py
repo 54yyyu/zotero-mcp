@@ -1079,3 +1079,89 @@ class TestAutoMergeSafety:
         assert "30 skipped" in result
         assert result.count("mixed item types") == 20
         assert "... and 10 more skipped group(s)" in result
+
+
+# ---------------------------------------------------------------------------
+# #496 (PR 1, T1.1): characterization gate for the key-derivation rewrite
+# ---------------------------------------------------------------------------
+
+class TestGroupingInvariants:
+    """Pins today's `_collect_duplicate_groups` / `_auto_merge_groups`
+    behavior so the upcoming rewrite (deriving keys from shared primitives
+    in identifiers.py, #496) can be checked against it: these three must
+    pass before the rewrite AND after it. Per the PR 1 design table, the
+    rewrite only widens DOI matching to also fold URL-form/bare-DOI pairs
+    and drop garbage DOIs like "n/a" — it does not change case-folding,
+    the mixed-item-type skip, or the conflicting-DOI skip. Those three are
+    exactly what is pinned here.
+    """
+
+    def test_case_only_doi_variants_group_together(self, monkeypatch, dummy_ctx):
+        """Two items whose DOIs differ only in case land in ONE duplicate
+        group today, because `_collect_duplicate_groups` keys on
+        ``doi.strip().lower()``. If a rewritten `doi_match_key` stopped
+        folding case, "10.1000/ABC" and "10.1000/abc" would split into two
+        singleton groups and `find_duplicates` would report 0 duplicate
+        groups (each singleton is filtered out) instead of 1.
+        """
+        fake = FakeZoteroForDuplicates()
+        fake._items = [
+            _make_item("CASE1", "Paper One", doi="10.1000/ABC"),
+            _make_item("CASE2", "Paper Two", doi="10.1000/abc"),
+        ]
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert "Found 1 duplicate groups" in result
+        assert result.count("## Group:") == 1
+        # Pins today's raw-lowercased-DOI key format, not a canonicalized one.
+        assert "## Group: doi:10.1000/abc" in result
+        assert "CASE1" in result
+        assert "CASE2" in result
+
+    def test_mixed_item_types_skipped_by_auto_merge(self, monkeypatch, dummy_ctx):
+        """A journalArticle and a book sharing a DOI are never auto-merged:
+        `_auto_merge_groups` declines any group whose members are not all
+        the same item type. If a rewritten guard dropped or weakened this
+        check, this pair would appear under "Groups to merge" and get
+        trashed via a PATCH call instead of being skipped and reported.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("MT1", "Same Thing", doi="10.1/mixed", item_type="journalArticle"),
+            _make_item("MT2", "Same Thing", doi="10.1/mixed", item_type="book"),
+        ])
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in result
+        assert "mixed item types" in result
+        assert "MT1" in result
+        assert "MT2" in result
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+
+    def test_conflicting_canonical_dois_skipped_by_auto_merge(self, monkeypatch, dummy_ctx):
+        """Two items that share a normalized title but carry genuinely
+        different DOIs (not merely a case variant of one another) are
+        never auto-merged — the #395 false-positive class of two distinct
+        edited volumes each titled "List of Contributors". The design
+        table says this guard "switches to canonical keys" under the
+        rewrite, so it must keep declining a real DOI conflict, not just
+        a same-DOI-different-case pair. If the guard were dropped, or
+        compared the wrong thing, this pair would be merged instead of
+        skipped.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("CF1", "List of Contributors", doi="10.1/book-one"),
+            _make_item("CF2", "List of Contributors", doi="10.1/book-two"),
+        ])
+
+        result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in result
+        assert "carry different DOIs" in result
+        assert "CF1" in result
+        assert "CF2" in result
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
