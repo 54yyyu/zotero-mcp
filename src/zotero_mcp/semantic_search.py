@@ -45,6 +45,7 @@ from .config_light import (  # noqa: F401
 )
 from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
+from .identifiers import metadata_match_keys
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .utils import _paginate, ensure_private_dir, format_creators, is_local_mode, suppress_stdout
 
@@ -1515,20 +1516,16 @@ class ZoteroSemanticSearch:
                 sys.stderr.write(f"Found {candidate_count} candidate items.\n")
 
                 # Optional deduplication: if preprint and journalArticle share a DOI/title, keep journalArticle
-                # Build index by (normalized DOI or normalized title)
-                def norm(s: str | None) -> str | None:
-                    if not s:
-                        return None
-                    return "".join(s.lower().split())
+                # Build index by the shared doi/title match keys (#496): same
+                # rule the duplicate detector uses, so the two agree on what
+                # counts as the same work.
+                def _work_keys(it):
+                    return {k for k in metadata_match_keys(it) if k[0] in ("doi", "title")}
 
                 key_to_best = {}
                 for it in local_items:
-                    doi_key = ("doi", norm(getattr(it, "doi", None))) if getattr(it, "doi", None) else None
-                    title_key = ("title", norm(getattr(it, "title", None))) if getattr(it, "title", None) else None
 
                     def consider(k):
-                        if not k:
-                            return
                         cur = key_to_best.get(k)
                         # Prefer journalArticle over preprint; otherwise keep first
                         if cur is None:
@@ -1540,20 +1537,16 @@ class ZoteroSemanticSearch:
                             if new_score > cur_score:
                                 key_to_best[k] = it
 
-                    consider(doi_key)
-                    consider(title_key)
+                    for k in _work_keys(it):
+                        consider(k)
 
                 # If a preprint loses against a journal article for same DOI/title, drop it
                 filtered_items = []
                 for it in local_items:
                     # If there is a journalArticle alternative for same DOI or title, and this is preprint, drop
                     if getattr(it, "item_type", None) == "preprint":
-                        k_doi = ("doi", norm(getattr(it, "doi", None))) if getattr(it, "doi", None) else None
-                        k_title = ("title", norm(getattr(it, "title", None))) if getattr(it, "title", None) else None
                         drop = False
-                        for k in (k_doi, k_title):
-                            if not k:
-                                continue
+                        for k in _work_keys(it):
                             best = key_to_best.get(k)
                             if (
                                 best is not None
