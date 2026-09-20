@@ -794,8 +794,8 @@ class TestAutoMergeGating:
 
     def _pair(self, monkeypatch):
         return _auto_fake(monkeypatch, [
-            _make_item("K1", "Same Paper", doi="10.1/x", date_added="2020-01-01"),
-            _make_item("K2", "Same Paper", doi="10.1/x", date_added="2024-01-01"),
+            _make_item("K1", "Same Paper", doi="10.1000/x", date_added="2020-01-01"),
+            _make_item("K2", "Same Paper", doi="10.1000/x", date_added="2024-01-01"),
         ])
 
     def test_plan_writes_nothing(self, monkeypatch, dummy_ctx):
@@ -846,7 +846,7 @@ class TestAutoMergeGating:
 
         # A third copy arrives before the confirmation lands.
         fake._items.append(
-            _make_item("K3", "Same Paper", doi="10.1/x", date_added="2025-01-01")
+            _make_item("K3", "Same Paper", doi="10.1000/x", date_added="2025-01-01")
         )
 
         result = server.merge_duplicates(
@@ -899,9 +899,9 @@ class TestAutoMergeKeeperHeuristic:
             [
                 # The one with children is NEWER and has no abstract, so only
                 # the child count can be what picks it.
-                _make_item("FEW", "Paper", doi="10.1/a", abstract="has one",
+                _make_item("FEW", "Paper", doi="10.1000/a", abstract="has one",
                            date_added="2019-01-01"),
-                _make_item("MANY", "Paper", doi="10.1/a", date_added="2025-01-01"),
+                _make_item("MANY", "Paper", doi="10.1000/a", date_added="2025-01-01"),
             ],
             children={"MANY": [_child("N1", "MANY"), _child("N2", "MANY")]},
         )
@@ -913,8 +913,8 @@ class TestAutoMergeKeeperHeuristic:
 
     def test_abstract_breaks_a_child_count_tie(self, monkeypatch, dummy_ctx):
         _auto_fake(monkeypatch, [
-            _make_item("NOABS", "Paper", doi="10.1/b", date_added="2019-01-01"),
-            _make_item("ABS", "Paper", doi="10.1/b", abstract="An abstract",
+            _make_item("NOABS", "Paper", doi="10.1000/b", date_added="2019-01-01"),
+            _make_item("ABS", "Paper", doi="10.1000/b", abstract="An abstract",
                        date_added="2025-01-01"),
         ])
 
@@ -925,9 +925,9 @@ class TestAutoMergeKeeperHeuristic:
 
     def test_oldest_date_added_breaks_the_remaining_tie(self, monkeypatch, dummy_ctx):
         _auto_fake(monkeypatch, [
-            _make_item("NEW", "Paper", doi="10.1/c", abstract="a",
+            _make_item("NEW", "Paper", doi="10.1000/c", abstract="a",
                        date_added="2025-06-01"),
-            _make_item("OLD", "Paper", doi="10.1/c", abstract="a",
+            _make_item("OLD", "Paper", doi="10.1000/c", abstract="a",
                        date_added="2018-02-03"),
         ])
 
@@ -939,8 +939,8 @@ class TestAutoMergeKeeperHeuristic:
     def test_choice_is_deterministic_when_nothing_discriminates(self, monkeypatch, dummy_ctx):
         """Identical members still have to produce a stable plan token."""
         _auto_fake(monkeypatch, [
-            _make_item("BBB", "Paper", doi="10.1/d"),
-            _make_item("AAA", "Paper", doi="10.1/d"),
+            _make_item("BBB", "Paper", doi="10.1000/d"),
+            _make_item("AAA", "Paper", doi="10.1000/d"),
         ])
 
         first = server.merge_duplicates(auto=True, ctx=dummy_ctx)
@@ -978,8 +978,8 @@ class TestAutoMergeSafety:
     def test_mixed_item_types_are_skipped(self, monkeypatch, dummy_ctx):
         """A book and a journal article sharing a DOI are not one record."""
         _auto_fake(monkeypatch, [
-            _make_item("M1", "Thing", doi="10.1/m", item_type="journalArticle"),
-            _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
+            _make_item("M1", "Thing", doi="10.1000/m", item_type="journalArticle"),
+            _make_item("M2", "Thing", doi="10.1000/m", item_type="book"),
         ])
 
         result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
@@ -992,8 +992,8 @@ class TestAutoMergeSafety:
         """The title false-positive class from #395: two different books each
         with a 'List of Contributors'."""
         _auto_fake(monkeypatch, [
-            _make_item("C1", "List of Contributors", doi="10.1/book-one"),
-            _make_item("C2", "List of Contributors", doi="10.1/book-two"),
+            _make_item("C1", "List of Contributors", doi="10.1000/book-one"),
+            _make_item("C2", "List of Contributors", doi="10.1000/book-two"),
         ])
 
         result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
@@ -1008,8 +1008,8 @@ class TestAutoMergeSafety:
         so merging it again would operate on items in the Trash.
         """
         _auto_fake(monkeypatch, [
-            _make_item("O1", "Same Title", doi="10.1/o"),
-            _make_item("O2", "Same Title", doi="10.1/o"),
+            _make_item("O1", "Same Title", doi="10.1000/o"),
+            _make_item("O2", "Same Title", doi="10.1000/o"),
         ])
 
         result = server.merge_duplicates(auto=True, method="both", ctx=dummy_ctx)
@@ -1019,8 +1019,8 @@ class TestAutoMergeSafety:
 
     def test_nothing_qualifies_means_nothing_to_confirm(self, monkeypatch, dummy_ctx):
         _auto_fake(monkeypatch, [
-            _make_item("M1", "Thing", doi="10.1/m", item_type="journalArticle"),
-            _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
+            _make_item("M1", "Thing", doi="10.1000/m", item_type="journalArticle"),
+            _make_item("M2", "Thing", doi="10.1000/m", item_type="book"),
         ])
 
         result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
@@ -1033,8 +1033,8 @@ class TestAutoMergeSafety:
         fake = _auto_fake(
             monkeypatch,
             [
-                _make_item("KEEP", "Paper", doi="10.1/p", date_added="2019-01-01"),
-                _make_item("GONE", "Paper", doi="10.1/p", date_added="2024-01-01"),
+                _make_item("KEEP", "Paper", doi="10.1000/p", date_added="2019-01-01"),
+                _make_item("GONE", "Paper", doi="10.1000/p", date_added="2024-01-01"),
             ],
             children={"GONE": [_child("KID", "GONE")]},
         )
@@ -1068,9 +1068,9 @@ class TestAutoMergeSafety:
         items = []
         for g in range(30):
             # Same DOI but different item types — declined, 30 times over.
-            items.append(_make_item(f"X{g:02d}A", f"Thing {g}", doi=f"10.1/x{g:02d}",
+            items.append(_make_item(f"X{g:02d}A", f"Thing {g}", doi=f"10.1000/x{g:02d}",
                                     item_type="journalArticle"))
-            items.append(_make_item(f"X{g:02d}B", f"Thing {g}", doi=f"10.1/x{g:02d}",
+            items.append(_make_item(f"X{g:02d}B", f"Thing {g}", doi=f"10.1000/x{g:02d}",
                                     item_type="book"))
         _auto_fake(monkeypatch, items)
 
@@ -1128,8 +1128,8 @@ class TestGroupingInvariants:
         trashed via a PATCH call instead of being skipped and reported.
         """
         fake = _auto_fake(monkeypatch, [
-            _make_item("MT1", "Same Thing", doi="10.1/mixed", item_type="journalArticle"),
-            _make_item("MT2", "Same Thing", doi="10.1/mixed", item_type="book"),
+            _make_item("MT1", "Same Thing", doi="10.1000/mixed", item_type="journalArticle"),
+            _make_item("MT2", "Same Thing", doi="10.1000/mixed", item_type="book"),
         ])
 
         result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
@@ -1153,8 +1153,8 @@ class TestGroupingInvariants:
         skipped.
         """
         fake = _auto_fake(monkeypatch, [
-            _make_item("CF1", "List of Contributors", doi="10.1/book-one"),
-            _make_item("CF2", "List of Contributors", doi="10.1/book-two"),
+            _make_item("CF1", "List of Contributors", doi="10.1000/book-one"),
+            _make_item("CF2", "List of Contributors", doi="10.1000/book-two"),
         ])
 
         result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
