@@ -1165,3 +1165,149 @@ class TestGroupingInvariants:
         assert "CF2" in result
         assert fake.client.patch_calls == []
         assert fake.update_calls == []
+
+
+# ---------------------------------------------------------------------------
+# #496 (PR 1, T1.5): grouping keys come from identifiers.metadata_match_keys
+# ---------------------------------------------------------------------------
+
+def _canonical_fixture():
+    """Items whose match keys only agree once identifiers.py canonicalizes them.
+
+    U1/U2/U3 carry one DOI written three ways (case, URL form, ``doi:`` prefix
+    plus a trailing period from a reference list). Their titles are deliberately
+    all different, so the only thing that can group them is the DOI.
+
+    P1/P2/P3 carry no DOI and three spellings of one title (hyphen, en dash,
+    leading article), so the only thing that can group them is the title.
+
+    N1/N2 carry ``n/a`` in the DOI field — the placeholder an importer leaves
+    behind. It is not a DOI, so it must not group anything; their titles differ
+    so they cannot group by title either.
+    """
+    return [
+        _make_item("U1", "Unified Alpha", doi="10.1000/ABC", date_added="2020-01-01"),
+        _make_item("U2", "Unified Beta", doi="https://doi.org/10.1000/abc",
+                   date_added="2021-01-01"),
+        _make_item("U3", "Unified Gamma", doi="doi:10.1000/abc.",
+                   date_added="2022-01-01"),
+        _make_item("P1", "Micro-Level Study of Trust"),
+        _make_item("P2", "Micro–Level Study of Trust"),
+        _make_item("P3", "The Micro Level Study of Trust"),
+        _make_item("N1", "Garbage One", doi="n/a"),
+        _make_item("N2", "Garbage Two", doi="n/a"),
+    ]
+
+
+class TestCanonicalGroupingKeys:
+    """`_collect_duplicate_groups` and `_auto_merge_groups` derive their keys
+    from `identifiers.metadata_match_keys` / `doi_match_key` (#496).
+
+    What this widens: URL-form and bare DOIs group together, title variants
+    that differ only by punctuation, diacritics or a leading article group
+    together, and a garbage DOI stops forming a group. What it must not
+    change is the auto-merge rule itself — DOI-only by default, mixed types
+    skipped, conflicting DOIs skipped, no title agreement required.
+    """
+
+    def test_one_doi_group_one_title_group_and_no_garbage_group(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The whole fixture yields exactly two groups: the three DOI spellings
+        under one canonical `doi:10.1000/abc` key, and the three title
+        spellings under one title key. `n/a` yields no key at all.
+        """
+        _dup_fake(monkeypatch, _canonical_fixture())
+
+        result = server.find_duplicates(method="both", limit=50, ctx=dummy_ctx)
+
+        assert "Found 2 duplicate groups (1 by DOI, 1 by title)" in result
+        assert "## Group: doi:10.1000/abc" in result
+        assert result.count("## Group:") == 2
+
+        groups = dict(re.findall(
+            r"## Group: (.+)\n((?:- `\w+`[^\n]*\n)+)", result
+        ))
+        doi_members = re.findall(r"- `(\w+)`", groups["doi:10.1000/abc"])
+        assert sorted(doi_members) == ["U1", "U2", "U3"]
+
+        title_key = next(k for k in groups if k.startswith("title:"))
+        title_members = re.findall(r"- `(\w+)`", groups[title_key])
+        assert sorted(title_members) == ["P1", "P2", "P3"]
+
+        assert "N1" not in result
+        assert "N2" not in result
+        assert "n/a" not in result
+
+    def test_auto_merge_merges_url_form_doi_pair(self, monkeypatch, dummy_ctx):
+        """A bare DOI and its URL form are one group, so auto mode merges them,
+        keeping U1 (older dateAdded). The plan token is a digest of the plan,
+        so planning twice over an unchanged library gives the same token.
+        """
+        _auto_fake(monkeypatch, [
+            _make_item("U1", "Unified Alpha", doi="10.1000/ABC", date_added="2020-01-01"),
+            _make_item("U2", "Unified Beta", doi="https://doi.org/10.1000/abc",
+                       date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### doi:10.1000/abc" in plan
+        assert "**KEEP** `U1`" in plan
+        assert "- trash `U2`" in plan
+
+        again = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        assert _token_from_plan(again) == _token_from_plan(plan)
+
+    def test_auto_merge_does_not_require_title_agreement(self, monkeypatch, dummy_ctx):
+        """Title variance under one canonical DOI is normal (a preprint and the
+        version of record rarely agree on subtitle or capitalization), so the
+        auto-merge rule asks for DOI agreement only.
+        """
+        _auto_fake(monkeypatch, [
+            _make_item("U1", "Unified Alpha", doi="10.1000/ABC", date_added="2020-01-01"),
+            _make_item("U3", "A Completely Different Title",
+                       doi="doi:10.1000/abc.", date_added="2022-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "0 skipped" in plan
+        assert "**KEEP** `U1`" in plan
+        assert "- trash `U3`" in plan
+
+    def test_conflicting_doi_guard_uses_canonical_form(self, monkeypatch, dummy_ctx):
+        """The guard that declines a group whose members "carry different DOIs"
+        compares canonical DOIs, so a title group whose members hold the same
+        DOI written two ways is merged, not skipped as a conflict.
+        """
+        _auto_fake(monkeypatch, [
+            _make_item("C1", "List of Contributors", doi="10.1000/ABC",
+                       date_added="2020-01-01"),
+            _make_item("C2", "List of Contributors",
+                       doi="https://doi.org/10.1000/abc", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "carry different DOIs" not in plan
+        assert "**KEEP** `C1`" in plan
+        assert "- trash `C2`" in plan
+
+    def test_garbage_doi_never_forms_a_group(self, monkeypatch, dummy_ctx):
+        """Two items whose DOI field holds `n/a` are not duplicates of each
+        other. Keying on the raw lowercased field made every such item in a
+        library one enormous false group (#496).
+        """
+        _dup_fake(monkeypatch, [
+            _make_item("N1", "Garbage One", doi="n/a"),
+            _make_item("N2", "Garbage Two", doi="n/a"),
+            _make_item("N3", "Garbage Three", doi="N/A"),
+        ])
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert result == "No duplicates found."
