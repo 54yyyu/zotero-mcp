@@ -166,9 +166,18 @@ def test_importtime_of_a_forwarder_only_module_shows_no_heavy_imports(tmp_path):
     """`-X importtime` of a module that only *defines* a forwarder (never
     accesses an attribute on it) must not drag in anything the target would
     need -- only warnings/importlib machinery, run in a subprocess since
-    import cost is only observable on a cold interpreter."""
+    import cost is only observable on a cold interpreter.
+
+    The target must have genuinely heavy transitive imports, or an eager
+    `import_module(target)` regression (the exact bug this test exists to
+    catch) would leave the trace looking identical to the lazy case.
+    `zotero_mcp.server` is confirmed (by a direct `-X importtime` run) to
+    pull in fastmcp, mcp, pydantic, pyzotero, bibtexparser and unidecode --
+    six of the ten names in HEAVY_MODULES below -- unlike a stdlib-only
+    target such as `zotero_mcp.schema`, whose eager import would never touch
+    that blocklist and so could pass whether the forwarder is lazy or not."""
     (tmp_path / "shim_only_mod.py").write_text(
-        "from zotero_mcp._shim import forwarder\n__getattr__ = forwarder(__name__, 'zotero_mcp.schema')\n"
+        "from zotero_mcp._shim import forwarder\n__getattr__ = forwarder(__name__, 'zotero_mcp.server')\n"
     )
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([str(tmp_path), SRC])
