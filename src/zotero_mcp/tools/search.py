@@ -8,6 +8,8 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
+from fastmcp.exceptions import ToolError
+
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
@@ -176,6 +178,7 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
     all_items: list[dict] = []
     seen_keys: set[str] = set()
     kept = 0  # unique items that survive the note filter
+    failure: Exception | None = None
     for variant in variants:
         # Check cascade timeout before each API call
         if cascade_start is not None and cascade_timeout is not None:
@@ -188,17 +191,12 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
         }
         if tag:
             params["tag"] = tag
-        # Page past child notes in titleCreatorYear mode (#542): the
-        # server's quicksearch matches a note's content in place of the
-        # title it lacks, so a single /items page can spend the whole limit
-        # budget on items the note filter below drops, crowding real papers
-        # out of small result sets. Keep fetching pages (start += limit)
-        # until enough surviving items have arrived or a page comes back
-        # short. /items/top can't stand in for this: the Web API projects a
-        # matching child onto its parent — a different result set — and the
-        # local API ignores /top filtering entirely. 'everything' never
-        # pages: child-note content is a legitimate match there, so nothing
-        # is dropped afterwards and one page is the whole answer.
+        # Page past child notes in titleCreatorYear mode (#542): the server
+        # matches a note's content there, and the filter below drops those
+        # notes, so one page can spend the whole limit on nothing. /items/top
+        # is no substitute: the Web API answers with the matching child's
+        # parent, and the local API returns child notes from /top anyway.
+        # 'everything' keeps its notes, so one page is the whole answer.
         start = 0
         t0 = _time.monotonic()
         pages = 0
@@ -208,6 +206,7 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
                 batch = zot.items()
             except Exception as e:
                 _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
+                failure = e
                 break  # Skip failed variant, try next
             pages += 1
             for item in batch:
@@ -231,6 +230,11 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
             f"[SEARCH] variant='{variant}' qmode={qmode}: {pages} page(s), {kept} kept, in {elapsed:.2f}s"
         )
 
+    if failure is not None and not all_items:
+        # A failed request is not an empty result: reporting "no items" here
+        # would send the caller down the fallback cascade, or away, for a
+        # library that was never actually searched.
+        raise failure
     return _exclude_note_content_matches(all_items, qmode)
 
 
@@ -573,7 +577,7 @@ def search_items(
         return f"Error: {e}"
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
-        return f"Error searching Zotero: {str(e)}"
+        raise ToolError(f"Error searching Zotero: {str(e)}") from e
 
 @mcp.tool(
     name="zotero_search_by_tag",
@@ -688,7 +692,7 @@ def search_by_tag(
 
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
-        return f"Error searching Zotero: {str(e)}"
+        raise ToolError(f"Error searching Zotero: {str(e)}") from e
 
 
 @mcp.tool(

@@ -134,6 +134,24 @@ class TestSearchWithVariants:
         )
         assert len(result) == 1  # deduplicated
 
+    def test_failed_lookup_is_not_an_empty_result(self):
+        """A library that was never searched must not read as "no items"."""
+        zot = self._make_zot({})
+        zot.items = MagicMock(side_effect=ConnectionError("Zotero unreachable"))
+
+        with pytest.raises(ConnectionError):
+            search_module._search_with_variants(zot, "Brewer", "titleCreatorYear", 10)
+
+    def test_a_failed_variant_keeps_what_the_others_found(self):
+        item = {"key": "D1", "data": {"title": "Paper D"}}
+        zot = self._make_zot({})
+        zot.items = MagicMock(side_effect=[[item], ConnectionError("dropped")])
+
+        result = search_module._search_with_variants(
+            zot, "Cladder-Micus", "titleCreatorYear", 10
+        )
+        assert [i["key"] for i in result] == ["D1"]
+
     def test_forwards_item_type_and_tag(self):
         zot = MagicMock()
         captured = {}
