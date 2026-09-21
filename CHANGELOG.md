@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-09-21
+
 ### Fixed
 
 - **SQLite keyword search missed titles the API backend finds, and rendered them "Untitled"** (#570, #574). Queries hardcoded a fieldID for `title`, `date` and `publicationTitle`; they now resolve by name and per item type, as Zotero does, so cases (`caseName`), statutes, emails, webpages and libraries with non-standard field IDs are found, sorted and indexed correctly. The lookup is also cheaper than before: keyword search 3.6 ms to 1.3 ms on a 700-item library.
