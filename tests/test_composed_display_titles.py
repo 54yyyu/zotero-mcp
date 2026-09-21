@@ -41,22 +41,6 @@ def _case(name="Marbury v. Madison", reporter="", court=""):
     return data
 
 
-def _party(last, ctype):
-    return {"creatorType": ctype, "firstName": "A.", "lastName": last}
-
-
-def _letter(title="", creators=None, item_type="letter"):
-    data = {"key": "LETT0001", "itemType": item_type,
-            "creators": creators or [], "tags": []}
-    if title:
-        data["title"] = title
-    return data
-
-
-# ---------------------------------------------------------------------------
-# Annotations — the half backed by an observable symptom
-# ---------------------------------------------------------------------------
-
 class TestAnnotations:
     @pytest.mark.parametrize("atype", ["highlight", "underline"])
     def test_quoted_text(self, atype):
@@ -117,10 +101,12 @@ class TestAnnotations:
         assert got == "“" + "z" * 50 + "”"
         assert "…" not in got
 
-    def test_html_in_text_is_reduced_to_plain_text(self):
-        """Zotero runs the value through nsIParserUtils.convertToPlainText."""
-        got = item_display_title(_annotation("highlight", text="<b>bold</b> text"))
-        assert got == "“bold text”"
+    def test_angle_brackets_are_text_not_markup(self):
+        title = item_display_title(_annotation(text="p < 0.05 and n > 30 in all"))
+        assert title == "“p < 0.05 and n > 30 in all”"
+
+    def test_line_breaks_do_not_reach_the_heading(self):
+        assert item_display_title(_annotation(text="line one\nline two")) == "“line one line two”"
 
 
 class TestAnnotationTypeMap:
@@ -176,52 +162,6 @@ class TestCases:
 
 # ---------------------------------------------------------------------------
 # Letters and interviews — conformance
-# ---------------------------------------------------------------------------
-
-class TestLettersAndInterviews:
-    def test_a_title_always_wins(self):
-        """Zotero composes only `if (title === "")`."""
-        item = _letter(title="On Civil Disobedience",
-                       creators=[_party("Thoreau", "recipient")])
-        assert item_display_title(item) == "On Civil Disobedience"
-
-    @pytest.mark.parametrize("names,expected", [
-        (["Thoreau"], "[Letter to Thoreau]"),
-        (["Thoreau", "Emerson"], "[Letter to Thoreau and Emerson]"),
-        (["A", "B", "C"], "[Letter to A, B, and C]"),
-        (["A", "B", "C", "D"], "[Letter to A et al.]"),
-        (["A", "B", "C", "D", "E"], "[Letter to A et al.]"),
-    ])
-    def test_letter_participants(self, names, expected):
-        item = _letter(creators=[_party(n, "recipient") for n in names])
-        assert item_display_title(item) == expected
-
-    def test_interview_uses_interviewers(self):
-        item = _letter(creators=[_party("Terkel", "interviewer")],
-                       item_type="interview")
-        assert item_display_title(item) == "[Interview by Terkel]"
-
-    @pytest.mark.parametrize("item_type,expected", [
-        ("letter", "[Letter]"), ("interview", "[Interview]"),
-    ])
-    def test_no_participants_falls_back_to_the_type_name(self, item_type, expected):
-        assert item_display_title(_letter(item_type=item_type)) == expected
-
-    def test_authors_are_not_participants(self):
-        """Zotero collects authors into a list it then never uses — only
-        recipients (letter) and interviewers (interview) reach the string."""
-        item = _letter(creators=[_party("Thoreau", "author")])
-        assert item_display_title(item) == "[Letter]"
-
-    def test_single_field_names_are_used_whole(self):
-        """`participants[i].name !== undefined ? .name : .lastName`."""
-        item = _letter(creators=[{"creatorType": "recipient",
-                                  "name": "The Royal Society"}])
-        assert item_display_title(item) == "[Letter to The Royal Society]"
-
-
-# ---------------------------------------------------------------------------
-# Nothing else may change
 # ---------------------------------------------------------------------------
 
 class TestUnaffected:

@@ -324,19 +324,14 @@ def item_display_title(data: dict) -> str:
     if item_type == "case":
         return _case_title(data, resolved_title)
 
-    if not resolved_title and item_type in ("letter", "interview"):
-        return _participant_title(data, item_type)
-
     if resolved_title:
         return resolved_title
 
     return data.get("title") or data.get("filename") or "Untitled"
 
 
-#: Zotero's own names for the annotation types, verbatim from
-#: chrome/locale/en-US/zotero/reader.ftl:20-27. The casing really is
-#: inconsistent there ("Highlight annotation" but "Note Annotation"); matching
-#: the client exactly is worth more than tidying it.
+#: Zotero's own names for the annotation types (reader.ftl), inconsistent
+#: casing included: matching the client beats tidying it.
 _ANNOTATION_TYPE_NAMES = {
     "highlight": "Highlight annotation",
     "underline": "Underline annotation",
@@ -346,99 +341,42 @@ _ANNOTATION_TYPE_NAMES = {
     "ink": "Ink Annotation",
 }
 
-#: Zotero caps each component of an annotation title at 50 characters
-#: (`maxComponentLength`, item.js:1010).
-_ANNOTATION_COMPONENT_MAX = 50
 
-
-def _clip(text: str, limit: int = _ANNOTATION_COMPONENT_MAX) -> str:
-    """`text` cut to `limit` characters, with Zotero's ellipsis when it was
-    actually longer. The comparison is `>`, not `>=`: a value of exactly
-    `limit` characters is complete and takes no ellipsis."""
+def _clip(text: str, limit: int = 50) -> str:
+    """Collapse whitespace and cut to Zotero's 50-character component cap."""
+    text = " ".join(text.split())
     return text[:limit] + "…" if len(text) > limit else text
 
 
 def annotation_title(data: dict) -> str:
-    """The display title Zotero builds for an annotation.
+    """The display title Zotero composes for an annotation, which has no
+    title field (``updateDisplayTitle`` in item.js): quoted text for a
+    highlight or underline, then the comment, else the type's name (#575).
 
-    Annotations have no title field; Zotero composes one in
-    ``updateDisplayTitle`` (chrome/content/zotero/xpcom/data/item.js:1006-1032)
-    and this mirrors it: quoted text for a highlight or underline, then the
-    comment, each clipped to 50 characters — and the type's own name when
-    there is neither, which is all an image or ink annotation ever has.
-
-    Reading ``annotationText`` directly instead would be wrong for the
-    comment-only types, and every annotation rendered as "Untitled" before
-    this existed, even where the text was right there in the record.
+    Both fields are plain text, so no HTML pass: a tag stripper would eat
+    the middle of "p < 0.05 and n > 30".
     """
     annotation_type = data.get("annotationType") or ""
-    text = html_to_text(data.get("annotationText") or "").strip()
-    comment = html_to_text(data.get("annotationComment") or "").strip()
+    comment = _clip(data.get("annotationComment") or "")
 
     title = ""
     if annotation_type in ("highlight", "underline"):
-        title = "“" + _clip(text) + "”"
+        title = "“" + _clip(data.get("annotationText") or "") + "”"
     if comment:
-        if title:
-            title += " "
-        title += _clip(comment)
+        title = f"{title} {comment}" if title else comment
 
     return title or _ANNOTATION_TYPE_NAMES.get(annotation_type, "") or "Untitled"
 
 
 def _case_title(data: dict, case_name: str) -> str:
-    """A case's name qualified by where it was reported, as Zotero renders it
-    (item.js:972-1005): the reporter if there is one, else the court.
-
-    Zotero also has a civil-law form for a case with no name at all
-    (``[court, date, first author]``). That is deliberately not implemented —
-    it depends on ``Zotero.Date.multipartToSQL``, whose exact output this was
-    not able to verify against the Zotero source, and guessing a date format
-    is worse than leaving a rare branch alone.
-    """
-    # `case_name` is the resolved `caseName`, which is what the web API
-    # returns. The SQLite backend hydrates the same value under the *base*
-    # key instead (`row_to_api_item`), so fall back to it — otherwise every
-    # SQL-served case would quietly lose its qualifier.
+    """A case's name qualified by its reporter, else its court, as Zotero
+    renders it. The SQLite backend hydrates ``caseName`` under the base
+    ``title`` key, hence the fallback."""
     name = case_name or data.get("title") or ""
     if not name:
         return "Untitled"
     qualifier = data.get("reporter") or data.get("court") or ""
     return f"{name} ({qualifier})" if qualifier else name
-
-
-#: `pane.items.<type>.<n>Participants` from
-#: chrome/locale/en-US/zotero/zotero.properties:378-385, as format templates.
-_PARTICIPANT_TEMPLATES = {
-    "letter": ("Letter to {0}", "Letter to {0} and {1}",
-               "Letter to {0}, {1}, and {2}", "Letter to {0} et al."),
-    "interview": ("Interview by {0}", "Interview by {0} and {1}",
-                  "Interview by {0}, {1}, and {2}", "Interview by {0} et al."),
-}
-
-#: Which creator role is the *participant* for each type. Zotero also collects
-#: the authors (item.js:919-970) into a list it then never uses, so only these
-#: reach the rendered string.
-_PARTICIPANT_ROLES = {"letter": "recipient", "interview": "interviewer"}
-
-
-def _participant_title(data: dict, item_type: str) -> str:
-    """The bracketed placeholder Zotero gives an untitled letter or interview
-    — ``[Letter to Thoreau]`` — falling back to the bare type name when it has
-    no participants to name (item.js:919-970).
-    """
-    role = _PARTICIPANT_ROLES[item_type]
-    names = [
-        creator.get("name") or creator.get("lastName") or ""
-        for creator in (data.get("creators") or [])
-        if isinstance(creator, dict) and creator.get("creatorType") == role
-    ]
-    names = [name for name in names if name][:4]
-
-    if not names:
-        return f"[{item_type.capitalize()}]"
-    template = _PARTICIPANT_TEMPLATES[item_type][min(len(names), 4) - 1]
-    return "[" + template.format(*names) + "]"
 
 
 def item_display_date(data: dict) -> str:
