@@ -8,6 +8,8 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
+from fastmcp.exceptions import ToolError
+
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
@@ -193,7 +195,9 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
                     all_items.append(item)
         except Exception as e:
             _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
-            continue  # Skip failed variant, try next
+            # A failed request does not establish an empty result. Do not
+            # silently return partial matches or retry through the cascade.
+            raise
 
     return _exclude_note_content_matches(all_items, qmode)
 
@@ -537,7 +541,7 @@ def search_items(
         return f"Error: {e}"
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
-        return f"Error searching Zotero: {str(e)}"
+        raise ToolError(f"Error searching Zotero: {str(e)}") from e
 
 @mcp.tool(
     name="zotero_search_by_tag",

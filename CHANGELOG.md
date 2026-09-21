@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Metadata search request failures now return MCP errors and CLI exit code 1 instead of successful empty or partial results. Failed query variants stop the fallback cascade; valid empty searches remain successful.
+
 ## [0.12.4] - 2026-09-14
 
 Found by using `zotero-cli` to read "Attention Is All You Need" and annotate it end to end.
