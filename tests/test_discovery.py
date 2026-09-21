@@ -152,6 +152,48 @@ def test_citations_direction_sorted_by_citation_count(monkeypatch):
     assert out.index("Citer High") < out.index("Citer Low")
 
 
+def test_citations_fall_back_to_cites_filter_without_api_url(monkeypatch):
+    """OpenAlex no longer returns `cited_by_api_url`, so the citing works have to be
+    looked up through the `cites:` filter built from the work's own id."""
+    _make_zot(monkeypatch)
+
+    source = {
+        "id": "https://openalex.org/W1",
+        "title": "Source Paper",
+        "referenced_works": [],
+    }
+    citing_results = {
+        "results": [
+            _work("https://openalex.org/W20", "Citer Low", 2020, "10.1234/low", 3, ["X"]),
+            _work("https://openalex.org/W21", "Citer High", 2021, "10.1234/high", 99, ["Y"]),
+        ]
+    }
+    seen: list[tuple[str, dict]] = []
+
+    def handler(url, params):
+        if url.endswith("/works/https://doi.org/10.1234/x"):
+            return FakeResponse(200, source)
+        seen.append((url, params))
+        if url.endswith("/works") and params.get("filter") == "cites:W1":
+            return FakeResponse(200, citing_results)
+        return FakeResponse(404, {})
+
+    _patch_requests(monkeypatch, handler)
+
+    out = discovery.find_related_papers("10.1234/x", direction="citations", ctx=DummyContext())
+    assert seen, "no citations lookup was attempted"
+    assert "2 citations" in out
+    assert "Citer High" in out and "Citer Low" in out
+    assert out.index("Citer High") < out.index("Citer Low")
+
+    # Nothing to name the work with: no query is invented, and the answer stays empty.
+    seen.clear()
+    source.pop("id")
+    out = discovery.find_related_papers("10.1234/x", direction="citations", ctx=DummyContext())
+    assert not seen
+    assert "0 citations" in out
+
+
 # --- find_related_papers: library membership flagging ---------------------
 
 
