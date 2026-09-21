@@ -22,7 +22,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><img src="img/logo.svg" alt="" width="28" height="28">Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.12.4</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.12.5</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="installation.html">Install &amp; setup</a>
@@ -42,7 +42,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <a class="news reveal" href="#whats-new"><b>0.12.4</b>Read and annotate a paper end to end</a>
+        <a class="news reveal" href="#whats-new"><b>0.12.5</b>Search finds the titles it used to miss</a>
         <h1 class="reveal">Chat with your <span class="hl c-yellow">research library</span> in Claude, ChatGPT, and more.</h1>
         <div class="reveal">
           <p class="lede">Zotero MCP connects your Zotero library to AI assistants. Search it, read it, annotate it, and add to it, from the desktop app or the web API.</p>
@@ -105,6 +105,19 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.12.5<small>Sep 2026</small></div>
+          <div>
+            <h3>Search finds the titles it used to <span class="hl c-yellow">miss</span></h3>
+            <p>Keyword search on the SQLite backend looked up the title, date and journal by a fixed field id, so cases, statutes, webpages and some upgraded databases were skipped or listed as &ldquo;Untitled&rdquo;. Fields are now resolved per item type, the way Zotero does it, and the lookup costs less than the old one.</p>
+            <p>Collection-scoped search works again on the web API, annotations show their own text instead of &ldquo;Untitled&rdquo;, <code>zotero_find_related_papers</code> reports citation counts again, and BibTeX export works. <code>update-db --limit</code> no longer marks the whole library as indexed, and the ChatGPT connector falls back to keyword search when there is no semantic index.</p>
+            <dl class="bench">
+              <div><dt>Keyword search</dt><dd><span class="fast">1.3 ms</span><span class="slow">before: 3.6 ms</span></dd></div>
+            </dl>
+            <p class="fine">Measured on a 700-item library. If you have run <code>update-db --limit</code>, run <code>update-db --fulltext</code> once to repair the index.</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.12.4<small>Sep 2026</small></div>
           <div>
             <h3>Read and <span class="hl c-yellow">annotate</span> a paper end to end</h3>
@@ -320,7 +333,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.12.4 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.12.5 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
