@@ -466,3 +466,77 @@ def test_watermark_ahead_of_library_version_forces_full_scan(monkeypatch, tmp_pa
     assert stats["processed_items"] == 1
     assert not any(c[0] == "item_versions" and c[1] for c in group.calls)
     assert _saved(config_path)["last_sync_versions"] == {str(GROUP_ID): 1200}
+
+
+# ---------------------------------------------------------------------------
+# --limit must not promote the sync watermark (cf. #292)
+# ---------------------------------------------------------------------------
+
+def test_limited_run_leaves_watermark_unset_for_a_bootstrap_library(monkeypatch, tmp_path):
+    """A --limit run indexes only a subset of the library; promoting the
+    watermark to the library's current version would strand every item
+    outside that subset the next time a plain update-db goes incremental."""
+    config_path = _write_config(tmp_path)
+    zot = FakeZoteroClient(["A", "B", "C"], library_version=100)
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+
+    search.update_database(limit=1)
+
+    versions = _saved(config_path).get("last_sync_versions", {})
+    assert "0" not in versions
+
+
+def test_limited_run_followed_by_a_plain_update_indexes_the_rest(monkeypatch, tmp_path):
+    """The actual user-visible consequence: after a --limit run, the next
+    plain update-db must still see and index everything the limited run
+    skipped, rather than treating the library as already up to date."""
+    config_path = _write_config(tmp_path)
+    zot = FakeZoteroClient(["A", "B", "C"], library_version=100)
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+    search.update_database(limit=1)
+    assert len(chroma.get_all_ids()) == 1
+
+    follow_up = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+    stats = follow_up.update_database()
+
+    assert stats["processed_items"] == 3
+    assert chroma.get_all_ids() == {"A", "B", "C"}
+    assert _saved(config_path)["last_sync_versions"] == {"0": 100}
+
+
+def test_limited_run_does_not_lower_or_clear_an_existing_watermark(monkeypatch, tmp_path):
+    """A --limit run against a library that already has a watermark must
+    leave it exactly where it was, not overwrite it with a value covering
+    only the limited subset."""
+    config_path = _write_config(tmp_path, {"last_sync_versions": {"0": 500}})
+    zot = FakeZoteroClient(["A", "B", "C"], library_version=1000)
+    chroma = FakeChromaClient()
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+
+    search.update_database(limit=1)
+
+    saved = _saved(config_path)
+    assert saved["last_sync_versions"] == {"0": 500}
+    assert "last_sync_version" not in saved
+
+
+def test_limited_forced_rebuild_resets_the_watermark(monkeypatch, tmp_path):
+    """--force-rebuild --limit --allow-mass-deletion empties the collection
+    and repopulates a subset, so the old watermark no longer describes the
+    index: the next plain run must full-scan rather than go incremental."""
+    config_path = _write_config(tmp_path, {"last_sync_versions": {"0": 500}})
+    zot = FakeZoteroClient(["A", "B", "C"], library_version=1000)
+    chroma = FakeChromaClient(preloaded_ids=["A", "B", "C"])
+    search = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+
+    search.update_database(force_full_rebuild=True, limit=1, allow_mass_deletion=True)
+
+    assert _saved(config_path)["last_sync_versions"] == {"0": 0}
+
+    follow_up = _build_search(monkeypatch, zot, chroma, config_path=config_path)
+    follow_up.update_database()
+
+    assert chroma.get_all_ids() == {"A", "B", "C"}
+    assert _saved(config_path)["last_sync_versions"] == {"0": 1000}
