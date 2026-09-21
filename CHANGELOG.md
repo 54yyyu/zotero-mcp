@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **FastMCP 4 is supported** (`fastmcp>=2.14.0,<5`). With it the HTTP server answers the MCP 2026-07-28 `server/discover` handshake that the ChatGPT Secure MCP Tunnel sends; legacy `initialize` clients keep working (#573).
+
+### Fixed
+
+- **Tool progress and error messages now reach the client.** The tools are synchronous while FastMCP's `ctx.info` / `ctx.warning` / `ctx.error` are coroutines, so every such message was an un-awaited coroutine and was silently dropped, on FastMCP 3 as well as 4. They are now handed to the event loop from the tool's worker thread.
+- **`zotero_add_item_relation` and `zotero_remove_item_relation` no longer fail after writing the forward relation** when the reverse one cannot be written: the warning path called a `ctx.warn` that does not exist.
+- The MCP `serverInfo.version` reports zotero-mcp's version, not FastMCP's.
+
 ## [0.12.5] - 2026-09-21
 
 ### Fixed
