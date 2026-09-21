@@ -735,7 +735,14 @@ _LINK_MODES = {
 
 #: Zotero's numeric annotation types, spelled as the API spells them. Same
 #: mapping `search_annotations_local` already uses.
-_ANNOTATION_TYPES = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}
+# Zotero.Annotations.ANNOTATION_TYPE_* (chrome/content/zotero/xpcom/
+# annotations.js:31-36), spelled as data/items.js:526-548 names them. Type 6
+# ("text") arrived after this map was written, so it resolved to "" — which
+# reaches the user as `[KEY] : ...` in tools/retrieval.py and as an empty
+# "type" in cli_json.py, and would defeat any display title keyed on the type.
+_ANNOTATION_TYPES = {
+    1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline", 6: "text",
+}
 
 
 def _api_timestamp(value: str | None) -> str:
