@@ -20,12 +20,6 @@ from pyzotero.zotero_errors import TooManyRetriesError
 
 from zotero_mcp.tools import _helpers
 
-
-def _zotero():
-    """A web-API Zotero. Constructing one opens no socket."""
-    return Zotero(library_id="1", library_type="user", api_key="x" * 24)
-
-
 # Fixtures must come from the HTTP library pyzotero speaks (httpx2 on
 # >=1.15, httpx below it), or its error handling never sees them (#511).
 _http = pyzotero_http_module()
@@ -58,10 +52,23 @@ def _200(items=None):
 
 
 def _client(responses):
-    """A client whose transport replays `responses` in order."""
-    zot = _zotero()
+    """A web-API Zotero whose transport replays `responses` in order.
+
+    Replaced rather than stubbed on the client: pyzotero dispatches a read
+    through ``client.get`` below 1.15.2 and through ``client.request`` from
+    1.15.2 on, so patching either method pins one version and lets the other
+    issue a real request to api.zotero.org. A transport sits underneath both,
+    and leaves pyzotero's own retry and error handling — the thing these
+    tests exist to pin — actually running.
+
+    Constructing a Zotero opens no socket, and the mock transport never lets
+    one open.
+    """
     seq = iter(responses)
-    zot.client.get = lambda url, params=None, timeout=None, **kw: next(seq)
+    zot = Zotero(
+        library_id="1", library_type="user", api_key="x" * 24,
+        client=_http.Client(transport=_http.MockTransport(lambda request: next(seq))),
+    )
     zot._set_backoff = lambda *a, **kw: None  # don't sleep in tests
     return zot
 
