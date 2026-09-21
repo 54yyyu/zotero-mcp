@@ -286,103 +286,47 @@ _CONDITION_FIELD_ALIASES = {
     "doi": "DOI",
 }
 
-# Zotero's own desktop client never picks one fieldID for a base field like
-# "title" up front. It loads every itemData row for an item generically —
-# Zotero.Items._loadItemData in the client's chrome/content/zotero/xpcom/
-# data/items.js:
+# Field resolution, the way the Zotero client does it (#570): never a literal
+# fieldID. A field is looked up by name, and a *base* field (title, date,
+# publicationTitle) resolves per item type through baseFieldMappingsCombined —
+# a case's title is `caseName`, a webpage's publicationTitle `websiteTitle` —
+# falling back to the base field's own ID: `override || baseFieldID`, as
+# Zotero.ItemFields.getFieldIDFromTypeAndBase plus Item.getField have it.
+# The ...Combined table is the one that also sees plugin-defined types.
 #
-#     SELECT itemID, fieldID, value FROM items
-#     JOIN itemData USING (itemID) JOIN itemDataValues USING (valueID)
-#     WHERE libraryID=? AND itemTypeID!=? ...
-#
-# — then resolves a base field to *that item's own type's* actual column at
-# read time, in Zotero.Item.prototype.getField (chrome/content/zotero/xpcom/
-# data/item.js): with includeBaseMapped set (as getDisplayTitle always does),
-# it calls Zotero.ItemFields.getFieldIDFromTypeAndBase(itemTypeID, field)
-# (chrome/content/zotero/xpcom/data/itemFields.js), which returns the
-# type's override field if the schema maps one, and the base field's own
-# fieldID otherwise. A case's title lives in `caseName`, a statute's in
-# `nameOfAct`, a webpage's publicationTitle in `websiteTitle`, and so on —
-# never a fixed fieldID for the whole library.
-#
-# The two helpers below are the SQL form of that same rule: the join for
-# projections, the correlated subquery for WHERE conditions. Both prefer this
-# item's override from `baseFieldMappingsCombined` and fall back to the base
-# field's own fieldID when the type has none.
-#
-# That fallback is Zotero's rule at two independent layers, not one, which is
-# why COALESCE is right rather than merely convenient. `_baseTypeFields`
-# (itemFields.js:524-557) is built from a *cartesian* itemTypesCombined x
-# fieldsCombined LEFT JOIN, so every (type, baseField) cell is filled: the
-# override, else the base fieldID itself when valid for the type, else
-# `false`. And getField turns that `false` straight back into the base
-# fieldID (item.js:279-281):
-#
-#     if (includeBaseMapped) { fieldID = getFieldIDFromTypeAndBase(...); }
-#     if (!fieldID) { fieldID = Zotero.ItemFields.getID(field); }
-#
-# so the effective read-time rule is `override || baseFieldID` — exactly
-# COALESCE(map.fieldID, f.fieldID).
-#
-# Only `title`, `date` and `publicationTitle` (of the fields read here) are
-# base fields at all; `abstractNote`, `DOI`, `extra` and `url` have zero rows
-# in baseFieldMappingsCombined and take getFieldIDFromTypeAndBase's early
-# isBaseField return. Those resolve by name via `_plain_field_join` — never
-# by a literal fieldID, but without a mapping lookup that can only miss.
-#
-# `baseFieldMappingsCombined` rather than `baseFieldMappings` is deliberate:
-# schema.js:932-956 rebuilds it as baseFieldMappings UNION
-# customBaseFieldMappings, so it is the only one that sees plugin-defined
-# types. Its primary key is (itemTypeID, baseFieldID, fieldID), so two
-# overrides for one (type, base) pair are schema-legal; Zotero's global
-# schema produces no such pair, and if one ever appeared the join form would
-# multiply the outer row while the subquery form would take the first —
-# Zotero's own array keeps the last.
-#
-# The name lookup deliberately does NOT follow that reasoning to its end: it
-# joins `fields`, not `fieldsCombined`, so it cannot see a plugin-defined
-# *field*. That is safe only because every name passed below is a core Zotero
-# field, and because `baseFieldID` is FK-constrained to builtin `fields` in
-# both mapping tables (userdata.sql:96-97, 554-561) — a base field is always
-# builtin even when its override is not. Revisit if these helpers ever take a
-# caller-supplied field name.
-#
-# Before hardcoding a fieldID or a field name for anything
-# item-metadata-shaped again, check how the Zotero client itself resolves it
-# — it has already solved this.
+# abstractNote, DOI, extra and url have no mappings and take the plain forms.
+# Every name passed here is a core Zotero field, hence `fields` rather than
+# `fieldsCombined`; revisit if a caller-supplied name ever reaches these.
+def _field_id(field_name: str) -> str:
+    """The fieldID as an uncorrelated scalar subquery, which SQLite evaluates
+    once per statement. Joining `fields` instead scans it for every outer row
+    (it has no index on fieldName): 3x slower on the keyword search."""
+    return f"(SELECT fieldID FROM fields WHERE fieldName = '{field_name}')"
+
+
 def _base_field_resolved_join(
     alias: str, base_field_name: str, item_alias: str = "i"
 ) -> str:
-    """LEFT JOIN chain projecting `{alias}_val.value` for base field
-    `base_field_name`, resolved per item exactly as
-    ``Zotero.ItemFields.getFieldIDFromTypeAndBase`` resolves it (see above):
-    this item's type-specific override field if the schema maps one for
-    `base_field_name`, otherwise the base field's own fieldID.
-
-    ``item_alias`` is the outer query's ``items`` alias; the note and
-    annotation searches resolve a *parent's* title against ``pi``/``gpi``.
+    """LEFT JOIN chain projecting `{alias}_val.value` for a base field,
+    resolved against the type of ``item_alias`` — the outer ``items`` alias,
+    which the note and annotation searches point at a parent (``pi``/``gpi``).
     """
+    field_id = _field_id(base_field_name)
     return f"""
-    LEFT JOIN fields {alias}_f ON {alias}_f.fieldName = '{base_field_name}'
     LEFT JOIN baseFieldMappingsCombined {alias}_map
         ON {alias}_map.itemTypeID = {item_alias}.itemTypeID
-        AND {alias}_map.baseFieldID = {alias}_f.fieldID
+        AND {alias}_map.baseFieldID = {field_id}
     LEFT JOIN itemData {alias}_data ON {item_alias}.itemID = {alias}_data.itemID
-        AND {alias}_data.fieldID = COALESCE({alias}_map.fieldID, {alias}_f.fieldID)
+        AND {alias}_data.fieldID = COALESCE({alias}_map.fieldID, {field_id})
     LEFT JOIN itemDataValues {alias}_val ON {alias}_data.valueID = {alias}_val.valueID
     """
 
 
 def _plain_field_join(alias: str, field_name: str, item_alias: str = "i") -> str:
-    """LEFT JOIN chain projecting `{alias}_val.value` for a field with NO
-    base-field mapping (abstractNote, DOI, extra, url, an attachment's own
-    title). Resolves by name rather than by a literal fieldID, but skips the
-    baseFieldMappingsCombined lookup that could only ever miss.
-    """
+    """The same projection for a field with no base-field mapping."""
     return f"""
-    LEFT JOIN fields {alias}_f ON {alias}_f.fieldName = '{field_name}'
     LEFT JOIN itemData {alias}_data ON {item_alias}.itemID = {alias}_data.itemID
-        AND {alias}_data.fieldID = {alias}_f.fieldID
+        AND {alias}_data.fieldID = {_field_id(field_name)}
     LEFT JOIN itemDataValues {alias}_val ON {alias}_data.valueID = {alias}_val.valueID
     """
 
@@ -393,33 +337,27 @@ def _base_field_resolved_subquery(
     value_expr: str = "v.value",
     extra_where: str = "",
 ) -> str:
-    """The same resolution as `_base_field_resolved_join`, as a correlated
-    scalar subquery — the shape a WHERE condition needs.
-
-    ``value_expr`` projects the matched row, which is what lets the three
-    date variants share this: the display half, the ISO prefix, the year.
-    ``search_semantics.sql_expression`` embeds the result exactly once, so
-    the subquery is evaluated once per row.
+    """`_base_field_resolved_join` as a correlated scalar subquery, the shape
+    a WHERE condition needs. ``value_expr`` lets the date variants (display
+    half, ISO prefix, year) share it.
     """
+    field_id = _field_id(base_field_name)
     return (
         f"(SELECT {value_expr} FROM itemData d "
         f"JOIN itemDataValues v ON d.valueID = v.valueID "
-        f"JOIN fields f ON f.fieldName = '{base_field_name}' "
         f"LEFT JOIN baseFieldMappingsCombined m "
-        f"ON m.itemTypeID = {item_alias}.itemTypeID AND m.baseFieldID = f.fieldID "
+        f"ON m.itemTypeID = {item_alias}.itemTypeID AND m.baseFieldID = {field_id} "
         f"WHERE d.itemID = {item_alias}.itemID "
-        f"AND d.fieldID = COALESCE(m.fieldID, f.fieldID){extra_where})"
+        f"AND d.fieldID = COALESCE(m.fieldID, {field_id}){extra_where})"
     )
 
 
 def _plain_field_subquery(field_name: str, item_alias: str = "i") -> str:
-    """Scalar-subquery counterpart to `_plain_field_join`, for a field with no
-    base-field mapping."""
+    """Scalar-subquery counterpart to `_plain_field_join`."""
     return (
         f"(SELECT v.value FROM itemData d "
         f"JOIN itemDataValues v ON d.valueID = v.valueID "
-        f"JOIN fields f ON d.fieldID = f.fieldID "
-        f"WHERE d.itemID = {item_alias}.itemID AND f.fieldName = '{field_name}')"
+        f"WHERE d.itemID = {item_alias}.itemID AND d.fieldID = {_field_id(field_name)})"
     )
 
 
