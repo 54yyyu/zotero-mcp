@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-21
+
 ### Changed
 
 - **FastMCP 4 is supported** (`fastmcp>=2.14.0,<5`). With it the HTTP server answers the MCP 2026-07-28 `server/discover` handshake that the ChatGPT Secure MCP Tunnel sends; legacy `initialize` clients keep working (#573).
