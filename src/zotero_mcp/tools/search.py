@@ -230,12 +230,14 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
             f"[SEARCH] variant='{variant}' qmode={qmode}: {pages} page(s), {kept} kept, in {elapsed:.2f}s"
         )
 
-    if failure is not None and not all_items:
+    results = _exclude_note_content_matches(all_items, qmode)
+    if failure is not None and not results:
         # A failed request is not an empty result: reporting "no items" here
         # would send the caller down the fallback cascade, or away, for a
-        # library that was never actually searched.
+        # library that was never actually searched. Checked after the note
+        # filter, which can empty a page that looked like matches.
         raise failure
-    return _exclude_note_content_matches(all_items, qmode)
+    return results
 
 
 class GlobalSearchUnsupported(Exception):
