@@ -286,6 +286,40 @@ def test_export_bibliography_bibtex_fenced(monkeypatch):
     assert "style" not in fake.last_kwargs
 
 
+def test_export_bibliography_bibtex_from_parsed_database(monkeypatch):
+    """pyzotero parses format=bibtex into a bibtexparser BibDatabase.
+
+    The stub above returns raw bytes, but the real client hands back the
+    parsed database, which used to crash with "'BibDatabase' object is not
+    iterable". It must reach the user as .bib text with every entry.
+    """
+    import bibtexparser
+
+    class _ParsedBibZotero(_BibZotero):
+        def _render(self, kwargs):
+            if kwargs.get("format") == "bibtex":
+                return bibtexparser.loads(
+                    "@inproceedings{yan2023, title={FPDM}, booktitle={ICCV}}\n"
+                    "@article{smith2020, title={Title}, author={Smith, J.}}\n"
+                )
+            return super()._render(kwargs)
+
+    fake = _ParsedBibZotero()
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
+
+    out = synthesis.export_bibliography(
+        item_keys=["ABCD1234", "EFGH5678"],
+        export_format="bibtex",
+        ctx=DummyContext(),
+    )
+
+    assert "Error" not in out
+    assert "```bibtex" in out
+    assert "@inproceedings{yan2023" in out
+    assert "booktitle = {ICCV}" in out
+    assert "@article{smith2020" in out
+
+
 def test_export_bibliography_collection(monkeypatch):
     fake = _BibZotero()
     monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)

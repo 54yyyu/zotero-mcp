@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero-cli export --format bibtex` / `zotero_export_bibliography(export_format="bibtex")` failed with `'BibDatabase' object is not iterable`.** pyzotero parses a `format=bibtex` response into a bibtexparser `BibDatabase`, not bytes, so the export now serialises it back to `.bib` text. This is the path that uses Zotero's own BibTeX translator, so collections and multi-item exports work again with complete entries.
+- **`@inproceedings` entries from `zotero-cli get bibtex` / `zotero_get_item_metadata(format="bibtex")` had no `booktitle`.** A conference paper keeps its venue in `proceedingsTitle`, which the local BibTeX generator did not map.
+
 ## [0.12.4] - 2026-09-14
 
 Found by using `zotero-cli` to read "Attention Is All You Need" and annotate it end to end.
