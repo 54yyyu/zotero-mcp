@@ -400,6 +400,12 @@ def export_bibliography(
                     # bibliography entry, so including them would pad the
                     # export with blanks and crowd out real references.
                     raw = zot.top(format="bibtex", limit=100)
+                if hasattr(raw, "entries"):
+                    # pyzotero parses a format=bibtex response into a
+                    # bibtexparser BibDatabase; serialise it back to .bib text.
+                    import bibtexparser
+
+                    raw = bibtexparser.dumps(raw)
                 rendered = raw.decode("utf-8") if isinstance(raw, bytes) else raw
             else:
                 include = "bib" if export_format == "bib" else "citation"

@@ -31,7 +31,6 @@ from zotero_mcp.cli import (
     obfuscate_config_for_display,
     setup_zotero_environment,
 )
-from zotero_mcp.utils import _paginate
 
 # ---------------------------------------------------------------------------
 # Context

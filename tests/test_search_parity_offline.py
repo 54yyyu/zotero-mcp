@@ -167,6 +167,16 @@ for _op in ["isGreaterThan", "isLessThan", "isBefore", "isAfter"]:
 for _value in ["2016", "2017", "2021"]:
     CONDITION_CASES.append(("year", "is", _value))
 
+# Base-field-mapped titles (#570). CASEITM1 is a `case`, so its title is
+# stored under `caseName` — the SQL backend has to resolve that through
+# baseFieldMappingsCombined and the API path through schema.resolve_field.
+# Before the fix both missed it, which agreed (both returned nothing) and so
+# would have passed a parity check; these cases only mean something because
+# the corpus now contains the item at all.
+for _op in _TEXT_OPS:
+    for _value in ["Marbury", "marbury", "Marbury v. Madison", "Madison"]:
+        CONDITION_CASES.append(("title", _op, _value))
+
 # Field-name aliases must resolve identically on both sides.
 for _alias in ["author", "authors", "creators", "tags", "itemtype", "doi"]:
     CONDITION_CASES.append((_alias, "contains", "a"))

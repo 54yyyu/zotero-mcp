@@ -122,6 +122,40 @@ class TestNormalizeArxivId:
     def test_old_format(self):
         assert server._normalize_arxiv_id("hep-ph/9901234") == "hep-ph/9901234"
 
+    def test_old_format_dotted_archive(self):
+        """Archive names carrying a period are the legacy norm, not an edge.
+
+        math.*, cs.*, q-bio.* and friends spell their subcategory after a dot
+        (arXiv's own taxonomy keys), so ``math.GT/0309136`` is as valid as
+        ``hep-ph/9901234``. A dotted name that fails to normalize is not
+        merely rejected here: it also drops the item out of arXiv dedup
+        (``_arxiv_identity``), so re-adding it duplicates the library entry.
+        """
+        assert server._normalize_arxiv_id("math.GT/0309136") == "math.GT/0309136"
+        assert server._normalize_arxiv_id("cs.LG/0105021") == "cs.LG/0105021"
+        assert server._normalize_arxiv_id("q-bio.BM/0301001") == "q-bio.BM/0301001"
+
+    def test_old_format_dotted_archive_with_dash_subcategory(self):
+        # cond-mat's own subcategories combine both separators.
+        assert server._normalize_arxiv_id("cond-mat.mtrl-sci/9901001") == (
+            "cond-mat.mtrl-sci/9901001"
+        )
+
+    def test_old_format_dotted_versioned(self):
+        assert server._normalize_arxiv_id("math.GT/0309136v1") == "math.GT/0309136v1"
+
+    def test_arxiv_prefix_on_dotted_id(self):
+        assert server._normalize_arxiv_id("arXiv:math.GT/0309136") == "math.GT/0309136"
+
+    def test_abs_url_dotted_id(self):
+        assert server._normalize_arxiv_id("https://arxiv.org/abs/math.GT/0309136") == (
+            "math.GT/0309136"
+        )
+
+    def test_legacy_archive_name_cannot_start_a_match_without_slash(self):
+        assert server._normalize_arxiv_id("math.GT.0309136") is None
+        assert server._normalize_arxiv_id("math.GT/03091") is None
+
     def test_arxiv_prefix(self):
         assert server._normalize_arxiv_id("arXiv:2401.00001") == "2401.00001"
 

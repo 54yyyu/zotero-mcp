@@ -24,15 +24,14 @@ from zotero_mcp.tools.retrieval import get_item_fulltext
         "do not rename. Not intended for general MCP clients — in Claude "
         "or other regular MCP contexts use zotero_semantic_search or "
         "zotero_search_items instead, which return richer markdown. "
-        "Performs semantic search over the active Zotero library and "
+        "Performs semantic search over the active Zotero library (keyword "
+        "search when the semantic index is unavailable or finds nothing) and "
         "returns a JSON string {\"results\":[{\"id\",\"title\",\"url\"}, "
         "...]} matching the ChatGPT connector citation UI. URLs are "
         "zotero://select/items/<key> deep-links. "
         "query: topic string; natural language works (embedding match). "
         "No limit parameter — fixed at 10 per the connector UI's "
         "expected result-set size. "
-        "Requires the semantic search DB populated — run "
-        "zotero_update_search_database first if empty. "
         "SILENT FALLBACK: any error returns {\"results\":[]} rather "
         "than raising, to keep the ChatGPT connector stable. "
         "Example (agent-invoked): search(query='mindfulness-based "
@@ -49,35 +48,40 @@ def chatgpt_connector_search(
     Returns a JSON-encoded string with shape {"results": [{"id","title","url"}, ...]}.
     The MCP runtime wraps this string as a single text content item.
     """
+    default_limit = 10
+    # (key, title) pairs. Semantic first; a missing extra, an unbuilt index or
+    # an empty answer all fall through to keyword search, so a core install
+    # still gives the connector something to cite.
+    hits: list[tuple[str, str]] = []
     try:
-        default_limit = 10
-
         from zotero_mcp.semantic_search import create_semantic_search
 
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
         search = create_semantic_search(str(config_path))
-
-        result_list: list[dict[str, str]] = []
         results = search.search(query=query, limit=default_limit, filters=None) or {}
         for r in results.get("results", []):
-            item_key = r.get("item_key") or ""
-            title = ""
-            if r.get("zotero_item"):
-                data = (r.get("zotero_item") or {}).get("data", {})
-                title = data.get("title", "")
-            if not title:
-                title = f"Zotero Item {item_key}" if item_key else "Zotero Item"
-            url = f"zotero://select/items/{item_key}" if item_key else ""
-            result_list.append({
-                "id": item_key or uuid.uuid4().hex[:8],
-                "title": title,
-                "url": url,
-            })
-
-        return json.dumps({"results": result_list}, separators=(",", ":"))
+            data = (r.get("zotero_item") or {}).get("data", {})
+            hits.append((r.get("item_key") or "", data.get("title", "")))
     except Exception as e:
-        ctx.error(f"Error in search wrapper: {str(e)}")
-        return json.dumps({"results": []}, separators=(",", ":"))
+        ctx.info(f"Semantic search unavailable, using keyword search: {e}")
+    if not hits:
+        try:
+            items = _library.get_library_backend().search_items(
+                query, qmode="everything", limit=default_limit
+            )
+            hits = [(i.get("key", ""), i.get("data", {}).get("title", "")) for i in items]
+        except Exception as e:
+            ctx.error(f"Error in search wrapper: {str(e)}")
+
+    result_list = [
+        {
+            "id": key or uuid.uuid4().hex[:8],
+            "title": title or (f"Zotero Item {key}" if key else "Zotero Item"),
+            "url": f"zotero://select/items/{key}" if key else "",
+        }
+        for key, title in hits
+    ]
+    return json.dumps({"results": result_list}, separators=(",", ":"))
 
 
 @mcp.tool(

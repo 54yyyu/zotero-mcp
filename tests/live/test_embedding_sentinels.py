@@ -62,7 +62,7 @@ def test_ollama_sentinel(ollama_available, cosine_similarity):
     sentinel = _load_sentinel("ollama-nomic-embed-text.json")
 
     ef = OllamaEmbeddingFunction(model_name=sentinel["model_name"], base_url=ollama_available)
-    vector = ef.embed_query(sentinel["text"])
+    vector = ef.embed_query_text(sentinel["text"])
 
     assert len(vector) == sentinel["dim"]
     similarity = cosine_similarity(vector, sentinel["vector"])
@@ -76,7 +76,7 @@ def test_openai_sentinel(configured_provider, cosine_similarity):
 
     cfg = {**production_config, "model_name": sentinel["model_name"]}
     ef = create_embedding_function("openai", cfg)
-    vector = ef.embed_query(sentinel["text"])
+    vector = ef.embed_query_text(sentinel["text"])
 
     assert len(vector) == sentinel["dim"]
     similarity = cosine_similarity(vector, sentinel["vector"])
@@ -91,7 +91,7 @@ def test_gemini_sentinel(configured_provider, cosine_similarity):
     cfg = {**production_config, "model_name": sentinel["model_name"]}
     ef = create_embedding_function("gemini", cfg)
     assert isinstance(ef, GeminiEmbeddingFunction)
-    vector = ef.embed_query(sentinel["text"])
+    vector = ef.embed_query_text(sentinel["text"])
 
     assert len(vector) == sentinel["dim"]
     similarity = cosine_similarity(vector, sentinel["vector"])

@@ -669,7 +669,6 @@ def parse_epub_for_cfi(epub_path: str) -> tuple[Any, list[dict]]:
 
     # Build manifest map
     manifest = {}
-    ns_opf = {'opf': 'http://www.idpf.org/2007/opf'}
 
     for item in opf_root.findall('.//{*}item'):
         item_id = item.get('id')
@@ -721,7 +720,6 @@ def generate_cfi_python(
 
     try:
         # Track cumulative character count for pseudo-page calculation
-        cumulative_chars = 0
         spine_char_counts: list[int] = []
 
         # First pass: count characters in each spine item

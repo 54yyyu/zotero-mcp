@@ -487,7 +487,12 @@ class ApiBackend:
             # and merge, exactly as the tool used to do inline.
             results: list[dict] = []
             seen: set[str] = set()
-            extra: dict[str, Any] = {}
+            extra: dict[str, Any] = {"q": query, "qmode": qmode}
+            if qmode == "titleCreatorYear":
+                # The server matches a child note's content in this mode and
+                # the tool drops those notes afterwards, so they must not
+                # count toward the cap (#542).
+                extra["keep"] = lambda item: item.get("data", {}).get("itemType") != "note"
             if tag:
                 extra["tag"] = tag
             if item_type:

@@ -28,8 +28,28 @@ GROUP_ID = 6015547
 USER_LIBRARY_ID = 1
 GROUP_LIBRARY_ID = 5
 
-_ITEM_TYPE_IDS = {"journalArticle": 1, "attachment": 2, "note": 3, "book": 4}
-_FIELD_IDS = {"title": 1, "abstractNote": 2, "date": 13, "DOI": 26, "publicationTitle": 27}
+_ITEM_TYPE_IDS = {
+    "journalArticle": 1, "attachment": 2, "note": 3, "book": 4, "case": 5,
+}
+_FIELD_IDS = {
+    "title": 1, "abstractNote": 2, "date": 13, "DOI": 26,
+    "publicationTitle": 27, "caseName": 30,
+}
+
+#: Zotero base-field overrides per item type: the base field a type stores
+#: under its own key instead. `case` is the corpus's representative (#570) —
+#: its title lives in `caseName`, exactly as a statute's lives in `nameOfAct`
+#: and an email's in `subject`. Must agree with Zotero's real global schema
+#: (src/zotero_mcp/data/zotero_basefields.json), because the SQL backend
+#: resolves through `baseFieldMappingsCombined` while the API path resolves
+#: through `schema.resolve_field` — if this fixture disagreed with either,
+#: the parity comparison would be testing the wrong thing.
+BASE_FIELD_OVERRIDES: dict[str, dict[str, str]] = {"case": {"title": "caseName"}}
+
+
+def _actual_key(item_type: str, base_field: str) -> str:
+    """The key `item_type` actually stores `base_field` under."""
+    return BASE_FIELD_OVERRIDES.get(item_type, {}).get(base_field, base_field)
 
 #: Schema shared with ``test_sql_search_backend._build_db`` so the two fixtures
 #: cannot drift apart. A subset of Zotero's real schema — only what the search
@@ -67,6 +87,18 @@ CREATE TABLE collections (
     parentCollectionID INTEGER, libraryID INTEGER, key TEXT
 );
 CREATE TABLE collectionItems (collectionID INTEGER, itemID INTEGER);
+-- Real Zotero schema table: (itemTypeID, baseFieldID) -> the type-specific
+-- fieldID that actually holds that base field for a "case"-caseName,
+-- "email"-subject, "statute"-nameOfAct shaped item (#570). Empty here since
+-- the corpus above sticks to plain-title types; local_db.py's
+-- _base_field_resolved_join LEFT JOINs it and falls back to the base
+-- field's own fieldID, exactly as Zotero's own
+-- Zotero.ItemFields.getFieldIDFromTypeAndBase does, so an empty table is a
+-- correct "no type in this fixture remaps anything" rather than a stub.
+CREATE TABLE baseFieldMappingsCombined (
+    itemTypeID INT, baseFieldID INT, fieldID INT,
+    PRIMARY KEY (itemTypeID, baseFieldID, fieldID)
+);
 """
 
 
@@ -160,6 +192,18 @@ CORPUS: list[Item] = [
     Item("PARTDT02", title="Month And Year Partial Date", date="2021-03-00 03/2021"),
     Item("PARTDT03", title="Slash Separated Full Date", date="2022-11-28 2022/11/28"),
 
+    # --- a base-field-mapped type (#570): this title lives in `caseName`,
+    # not `title`. The SQL backend has to resolve it through
+    # baseFieldMappingsCombined and the API path through schema.resolve_field;
+    # before the fix neither did, so a title search simply never found it.
+    # No date deliberately: a case's date would be `dateDecided`, and the two
+    # backends still disagree on the *shape* of a resolved date (SQL aliases
+    # it to `date`, the real API returns only `dateDecided`), which
+    # test_backends_agree_on_the_rendered_date would trip over. Date
+    # resolution is covered SQL-side in test_sql_search_backend.py. ---
+    Item("CASEITM1", item_type="case", title="Marbury v. Madison",
+         creators=[("John", "Marshall")]),
+
     # --- group library, to keep library scoping honest ---
     Item("GRPITEM1", title="Group Library Paper about quantum",
          library_id=GROUP_LIBRARY_ID, tags=["physics"]),
@@ -208,6 +252,15 @@ def build_sqlite(db_path: Path, items: list[Item] | None = None) -> None:
         "INSERT INTO fields (fieldID, fieldName) VALUES (?, ?)",
         [(v, k) for k, v in _FIELD_IDS.items()],
     )
+    conn.executemany(
+        "INSERT INTO baseFieldMappingsCombined (itemTypeID, baseFieldID, fieldID) "
+        "VALUES (?, ?, ?)",
+        [
+            (_ITEM_TYPE_IDS[type_name], _FIELD_IDS[base], _FIELD_IDS[actual])
+            for type_name, overrides in BASE_FIELD_OVERRIDES.items()
+            for base, actual in overrides.items()
+        ],
+    )
     conn.execute("INSERT INTO creatorTypes VALUES (1, 'author')")
 
     for coll_key, parent_key in COLLECTIONS.items():
@@ -238,11 +291,15 @@ def build_sqlite(db_path: Path, items: list[Item] | None = None) -> None:
         ):
             if value is None:
                 continue
+            # Store the value under the key this item's TYPE actually uses, as
+            # Zotero does: a case's title row carries the `caseName` fieldID,
+            # and there is no `title` row at all.
+            actual = _actual_key(item.item_type, field_name)
             value_id += 1
             conn.execute("INSERT INTO itemDataValues (valueID, value) VALUES (?, ?)",
                          (value_id, value))
             conn.execute("INSERT INTO itemData (itemID, fieldID, valueID) VALUES (?, ?, ?)",
-                         (index, _FIELD_IDS[field_name], value_id))
+                         (index, _FIELD_IDS[actual], value_id))
 
         for order, creator in enumerate(item.creators):
             if creator not in creator_ids:
@@ -305,7 +362,10 @@ def build_api_items(
                 "data": {
                     "key": item.key,
                     "itemType": item.item_type,
-                    "title": item.title or "",
+                    # The API returns the key the TYPE actually uses: a case
+                    # carries `caseName` and no `title` at all (#570), which
+                    # is why reading `data["title"]` used to miss it.
+                    _actual_key(item.item_type, "title"): item.title or "",
                     # The API exposes only the display half of a multipart date.
                     "date": item.display_date,
                     "dateAdded": item.date_added,

@@ -8,6 +8,8 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
+from fastmcp.exceptions import ToolError
+
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
@@ -128,6 +130,13 @@ def _canonical_item_type(value: str) -> str | None:
     return None
 
 
+def _is_note(item: dict) -> bool:
+    """Whether *item* is a note — the one itemType whose *content* Zotero's
+    quicksearch matches in `titleCreatorYear` mode, standing in for the
+    title a note doesn't have."""
+    return item.get("data", {}).get("itemType") == "note"
+
+
 def _exclude_note_content_matches(items: list[dict], qmode: str) -> list[dict]:
     """Drop standalone notes from a `titleCreatorYear` result set.
 
@@ -143,7 +152,7 @@ def _exclude_note_content_matches(items: list[dict], qmode: str) -> list[dict]:
     """
     if qmode != "titleCreatorYear":
         return items
-    return [item for item in items if item.get("data", {}).get("itemType") != "note"]
+    return [item for item in items if not _is_note(item)]
 
 
 @with_zotero_api_lock
@@ -168,6 +177,8 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
 
     all_items: list[dict] = []
     seen_keys: set[str] = set()
+    kept = 0  # unique items that survive the note filter
+    failure: Exception | None = None
     for variant in variants:
         # Check cascade timeout before each API call
         if cascade_start is not None and cascade_timeout is not None:
@@ -180,21 +191,50 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
         }
         if tag:
             params["tag"] = tag
-        zot.add_parameters(**params)
-        try:
-            t0 = _time.monotonic()
-            batch = zot.items()
-            elapsed = _time.monotonic() - t0
-            _search_logger.debug(f"[SEARCH] variant='{variant}' qmode={qmode}: {len(batch)} results in {elapsed:.2f}s")
+        # Page past child notes in titleCreatorYear mode (#542): the server
+        # matches a note's content there, and the filter below drops those
+        # notes, so one page can spend the whole limit on nothing. /items/top
+        # is no substitute: the Web API answers with the matching child's
+        # parent, and the local API returns child notes from /top anyway.
+        # 'everything' keeps its notes, so one page is the whole answer.
+        start = 0
+        t0 = _time.monotonic()
+        pages = 0
+        while True:
+            zot.add_parameters(**({**params, "start": start} if start else params))
+            try:
+                batch = zot.items()
+            except Exception as e:
+                _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
+                failure = e
+                break  # Skip failed variant, try next
+            pages += 1
             for item in batch:
                 key = item.get("key", "")
                 if key and key not in seen_keys:
                     seen_keys.add(key)
                     all_items.append(item)
-        except Exception as e:
-            _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
-            continue  # Skip failed variant, try next
+                    if not _is_note(item):
+                        kept += 1
+            if len(batch) < limit:
+                break  # short page: the server is out of matches
+            if qmode != "titleCreatorYear" or kept >= limit:
+                break
+            if cascade_start is not None and cascade_timeout is not None:
+                if _time.monotonic() - cascade_start > cascade_timeout:
+                    _search_logger.debug("[SEARCH] Cascade timeout reached, skipping remaining variants")
+                    break
+            start += limit
+        elapsed = _time.monotonic() - t0
+        _search_logger.debug(
+            f"[SEARCH] variant='{variant}' qmode={qmode}: {pages} page(s), {kept} kept, in {elapsed:.2f}s"
+        )
 
+    if failure is not None and not all_items:
+        # A failed request is not an empty result: reporting "no items" here
+        # would send the caller down the fallback cascade, or away, for a
+        # library that was never actually searched.
+        raise failure
     return _exclude_note_content_matches(all_items, qmode)
 
 
@@ -537,7 +577,7 @@ def search_items(
         return f"Error: {e}"
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
-        return f"Error searching Zotero: {str(e)}"
+        raise ToolError(f"Error searching Zotero: {str(e)}") from e
 
 @mcp.tool(
     name="zotero_search_by_tag",
@@ -652,7 +692,7 @@ def search_by_tag(
 
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
-        return f"Error searching Zotero: {str(e)}"
+        raise ToolError(f"Error searching Zotero: {str(e)}") from e
 
 
 @mcp.tool(
@@ -915,6 +955,29 @@ def advanced_search(
         ) -> list[str]:
             field_lower = field.lower()
 
+            def _typed(name: str) -> str:
+                """`name` routed to the key THIS item's type actually uses.
+
+                A case's title is ``caseName``, a statute's ``nameOfAct``, an
+                email's ``subject``; a case's date is ``dateDecided``. Reading
+                ``data["title"]`` finds nothing for those, so the condition
+                silently never matched them (#570) — while the SQLite backend,
+                which resolves through ``baseFieldMappingsCombined``, does
+                match. The two backends have to agree, so both resolve.
+
+                Falls back to the plain field when the schema is unavailable,
+                as ``utils.item_display_title`` does for the same lookup.
+                """
+                item_type = str(data.get("itemType", "") or "")
+                if not item_type:
+                    return name
+                try:
+                    from zotero_mcp import schema as _schema
+
+                    return _schema.resolve_field(item_type, name)
+                except Exception:  # schema unavailable — use the plain field
+                    return name
+
             if field_lower in {"author", "authors", "creator", "creators"}:
                 creators = data.get("creators", []) or []
                 values: list[str] = []
@@ -956,7 +1019,7 @@ def advanced_search(
                 return keys or [""]
 
             if field_lower == "date":
-                display = str(data.get("date", "") or "").strip()
+                display = str(data.get(_typed("date"), "") or "").strip()
                 if operation in _semantics.RANGE_OPS:
                     # Never the display text, which is free-form (#551).
                     key = _semantics.date_range_key((meta or {}).get("parsedDate"), display)
@@ -965,7 +1028,7 @@ def advanced_search(
                 return [display] if display else []
 
             if field_lower == "year":
-                display = str(data.get("date", "") or "").strip()
+                display = str(data.get(_typed("date"), "") or "").strip()
                 if not display:
                     return []
                 # The year of the ISO half, like SQL's SUBSTR(value, 1, 4);
@@ -974,7 +1037,7 @@ def advanced_search(
                 return [key[:4]] if key else []
 
             source_field = _semantics.FIELD_ALIASES.get(field_lower, field)
-            raw_value = data.get(source_field, "")
+            raw_value = data.get(_typed(source_field), "")
             if raw_value is None:
                 return []
             return [str(raw_value).strip()]

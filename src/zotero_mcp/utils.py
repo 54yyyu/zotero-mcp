@@ -217,12 +217,17 @@ def is_local_mode() -> bool:
 # Pagination helper
 # ---------------------------------------------------------------------------
 
-def _paginate(zot_method, *args, max_items=None, **kwargs):
+def _paginate(zot_method, *args, max_items=None, keep=None, **kwargs):
     """Fetch all results from a pyzotero method using manual pagination.
 
     Avoids zot.everything() which can cause RLock pickling in MCP contexts.
     Accepts the same positional and keyword arguments as the wrapped method,
-    plus an optional max_items to cap the total results.
+    plus an optional max_items to cap the total results, and an optional
+    ``keep`` predicate: only items passing it are returned and counted
+    toward max_items. That is for callers whose own filter would drop a
+    pageful of fetched items (child notes in a titleCreatorYear search,
+    #542) — a full page of filtered-out items is not exhaustion, so paging
+    continues and the cap is not spent on results nobody will see.
     """
     items = []
     start = 0
@@ -231,8 +236,13 @@ def _paginate(zot_method, *args, max_items=None, **kwargs):
         batch = zot_method(*args, start=start, limit=page_size, **kwargs)
         if not batch:
             break
+        # Short-page test on the raw count: a full page that keep filters
+        # down to nothing must not read as "the server ran out".
+        fetched = len(batch)
+        if keep is not None:
+            batch = [item for item in batch if keep(item)]
         items.extend(batch)
-        if len(batch) < page_size:
+        if fetched < page_size:
             break
         start += page_size
         if max_items and len(items) >= max_items:
@@ -298,6 +308,10 @@ def item_display_title(data: dict) -> str:
     if item_type == "note":
         return note_title(data.get("note", ""))
 
+    if item_type == "annotation":
+        return annotation_title(data)
+
+    resolved_title = ""
     if item_type:
         try:
             from zotero_mcp import schema as _schema
@@ -305,10 +319,64 @@ def item_display_title(data: dict) -> str:
             resolved = _schema.resolve_field(item_type, "title")
         except Exception:  # schema unavailable — fall back to the plain field
             resolved = "title"
-        if title := data.get(resolved):
-            return title
+        resolved_title = data.get(resolved) or ""
+
+    if item_type == "case":
+        return _case_title(data, resolved_title)
+
+    if resolved_title:
+        return resolved_title
 
     return data.get("title") or data.get("filename") or "Untitled"
+
+
+#: Zotero's own names for the annotation types (reader.ftl), inconsistent
+#: casing included: matching the client beats tidying it.
+_ANNOTATION_TYPE_NAMES = {
+    "highlight": "Highlight annotation",
+    "underline": "Underline annotation",
+    "note": "Note Annotation",
+    "text": "Text Annotation",
+    "image": "Image Annotation",
+    "ink": "Ink Annotation",
+}
+
+
+def _clip(text: str, limit: int = 50) -> str:
+    """Collapse whitespace and cut to Zotero's 50-character component cap."""
+    text = " ".join(text.split())
+    return text[:limit] + "…" if len(text) > limit else text
+
+
+def annotation_title(data: dict) -> str:
+    """The display title Zotero composes for an annotation, which has no
+    title field (``updateDisplayTitle`` in item.js): quoted text for a
+    highlight or underline, then the comment, else the type's name (#575).
+
+    Both fields are plain text, so no HTML pass: a tag stripper would eat
+    the middle of "p < 0.05 and n > 30".
+    """
+    annotation_type = data.get("annotationType") or ""
+    comment = _clip(data.get("annotationComment") or "")
+
+    title = ""
+    if annotation_type in ("highlight", "underline"):
+        title = "“" + _clip(data.get("annotationText") or "") + "”"
+    if comment:
+        title = f"{title} {comment}" if title else comment
+
+    return title or _ANNOTATION_TYPE_NAMES.get(annotation_type, "") or "Untitled"
+
+
+def _case_title(data: dict, case_name: str) -> str:
+    """A case's name qualified by its reporter, else its court, as Zotero
+    renders it. The SQLite backend hydrates ``caseName`` under the base
+    ``title`` key, hence the fallback."""
+    name = case_name or data.get("title") or ""
+    if not name:
+        return "Untitled"
+    qualifier = data.get("reporter") or data.get("court") or ""
+    return f"{name} ({qualifier})" if qualifier else name
 
 
 def item_display_date(data: dict) -> str:
