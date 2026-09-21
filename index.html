@@ -22,7 +22,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><img src="img/logo.svg" alt="" width="28" height="28">Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.12.5</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.0</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="installation.html">Install &amp; setup</a>
@@ -42,7 +42,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <a class="news reveal" href="#whats-new"><b>0.12.5</b>Search finds the titles it used to miss</a>
+        <a class="news reveal" href="#whats-new"><b>0.13.0</b>FastMCP 4, and tool messages that arrive</a>
         <h1 class="reveal">Chat with your <span class="hl c-yellow">research library</span> in Claude, ChatGPT, and more.</h1>
         <div class="reveal">
           <p class="lede">Zotero MCP connects your Zotero library to AI assistants. Search it, read it, annotate it, and add to it, from the desktop app or the web API.</p>
@@ -105,6 +105,15 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.13.0<small>Sep 2026</small></div>
+          <div>
+            <h3>FastMCP 4, and tool messages that <span class="hl c-yellow">arrive</span></h3>
+            <p>The server runs on FastMCP 4. Over HTTP it answers the MCP 2026-07-28 <code>server/discover</code> handshake that the ChatGPT Secure MCP Tunnel sends, and clients that still use <code>initialize</code> keep working.</p>
+            <p>Progress and error messages from the tools now reach the client. The tools are synchronous while FastMCP&rsquo;s log calls are coroutines, so those messages were dropped before. <code>zotero_add_item_relation</code> and <code>zotero_remove_item_relation</code> no longer fail after writing the forward relation, and the MCP <code>serverInfo</code> reports zotero-mcp&rsquo;s own version.</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.12.5<small>Sep 2026</small></div>
           <div>
             <h3>Search finds the titles it used to <span class="hl c-yellow">miss</span></h3>
@@ -333,7 +342,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.12.5 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.13.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
