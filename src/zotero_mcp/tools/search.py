@@ -1352,6 +1352,11 @@ def semantic_search(
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.
             loc_bits = []
+            # Section first: it is what tells a reader whether the hit is this
+            # paper's own claim or a citation of someone else's, which changes
+            # how the result should be read before anything else does.
+            if section := result.get("section"):
+                loc_bits.append(str(section))
             if (page := result.get("page")) is not None:
                 loc_bits.append(f"p. {page}")
             if (ci := result.get("chunk_index")) is not None and (nc := result.get("n_chunks")):
