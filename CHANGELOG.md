@@ -9,11 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`zotero-cli export --format bibtex` / `zotero_export_bibliography(export_format="bibtex")` failed with `'BibDatabase' object is not iterable`.** pyzotero parses a `format=bibtex` response into a bibtexparser `BibDatabase`, not bytes, so the export now serialises it back to `.bib` text. This is the path that uses Zotero's own BibTeX translator, so collections and multi-item exports work again with complete entries.
-- **`@inproceedings` entries from `zotero-cli get bibtex` / `zotero_get_item_metadata(format="bibtex")` had no `booktitle`.** A conference paper keeps its venue in `proceedingsTitle`, which the local BibTeX generator did not map.
-- **Annotations, cases, letters and interviews no longer render as "Untitled".** `item_display_title` found a title by *reading a field*, but Zotero stores none for these types — it composes one, in `Zotero.Item.prototype.updateDisplayTitle`. An annotation now shows its highlighted text and comment (`“Sample 7: employees evaluated reward expectations…” -if you ask a question…`, each component capped at 50 characters exactly as Zotero caps it); an image or ink annotation shows its type name; an untitled letter or interview shows its participants (`[Letter to Thoreau]`). Every string matches the desktop client verbatim, down to its inconsistent capitalisation. In the reporting library this was 461 annotations rendering as a column of `## Untitled` through `zotero://items/{key}`, with the text present and correct in the record the whole time (#575).
-- **A case's name now carries its reporter or court**, as Zotero renders it: `Marbury v. Madison (5 U.S. 137)`, falling back to the court when there is no reporter. This changes existing output for cases that have either field. The civil-law form for a case with no name at all is deliberately not implemented — it depends on `Zotero.Date.multipartToSQL`, whose output could not be verified against the Zotero source (#575).
-- **Annotation type 6 ("text") is no longer reported as an empty string.** Zotero added `ANNOTATION_TYPE_TEXT = 6` after `_ANNOTATION_TYPES` was written, so those annotations came back with `"annotationType": ""` — surfacing as `- [KEY] : ...` from `zotero_get_item_children` and as an empty `"type"` in the CLI's JSON output (#575).
+- **SQLite keyword search missed titles the API backend finds, and rendered them "Untitled"** (#570, #574). Queries hardcoded a fieldID for `title`, `date` and `publicationTitle`; they now resolve by name and per item type, as Zotero does, so cases (`caseName`), statutes, emails, webpages and libraries with non-standard field IDs are found, sorted and indexed correctly. The lookup is also cheaper than before: keyword search 3.6 ms to 1.3 ms on a 700-item library.
+- **Collection-scoped search on the web API ignored the query** and returned the collection's first items. Regression from 0.12.1.
+- **Child notes no longer crowd papers out of small `titleCreatorYear` result sets** on the API backend: the search pages past notes it is going to drop (#542).
+- **A failed metadata search is reported as an error** instead of "No items found" followed by the fallback cascade (#578). Results already found by another query variant are kept.
+- **Annotations no longer render as "Untitled"**: they show Zotero's own composed title, the quoted text and comment, or the type name for image and ink annotations (#575, #576). Annotation type 6 ("text") is no longer reported as an empty string.
+- **`update-db --limit N` no longer marks the whole library as indexed** (#564). If you have used `--limit`, run `update-db --fulltext` or `--force-rebuild` once to repair the index.
+- **Semantic search no longer fails with `embed_query() got an unexpected keyword argument 'input'`** when the config file is missing and ChromaDB rebuilds the stored embedding function (#565). The single-text method is now `embed_query_text`.
+- **`zotero_find_related_papers` reported 0 citations for every paper** after OpenAlex removed `cited_by_api_url`; it now uses the `cites:` filter (#458, #566). Its "in library" flag also recognises DOIs stored as `doi.org` URLs (#568).
+- **`export --format bibtex` failed with `'BibDatabase' object is not iterable`**, and `@inproceedings` entries had no `booktitle` (#579).
+- **Legacy arXiv ids with a dotted archive (`math.GT/0309136`) are recognised**, so re-adding such a paper is deduplicated (#571).
+- **Local writes are probed on `127.0.0.1`**, where pyzotero 1.15.2 sends them. Where `localhost` resolves to `::1` first, writes silently fell back to the web API (#567, #569).
+- **The ChatGPT connector `search` tool falls back to keyword search** when the semantic extra or index is missing, instead of returning nothing (#572).
+
+### Changed
+
+- **A case's title carries its reporter or court**, as in Zotero: `Marbury v. Madison (5 U.S. 137)` (#576).
+- **Creating a note from Markdown-looking text warns** that Zotero stores it literally (#503, #559).
 
 ## [0.12.4] - 2026-09-14
 
