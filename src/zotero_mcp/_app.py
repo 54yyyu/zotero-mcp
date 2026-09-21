@@ -10,6 +10,8 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from zotero_mcp._context import sync_context
+from zotero_mcp._version import __version__
 from zotero_mcp.utils import is_local_mode
 
 # Configure logging from environment variable
@@ -110,5 +112,15 @@ async def server_lifespan(server: FastMCP):
     sys.stderr.write("Shutting down Zotero MCP server...\n")
 
 
+class _ZoteroMCP(FastMCP):
+    """FastMCP whose tools get a context they can log to synchronously."""
+
+    def tool(self, name_or_fn=None, **kwargs):
+        if callable(name_or_fn):
+            return super().tool(sync_context(name_or_fn), **kwargs)
+        register = super().tool(name_or_fn, **kwargs)
+        return lambda fn: register(sync_context(fn))
+
+
 # Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
-mcp = FastMCP("Zotero", lifespan=server_lifespan)
+mcp = _ZoteroMCP("Zotero", version=__version__, lifespan=server_lifespan)

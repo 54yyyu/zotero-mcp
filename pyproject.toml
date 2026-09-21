@@ -45,7 +45,7 @@ dependencies = [
     # <4 until the FastMCP 4 migration: FastMCP 4 targets the stateless
     # 2026-07-28 MCP revision, drops ctx.sample/list_roots/elicit, and swaps
     # httpx for httpx2. It is still a beta (4.0.0b1) as of this pin.
-    "fastmcp>=2.14.0,<4",
+    "fastmcp>=2.14.0,<5",
     # The client we hand the local Zotero API is built from whichever HTTP
     # library the installed pyzotero is built against — httpx2 on >=1.15,
     # httpx below it — because pyzotero only recognises errors from its own

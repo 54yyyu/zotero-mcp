@@ -5068,7 +5068,7 @@ def add_item_relation(
                 _helpers._strip_unwritable_fields(related_item)
                 write_zot.update_item(related_item)
         except Exception as e:
-            ctx.warn(f"Could not add reverse relation: {e}")
+            ctx.warning(f"Could not add reverse relation: {e}")
 
         item_title = data.get("title", "Untitled")
         related_title = related_data.get("title", "Untitled")
@@ -5183,7 +5183,7 @@ def remove_item_relation(
                         _helpers._strip_unwritable_fields(related_item)
                         write_zot.update_item(related_item)
             except Exception as e:
-                ctx.warn(f"Could not remove reverse relation: {e}")
+                ctx.warning(f"Could not remove reverse relation: {e}")
 
         return (
             f"Successfully removed relation:\n\n"
