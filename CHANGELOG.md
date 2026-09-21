@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed search request hidden behind a page of notes is reported as an error.** In `titleCreatorYear` mode, a first page made up entirely of child notes followed by a failed next page came back as "No items found": the failure check ran before the note filter emptied the results (reported on #578).
+
 ## [0.13.0] - 2026-09-21
 
 ### Changed

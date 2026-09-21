@@ -142,6 +142,17 @@ class TestSearchWithVariants:
         with pytest.raises(ConnectionError):
             search_module._search_with_variants(zot, "Brewer", "titleCreatorYear", 10)
 
+    def test_failure_behind_a_page_of_notes_is_not_an_empty_result(self):
+        """A full first page of notes, all dropped by the note filter, then a
+        failed next page: nothing real was found, so the failure must surface
+        (reported on #578)."""
+        notes = [{"key": f"N{i:07d}", "data": {"itemType": "note"}} for i in range(10)]
+        zot = self._make_zot({})
+        zot.items = MagicMock(side_effect=[notes, ConnectionError("dropped")])
+
+        with pytest.raises(ConnectionError):
+            search_module._search_with_variants(zot, "Brewer", "titleCreatorYear", 10)
+
     def test_a_failed_variant_keeps_what_the_others_found(self):
         item = {"key": "D1", "data": {"title": "Paper D"}}
         zot = self._make_zot({})
