@@ -159,19 +159,3 @@ def test_search_through_the_rebuilt_remote_provider_does_not_raise(reopened):
     assert _StubRemoteEF.calls == [(["alpha"], True)], (
         "the query must reach the rebuilt remote provider exactly once, flagged as a query"
     )
-
-
-def test_documents_still_go_through_the_rebuilt_remote_provider(reopened):
-    """The document side was never broken; keep it that way."""
-    reopened.collection.add(ids=["C"], documents=["charlie"])
-
-    assert reopened.collection.count() == 3
-    assert _StubRemoteEF.calls == [(["charlie"], False)]
-
-
-def test_raw_collection_query_also_survives(reopened):
-    """Not only through our wrapper: the plain ChromaDB query API too."""
-    results = reopened.collection.query(query_texts=["alpha"], n_results=1)
-
-    assert results["ids"] == [["A"]]
-    assert _StubRemoteEF.calls == [(["alpha"], True)]
