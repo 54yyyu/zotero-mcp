@@ -21,8 +21,9 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
     # task instruction in the prompt text itself, which empirically shifts
     # the embedding space (cos ~0.84 vs raw baseline) and preserves asymmetric
     # doc/query tuning (cos ~0.94 between doc-prefix and query-prefix).
-    # These are the canonical prefixes; __call__ and embed_query prepend them
-    # to every v2 input. They MUST stay in sync with V2_PREFIX_TOKEN_BUDGET
+    # These are the canonical prefixes; _prepare_document/_prepare_query
+    # prepend them to every v2 input, on the document and query side
+    # respectively. They MUST stay in sync with V2_PREFIX_TOKEN_BUDGET
     # below: if you lengthen a prefix, bump the budget so truncation still
     # leaves room for it under the model's hard cap.
     V2_DOC_PREFIX = "Represent this document for retrieval:\n\n"
@@ -61,10 +62,10 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
     DEFAULT_MAX_PARALLEL_REQUESTS = 4
     max_parallel_requests_default = DEFAULT_MAX_PARALLEL_REQUESTS
 
-    # Gemini's query path (embed_query) bypasses the indexing pipeline's own
-    # truncation, so the base class must truncate before preparing the text —
-    # matching this class's original embed_query, which truncated first and
-    # only then prepended the v2 prefix.
+    # Gemini's query path (embed_query_text) bypasses the indexing pipeline's
+    # own truncation, so the base class must truncate before preparing the
+    # text — matching this class's original single-string query method, which
+    # truncated first and only then prepended the v2 prefix.
     truncate_queries = True
 
     def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None,
@@ -76,7 +77,8 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
         # Model-aware token limit. For v2 models, derive from:
         #   hard_cap (8192) - safety_margin (192, for char-based truncation
         #   imprecision) - V2_PREFIX_TOKEN_BUDGET (20, reserved for the
-        #   in-prompt task instruction prepended in __call__/embed_query).
+        #   in-prompt task instruction prepended by _prepare_document or
+        #   _prepare_query).
         # Net effective budget for text body: 8192 - 192 - 20 = 7980 tokens.
         # This guarantees post-prefix payload <= hard cap even at the
         # truncation limit, formally closing the cap-enforcement gap.
@@ -158,8 +160,8 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
         """Prepend the v2 query prefix; identity for v1 models.
 
         Runs after the base class has already truncated (truncate_queries =
-        True), reproducing the original embed_query's truncate-then-prefix
-        order.
+        True), reproducing the original single-string query method's
+        truncate-then-prefix order.
         """
         if self._is_v2():
             return f"{self.V2_QUERY_PREFIX}{text}"

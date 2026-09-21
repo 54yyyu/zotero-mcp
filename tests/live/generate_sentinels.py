@@ -116,7 +116,7 @@ def generate_ollama() -> None:
     from zotero_mcp.embeddings.providers.ollama import OllamaEmbeddingFunction
 
     ef = OllamaEmbeddingFunction(model_name="nomic-embed-text", base_url=base_url)
-    vector = ef.embed_query(SENTINEL_TEXT)
+    vector = ef.embed_query_text(SENTINEL_TEXT)
     _write_sentinel(
         SENTINELS_DIR / "ollama-nomic-embed-text.json",
         provider="ollama",
@@ -140,7 +140,7 @@ def generate_openai() -> None:
 
     model_name = "text-embedding-3-small"
     ef = OpenAIEmbeddingFunction(model_name=model_name, api_key=api_key)
-    vector = ef.embed_query(SENTINEL_TEXT)
+    vector = ef.embed_query_text(SENTINEL_TEXT)
     _write_sentinel(
         SENTINELS_DIR / "openai-text-embedding-3-small.json",
         provider="openai",
@@ -164,7 +164,7 @@ def generate_gemini() -> None:
 
     model_name = "gemini-embedding-001"  # GeminiEmbeddingFunction's default
     ef = GeminiEmbeddingFunction(model_name=model_name, api_key=api_key)
-    vector = ef.embed_query(SENTINEL_TEXT)
+    vector = ef.embed_query_text(SENTINEL_TEXT)
     _write_sentinel(
         SENTINELS_DIR / f"gemini-{model_name}.json",
         provider="gemini",
