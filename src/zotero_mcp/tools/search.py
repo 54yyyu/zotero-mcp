@@ -955,6 +955,29 @@ def advanced_search(
         ) -> list[str]:
             field_lower = field.lower()
 
+            def _typed(name: str) -> str:
+                """`name` routed to the key THIS item's type actually uses.
+
+                A case's title is ``caseName``, a statute's ``nameOfAct``, an
+                email's ``subject``; a case's date is ``dateDecided``. Reading
+                ``data["title"]`` finds nothing for those, so the condition
+                silently never matched them (#570) — while the SQLite backend,
+                which resolves through ``baseFieldMappingsCombined``, does
+                match. The two backends have to agree, so both resolve.
+
+                Falls back to the plain field when the schema is unavailable,
+                as ``utils.item_display_title`` does for the same lookup.
+                """
+                item_type = str(data.get("itemType", "") or "")
+                if not item_type:
+                    return name
+                try:
+                    from zotero_mcp import schema as _schema
+
+                    return _schema.resolve_field(item_type, name)
+                except Exception:  # schema unavailable — use the plain field
+                    return name
+
             if field_lower in {"author", "authors", "creator", "creators"}:
                 creators = data.get("creators", []) or []
                 values: list[str] = []
@@ -996,7 +1019,7 @@ def advanced_search(
                 return keys or [""]
 
             if field_lower == "date":
-                display = str(data.get("date", "") or "").strip()
+                display = str(data.get(_typed("date"), "") or "").strip()
                 if operation in _semantics.RANGE_OPS:
                     # Never the display text, which is free-form (#551).
                     key = _semantics.date_range_key((meta or {}).get("parsedDate"), display)
@@ -1005,7 +1028,7 @@ def advanced_search(
                 return [display] if display else []
 
             if field_lower == "year":
-                display = str(data.get("date", "") or "").strip()
+                display = str(data.get(_typed("date"), "") or "").strip()
                 if not display:
                     return []
                 # The year of the ISO half, like SQL's SUBSTR(value, 1, 4);
@@ -1014,7 +1037,7 @@ def advanced_search(
                 return [key[:4]] if key else []
 
             source_field = _semantics.FIELD_ALIASES.get(field_lower, field)
-            raw_value = data.get(source_field, "")
+            raw_value = data.get(_typed(source_field), "")
             if raw_value is None:
                 return []
             return [str(raw_value).strip()]

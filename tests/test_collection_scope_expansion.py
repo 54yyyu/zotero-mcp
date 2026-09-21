@@ -32,6 +32,10 @@ BASE_SCHEMA = [
     "CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT)",
     "CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT)",
     "CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT)",
+    # get_items_with_text resolves title per item type through this table
+    # (#570); empty here, since this corpus uses only plain-title types.
+    "CREATE TABLE baseFieldMappingsCombined (itemTypeID INT, baseFieldID INT, "
+    "fieldID INT, PRIMARY KEY (itemTypeID, baseFieldID, fieldID))",
     "CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)",
     "CREATE TABLE itemCreators (itemID INT, creatorID INT)",
     "CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, firstName TEXT, "

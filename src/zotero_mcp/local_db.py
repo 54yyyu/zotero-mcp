@@ -286,29 +286,157 @@ _CONDITION_FIELD_ALIASES = {
     "doi": "DOI",
 }
 
+# Zotero's own desktop client never picks one fieldID for a base field like
+# "title" up front. It loads every itemData row for an item generically —
+# Zotero.Items._loadItemData in the client's chrome/content/zotero/xpcom/
+# data/items.js:
+#
+#     SELECT itemID, fieldID, value FROM items
+#     JOIN itemData USING (itemID) JOIN itemDataValues USING (valueID)
+#     WHERE libraryID=? AND itemTypeID!=? ...
+#
+# — then resolves a base field to *that item's own type's* actual column at
+# read time, in Zotero.Item.prototype.getField (chrome/content/zotero/xpcom/
+# data/item.js): with includeBaseMapped set (as getDisplayTitle always does),
+# it calls Zotero.ItemFields.getFieldIDFromTypeAndBase(itemTypeID, field)
+# (chrome/content/zotero/xpcom/data/itemFields.js), which returns the
+# type's override field if the schema maps one, and the base field's own
+# fieldID otherwise. A case's title lives in `caseName`, a statute's in
+# `nameOfAct`, a webpage's publicationTitle in `websiteTitle`, and so on —
+# never a fixed fieldID for the whole library.
+#
+# The two helpers below are the SQL form of that same rule: the join for
+# projections, the correlated subquery for WHERE conditions. Both prefer this
+# item's override from `baseFieldMappingsCombined` and fall back to the base
+# field's own fieldID when the type has none.
+#
+# That fallback is Zotero's rule at two independent layers, not one, which is
+# why COALESCE is right rather than merely convenient. `_baseTypeFields`
+# (itemFields.js:524-557) is built from a *cartesian* itemTypesCombined x
+# fieldsCombined LEFT JOIN, so every (type, baseField) cell is filled: the
+# override, else the base fieldID itself when valid for the type, else
+# `false`. And getField turns that `false` straight back into the base
+# fieldID (item.js:279-281):
+#
+#     if (includeBaseMapped) { fieldID = getFieldIDFromTypeAndBase(...); }
+#     if (!fieldID) { fieldID = Zotero.ItemFields.getID(field); }
+#
+# so the effective read-time rule is `override || baseFieldID` — exactly
+# COALESCE(map.fieldID, f.fieldID).
+#
+# Only `title`, `date` and `publicationTitle` (of the fields read here) are
+# base fields at all; `abstractNote`, `DOI`, `extra` and `url` have zero rows
+# in baseFieldMappingsCombined and take getFieldIDFromTypeAndBase's early
+# isBaseField return. Those resolve by name via `_plain_field_join` — never
+# by a literal fieldID, but without a mapping lookup that can only miss.
+#
+# `baseFieldMappingsCombined` rather than `baseFieldMappings` is deliberate:
+# schema.js:932-956 rebuilds it as baseFieldMappings UNION
+# customBaseFieldMappings, so it is the only one that sees plugin-defined
+# types. Its primary key is (itemTypeID, baseFieldID, fieldID), so two
+# overrides for one (type, base) pair are schema-legal; Zotero's global
+# schema produces no such pair, and if one ever appeared the join form would
+# multiply the outer row while the subquery form would take the first —
+# Zotero's own array keeps the last.
+#
+# The name lookup deliberately does NOT follow that reasoning to its end: it
+# joins `fields`, not `fieldsCombined`, so it cannot see a plugin-defined
+# *field*. That is safe only because every name passed below is a core Zotero
+# field, and because `baseFieldID` is FK-constrained to builtin `fields` in
+# both mapping tables (userdata.sql:96-97, 554-561) — a base field is always
+# builtin even when its override is not. Revisit if these helpers ever take a
+# caller-supplied field name.
+#
+# Before hardcoding a fieldID or a field name for anything
+# item-metadata-shaped again, check how the Zotero client itself resolves it
+# — it has already solved this.
+def _base_field_resolved_join(
+    alias: str, base_field_name: str, item_alias: str = "i"
+) -> str:
+    """LEFT JOIN chain projecting `{alias}_val.value` for base field
+    `base_field_name`, resolved per item exactly as
+    ``Zotero.ItemFields.getFieldIDFromTypeAndBase`` resolves it (see above):
+    this item's type-specific override field if the schema maps one for
+    `base_field_name`, otherwise the base field's own fieldID.
+
+    ``item_alias`` is the outer query's ``items`` alias; the note and
+    annotation searches resolve a *parent's* title against ``pi``/``gpi``.
+    """
+    return f"""
+    LEFT JOIN fields {alias}_f ON {alias}_f.fieldName = '{base_field_name}'
+    LEFT JOIN baseFieldMappingsCombined {alias}_map
+        ON {alias}_map.itemTypeID = {item_alias}.itemTypeID
+        AND {alias}_map.baseFieldID = {alias}_f.fieldID
+    LEFT JOIN itemData {alias}_data ON {item_alias}.itemID = {alias}_data.itemID
+        AND {alias}_data.fieldID = COALESCE({alias}_map.fieldID, {alias}_f.fieldID)
+    LEFT JOIN itemDataValues {alias}_val ON {alias}_data.valueID = {alias}_val.valueID
+    """
+
+
+def _plain_field_join(alias: str, field_name: str, item_alias: str = "i") -> str:
+    """LEFT JOIN chain projecting `{alias}_val.value` for a field with NO
+    base-field mapping (abstractNote, DOI, extra, url, an attachment's own
+    title). Resolves by name rather than by a literal fieldID, but skips the
+    baseFieldMappingsCombined lookup that could only ever miss.
+    """
+    return f"""
+    LEFT JOIN fields {alias}_f ON {alias}_f.fieldName = '{field_name}'
+    LEFT JOIN itemData {alias}_data ON {item_alias}.itemID = {alias}_data.itemID
+        AND {alias}_data.fieldID = {alias}_f.fieldID
+    LEFT JOIN itemDataValues {alias}_val ON {alias}_data.valueID = {alias}_val.valueID
+    """
+
+
+def _base_field_resolved_subquery(
+    base_field_name: str,
+    item_alias: str = "i",
+    value_expr: str = "v.value",
+    extra_where: str = "",
+) -> str:
+    """The same resolution as `_base_field_resolved_join`, as a correlated
+    scalar subquery — the shape a WHERE condition needs.
+
+    ``value_expr`` projects the matched row, which is what lets the three
+    date variants share this: the display half, the ISO prefix, the year.
+    ``search_semantics.sql_expression`` embeds the result exactly once, so
+    the subquery is evaluated once per row.
+    """
+    return (
+        f"(SELECT {value_expr} FROM itemData d "
+        f"JOIN itemDataValues v ON d.valueID = v.valueID "
+        f"JOIN fields f ON f.fieldName = '{base_field_name}' "
+        f"LEFT JOIN baseFieldMappingsCombined m "
+        f"ON m.itemTypeID = {item_alias}.itemTypeID AND m.baseFieldID = f.fieldID "
+        f"WHERE d.itemID = {item_alias}.itemID "
+        f"AND d.fieldID = COALESCE(m.fieldID, f.fieldID){extra_where})"
+    )
+
+
+def _plain_field_subquery(field_name: str, item_alias: str = "i") -> str:
+    """Scalar-subquery counterpart to `_plain_field_join`, for a field with no
+    base-field mapping."""
+    return (
+        f"(SELECT v.value FROM itemData d "
+        f"JOIN itemDataValues v ON d.valueID = v.valueID "
+        f"JOIN fields f ON d.fieldID = f.fieldID "
+        f"WHERE d.itemID = {item_alias}.itemID AND f.fieldName = '{field_name}')"
+    )
+
+
 # Single-valued fields resolvable to one scalar SQL expression correlated on
 # the outer query's `i` (items) / `it` (itemTypes) aliases.
 _SIMPLE_FIELD_SQL = {
-    "title": (
-        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
-        "WHERE d.itemID = i.itemID AND d.fieldID = 1)"
-    ),
-    "abstractNote": (
-        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
-        "WHERE d.itemID = i.itemID AND d.fieldID = 2)"
-    ),
+    # `title` and `publicationTitle` are base fields — a case's title lives in
+    # caseName, a webpage's publicationTitle in websiteTitle (#570). Matching
+    # them unresolved is what let advanced_search_sql contradict itself: a
+    # base-resolved SELECT over a non-resolved WHERE, so `title contains X`
+    # missed items whose *returned* title plainly matched.
+    "title": _base_field_resolved_subquery("title"),
+    "abstractNote": _plain_field_subquery("abstractNote"),
     # "date" is handled separately below (_DATE_DISPLAY_SQL / _DATE_RANGE_SQL)
     # — it needs an operator-aware expression, unlike every other field here.
-    "DOI": (
-        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
-        "JOIN fields f ON d.fieldID = f.fieldID "
-        "WHERE d.itemID = i.itemID AND f.fieldName = 'DOI')"
-    ),
-    "publicationTitle": (
-        "(SELECT v.value FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
-        "JOIN fields f ON d.fieldID = f.fieldID "
-        "WHERE d.itemID = i.itemID AND f.fieldName = 'publicationTitle')"
-    ),
+    "DOI": _plain_field_subquery("DOI"),
+    "publicationTitle": _base_field_resolved_subquery("publicationTitle"),
     "dateAdded": "i.dateAdded",
     "dateModified": "i.dateModified",
     "itemType": "it.typeName",
@@ -339,19 +467,20 @@ _SIMPLE_FIELD_SQL = {
 # replicate; see the plan's Phase D bug list.
 _RANGE_OPERATIONS = frozenset({"isGreaterThan", "isLessThan", "isBefore", "isAfter"})
 
-_DATE_DISPLAY_SQL = (
-    "(SELECT SUBSTR(v.value, INSTR(v.value, ' ') + 1) FROM itemData d "
-    "JOIN itemDataValues v ON d.valueID = v.valueID JOIN fields f ON d.fieldID = f.fieldID "
-    "WHERE d.itemID = i.itemID AND f.fieldName = 'date')"
+# `date` is a base field too: a case's is dateDecided, a statute's
+# dateEnacted, a patent's issueDate (#570). All three variants resolve it, so
+# a date/year condition can reach those items at all — and so that the same
+# item is not displayed with a date it cannot be filtered by.
+_DATE_DISPLAY_SQL = _base_field_resolved_subquery(
+    "date", value_expr="SUBSTR(v.value, INSTR(v.value, ' ') + 1)"
 )
-_DATE_RANGE_SQL = (
-    "(SELECT SUBSTR(v.value, 1, 10) FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
-    "JOIN fields f ON d.fieldID = f.fieldID WHERE d.itemID = i.itemID AND f.fieldName = 'date')"
+_DATE_RANGE_SQL = _base_field_resolved_subquery(
+    "date", value_expr="SUBSTR(v.value, 1, 10)"
 )
-_YEAR_FIELD_SQL = (
-    "(SELECT SUBSTR(v.value, 1, 4) FROM itemData d JOIN itemDataValues v ON d.valueID = v.valueID "
-    "JOIN fields f ON d.fieldID = f.fieldID "
-    "WHERE d.itemID = i.itemID AND f.fieldName = 'date' AND LENGTH(v.value) >= 4)"
+_YEAR_FIELD_SQL = _base_field_resolved_subquery(
+    "date",
+    value_expr="SUBSTR(v.value, 1, 4)",
+    extra_where=" AND LENGTH(v.value) >= 4",
 )
 
 # The display half of the multipart date, for the hydration projections
@@ -369,28 +498,24 @@ _CREATOR_NAME_EXPR = "TRIM(COALESCE(c.firstName, '') || ' ' || COALESCE(c.lastNa
 # `WHERE i.libraryID IN (...)`. Built by `_item_hydration_select`, which
 # sizes that IN list; a global search (#163) passes every accessible
 # library rather than one.
-_ITEM_HYDRATION_SELECT_TEMPLATE = """
+_ITEM_HYDRATION_SELECT_TEMPLATE = (
+    """
     SELECT i.itemID, i.key, i.libraryID, it.typeName as itemType, i.dateAdded, i.dateModified,
            title_val.value as title, abstract_val.value as abstractNote,
            SUBSTR(date_val.value, INSTR(date_val.value, ' ') + 1) as date, doi_val.value as DOI, pub_val.value as publicationTitle
     FROM items i
     JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
-    LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
-    LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
-    LEFT JOIN itemData abstract_data ON i.itemID = abstract_data.itemID AND abstract_data.fieldID = 2
-    LEFT JOIN itemDataValues abstract_val ON abstract_data.valueID = abstract_val.valueID
-    LEFT JOIN fields date_f ON date_f.fieldName = 'date'
-    LEFT JOIN itemData date_data ON i.itemID = date_data.itemID AND date_data.fieldID = date_f.fieldID
-    LEFT JOIN itemDataValues date_val ON date_data.valueID = date_val.valueID
-    LEFT JOIN fields doi_f ON doi_f.fieldName = 'DOI'
-    LEFT JOIN itemData doi_data ON i.itemID = doi_data.itemID AND doi_data.fieldID = doi_f.fieldID
-    LEFT JOIN itemDataValues doi_val ON doi_data.valueID = doi_val.valueID
-    LEFT JOIN fields pub_f ON pub_f.fieldName = 'publicationTitle'
-    LEFT JOIN itemData pub_data ON i.itemID = pub_data.itemID AND pub_data.fieldID = pub_f.fieldID
-    LEFT JOIN itemDataValues pub_val ON pub_data.valueID = pub_val.valueID
+    """
+    + _base_field_resolved_join("title", "title")
+    + _plain_field_join("abstract", "abstractNote")
+    + _base_field_resolved_join("date", "date")
+    + _plain_field_join("doi", "DOI")
+    + _base_field_resolved_join("pub", "publicationTitle")
+    + """
     WHERE i.libraryID IN ({library_placeholders})
     AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
 """
+)
 
 
 def _item_hydration_select(library_count: int) -> str:
@@ -1500,19 +1625,13 @@ class LocalZoteroReader:
             FROM feedItems fi
             JOIN items i ON fi.itemID = i.itemID
             JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
-            LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
-            LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
-            LEFT JOIN itemData abstract_data ON i.itemID = abstract_data.itemID AND abstract_data.fieldID = 2
-            LEFT JOIN itemDataValues abstract_val ON abstract_data.valueID = abstract_val.valueID
-            LEFT JOIN fields date_f ON date_f.fieldName = 'date'
-            LEFT JOIN itemData date_data ON i.itemID = date_data.itemID AND date_data.fieldID = date_f.fieldID
-            LEFT JOIN itemDataValues date_val ON date_data.valueID = date_val.valueID
-            LEFT JOIN fields doi_f ON doi_f.fieldName = 'DOI'
-            LEFT JOIN itemData doi_data ON i.itemID = doi_data.itemID AND doi_data.fieldID = doi_f.fieldID
-            LEFT JOIN itemDataValues doi_val ON doi_data.valueID = doi_val.valueID
-            LEFT JOIN fields url_f ON url_f.fieldName = 'url'
-            LEFT JOIN itemData url_data ON i.itemID = url_data.itemID AND url_data.fieldID = url_f.fieldID
-            LEFT JOIN itemDataValues url_val ON url_data.valueID = url_val.valueID
+            """
+            + _base_field_resolved_join("title", "title")
+            + _plain_field_join("abstract", "abstractNote")
+            + _base_field_resolved_join("date", "date")
+            + _plain_field_join("doi", "DOI")
+            + _plain_field_join("url", "url")
+            + """
             LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
             LEFT JOIN creators c ON ic.creatorID = c.creatorID
             WHERE i.libraryID = ?
@@ -1617,7 +1736,8 @@ class LocalZoteroReader:
         conn = self._get_connection()
 
         # Query to get items with their text content (simplified for now)
-        query = """
+        query = (
+            """
         SELECT
             i.itemID,
             i.key,
@@ -1641,24 +1761,15 @@ class LocalZoteroReader:
             ) as creators
         FROM items i
         JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
-
-        -- Get title
-        LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
-        LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
-
-        -- Get abstract
-        LEFT JOIN itemData abstract_data ON i.itemID = abstract_data.itemID AND abstract_data.fieldID = 2
-        LEFT JOIN itemDataValues abstract_val ON abstract_data.valueID = abstract_val.valueID
-
-        -- Get extra field
-        LEFT JOIN itemData extra_data ON i.itemID = extra_data.itemID AND extra_data.fieldID = 16
-        LEFT JOIN itemDataValues extra_val ON extra_data.valueID = extra_val.valueID
-
-        -- Get DOI field via fields table
-        LEFT JOIN fields doi_f ON doi_f.fieldName = 'DOI'
-        LEFT JOIN itemData doi_data ON i.itemID = doi_data.itemID AND doi_data.fieldID = doi_f.fieldID
-        LEFT JOIN itemDataValues doi_val ON doi_data.valueID = doi_val.valueID
-
+        """
+            # Title resolves per item type (#570): a case/statute/email
+            # indexed through a hardcoded fieldID 1 got an empty title AND an
+            # empty abstract, making it invisible to semantic search.
+            + _base_field_resolved_join("title", "title")
+            + _plain_field_join("abstract", "abstractNote")
+            + _plain_field_join("extra", "extra")
+            + _plain_field_join("doi", "DOI")
+            + """
         -- Get notes
         LEFT JOIN itemNotes n ON i.itemID = n.parentItemID OR i.itemID = n.itemID
 
@@ -1669,6 +1780,7 @@ class LocalZoteroReader:
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
         AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
         """
+        )
 
         params = []
         if collection_keys:
@@ -1911,10 +2023,12 @@ class LocalZoteroReader:
             FROM itemAttachments ia
             JOIN items att ON att.itemID = ia.itemID
             LEFT JOIN items parent ON parent.itemID = ia.parentItemID
-            LEFT JOIN itemData title_data
-                ON title_data.itemID = att.itemID AND title_data.fieldID = 1
-            LEFT JOIN itemDataValues title_val
-                ON title_data.valueID = title_val.valueID
+            """
+            # An attachment's own title: `attachment` has no base-field
+            # mapping, so this resolves by name rather than through the
+            # mapping lookup — but still never by a literal fieldID.
+            + _plain_field_join("title", "title", item_alias="att")
+            + """
             WHERE att.key = ?
             AND att.itemID NOT IN (SELECT itemID FROM deletedItems)
             """,
@@ -1976,12 +2090,15 @@ class LocalZoteroReader:
         cursor.execute("""
             SELECT i.key, n.note, n.title,
                    pi.key as parentKey,
-                   pdv.value as parentTitle
+                   ptitle_val.value as parentTitle
             FROM itemNotes n
             JOIN items i ON n.itemID = i.itemID
             LEFT JOIN items pi ON n.parentItemID = pi.itemID
-            LEFT JOIN itemData pd ON pi.itemID = pd.itemID AND pd.fieldID = 1
-            LEFT JOIN itemDataValues pdv ON pd.valueID = pdv.valueID
+            """
+            # The parent is any regular item type, so its title resolves per
+            # type (#570) — a note filed under a case rendered "Unknown".
+            + _base_field_resolved_join("ptitle", "title", item_alias="pi")
+            + """
             WHERE n.note LIKE ?
             AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             LIMIT ?
@@ -2015,14 +2132,16 @@ class LocalZoteroReader:
             SELECT i.key, ia.text, ia.comment, ia.type, ia.color, ia.pageLabel,
                    att.key as attachmentKey,
                    gpi.key as parentKey,
-                   gpdv.value as parentTitle
+                   gptitle_val.value as parentTitle
             FROM itemAnnotations ia
             JOIN items i ON ia.itemID = i.itemID
             LEFT JOIN items att ON ia.parentItemID = att.itemID
             LEFT JOIN itemAttachments iatt ON ia.parentItemID = iatt.itemID
             LEFT JOIN items gpi ON iatt.parentItemID = gpi.itemID
-            LEFT JOIN itemData gpd ON gpi.itemID = gpd.itemID AND gpd.fieldID = 1
-            LEFT JOIN itemDataValues gpdv ON gpd.valueID = gpdv.valueID
+            """
+            # Same as search_notes_local, one hop further out (#570).
+            + _base_field_resolved_join("gptitle", "title", item_alias="gpi")
+            + """
             WHERE (ia.text LIKE ? OR ia.comment LIKE ?)
             AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             LIMIT ?
@@ -2933,12 +3052,11 @@ class LocalZoteroReader:
         # written vs 31 ms with NOT INDEXED and an itemTypeID subquery. For a
         # small scope the index still wins (3 ms vs 4 ms for a 3k group
         # library in a 90k database), so the scan is chosen per scope.
-        title_join = (
-            """ LEFT JOIN itemData title_data
-                      ON title_data.itemID = i.itemID AND title_data.fieldID = 1
-                  LEFT JOIN itemDataValues title_val ON title_val.valueID = title_data.valueID"""
-            if sort == "title" else ""
-        )
+        # Same base-field resolution as _base_field_resolved_join (#570) — a
+        # case's or statute's title must sort by its real title (caseName /
+        # nameOfAct), not by a column it never populates. See that
+        # function's docstring for the Zotero source this follows.
+        title_join = _base_field_resolved_join("title", "title") if sort == "title" else ""
         items_source = (
             "items i NOT INDEXED"
             if not collection_key and self._scope_prefers_scan(conn, lib_ids)

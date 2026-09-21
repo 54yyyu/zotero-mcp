@@ -238,6 +238,12 @@ def _build_multilib_db(db_path):
         CREATE TABLE itemTypes (itemTypeID INTEGER PRIMARY KEY, typeName TEXT);
         CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT);
         CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT);
+        -- get_items_with_text resolves title per item type through this
+        -- table (#570); empty, since no type here remaps anything.
+        CREATE TABLE baseFieldMappingsCombined (
+            itemTypeID INT, baseFieldID INT, fieldID INT,
+            PRIMARY KEY (itemTypeID, baseFieldID, fieldID)
+        );
         CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT);
         CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT);
         CREATE TABLE itemCreators (itemID INT, creatorID INT);
