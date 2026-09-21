@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -23,6 +24,34 @@ _WEB_API_ENV_VARS = (
     "- ZOTERO_LIBRARY_ID: Your library ID\n"
     "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'"
 )
+
+
+#: Markdown constructs that Zotero notes do NOT render. Plain-text input
+#: matching any of these is stored verbatim (see ``create_note``), so the
+#: match only triggers a warning, never a rejection or conversion.
+_MARKDOWN_PATTERNS = (
+    re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S"),  # ATX heading
+    re.compile(r"(?m)^\s{0,3}>\s+\S"),  # blockquote
+    re.compile(r"(?m)^\s{0,3}(?:[-*+]\s+\S|\d{1,3}[.)]\s+\S)"),  # list item
+    re.compile(r"\*\*.+?\*\*|__.+?__"),  # bold
+    re.compile(r"(?<!\w)\*[^*\n]+\*(?!\w)|(?<!\w)_[^_\n]+_(?!\w)"),  # italic
+    re.compile(r"`[^`\n]+`"),  # inline code (fences included)
+    re.compile(r"!\[[^\]]*\]\([^)]*\)|\[[^\]]+\]\([^)]*\)"),  # image / link
+    re.compile(r"~~.+?~~"),  # strikethrough
+)
+
+#: Appended to a note-create success message when the input looked like
+#: Markdown. Zotero notes render a fixed HTML subset, so without this the
+#: caller cannot tell stored-verbatim from rendered.
+_MARKDOWN_WARNING = (
+    "\n\nWarning: the note text looks like Markdown, which Zotero notes do "
+    "NOT render — it was stored as literal text. Use simple HTML "
+    "(p, strong, em, ul/li, a, code) for formatting."
+)
+
+
+def _looks_like_markdown(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _MARKDOWN_PATTERNS)
 
 
 def _page_index(data: dict) -> int | None:
@@ -144,7 +173,9 @@ def _download_attachment_for_processing(
     )
 
 
-def _create_note_via_connector(item_key, parent_title, html_content, tags):
+def _create_note_via_connector(
+    item_key, parent_title, html_content, tags, markdown_suffix=""
+):
     """Last-resort note creation through Zotero's connector endpoint.
 
     Only reachable in local mode with no writable API backend: a Zotero older
@@ -188,6 +219,7 @@ def _create_note_via_connector(item_key, parent_title, html_content, tags):
         "`zotero-mcp authorize-local` (Zotero 10 or newer), or add these "
         "environment variables alongside ZOTERO_LOCAL=true:\n"
         + _WEB_API_ENV_VARS
+        + markdown_suffix
     )
 
 
@@ -1136,8 +1168,10 @@ def get_notes_tool(
         "item_key: the PARENT item's key for action='create', the NOTE's "
         "own key for 'update' and 'delete' (zotero_get_notes finds it). "
         "create: needs note_text — plain text, or simple HTML (p, strong, "
-        "em, ul/li, a, code), which is preserved; note_title becomes a "
-        "heading; tags optional. "
+        "em, ul/li, a, code), which is preserved; Markdown is NOT "
+        "supported — Markdown syntax is stored as literal text, and the "
+        "create response carries a warning when it is detected; "
+        "note_title becomes a heading; tags optional. "
         "update: needs note_text. append=False (default) REPLACES the "
         "whole body, append=True concatenates. To keep formatting, fetch "
         "with zotero_get_notes(raw_html=True), edit that HTML, and pass it "
@@ -1240,6 +1274,7 @@ def create_note(
         # If the note_text already has HTML, use it directly
         if "<p>" in note_text or "<div>" in note_text:
             html_content = note_text
+            markdown_suffix = ""
         else:
             # Convert plain text to HTML paragraphs - avoiding f-strings with replacements
             paragraphs = note_text.split("\n\n")
@@ -1249,6 +1284,10 @@ def create_note(
                 p_with_br = p.replace("\n", "<br/>")
                 html_parts.append("<p>" + p_with_br + "</p>")
             html_content = "".join(html_parts)
+            # Warn (don't fail): Markdown-looking input is stored verbatim.
+            markdown_suffix = (
+                _MARKDOWN_WARNING if _looks_like_markdown(note_text) else ""
+            )
 
         # Use note_title as a visible heading so the argument is not ignored.
         clean_title = (note_title or "").strip()
@@ -1275,7 +1314,7 @@ def create_note(
             # is the only thing left — but it ignores parentItem, so the note
             # arrives standalone. Say so rather than pretending it worked.
             return _create_note_via_connector(
-                item_key, parent_title, html_content, tags
+                item_key, parent_title, html_content, tags, markdown_suffix
             ) or err
 
         result = write_zot.create_items([note_data])
@@ -1283,7 +1322,7 @@ def create_note(
             successful = result["success"]
             if len(successful) > 0:
                 note_key = next(iter(successful.values()))
-                return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
+                return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}{markdown_suffix}"
             return f"Note creation response was successful but no key was returned: {result}"
         return f"Failed to create note: {result.get('failed', 'Unknown error')}"
 
