@@ -1007,6 +1007,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         ("title", "title"),
         ("publicationTitle", "journal"),
         ("bookTitle", "booktitle"),
+        ("proceedingsTitle", "booktitle"),
         ("volume", "volume"),
         ("issue", "number"),
         ("pages", "pages"),
