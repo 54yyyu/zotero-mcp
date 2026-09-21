@@ -3,10 +3,9 @@
 import json
 import os
 import re
-import shutil
 import tempfile
 import uuid
-from typing import Any, Literal
+from typing import Literal
 
 import requests
 

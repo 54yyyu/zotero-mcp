@@ -9,7 +9,6 @@ import time as _time
 from typing import Literal
 
 from fastmcp.exceptions import ToolError
-from pyzotero.zotero_errors import ResourceNotFoundError
 
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
