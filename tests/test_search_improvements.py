@@ -180,6 +180,49 @@ class TestSearchWithVariants:
 
         assert {item["key"] for item in result} == {"N1"}
 
+    def test_titlecreatoryear_pages_past_note_crowding(self):
+        # In titleCreatorYear mode the server matches a note's content in
+        # place of the title it lacks, so a full /items page of notes spends
+        # the whole limit budget on items the note filter drops (#542). The
+        # search must keep paging (start += limit) until enough surviving
+        # items have arrived or a page comes back short.
+        limit = 5
+        notes = [{"key": f"N{i}", "data": {"itemType": "note", "note": "Paper"}}
+                 for i in range(limit)]
+        papers = [{"key": f"P{i}", "data": {"itemType": "journalArticle", "title": "Paper"}}
+                  for i in range(limit)]
+        zot = MagicMock()
+        starts = []
+
+        def fake_add_params(**kw):
+            starts.append(kw.get("start", 0))
+
+        zot.add_parameters = fake_add_params
+        zot.items = lambda: list(notes) if starts[-1] == 0 else list(papers)
+
+        result = search_module._search_with_variants(zot, "Paper", "titleCreatorYear", limit)
+
+        # Page 1 was a full page of notes and filled nothing, so page 2 was
+        # fetched; its papers filled the budget, so there was no page 3.
+        assert starts == [0, limit]
+        assert [item["key"] for item in result] == [f"P{i}" for i in range(limit)]
+
+    def test_everything_mode_does_not_page(self):
+        # 'everything' treats child-note content as a legitimate match, so
+        # nothing is dropped after fetching and a full first page is the
+        # whole answer — exactly one request, as before #542.
+        limit = 5
+        notes = [{"key": f"N{i}", "data": {"itemType": "note", "note": "Paper"}}
+                 for i in range(limit)]
+        zot = MagicMock()
+        zot.add_parameters = MagicMock()
+        zot.items = MagicMock(return_value=list(notes))
+
+        result = search_module._search_with_variants(zot, "Paper", "everything", limit)
+
+        assert zot.items.call_count == 1
+        assert [item["key"] for item in result] == [f"N{i}" for i in range(limit)]
+
 
 class TestSearchItemsCollectionKeyExcludesNotes:
     """search_items's collection_key path bypasses _search_with_variants
@@ -203,6 +246,57 @@ class TestSearchItemsCollectionKeyExcludesNotes:
 
         assert "P1" in result
         assert "N1" not in result
+
+    def test_collection_search_pages_past_note_crowding(self, monkeypatch):
+        # The collection path has the same budget problem: child notes that
+        # the note filter drops must not spend max_items. _paginate counts
+        # only surviving items toward the cap and keeps paging, so a first
+        # page full of notes is not treated as exhaustion (#542).
+        from zotero_mcp import server
+
+        notes = [{"key": f"N{i}", "data": {"itemType": "note", "note": "Paper"}}
+                 for i in range(100)]
+        papers = [{"key": f"P{i}", "data": {"itemType": "journalArticle", "title": "Paper"}}
+                  for i in range(3)]
+        fake_zot = MagicMock()
+        fake_zot.collection = MagicMock(return_value={"key": "COLL0001"})
+
+        def fake_collection_items(key, start=0, limit=100, **kwargs):
+            return list(notes) if start == 0 else list(papers)
+
+        fake_zot.collection_items = fake_collection_items
+        monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
+
+        result = server.search_items(
+            query="Paper", qmode="titleCreatorYear", collection_key="COLL0001",
+            limit=3, ctx=DummyContext(),
+        )
+
+        assert "P0" in result
+        assert "N0" not in result
+
+    def test_collection_everything_mode_keeps_notes_in_budget(self, monkeypatch):
+        # 'everything' searches child-note content legitimately, so the
+        # collection path must keep returning notes and count them toward
+        # max_items like any other item.
+        from zotero_mcp import server
+
+        paper = {"key": "P1", "data": {"itemType": "journalArticle", "title": "Paper"}}
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        fake_zot = MagicMock()
+        fake_zot.collection = MagicMock(return_value={"key": "COLL0001"})
+        fake_zot.collection_items = MagicMock(return_value=[paper, note])
+        monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
+
+        result = server.search_items(
+            query="Paper",
+            qmode="everything",
+            collection_key="COLL0001",
+            ctx=DummyContext(),
+        )
+
+        assert "N1" in result
+        fake_zot.collection_items.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

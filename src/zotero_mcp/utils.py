@@ -217,12 +217,17 @@ def is_local_mode() -> bool:
 # Pagination helper
 # ---------------------------------------------------------------------------
 
-def _paginate(zot_method, *args, max_items=None, **kwargs):
+def _paginate(zot_method, *args, max_items=None, keep=None, **kwargs):
     """Fetch all results from a pyzotero method using manual pagination.
 
     Avoids zot.everything() which can cause RLock pickling in MCP contexts.
     Accepts the same positional and keyword arguments as the wrapped method,
-    plus an optional max_items to cap the total results.
+    plus an optional max_items to cap the total results, and an optional
+    ``keep`` predicate: only items passing it are returned and counted
+    toward max_items. That is for callers whose own filter would drop a
+    pageful of fetched items (child notes in a titleCreatorYear search,
+    #542) — a full page of filtered-out items is not exhaustion, so paging
+    continues and the cap is not spent on results nobody will see.
     """
     items = []
     start = 0
@@ -231,8 +236,13 @@ def _paginate(zot_method, *args, max_items=None, **kwargs):
         batch = zot_method(*args, start=start, limit=page_size, **kwargs)
         if not batch:
             break
+        # Short-page test on the raw count: a full page that keep filters
+        # down to nothing must not read as "the server ran out".
+        fetched = len(batch)
+        if keep is not None:
+            batch = [item for item in batch if keep(item)]
         items.extend(batch)
-        if len(batch) < page_size:
+        if fetched < page_size:
             break
         start += page_size
         if max_items and len(items) >= max_items:

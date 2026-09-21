@@ -128,6 +128,13 @@ def _canonical_item_type(value: str) -> str | None:
     return None
 
 
+def _is_note(item: dict) -> bool:
+    """Whether *item* is a note — the one itemType whose *content* Zotero's
+    quicksearch matches in `titleCreatorYear` mode, standing in for the
+    title a note doesn't have."""
+    return item.get("data", {}).get("itemType") == "note"
+
+
 def _exclude_note_content_matches(items: list[dict], qmode: str) -> list[dict]:
     """Drop standalone notes from a `titleCreatorYear` result set.
 
@@ -143,7 +150,7 @@ def _exclude_note_content_matches(items: list[dict], qmode: str) -> list[dict]:
     """
     if qmode != "titleCreatorYear":
         return items
-    return [item for item in items if item.get("data", {}).get("itemType") != "note"]
+    return [item for item in items if not _is_note(item)]
 
 
 @with_zotero_api_lock
@@ -168,6 +175,7 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
 
     all_items: list[dict] = []
     seen_keys: set[str] = set()
+    kept = 0  # unique items that survive the note filter
     for variant in variants:
         # Check cascade timeout before each API call
         if cascade_start is not None and cascade_timeout is not None:
@@ -180,20 +188,48 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
         }
         if tag:
             params["tag"] = tag
-        zot.add_parameters(**params)
-        try:
-            t0 = _time.monotonic()
-            batch = zot.items()
-            elapsed = _time.monotonic() - t0
-            _search_logger.debug(f"[SEARCH] variant='{variant}' qmode={qmode}: {len(batch)} results in {elapsed:.2f}s")
+        # Page past child notes in titleCreatorYear mode (#542): the
+        # server's quicksearch matches a note's content in place of the
+        # title it lacks, so a single /items page can spend the whole limit
+        # budget on items the note filter below drops, crowding real papers
+        # out of small result sets. Keep fetching pages (start += limit)
+        # until enough surviving items have arrived or a page comes back
+        # short. /items/top can't stand in for this: the Web API projects a
+        # matching child onto its parent — a different result set — and the
+        # local API ignores /top filtering entirely. 'everything' never
+        # pages: child-note content is a legitimate match there, so nothing
+        # is dropped afterwards and one page is the whole answer.
+        start = 0
+        t0 = _time.monotonic()
+        pages = 0
+        while True:
+            zot.add_parameters(**({**params, "start": start} if start else params))
+            try:
+                batch = zot.items()
+            except Exception as e:
+                _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
+                break  # Skip failed variant, try next
+            pages += 1
             for item in batch:
                 key = item.get("key", "")
                 if key and key not in seen_keys:
                     seen_keys.add(key)
                     all_items.append(item)
-        except Exception as e:
-            _search_logger.debug(f"[SEARCH] variant='{variant}' failed: {e}")
-            continue  # Skip failed variant, try next
+                    if not _is_note(item):
+                        kept += 1
+            if len(batch) < limit:
+                break  # short page: the server is out of matches
+            if qmode != "titleCreatorYear" or kept >= limit:
+                break
+            if cascade_start is not None and cascade_timeout is not None:
+                if _time.monotonic() - cascade_start > cascade_timeout:
+                    _search_logger.debug("[SEARCH] Cascade timeout reached, skipping remaining variants")
+                    break
+            start += limit
+        elapsed = _time.monotonic() - t0
+        _search_logger.debug(
+            f"[SEARCH] variant='{variant}' qmode={qmode}: {pages} page(s), {kept} kept, in {elapsed:.2f}s"
+        )
 
     return _exclude_note_content_matches(all_items, qmode)
 
