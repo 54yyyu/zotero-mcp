@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import subprocess
 import sys
 import warnings
@@ -23,9 +24,11 @@ from pathlib import Path
 import pytest
 from conftest import SHIM_PATH_GATE_ENV_VAR, SHIM_PATHS_ARE_ERRORS
 
+from zotero_mcp import _shim
 from zotero_mcp._shim import MovedModuleWarning, forwarder
 
-SRC = str(Path(__file__).resolve().parents[1] / "src")
+REPO = Path(__file__).resolve().parents[1]
+SRC = str(REPO / "src")
 
 # Modules that must never be pulled in by importing a shim module that only
 # *defines* a forwarder -- nothing has been accessed on it yet.
@@ -271,3 +274,67 @@ def test_the_suites_own_configuration_turns_a_shim_access_into_an_error(tmp_path
             old_mod_7.VALUE
     finally:
         _purge("old_mod_7", "target_mod_7")
+
+
+def test_the_warning_reads_the_release_plan_from_the_two_constants(tmp_path, monkeypatch):
+    """The versions in the warning are `MOVED_IN` / `REMOVED_IN` as they stand when the name is used,
+    not a literal that happens to equal them: set both to versions no release will have and the
+    message follows."""
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(_shim, "MOVED_IN", "98.0.0")
+    monkeypatch.setattr(_shim, "REMOVED_IN", "99.0.0")
+    (tmp_path / "target_mod_8.py").write_text("VALUE = 1\n")
+    (tmp_path / "old_mod_8.py").write_text(
+        "from zotero_mcp._shim import forwarder\n__getattr__ = forwarder(__name__, 'target_mod_8')\n"
+    )
+    try:
+        import old_mod_8
+
+        with pytest.warns(MovedModuleWarning) as record:
+            old_mod_8.VALUE
+
+        assert str(record[0].message) == (
+            "old_mod_8.VALUE moved to target_mod_8.VALUE in 98.0.0; this alias is removed in 99.0.0"
+        )
+    finally:
+        _purge("old_mod_8", "target_mod_8")
+
+
+def _release_mentions(path: Path) -> list[tuple[Path, int, str]]:
+    """Every line of `path` that spells out `MOVED_IN` or `REMOVED_IN`, as (path, line number, text).
+    A version is matched whole: `10.14.0` or `0.14.0.1` is not `0.14.0`."""
+    pattern = re.compile(
+        "|".join(rf"(?<![\d.]){re.escape(v)}(?!\.?\d)" for v in (_shim.MOVED_IN, _shim.REMOVED_IN))
+    )
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [(path, n, line.strip()) for n, line in enumerate(lines, 1) if pattern.search(line)]
+
+
+def test_no_shim_module_names_a_release():
+    """The release plan lives in `_shim.MOVED_IN` / `REMOVED_IN` and nowhere else. A version spelled
+    out in a shim's docstring or comment, or in docs/architecture.md, goes stale the day the plan
+    moves -- as it did once, when 0.13.0 shipped without the refactor and left every shim saying it
+    had moved in 0.13.0."""
+    package = REPO / "src" / "zotero_mcp"
+    shim_modules = sorted(
+        p for p in package.rglob("*.py")
+        if p.name != "_shim.py" and "_shim import" in p.read_text(encoding="utf-8")
+    )
+    hits = [hit for p in [*shim_modules, REPO / "docs" / "architecture.md"] for hit in _release_mentions(p)]
+    assert not hits, "name `_shim.MOVED_IN` / `_shim.REMOVED_IN` instead of the version:\n" + "\n".join(
+        f"{p.relative_to(REPO)}:{n}: {text}" for p, n, text in hits
+    )
+
+
+def test_the_release_scan_flags_a_spelled_out_version(tmp_path):
+    """Until a move PR adds a shim module, the guard above has only the architecture document to
+    read, so the matcher is proven here on a synthetic file: both versions are flagged however they
+    are punctuated, and a longer version that merely contains one is not."""
+    moved, removed = _shim.MOVED_IN, _shim.REMOVED_IN
+    path = tmp_path / "old_mod_9.py"
+    path.write_text(
+        f'"""Deprecated: moved in {moved}; removed in {removed}."""\n'
+        f"# installs made before v{moved}, which record the old path\n"
+        f"# not a release of ours: 1{moved}, {moved}.1, {removed}1\n"
+    )
+    assert [n for _, n, _ in _release_mentions(path)] == [1, 2]

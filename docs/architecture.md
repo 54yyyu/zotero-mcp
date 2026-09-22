@@ -197,7 +197,7 @@ from zotero_mcp._shim import forwarder
 __getattr__ = forwarder("zotero_mcp.client", "zotero_mcp.backends.api")
 ```
 
-`forwarder(old, new, removed_in="0.14.0")` returns a module-level `__getattr__`. Four properties matter:
+`forwarder(old, new)` returns a module-level `__getattr__`. Four properties matter:
 
 - **Importing the old path costs nothing.** Nothing is imported until a name is actually used, so a stale
   `import zotero_mcp.client` does not drag the new module — or its dependencies — into a cold interpreter.
@@ -273,15 +273,19 @@ forwarded name under the suite's ambient filters and asserts it raises, so the g
 
 ### Shim table
 
-One row per moved module. Columns: **old import path**, **new import path**, **first release that warns**,
-**release that removes the shim**. Append a row here and to `SHIMS` in `tests/test_module_layout.py` in the
-same commit as the move, and add the matching `### Architecture` line to the CHANGELOG.
+One row per moved module: **old import path**, **new import path**. Append a row here and to `SHIMS` in
+`tests/test_module_layout.py` in the same commit as the move, and add the matching `### Architecture` line to
+the CHANGELOG.
 
-| Old import path | New import path | Deprecated in | Removed in |
-|---|---|---|---|
-| _(none yet — no module has moved)_ | | | |
+| Old import path | New import path |
+|---|---|
+| _(none yet — no module has moved)_ | |
 
-All shims are removed together in 0.14.0.
+Every shim starts warning in the same release and is removed in the same later one. Those two versions are
+`MOVED_IN` and `REMOVED_IN` in `src/zotero_mcp/_shim.py`, and they are written nowhere else: not in this
+table, not in a shim's docstring, not in a comment. The warning text reads them at runtime, so moving the
+release plan is a two-line change. `tests/test_shim.py::test_no_shim_module_names_a_release` fails on a shim
+module, or this document, that spells either version out.
 
 ## 6. The import-cost budget
 
