@@ -322,7 +322,7 @@ def test_no_shim_module_names_a_release():
     )
     hits = [hit for p in [*shim_modules, REPO / "docs" / "architecture.md"] for hit in _release_mentions(p)]
     assert not hits, "name `_shim.MOVED_IN` / `_shim.REMOVED_IN` instead of the version:\n" + "\n".join(
-        f"{p.relative_to(REPO)}:{n}: {text}" for p, n, text in hits
+        f"{p.relative_to(REPO).as_posix()}:{n}: {text}" for p, n, text in hits
     )
 
 

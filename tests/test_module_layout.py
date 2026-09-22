@@ -156,7 +156,7 @@ def _find_violations(files: list[Path], shims: dict[str, str], repo_root: Path, 
         return []
     messages: list[str] = []
     for file in files:
-        rel = file.relative_to(repo_root)
+        rel = file.relative_to(repo_root).as_posix()  # `src/...` on Windows too, as git prints it
         text = file.read_text(encoding="utf-8")
         for lineno, line in enumerate(text.splitlines(), start=1):
             for old, new in _violations_in_line(line, shims, src_root):
