@@ -5987,15 +5987,18 @@ def add_item(
         "Copy item(s) from one Zotero library to another (e.g. personal to "
         "group, between groups, or from an RSS feed to a user/group library). "
         "Clones metadata, child notes, and attachments without modifying source "
-        "items. Hallucination-safe. "
+        "items; PDF annotations are not copied. Hallucination-safe. "
         "item_keys: single key or list/comma-separated keys to copy. "
         "target_library_id: destination library ('0'/'user' or groupID). "
         "Defaults to active library if source_library_id is provided. "
         "source_library_id: source library. Defaults to active library if "
         "copy_notes: copy child notes (default: True). "
-        "copy_attachments: copy attached files and linked URLs (default: True). "
+        "copy_attachments: copy attached files and linked URLs (default: True); "
+        "PDF/image annotations on those attachments are not carried over. "
         "copy_tags: preserve tags (default: True). "
-        "if_exists: 'duplicate' (default), 'file' (add missing tags to existing item), 'skip'. "
+        "if_exists: 'skip' (default; leaves a matching item untouched), "
+        "'file' (add missing tags to the existing item), 'duplicate' (always creates a new item - "
+        "pick this explicitly, since a retried or repeated call would otherwise double the items). "
         "Example: zotero_copy_items_between_libraries(item_keys='ABCD2345', target_library_id='6069773')."
     ),
 )
@@ -6009,7 +6012,7 @@ def copy_items_between_libraries(
     copy_notes: bool = True,
     copy_attachments: bool = True,
     copy_tags: bool = True,
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "skip",
     *,
     ctx: Context,
 ) -> str:
@@ -6296,10 +6299,12 @@ def copy_items_between_libraries(
                                     except Exception:
                                         pass
 
-            # TODO(human): Support copying PDF annotations across libraries.
-            # PDF annotations in Zotero are child items of the attachment item (parentItem = attachment_key)
-            # with itemType="annotation". Replicating them requires mapping old attachment keys to new
-            # attachment keys and copying coordinate geometry.
+            # PDF/image annotations are child items of the attachment
+            # (parentItem = attachment_key), so copying them would require
+            # mapping old attachment keys to new ones and translating
+            # coordinate geometry between the two copies of the file.
+            # Not implemented: annotations are not copied, and the tool
+            # description and result text both say so.
 
             results.append({
                 "ok": True,
@@ -6339,6 +6344,7 @@ def copy_items_between_libraries(
         if r.get("attachments_copied", 0) > 0:
             att_info = f" ({', '.join(r.get('attachment_details', []))})" if r.get("attachment_details") else ""
             output_lines.append(f"- **Attachments copied:** {r['attachments_copied']}{att_info}")
+            output_lines.append("- **Annotations copied:** 0 (not supported; add them in the target library)")
         output_lines.append("")
 
     output_lines.append("_Note: To include copied items in semantic search, run `zotero_update_search_database`._")
