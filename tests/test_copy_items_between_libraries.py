@@ -497,6 +497,70 @@ class TestCopyItemsExecution:
         # No new item created in target library
         assert len(target_zot.created) == 0
 
+    def test_if_exists_defaults_to_skip(self, setup_clients, monkeypatch, dummy_ctx):
+        """A retried/repeated call must not double items unless 'duplicate' is explicit."""
+        source_zot, target_zot = setup_clients
+        source_zot._items = [
+            {
+                "key": "SRC0001",
+                "version": 1,
+                "data": {
+                    "key": "SRC0001",
+                    "itemType": "journalArticle",
+                    "title": "Existing Paper",
+                    "DOI": "10.1000/182",
+                },
+            }
+        ]
+
+        monkeypatch.setattr(
+            _helpers,
+            "find_existing_items",
+            lambda zot, **kwargs: [{"key": "EXISTING_KEY", "data": {"key": "EXISTING_KEY"}}],
+        )
+
+        res = copy_items_between_libraries(
+            "SRC0001",
+            source_library_id="0",
+            target_library_id="6069773",
+            ctx=dummy_ctx,
+        )
+
+        assert "**Status:** Skipped" in res
+        assert len(target_zot.created) == 0
+
+    def test_if_exists_duplicate_must_be_explicit(self, setup_clients, monkeypatch, dummy_ctx):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [
+            {
+                "key": "SRC0001",
+                "version": 1,
+                "data": {
+                    "key": "SRC0001",
+                    "itemType": "journalArticle",
+                    "title": "Existing Paper",
+                    "DOI": "10.1000/182",
+                },
+            }
+        ]
+
+        monkeypatch.setattr(
+            _helpers,
+            "find_existing_items",
+            lambda zot, **kwargs: [{"key": "EXISTING_KEY", "data": {"key": "EXISTING_KEY"}}],
+        )
+
+        res = copy_items_between_libraries(
+            "SRC0001",
+            source_library_id="0",
+            target_library_id="6069773",
+            if_exists="duplicate",
+            ctx=dummy_ctx,
+        )
+
+        assert "**Status:** Copied" in res
+        assert len(target_zot.created) == 1
+
 
 # ---------------------------------------------------------------------------
 # 5. Toolset Registry & Export Verification
@@ -504,8 +568,14 @@ class TestCopyItemsExecution:
 
 
 class TestToolsetRegistration:
-    def test_tool_in_libraries_toolset(self):
-        assert "zotero_copy_items_between_libraries" in TOOLSETS["libraries"]
+    def test_tool_in_libraries_copy_toolset(self):
+        assert "zotero_copy_items_between_libraries" in TOOLSETS["libraries-copy"]
+        assert "zotero_copy_items_between_libraries" not in TOOLSETS["libraries"]
+
+    def test_libraries_copy_toolset_is_opt_in(self):
+        from zotero_mcp.toolsets import DEFAULT_ON
+
+        assert "libraries-copy" not in DEFAULT_ON
 
     def test_toolsets_registry_validates(self):
         import asyncio

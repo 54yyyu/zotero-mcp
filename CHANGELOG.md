@@ -165,6 +165,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.13.2] - 2026-10-04
 
+### Added
+
+- **`zotero_copy_items_between_libraries`** copies items — with child notes, tags, and attachments — from one Zotero library to another (personal to group, between groups, or from an RSS feed into a user/group library), without modifying the source (#560). PDF/image annotations are not copied. It's in its own opt-in `libraries-copy` toolset (`ZOTERO_MCP_TOOLSETS=libraries-copy`), separate from the default-on `libraries` group, since most multi-library users never call it. `if_exists` defaults to `'skip'`, so a retried or repeated call doesn't double the items; pass `'duplicate'` explicitly to always create a new copy.
+
 ### Fixed
 
 - **Duplicate detection agrees with itself** (#496). Duplicate grouping, the auto-merge DOI-conflict guard, the pre-add existence check and the semantic index's preprint filter now take their keys from `zotero_mcp.identifiers`, so DOIs match in canonical form (`10.1000/ABC`, `https://doi.org/10.1000/abc`) and titles fold the way Zotero's own duplicate finder folds them. A DOI field holding a placeholder such as `article` no longer groups every item that carries it, and re-adding a paper whose stored DOI differs only in case no longer creates a second copy.

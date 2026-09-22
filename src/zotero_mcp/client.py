@@ -159,6 +159,11 @@ def temporary_active_library(library_id: str, library_type: str):
 
     Restores the previous active library state (or clears it if there was none)
     when exiting the context.
+
+    ``_active_library_override`` is a module-level global, not thread-local, so
+    this must only be used while holding ``_zotero_api_lock`` (i.e. inside a
+    ``with_zotero_api_lock``-wrapped tool) — otherwise a concurrent call could
+    see, or override, another thread's active library mid-operation.
     """
     previous = get_active_library()
     set_active_library(library_id, library_type)
