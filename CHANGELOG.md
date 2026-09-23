@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`zotero_find_related_papers` no longer under-reports silently** (#458, items 3 to 5). A referenced work missing from OpenAlex is now replaced by the next one, so asking for 20 references returns 20; a failed OpenAlex request is reported as incomplete or failed instead of as zero results; and citations are sorted most-cited first by OpenAlex itself, so the most-cited works are no longer missed.
+
 - **A failed search request hidden behind a page of notes is reported as an error.** In `titleCreatorYear` mode, a first page made up entirely of child notes followed by a failed next page came back as "No items found": the failure check ran before the note filter emptied the results (reported on #578).
 
 ## [0.13.0] - 2026-09-21
