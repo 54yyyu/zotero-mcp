@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sticky-note annotations.** `zotero_create_annotation` takes `note=[x, y]`, `zotero-cli annotations create` takes `--note x,y`, and `annotations batch` plans accept `{"page", "note", "comment"}`. The note is a 22 pt square centered on that normalized point, the same geometry Zotero's reader uses, and its text is the comment.
+
 ### Fixed
+
+- **Area boxes land in the right place on rotated pages.** On a page with `/Rotate` (e.g. a landscape figure page), the normalized rect was scaled to the displayed page but stored as if the page were unrotated, so the box was drawn somewhere else. Rects are now derotated first; highlights were not affected.
 
 - **A failed search request hidden behind a page of notes is reported as an error.** In `titleCreatorYear` mode, a first page made up entirely of child notes followed by a failed next page came back as "No items found": the failure check ran before the note filter emptied the results (reported on #578).
 

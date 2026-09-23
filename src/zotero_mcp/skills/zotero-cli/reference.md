@@ -108,6 +108,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--page` -- **required**
  - `--text` -- Exact text to highlight
  - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables
+ - `--note` -- Sticky note centered at x,y, normalized 0-1; its text is --comment
  - `--comment`
  - `--color` -- default `#ffd400` -- Hex, or a Zotero color name: yellow, red, green, blue, purple, magenta, orange, gray
  - `--tags` -- Comma-separated tags
@@ -115,7 +116,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ### `annotations batch`
 
  - `--attachment-key` -- **required** -- Attachment for lines that do not name their own
- - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect, comment, color, tags}; - reads stdin
+ - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, comment, color, tags}; - reads stdin
  - `--dry-run` -- Locate every highlight and report what it would cover, without writing
 
 ## `layout`
