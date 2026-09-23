@@ -435,6 +435,7 @@ def cmd_annotations(args):
             attachment_key=args.attachment_key, page=args.page,
             text=getattr(args, "text", None),
             rect=_parse_rect(getattr(args, "rect", None)),
+            note=_parse_rect(getattr(args, "note", None), size=2, flag="--note"),
             comment=getattr(args, "comment", None),
             color=_resolve_color(args.color),
             tags=_split_csv(getattr(args, "tags", None)), ctx=ctx,
@@ -514,11 +515,12 @@ def _annotations_batch(args, annotations, ctx) -> None:
     groups: dict[str, list[int]] = {}
     for position, spec in enumerate(specs):
         groups.setdefault(spec.get("attachment_key") or args.attachment_key, []).append(position)
-        if spec.get("rect") is not None:
-            try:
-                spec["rect"] = _parse_rect(spec["rect"])
-            except _cli_json.CliError:
-                pass  # left as given; the tool reports the malformed rect for this spec
+        for key, size in (("rect", 4), ("note", 2)):
+            if spec.get(key) is not None:
+                try:
+                    spec[key] = _parse_rect(spec[key], size=size, flag=key)
+                except _cli_json.CliError:
+                    pass  # left as given; the tool reports the malformed value for this spec
         if spec.get("color"):
             spec["color"] = _resolve_color(spec["color"])
 
@@ -1038,8 +1040,8 @@ def _resolve_color(value):
     return ZOTERO_COLORS.get(str(value).strip().lower(), value)
 
 
-def _parse_rect(value):
-    """`x,y,w,h` or `[x, y, w, h]` -> list of four floats.
+def _parse_rect(value, size=4, flag="--rect"):
+    """`x,y,w,h` or `[x, y, w, h]` -> list of four floats (`x,y` -> two for --note).
 
     Raises CliError on anything else, so a typo is reported as a usage error
     before a PDF is fetched.
@@ -1054,9 +1056,10 @@ def _parse_rect(value):
         rect = [float(p) for p in parts]
     except (TypeError, ValueError):
         rect = []
-    if len(rect) != 4:
+    if len(rect) != size:
+        shape = "four numbers x,y,width,height" if size == 4 else "two numbers x,y"
         raise _cli_json.CliError(
-            f"--rect must be four numbers x,y,width,height (normalized 0-1), got {value!r}",
+            f"{flag} must be {shape} (normalized 0-1), got {value!r}",
             code="bad_rect",
         )
     return rect
@@ -1377,12 +1380,15 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--remove-tags", help="Comma-separated tags to remove")
     ad = a_sub.add_parser("delete", help="Delete an annotation")
     ad.add_argument("annotation_key")
-    ac = a_sub.add_parser("create", help="Create a highlight (--text) or an area box (--rect)")
+    ac = a_sub.add_parser("create", help="Create a highlight (--text), an area box (--rect) "
+                                         "or a sticky note (--note)")
     ac.add_argument("--attachment-key", required=True)
     ac.add_argument("--page", required=True, type=int)
     ac.add_argument("--text", help="Exact text to highlight")
     ac.add_argument("--rect", help="Area box x,y,width,height, normalized 0-1; "
                                    "`zotero-cli layout` prints boxes for figures and tables")
+    ac.add_argument("--note", help="Sticky note centered at x,y, normalized 0-1; "
+                                   "its text is --comment")
     ac.add_argument("--comment")
     ac.add_argument("--color", default="#ffd400",
                     help=f"Hex, or a Zotero color name: {', '.join(ZOTERO_COLORS)}")
@@ -1391,7 +1397,7 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument("--attachment-key", required=True,
                     help="Attachment for lines that do not name their own")
     ab.add_argument("--file", default="-",
-                    help="JSON Lines (or a JSON array) of {page, text|rect, comment, color, tags}; "
+                    help="JSON Lines (or a JSON array) of {page, text|rect|note, comment, color, tags}; "
                          "- reads stdin")
     ab.add_argument("--dry-run", action="store_true",
                     help="Locate every highlight and report what it would cover, without writing")

@@ -1429,9 +1429,11 @@ def delete_note(
     name="zotero_create_annotation",
     description=(
         "Create an annotation on a PDF attachment (EPUB: highlights only). "
-        "Exactly one of two modes per call: text= HIGHLIGHTS selectable "
+        "Exactly one mode per call: text= HIGHLIGHTS selectable "
         "text; rect= draws an AREA box over a figure, table, or other "
-        "non-text region (PDF only). Passing both or neither is an error. "
+        "non-text region (PDF only); note=[x, y] places a STICKY NOTE "
+        "centered on that normalized point, its text in comment (PDF "
+        "only). Passing several or none is an error. "
         "attachment_key: the PDF/EPUB attachment key, NOT the parent item "
         "key (zotero_get_item_children finds it). "
         "page: 1-indexed page (EPUB: 1-indexed chapter). "
@@ -1457,10 +1459,11 @@ def create_annotation(
     comment: str | None = None,
     color: str = "#ffd400",
     tags: list[str] | str | None = None,
+    note: list[float] | str | None = None,
     *,
     ctx: Context
 ) -> str:
-    """Dispatch to the highlight or area annotation implementation.
+    """Dispatch to the highlight, area or sticky-note implementation.
 
     Area mode is selected by the presence of ``rect``. Geometry is mutually
     exclusive with ``text``: Zotero stores highlights and image annotations
@@ -1468,6 +1471,22 @@ def create_annotation(
     call carrying both is ambiguous rather than additive.
     """
     has_text = text is not None and text != ""
+
+    if note is not None:
+        if rect is not None or has_text:
+            return "Error: pass only one of text (highlight), rect (area box) or note (sticky note)."
+        spec = {"page": page, "note": note, "comment": comment, "color": color, "tags": tags}
+        (result,) = create_annotations(attachment_key, [spec], ctx=ctx)
+        if not result["ok"]:
+            return result["error"]
+        return "\n".join([
+            "Successfully created sticky note",
+            "",
+            f"**Annotation Key:** {result['annotation_key']}",
+            f"**Page:** {result['page_label']}",
+            f"**Color:** {color}",
+            f"**Comment:** {comment}",
+        ])
 
     if rect is not None and has_text:
         return (
@@ -1639,7 +1658,8 @@ def create_annotations(
     """Create highlights and area boxes on one attachment, written together.
 
     Each spec is ``{"page", "text"}`` for a highlight or
-    ``{"page", "rect": [x, y, width, height]}`` for an area box, with optional
+    ``{"page", "rect": [x, y, width, height]}`` for an area box, or
+    ``{"page", "note": [x, y], "comment"}`` for a sticky note, with optional
     ``comment``, ``color`` and ``tags``.
 
     Work that belongs to the attachment happens once: reading its metadata,
@@ -1659,7 +1679,7 @@ def create_annotations(
     """
     results = [
         {"index": index, "page": spec.get("page"), "ok": False,
-         "type": "area" if spec.get("rect") is not None else "highlight"}
+         "type": _spec_type(spec)}
         for index, spec in enumerate(specs, start=1)
     ]
 
@@ -1770,6 +1790,7 @@ def _annotation_payload(
     from zotero_mcp.pdf_utils import (
         build_annotation_position,
         build_area_position_data,
+        build_note_position_data,
         find_text_position,
         get_page_label,
         text_in_rects,
@@ -1779,9 +1800,9 @@ def _annotation_payload(
     if isinstance(page, bool) or not isinstance(page, int) or page < 1:
         return None, {"error": "Error: page must be a positive integer"}
 
-    text, rect = spec.get("text"), spec.get("rect")
-    if rect is not None and text:
-        return None, {"error": "Error: pass either text (highlight) or rect (area box), not both"}
+    text, rect, note = spec.get("text"), spec.get("rect"), spec.get("note")
+    if sum(v is not None and v != "" for v in (text, rect, note)) > 1:
+        return None, {"error": "Error: pass only one of text (highlight), rect (area box) or note (sticky note)"}
 
     tags = spec.get("tags")
     tag_list = _helpers._normalize_str_list_input(tags, "tags") if tags is not None else []
@@ -1829,8 +1850,31 @@ def _annotation_payload(
         )
         return payload, {"page_label": label}
 
+    if note is not None:
+        if file_type != "pdf":
+            return None, {"error": "Error: sticky notes need a PDF attachment"}
+        point = _helpers._normalize_float_list_input(note, 2, "note")
+        if point is None or not all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in point):
+            return None, {"error": (
+                "Error: note must be a point [x, y], normalized to 0-1 from the "
+                f"page's top-left. Got: {note!r}"
+            )}
+        if not spec.get("comment"):
+            return None, {"error": "Error: a sticky note needs a comment (its text)"}
+        position = build_note_position_data(source, page, *point)
+        if "error" in position:
+            return None, {"error": f"Error: {position['error']}"}
+        label = label_of(page)
+        payload = annotation(
+            "note",
+            annotationSortIndex=position["sort_index"],
+            annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
+            annotationPageLabel=label,
+        )
+        return payload, {"page_label": label}
+
     if not text:
-        return None, {"error": "Error: nothing to annotate. Pass text (highlight) or rect (area box)."}
+        return None, {"error": "Error: nothing to annotate. Pass text (highlight), rect (area box) or note (sticky note)."}
 
     if file_type == "epub":
         from zotero_mcp.epub_utils import find_text_in_epub
@@ -1870,6 +1914,14 @@ def _annotation_payload(
     if with_text:
         details["matched_text"] = text_in_rects(source, position["pageIndex"], position["rects"])
     return payload, details
+
+
+def _spec_type(spec: dict) -> str:
+    if spec.get("rect") is not None:
+        return "area"
+    if spec.get("note") is not None:
+        return "note"
+    return "highlight"
 
 
 def _rect_error(x, y, width, height) -> str | None:

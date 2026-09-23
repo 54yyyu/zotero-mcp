@@ -115,3 +115,54 @@ def test_build_area_position_offset_mediabox():
         assert rect[2] == pytest.approx(0.4 * crop_w + 41.9, abs=0.01)
         assert rect[3] == pytest.approx(840.2 - 0.2 * crop_h, abs=0.01)
         assert rect[1] == pytest.approx(840.2 - 0.6 * crop_h, abs=0.01)
+
+
+def test_build_area_position_rotated_page():
+    """On a /Rotate 90 page the rect is normalized to the page as displayed,
+    so a box drawn around some text must land where that text's highlight
+    lands, not at the same fractions of the unrotated page."""
+    import fitz
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path, (text_rect,) = _make_pdf(tmpdir)
+        doc = fitz.open(path)
+        doc[0].set_rotation(90)
+        doc.saveIncr()
+        page = doc[0]
+        shown = page.search_for(SENTENCE)[0] * page.rotation_matrix
+        w, h = page.rect.width, page.rect.height
+        doc.close()
+
+        result = build_area_position_data(
+            path, 1, shown.x0 / w, shown.y0 / h, shown.width / w, shown.height / h
+        )
+
+        assert "error" not in result
+        _assert_rects_close(result["rects"], [text_rect])
+
+
+def test_build_note_position_rotated_page():
+    """A note placed at a displayed point on a /Rotate 90 page is centered on
+    that point in the stored (unrotated) PDF space."""
+    import fitz
+
+    from zotero_mcp.pdf_utils import build_note_position_data
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path, (text_rect,) = _make_pdf(tmpdir)
+        doc = fitz.open(path)
+        doc[0].set_rotation(90)
+        doc.saveIncr()
+        page = doc[0]
+        shown = page.search_for(SENTENCE)[0] * page.rotation_matrix
+        w, h = page.rect.width, page.rect.height
+        doc.close()
+
+        result = build_note_position_data(path, 1, shown.x0 / w, shown.y0 / h)
+
+        (rect,) = result["rects"]
+        assert rect[2] - rect[0] == pytest.approx(22) and rect[3] - rect[1] == pytest.approx(22)
+        centre = ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+        corners = [(text_rect[0], text_rect[1]), (text_rect[0], text_rect[3]),
+                   (text_rect[2], text_rect[1]), (text_rect[2], text_rect[3])]
+        assert any(centre == pytest.approx(c, abs=0.5) for c in corners)
