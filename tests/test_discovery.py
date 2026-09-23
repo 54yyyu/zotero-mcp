@@ -186,12 +186,62 @@ def test_citations_fall_back_to_cites_filter_without_api_url(monkeypatch):
     assert "Citer High" in out and "Citer Low" in out
     assert out.index("Citer High") < out.index("Citer Low")
 
-    # Nothing to name the work with: no query is invented, and the answer stays empty.
+    assert all(p.get("sort") == "cited_by_count:desc" for _u, p in seen)
+
+    # Nothing to name the work with: no query is invented, and it is not reported as zero.
     seen.clear()
     source.pop("id")
     out = discovery.find_related_papers("10.1234/x", direction="citations", ctx=DummyContext())
     assert not seen
-    assert "0 citations" in out
+    assert "citations lookup FAILED" in out
+
+
+def _refs_source(n):
+    return {
+        "id": "https://openalex.org/W1",
+        "title": "Source Paper",
+        "referenced_works": [f"https://openalex.org/W{100 + i}" for i in range(n)],
+    }
+
+
+def test_dead_references_are_backfilled_up_to_limit(monkeypatch):
+    """A referenced work missing from OpenAlex must not shrink the answer (#458 item 3)."""
+    _make_zot(monkeypatch)
+    source = _refs_source(5)
+    calls = []
+
+    def handler(url, params):
+        if url.endswith("/works/https://doi.org/10.1234/x"):
+            return FakeResponse(200, source)
+        ids = params["filter"].removeprefix("openalex_id:").split("|")
+        calls.append(ids)
+        live = [i for i in ids if i != "W101"]  # W101 is dead
+        return FakeResponse(200, {"results": [
+            _work(f"https://openalex.org/{i}", f"Ref {i}", 2010, f"10.1/{i}", 1, ["A"]) for i in live
+        ]})
+
+    _patch_requests(monkeypatch, handler)
+    out = discovery.find_related_papers("10.1234/x", direction="references", limit=3,
+                                        ctx=DummyContext())
+    assert "Found 3 references" in out
+    assert out.index("Ref W100") < out.index("Ref W102") < out.index("Ref W103")
+    assert calls == [["W100", "W101", "W102"], ["W103", "W104"]]
+
+
+def test_failed_lookups_are_not_reported_as_empty(monkeypatch):
+    """A failed OpenAlex request must be distinguishable from zero results (#458 item 4)."""
+    _make_zot(monkeypatch)
+    source = _refs_source(2)
+
+    def handler(url, params):
+        if url.endswith("/works/https://doi.org/10.1234/x"):
+            return FakeResponse(200, source)
+        return FakeResponse(503, {})
+
+    _patch_requests(monkeypatch, handler)
+    out = discovery.find_related_papers("10.1234/x", direction="both", ctx=DummyContext())
+    assert "0 references (INCOMPLETE: an OpenAlex lookup failed)" in out
+    assert "citations lookup FAILED (this is not a zero)" in out
 
 
 # --- find_related_papers: library membership flagging ---------------------
