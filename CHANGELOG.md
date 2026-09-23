@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-23
+
 ### Added
 
 - **Sticky-note annotations.** `zotero_create_annotation` takes `note=[x, y]`, `zotero-cli annotations create` takes `--note x,y`, and `annotations batch` plans accept `{"page", "note", "comment"}`. The note is a 22 pt square centered on that normalized point, the same geometry Zotero's reader uses, and its text is the comment.
@@ -15,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`zotero_find_related_papers` no longer under-reports silently** (#458, items 3 to 5). A referenced work missing from OpenAlex is now replaced by the next one, so asking for 20 references returns 20; a failed OpenAlex request is reported as incomplete or failed instead of as zero results; and citations are sorted most-cited first by OpenAlex itself, so the most-cited works are no longer missed.
 - **Area boxes land in the right place on rotated pages.** On a page with `/Rotate` (e.g. a landscape figure page), the normalized rect was scaled to the displayed page but stored as if the page were unrotated, so the box was drawn somewhere else. Rects are now derotated first; highlights were not affected.
+- **`update-db` progress lines no longer garble the terminal on CJK titles.** Lines are clipped by display width, so wide characters count as two columns, and cleared to the real terminal width (#585, thanks @jianxing-chen).
 - **A failed search request hidden behind a page of notes is reported as an error.** In `titleCreatorYear` mode, a first page made up entirely of child notes followed by a failed next page came back as "No items found": the failure check ran before the note filter emptied the results (reported on #578).
 
 ## [0.13.0] - 2026-09-21
