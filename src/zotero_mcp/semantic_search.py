@@ -16,6 +16,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,37 @@ def _report(message: str) -> None:
         sys.stderr.flush()
     except Exception:
         pass
+
+
+def _term_width(default: int = 80) -> int:
+    """Terminal width in columns, or ``default`` when stderr isn't a tty."""
+    try:
+        return os.get_terminal_size().columns
+    except (OSError, ValueError):
+        return default
+
+
+def _display_cols(text: str) -> int:
+    """Rendered width of ``text``: East-Asian wide characters count as 2."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _clip_to_width(line: str, max_cols: int) -> str:
+    """Truncate a single-line progress string to ``max_cols`` display columns.
+
+    A len()-based slice lets a CJK title wrap the terminal (57 chars ≈ 114
+    columns), and once a ``\r`` line wraps, every later redraw repaints only
+    the last physical line — the residue above it is the garbled progress
+    output users see.
+    """
+    if max_cols <= 0:
+        return ""
+    cols = 0
+    for idx, ch in enumerate(line):
+        cols += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if cols > max_cols:
+            return line[:idx]
+    return line
 
 
 def _realtime_slice_size(max_parallel: int) -> int:
@@ -1650,9 +1682,10 @@ class ZoteroSemanticSearch:
                             if remaining > 0 and display and len(display) > remaining:
                                 display = display[:remaining] + "..."
                             line = f"{prefix}{display or 'working...'}"
-                            if len(line) > max_len:
-                                line = line[:max_len]
-                            sys.stderr.write(f"\r{line}{' ' * max(0, max_len - len(line))}")
+                            # Clip by display columns so a CJK title can't
+                            # wrap the terminal and garble later \r redraws.
+                            line = _clip_to_width(line, max_len)
+                            sys.stderr.write(f"\r{line}{' ' * max(0, max_len - _display_cols(line))}")
                             sys.stderr.flush()
                         except Exception:
                             pass
@@ -1791,7 +1824,7 @@ class ZoteroSemanticSearch:
 
                     # Clear progress line and show extraction summary
                     try:
-                        sys.stderr.write(f"\r{' ' * 120}\r")  # Clear progress line
+                        sys.stderr.write(f"\r{' ' * _term_width(120)}\r")  # Clear progress line
                         parts = [f"  Extraction complete: {extracted} items to index"]
                         if skipped_existing > 0:
                             parts.append(f"{skipped_existing} already up to date")
@@ -2860,11 +2893,13 @@ class ZoteroSemanticSearch:
                 if title and len(title) > 60:
                     title = title[:57] + "..."
                 pct = int(seen_items / total * 100) if total else 0
-                try:
-                    sys.stderr.write(f"\r  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}")
-                    sys.stderr.flush()
-                except Exception:
-                    pass
+                # -1 keeps the cursor from wrapping onto the next line. Clip
+                # by display columns, not characters: a CJK title must not be
+                # allowed to wrap, or every later \r redraw garbles the screen.
+                max_cols = _term_width() - 1
+                line = f"  [{pct:3d}%] {seen_items}/{total} — {title or 'processing...'}"
+                line = _clip_to_width(line, max_cols)
+                _report(f"\r{line}{' ' * max(0, max_cols - _display_cols(line))}")
 
             # Overlap preparation, embedding and commits when the embedding
             # function is configured for concurrent requests. Off unless
@@ -2916,7 +2951,7 @@ class ZoteroSemanticSearch:
             # Retry any documents that failed during the main run
             if _failed_docs:
                 try:
-                    sys.stderr.write(f"\r{' ' * 120}\r")
+                    sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
                     sys.stderr.write(f"\n  Retrying {len(_failed_docs)} failed items...\n")
                 except Exception:
                     pass
@@ -2948,7 +2983,7 @@ class ZoteroSemanticSearch:
 
             # Clear the progress line and show summary
             try:
-                sys.stderr.write(f"\r{' ' * 120}\r")  # Clear line
+                sys.stderr.write(f"\r{' ' * _term_width(120)}\r")  # Clear line
                 summary = (
                     f"  Done: {stats['processed_items']} indexed, "
                     f"{stats['skipped_items']} skipped, "

@@ -229,3 +229,28 @@ class TestBatchUpdateTagsFilter:
         assert "tag" in sig.parameters, (
             "batch_update_tags must have a 'tag' parameter for tag-based filtering"
         )
+
+
+class TestProgressWidthClipping:
+    """update-db \\r progress lines must never wrap the terminal.
+
+    A len()-based slice lets a CJK title occupy twice the columns it has
+    characters; once the line wraps, every later \\r redraw repaints only the
+    last physical line and the screen above turns to residue.
+    """
+
+    def test_cjk_title_cannot_wrap_the_progress_line(self):
+        from zotero_mcp.semantic_search import _clip_to_width, _display_cols
+
+        # A 57-char CJK title + prefix ≈ 130 columns on an 80-col terminal.
+        line = "  [100%] 3/3 — " + "深" * 57 + "..."
+        assert _display_cols(line) > 120
+        clipped = _clip_to_width(line, 79)
+        assert _display_cols(clipped) <= 79
+
+    def test_ascii_clips_like_a_plain_slice(self):
+        from zotero_mcp.semantic_search import _clip_to_width
+
+        assert _clip_to_width("abcdef", 3) == "abc"
+        assert _clip_to_width("abc", 10) == "abc"
+        assert _clip_to_width("anything", 0) == ""
