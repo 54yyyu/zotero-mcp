@@ -12,6 +12,7 @@ import socket
 import tempfile
 import threading
 from ipaddress import ip_address
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -146,10 +147,19 @@ def apply_library_override(zot, override: dict | None) -> None:
     """
     if not override:
         return
-    zot.library_id = override.get("library_id", zot.library_id)
+    library_id = override.get("library_id", zot.library_id)
+    library_type = zot.library_type
     raw_type = override.get("library_type")
     if raw_type:
-        zot.library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
+        library_type = raw_type if raw_type.endswith("s") else raw_type + "s"
+    # "0" is the local API's name for the personal library; the web API only
+    # knows it by userID. A user-scoped web client already holds that id, so
+    # keep it rather than write to /users/0 (hybrid mode after switching to
+    # the personal library).
+    if library_type == "users" and str(library_id) == "0" and zot.library_type == "users":
+        library_id = zot.library_id
+    zot.library_id = library_id
+    zot.library_type = library_type
 
 
 def write_unavailable_message(op_description: str = "write operations") -> str:
@@ -796,6 +806,52 @@ def _parse_library_id_param(value: int | str | None) -> int | None:
                 f"Invalid library_id: {value!r}. Use an integer groupID, 0, or 'user'."
             ) from None
     return int(value)
+
+
+def _sanitize_item_for_creation(
+    source_data: dict,
+    target_write_zot: Any,
+    copy_tags: bool = True,
+) -> dict:
+    """Prepare a source item's data dict for creation in the destination library.
+
+    Strips read-only and library-specific fields (key, version, collections,
+    relations, dateAdded, dateModified, deleted, parentItem), fetches the
+    template for the itemType, and copies over valid metadata fields.
+    """
+    from zotero_mcp import schema as _schema
+
+    item_type = source_data.get("itemType")
+    if not item_type:
+        raise ValueError("Source item is missing 'itemType'.")
+
+    template = item_template_for(target_write_zot, item_type)
+    payload = copy.deepcopy(template)
+
+    excluded_keys = {
+        "key", "version", "dateAdded", "dateModified",
+        "collections", "relations", "deleted", "parentItem"
+    }
+    for k in excluded_keys:
+        payload.pop(k, None)
+
+    valid_fields = _schema.valid_fields(item_type)
+    for key, value in source_data.items():
+        if key in excluded_keys:
+            continue
+        if key in payload or (valid_fields and key in valid_fields):
+            payload[key] = copy.deepcopy(value)
+
+    if "creators" in source_data and "creators" in payload:
+        payload["creators"] = copy.deepcopy(source_data["creators"])
+
+    if copy_tags and "tags" in source_data:
+        payload["tags"] = copy.deepcopy(source_data["tags"])
+    elif not copy_tags:
+        payload["tags"] = []
+
+    return payload
+
 
 
 def _normalize_float_list_input(value, length, field_name="value"):

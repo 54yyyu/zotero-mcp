@@ -126,6 +126,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
     batch_update,
     batch_update_extra,
     batch_update_tags,
+    copy_items_between_libraries,
     create_collection,
     delete_collection,
     update_collection,

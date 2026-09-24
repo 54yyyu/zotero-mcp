@@ -92,6 +92,15 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "zotero_switch_library",
         }
     ),
+    # Cross-library copying. Separate from `libraries` so that the (much more
+    # common) enumerate/switch workflow doesn't tax every request's context
+    # window with a tool most users - even most multi-library users - never
+    # call.
+    "libraries-copy": frozenset(
+        {
+            "zotero_copy_items_between_libraries",
+        }
+    ),
     # Semantic-index administration. The same operations are available from
     # the CLI (``zotero-mcp update-db``), so agent access is a convenience.
     "search-admin": frozenset(
