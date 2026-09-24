@@ -22,7 +22,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><img src="img/logo.svg" alt="" width="28" height="28">Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.0</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.1</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="installation.html">Install &amp; setup</a>
@@ -42,7 +42,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <a class="news reveal" href="#whats-new"><b>0.13.0</b>FastMCP 4, and tool messages that arrive</a>
+        <a class="news reveal" href="#whats-new"><b>0.13.1</b>Sticky notes, and related papers that add up</a>
         <h1 class="reveal">Chat with your <span class="hl c-yellow">research library</span> in Claude, ChatGPT, and more.</h1>
         <div class="reveal">
           <p class="lede">Zotero MCP connects your Zotero library to AI assistants. Search it, read it, annotate it, and add to it, from the desktop app or the web API.</p>
@@ -105,6 +105,15 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.13.1<small>Sep 2026</small></div>
+          <div>
+            <h3>Sticky notes, and related papers that <span class="hl c-yellow">add up</span></h3>
+            <p>Annotations can now be sticky notes. <code>zotero_create_annotation</code> takes <code>note=[x, y]</code>, <code>zotero-cli annotations create</code> takes <code>--note x,y</code>, and batch plans accept <code>{"page", "note", "comment"}</code>. The note is a 22&nbsp;pt square centered on that point, the same geometry Zotero&rsquo;s reader uses, and its text is the comment.</p>
+            <p><code>zotero_find_related_papers</code> no longer comes up short without saying so. References that OpenAlex no longer resolves are back-filled, so asking for 20 returns 20, a failed lookup is reported instead of shown as zero, and citing papers are sorted most-cited first. Area boxes land in the right place on rotated pages, <code>update-db</code> progress lines no longer garble the terminal on CJK titles, and a failed search hidden behind a page of notes is reported as an error.</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.13.0<small>Sep 2026</small></div>
           <div>
             <h3>FastMCP 4, and tool messages that <span class="hl c-yellow">arrive</span></h3>
@@ -285,6 +294,7 @@
           <ul>
             <li>Read, create, edit, and delete highlights</li>
             <li>Area annotations placed on detected figures and tables</li>
+            <li>Sticky notes pinned to a point on the page</li>
             <li>Create, update, and search notes</li>
             <li>A per-paper summary of your highlights and notes</li>
           </ul>
@@ -342,7 +352,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.13.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.13.1 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
