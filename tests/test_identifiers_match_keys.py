@@ -58,6 +58,43 @@ def test_normalize_title_for_matching(raw, expected):
 @pytest.mark.parametrize(
     "raw,expected",
     [
+        # The "a" of a compound term is not an article: stripping it would
+        # fold these to "b testing" and match them with "B Testing".
+        ("A/B testing", "a b testing"),
+        ("A-B testing", "a b testing"),
+        ("B Testing", "b testing"),
+        # A real article is dropped, whatever follows it.
+        ("An Introduction to Mediation", "introduction to mediation"),
+        ("The correction for attenuation", "correction for attenuation"),
+        ("A Right to Strike?", "right to strike"),
+        ("The R book", "r book"),
+        ("The M-form Society", "m form society"),
+        ("A 2 × 2 taxonomy", "2 2 taxonomy"),
+        ("“The Firm”", "firm"),
+        ("<i>The</i> Firm", "firm"),
+        ("The Élan of Firms", "elan of firms"),
+        # Only a leading article, and only one.
+        ("Theory of the Firm", "theory of the firm"),
+        ("The The", "the"),
+    ],
+)
+def test_leading_article_dropped_only_when_whitespace_follows(raw, expected):
+    assert normalize_title_for_matching(raw) == expected
+
+
+@pytest.mark.parametrize("ch", [chr(i) for i in range(128)])
+def test_ascii_fast_path_folds_every_ascii_character_like_the_unicode_path(ch):
+    """ASCII titles skip the per-character category loop; the key must not
+    depend on which path produced it."""
+    from zotero_mcp.identifiers import _fold_ascii, _fold_unicode
+
+    s = f"x{ch}y"
+    assert _fold_ascii(s) == _fold_unicode(s)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
         ("0-306-40615-2", {"9780306406157"}),
         ("0306406153", set()),  # deliberately bad checksum
     ],
@@ -81,25 +118,8 @@ def test_arxiv_identity(raw, expected):
 # ---------------------------------------------------------------------------
 # metadata_match_keys: one identity set regardless of item shape (T1.4)
 #
-# The plan's worked example is ``ZoteroItem(doi="10.1/x", title="A B", ...)``
-# expected to yield ``{("doi", "10.1/x"), ("title", "a b"), ...}``. Both
-# literals are unreachable through the primitives this task builds on top
-# of, and those primitives are out of this task's scope (already pinned
-# above, by T1.2/T1.3):
-#
-# * ``doi_match_key`` requires a 4-9 digit registrant code (``DOI_RE``);
-#   "10.1/x" has one digit, so ``doi_match_key("10.1/x")`` is ``None`` --
-#   see ``test_doi_match_key`` above, which already pins the boundary via
-#   "10.1000/ABC".
-# * ``normalize_title_for_matching`` strips a single leading English
-#   article; "A B" case-folds to "a b" and then loses the "a" to that rule,
-#   yielding "b" -- see ``test_normalize_title_for_matching`` above, which
-#   already pins the same rule via "The self attention...".
-#
-# The tests below substitute a DOI and title that clear both rules
-# ("10.1000/x", "Foo Bar") so they exercise the same three-shape parity
-# the plan asks for, without being unsatisfiable by code this task does
-# not own.
+# ``doi_match_key`` requires a 4-9 digit registrant code (``DOI_RE``), so
+# the fixtures use "10.1000/x" rather than a shorter placeholder.
 _DOI = "10.1000/x"
 _TITLE = "Foo Bar"
 _TITLE_KEY = "foo bar"
@@ -133,6 +153,26 @@ def test_metadata_match_keys_reader_item():
         extra=_EXTRA,
     )
     assert metadata_match_keys(reader_item) == _EXPECTED
+
+
+@pytest.mark.parametrize(
+    "kinds,expected",
+    [
+        (None, _EXPECTED),
+        (("doi", "title"), {("doi", _DOI), ("title", _TITLE_KEY)}),
+        ({"title"}, {("title", _TITLE_KEY)}),
+        (("arxiv",), {("arxiv", "2101.00001")}),
+        ((), frozenset()),
+    ],
+)
+def test_metadata_match_keys_kinds_limits_what_is_computed(kinds, expected):
+    item = {"data": {"DOI": _DOI, "title": _TITLE, "extra": _EXTRA}}
+    assert metadata_match_keys(item, kinds=kinds) == expected
+
+
+def test_metadata_match_keys_rejects_an_unknown_kind():
+    with pytest.raises(ValueError, match="issn"):
+        metadata_match_keys({"title": _TITLE}, kinds=("title", "issn"))
 
 
 def test_metadata_match_keys_no_identifying_fields_is_empty_not_a_crash():

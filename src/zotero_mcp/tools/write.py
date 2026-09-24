@@ -3462,9 +3462,8 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
         if data.get("itemType") in ("attachment", "note", "annotation"):
             continue
 
-        for kind, value in metadata_match_keys(item):
-            if kind in wanted:
-                groups.setdefault(f"{kind}:{value}", []).append(item)
+        for kind, value in metadata_match_keys(item, kinds=wanted):
+            groups.setdefault(f"{kind}:{value}", []).append(item)
 
     return {k: v for k, v in sorted(groups.items()) if len(v) >= 2}, None
 

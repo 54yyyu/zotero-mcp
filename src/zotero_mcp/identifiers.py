@@ -246,9 +246,34 @@ def arxiv_identity_from_extra(extra):
 #: strip tags before entities are unescaped, so an escaped tag like
 #: ``&lt;i&gt;`` survives the strip and is unescaped into literal ``<i>``
 #: text, not removed.
-_TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
 
-_LEADING_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+")
+#: A leading English article, with any punctuation before it. Matched
+#: before punctuation is mapped to spaces, so it needs real whitespace after
+#: the article: the "A" of "A/B testing" or "A-B testing" is not one, and
+#: stripping it would match those titles with "B Testing".
+_LEADING_ARTICLE_RE = re.compile(r"^\W*(?:a|an|the)\s+", re.IGNORECASE)
+
+#: The ASCII characters ``_fold_unicode`` keeps: letters, digits, and the
+#: control characters that are neither punctuation nor whitespace.
+_ASCII_FOLD_RE = re.compile(r"[^0-9A-Za-z\x00-\x08\x0e-\x1b\x7f]+")
+
+
+def _fold_unicode(s):
+    """Drop combining marks; map punctuation, symbols and separators to a space."""
+    out = []
+    for ch in unicodedata.normalize("NFKD", s):
+        cat = unicodedata.category(ch)
+        if cat[0] == "M":
+            continue
+        out.append(" " if cat[0] in "PSZ" or ch.isspace() else ch)
+    return "".join(out)
+
+
+def _fold_ascii(s):
+    """``_fold_unicode`` for an ASCII string, in one regex pass instead of a
+    per-character category lookup."""
+    return _ASCII_FOLD_RE.sub(" ", s)
 
 
 def normalize_title_for_matching(title):
@@ -256,20 +281,16 @@ def normalize_title_for_matching(title):
 
     Strips markup tags, unescapes HTML entities, decomposes accents
     (NFKD) and drops combining marks, maps punctuation/symbol/separator
-    characters to spaces, collapses whitespace, case-folds, and drops a
-    single leading English article. Returns ``""`` for falsy input.
+    characters to spaces, collapses whitespace and case-folds, as Zotero's
+    ``duplicates.js`` ``normalizeString`` does. Unlike Zotero, it also drops
+    a leading English article that whitespace separates from the rest. Returns ``""`` for falsy input.
     """
     if not title:
         return ""
-    s = unicodedata.normalize("NFKD", html.unescape(_TITLE_TAG_RE.sub(" ", str(title))))
-    out = []
-    for ch in s:
-        cat = unicodedata.category(ch)
-        if cat[0] == "M":
-            continue
-        out.append(" " if cat[0] in "PSZ" or ch.isspace() else ch)
-    s = " ".join("".join(out).casefold().split())
-    return _LEADING_ARTICLE_RE.sub("", s)
+    s = html.unescape(TITLE_TAG_RE.sub(" ", str(title)))
+    s = _LEADING_ARTICLE_RE.sub("", s, count=1)
+    s = _fold_ascii(s) if s.isascii() else _fold_unicode(s)
+    return " ".join(s.casefold().split())
 
 
 def _fields_of(item_like) -> dict:
@@ -294,19 +315,28 @@ def _fields_of(item_like) -> dict:
     return fields
 
 
-def metadata_match_keys(item_like) -> frozenset[tuple[str, str]]:
+MATCH_KEY_KINDS = frozenset({"doi", "arxiv", "isbn", "title"})
+
+
+def metadata_match_keys(item_like, kinds=None) -> frozenset[tuple[str, str]]:
     """Every (kind, value) this item could match under. Kinds: doi, arxiv, isbn, title.
-    Which kinds decide is the caller's policy."""
+    Which kinds decide is the caller's policy; pass ``kinds`` to compute only those,
+    since a full-library scan should not pay for keys it throws away."""
+    wanted = MATCH_KEY_KINDS if kinds is None else frozenset(kinds)
+    if unknown := wanted - MATCH_KEY_KINDS:
+        raise ValueError(f"unknown match-key kinds: {sorted(unknown)}")
     f = _fields_of(item_like)
     keys: set[tuple[str, str]] = set()
-    if d := doi_match_key(f.get("DOI")):
+    if "doi" in wanted and (d := doi_match_key(f.get("DOI"))):
         keys.add(("doi", d))
-    for field in ("url", "archiveID", "DOI"):
-        if a := arxiv_identity(f.get(field)):
+    if "arxiv" in wanted:
+        for field in ("url", "archiveID", "DOI"):
+            if a := arxiv_identity(f.get(field)):
+                keys.add(("arxiv", a))
+        if a := arxiv_identity_from_extra(f.get("extra")):
             keys.add(("arxiv", a))
-    if a := arxiv_identity_from_extra(f.get("extra")):
-        keys.add(("arxiv", a))
-    keys.update(("isbn", i) for i in isbn_match_keys(f.get("ISBN")))
-    if t := normalize_title_for_matching(f.get("title")):
+    if "isbn" in wanted:
+        keys.update(("isbn", i) for i in isbn_match_keys(f.get("ISBN")))
+    if "title" in wanted and (t := normalize_title_for_matching(f.get("title"))):
         keys.add(("title", t))
     return frozenset(keys)

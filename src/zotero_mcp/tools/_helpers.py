@@ -33,11 +33,8 @@ from pyzotero.errors import (
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
-from zotero_mcp.identifiers import (  # noqa: F401 — re-exported for existing callers/tests
-    _TITLE_TAG_RE,
-    _isbn10_checksum_valid,
-    _isbn10_to_isbn13,
-    _isbn13_checksum_valid,
+from zotero_mcp.identifiers import (
+    TITLE_TAG_RE,
     arxiv_identity,
     doi_match_key,
     isbn_match_keys,
@@ -1236,7 +1233,7 @@ def _title_search_query(title):
     # Strip tags before resolving entities: an escaped '&lt;i&gt;' is
     # literal text in a title and must survive, which it would not if
     # unescaping ran first and handed a real tag to the tag stripper.
-    cleaned = _html.unescape(_TITLE_TAG_RE.sub(" ", str(title)))
+    cleaned = _html.unescape(TITLE_TAG_RE.sub(" ", str(title)))
     return " ".join(cleaned.split()) or None
 
 

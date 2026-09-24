@@ -1520,7 +1520,7 @@ class ZoteroSemanticSearch:
                 # rule the duplicate detector uses, so the two agree on what
                 # counts as the same work.
                 def _work_keys(it):
-                    return {k for k in metadata_match_keys(it) if k[0] in ("doi", "title")}
+                    return metadata_match_keys(it, kinds=("doi", "title"))
 
                 key_to_best = {}
                 for it in local_items:
