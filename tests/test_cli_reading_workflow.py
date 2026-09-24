@@ -64,6 +64,9 @@ class TestFailureReporting:
         "Failed to create annotation: {}",
         "Could not find text on page 9",
         "Cannot write: read-only",
+        "Group 'missing' not found. Available groups: 123",
+        "Feed with libraryID 'missing' not found. Available feeds: 10",
+        "Personal library id '99' is not addressable in local mode.",
         "\n**Error:** something",
     ])
     def test_failure_prose_is_recognised(self, text):
