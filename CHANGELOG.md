@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Architecture
+
+- **[docs/architecture.md](docs/architecture.md) states the target package layout and the naming, test-layout and import-cost rules** the package is being reorganised towards, alongside the scaffolding that reorganisation needs: `_shim.forwarder` for leaving a lazy deprecation forwarder at a moved module's old path, `tests/test_module_layout.py` to catch internal code still reaching for one, a suite-wide gate that turns `MovedModuleWarning` into an error so that a *lazy* import of an old path — which no static scan can see — fails the test that reaches it (armed from `tests/conftest.py`, since the interpreter's `-W` flag cannot survive that file's `sys.modules` purge; `ZOTERO_MCP_ALLOW_SHIM_PATHS=1` turns it off), HOME isolation in `tests/conftest.py` so a running `zotero-mcp` cannot hold `update.lock` against the suite, and a shared `FIXTURES_DIR`. No module has moved: the tree is still flat and the document's shim table is empty.
+
 ### Fixed
 
 - **Duplicate detection agrees with itself** (#496). Duplicate grouping, the auto-merge DOI-conflict guard, the pre-add existence check and the semantic index's preprint filter now take their keys from `zotero_mcp.identifiers`, so DOIs match in canonical form (`10.1000/ABC`, `https://doi.org/10.1000/abc`) and titles fold the way Zotero's own duplicate finder folds them. A DOI field holding a placeholder such as `article` no longer groups every item that carries it, and re-adding a paper whose stored DOI differs only in case no longer creates a second copy.

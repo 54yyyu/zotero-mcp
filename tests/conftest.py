@@ -1,7 +1,10 @@
 """Shared test fixtures for Zotero MCP tests."""
 
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,67 @@ if _SRC.is_dir():
     sys.path.insert(0, str(_SRC))
     for _name in [n for n in sys.modules if n == "zotero_mcp" or n.startswith("zotero_mcp.")]:
         del sys.modules[_name]
+
+# Reaching a module's old (shimmed) path from inside this repo is an error for the whole suite.
+# `MovedModuleWarning` is the only signal a *lazy*, function-level import of an old path leaves
+# behind -- it resolves through the shim and nothing else fails -- and pyproject's
+# `filterwarnings = ["ignore::DeprecationWarning"]` hides it, so it has to be turned into an error
+# deliberately. Set ZOTERO_MCP_ALLOW_SHIM_PATHS=1 to get the plain warning back (e.g. when running
+# a third-party test that legitimately imports a deprecated path).
+#
+# It is armed here, from pytest's own filter list, rather than with
+# `-W error::zotero_mcp._shim.MovedModuleWarning`: the interpreter resolves a `-W` category at
+# startup, by importing `zotero_mcp._shim` and binding *that* class object into `warnings.filters`.
+# The purge above then throws that module away, and the class the re-imported module defines is a
+# different object, which the startup filter can no longer match -- the flag looks armed, matches
+# nothing, and the `ignore::DeprecationWarning` above swallows the warning. See
+# `tests/test_shim.py::test_the_suites_own_configuration_turns_a_shim_access_into_an_error`.
+SHIM_PATH_GATE_ENV_VAR = "ZOTERO_MCP_ALLOW_SHIM_PATHS"
+SHIM_PATHS_ARE_ERRORS = os.environ.get(SHIM_PATH_GATE_ENV_VAR, "").strip() != "1"
+
+
+def pytest_configure(config):
+    """Arm the shim-path gate (see above) for collection and every test.
+
+    Appending to the `filterwarnings` ini list puts this filter *after*
+    pyproject's `ignore::DeprecationWarning`, and pytest applies that list in
+    reverse-precedence order, so the error wins. This line is also parsed for
+    the first time *here*, after the purge above, which is what makes its
+    category the live class.
+
+    A `-W` argument that names the category does **not** turn the gate off,
+    not even when passed to pytest rather than the interpreter:
+    `pytest -W ignore::zotero_mcp._shim.MovedModuleWarning` leaves the access
+    raising. Pytest resolves a command-line filter before the purge above runs
+    and caches the parsed tuple (`parse_warning_filter` is `lru_cache`d, so it
+    never re-resolves), leaving its category the class the purge discarded --
+    measured as a different `id()` from the class the suite warns with, the
+    same identity trap the interpreter flag falls into. Only a filter that
+    does not name the class -- `-W ignore`, `-W ignore::DeprecationWarning` --
+    overrides the gate, and that is loud rather than silent: the regression
+    test named above fails as soon as one is in play. The supported off-switch
+    is ZOTERO_MCP_ALLOW_SHIM_PATHS=1.
+    """
+    if SHIM_PATHS_ARE_ERRORS:
+        config.addinivalue_line("filterwarnings", "error::zotero_mcp._shim.MovedModuleWarning")
+
+
+# config.py:19 and client.py:408 compute Path.home()/.config/zotero-mcp/... at import time, before any
+# fixture runs, so HOME is isolated here. Prevents update_database() flocking the developer's real
+# update.lock (a running zotero-mcp holds it; 51 tests failed that way on 2026-09-20) and tests reading
+# the real config.json. Live tests need the real home and are gated by the same variable.
+LIVE_TESTS_ENV_VAR = "ZOTERO_MCP_LIVE_TESTS"
+if os.environ.get(LIVE_TESTS_ENV_VAR, "").strip() != "1":
+    _TEST_HOME = tempfile.mkdtemp(prefix="zotero-mcp-tests-home-")
+    os.environ["HOME"] = _TEST_HOME
+    os.environ["USERPROFILE"] = _TEST_HOME   # Path.home() on Windows
+    atexit.register(shutil.rmtree, _TEST_HOME, True)
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"   # tests live at several depths; never derive from their own __file__
+
+@pytest.fixture
+def fixtures_dir() -> Path:
+    return FIXTURES_DIR
 
 # Marker for tests that use tmp_path and fail on GitHub Actions
 skip_on_ci = pytest.mark.skipif(
