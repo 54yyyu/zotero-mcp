@@ -186,6 +186,22 @@ class TestCreateForwarding:
         assert kwargs["tags"] == ["a", "b"]
 
 
+class TestNoteForwarding:
+    def test_note_point_reaches_the_tool(self, capsys):
+        annotations = MagicMock()
+        annotations.create_annotation.return_value = "Successfully created sticky note"
+        args = _args(subcommand="create", attachment_key="A1", page=1, text=None, rect=None,
+                     note="0.1,0.2", comment="c", color="orange", tags=None)
+        env, tools = _with_tools(annotations)
+        with env, tools:
+            cli_standalone.cmd_annotations(args)
+        assert annotations.create_annotation.call_args.kwargs["note"] == [0.1, 0.2]
+
+    def test_note_must_be_two_numbers(self):
+        with pytest.raises(CliError, match="--note must be two numbers"):
+            _parse_rect("0.1,0.2,0.3", size=2, flag="--note")
+
+
 class TestSpecReader:
     def test_json_lines(self, tmp_path):
         path = tmp_path / "specs.jsonl"
@@ -482,6 +498,34 @@ class TestCreateAnnotations:
         ], ctx=MagicMock())
         assert results[0]["ok"] and not results[1]["ok"]
         assert "bad color" in results[1]["error"]
+
+    def test_sticky_note_is_a_22pt_square_centered_on_the_point(self, writer):
+        """Zotero's reader draws a note as a 22 pt square (PDF_NOTE_DIMENSIONS)."""
+        annotations, fake, _fetches = writer
+        results = annotations.create_annotations("ATT00001", [
+            {"page": 1, "note": [0.5, 0.25], "comment": "Read this first", "color": "#f19837"},
+        ], ctx=MagicMock())
+
+        assert results[0]["ok"] and results[0]["type"] == "note"
+        (payload,) = fake.create_items.call_args.args[0]
+        assert [k for k in payload if k.startswith("annotation")][0] == "annotationType"
+        assert payload["annotationType"] == "note"
+        assert payload["annotationComment"] == "Read this first"
+        position = json.loads(payload["annotationPosition"])
+        assert position["pageIndex"] == 0
+        # Point (306, 198) from the top of a 612 x 792 page is y = 594 in PDF space.
+        assert position["rects"] == [[295.0, 583.0, 317.0, 605.0]]
+
+    @pytest.mark.parametrize("spec, error", [
+        ({"page": 1, "note": [0.5, 0.5]}, "needs a comment"),
+        ({"page": 1, "note": [0.5, 1.5], "comment": "c"}, "normalized to 0-1"),
+        ({"page": 1, "note": [0.5], "comment": "c"}, "normalized to 0-1"),
+        ({"page": 1, "note": [0.5, 0.5], "rect": [0.1, 0.1, 0.1, 0.1], "comment": "c"}, "only one of"),
+    ])
+    def test_bad_note_specs_fail_alone(self, writer, spec, error):
+        annotations, _fake, _fetches = writer
+        (result,) = annotations.create_annotations("ATT00001", [spec], ctx=MagicMock())
+        assert not result["ok"] and error in result["error"]
 
     def test_no_write_access_fails_every_spec_with_the_reason(self, prose_pdf, monkeypatch):
         from zotero_mcp.tools import annotations

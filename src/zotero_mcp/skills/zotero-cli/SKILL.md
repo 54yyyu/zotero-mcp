@@ -151,7 +151,9 @@ To annotate, plan everything, check it, then write it in one run:
    equation boxes with their captions and a paste-ready `rect_arg`.
 2. Write one JSON object per line: `{"page": 4, "text": "exact words",
    "comment": "...", "color": "yellow"}` for a highlight, or
-   `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box. Copy
+   `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box, or
+   `{"page": 1, "note": "x,y", "comment": "..."}` for a sticky note
+   centered on a point (its text is the comment). Copy
    highlight text exactly from `read`; it is searched for on that page and
    two pages either side.
 3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run`

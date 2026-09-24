@@ -872,16 +872,63 @@ def build_area_position_data(
 
         target_index = page_num - 1
         page = doc[target_index]
-        bbox = [(
-            round(x * page.rect.width, 4),
-            round(y * page.rect.height, 4),
-            round((x + width) * page.rect.width, 4),
-            round((y + height) * page.rect.height, 4),
-        )]
-        rects, min_y, min_x = _convert_rects_to_zotero(bbox, page)
+        rects, min_y, min_x = _shown_rect_to_zotero(page, x, y, x + width, y + height)
 
         return {
             "pageIndex": target_index,
             "rects": rects,
             "sort_index": _build_sort_index(target_index, min_y, min_x),
         }
+
+
+#: Side of a sticky note in PDF points; Zotero's reader uses the same size.
+NOTE_SIZE = 22
+
+
+def build_note_position_data(pdf, page_num: int, x: float, y: float) -> dict:
+    """
+    Build Zotero position data for a sticky note centered on a page point.
+
+    Args:
+        pdf: Path to the PDF file, or an open PyMuPDF document
+        page_num: 1-indexed page number
+        x, y: Normalized point (0..1) on the page as displayed
+
+    Returns:
+        On success: {"pageIndex": int, "rects": [[x1, y1, x2, y2]], "sort_index": str}
+        On failure: {"error": str}
+    """
+    with open_pdf(pdf) as doc:
+        error = page_range_error(doc, page_num)
+        if error:
+            return {"error": error}
+
+        target_index = page_num - 1
+        page = doc[target_index]
+        ((px, py, _, _),), _, _ = _shown_rect_to_zotero(page, x, y, x, y)
+        half = NOTE_SIZE / 2
+        rect = [round(v, 4) for v in (px - half, py - half, px + half, py + half)]
+
+        return {
+            "pageIndex": target_index,
+            "rects": [rect],
+            "sort_index": _build_sort_index(target_index, max(rect[1], 0), max(rect[0], 0)),
+        }
+
+
+def _shown_rect_to_zotero(page, x0: float, y0: float, x1: float, y1: float):
+    """Normalized corners on the page as displayed -> _convert_rects_to_zotero output.
+
+    The page as displayed is page.rect, which reflects /Rotate, but
+    _convert_rects_to_zotero expects unrotated page space, the frame PyMuPDF
+    text coordinates use.
+    """
+    x0, x1 = x0 * page.rect.width, x1 * page.rect.width
+    y0, y1 = y0 * page.rect.height, y1 * page.rect.height
+    if getattr(page, "rotation", 0):
+        a, b, c, d, e, f = page.derotation_matrix
+        xs = (a * x0 + c * y0 + e, a * x1 + c * y1 + e)
+        ys = (b * x0 + d * y0 + f, b * x1 + d * y1 + f)
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    bbox = [tuple(round(v, 4) for v in (x0, y0, x1, y1))]
+    return _convert_rects_to_zotero(bbox, page)
