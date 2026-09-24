@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`zotero_copy_items_between_libraries`** copies items — with child notes, tags, and attachments — from one Zotero library to another (personal to group, between groups, or from an RSS feed into a user/group library), without modifying the source (#560). PDF/image annotations are not copied. It's in its own opt-in `libraries-copy` toolset (`ZOTERO_MCP_TOOLSETS=libraries-copy`), separate from the default-on `libraries` group, since most multi-library users never call it. `if_exists` defaults to `'skip'`, so a retried or repeated call doesn't double the items; pass `'duplicate'` explicitly to always create a new copy.
+- **`zotero_copy_items_between_libraries`** copies items — with child notes, tags, and attachments — from one Zotero library to another (personal to group, between groups, or from an RSS feed into a user/group library), without modifying the source (#560). PDF/image annotations are not copied. It's in its own opt-in `libraries-copy` toolset (`ZOTERO_MCP_TOOLSETS=libraries-copy`), separate from the default-on `libraries` group, since most multi-library users never call it. `if_exists` defaults to `'skip'`, so a retried or repeated call doesn't double the items; pass `'duplicate'` explicitly to always create a new copy. Matching is by DOI, ISBN or URL, so an item with none of them is always copied. Items and child items in the trash are not copied.
+
+### Fixed
+
+- **Hybrid mode writes to the personal library reach the right account.** After `zotero_switch_library` to the personal library, whose local id is `0`, web-API writes went to `/users/0` instead of your userID.
 
 ## [0.13.1] - 2026-09-23
 

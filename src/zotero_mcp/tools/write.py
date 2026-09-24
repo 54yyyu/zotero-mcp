@@ -5976,9 +5976,119 @@ def add_item(
     return add_by_csl_json(csl_json=source, attach_mode=attach_mode, **common)
 
 
+
 # ---------------------------------------------------------------------------
 # zotero_copy_items_between_libraries — cross-library copying
 # ---------------------------------------------------------------------------
+
+
+class _CopyLibrary(NamedTuple):
+    """One side of a copy."""
+
+    library_id: str
+    """The id the active-library override takes: "0" or the userID for the
+    personal library (local vs web mode), the groupID, or the feed's libraryID."""
+    library_type: str
+    """"user", "group" or "feed"."""
+    scope: int
+    """0 for the personal library, the groupID, or the feed's libraryID."""
+
+
+def _copy_library(library_id, library_type) -> _CopyLibrary:
+    """Resolve and validate one side of a copy; ``None`` means the active library.
+
+    Raises ValueError with a user-facing message.
+    """
+    from zotero_mcp.tools.retrieval import validate_library_switch
+
+    if library_id is None:
+        active = _client.get_active_library()
+        if active.get("library_type") == "feed":
+            library_id, library_type = active["library_id"], "feed"
+        else:
+            library_id = _client.get_active_group_id()
+
+    if library_type == "feed":
+        try:
+            scope = int(str(library_id).strip())
+        except ValueError:
+            raise ValueError(
+                f"Invalid feed library_id: {library_id!r}. Use the libraryID "
+                "that zotero_list_feeds reports."
+            ) from None
+        override_id = str(scope)
+    else:
+        scope = _helpers._parse_library_id_param(library_id)
+        if scope is None:
+            raise ValueError("library_id is empty. Use '0'/'user' or a groupID.")
+        if library_type is None:
+            library_type = "user" if scope == 0 else "group"
+        if library_type == "user":
+            # The personal library is always your own: local mode addresses it
+            # as "0", the web API by the userID the credentials belong to.
+            scope = 0
+            override_id = "0" if _utils.is_local_mode() else os.getenv("ZOTERO_LIBRARY_ID", "0")
+        else:
+            override_id = str(scope)
+
+    error = validate_library_switch(override_id, library_type)
+    if error:
+        raise ValueError(error)
+    return _CopyLibrary(override_id, library_type, scope)
+
+
+def _read_copy_source(src: _CopyLibrary, keys: list[str]) -> tuple[dict, dict]:
+    """(items by key, children by parent key) from the source library.
+
+    A feed has no group_id, so the library backend cannot scope to one; feeds
+    are read straight from zotero.sqlite by libraryID instead.
+    """
+    if src.library_type == "feed":
+        reader = _library._sqlite_reader()
+        if reader is None:
+            raise ValueError(
+                "Reading an RSS feed needs the local Zotero database "
+                "(ZOTERO_LOCAL=true)."
+            )
+        return (
+            reader.get_full_items(keys, library_id=src.scope),
+            reader.get_children_of(keys, library_id=src.scope),
+        )
+    with _client.temporary_active_library(src.library_id, src.library_type):
+        backend = _library.get_library_backend()
+        return backend.get_items(keys), backend.get_children(keys)
+
+
+def _source_file_clients(src: _CopyLibrary) -> tuple:
+    """(local_client, web_client) scoped to the source library, for
+    ``download_attachment_file``. Built here because the downloads run while
+    the target library is active."""
+    if src.library_type == "feed":
+        return None, None  # feed files exist only on this computer
+    with _client.temporary_active_library(src.library_id, src.library_type):
+        if not _utils.is_local_mode():
+            return None, _client.get_zotero_client()
+        web_client = _client.get_web_zotero_client()
+        if web_client is not None:
+            _helpers.apply_library_override(web_client, _client.get_active_library())
+        return _client.get_zotero_client(), web_client
+
+
+def _first_isbn(raw) -> str | None:
+    """First valid ISBN in a Zotero ISBN field, which may hold several."""
+    for token in re.split(r"[,;\s]+", raw or ""):
+        if isbn := _helpers._normalize_isbn(token):
+            return isbn
+    return None
+
+
+def _copy_result(key, title=None, *, error=None, status="copied", target_key=None,
+                 notes=0, attachments=0, copied=(), failed=()) -> dict:
+    return {
+        "source_key": key, "title": title, "error": error, "status": status,
+        "target_key": target_key, "notes_copied": notes,
+        "attachments_copied": attachments, "copied": list(copied), "failed": list(failed),
+    }
 
 
 @mcp.tool(
@@ -5986,19 +6096,21 @@ def add_item(
     description=(
         "Copy item(s) from one Zotero library to another (e.g. personal to "
         "group, between groups, or from an RSS feed to a user/group library). "
-        "Clones metadata, child notes, and attachments without modifying source "
-        "items; PDF annotations are not copied. Hallucination-safe. "
+        "Clones metadata, tags, child notes and attachments without modifying "
+        "the source. PDF/image annotations, collections and related-item links "
+        "are not copied, and neither is anything in the trash. "
         "item_keys: single key or list/comma-separated keys to copy. "
-        "target_library_id: destination library ('0'/'user' or groupID). "
-        "Defaults to active library if source_library_id is provided. "
-        "source_library_id: source library. Defaults to active library if "
+        "target_library_id / source_library_id: '0'/'user' for the personal "
+        "library, a groupID, or (source only, with source_library_type='feed') "
+        "a feed's libraryID; either defaults to the active library. "
         "copy_notes: copy child notes (default: True). "
-        "copy_attachments: copy attached files and linked URLs (default: True); "
-        "PDF/image annotations on those attachments are not carried over. "
+        "copy_attachments: copy attached files and linked URLs (default: True). "
         "copy_tags: preserve tags (default: True). "
         "if_exists: 'skip' (default; leaves a matching item untouched), "
         "'file' (add missing tags to the existing item), 'duplicate' (always creates a new item - "
         "pick this explicitly, since a retried or repeated call would otherwise double the items). "
+        "Matching is by DOI, ISBN or URL, so an item with none of them is always "
+        "copied, even with 'skip'. "
         "Example: zotero_copy_items_between_libraries(item_keys='ABCD2345', target_library_id='6069773')."
     ),
 )
@@ -6025,328 +6137,216 @@ def copy_items_between_libraries(
         return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
 
     try:
-        source_lib_id, source_lib_type, source_group_id = _helpers._resolve_library_spec(
-            source_library_id, source_library_type
-        )
+        src = _copy_library(source_library_id, source_library_type)
     except ValueError as e:
         return f"Error resolving source library: {e}"
-
     try:
-        target_lib_id, target_lib_type, target_group_id = _helpers._resolve_library_spec(
-            target_library_id, target_library_type
-        )
+        dst = _copy_library(target_library_id, target_library_type)
     except ValueError as e:
         return f"Error resolving target library: {e}"
 
-    if (source_lib_id, source_lib_type) == (target_lib_id, target_lib_type):
+    if dst.library_type == "feed":
+        return "Error: Cannot copy items to an RSS feed library (feeds are read-only)."
+    if (src.library_type, src.scope) == (dst.library_type, dst.scope):
         return (
             f"Error: Source and target libraries are the same "
-            f"({source_lib_id}, type={source_lib_type}). "
+            f"({src.library_id}, type={src.library_type}). "
             "Specify target_library_id (or source_library_id) to copy between different libraries."
         )
 
-    if target_lib_type == "feed":
-        return "Error: Cannot copy items to an RSS feed library (feeds are read-only)."
-
     ctx.info(
-        f"Copying {len(keys)} item(s) from library {source_lib_id} ({source_lib_type}) "
-        f"to {target_lib_id} ({target_lib_type})"
+        f"Copying {len(keys)} item(s) from library {src.library_id} ({src.library_type}) "
+        f"to {dst.library_id} ({dst.library_type})"
     )
 
-    # 1. Read source items and their children
-    source_items_by_key: dict[str, dict] = {}
-    source_children_by_parent: dict[str, list[dict]] = {}
+    try:
+        source_items, source_children = _read_copy_source(src, keys)
+    except Exception as exc:
+        return f"Error reading from source library {src.library_id}: {_helpers.format_zotero_error(exc)}"
 
-    sqlite_read = False
-    if _utils.is_local_mode() and _library.configured_backend() == "sqlite":
-        reader = _library._sqlite_reader()
-        if reader is not None:
-            try:
-                if source_lib_type == "feed":
-                    feed_id = int(source_lib_id)
-                    source_items_by_key = reader.get_full_items(keys, library_id=feed_id)
-                    source_children_by_parent = reader.get_children_of(keys, library_id=feed_id)
-                else:
-                    source_items_by_key = reader.get_full_items(keys, group_id=source_group_id)
-                    source_children_by_parent = reader.get_children_of(keys, group_id=source_group_id)
-                sqlite_read = True
-            except Exception as exc:
-                ctx.warning(f"SQLite source read failed ({exc}), falling back to API")
+    file_clients = _source_file_clients(src) if copy_attachments else (None, None)
 
-    if not sqlite_read:
-        with _client.temporary_active_library(source_lib_id, source_lib_type):
-            try:
-                source_zot = _client.get_zotero_client()
-                source_backend = _library.ApiBackend(source_zot)
-                source_items_by_key = source_backend.get_items(keys)
-                source_children_by_parent = source_backend.get_children(keys)
-            except Exception as exc:
-                return f"Error reading from source library {source_lib_id}: {_helpers.format_zotero_error(exc)}"
-
-    # 2. Write to target library
-    with _client.temporary_active_library(target_lib_id, target_lib_type):
+    with _client.temporary_active_library(dst.library_id, dst.library_type):
         try:
-            _read_zot, target_write_zot = _helpers._get_write_client(ctx)
+            _read_zot, target_zot = _helpers._get_write_client(ctx)
         except ValueError as e:
             return str(e)
 
-        results: list[dict] = []
-        for key in keys:
-            source_item = source_items_by_key.get(key)
-            data = source_item.get("data", {}) if source_item else {}
-            item_type = data.get("itemType")
-            if not source_item or not item_type:
-                results.append({
-                    "ok": False,
-                    "source_key": key,
-                    "title": None,
-                    "target_key": None,
-                    "error": f"Item '{key}' not found in source library {source_lib_id}.",
-                    "notes_copied": 0,
-                    "attachments_copied": 0,
-                })
-                continue
+        results = [
+            _copy_one(
+                key, source_items.get(key), source_children.get(key, []),
+                target_zot, src, file_clients,
+                copy_notes=copy_notes, copy_attachments=copy_attachments,
+                copy_tags=copy_tags, if_exists=if_exists, ctx=ctx,
+            )
+            for key in keys
+        ]
 
-            title = data.get("title") or _utils.item_display_title(source_item) or f"Item {key}"
+    return _format_copy_results(src, dst, results, copy_attachments=copy_attachments)
 
-            if item_type in ("attachment", "note", "annotation"):
-                results.append({
-                    "ok": False,
-                    "source_key": key,
-                    "title": title,
-                    "target_key": None,
-                    "error": (
-                        f"Item '{key}' has itemType '{item_type}'. Top-level copying of "
-                        "attachments, notes, or annotations is not supported; copy the parent item instead."
-                    ),
-                    "notes_copied": 0,
-                    "attachments_copied": 0,
-                })
-                continue
 
-            # Deduplication check
-            if if_exists != "duplicate":
-                existing = None
-                doi = _helpers._normalize_doi(data.get("DOI") or data.get("doi"))
-                if doi:
-                    candidates = _helpers.find_existing_items(target_write_zot, doi=doi, title=data.get("title"), ctx=ctx)
-                    if candidates:
-                        existing = candidates[0]
-                if not existing and data.get("ISBN"):
-                    candidates = _helpers.find_existing_items(target_write_zot, isbn=data.get("ISBN"), title=data.get("title"), ctx=ctx)
-                    if candidates:
-                        existing = candidates[0]
-                if not existing and data.get("url"):
-                    candidates = _helpers.find_existing_items(target_write_zot, url=data.get("url"), title=data.get("title"), ctx=ctx)
-                    if candidates:
-                        existing = candidates[0]
+def _copy_one(key, source_item, children, target_zot, src, file_clients, *,
+              copy_notes, copy_attachments, copy_tags, if_exists, ctx) -> dict:
+    """Copy one item and its children into the (already active) target library."""
+    data = (source_item or {}).get("data", {})
+    item_type = data.get("itemType")
+    if not item_type:
+        return _copy_result(key, error=f"Item '{key}' not found in source library {src.library_id}.")
 
-                if existing:
-                    existing_key = existing.get("key") or existing.get("data", {}).get("key")
-                    if if_exists == "skip":
-                        results.append({
-                            "ok": True,
-                            "source_key": key,
-                            "title": title,
-                            "target_key": existing_key,
-                            "status": "skipped",
-                            "error": None,
-                            "notes_copied": 0,
-                            "attachments_copied": 0,
-                            "attachment_details": [],
-                        })
-                        continue
-                    elif if_exists == "file":
-                        if copy_tags and data.get("tags"):
-                            tags_to_add = [t["tag"] for t in data["tags"] if isinstance(t, dict) and "tag" in t]
-                            if tags_to_add:
-                                def _add_tags(it):
-                                    existing_tags = {x.get("tag") for x in it["data"].get("tags", [])}
-                                    it["data"].setdefault("tags", []).extend(
-                                        [{"tag": t} for t in tags_to_add if t not in existing_tags]
-                                    )
-                                _helpers._update_item_with_version_retry(
-                                    target_write_zot, existing_key, _add_tags, ctx=ctx
-                                )
-                        results.append({
-                            "ok": True,
-                            "source_key": key,
-                            "title": title,
-                            "target_key": existing_key,
-                            "status": "reused",
-                            "error": None,
-                            "notes_copied": 0,
-                            "attachments_copied": 0,
-                            "attachment_details": [],
-                        })
-                        continue
+    title = _utils.item_display_title(data) or f"Item {key}"
+    if data.get("deleted"):
+        return _copy_result(key, title, error=f"Item '{key}' is in the trash; restore it first to copy it.")
+    if item_type in ("attachment", "note", "annotation"):
+        return _copy_result(key, title, error=(
+            f"Item '{key}' has itemType '{item_type}'. Top-level copying of "
+            "attachments, notes, or annotations is not supported; copy the parent item instead."
+        ))
 
-            # Create new item in target library
-            try:
-                payload = _helpers._sanitize_item_for_creation(data, target_write_zot, copy_tags=copy_tags)
-                create_res = target_write_zot.create_items([payload])
-                if not (isinstance(create_res, dict) and create_res.get("success")):
-                    err_detail = create_res.get("failed", {}).get("0") if isinstance(create_res, dict) else str(create_res)
-                    results.append({
-                        "ok": False,
-                        "source_key": key,
-                        "title": title,
-                        "target_key": None,
-                        "error": f"Failed to create item in target library: {err_detail}",
-                        "notes_copied": 0,
-                        "attachments_copied": 0,
-                    })
-                    continue
+    if if_exists != "duplicate":
+        existing = None
+        for field, value in (
+            ("doi", _helpers._normalize_doi(data.get("DOI"))),
+            ("isbn", _first_isbn(data.get("ISBN"))),
+            ("url", data.get("url")),
+        ):
+            if value and (candidates := _helpers.find_existing_items(
+                target_zot, **{field: value}, title=data.get("title"), ctx=ctx
+            )):
+                existing = candidates[0]
+                break
+        if existing:
+            existing_key = existing.get("key") or existing.get("data", {}).get("key")
+            if if_exists == "skip":
+                return _copy_result(key, title, status="skipped", target_key=existing_key)
+            tags_to_add = [t["tag"] for t in data.get("tags", []) if copy_tags and "tag" in t]
+            if tags_to_add:
+                def _add_tags(it):
+                    have = {x.get("tag") for x in it["data"].get("tags", [])}
+                    it["data"].setdefault("tags", []).extend(
+                        {"tag": t} for t in tags_to_add if t not in have
+                    )
+                _helpers._update_item_with_version_retry(target_zot, existing_key, _add_tags, ctx=ctx)
+            return _copy_result(key, title, status="reused", target_key=existing_key)
 
-                target_item_key = next(iter(create_res["success"].values()))
-            except Exception as exc:
-                results.append({
-                    "ok": False,
-                    "source_key": key,
-                    "title": title,
-                    "target_key": None,
-                    "error": f"Error creating item: {_helpers.format_zotero_error(exc)}",
-                    "notes_copied": 0,
-                    "attachments_copied": 0,
-                })
-                continue
+    try:
+        payload = _helpers._sanitize_item_for_creation(data, target_zot, copy_tags=copy_tags)
+        create_res = target_zot.create_items([payload])
+    except Exception as exc:
+        return _copy_result(key, title, error=f"Error creating item: {_helpers.format_zotero_error(exc)}")
+    if not (isinstance(create_res, dict) and create_res.get("success")):
+        detail = create_res.get("failed", {}).get("0") if isinstance(create_res, dict) else create_res
+        return _copy_result(key, title, error=f"Failed to create item in target library: {detail}")
+    target_key = next(iter(create_res["success"].values()))
 
-            # Copy child notes
-            notes_copied = 0
-            children = source_children_by_parent.get(key, [])
-            if copy_notes:
-                for child in children:
-                    child_data = child.get("data", {})
-                    if child_data.get("itemType") == "note":
-                        note_payload = {
-                            "itemType": "note",
-                            "parentItem": target_item_key,
-                            "note": child_data.get("note", ""),
-                        }
-                        if copy_tags and child_data.get("tags"):
-                            note_payload["tags"] = copy.deepcopy(child_data["tags"])
-                        try:
-                            note_res = target_write_zot.create_items([note_payload])
-                            if isinstance(note_res, dict) and note_res.get("success"):
-                                notes_copied += 1
-                        except Exception as e:
-                            ctx.warning(f"Failed to copy child note for {key}: {e}")
-
-            # Copy child attachments
-            attachments_copied = 0
-            attachment_details = []
-            if copy_attachments:
-                for child in children:
-                    child_data = child.get("data", {})
-                    if child_data.get("itemType") == "attachment":
-                        link_mode = child_data.get("linkMode")
-                        att_title = child_data.get("title") or child_data.get("filename") or "Attachment"
-                        if link_mode == "linked_url":
-                            att_template = _helpers.item_template_for(target_write_zot, "attachment", "linked_url")
-                            att_template["url"] = child_data.get("url", "")
-                            att_template["title"] = att_title
-                            att_template["parentItem"] = target_item_key
-                            if copy_tags and child_data.get("tags"):
-                                att_template["tags"] = copy.deepcopy(child_data["tags"])
-                            try:
-                                att_res = target_write_zot.create_items([att_template])
-                                if isinstance(att_res, dict) and att_res.get("success"):
-                                    attachments_copied += 1
-                                    attachment_details.append(f"Linked URL: {att_title}")
-                            except Exception as e:
-                                ctx.warning(f"Failed to copy linked URL attachment for {key}: {e}")
-                        elif link_mode in ("imported_file", "imported_url"):
-                            child_key = child.get("key")
-                            local_path = None
-                            temp_dir_obj = None
-                            try:
-                                # 1. Try local storage on disk
-                                local_path = _library.attachment_path_for(child_key)
-                                if not (local_path and local_path.exists()):
-                                    # 2. Try download_attachment_file
-                                    temp_dir_obj = tempfile.TemporaryDirectory()
-                                    fn = child_data.get("filename") or f"{child_key}.pdf"
-                                    dl_res = _client.download_attachment_file(
-                                        child_key, temp_dir_obj.name, filename=fn
-                                    )
-                                    if dl_res and dl_res.path and dl_res.path.exists():
-                                        local_path = dl_res.path
-
-                                if local_path and local_path.exists():
-                                    display_name = child_data.get("filename") or os.path.basename(str(local_path))
-                                    ok, suffix, new_att_key = _helpers._attach_and_verify(
-                                        target_write_zot,
-                                        display_name,
-                                        str(local_path),
-                                        target_item_key,
-                                        ctx,
-                                        content_type=child_data.get("contentType"),
-                                    )
-                                    if ok:
-                                        attachments_copied += 1
-                                        attachment_details.append(f"File: {display_name}")
-                                    else:
-                                        attachment_details.append(f"File failed: {display_name} ({suffix})")
-                                else:
-                                    attachment_details.append(f"File could not be downloaded/resolved: {child_key}")
-                            except Exception as e:
-                                ctx.warning(f"Failed to copy file attachment {child_key}: {e}")
-                                attachment_details.append(f"File error ({child_key}): {e}")
-                            finally:
-                                if temp_dir_obj is not None:
-                                    try:
-                                        temp_dir_obj.cleanup()
-                                    except Exception:
-                                        pass
-
-            # PDF/image annotations are child items of the attachment
-            # (parentItem = attachment_key), so copying them would require
-            # mapping old attachment keys to new ones and translating
-            # coordinate geometry between the two copies of the file.
-            # Not implemented: annotations are not copied, and the tool
-            # description and result text both say so.
-
-            results.append({
-                "ok": True,
-                "source_key": key,
-                "title": title,
-                "target_key": target_item_key,
-                "status": "copied",
-                "error": None,
-                "notes_copied": notes_copied,
-                "attachments_copied": attachments_copied,
-                "attachment_details": attachment_details,
+    notes = attachments = 0
+    copied: list[str] = []
+    failed: list[str] = []
+    for child in children:
+        child_data = child.get("data", {})
+        child_type = child_data.get("itemType")
+        if child_data.get("deleted"):
+            continue
+        tags = copy.deepcopy(child_data.get("tags", [])) if copy_tags else []
+        if child_type == "note" and copy_notes:
+            ok, reason = _create_child(target_zot, {
+                "itemType": "note", "parentItem": target_key,
+                "note": child_data.get("note", ""), "tags": tags,
             })
+            if ok:
+                notes += 1
+            else:
+                failed.append(f"Note {child.get('key')}: {reason}")
+        elif child_type == "attachment" and copy_attachments:
+            name, reason = _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx)
+            if reason is None:
+                attachments += 1
+                copied.append(name)
+            else:
+                failed.append(f"{name}: {reason}")
 
-    output_lines = [
+    return _copy_result(key, title, target_key=target_key, notes=notes,
+                        attachments=attachments, copied=copied, failed=failed)
+
+
+def _create_child(target_zot, payload) -> tuple[bool, str | None]:
+    try:
+        res = target_zot.create_items([payload])
+    except Exception as exc:
+        return False, _helpers.format_zotero_error(exc)
+    if isinstance(res, dict) and res.get("success"):
+        return True, None
+    return False, str(res.get("failed", {}).get("0") if isinstance(res, dict) else res)
+
+
+def _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx) -> tuple[str, str | None]:
+    """Copy one child attachment. Returns (display name, failure reason or None)."""
+    child_key = child.get("key")
+    data = child.get("data", {})
+    link_mode = data.get("linkMode")
+    title = data.get("title") or data.get("filename") or "Attachment"
+
+    if link_mode == "linked_url":
+        template = _helpers.item_template_for(target_zot, "attachment", "linked_url")
+        template.update(url=data.get("url", ""), title=title, parentItem=target_key, tags=tags)
+        ok, reason = _create_child(target_zot, template)
+        return f"Linked URL: {title}", reason
+    if link_mode not in ("imported_file", "imported_url"):
+        # A linked file lives at a path on one computer; there is nothing to upload.
+        return f"{title}", f"{link_mode} attachments are not copied"
+
+    filename = data.get("filename") or f"{child_key}.pdf"
+    local_client, web_client = file_clients
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            download = _client.download_attachment_file(
+                child_key, tmp, filename,
+                local_client=local_client, web_client=web_client,
+                in_place=True,  # only read, to upload it
+            )
+            if download.path is None:
+                tried = "; ".join(download.errors) or "no source had the file"
+                return f"File: {filename}", f"could not fetch the file ({tried})"
+            ok, suffix, _new_key = _helpers._attach_and_verify(
+                target_zot, filename, str(download.path), target_key, ctx,
+                content_type=data.get("contentType"),
+            )
+    except Exception as exc:
+        return f"File: {filename}", _helpers.format_zotero_error(exc)
+    return f"File: {filename}{suffix if ok else ''}", None if ok else suffix
+
+
+def _format_copy_results(src, dst, results, *, copy_attachments) -> str:
+    lines = [
         "# zotero_copy_items_between_libraries",
         "",
-        f"- **Source library:** ID={source_lib_id} (type={source_lib_type})",
-        f"- **Target library:** ID={target_lib_id} (type={target_lib_type})",
+        f"- **Source library:** ID={src.library_id} (type={src.library_type})",
+        f"- **Target library:** ID={dst.library_id} (type={dst.library_type})",
         "",
     ]
+    labels = {"copied": "Copied", "skipped": "Skipped", "reused": "Reused"}
     for r in results:
-        if not r["ok"]:
-            output_lines.append(f"### ❌ Item `{r['source_key']}`")
-            if r.get("title"):
-                output_lines.append(f"- **Title:** {r['title']}")
-            output_lines.append(f"- **Error:** {r['error']}")
-            output_lines.append("")
+        if r["error"]:
+            lines.append(f"### ❌ Item `{r['source_key']}`")
+            if r["title"]:
+                lines.append(f"- **Title:** {r['title']}")
+            lines += [f"- **Error:** {r['error']}", ""]
             continue
+        lines += [
+            f"### ✅ {r['title']}",
+            f"- **Status:** {labels[r['status']]}",
+            f"- **Source Key:** `{r['source_key']}`",
+            f"- **Target Key:** `{r['target_key']}`",
+        ]
+        if r["status"] == "copied":
+            lines.append(f"- **Notes copied:** {r['notes_copied']}")
+            att = f"- **Attachments copied:** {r['attachments_copied']}"
+            if r["copied"]:
+                att += f" ({', '.join(r['copied'])})"
+            lines.append(att)
+            lines += [f"- **Not copied:** {f}" for f in r["failed"]]
+        lines.append("")
 
-        status_label = "Reused" if r.get("status") == "reused" else ("Skipped" if r.get("status") == "skipped" else "Copied")
-        output_lines.append(f"### ✅ {r['title']}")
-        output_lines.append(f"- **Status:** {status_label}")
-        output_lines.append(f"- **Source Key:** `{r['source_key']}`")
-        output_lines.append(f"- **Target Key:** `{r['target_key']}`")
-        if r.get("notes_copied", 0) > 0:
-            output_lines.append(f"- **Notes copied:** {r['notes_copied']}")
-        if r.get("attachments_copied", 0) > 0:
-            att_info = f" ({', '.join(r.get('attachment_details', []))})" if r.get("attachment_details") else ""
-            output_lines.append(f"- **Attachments copied:** {r['attachments_copied']}{att_info}")
-            output_lines.append("- **Annotations copied:** 0 (not supported; add them in the target library)")
-        output_lines.append("")
-
-    output_lines.append("_Note: To include copied items in semantic search, run `zotero_update_search_database`._")
-    return "\n".join(output_lines)
-
+    if copy_attachments:
+        lines.append("_PDF/image annotations are not copied; add them in the target library._")
+    lines.append("_Note: To include copied items in semantic search, run `zotero_update_search_database`._")
+    return "\n".join(lines)
