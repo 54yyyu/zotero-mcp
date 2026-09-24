@@ -565,3 +565,58 @@ def test_maybe_upload_no_key_returns_empty(tmp_path, monkeypatch):
 
     assert result == ""
     assert zot.deleted_payloads == []
+
+
+# ---------------------------------------------------------------------------
+# Group libraries never use WebDAV (#591)
+# ---------------------------------------------------------------------------
+
+
+@skip_on_ci
+def test_webdav_first_attach_skips_group_library(tmp_path, monkeypatch):
+    """A group upload returns None so the caller uploads to Zotero Storage;
+    no shell is created and nothing is PUT to the personal WebDAV."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=201)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _ShellZotero()
+    zot.library_type = "groups"
+    result = _helpers._webdav_first_attach(zot, "paper.pdf", _src_pdf(tmp_path), "PARENT0", _NoOpCtx())
+
+    assert result is None
+    assert zot.created_template is None
+    assert session.calls == []
+
+
+@skip_on_ci
+def test_maybe_upload_skips_group_library(tmp_path, monkeypatch):
+    """After a group upload to Zotero Storage, no second copy goes to the
+    personal WebDAV, so a failing PUT cannot delete the group attachment."""
+    from zotero_mcp.tools import _helpers
+
+    _setup_webdav_env(monkeypatch)
+    session = _RecordingPutSession(status_code=500)
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    zot = _AttachBothZotero()
+    zot.library_type = "groups"
+    result = _helpers._maybe_upload_to_webdav(_attach_result(), _src_pdf(tmp_path), _NoOpCtx(), write_zot=zot)
+
+    assert result == ""
+    assert session.calls == []
+    assert zot.deleted_payloads == []
+
+
+def test_is_group_client_reads_library_type():
+    from types import SimpleNamespace
+
+    from zotero_mcp.tools import _helpers
+
+    assert _helpers._is_group_client(SimpleNamespace(library_type="groups"))
+    assert _helpers._is_group_client(SimpleNamespace(library_type="group"))
+    assert not _helpers._is_group_client(SimpleNamespace(library_type="users"))
+    assert not _helpers._is_group_client(SimpleNamespace())
+    assert not _helpers._is_group_client(None)

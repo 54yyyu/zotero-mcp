@@ -1673,6 +1673,16 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
         return None
 
 
+def _is_group_client(write_zot) -> bool:
+    """True when *write_zot* writes to a group library.
+
+    Group libraries always store files in Zotero Storage; WebDAV can only be
+    configured for My Library. A configured WebDAV therefore never applies to
+    a group upload (#591).
+    """
+    return str(getattr(write_zot, "library_type", "") or "").startswith("group")
+
+
 def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     """Suffix to append to a user-facing 'file attached' message.
 
@@ -1696,7 +1706,7 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     """
     from zotero_mcp import webdav as _webdav
 
-    if getattr(write_zot, "local", False):
+    if getattr(write_zot, "local", False) or _is_group_client(write_zot):
         return ""
 
     if not _webdav.is_webdav_configured():
@@ -1782,7 +1792,7 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
     # which files them in its own storage and syncs them to WebDAV itself;
     # the workaround below is a web-API-only concern. See
     # ``_maybe_upload_to_webdav`` for the same reasoning on the other side.
-    if getattr(write_zot, "local", False):
+    if getattr(write_zot, "local", False) or _is_group_client(write_zot):
         return None
 
     if not _webdav.is_webdav_configured():
