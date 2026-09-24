@@ -112,13 +112,16 @@ def _reports_failure(text: str) -> bool:
 
     Tools that fail without raising lead with one of a few fixed phrasings
     ("Error: ...", "Error creating ...", "Failed to ...", "Could not ...",
-    "Cannot ...", or "Invalid ..."). Only the opening words count: a success
-    message may quote an error further down, and must stay a success.
+    "Cannot ...", "Invalid ...", "Group ...", "Feed ...", or
+    "Personal ..."). Only the opening words count: a success message may
+    quote an error further down, and must stay a success.
     """
     global _FAILURE_RE
     if _FAILURE_RE is None:
         import re
-        _FAILURE_RE = re.compile(r"^[\s#*>]*(Error\b|Failed to\b|Could not\b|Cannot\b|Invalid\b)")
+        _FAILURE_RE = re.compile(
+            r"^[\s#*>]*(Error\b|Failed to\b|Could not\b|Cannot\b|Invalid\b|Group\b|Feed\b|Personal\b)"
+        )
     return bool(_FAILURE_RE.match(text))
 
 
