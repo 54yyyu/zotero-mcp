@@ -1109,10 +1109,20 @@ class LocalZoteroReader:
         Returns the configured ``extensions.zotero.baseAttachmentPath`` or
         ``None`` if the preference is not set or cannot be read. The
         preference lives in the profile directory's prefs.js; a prefs.js
-        next to the database is also checked for unusual setups.
+        next to the database is also checked for unusual setups. If multiple
+        profiles exist, prefer the profile whose configured data directory
+        contains this reader's database.
         """
-        prefs_files = [Path(self.db_path).parent / "prefs.js"]
-        prefs_files.extend(_profile_prefs_files())
+        db_parent = Path(self.db_path).expanduser().parent
+        profile_prefs = _profile_prefs_files()
+        matching_profile_prefs = []
+        for prefs_path in profile_prefs:
+            data_dir = _read_string_pref(prefs_path, "extensions.zotero.dataDir")
+            if data_dir and Path(data_dir).expanduser().resolve() == db_parent.resolve():
+                matching_profile_prefs.append(prefs_path)
+
+        prefs_files = [db_parent / "prefs.js"]
+        prefs_files.extend(matching_profile_prefs or profile_prefs)
         for prefs_path in prefs_files:
             if not prefs_path.exists():
                 continue
