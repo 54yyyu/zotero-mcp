@@ -794,8 +794,8 @@ class TestAutoMergeGating:
 
     def _pair(self, monkeypatch):
         return _auto_fake(monkeypatch, [
-            _make_item("K1", "Same Paper", doi="10.1/x", date_added="2020-01-01"),
-            _make_item("K2", "Same Paper", doi="10.1/x", date_added="2024-01-01"),
+            _make_item("K1", "Same Paper", doi="10.1000/x", date_added="2020-01-01"),
+            _make_item("K2", "Same Paper", doi="10.1000/x", date_added="2024-01-01"),
         ])
 
     def test_plan_writes_nothing(self, monkeypatch, dummy_ctx):
@@ -846,7 +846,7 @@ class TestAutoMergeGating:
 
         # A third copy arrives before the confirmation lands.
         fake._items.append(
-            _make_item("K3", "Same Paper", doi="10.1/x", date_added="2025-01-01")
+            _make_item("K3", "Same Paper", doi="10.1000/x", date_added="2025-01-01")
         )
 
         result = server.merge_duplicates(
@@ -899,9 +899,9 @@ class TestAutoMergeKeeperHeuristic:
             [
                 # The one with children is NEWER and has no abstract, so only
                 # the child count can be what picks it.
-                _make_item("FEW", "Paper", doi="10.1/a", abstract="has one",
+                _make_item("FEW", "Paper", doi="10.1000/a", abstract="has one",
                            date_added="2019-01-01"),
-                _make_item("MANY", "Paper", doi="10.1/a", date_added="2025-01-01"),
+                _make_item("MANY", "Paper", doi="10.1000/a", date_added="2025-01-01"),
             ],
             children={"MANY": [_child("N1", "MANY"), _child("N2", "MANY")]},
         )
@@ -913,8 +913,8 @@ class TestAutoMergeKeeperHeuristic:
 
     def test_abstract_breaks_a_child_count_tie(self, monkeypatch, dummy_ctx):
         _auto_fake(monkeypatch, [
-            _make_item("NOABS", "Paper", doi="10.1/b", date_added="2019-01-01"),
-            _make_item("ABS", "Paper", doi="10.1/b", abstract="An abstract",
+            _make_item("NOABS", "Paper", doi="10.1000/b", date_added="2019-01-01"),
+            _make_item("ABS", "Paper", doi="10.1000/b", abstract="An abstract",
                        date_added="2025-01-01"),
         ])
 
@@ -925,9 +925,9 @@ class TestAutoMergeKeeperHeuristic:
 
     def test_oldest_date_added_breaks_the_remaining_tie(self, monkeypatch, dummy_ctx):
         _auto_fake(monkeypatch, [
-            _make_item("NEW", "Paper", doi="10.1/c", abstract="a",
+            _make_item("NEW", "Paper", doi="10.1000/c", abstract="a",
                        date_added="2025-06-01"),
-            _make_item("OLD", "Paper", doi="10.1/c", abstract="a",
+            _make_item("OLD", "Paper", doi="10.1000/c", abstract="a",
                        date_added="2018-02-03"),
         ])
 
@@ -939,8 +939,8 @@ class TestAutoMergeKeeperHeuristic:
     def test_choice_is_deterministic_when_nothing_discriminates(self, monkeypatch, dummy_ctx):
         """Identical members still have to produce a stable plan token."""
         _auto_fake(monkeypatch, [
-            _make_item("BBB", "Paper", doi="10.1/d"),
-            _make_item("AAA", "Paper", doi="10.1/d"),
+            _make_item("BBB", "Paper", doi="10.1000/d"),
+            _make_item("AAA", "Paper", doi="10.1000/d"),
         ])
 
         first = server.merge_duplicates(auto=True, ctx=dummy_ctx)
@@ -978,8 +978,8 @@ class TestAutoMergeSafety:
     def test_mixed_item_types_are_skipped(self, monkeypatch, dummy_ctx):
         """A book and a journal article sharing a DOI are not one record."""
         _auto_fake(monkeypatch, [
-            _make_item("M1", "Thing", doi="10.1/m", item_type="journalArticle"),
-            _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
+            _make_item("M1", "Thing", doi="10.1000/m", item_type="journalArticle"),
+            _make_item("M2", "Thing", doi="10.1000/m", item_type="book"),
         ])
 
         result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
@@ -992,8 +992,8 @@ class TestAutoMergeSafety:
         """The title false-positive class from #395: two different books each
         with a 'List of Contributors'."""
         _auto_fake(monkeypatch, [
-            _make_item("C1", "List of Contributors", doi="10.1/book-one"),
-            _make_item("C2", "List of Contributors", doi="10.1/book-two"),
+            _make_item("C1", "List of Contributors", doi="10.1000/book-one"),
+            _make_item("C2", "List of Contributors", doi="10.1000/book-two"),
         ])
 
         result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
@@ -1008,8 +1008,8 @@ class TestAutoMergeSafety:
         so merging it again would operate on items in the Trash.
         """
         _auto_fake(monkeypatch, [
-            _make_item("O1", "Same Title", doi="10.1/o"),
-            _make_item("O2", "Same Title", doi="10.1/o"),
+            _make_item("O1", "Same Title", doi="10.1000/o"),
+            _make_item("O2", "Same Title", doi="10.1000/o"),
         ])
 
         result = server.merge_duplicates(auto=True, method="both", ctx=dummy_ctx)
@@ -1019,8 +1019,8 @@ class TestAutoMergeSafety:
 
     def test_nothing_qualifies_means_nothing_to_confirm(self, monkeypatch, dummy_ctx):
         _auto_fake(monkeypatch, [
-            _make_item("M1", "Thing", doi="10.1/m", item_type="journalArticle"),
-            _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
+            _make_item("M1", "Thing", doi="10.1000/m", item_type="journalArticle"),
+            _make_item("M2", "Thing", doi="10.1000/m", item_type="book"),
         ])
 
         result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
@@ -1033,8 +1033,8 @@ class TestAutoMergeSafety:
         fake = _auto_fake(
             monkeypatch,
             [
-                _make_item("KEEP", "Paper", doi="10.1/p", date_added="2019-01-01"),
-                _make_item("GONE", "Paper", doi="10.1/p", date_added="2024-01-01"),
+                _make_item("KEEP", "Paper", doi="10.1000/p", date_added="2019-01-01"),
+                _make_item("GONE", "Paper", doi="10.1000/p", date_added="2024-01-01"),
             ],
             children={"GONE": [_child("KID", "GONE")]},
         )
@@ -1068,9 +1068,9 @@ class TestAutoMergeSafety:
         items = []
         for g in range(30):
             # Same DOI but different item types — declined, 30 times over.
-            items.append(_make_item(f"X{g:02d}A", f"Thing {g}", doi=f"10.1/x{g:02d}",
+            items.append(_make_item(f"X{g:02d}A", f"Thing {g}", doi=f"10.1000/x{g:02d}",
                                     item_type="journalArticle"))
-            items.append(_make_item(f"X{g:02d}B", f"Thing {g}", doi=f"10.1/x{g:02d}",
+            items.append(_make_item(f"X{g:02d}B", f"Thing {g}", doi=f"10.1000/x{g:02d}",
                                     item_type="book"))
         _auto_fake(monkeypatch, items)
 
@@ -1079,3 +1079,380 @@ class TestAutoMergeSafety:
         assert "30 skipped" in result
         assert result.count("mixed item types") == 20
         assert "... and 10 more skipped group(s)" in result
+
+
+# ---------------------------------------------------------------------------
+# #496 (PR 1, T1.1): characterization gate for the key-derivation rewrite
+# ---------------------------------------------------------------------------
+
+class TestGroupingInvariants:
+    """Pins today's `_collect_duplicate_groups` / `_auto_merge_groups`
+    behavior so the upcoming rewrite (deriving keys from shared primitives
+    in identifiers.py, #496) can be checked against it: these three must
+    pass before the rewrite AND after it. Per the PR 1 design table, the
+    rewrite only widens DOI matching to also fold URL-form/bare-DOI pairs
+    and drop garbage DOIs like "n/a" — it does not change case-folding,
+    the mixed-item-type skip, or the conflicting-DOI skip. Those three are
+    exactly what is pinned here.
+    """
+
+    def test_case_only_doi_variants_group_together(self, monkeypatch, dummy_ctx):
+        """Two items whose DOIs differ only in case land in ONE duplicate
+        group today, because `_collect_duplicate_groups` keys on
+        ``doi.strip().lower()``. If a rewritten `doi_match_key` stopped
+        folding case, "10.1000/ABC" and "10.1000/abc" would split into two
+        singleton groups and `find_duplicates` would report 0 duplicate
+        groups (each singleton is filtered out) instead of 1.
+        """
+        fake = FakeZoteroForDuplicates()
+        fake._items = [
+            _make_item("CASE1", "Paper One", doi="10.1000/ABC"),
+            _make_item("CASE2", "Paper Two", doi="10.1000/abc"),
+        ]
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert "Found 1 duplicate groups" in result
+        assert result.count("## Group:") == 1
+        # The key both sides must agree on. Before the rewrite this was the
+        # raw DOI field lowercased; now it is `doi_match_key`'s canonical
+        # form. For this input the two coincide, which is exactly why the
+        # assertion can be written once and hold on both sides of the change.
+        assert "## Group: doi:10.1000/abc" in result
+        assert "CASE1" in result
+        assert "CASE2" in result
+
+    def test_mixed_item_types_skipped_by_auto_merge(self, monkeypatch, dummy_ctx):
+        """A journalArticle and a book sharing a DOI are never auto-merged:
+        `_auto_merge_groups` declines any group whose members are not all
+        the same item type. If a rewritten guard dropped or weakened this
+        check, this pair would appear under "Groups to merge" and get
+        trashed via a PATCH call instead of being skipped and reported.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("MT1", "Same Thing", doi="10.1000/mixed", item_type="journalArticle"),
+            _make_item("MT2", "Same Thing", doi="10.1000/mixed", item_type="book"),
+        ])
+
+        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in result
+        assert "mixed item types" in result
+        assert "MT1" in result
+        assert "MT2" in result
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+
+    def test_conflicting_canonical_dois_skipped_by_auto_merge(self, monkeypatch, dummy_ctx):
+        """Two items that share a normalized title but carry genuinely
+        different DOIs (not merely a case variant of one another) are
+        never auto-merged — the #395 false-positive class of two distinct
+        edited volumes each titled "List of Contributors". The design
+        table says this guard "switches to canonical keys" under the
+        rewrite, so it must keep declining a real DOI conflict, not just
+        a same-DOI-different-case pair. If the guard were dropped, or
+        compared the wrong thing, this pair would be merged instead of
+        skipped.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("CF1", "List of Contributors", doi="10.1000/book-one"),
+            _make_item("CF2", "List of Contributors", doi="10.1000/book-two"),
+        ])
+
+        result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in result
+        assert "carry different DOIs" in result
+        assert "CF1" in result
+        assert "CF2" in result
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+
+
+# ---------------------------------------------------------------------------
+# #496 (PR 1, T1.5): grouping keys come from identifiers.metadata_match_keys
+# ---------------------------------------------------------------------------
+
+def _canonical_fixture():
+    """Items whose match keys only agree once identifiers.py canonicalizes them.
+
+    U1/U2/U3 carry one DOI written three ways (case, URL form, ``doi:`` prefix
+    plus a trailing period from a reference list). Their titles are deliberately
+    all different, so the only thing that can group them is the DOI.
+
+    P1/P2/P3 carry no DOI and three spellings of one title (hyphen, en dash,
+    leading article), so the only thing that can group them is the title.
+
+    N1/N2 carry ``n/a`` in the DOI field — the placeholder an importer leaves
+    behind. It is not a DOI, so it must not group anything; their titles differ
+    so they cannot group by title either.
+    """
+    return [
+        _make_item("U1", "Unified Alpha", doi="10.1000/ABC", date_added="2020-01-01"),
+        _make_item("U2", "Unified Beta", doi="https://doi.org/10.1000/abc",
+                   date_added="2021-01-01"),
+        _make_item("U3", "Unified Gamma", doi="doi:10.1000/abc.",
+                   date_added="2022-01-01"),
+        _make_item("P1", "Micro-Level Study of Trust"),
+        _make_item("P2", "Micro–Level Study of Trust"),
+        _make_item("P3", "The Micro Level Study of Trust"),
+        _make_item("N1", "Garbage One", doi="n/a"),
+        _make_item("N2", "Garbage Two", doi="n/a"),
+    ]
+
+
+class TestCanonicalGroupingKeys:
+    """`_collect_duplicate_groups` and `_auto_merge_groups` derive their keys
+    from `identifiers.metadata_match_keys` / `doi_match_key` (#496).
+
+    What this widens: URL-form and bare DOIs group together, title variants
+    that differ only by punctuation, diacritics or a leading article group
+    together, and a garbage DOI stops forming a group. What it must not
+    change is the auto-merge rule itself — DOI-only by default, mixed types
+    skipped, conflicting DOIs skipped, no title agreement required.
+    """
+
+    def test_one_doi_group_one_title_group_and_no_garbage_group(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The whole fixture yields exactly two groups: the three DOI spellings
+        under one canonical `doi:10.1000/abc` key, and the three title
+        spellings under one title key. `n/a` yields no key at all.
+        """
+        _dup_fake(monkeypatch, _canonical_fixture())
+
+        result = server.find_duplicates(method="both", limit=50, ctx=dummy_ctx)
+
+        assert "Found 2 duplicate groups (1 by DOI, 1 by title)" in result
+        assert "## Group: doi:10.1000/abc" in result
+        assert result.count("## Group:") == 2
+
+        groups = dict(re.findall(
+            r"## Group: (.+)\n((?:- `\w+`[^\n]*\n)+)", result
+        ))
+        doi_members = re.findall(r"- `(\w+)`", groups["doi:10.1000/abc"])
+        assert sorted(doi_members) == ["U1", "U2", "U3"]
+
+        title_key = next(k for k in groups if k.startswith("title:"))
+        title_members = re.findall(r"- `(\w+)`", groups[title_key])
+        assert sorted(title_members) == ["P1", "P2", "P3"]
+
+        assert "N1" not in result
+        assert "N2" not in result
+        assert "n/a" not in result
+
+    def test_auto_merge_merges_url_form_doi_pair(self, monkeypatch, dummy_ctx):
+        """A bare DOI and its URL form are one group, so auto mode merges them,
+        keeping U1 (older dateAdded). The plan token is a digest of the plan,
+        so planning twice over an unchanged library gives the same token.
+        """
+        _auto_fake(monkeypatch, [
+            _make_item("U1", "Unified Alpha", doi="10.1000/ABC", date_added="2020-01-01"),
+            _make_item("U2", "Unified Beta", doi="https://doi.org/10.1000/abc",
+                       date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### doi:10.1000/abc" in plan
+        assert "**KEEP** `U1`" in plan
+        assert "- trash `U2`" in plan
+
+        again = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        assert _token_from_plan(again) == _token_from_plan(plan)
+
+    def test_auto_merge_does_not_require_title_agreement(self, monkeypatch, dummy_ctx):
+        """Title variance under one canonical DOI is normal (a preprint and the
+        version of record rarely agree on subtitle or capitalization), so the
+        auto-merge rule asks for DOI agreement only.
+        """
+        _auto_fake(monkeypatch, [
+            _make_item("U1", "Unified Alpha", doi="10.1000/ABC", date_added="2020-01-01"),
+            _make_item("U3", "A Completely Different Title",
+                       doi="doi:10.1000/abc.", date_added="2022-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "0 skipped" in plan
+        assert "**KEEP** `U1`" in plan
+        assert "- trash `U3`" in plan
+
+    def test_conflicting_doi_guard_uses_canonical_form(self, monkeypatch, dummy_ctx):
+        """The guard that declines a group whose members "carry different DOIs"
+        compares canonical DOIs, so a title group whose members hold the same
+        DOI written two ways is merged, not skipped as a conflict.
+        """
+        _auto_fake(monkeypatch, [
+            _make_item("C1", "List of Contributors", doi="10.1000/ABC",
+                       date_added="2020-01-01"),
+            _make_item("C2", "List of Contributors",
+                       doi="https://doi.org/10.1000/abc", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "carry different DOIs" not in plan
+        assert "**KEEP** `C1`" in plan
+        assert "- trash `C2`" in plan
+
+    def test_conflicting_doi_guard_keeps_unparseable_dois_apart(
+        self, monkeypatch, dummy_ctx
+    ):
+        """Two DIFFERENT non-DOI placeholders are still a DOI conflict.
+
+        The guard keys each member's DOI as ``doi_match_key(raw) or
+        raw.lower()``. Canonicalisation is what the rewrite added; the
+        ``or raw.lower()`` fallback is what stops it from erasing the
+        conflict. `n/a` and `TBD` both canonicalise to None, so without the
+        fallback the set of DOIs in this group collapses to ``{None}`` — one
+        element — and the guard concludes the members agree on a DOI and
+        auto-merges two unrelated works, trashing one of them. Canonical
+        keys must not make a group's DOIs look equal just because neither
+        of them parses.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("GB1", "List of Contributors", doi="n/a",
+                       date_added="2020-01-01"),
+            _make_item("GB2", "List of Contributors", doi="TBD",
+                       date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "0 group(s) qualify" in plan
+        assert "carry different DOIs" in plan
+        assert "GB1" in plan
+        assert "GB2" in plan
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+
+    def test_garbage_doi_never_forms_a_group(self, monkeypatch, dummy_ctx):
+        """Two items whose DOI field holds `n/a` are not duplicates of each
+        other. Keying on the raw lowercased field made every such item in a
+        library one enormous false group (#496).
+        """
+        _dup_fake(monkeypatch, [
+            _make_item("N1", "Garbage One", doi="n/a"),
+            _make_item("N2", "Garbage Two", doi="n/a"),
+            _make_item("N3", "Garbage Three", doi="N/A"),
+        ])
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert result == "No duplicates found."
+
+
+# ---------------------------------------------------------------------------
+# #496 (PR 1, T1.5): what the shared title rule changes for method="title"
+# ---------------------------------------------------------------------------
+
+class TestTitleRuleChangesAutoMerge:
+    """Under `method="title"` / `"both"`, auto-merge groups on
+    `identifiers.normalize_title_for_matching` — Zotero's own
+    `duplicates.js normalizeString` rule — so the set of pairs it merges
+    moves in BOTH directions, not just outwards.
+
+    Pairs that differ only by a diacritic, by punctuation that folds to a
+    space, or by HTML markup and entities are now one group. A pair whose
+    titles agreed only because the old rule DELETED punctuation rather than
+    replacing it with a space ("Micro-Level" -> "microlevel") is no longer
+    one group. The DOI guarantee — that a widened group is a group whose
+    members' DOIs are equal after canonicalization — holds under
+    `method="doi"`, which is auto mode's default; it does not describe the
+    title rule, and these tests are here so that is written down rather
+    than discovered.
+
+    Nothing here escapes the two-call gate: auto mode still produces a plan
+    and refuses to act without the caller echoing its token back.
+    """
+
+    def test_auto_merge_title_method_merges_diacritic_variants(
+        self, monkeypatch, dummy_ctx
+    ):
+        """"Café Society" and "Cafe Society" are one work. The old rule kept
+        the combining accent (``é`` is a word character, so stripping
+        non-word characters left it in place) and saw two titles.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("D1", "Café Society", date_added="2020-01-01"),
+            _make_item("D2", "Cafe Society", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### title:cafe society" in plan
+        assert "**KEEP** `D1`" in plan
+        assert "- trash `D2`" in plan
+        # Still a plan, not an act.
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+        assert "plan_token=" in plan
+
+    def test_auto_merge_title_method_merges_markup_and_entity_variants(
+        self, monkeypatch, dummy_ctx
+    ):
+        """Zotero stores rich-text titles with markup, and imported records
+        arrive with HTML entities. All three spellings of one title are one
+        group; the old rule turned ``&amp;`` into the word "amp" and ``<i>``
+        into the letters "i", so all three disagreed.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("E1", "Trust &amp; Power", date_added="2020-01-01"),
+            _make_item("E2", "Trust & Power", date_added="2021-01-01"),
+            _make_item("E3", "<i>Trust</i> & Power", date_added="2022-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### title:trust power" in plan
+        assert "**KEEP** `E1`" in plan
+        assert "- trash `E2`" in plan
+        assert "- trash `E3`" in plan
+        assert "**Would trash 2 item(s)**" in plan
+        assert fake.client.patch_calls == []
+
+    def test_auto_merge_title_method_no_longer_merges_glued_word_variants(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The direction that narrows, and the reason it is an improvement.
+
+        The old rule DELETED punctuation, so "Micro-Level Study" collapsed to
+        "microlevel study" and matched "MicroLevel Study" — but by the same
+        token it did NOT match "Micro Level Study", which is the spelling a
+        real duplicate is far likelier to use. Replacing punctuation with a
+        space (what Zotero's own duplicate detection does) reverses both: the
+        spaced variant matches and the glued one does not.
+        """
+        fake = _auto_fake(monkeypatch, [
+            _make_item("G1", "Micro-Level Study", date_added="2020-01-01"),
+            _make_item("G2", "MicroLevel Study", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert plan == "No duplicates found."
+        assert fake.client.patch_calls == []
+        assert fake.update_calls == []
+
+    def test_auto_merge_title_method_merges_the_spaced_variant_instead(
+        self, monkeypatch, dummy_ctx
+    ):
+        """The other half of the trade the previous test describes."""
+        _auto_fake(monkeypatch, [
+            _make_item("G1", "Micro-Level Study", date_added="2020-01-01"),
+            _make_item("G3", "Micro Level Study", date_added="2021-01-01"),
+        ])
+
+        plan = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+
+        assert "1 group(s) qualify" in plan
+        assert "### title:micro level study" in plan
+        assert "**KEEP** `G1`" in plan
+        assert "- trash `G3`" in plan
