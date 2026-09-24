@@ -1,5 +1,6 @@
 """Tests for Zotero database auto-discovery in LocalZoteroReader."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -136,3 +137,41 @@ def test_base_attachment_path_from_profile_prefs(monkeypatch, tmp_path, isolated
 
     reader = LocalZoteroReader()
     assert reader._get_base_attachment_path() == tmp_path / "attachments"
+
+
+def test_base_attachment_path_uses_profile_for_selected_database(monkeypatch, tmp_path, isolated_discovery):
+    profiles_dir = tmp_path / "Profiles"
+    unrelated = profiles_dir / "aaa-unrelated"
+    selected = profiles_dir / "zzz-selected"
+    unrelated.mkdir(parents=True)
+    selected.mkdir()
+
+    unrelated_data = _make_data_dir(tmp_path, "unrelated-data")
+    selected_data = _make_data_dir(tmp_path, "selected-data")
+    unrelated_base = tmp_path / "unrelated-attachments"
+    selected_base = tmp_path / "selected-attachments"
+    unrelated_base.mkdir()
+    selected_base.mkdir()
+    (selected_base / "paper.pdf").touch()
+
+    for profile, data_dir, base in (
+        (unrelated, unrelated_data, unrelated_base),
+        (selected, selected_data, selected_base),
+    ):
+        profile.joinpath("prefs.js").write_text(
+            "\n".join(
+                (
+                    f'user_pref("extensions.zotero.dataDir", {json.dumps(str(data_dir))});',
+                    f'user_pref("extensions.zotero.baseAttachmentPath", {json.dumps(str(base))});',
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(local_db, "_zotero_profiles_dirs", lambda: [profiles_dir])
+    monkeypatch.setenv("ZOTERO_DB_PATH", str(selected_data / "zotero.sqlite"))
+
+    reader = LocalZoteroReader()
+
+    assert reader._get_base_attachment_path() == selected_base
+    assert reader._resolve_attachment_path("ATT1", "attachments:paper.pdf") == (selected_base / "paper.pdf")
