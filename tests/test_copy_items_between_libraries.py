@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import DummyContext, FakeZotero
@@ -12,7 +10,7 @@ from conftest import DummyContext, FakeZotero
 from zotero_mcp import client as _client
 from zotero_mcp import server
 from zotero_mcp.tools import _helpers
-from zotero_mcp.tools.write import copy_items_between_libraries
+from zotero_mcp.tools.write import _copy_library, copy_items_between_libraries
 from zotero_mcp.toolsets import TOOLSETS, validate_toolsets
 
 
@@ -26,65 +24,50 @@ def dummy_ctx():
 # ---------------------------------------------------------------------------
 
 
-class TestLibrarySpecResolution:
-    def test_default_resolution_with_no_override(self, monkeypatch):
+class TestLibraryResolution:
+    def test_default_is_active_personal_library_in_web_mode(self, monkeypatch):
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
         monkeypatch.setenv("ZOTERO_LIBRARY_ID", "12345")
         monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "user")
         _client.clear_active_library()
 
-        lib_id, lib_type, group_id = _helpers._resolve_library_spec(None)
-        assert lib_id == "12345"
-        assert lib_type == "user"
-        assert group_id == 0
+        assert _copy_library(None, None) == ("12345", "user", 0)
 
-    def test_default_resolution_with_active_override(self):
+    def test_default_follows_active_group(self):
         _client.set_active_library("6069773", "group")
         try:
-            lib_id, lib_type, group_id = _helpers._resolve_library_spec(None)
-            assert lib_id == "6069773"
-            assert lib_type == "group"
-            assert group_id == 6069773
+            assert _copy_library(None, None) == ("6069773", "group", 6069773)
         finally:
             _client.clear_active_library()
 
-    def test_user_library_aliases(self, monkeypatch):
+    def test_personal_library_is_0_in_local_mode(self, monkeypatch):
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
-        for alias in ("0", "user", "personal", "USER"):
-            lib_id, lib_type, group_id = _helpers._resolve_library_spec(alias)
-            assert lib_id == "0"
-            assert lib_type == "user"
-            assert group_id == 0
+        for alias in ("0", "user", "USER", 0):
+            assert _copy_library(alias, None) == ("0", "user", 0)
 
-    def test_user_library_web_mode(self, monkeypatch):
+    def test_personal_library_is_the_user_id_in_web_mode(self, monkeypatch):
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
         monkeypatch.setenv("ZOTERO_LIBRARY_ID", "98765")
-        lib_id, lib_type, group_id = _helpers._resolve_library_spec("0")
-        assert lib_id == "98765"
-        assert lib_type == "user"
-        assert group_id == 0
+        assert _copy_library("0", None) == ("98765", "user", 0)
 
     def test_group_library_numeric(self):
-        lib_id, lib_type, group_id = _helpers._resolve_library_spec("54321")
-        assert lib_id == "54321"
-        assert lib_type == "group"
-        assert group_id == 54321
-
-        lib_id2, lib_type2, group_id2 = _helpers._resolve_library_spec(54321)
-        assert lib_id2 == "54321"
-        assert lib_type2 == "group"
-        assert group_id2 == 54321
+        assert _copy_library("54321", None) == ("54321", "group", 54321)
+        assert _copy_library(54321, "group") == ("54321", "group", 54321)
 
     def test_feed_library(self):
-        lib_id, lib_type, group_id = _helpers._resolve_library_spec(
-            "12", library_type="feed"
-        )
-        assert lib_id == "12"
-        assert lib_type == "feed"
-        assert group_id is None
+        assert _copy_library("12", "feed") == ("12", "feed", 12)
 
     def test_invalid_library_id_raises(self):
         with pytest.raises(ValueError, match="Invalid library_id"):
-            _helpers._resolve_library_spec("not_a_number_or_user")
+            _copy_library("not_a_number_or_user", None)
+
+    def test_unknown_group_is_rejected_in_local_mode(self, monkeypatch):
+        monkeypatch.setattr(
+            "zotero_mcp.tools.retrieval.validate_library_switch",
+            lambda library_id, library_type: f"Group '{library_id}' not found.",
+        )
+        with pytest.raises(ValueError, match="Group '999' not found"):
+            _copy_library("999", "group")
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +370,8 @@ class TestCopyItemsExecution:
         assert att_created["url"] == "https://example.com/paper.html"
         assert att_created["parentItem"] == "KEY0000"
 
-    def test_copies_child_file_attachment(self, setup_clients, monkeypatch, tmp_path, dummy_ctx):
-        source_zot, target_zot = setup_clients
+    @staticmethod
+    def _parent_with_file(source_zot, **child_extra):
         source_zot._items = [
             {
                 "key": "SRC0001",
@@ -405,19 +388,32 @@ class TestCopyItemsExecution:
                     "title": "paper.pdf",
                     "filename": "paper.pdf",
                     "contentType": "application/pdf",
+                    **child_extra,
                 },
             }
         ]
 
-        # Mock attachment_path_for to point to a real temp file
-        pdf_file = tmp_path / "paper.pdf"
-        pdf_file.write_bytes(b"%PDF-1.4 mock content")
-        monkeypatch.setattr("zotero_mcp.library.attachment_path_for", lambda key: pdf_file)
+    def test_copies_child_file_attachment_from_the_source_library(
+        self, setup_clients, monkeypatch, dummy_ctx
+    ):
+        """The file is fetched through a client scoped to the source library,
+        not the target one that is active while the copy runs."""
+        source_zot, target_zot = setup_clients
+        self._parent_with_file(source_zot)
+
+        real_download = _client.download_attachment_file
+        download_clients = []
+
+        def spy_download(*args, **kwargs):
+            download_clients.append(kwargs.get("web_client"))
+            return real_download(*args, **kwargs)
+
+        monkeypatch.setattr(_client, "download_attachment_file", spy_download)
 
         attached_files = []
 
         def fake_attach_and_verify(write_zot, display_name, path, item_key, ctx, content_type=None):
-            attached_files.append((display_name, path, item_key))
+            attached_files.append((display_name, Path(path).read_bytes(), item_key))
             return True, "", "NEW_ATT_KEY"
 
         monkeypatch.setattr(_helpers, "_attach_and_verify", fake_attach_and_verify)
@@ -430,10 +426,75 @@ class TestCopyItemsExecution:
             ctx=dummy_ctx,
         )
 
-        assert "**Attachments copied:** 1" in res
-        assert len(attached_files) == 1
-        assert attached_files[0][0] == "paper.pdf"
-        assert attached_files[0][2] == "KEY0000"
+        assert "**Attachments copied:** 1 (File: paper.pdf)" in res
+        assert download_clients == [source_zot]
+        # FakeZotero.dump wrote these bytes: the Web API step served the file.
+        assert attached_files == [("paper.pdf", b"%PDF-1.4 fake", "KEY0000")]
+
+    def test_failed_file_copy_is_reported(self, setup_clients, monkeypatch, dummy_ctx):
+        source_zot, target_zot = setup_clients
+        self._parent_with_file(source_zot)
+        monkeypatch.setattr(
+            _client,
+            "download_attachment_file",
+            lambda *a, **k: _client.AttachmentDownloadResult(
+                path=None, source=None, errors=["Web API: 404 Not Found"]
+            ),
+        )
+
+        res = copy_items_between_libraries(
+            "SRC0001",
+            source_library_id="0",
+            target_library_id="6069773",
+            ctx=dummy_ctx,
+        )
+
+        assert "**Attachments copied:** 0" in res
+        assert (
+            "**Not copied:** File: paper.pdf: could not fetch the file "
+            "(Web API: 404 Not Found)" in res
+        )
+        assert "annotations are not copied" in res
+        assert len(target_zot.created) == 1  # the parent only
+
+    def test_trashed_children_are_not_copied(self, setup_clients, dummy_ctx):
+        source_zot, target_zot = setup_clients
+        self._parent_with_file(source_zot, deleted=1)
+        source_zot._children["SRC0001"].append(
+            {"key": "NOTE_DEL", "data": {"itemType": "note", "note": "<p>old</p>", "deleted": 1}}
+        )
+
+        res = copy_items_between_libraries(
+            "SRC0001",
+            source_library_id="0",
+            target_library_id="6069773",
+            ctx=dummy_ctx,
+        )
+
+        assert "**Notes copied:** 0" in res
+        assert "**Attachments copied:** 0" in res
+        assert "Not copied" not in res
+        assert len(target_zot.created) == 1
+
+    def test_trashed_item_is_not_copied(self, setup_clients, dummy_ctx):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [
+            {
+                "key": "SRC0001",
+                "version": 1,
+                "data": {"key": "SRC0001", "itemType": "book", "title": "Old", "deleted": 1},
+            }
+        ]
+
+        res = copy_items_between_libraries(
+            "SRC0001",
+            source_library_id="0",
+            target_library_id="6069773",
+            ctx=dummy_ctx,
+        )
+
+        assert "is in the trash" in res
+        assert target_zot.created == []
 
     def test_source_collections_not_copied(self, setup_clients, dummy_ctx):
         source_zot, target_zot = setup_clients
@@ -562,8 +623,124 @@ class TestCopyItemsExecution:
         assert len(target_zot.created) == 1
 
 
+    def test_hyphenated_isbn_is_normalized_before_matching(
+        self, setup_clients, monkeypatch, dummy_ctx
+    ):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [
+            {
+                "key": "SRC0001",
+                "version": 1,
+                "data": {
+                    "key": "SRC0001",
+                    "itemType": "book",
+                    "title": "Introduction to Algorithms",
+                    # Zotero's ISBN field may hold several, hyphenated.
+                    "ISBN": "978-0-262-03384-8 0-262-03384-4",
+                },
+            }
+        ]
+        lookups = []
+
+        def fake_find(zot, **kwargs):
+            lookups.append(kwargs)
+            return [{"key": "EXISTING_KEY", "data": {"key": "EXISTING_KEY"}}]
+
+        monkeypatch.setattr(_helpers, "find_existing_items", fake_find)
+
+        res = copy_items_between_libraries(
+            "SRC0001",
+            source_library_id="0",
+            target_library_id="6069773",
+            ctx=dummy_ctx,
+        )
+
+        assert lookups[0]["isbn"] == "9780262033848"
+        assert "**Status:** Skipped" in res
+        assert target_zot.created == []
+
+
 # ---------------------------------------------------------------------------
-# 5. Toolset Registry & Export Verification
+# 5. Reading the source from zotero.sqlite
+# ---------------------------------------------------------------------------
+
+
+class _FakeReader:
+    """Records the scope each read asked for; one group and one feed hold items."""
+
+    def __init__(self):
+        self.calls = []
+        self.scoped = {
+            ("group", 6015547): {"key": "GRP0001", "version": 1,
+                                 "data": {"key": "GRP0001", "itemType": "book", "title": "Group Book"}},
+            ("library", 12): {"key": "FEED001", "version": 1,
+                              "data": {"key": "FEED001", "itemType": "journalArticle",
+                                       "title": "Feed Paper"}},
+        }
+
+    def _lookup(self, group_id, library_id):
+        if library_id is not None:
+            return self.scoped.get(("library", library_id))
+        return self.scoped.get(("group", group_id))
+
+    def get_full_items(self, keys, *, group_id=0, include_trashed=True, library_id=None):
+        self.calls.append(("items", group_id, library_id))
+        item = self._lookup(group_id, library_id)
+        return {k: item for k in keys if item and item["key"] == k}
+
+    def get_children_of(self, keys, *, item_type=None, group_id=0, library_id=None):
+        self.calls.append(("children", group_id, library_id))
+        return {k: [] for k in keys}
+
+
+class TestSqliteSource:
+    @pytest.fixture
+    def sqlite_source(self, monkeypatch):
+        from zotero_mcp import library as _library
+
+        reader = _FakeReader()
+        monkeypatch.setattr(_library, "configured_backend", lambda: "sqlite")
+        monkeypatch.setattr(_library, "_sqlite_reader", lambda: reader)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
+        target_zot = FakeZotero()
+        monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (target_zot, target_zot))
+        _client.clear_active_library()
+        return reader, target_zot
+
+    def test_group_source_is_read_in_its_own_scope(self, sqlite_source, dummy_ctx):
+        reader, target_zot = sqlite_source
+
+        res = copy_items_between_libraries(
+            "GRP0001",
+            source_library_id="6015547",
+            target_library_id="0",
+            copy_attachments=False,
+            ctx=dummy_ctx,
+        )
+
+        assert "✅ Group Book" in res
+        assert reader.calls == [("items", 6015547, None), ("children", 6015547, None)]
+        assert target_zot.created[0]["title"] == "Group Book"
+        # The source scope does not outlive the call.
+        assert _client.get_active_library() == {}
+
+    def test_feed_source_is_read_by_library_id(self, sqlite_source, dummy_ctx):
+        reader, target_zot = sqlite_source
+
+        res = copy_items_between_libraries(
+            "FEED001",
+            source_library_id="12",
+            source_library_type="feed",
+            target_library_id="0",
+            ctx=dummy_ctx,
+        )
+
+        assert "✅ Feed Paper" in res
+        assert [call[2] for call in reader.calls] == [12, 12]
+
+
+# ---------------------------------------------------------------------------
+# 6. Toolset Registry & Export Verification
 # ---------------------------------------------------------------------------
 
 
@@ -579,6 +756,7 @@ class TestToolsetRegistration:
 
     def test_toolsets_registry_validates(self):
         import asyncio
+
         from zotero_mcp.server import mcp
         from zotero_mcp.toolsets import optional_tool_names
 
