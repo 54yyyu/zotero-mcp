@@ -42,6 +42,11 @@ def _fulltext_display_max_pages() -> int:
     return DEFAULT_FULLTEXT_DISPLAY_MAX if configured is None else configured
 
 
+def _fulltext_error(metadata: str, detail: str) -> str:
+    """Return a fulltext failure with an error marker before the metadata."""
+    return f"Error: {detail}\n\n---\n\n{metadata}"
+
+
 def _fulltext_section_heading(
     truncated: bool, page_count: int | None, max_pages: int, item_key: str
 ) -> tuple[str, str]:
@@ -289,36 +294,33 @@ def get_item_fulltext(
                     # page bookkeeping and not only its text (#448).
                     doc = extract_file(download.path, max_pages=max_pages)
                     if doc is None:
-                        heading, notice = "## Full Text", ""
-                        converted_text = f"Error converting file to markdown: {download.path.name}"
-                    else:
-                        heading, notice = _fulltext_section_heading(
-                            doc.truncated, doc.page_count, max_pages, item_key
+                        return _fulltext_error(
+                            metadata,
+                            f"converting file to markdown: {download.path.name}",
                         )
-                        converted_text = doc.text
-                    body = "\n\n".join(
-                        part for part in (heading, notice, converted_text) if part
+                    heading, notice = _fulltext_section_heading(
+                        doc.truncated, doc.page_count, max_pages, item_key
                     )
+                    body = "\n\n".join(part for part in (heading, notice, doc.text) if part)
                     return _helpers._prepend_size_warning(
                         f"{metadata}\n\n---\n\n{body}",
                         "Consider using zotero_semantic_search to find specific content instead of reading full papers."
                     )
 
                 error_details = "\n".join(f"  - {err}" for err in download.errors) or "  - No download source succeeded"
-                return (
-                    f"{metadata}\n\n---\n\nFile download failed.\n\n"
+                return _fulltext_error(
+                    metadata,
+                    "File download failed.\n\n"
                     f"Attempted sources:\n{error_details}\n\n"
                     "For WebDAV-backed attachments, configure "
-                    "ZOTERO_WEBDAV_URL / ZOTERO_WEBDAV_USERNAME / ZOTERO_WEBDAV_PASSWORD."
+                    "ZOTERO_WEBDAV_URL / ZOTERO_WEBDAV_USERNAME / ZOTERO_WEBDAV_PASSWORD.",
                 )
         except Exception as download_error:
             ctx.error(f"Error downloading/converting file: {str(download_error)}")
+            detail = f"accessing attachment: {str(download_error)}"
             if local_extract_error_msg:
-                return (
-                    f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}\n\n"
-                    f"Local extraction fallback error: {local_extract_error_msg}"
-                )
-            return f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}"
+                detail += f"\n\nLocal extraction fallback error: {local_extract_error_msg}"
+            return _fulltext_error(metadata, detail)
 
     except Exception as e:
         ctx.error(f"Error fetching item full text: {str(e)}")
