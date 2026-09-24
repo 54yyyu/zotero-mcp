@@ -19,9 +19,21 @@ and tests are unaffected.
 
 from __future__ import annotations
 
+import html
 import re
+import unicodedata
 
-__all__ = ["normalize_doi"]
+__all__ = [
+    "normalize_doi",
+    "doi_match_key",
+    "normalize_isbn",
+    "isbn_match_keys",
+    "normalize_arxiv_id",
+    "arxiv_identity",
+    "arxiv_identity_from_extra",
+    "normalize_title_for_matching",
+    "metadata_match_keys",
+]
 
 #: A well-formed DOI: the ``10.NNNN`` registrant prefix plus a suffix.
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
@@ -79,3 +91,252 @@ def normalize_doi(raw):
     if DOI_RE.match(s):
         return s
     return None
+
+
+def doi_match_key(raw):
+    """Case-folded canonical DOI for equality tests, or ``None``.
+
+    ``normalize_doi`` stays case-preserving because some consumers echo a
+    DOI back to the user; this is the case-folded counterpart for callers
+    that only need to answer "is this the same DOI?".
+    """
+    doi = normalize_doi(raw)
+    return doi.lower() if doi else None
+
+
+def normalize_isbn(raw):
+    """Normalize an ISBN string and validate the checksum.
+
+    Accepts ISBN-10, ISBN-13, and prefixed/URL forms (isbn:, https://isbndb.com/...).
+    Strips hyphens, spaces, and any prefix. Returns the canonical digits-only
+    form (13-digit preferred — ISBN-10 inputs are converted to ISBN-13).
+    Returns None on invalid input or failing checksum.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.lower().startswith("isbn:"):
+        s = s[5:].strip()
+    if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
+        s = s[5:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])",
+                      s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        s = m.group(1)
+    digits = re.sub(r"[\s\-]", "", s)
+    if re.match(r"^\d{9}[\dXx]$", digits):
+        if not _isbn10_checksum_valid(digits):
+            return None
+        return _isbn10_to_isbn13(digits)
+    if re.match(r"^97[89]\d{10}$", digits):
+        if not _isbn13_checksum_valid(digits):
+            return None
+        return digits
+    return None
+
+
+def _isbn10_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = 10 if ch in ("X", "x") else int(ch)
+        total += v * (10 - i)
+    return total % 11 == 0
+
+
+def _isbn13_checksum_valid(s):
+    total = 0
+    for i, ch in enumerate(s):
+        v = int(ch)
+        total += v if i % 2 == 0 else v * 3
+    return total % 10 == 0
+
+
+def _isbn10_to_isbn13(isbn10):
+    core = "978" + isbn10[:9]
+    total = 0
+    for i, ch in enumerate(core):
+        total += int(ch) * (1 if i % 2 == 0 else 3)
+    check = (10 - total % 10) % 10
+    return core + str(check)
+
+
+def isbn_match_keys(raw):
+    """Every valid ISBN in a Zotero ISBN field (space/comma/semicolon separated), as ISBN-13."""
+    if not raw:
+        return frozenset()
+    return frozenset(n for tok in re.split(r"[,;\s]+", str(raw)) if tok and (n := normalize_isbn(tok)))
+
+
+_ARXIV_LEGACY_RE = r"[a-z][a-z\-]*(?:\.[a-z][a-z\-]*)?/\d{7}(?:v\d+)?"
+
+
+def normalize_arxiv_id(raw):
+    """Normalize an arXiv ID from various input formats."""
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.lower().startswith("arxiv:"):
+        s = s[6:].strip()
+    if s.lower().startswith("http://") or s.lower().startswith("https://"):
+        m = re.search(
+            r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|"
+            + _ARXIV_LEGACY_RE + r")(?:\.pdf)?",
+            s, flags=re.IGNORECASE,
+        )
+        if not m:
+            return None
+        s = m.group(1)
+    if re.match(r"^[0-9]{4}\.[0-9]{4,5}(?:v\d+)?$", s):
+        return s
+    if re.match(rf"^{_ARXIV_LEGACY_RE}$", s, flags=re.IGNORECASE):
+        return s
+    return None
+
+
+# arXiv's DataCite DOIs are minted as 10.48550/arXiv.<id>, which is what
+# Zotero puts in the DOI field for a preprint imported from arXiv.
+_ARXIV_DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$",
+                           re.IGNORECASE)
+_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
+
+
+def arxiv_identity(raw):
+    """The version-independent arXiv identity of an ID, URL, DOI or archiveID.
+
+    ``normalize_arxiv_id`` deliberately keeps the ``v2`` suffix: callers use
+    its result to fetch a specific version from arXiv. Deduplication wants the
+    opposite — 2401.00001v1 and 2401.00001v2 are the same paper and must not
+    become two library items — so identity comparison goes through here
+    instead. This also accepts arXiv's DataCite DOI form, so an item added by
+    DOI is recognized by a later add of the same paper's arXiv ID.
+
+    Returns the bare, unversioned ID, or None if ``raw`` isn't an arXiv
+    identifier in any of those forms.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    m = _ARXIV_DOI_RE.match(s)
+    if m:
+        s = m.group(1)
+    ident = normalize_arxiv_id(s)
+    if not ident:
+        return None
+    return _ARXIV_VERSION_RE.sub("", ident)
+
+
+#: Matches an ``arXiv:<id>`` line in a Zotero item's Extra field.
+_ARXIV_EXTRA_RE = re.compile(r"^\s*arxiv:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
+
+
+def arxiv_identity_from_extra(extra):
+    """arXiv identity parsed from an ``arXiv:<id>`` line in an Extra field, or ``None``."""
+    m = _ARXIV_EXTRA_RE.search(extra or "")
+    return arxiv_identity(m.group(1)) if m else None
+
+
+#: An HTML/XML start or end tag, e.g. ``<i>`` or ``</sub>``: '<' or '</'
+#: followed directly by a letter. Not ``clean_html``'s '<.*?>': CrossRef
+#: titles reach us entity-decoded (``utils.repair_crossref_string``), so a
+#: title about '&lt;10 Hz' arrives with a bare '<', and '<.*?>' would read
+#: everything up to the next '>' as one tag and delete the words in between.
+#: Both callers — title matching here and ``_helpers._title_search_query`` —
+#: strip tags before entities are unescaped, so an escaped tag like
+#: ``&lt;i&gt;`` survives the strip and is unescaped into literal ``<i>``
+#: text, not removed.
+TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+
+#: A leading English article, with any punctuation before it. Matched
+#: before punctuation is mapped to spaces, so it needs real whitespace after
+#: the article: the "A" of "A/B testing" or "A-B testing" is not one, and
+#: stripping it would match those titles with "B Testing".
+_LEADING_ARTICLE_RE = re.compile(r"^\W*(?:a|an|the)\s+", re.IGNORECASE)
+
+#: The ASCII characters ``_fold_unicode`` keeps: letters, digits, and the
+#: control characters that are neither punctuation nor whitespace.
+_ASCII_FOLD_RE = re.compile(r"[^0-9A-Za-z\x00-\x08\x0e-\x1b\x7f]+")
+
+
+def _fold_unicode(s):
+    """Drop combining marks; map punctuation, symbols and separators to a space."""
+    out = []
+    for ch in unicodedata.normalize("NFKD", s):
+        cat = unicodedata.category(ch)
+        if cat[0] == "M":
+            continue
+        out.append(" " if cat[0] in "PSZ" or ch.isspace() else ch)
+    return "".join(out)
+
+
+def _fold_ascii(s):
+    """``_fold_unicode`` for an ASCII string, in one regex pass instead of a
+    per-character category lookup."""
+    return _ASCII_FOLD_RE.sub(" ", s)
+
+
+def normalize_title_for_matching(title):
+    """Fold a title down to a whitespace-normalised, case-folded key.
+
+    Strips markup tags, unescapes HTML entities, decomposes accents
+    (NFKD) and drops combining marks, maps punctuation/symbol/separator
+    characters to spaces, collapses whitespace and case-folds, as Zotero's
+    ``duplicates.js`` ``normalizeString`` does. Unlike Zotero, it also drops
+    a leading English article that whitespace separates from the rest. Returns ``""`` for falsy input.
+    """
+    if not title:
+        return ""
+    s = html.unescape(TITLE_TAG_RE.sub(" ", str(title)))
+    s = _LEADING_ARTICLE_RE.sub("", s, count=1)
+    s = _fold_ascii(s) if s.isascii() else _fold_unicode(s)
+    return " ".join(s.casefold().split())
+
+
+def _fields_of(item_like) -> dict:
+    """pyzotero item {"data": {...}}, bare data dict, or an object such as local_db.ZoteroItem
+    (attributes doi, title, extra; no url/ISBN/archiveID)."""
+    if isinstance(item_like, dict):
+        data = item_like.get("data")
+        return data if isinstance(data, dict) else item_like
+    fields = {}
+    for name, attrs in (
+        ("DOI", ("doi", "DOI")),
+        ("ISBN", ("isbn", "ISBN")),
+        ("title", ("title",)),
+        ("url", ("url",)),
+        ("archiveID", ("archive_id", "archiveID")),
+        ("extra", ("extra",)),
+    ):
+        for attr in attrs:
+            if v := getattr(item_like, attr, None):
+                fields[name] = v
+                break
+    return fields
+
+
+MATCH_KEY_KINDS = frozenset({"doi", "arxiv", "isbn", "title"})
+
+
+def metadata_match_keys(item_like, kinds=None) -> frozenset[tuple[str, str]]:
+    """Every (kind, value) this item could match under. Kinds: doi, arxiv, isbn, title.
+    Which kinds decide is the caller's policy; pass ``kinds`` to compute only those,
+    since a full-library scan should not pay for keys it throws away."""
+    wanted = MATCH_KEY_KINDS if kinds is None else frozenset(kinds)
+    if unknown := wanted - MATCH_KEY_KINDS:
+        raise ValueError(f"unknown match-key kinds: {sorted(unknown)}")
+    f = _fields_of(item_like)
+    keys: set[tuple[str, str]] = set()
+    if "doi" in wanted and (d := doi_match_key(f.get("DOI"))):
+        keys.add(("doi", d))
+    if "arxiv" in wanted:
+        for field in ("url", "archiveID", "DOI"):
+            if a := arxiv_identity(f.get(field)):
+                keys.add(("arxiv", a))
+        if a := arxiv_identity_from_extra(f.get("extra")):
+            keys.add(("arxiv", a))
+    if "isbn" in wanted:
+        keys.update(("isbn", i) for i in isbn_match_keys(f.get("ISBN")))
+    if "title" in wanted and (t := normalize_title_for_matching(f.get("title"))):
+        keys.add(("title", t))
+    return frozenset(keys)

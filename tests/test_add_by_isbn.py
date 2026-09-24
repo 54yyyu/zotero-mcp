@@ -11,11 +11,8 @@ import pytest
 import requests
 
 from zotero_mcp.tools import write as _write
-from zotero_mcp.tools._helpers import (
-    _isbn10_to_isbn13,
-    _isbn13_checksum_valid,
-    _normalize_isbn,
-)
+from zotero_mcp.identifiers import _isbn10_to_isbn13, _isbn13_checksum_valid
+from zotero_mcp.tools._helpers import _normalize_isbn
 from conftest import DummyContext, FakeZotero
 
 

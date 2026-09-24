@@ -33,6 +33,7 @@ from zotero_mcp.html_metadata import (
     EmbeddedMetadata,
     extract_embedded_metadata,
 )
+from zotero_mcp.identifiers import doi_match_key, metadata_match_keys
 from zotero_mcp.tools import _helpers
 
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
@@ -3410,17 +3411,6 @@ _DUP_SCAN_MAX_ITEMS = 5000
 _DUP_GROUP_MAX_LIMIT = 500
 
 
-def _normalize_dup_title(title: str | None) -> str:
-    """Lowercase, strip punctuation and a leading article, collapse spaces."""
-    t = (title or "").lower().strip()
-    t = re.sub(r'[^\w\s]', '', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    for article in ("a ", "an ", "the "):
-        if t.startswith(article):
-            t = t[len(article):]
-    return t
-
-
 def _collect_duplicate_groups(zot, method, collection_key=None):
     """Group the active library's items into duplicate candidates.
 
@@ -3429,6 +3419,13 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     with two or more items, in sorted key order so that paging over it is
     stable across calls. ``error`` is a message to hand straight back to the
     caller (library too large), in which case ``groups`` is empty.
+
+    The keys themselves come from ``identifiers.metadata_match_keys``, which
+    is also what ``find_existing_items`` and the semantic-search work-level
+    filter use (#496); this function's only policy is which kinds of key
+    ``method`` admits. Canonicalising there rather than here is what makes
+    ``10.1000/ABC``, ``https://doi.org/10.1000/abc`` and ``doi:10.1000/abc.``
+    one group, and what stops a DOI field holding ``n/a`` from forming one.
 
     Both zotero_find_duplicates and zotero_merge_duplicates(auto=True) go
     through here, so "merge everything that qualifies" and "show me what
@@ -3457,24 +3454,16 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
             "Please scope by collection_key to reduce the search."
         )
 
+    wanted = {"doi", "title"} if method == "both" else {method}
+
     groups: dict[str, list] = {}
     for item in items:
         data = item.get("data", {})
         if data.get("itemType") in ("attachment", "note", "annotation"):
             continue
 
-        keys_to_check = []
-        if method in ("title", "both"):
-            nt = _normalize_dup_title(data.get("title", ""))
-            if nt:
-                keys_to_check.append(("title", nt))
-        if method in ("doi", "both"):
-            doi_val = (data.get("DOI") or "").strip().lower()
-            if doi_val:
-                keys_to_check.append(("doi", doi_val))
-
-        for group_type, group_key in keys_to_check:
-            groups.setdefault(f"{group_type}:{group_key}", []).append(item)
+        for kind, value in metadata_match_keys(item, kinds=wanted):
+            groups.setdefault(f"{kind}:{value}", []).append(item)
 
     return {k: v for k, v in sorted(groups.items()) if len(v) >= 2}, None
 
@@ -3854,8 +3843,11 @@ def _auto_merge_groups(read_zot, write_zot, method, collection_key, max_groups):
             skipped.append((group_key, keys, f"mixed item types ({types})"))
             continue
 
-        dois = {(i.get("data", {}).get("DOI") or "").strip().lower() for i in group_items}
-        dois.discard("")
+        dois = {
+            doi_match_key(raw) or raw.lower()
+            for i in group_items
+            if (raw := (i.get("data", {}).get("DOI") or "").strip())
+        }
         if len(dois) > 1:
             skipped.append((group_key, keys, "members carry different DOIs"))
             continue
