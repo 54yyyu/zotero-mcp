@@ -64,6 +64,7 @@ class TestFailureReporting:
         "Failed to create annotation: {}",
         "Could not find text on page 9",
         "Cannot write: read-only",
+        "Invalid library_type 'bogus'. Must be 'user', 'group', or 'feed'.",
         "\n**Error:** something",
     ])
     def test_failure_prose_is_recognised(self, text):
@@ -88,6 +89,18 @@ class TestFailureReporting:
         assert payload["ok"] is False
         assert payload["error"]["code"] == "tool_error"
         assert "local-only mode" in payload["error"]["message"]
+
+    def test_invalid_library_type_is_an_error_envelope(self, capsys):
+        text = "Invalid library_type 'bogus'. Must be 'user', 'group', or 'feed'."
+
+        with pytest.raises(SystemExit) as exc:
+            _out(_args(json_out=True), "switch-library", text=text)
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "tool_error"
+        assert "library_type" in payload["error"]["message"]
 
     def test_markdown_mode_sends_failures_to_stderr_with_exit_1(self, capsys):
         with pytest.raises(SystemExit) as exc:
