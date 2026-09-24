@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **File uploads into a group library no longer go to your personal WebDAV** (#591). Group libraries always store files in Zotero Storage, but with `ZOTERO_WEBDAV_*` configured and writes going through the Web API, `zotero_add_item` and `zotero_attach_file` sent the file only to WebDAV and left the group attachment without one. Other attach paths PUT a second copy to WebDAV, and if that failed they deleted the group attachment even though its file was already in Zotero Storage. The WebDAV steps now skip group libraries.
+
 ## [0.13.1] - 2026-09-23
 
 ### Added
