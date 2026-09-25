@@ -16,6 +16,7 @@ from typing import Literal, NamedTuple
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
+from pyzotero.zotero_errors import TooManyRequestsError, TooManyRetriesError
 from unidecode import unidecode
 
 from zotero_mcp import citation_import as _citation_import
@@ -6258,13 +6259,23 @@ def _copy_library(library_id, library_type) -> _CopyLibrary:
         scope = _helpers._parse_library_id_param(library_id)
         if scope is None:
             raise ValueError("library_id is empty. Use '0'/'user' or a groupID.")
+        # The personal library is always your own: local mode addresses it as
+        # "0", the web API by the userID the credentials belong to. Web mode
+        # also accepts that userID, since zotero_list_libraries shows it (#603).
+        user_id = None
+        if not _utils.is_local_mode() and os.getenv("ZOTERO_LIBRARY_TYPE", "user") == "user":
+            user_id = os.getenv("ZOTERO_LIBRARY_ID")
+        is_own = scope == 0 or (user_id is not None and str(scope) == user_id)
         if library_type is None:
-            library_type = "user" if scope == 0 else "group"
+            library_type = "user" if is_own else "group"
         if library_type == "user":
-            # The personal library is always your own: local mode addresses it
-            # as "0", the web API by the userID the credentials belong to.
+            if not is_own:
+                raise ValueError(
+                    f"'{library_id}' is not your personal library. Use '0' or "
+                    "'user' for it, or library_type='group' for a group."
+                )
             scope = 0
-            override_id = "0" if _utils.is_local_mode() else os.getenv("ZOTERO_LIBRARY_ID", "0")
+            override_id = user_id or "0"
         else:
             override_id = str(scope)
 
@@ -6319,12 +6330,23 @@ def _first_isbn(raw) -> str | None:
     return None
 
 
+# Zotero is throttling us; every further request would be refused too, so a
+# copy stops at the first one rather than failing each remaining item.
+_RATE_LIMIT_ERRORS = (TooManyRequestsError, TooManyRetriesError)
+
+
+def _rate_limit_message(exc) -> str:
+    return f"Zotero is rate-limiting requests ({exc})"
+
+
 def _copy_result(key, title=None, *, error=None, status="copied", target_key=None,
-                 notes=0, attachments=0, copied=(), failed=()) -> dict:
+                 notes=0, attachments=0, copied=(), failed=(), stopped=False) -> dict:
+    """``stopped``: Zotero rate-limited this item, so the batch ends here."""
     return {
         "source_key": key, "title": title, "error": error, "status": status,
         "target_key": target_key, "notes_copied": notes,
         "attachments_copied": attachments, "copied": list(copied), "failed": list(failed),
+        "stopped": stopped,
     }
 
 
@@ -6338,8 +6360,9 @@ def _copy_result(key, title=None, *, error=None, status="copied", target_key=Non
         "are not copied, and neither is anything in the trash. "
         "item_keys: single key or list/comma-separated keys to copy. "
         "target_library_id / source_library_id: '0'/'user' for the personal "
-        "library, a groupID, or (source only, with source_library_type='feed') "
-        "a feed's libraryID; either defaults to the active library. "
+        "library (or your userID in web mode), a groupID, or (source only, "
+        "with source_library_type='feed') a feed's libraryID; either defaults "
+        "to the active library. "
         "copy_notes: copy child notes (default: True). "
         "copy_attachments: copy attached files and linked URLs (default: True). "
         "copy_tags: preserve tags (default: True). "
@@ -6347,7 +6370,8 @@ def _copy_result(key, title=None, *, error=None, status="copied", target_key=Non
         "'file' (add missing tags to the existing item), 'duplicate' (always creates a new item - "
         "pick this explicitly, since a retried or repeated call would otherwise double the items). "
         "Matching is by DOI, ISBN or URL, so an item with none of them is always "
-        "copied, even with 'skip'. "
+        "copied, even with 'skip'. If Zotero rate-limits the copy, it stops "
+        "and lists the keys it did not attempt; rerun with those. "
         "Example: zotero_copy_items_between_libraries(item_keys='ABCD2345', target_library_id='6069773')."
     ),
 )
@@ -6409,17 +6433,37 @@ def copy_items_between_libraries(
         except ValueError as e:
             return str(e)
 
-        results = [
-            _copy_one(
-                key, source_items.get(key), source_children.get(key, []),
-                target_zot, src, file_clients,
-                copy_notes=copy_notes, copy_attachments=copy_attachments,
-                copy_tags=copy_tags, if_exists=if_exists, ctx=ctx,
-            )
-            for key in keys
-        ]
+        # Earlier items are already in the target by the time a later one
+        # fails, so a failure becomes that item's result rather than an
+        # exception that would lose the report of what was written.
+        results = []
+        not_attempted: list[str] = []
+        for i, key in enumerate(keys):
+            source_item = source_items.get(key)
+            try:
+                result = _copy_one(
+                    key, source_item, source_children.get(key, []),
+                    target_zot, src, file_clients,
+                    copy_notes=copy_notes, copy_attachments=copy_attachments,
+                    copy_tags=copy_tags, if_exists=if_exists, ctx=ctx,
+                )
+            except _RATE_LIMIT_ERRORS as exc:
+                result = _copy_result(key, _source_title(source_item),
+                                      error=_rate_limit_message(exc), stopped=True)
+            except Exception as exc:
+                result = _copy_result(key, _source_title(source_item),
+                                      error=_helpers.format_zotero_error(exc))
+            results.append(result)
+            if result["stopped"]:
+                not_attempted = keys[i + 1:]
+                break
 
-    return _format_copy_results(src, dst, results, copy_attachments=copy_attachments)
+    return _format_copy_results(src, dst, results, not_attempted,
+                                copy_attachments=copy_attachments)
+
+
+def _source_title(source_item) -> str | None:
+    return _utils.item_display_title((source_item or {}).get("data", {})) or None
 
 
 def _copy_one(key, source_item, children, target_zot, src, file_clients, *,
@@ -6462,12 +6506,23 @@ def _copy_one(key, source_item, children, target_zot, src, file_clients, *,
                     it["data"].setdefault("tags", []).extend(
                         {"tag": t} for t in tags_to_add if t not in have
                     )
-                _helpers._update_item_with_version_retry(target_zot, existing_key, _add_tags, ctx=ctx)
+                # The match is found either way; a failed tag update is
+                # reported on it rather than turning it into an error.
+                try:
+                    _helpers._update_item_with_version_retry(target_zot, existing_key, _add_tags, ctx=ctx)
+                except _RATE_LIMIT_ERRORS as exc:
+                    return _copy_result(key, title, status="reused", target_key=existing_key,
+                                        failed=[f"Tags: {_rate_limit_message(exc)}"], stopped=True)
+                except Exception as exc:
+                    return _copy_result(key, title, status="reused", target_key=existing_key,
+                                        failed=[f"Tags: {_helpers.format_zotero_error(exc)}"])
             return _copy_result(key, title, status="reused", target_key=existing_key)
 
     try:
         payload = _helpers._sanitize_item_for_creation(data, target_zot, copy_tags=copy_tags)
         create_res = target_zot.create_items([payload])
+    except _RATE_LIMIT_ERRORS:
+        raise
     except Exception as exc:
         return _copy_result(key, title, error=f"Error creating item: {_helpers.format_zotero_error(exc)}")
     if not (isinstance(create_res, dict) and create_res.get("success")):
@@ -6475,41 +6530,57 @@ def _copy_one(key, source_item, children, target_zot, src, file_clients, *,
         return _copy_result(key, title, error=f"Failed to create item in target library: {detail}")
     target_key = next(iter(create_res["success"].values()))
 
+    # From here on the parent exists in the target, so nothing below may
+    # raise: the result must keep target_key, or a retry would duplicate it.
+    wanted = {"note": copy_notes, "attachment": copy_attachments}
+    to_copy = [
+        c for c in children
+        if wanted.get(c.get("data", {}).get("itemType")) and not c["data"].get("deleted")
+    ]
     notes = attachments = 0
     copied: list[str] = []
     failed: list[str] = []
-    for child in children:
-        child_data = child.get("data", {})
-        child_type = child_data.get("itemType")
-        if child_data.get("deleted"):
-            continue
+    stopped = False
+    for i, child in enumerate(to_copy):
+        child_data = child["data"]
         tags = copy.deepcopy(child_data.get("tags", [])) if copy_tags else []
-        if child_type == "note" and copy_notes:
-            ok, reason = _create_child(target_zot, {
-                "itemType": "note", "parentItem": target_key,
-                "note": child_data.get("note", ""), "tags": tags,
-            })
-            if ok:
-                notes += 1
+        if child_data["itemType"] == "note":
+            name = f"Note {child.get('key')}"
+        else:
+            name = child_data.get("title") or child_data.get("filename") or f"Attachment {child.get('key')}"
+        try:
+            if child_data["itemType"] == "note":
+                ok, reason = _create_child(target_zot, {
+                    "itemType": "note", "parentItem": target_key,
+                    "note": child_data.get("note", ""), "tags": tags,
+                })
+                if ok:
+                    notes += 1
             else:
-                failed.append(f"Note {child.get('key')}: {reason}")
-        elif child_type == "attachment" and copy_attachments:
-            name, reason = _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx)
-            if reason is None:
-                attachments += 1
-                copied.append(name)
-            else:
-                failed.append(f"{name}: {reason}")
+                name, reason = _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx)
+                if reason is None:
+                    attachments += 1
+                    copied.append(name)
+        except _RATE_LIMIT_ERRORS as exc:
+            reason = _rate_limit_message(exc)
+            stopped = True
+        except Exception as exc:
+            reason = _helpers.format_zotero_error(exc)
+        if reason is not None:
+            failed.append(f"{name}: {reason}")
+        if stopped:
+            if rest := len(to_copy) - i - 1:
+                failed.append(f"{rest} more child item(s): not attempted")
+            break
 
     return _copy_result(key, title, target_key=target_key, notes=notes,
-                        attachments=attachments, copied=copied, failed=failed)
+                        attachments=attachments, copied=copied, failed=failed,
+                        stopped=stopped)
 
 
 def _create_child(target_zot, payload) -> tuple[bool, str | None]:
-    try:
-        res = target_zot.create_items([payload])
-    except Exception as exc:
-        return False, _helpers.format_zotero_error(exc)
+    """Create one child item. Exceptions propagate to the caller's loop."""
+    res = target_zot.create_items([payload])
     if isinstance(res, dict) and res.get("success"):
         return True, None
     return False, str(res.get("failed", {}).get("0") if isinstance(res, dict) else res)
@@ -6547,12 +6618,14 @@ def _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx) -> 
                 target_zot, filename, str(download.path), target_key, ctx,
                 content_type=data.get("contentType"),
             )
+    except _RATE_LIMIT_ERRORS:
+        raise
     except Exception as exc:
         return f"File: {filename}", _helpers.format_zotero_error(exc)
     return f"File: {filename}{suffix if ok else ''}", None if ok else suffix
 
 
-def _format_copy_results(src, dst, results, *, copy_attachments) -> str:
+def _format_copy_results(src, dst, results, not_attempted, *, copy_attachments) -> str:
     lines = [
         "# zotero_copy_items_between_libraries",
         "",
@@ -6560,6 +6633,13 @@ def _format_copy_results(src, dst, results, *, copy_attachments) -> str:
         f"- **Target library:** ID={dst.library_id} (type={dst.library_type})",
         "",
     ]
+    if any(r["stopped"] for r in results):
+        lines.append("**Stopped early: Zotero is rate-limiting requests.** Each item "
+                     "below shows what was written before the stop.")
+        if not_attempted:
+            keys = ", ".join(f"`{k}`" for k in not_attempted)
+            lines.append(f"- **Not attempted:** {keys}. Wait a minute, then rerun with these keys.")
+        lines.append("")
     labels = {"copied": "Copied", "skipped": "Skipped", "reused": "Reused"}
     for r in results:
         if r["error"]:
@@ -6580,7 +6660,7 @@ def _format_copy_results(src, dst, results, *, copy_attachments) -> str:
             if r["copied"]:
                 att += f" ({', '.join(r['copied'])})"
             lines.append(att)
-            lines += [f"- **Not copied:** {f}" for f in r["failed"]]
+        lines += [f"- **Not copied:** {f}" for f in r["failed"]]
         lines.append("")
 
     if copy_attachments:

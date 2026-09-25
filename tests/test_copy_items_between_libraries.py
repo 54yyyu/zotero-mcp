@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from conftest import DummyContext, FakeZotero
+from pyzotero.zotero_errors import TooManyRequestsError, TooManyRetriesError
 
 from zotero_mcp import client as _client
 from zotero_mcp import server
@@ -49,6 +50,22 @@ class TestLibraryResolution:
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
         monkeypatch.setenv("ZOTERO_LIBRARY_ID", "98765")
         assert _copy_library("0", None) == ("98765", "user", 0)
+
+    def test_web_mode_accepts_your_own_user_id(self, monkeypatch):
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+        monkeypatch.setenv("ZOTERO_LIBRARY_ID", "98765")
+        assert _copy_library("98765", "user") == ("98765", "user", 0)
+        # zotero_list_libraries shows the userID, and an agent may omit the type.
+        assert _copy_library("98765", None) == ("98765", "user", 0)
+
+    @pytest.mark.parametrize("local", [True, False])
+    def test_another_id_as_personal_library_is_rejected(self, monkeypatch, local):
+        """Any id with library_type='user' used to mean your own library, so a
+        wrong id silently wrote there."""
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: local)
+        monkeypatch.setenv("ZOTERO_LIBRARY_ID", "98765")
+        with pytest.raises(ValueError, match="not your personal library"):
+            _copy_library("6069773", "user")
 
     def test_group_library_numeric(self):
         assert _copy_library("54321", None) == ("54321", "group", 54321)
@@ -658,6 +675,170 @@ class TestCopyItemsExecution:
         assert lookups[0]["isbn"] == "9780262033848"
         assert "**Status:** Skipped" in res
         assert target_zot.created == []
+
+
+# ---------------------------------------------------------------------------
+# 4b. Failures partway through a batch
+# ---------------------------------------------------------------------------
+
+
+def _paper(key, title, doi=None):
+    data = {"key": key, "itemType": "journalArticle", "title": title}
+    if doi:
+        data["DOI"] = doi
+    return {"key": key, "version": 1, "data": data}
+
+
+class TestPartialFailure:
+    """Items already written must stay in the report when a later step fails,
+    or the caller retries and duplicates them."""
+
+    setup_clients = TestCopyItemsExecution.setup_clients
+
+    def _copy(self, keys, ctx, **kwargs):
+        return copy_items_between_libraries(
+            keys, source_library_id="0", target_library_id="6069773", ctx=ctx, **kwargs
+        )
+
+    def test_rate_limited_lookup_stops_the_batch_and_keeps_the_report(
+        self, setup_clients, monkeypatch, dummy_ctx
+    ):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [
+            _paper("SRC0001", "First", "10.1000/1"),
+            _paper("SRC0002", "Second", "10.1000/2"),
+            _paper("SRC0003", "Third", "10.1000/3"),
+        ]
+
+        def fake_find(zot, **kwargs):
+            if kwargs["doi"] == "10.1000/2":
+                raise TooManyRequestsError("429 Too Many Requests")
+            return []
+
+        monkeypatch.setattr(_helpers, "find_existing_items", fake_find)
+
+        res = self._copy(["SRC0001", "SRC0002", "SRC0003"], dummy_ctx)
+
+        assert "### ✅ First" in res
+        assert "**Target Key:** `KEY0000`" in res
+        assert "### ❌ Item `SRC0002`" in res
+        assert "rate-limiting" in res
+        assert "Stopped early" in res
+        assert "**Not attempted:** `SRC0003`" in res
+        assert [c["title"] for c in target_zot.created] == ["First"]
+
+    def test_rate_limited_create_stops_the_batch(self, setup_clients, monkeypatch, dummy_ctx):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [_paper("SRC0001", "First"), _paper("SRC0002", "Second")]
+
+        def create_items(items, **kwargs):
+            raise TooManyRequestsError("429 Too Many Requests")
+
+        monkeypatch.setattr(target_zot, "create_items", create_items)
+
+        res = self._copy(["SRC0001", "SRC0002"], dummy_ctx)
+
+        assert "### ❌ Item `SRC0001`" in res
+        assert "rate-limiting" in res
+        assert "**Not attempted:** `SRC0002`" in res
+
+    def test_other_error_is_reported_and_the_batch_continues(
+        self, setup_clients, monkeypatch, dummy_ctx
+    ):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [
+            _paper("SRC0001", "First", "10.1000/1"),
+            _paper("SRC0002", "Second", "10.1000/2"),
+            _paper("SRC0003", "Third", "10.1000/3"),
+        ]
+
+        def fake_find(zot, **kwargs):
+            if kwargs["doi"] == "10.1000/2":
+                raise RuntimeError("search exploded")
+            return []
+
+        monkeypatch.setattr(_helpers, "find_existing_items", fake_find)
+
+        res = self._copy(["SRC0001", "SRC0002", "SRC0003"], dummy_ctx)
+
+        assert "### ❌ Item `SRC0002`" in res
+        assert "search exploded" in res
+        assert "Stopped early" not in res
+        assert [c["title"] for c in target_zot.created] == ["First", "Third"]
+
+    def test_child_failure_after_the_parent_exists_keeps_its_target_key(
+        self, setup_clients, monkeypatch, dummy_ctx
+    ):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [_paper("SRC0001", "Parent Paper")]
+        source_zot._children["SRC0001"] = [{
+            "key": "ATT_LINK",
+            "data": {"itemType": "attachment", "linkMode": "linked_url",
+                     "title": "Online Version", "url": "https://example.com/p"},
+        }]
+        real_template = _helpers.item_template_for
+
+        def fake_template(zot, item_type, *args):
+            if item_type == "attachment":
+                raise RuntimeError("template fetch failed")
+            return real_template(zot, item_type, *args)
+
+        monkeypatch.setattr(_helpers, "item_template_for", fake_template)
+
+        res = self._copy("SRC0001", dummy_ctx)
+
+        assert "### ✅ Parent Paper" in res
+        assert "**Target Key:** `KEY0000`" in res
+        assert "**Not copied:** Online Version: template fetch failed" in res
+        assert len(target_zot.created) == 1
+
+    def test_rate_limited_child_stops_the_batch(self, setup_clients, monkeypatch, dummy_ctx):
+        source_zot, target_zot = setup_clients
+        source_zot._items = [_paper("SRC0001", "First"), _paper("SRC0002", "Second")]
+        source_zot._children["SRC0001"] = [
+            {"key": f"NOTE{i}", "data": {"itemType": "note", "note": f"<p>{i}</p>"}}
+            for i in (1, 2, 3)
+        ]
+        real_create = target_zot.create_items
+
+        def create_items(items, **kwargs):
+            if items[0].get("itemType") == "note":
+                raise TooManyRetriesError("gave up after retries")
+            return real_create(items, **kwargs)
+
+        monkeypatch.setattr(target_zot, "create_items", create_items)
+
+        res = self._copy(["SRC0001", "SRC0002"], dummy_ctx)
+
+        assert "### ✅ First" in res
+        assert "**Target Key:** `KEY0000`" in res
+        assert "**Not copied:** Note NOTE1: Zotero is rate-limiting requests" in res
+        assert "**Not copied:** 2 more child item(s): not attempted" in res
+        assert "**Not attempted:** `SRC0002`" in res
+        assert [c["title"] for c in target_zot.created] == ["First"]
+
+    def test_failed_tag_update_is_reported_on_the_reused_item(
+        self, setup_clients, monkeypatch, dummy_ctx
+    ):
+        source_zot, _target_zot = setup_clients
+        item = _paper("SRC0001", "Existing", "10.1000/1")
+        item["data"]["tags"] = [{"tag": "new"}]
+        source_zot._items = [item]
+        monkeypatch.setattr(
+            _helpers, "find_existing_items",
+            lambda zot, **kwargs: [{"key": "EXISTING_KEY", "data": {"key": "EXISTING_KEY"}}],
+        )
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("version conflict")
+
+        monkeypatch.setattr(_helpers, "_update_item_with_version_retry", boom)
+
+        res = self._copy("SRC0001", dummy_ctx, if_exists="file")
+
+        assert "**Status:** Reused" in res
+        assert "**Target Key:** `EXISTING_KEY`" in res
+        assert "**Not copied:** Tags: version conflict" in res
 
 
 # ---------------------------------------------------------------------------
