@@ -345,6 +345,16 @@ def cmd_get(args):
             collection_key=args.collection_key, detail=args.detail, limit=args.limit,
             offset=getattr(args, "offset", 0), ctx=ctx,
         )
+        # A key that names no collection in the active library, or a failed
+        # lookup, has to fail -- otherwise it reads as an empty collection
+        # (#606).
+        if _reports_failure(result) or result.startswith("Collection not found"):
+            code = "not_found" if result.startswith("Collection not found") else "tool_error"
+            if json_mode:
+                _cli_json.emit_error("get collection-items", result.strip(), code=code)
+            else:
+                print(result, file=sys.stderr)
+            sys.exit(1)
         if json_mode:
             keys = _keys_from_markdown(result)
             _cli_json.emit("get collection-items", {

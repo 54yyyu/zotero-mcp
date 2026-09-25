@@ -403,6 +403,60 @@ class TestGetCommand:
         assert payload["ok"] is False
         assert payload["error"]["code"] == "unknown_subcommand"
 
+    def _collection_items(self, result, **kwargs):
+        args = _args(subcommand="collection-items", collection_key="GRPCOLL1",
+                     detail="summary", limit=50, offset=0, **kwargs)
+        retrieval = MagicMock()
+        retrieval.get_collection_items.return_value = result
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
+             patch("zotero_mcp.cli_standalone._read_backend", return_value=MagicMock()), \
+             patch("zotero_mcp.cli_standalone._import_tools",
+                   return_value=(MagicMock(), retrieval, MagicMock(), MagicMock(), MagicMock())):
+            cmd_get(args)
+
+    def test_unknown_collection_is_an_error_not_an_empty_collection(self, capsys):
+        """A key from another library used to come back as `ok: true` with
+        zero items, indistinguishable from an empty collection (#606)."""
+        with pytest.raises(SystemExit) as exc:
+            self._collection_items(
+                "Collection not found or not yet accessible: `GRPCOLL1`. "
+                "If you just created this collection, wait a moment and try again."
+            )
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "not_found"
+        assert "GRPCOLL1" in payload["error"]["message"]
+
+    def test_a_failed_collection_lookup_is_an_error(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            self._collection_items("Error fetching collection items: disk I/O error")
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "tool_error"
+
+    def test_unknown_collection_fails_in_markdown_mode_too(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            self._collection_items(
+                "Collection not found or not yet accessible: `GRPCOLL1`.",
+                json_out=False,
+            )
+
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "GRPCOLL1" in captured.err
+
+    def test_an_empty_collection_is_still_a_success(self, capsys):
+        self._collection_items("No items found in collection: Inbox (Key: GRPCOLL1)")
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is True
+        assert payload["data"]["count"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Flag placement
@@ -427,3 +481,70 @@ class TestFlagPlacement:
         assert parser.parse_args(["-v", "search", "x"]).verbose is True
         assert parser.parse_args(["search", "-v", "x"]).verbose is True
         assert parser.parse_args(["search", "x"]).verbose is False
+
+
+# ---------------------------------------------------------------------------
+# Library scope
+# ---------------------------------------------------------------------------
+
+class TestLibraryScope:
+    """`get collections`, `get collection-items` and `get recent` read the
+    library ZOTERO_LIBRARY_ID/ZOTERO_LIBRARY_TYPE or an active switch names,
+    exactly as `collections search` does (#606)."""
+
+    COMMANDS = [
+        ["get", "collections"],
+        ["get", "collection-items", "GRPCOLL1"],
+        ["get", "recent"],
+        ["collections", "search", "Inbox"],
+    ]
+
+    @pytest.fixture
+    def opened(self, monkeypatch):
+        from zotero_mcp import client as _client
+
+        monkeypatch.setenv("ZOTERO_LOCAL", "true")
+        monkeypatch.setenv("ZOTERO_BACKEND", "api")
+        monkeypatch.delenv("ZOTERO_LIBRARY_ID", raising=False)
+        monkeypatch.delenv("ZOTERO_LIBRARY_TYPE", raising=False)
+        monkeypatch.setattr(_client, "_active_library_override", {})
+        opened = []
+
+        def fake_zotero(**kwargs):
+            opened.append((kwargs["library_id"], kwargs["library_type"]))
+            zot = MagicMock()
+            zot.collections.return_value = []
+            zot.items.return_value = []
+            zot.collection_items.return_value = []
+            zot.collection.return_value = {"key": "GRPCOLL1", "data": {"name": "Inbox"}}
+            return zot
+
+        monkeypatch.setattr(_client.zotero, "Zotero", fake_zotero)
+        return opened
+
+    def _run(self, argv):
+        from zotero_mcp.cli_standalone import _CMD_MAP
+
+        args = build_parser().parse_args(["--json", *argv])
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            _CMD_MAP[args.command](args)
+
+    @pytest.mark.parametrize("argv", COMMANDS, ids=" ".join)
+    def test_env_vars_choose_the_library(self, opened, monkeypatch, argv):
+        monkeypatch.setenv("ZOTERO_LIBRARY_ID", "6626192")
+        monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "group")
+
+        self._run(argv)
+
+        assert opened and set(opened) == {("6626192", "group")}
+
+    @pytest.mark.parametrize("argv", COMMANDS, ids=" ".join)
+    def test_an_active_switch_wins_over_env_vars(self, opened, monkeypatch, argv):
+        from zotero_mcp import client as _client
+
+        monkeypatch.setenv("ZOTERO_LIBRARY_ID", "0")
+        _client.set_active_library("6626192", "group")
+
+        self._run(argv)
+
+        assert opened and set(opened) == {("6626192", "group")}
