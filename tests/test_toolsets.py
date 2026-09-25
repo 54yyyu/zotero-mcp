@@ -18,12 +18,19 @@ import pytest
 
 from zotero_mcp.toolsets import (
     DEFAULT_ON,
+    PROFILE_ENV_VAR,
+    PROFILES,
     TOOLSETS,
     TOOLSETS_ENV_VAR,
+    UnknownProfileError,
     UnknownToolsetError,
+    apply_profile,
     apply_toolsets,
     optional_tool_names,
+    profile_tool_names,
     resolve_enabled,
+    resolve_profile,
+    validate_profiles,
     validate_toolsets,
 )
 
@@ -151,3 +158,104 @@ class TestApplyToolsets:
             assert default < full
         finally:
             apply_toolsets(mcp, raw="all", transport="streamable-http")
+
+
+class TestResolveProfile:
+    def test_unset_is_none(self, monkeypatch):
+        monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
+        assert resolve_profile() is None
+
+    def test_blank_value_is_treated_as_unset(self):
+        assert resolve_profile("   ") is None
+
+    def test_known_profile_is_normalized(self):
+        assert resolve_profile("  RESEARCH ") == "research"
+
+    def test_unknown_profile_raises_with_valid_values(self):
+        with pytest.raises(UnknownProfileError) as exc:
+            resolve_profile("nope")
+        message = str(exc.value)
+        assert "nope" in message
+        assert "research" in message  # lists the valid options
+
+    def test_env_var_is_read_when_raw_is_none(self, monkeypatch):
+        monkeypatch.setenv(PROFILE_ENV_VAR, "research")
+        assert resolve_profile() == "research"
+
+
+class TestProfileRegistry:
+    def test_registry_matches_live_tools(self):
+        """Every name in PROFILES must still be a registered tool."""
+        from zotero_mcp.server import mcp
+
+        # list_tools reflects whatever is currently hidden, so re-enable
+        # everything named by a profile first; otherwise a disabled tool
+        # would look like drift rather than an intentional exclusion.
+        mcp.enable(names=profile_tool_names())
+        registered = {t.name for t in asyncio.run(mcp.list_tools())}
+        stale = validate_profiles(registered)
+        assert not stale, (
+            f"toolsets.py PROFILES references tools that no longer exist: {stale}. "
+            "Update PROFILES after renaming or removing a tool."
+        )
+
+    def test_research_profile_excludes_irreversible_deletes(self):
+        # The two operations with no undo path must never be in a profile
+        # meant for an unsupervised local assistant with full write access.
+        assert "zotero_delete_collection" not in PROFILES["research"]
+        assert "zotero_delete_annotation" not in PROFILES["research"]
+
+    def test_research_profile_keeps_recoverable_delete(self):
+        # zotero_delete_item moves to Trash, so it stays available.
+        assert "zotero_delete_item" in PROFILES["research"]
+
+
+class TestApplyProfile:
+    """``apply_profile`` uses FastMCP's ``only=True`` allowlist mode, which
+    (unlike everything ``apply_toolsets`` does) disables *every* tool via a
+    match-all transform before re-enabling the named set. There is no public
+    API to undo a match-all transform other than removing it, so each test
+    here snapshots ``mcp.transforms`` and truncates back to it afterwards —
+    otherwise a profile applied in one test would leak into every test that
+    runs after it in the same process.
+    """
+
+    def test_no_profile_leaves_toolset_surface_untouched(self):
+        from zotero_mcp.server import mcp
+
+        def listed() -> set[str]:
+            return {t.name for t in asyncio.run(mcp.list_tools())}
+
+        snapshot = len(mcp.transforms)
+        try:
+            apply_toolsets(mcp, raw="all", transport="streamable-http")
+            before = listed()
+            assert apply_profile(mcp, raw=None) is None
+            assert listed() == before
+        finally:
+            del mcp._transforms[snapshot:]
+            apply_toolsets(mcp, raw="all", transport="streamable-http")
+
+    def test_research_profile_is_a_hard_allowlist(self):
+        from zotero_mcp.server import mcp
+
+        def listed() -> set[str]:
+            return {t.name for t in asyncio.run(mcp.list_tools())}
+
+        snapshot = len(mcp.transforms)
+        try:
+            # Start from the full surface so this proves the profile *removes*
+            # core tools, not merely that it fails to add optional ones back.
+            apply_toolsets(mcp, raw="all", transport="streamable-http")
+            assert apply_profile(mcp, raw="research") == "research"
+            assert listed() == set(PROFILES["research"])
+            assert "zotero_delete_collection" not in listed()
+        finally:
+            del mcp._transforms[snapshot:]
+            apply_toolsets(mcp, raw="all", transport="streamable-http")
+
+    def test_unknown_profile_raises(self):
+        from zotero_mcp.server import mcp
+
+        with pytest.raises(UnknownProfileError):
+            apply_profile(mcp, raw="nope")

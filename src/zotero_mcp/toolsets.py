@@ -25,6 +25,14 @@ unset                        Core plus :data:`DEFAULT_ON` (the default profile)
 ===========================  ==================================================
 
 Names are case-insensitive and may be separated by commas or whitespace.
+
+A second, orthogonal selector, ``ZOTERO_MCP_PROFILE``, names a **hard
+allowlist** (see :data:`PROFILES`) rather than an addition to the core
+surface. Toolsets can only ever grow the surface beyond core; a profile can
+also shrink it below core, which is the only way to remove a tool like
+``zotero_delete_collection`` that toolset selection can't touch. Apply
+:func:`apply_profile` after :func:`apply_toolsets` — a profile wins outright
+over whatever toolsets selected.
 """
 
 from __future__ import annotations
@@ -257,3 +265,119 @@ def validate_toolsets(registered: Iterable[str]) -> list[str]:
     """
     known = set(registered)
     return sorted(name for name in optional_tool_names() if name not in known)
+
+
+#: Environment variable that selects a named tool-surface profile.
+PROFILE_ENV_VAR = "ZOTERO_MCP_PROFILE"
+
+#: Named tool-surface profiles: hard allowlists applied *after* toolset
+#: resolution (see the module docstring). Each is a complete, curated surface
+#: for a particular way of using the server — not an add-on to core.
+PROFILES: dict[str, frozenset[str]] = {
+    # A single-user, local-model research assistant: full search, plus the
+    # everyday write operations (add items, organize collections, notes,
+    # annotations, tags) a chat session is actually asked to do — but not the
+    # two unrecoverable deletes (`zotero_delete_collection`,
+    # `zotero_delete_annotation`) or the rarer bulk/admin tools
+    # (`zotero_batch_update`, `zotero_attach_file`, `zotero_set_item_parent`,
+    # library-switching, PDF geometry, scite, feeds, duplicates, discovery).
+    # Cuts the full 41-tool/~63KB schema payload to 22 tools, which is what
+    # keeps a small local model's time-to-first-tool-call usable rather than
+    # spending most of a turn just re-reading the tool list.
+    "research": frozenset(
+        {
+            # Reads
+            "zotero_semantic_search",
+            "zotero_search_items",
+            "zotero_advanced_search",
+            "zotero_get_item_metadata",
+            "zotero_get_item_fulltext",
+            "zotero_get_collections",
+            "zotero_get_collection_items",
+            "zotero_get_tags",
+            "zotero_get_recent",
+            "zotero_get_annotations",
+            "zotero_get_notes",
+            # Everyday writes
+            "zotero_manage_note",
+            "zotero_add_item",
+            "zotero_create_annotation",
+            "zotero_update_annotation",
+            "zotero_update_item",
+            "zotero_delete_item",  # Trash, not permanent — safe to keep.
+            "zotero_create_collection",
+            "zotero_update_collection",
+            "zotero_set_item_collections",
+            # Write-path plumbing: how a local write gets authorized (Zotero
+            # 10+) and how the model finds out whether it's available at all.
+            # Without these, every write tool above would fail with no way
+            # for the model to self-diagnose or unblock why.
+            "zotero_authorize_local_writes",
+            "zotero_write_capabilities",
+        }
+    ),
+}
+
+
+class UnknownProfileError(ValueError):
+    """Raised when ``ZOTERO_MCP_PROFILE`` names a profile that does not exist."""
+
+
+def resolve_profile(raw: str | None = None) -> str | None:
+    """Return the named profile to apply, or ``None`` for no restriction.
+
+    Args:
+        raw: Raw ``ZOTERO_MCP_PROFILE`` value. ``None`` reads the environment;
+            an empty or whitespace-only value is treated as unset, mirroring
+            how :func:`resolve_enabled` treats ``ZOTERO_MCP_TOOLSETS=``.
+
+    Raises:
+        UnknownProfileError: If the value does not name a known profile.
+    """
+    if raw is None:
+        raw = os.environ.get(PROFILE_ENV_VAR)
+    name = (raw or "").strip().lower()
+    if not name:
+        return None
+    if name not in PROFILES:
+        valid = ", ".join(sorted(PROFILES))
+        raise UnknownProfileError(
+            f"Unknown profile {name!r} in {PROFILE_ENV_VAR}. Valid values: {valid}"
+        )
+    return name
+
+
+def apply_profile(mcp: FastMCP, *, raw: str | None = None) -> str | None:
+    """Restrict ``mcp``'s advertised tools to a named profile, if one is set.
+
+    Call this after :func:`apply_toolsets`. A profile is a hard allowlist
+    that wins regardless of toolset state: it uses FastMCP's ``only=True``
+    allowlist mode, which disables every tool and then re-enables exactly the
+    named set, overriding whatever toolset selection did. That's what lets a
+    profile remove a core tool (toolsets can only ever add to core).
+
+    Returns the profile name that was applied, or ``None`` if
+    ``ZOTERO_MCP_PROFILE`` was unset, in which case the toolset-resolved
+    surface from :func:`apply_toolsets` is left exactly as it was.
+    """
+    name = resolve_profile(raw)
+    if name is None:
+        return None
+    mcp.enable(names=set(PROFILES[name]), only=True)
+    return name
+
+
+def profile_tool_names() -> set[str]:
+    """Every tool name mentioned by some profile."""
+    return {name for tools in PROFILES.values() for name in tools}
+
+
+def validate_profiles(registered: Iterable[str]) -> list[str]:
+    """Return profile entries that no longer match a registered tool.
+
+    Same rationale as :func:`validate_toolsets`: FastMCP ignores unknown names
+    silently, so a renamed or removed tool would otherwise leave a dead entry
+    here that quietly shrinks the profile instead of failing loudly.
+    """
+    known = set(registered)
+    return sorted(name for name in profile_tool_names() if name not in known)
