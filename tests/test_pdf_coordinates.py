@@ -92,11 +92,11 @@ def test_find_text_position_offset_mediabox_includes_origin():
             (crop_height - pymupdf_rect.y0) + 46.5, abs=1.0
         )
 
-        # Sort index is derived from the corrected coordinates.
-        page_part, y_part, x_part = result["sort_index"].split("|")
+        # Sort index: page | character offset | page height minus the rect's top.
+        page_part, offset_part, top_part = result["sort_index"].split("|")
         assert page_part == "00000"
-        assert int(y_part) == int(rect[1])
-        assert int(x_part) == int(rect[0])
+        assert offset_part == "000000"  # SENTENCE is the page's only text
+        assert int(top_part) == int(crop_height - rect[3])
 
 
 def test_build_area_position_offset_mediabox():
