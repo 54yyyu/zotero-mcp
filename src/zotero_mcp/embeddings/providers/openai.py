@@ -59,7 +59,8 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
                  max_parallel_requests: int | None = None,
                  max_retries: int | None = None,
                  tokens_per_minute: float | None = None,
-                 dimensions: int | None = None):
+                 dimensions: int | None = None,
+                 insecure_skip_verify: bool | None = None):
         import threading
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self._rate_lock = threading.Lock()
@@ -71,6 +72,21 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         self.dimensions: int | None = int(dimensions) if dimensions else None
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
+
+        # Opt-in only: some OpenAI-compatible internal gateways (an
+        # organization's own reverse proxy in front of a self-hosted backend,
+        # for example) present a certificate chain missing its intermediate,
+        # which no standards-compliant client can verify without either that
+        # intermediate or disabling verification outright. There is no way to
+        # express "skip verification" through an environment variable alone
+        # (httpx/openai only expose it as a constructor argument), hence this
+        # explicit, narrowly-scoped opt-in rather than a blanket env default.
+        self.insecure_skip_verify: bool = (
+            insecure_skip_verify
+            if insecure_skip_verify is not None
+            else os.getenv("OPENAI_EMBEDDING_INSECURE_SKIP_VERIFY", "").strip().lower()
+            in ("1", "true", "yes")
+        )
 
         self._init_common(
             model_name=model_name,
@@ -87,12 +103,22 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             client_kwargs = {"api_key": self.api_key}
             if self.base_url:
                 client_kwargs["base_url"] = self.base_url
-            # Deliberately no custom http_client. The SDK already pools at
-            # 1000 connections / 100 keepalive with a 600s read timeout, which
-            # comfortably covers any max_parallel_requests worth setting;
-            # supplying an httpx.Client here would *narrow* both, and a
-            # shorter read timeout would fail large embedding requests the
-            # default would have completed.
+            # Deliberately no custom http_client, UNLESS insecure_skip_verify
+            # was explicitly requested. The SDK's own default client already
+            # pools at 1000 connections / 100 keepalive with a 600s read
+            # timeout, which comfortably covers any max_parallel_requests
+            # worth setting; supplying an httpx.Client here would otherwise
+            # *narrow* both, and a shorter read timeout would fail large
+            # embedding requests the default would have completed -- so when
+            # it is needed, this matches those same defaults and changes only
+            # verify=False.
+            if self.insecure_skip_verify:
+                import httpx
+                client_kwargs["http_client"] = httpx.Client(
+                    verify=False,
+                    limits=httpx.Limits(max_connections=1000, max_keepalive_connections=100),
+                    timeout=600,
+                )
             self.client = openai.OpenAI(**client_kwargs)
         except ImportError:
             raise ImportError("openai package is required for OpenAI embeddings")
@@ -113,6 +139,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             "api_key_env_var": "OPENAI_API_KEY",
             "api_base": self.base_url,
             "dimensions": getattr(self, "dimensions", None),
+            "insecure_skip_verify": getattr(self, "insecure_skip_verify", False),
             **self._common_config(),
         }
 
@@ -135,6 +162,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             max_retries=config.get("max_retries"),
             tokens_per_minute=config.get("tokens_per_minute"),
             dimensions=config.get("dimensions"),
+            insecure_skip_verify=config.get("insecure_skip_verify"),
         )
 
     def _wait_for_rate_limit(self) -> None:

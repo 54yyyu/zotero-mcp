@@ -1383,10 +1383,21 @@ def main():
         # import-time call in server.py assumed stdio; an HTTP transport also
         # needs the ChatGPT connector tools. setup_zotero_environment() runs
         # first so a ZOTERO_MCP_TOOLSETS set via the config file is honoured.
-        from zotero_mcp.toolsets import UnknownToolsetError, apply_toolsets
+        from zotero_mcp.toolsets import (
+            UnknownProfileError,
+            UnknownToolsetError,
+            apply_profile,
+            apply_toolsets,
+        )
         try:
             apply_toolsets(mcp, transport=transport)
+            # A named ZOTERO_MCP_PROFILE is a hard allowlist layered on top —
+            # see zotero_mcp.toolsets module docstring.
+            apply_profile(mcp)
         except UnknownToolsetError as e:
+            print(f"❌ {e}")
+            sys.exit(1)
+        except UnknownProfileError as e:
             print(f"❌ {e}")
             sys.exit(1)
         # If the reranker is enabled, warm it up in the background so the first
