@@ -209,6 +209,17 @@ class TestProfileRegistry:
         # zotero_delete_item moves to Trash, so it stays available.
         assert "zotero_delete_item" in PROFILES["research"]
 
+    def test_research_profile_supports_reading_past_the_fulltext_cap(self):
+        # zotero_get_item_fulltext truncates at fulltext_display_max_pages
+        # (10 by default) and its own truncation notice tells the model to
+        # call zotero_read_pdf_pages to continue. A profile that includes
+        # the former without the latter points the model at a tool it can't
+        # see -- observed live as an assistant correctly reporting "the
+        # page-range reader ... is not exposed". Both must travel together.
+        assert "zotero_get_item_fulltext" in PROFILES["research"]
+        assert "zotero_read_pdf_pages" in PROFILES["research"]
+        assert "zotero_get_pdf_outline" in PROFILES["research"]
+
 
 class TestApplyProfile:
     """``apply_profile`` uses FastMCP's ``only=True`` allowlist mode, which

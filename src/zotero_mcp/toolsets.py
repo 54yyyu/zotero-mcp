@@ -280,8 +280,9 @@ PROFILES: dict[str, frozenset[str]] = {
     # two unrecoverable deletes (`zotero_delete_collection`,
     # `zotero_delete_annotation`) or the rarer bulk/admin tools
     # (`zotero_batch_update`, `zotero_attach_file`, `zotero_set_item_parent`,
-    # library-switching, PDF geometry, scite, feeds, duplicates, discovery).
-    # Cuts the full 41-tool/~63KB schema payload to 22 tools, which is what
+    # library-switching, page-geometry/annotation-coordinate tools, scite,
+    # feeds, duplicates, discovery).
+    # Cuts the full 41-tool/~63KB schema payload to 24 tools, which is what
     # keeps a small local model's time-to-first-tool-call usable rather than
     # spending most of a turn just re-reading the tool list.
     "research": frozenset(
@@ -292,6 +293,18 @@ PROFILES: dict[str, frozenset[str]] = {
             "zotero_advanced_search",
             "zotero_get_item_metadata",
             "zotero_get_item_fulltext",
+            # zotero_get_item_fulltext caps at fulltext_display_max_pages
+            # (default 10) — a deliberate context-window guard, not a bug
+            # (see retrieval.py). Its own truncation notice tells the model
+            # to call zotero_read_pdf_pages to keep reading; without these
+            # two, that notice points at a tool the model can't see, and a
+            # live session hit exactly that (reported "the page-range reader
+            # ... is not exposed" — accurate, not a hallucination). Paired
+            # per zotero_read_pdf_pages' own description ("use this when you
+            # know which pages to read — for example after getting the PDF
+            # outline via zotero_get_pdf_outline").
+            "zotero_read_pdf_pages",
+            "zotero_get_pdf_outline",
             "zotero_get_collections",
             "zotero_get_collection_items",
             "zotero_get_tags",
