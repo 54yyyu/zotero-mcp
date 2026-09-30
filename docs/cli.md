@@ -140,6 +140,8 @@ zotero-cli read ABC123 --start-page 42 --end-page 55      # flags garbled math, 
 zotero-cli read ABC123 --start-page 44 --format image    # PNG page images (up to 10 pages)
 zotero-cli read ABC123 --start-page 44 --format image --rect 0.35,0.49,0.3,0.05   # zoom in
 zotero-cli path ABC123                        # where the file lives on disk
+zotero-cli open ABC123 --page 44              # show page 44 in the Zotero reader
+zotero-cli open --annotation ANN01            # jump to an annotation and select it
 
 # Annotating a PDF — boxes to aim at, then a checked plan written in one run
 zotero-cli --json layout ATTACH01 --pages 3-9            # figure, table and equation boxes

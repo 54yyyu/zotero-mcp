@@ -112,6 +112,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--comment`
  - `--color` -- default `#ffd400` -- Hex, or a Zotero color name: yellow, red, green, blue, purple, magenta, orange, gray
  - `--tags` -- Comma-separated tags
+ - `--open` -- Then show the new annotation in the Zotero reader
 
 ### `annotations batch`
 
@@ -389,6 +390,12 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ## `path`
 
  - `<item_key>`
+
+## `open`
+
+ - `<item_key>` -- Item or attachment key (not needed with --annotation)
+ - `--page` -- 1-based page position, as `read` counts pages
+ - `--annotation` -- Annotation key to jump to and select
 
 ## `batch`
 
