@@ -47,6 +47,8 @@ class TestParsing:
         (["coverage"], "coverage"),
         (["synthesize"], "synthesize"),
         (["path", "K1"], "path"),
+        (["open", "K1", "--page", "4"], "open"),
+        (["open", "--annotation", "N1"], "open"),
         (["batch", "--item-keys", "K1", "--add-tags", "x"], "batch"),
     ])
     def test_command_parses_and_is_routable(self, argv, command):
@@ -168,3 +170,49 @@ class TestDispatch:
         assert kwargs["add_tags"] == ["x", "y"]
         assert kwargs["remove_tags"] == ["z"]
         assert kwargs["comment"] == "hi"
+
+
+class TestOpen:
+    """`open` hands Zotero's reader a zotero://open-pdf link it resolves."""
+
+    def _run(self, zot, group_id=0, **kwargs):
+        args = _args(**{"item_key": None, "page": None, "annotation": None, **kwargs})
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
+             patch("zotero_mcp.client.get_zotero_client", return_value=zot), \
+             patch("zotero_mcp.client.get_active_group_id", return_value=group_id), \
+             patch("zotero_mcp.cli_standalone._launch_url") as launch:
+            cli_standalone.cmd_open(args)
+        return launch.call_args.args[0]
+
+    def test_parent_item_opens_its_pdf_at_the_page(self):
+        zot = MagicMock()
+        zot.item.return_value = {"key": "P1", "data": {"itemType": "journalArticle"}}
+        zot.children.return_value = [{"key": "A1", "data": {
+            "itemType": "attachment", "contentType": "application/pdf",
+            "filename": "x.pdf", "title": "PDF"}}]
+        with patch("zotero_mcp.client._paginate", side_effect=lambda f, k: f(k)):
+            url = self._run(zot, item_key="P1", page=5)
+        assert url == "zotero://open-pdf/library/items/A1?page=5"
+
+    def test_annotation_link_uses_the_annotations_own_attachment(self):
+        zot = MagicMock()
+        zot.item.return_value = {"key": "N1", "data": {
+            "itemType": "annotation", "parentItem": "A9"}}
+        url = self._run(zot, item_key="P1", annotation="N1", page=3)
+        assert url == "zotero://open-pdf/library/items/A9?annotation=N1"
+
+    def test_group_library_links_through_the_group(self):
+        zot = MagicMock()
+        zot.item.return_value = {"key": "A1", "data": {"itemType": "attachment"}}
+        url = self._run(zot, group_id=42, item_key="A1", page=2)
+        assert url == "zotero://open-pdf/groups/42/items/A1?page=2"
+
+    def test_non_annotation_key_is_refused(self):
+        zot = MagicMock()
+        zot.item.return_value = {"key": "P1", "data": {"itemType": "journalArticle"}}
+        with pytest.raises(SystemExit):
+            self._run(zot, annotation="P1")
+
+    def test_needs_a_key(self):
+        with pytest.raises(SystemExit):
+            self._run(MagicMock())

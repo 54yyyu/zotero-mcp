@@ -84,6 +84,7 @@ Extracted text is reliable for prose and **unreliable for math, figures and tabl
 zotero-cli --json read ITEM_KEY --start-page 4 --format image                               # PNG paths
 zotero-cli --json read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05     # zoom in
 zotero-cli path ITEM_KEY                                                                    # the PDF on disk
+zotero-cli open ITEM_KEY --page 4                                                           # show it in the Zotero reader
 ```
 
 ### Annotating a paper

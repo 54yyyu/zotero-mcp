@@ -133,7 +133,13 @@ item` refuses notes unless `--allow-note` is passed.
 zotero-cli get children ITEM_KEY                          # the PDF's attachment key
 zotero-cli read ITEM_KEY --start-page 1 --end-page 99     # end page clamps to the last page
 zotero-cli path ATTACHMENT_KEY                            # the PDF file on disk
+zotero-cli open ITEM_KEY --page 7                         # show that page in the Zotero reader
+zotero-cli open --annotation ANNOTATION_KEY               # jump to one annotation and select it
 ```
+
+When the user is reading along in Zotero and asks where something is, point
+the reader at it with `open` rather than only quoting a page number.
+`annotations create --open` does both in one step.
 
 Extracted text is reliable for prose and unreliable for math, figures and
 tables: symbols drop out and table cells run together. `read` flags each

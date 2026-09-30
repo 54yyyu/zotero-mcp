@@ -431,7 +431,7 @@ def cmd_annotations(args):
             return
         print(result)
     elif args.subcommand == "create":
-        _out(args, "annotations create", text=annotations.create_annotation(
+        text = annotations.create_annotation(
             attachment_key=args.attachment_key, page=args.page,
             text=getattr(args, "text", None),
             rect=_parse_rect(getattr(args, "rect", None)),
@@ -439,7 +439,13 @@ def cmd_annotations(args):
             comment=getattr(args, "comment", None),
             color=_resolve_color(args.color),
             tags=_split_csv(getattr(args, "tags", None)), ctx=ctx,
-        ))
+        )
+        if getattr(args, "open", False) and not _reports_failure(text):
+            import re
+            match = re.search(r"\*\*Annotation Key:\*\* (\w+)", text)
+            _launch_url(_reader_url(args.attachment_key, page=args.page,
+                                    annotation_key=match and match.group(1)))
+        _out(args, "annotations create", text=text)
     elif args.subcommand == "batch":
         _annotations_batch(args, annotations, ctx)
     elif args.subcommand == "update":
@@ -1245,6 +1251,70 @@ def cmd_plugin(args):
         "Setup and first run: https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md"))
 
 
+def _reader_url(attachment_key: str, *, page: int | None = None,
+                annotation_key: str | None = None) -> str:
+    """A zotero://open-pdf link that Zotero's own protocol handler resolves.
+
+    page is 1-based and positional (Zotero subtracts one to get pageIndex),
+    the same numbering `read` uses, not the printed page label.
+    """
+    from urllib.parse import urlencode
+
+    from zotero_mcp import client as _client
+    group_id = _client.get_active_group_id()
+    library = f"groups/{group_id}" if group_id else "library"
+    params = {}
+    if annotation_key:
+        params["annotation"] = annotation_key
+    elif page:
+        params["page"] = page
+    query = f"?{urlencode(params)}" if params else ""
+    return f"zotero://open-pdf/{library}/items/{attachment_key}{query}"
+
+
+def _launch_url(url: str) -> None:
+    import os
+    import subprocess
+    if sys.platform == "darwin":
+        subprocess.run(["open", url], check=True)
+    elif sys.platform == "win32":
+        os.startfile(url)  # noqa: S606 -- a zotero:// link, not a path
+    else:
+        subprocess.run(["xdg-open", url], check=True)
+
+
+def cmd_open(args):
+    """Show an item's PDF in the Zotero reader, at a page or on an annotation."""
+    if not args.item_key and not args.annotation:
+        _fail(args, "open", "pass an item or attachment key, or --annotation KEY", "bad_args")
+    setup_zotero_environment()
+    from zotero_mcp import client as _client
+    zot = _client.get_zotero_client()
+
+    if args.annotation:
+        # The reader needs the annotation's own attachment in the link, so
+        # derive it rather than trusting a key the caller may have mixed up.
+        ann = zot.item(args.annotation)
+        attachment_key = ann.get("data", {}).get("parentItem")
+        if ann.get("data", {}).get("itemType") != "annotation" or not attachment_key:
+            _fail(args, "open", f"{args.annotation} is not an annotation", "not_annotation")
+    else:
+        item = zot.item(args.item_key)
+        attachment = (_client.get_attachment_details(zot, item, priority=("pdf",))
+                      or _client.get_attachment_details(zot, item))
+        if attachment is None:
+            _fail(args, "open", f"No attachment found for {args.item_key}", "no_attachment")
+        attachment_key = attachment.key
+
+    url = _reader_url(attachment_key, page=args.page, annotation_key=args.annotation)
+    _launch_url(url)
+    _out(args, "open",
+         data={"attachment_key": attachment_key, "page": args.page,
+               "annotation_key": args.annotation, "url": url}
+         if _json_mode(args) else None,
+         text=f"Opened in Zotero: {url}")
+
+
 def cmd_batch(args):
     setup_zotero_environment()
     _s, _r, _a, write_mod, _c = _import_tools()
@@ -1416,6 +1486,8 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--color", default="#ffd400",
                     help=f"Hex, or a Zotero color name: {', '.join(ZOTERO_COLORS)}")
     ac.add_argument("--tags", help="Comma-separated tags")
+    ac.add_argument("--open", action="store_true",
+                    help="Then show the new annotation in the Zotero reader")
     ab = a_sub.add_parser("batch", help="Create many annotations from JSON Lines in one run")
     ab.add_argument("--attachment-key", required=True,
                     help="Attachment for lines that do not name their own")
@@ -1677,6 +1749,12 @@ def build_parser() -> argparse.ArgumentParser:
     pl_p = sub.add_parser("plugin", help="Locate the Zotero chat plugin (.xpi) and show how to install it")
     pl_p.add_argument("--path", action="store_true", help="Print only the path to the .xpi")
 
+    # open -- point the Zotero reader at a page or an annotation
+    op_p = sub.add_parser("open", help="Open an item's PDF in the Zotero reader at a page or annotation")
+    op_p.add_argument("item_key", nargs="?", help="Item or attachment key (not needed with --annotation)")
+    op_p.add_argument("--page", type=int, help="1-based page position, as `read` counts pages")
+    op_p.add_argument("--annotation", help="Annotation key to jump to and select")
+
     # batch
     b_p = sub.add_parser("batch", help="Update tags/Extra fields across many items")
     b_p.add_argument("--item-keys", help="Comma-separated item keys")
@@ -1719,6 +1797,7 @@ _CMD_MAP = {
     "synthesize": cmd_synthesize,
     "path": cmd_path,
     "plugin": cmd_plugin,
+    "open": cmd_open,
     "batch": cmd_batch,
 }
 
