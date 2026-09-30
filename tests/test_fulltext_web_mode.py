@@ -289,6 +289,20 @@ def test_get_items_from_api_with_fulltext_marks_misses_as_attempted(monkeypatch)
     assert items[0]["data"]["fulltext_attempted"] is True
 
 
+def test_get_items_from_api_filters_out_attachments_notes_and_annotations(monkeypatch):
+    # The full-scan path must skip the same item types as the incremental
+    # path and the local SQLite scan (#604).
+    zot = FakeZoteroClient()
+    att = _paper("AT1", item_type="attachment")
+    note = _paper("N1", item_type="note")
+    ann = _paper("A1", item_type="annotation")
+    paper = _paper("P1", item_type="conferencePaper")
+    zot.load_scenario([att, note, ann, paper])
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    items = search._get_items_from_api(include_fulltext=False)
+    assert [it["key"] for it in items] == ["P1"]
+
+
 # --------- Integration tests: incremental fetch ----------
 
 def test_get_changed_items_from_api_returns_only_changed_keys(monkeypatch):
