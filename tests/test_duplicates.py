@@ -625,6 +625,52 @@ class TestMergeDuplicatesPagination:
         assert "1 duplicate attachments skipped" in result
 
 
+def _make_linked_pdf(key, parent, path):
+    """A linked-file PDF as the Zotero API returns it: ``path``, no filename/md5."""
+    return {"key": key, "version": 1, "data": {
+        "key": key,
+        "itemType": "attachment",
+        "parentItem": parent,
+        "linkMode": "linked_file",
+        "title": "Full Text PDF",
+        "contentType": "application/pdf",
+        "path": path,
+    }}
+
+
+class TestMergeDuplicatesLinkedFiles:
+    """Linked-file attachments carry no filename or md5, so the dedupe
+    signature must not treat two different linked PDFs as the same file."""
+
+    def _run(self, monkeypatch, dummy_ctx, keeper_path, dup_path):
+        fake = FakeZoteroForDuplicates()
+        keep_att = _make_linked_pdf("KATT", "KEEP", keeper_path)
+        dup_att = _make_linked_pdf("DATT", "DUP1", dup_path)
+        fake._items = [_make_item("KEEP", "Keeper"), _make_item("DUP1", "Dup"),
+                       keep_att, dup_att]
+        fake._children = {"KEEP": [keep_att], "DUP1": [dup_att]}
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        result = server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
+        )
+        return fake, result
+
+    def test_different_linked_pdf_is_moved_not_trashed(self, monkeypatch, dummy_ctx):
+        fake, result = self._run(monkeypatch, dummy_ctx,
+                                 "/Users/me/Papers/smith-2020-preprint.pdf",
+                                 "/Users/me/Papers/smith-2021-published.pdf")
+        moved = [u for u in fake.update_calls
+                 if u.get("key") == "DATT" and u["data"].get("parentItem") == "KEEP"]
+        assert moved, "distinct linked PDF was left on the duplicate and trashed with it"
+        assert "duplicate attachments skipped" not in result
+
+    def test_same_linked_pdf_is_still_skipped(self, monkeypatch, dummy_ctx):
+        fake, result = self._run(monkeypatch, dummy_ctx,
+                                 "/Users/me/Papers/smith.pdf", "/Users/me/Papers/smith.pdf")
+        assert "DATT" not in {u.get("key") for u in fake.update_calls}
+        assert "1 duplicate attachments skipped" in result
+
+
 # ---------------------------------------------------------------------------
 # #394: paging past the 100-group ceiling, and honest counts
 # ---------------------------------------------------------------------------
