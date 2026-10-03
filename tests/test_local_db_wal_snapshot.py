@@ -19,6 +19,7 @@ from zotero_mcp.local_db import LocalZoteroReader
 @pytest.fixture(autouse=True)
 def _fresh_snapshot_cache(monkeypatch):
     monkeypatch.setattr(local_db, "_snapshots", {})
+    monkeypatch.setattr(local_db, "_last_write_at", None, raising=False)
     monkeypatch.delenv(local_db.DB_SNAPSHOT_ENV_VAR, raising=False)
     monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "0")
 
@@ -140,6 +141,22 @@ def test_snapshot_is_not_recopied_inside_the_min_interval(zotero_like_db, monkey
     clock[0] += 10
     assert local_db._wal_snapshot_path(str(path)) == first
     clock[0] += 25
+    assert local_db._wal_snapshot_path(str(path)) != first
+
+
+def test_own_write_bypasses_the_min_interval(zotero_like_db, monkeypatch):
+    """A read right after this process writes must not get the pre-write copy."""
+    path, writer = zotero_like_db
+    monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "30")
+    clock = [1000.0]
+    monkeypatch.setattr(local_db.time, "monotonic", lambda: clock[0])
+
+    first = local_db._wal_snapshot_path(str(path))
+    local_db.note_local_write()
+    writer.execute("INSERT INTO items (key) VALUES ('OWNWRITE')")
+    writer.commit()
+
+    clock[0] += 1
     assert local_db._wal_snapshot_path(str(path)) != first
 
 

@@ -178,3 +178,16 @@ class TestUnavailableMessage:
 
     def test_keeps_the_phrase_the_write_tools_are_tested_against(self):
         assert "local-only mode" in _helpers.write_unavailable_message()
+
+
+def test_resolving_a_write_client_lifts_the_snapshot_throttle(web_mode, monkeypatch, fake_zot):
+    """Every write path resolves its client first, so that is where the next
+    local read learns it must not reuse a WAL snapshot copied before the write."""
+    from zotero_mcp import local_db
+
+    monkeypatch.setattr(_client, "get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr(local_db, "_last_write_at", None, raising=False)
+
+    _helpers.resolve_write_client()
+
+    assert local_db._recently_wrote()
