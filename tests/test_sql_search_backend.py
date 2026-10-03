@@ -800,3 +800,31 @@ def test_hydrated_row_resolves_date_mapped_to_a_type_specific_field(tmp_path):
     finally:
         reader.close()
     assert hydrated["CASEITM1"]["data"]["date"] == "February 24, 1803"
+
+
+# ---------------------------------------------------------------------------
+# Tag type: automatic tags are reported as automatic, as the API does
+# ---------------------------------------------------------------------------
+
+
+def test_hydrated_tags_carry_the_automatic_type(tmp_path):
+    """Zotero's API marks an automatic tag with ``"type": 1`` and leaves the
+    key out for a manual one. The SQLite reader must match, or a caller that
+    reads an item and writes its tags back turns automatic tags manual."""
+    db_path = tmp_path / "zotero.sqlite"
+    _build_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO tags (tagID, name) VALUES (3, 'MeSH heading')")
+    conn.execute("INSERT INTO itemTags VALUES (1, 3, 1)")
+    conn.commit()
+    conn.close()
+
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        tags = reader.get_items_by_keys(["PERS0001"])["PERS0001"]["data"]["tags"]
+    finally:
+        reader.close()
+    assert sorted(tags, key=lambda t: t["tag"]) == [
+        {"tag": "MeSH heading", "type": 1},
+        {"tag": "physics"},
+    ]
