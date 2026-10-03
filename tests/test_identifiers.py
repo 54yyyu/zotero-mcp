@@ -95,6 +95,28 @@ class TestNormalizeDoi:
         assert normalize_doi(12345) is None
 
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # A browser's address bar percent-encodes the brackets and angle
+            # brackets of Wiley's SICI DOIs. The URL names the same DOI as
+            # the bare form, so it must normalise to the bare form.
+            (
+                "https://doi.org/10.1002/%28SICI%291097-4636%28199709%2936%3A3%3C287%3A%3AAID-JBM2%3E3.0.CO%3B2-E",
+                "10.1002/(SICI)1097-4636(199709)36:3<287::AID-JBM2>3.0.CO;2-E",
+            ),
+            ("https://doi.org/10.1000%2Fabc", "10.1000/abc"),
+            # "%" inside a DOI is itself encoded in a URL as %25.
+            ("https://doi.org/10.1000/50%25off", "10.1000/50%off"),
+        ],
+    )
+    def test_percent_encoded_doi_url_is_decoded(self, raw, expected):
+        assert normalize_doi(raw) == expected
+
+    def test_bare_doi_is_not_percent_decoded(self):
+        """Only a URL is percent-encoded; a bare DOI's '%' is literal."""
+        assert normalize_doi("10.1000/50%25off") == "10.1000/50%25off"
+
 def test_private_alias_is_the_same_object():
     """`tools/_helpers._normalize_doi` is kept as a compatibility alias;
     existing callers and tests must not observe the move."""
