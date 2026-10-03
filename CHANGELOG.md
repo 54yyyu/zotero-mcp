@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Adding a book chapter or conference paper by DOI keeps the book or proceedings title** (#638). CrossRef's `container-title` was written only to `publicationTitle`, which `bookSection` and `conferencePaper` items do not have, so the container was dropped silently. It now goes to `bookTitle` / `proceedingsTitle`.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed
