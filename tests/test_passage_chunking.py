@@ -125,6 +125,7 @@ class ChunkingFakeChroma:
         self.upserted_docs = []
         self.upserted_metas = []
         self.deleted_parents = []
+        self.pruned = []
         self.embedding_max_tokens = 8000
         self._existing = set(existing or [])
 
@@ -133,6 +134,9 @@ class ChunkingFakeChroma:
 
     def delete_item_chunks(self, item_key):
         self.deleted_parents.append(item_key)
+
+    def prune_item_chunks(self, item_key, keep):
+        self.pruned.append((item_key, keep))
 
     def upsert_documents(self, documents, metadatas, ids):
         self.upserted_docs.extend(documents)
@@ -193,8 +197,26 @@ def test_chunking_added_vs_updated_is_item_granular(monkeypatch):
     stats = s._process_item_batch([_long_item("ITEM0001")], force_rebuild=False)
     assert stats["updated"] == 1
     assert stats["added"] == 0
-    # Stale chunks for the re-indexed item were cleared first.
-    assert "ITEM0001" in s.chroma_client.deleted_parents
+    # Stale chunks beyond the new passage count were pruned after the write.
+    n = len(s.chroma_client.upserted_ids)
+    assert s.chroma_client.pruned == [("ITEM0001", n)]
+
+
+class FailingUpsertChunkingChroma(ChunkingFakeChroma):
+    def upsert_documents(self, documents, metadatas, ids):
+        raise RuntimeError("embedding provider unavailable")
+
+
+def test_failed_reindex_keeps_existing_passages(monkeypatch):
+    # #610: a failed embed must not have deleted the item's old passages.
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    s = _chunking_search(monkeypatch)
+    s.chroma_client = FailingUpsertChunkingChroma(existing={"ITEM0001#0"})
+    failed = []
+    stats = s._process_item_batch([_long_item("ITEM0001")], False, failed)
+    assert stats["errors"] > 0 and failed
+    assert s.chroma_client.deleted_parents == []
+    assert s.chroma_client.pruned == []
 
 
 def test_default_path_still_item_level(monkeypatch):
