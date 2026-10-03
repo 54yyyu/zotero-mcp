@@ -280,7 +280,9 @@ def _acquire_update_lock(lock_path: Path):
     ensure_private_dir(lock_path.parent)
     fd = None
     try:
-        fd = open(lock_path, "w")
+        # "a" not "w": a process that loses the race must not truncate the
+        # holder's pid before flock fails. We truncate after acquiring.
+        fd = open(lock_path, "a")
         try:
             fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -379,7 +381,7 @@ def _split_prepared_into_requests(prepared: dict[str, Any], request_batch_size: 
     ``request_batch_size`` when a single item contributed more chunks than
     that, which is deliberate: an item whose chunks were spread across two
     independently committed requests could end up half-indexed if one of them
-    failed, and ``delete_item_chunks`` runs once per item at preparation time.
+    failed, and stale passages are pruned per item after each successful write.
     """
     documents = prepared["documents"]
     metadatas = prepared["metadatas"]
@@ -2942,6 +2944,7 @@ class ZoteroSemanticSearch:
                     )
 
             # Retry any documents that failed during the main run
+            retry_fail = 0
             if _failed_docs:
                 try:
                     sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
@@ -2954,10 +2957,10 @@ class ZoteroSemanticSearch:
                 _retry_time.sleep(1)  # Brief pause before retry
 
                 retry_ok = 0
-                retry_fail = 0
                 for doc, meta, doc_id in _failed_docs:
                     try:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
+                        self._prune_stale_chunks([meta])
                         retry_ok += 1
                         stats["errors"] -= 1  # Remove from error count
                         # Don't classify as added vs updated — when the
@@ -2993,8 +2996,11 @@ class ZoteroSemanticSearch:
             # run would take the unchanged-version early return and never
             # re-enter deletion detection, so the documented rerun with
             # --allow-mass-deletion would silently do nothing.
+            # Likewise when items still failed after the retry (#610): in
+            # incremental mode they would never appear in a later
+            # item_versions(since=...) result, so they would stay unindexed.
             self.update_config["last_update"] = datetime.now().isoformat()
-            if stats.get("deletion_skipped_reason"):
+            if stats.get("deletion_skipped_reason") or retry_fail:
                 self._save_update_config()
             else:
                 self._save_update_config(
@@ -3121,9 +3127,9 @@ class ZoteroSemanticSearch:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
                 stats["errors"] += 1
 
-        # Which items already existed (drives added-vs-updated). When chunking,
-        # also clear an item's stale passages before re-adding so a shrinking
-        # document never leaves orphaned chunks behind.
+        # Which items already existed (drives added-vs-updated). Stale
+        # passages are pruned only after the new ones are written
+        # (_prune_stale_chunks), so a failed embed never loses an item (#610).
         existing_item_keys: set[str] = set()
         if documents and not force_rebuild:
             with self._chroma_call_lock:
@@ -3131,12 +3137,6 @@ class ZoteroSemanticSearch:
                     probe_ids = [f"{k}#0" for k in item_keys_order]
                     existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
                     existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
-                    if hasattr(self.chroma_client, "delete_item_chunks"):
-                        for k in dict.fromkeys(item_keys_order):
-                            try:
-                                self.chroma_client.delete_item_chunks(k)
-                            except Exception as e:
-                                logger.debug(f"delete_item_chunks({k}) failed: {e}")
                 else:
                     existing_item_keys = self.chroma_client.get_existing_ids(ids)
 
@@ -3282,6 +3282,7 @@ class ZoteroSemanticSearch:
                     self.chroma_client.upsert_embeddings(
                         write_docs, write_metas, write_ids, write_vectors
                     )
+                    self._prune_stale_chunks(write_metas)
             except Exception as exc:
                 logger.warning(f"Batch upsert failed ({exc}), saving for retry")
                 record_failures(write_docs, write_metas, write_ids)
@@ -3385,6 +3386,23 @@ class ZoteroSemanticSearch:
                     pass
             time.sleep(0.05)
 
+    def _prune_stale_chunks(self, metadatas: list[dict[str, Any]]) -> None:
+        """Drop each just-written item's passages past its new ``n_chunks``.
+
+        Runs after a successful upsert, never before: write first, then
+        prune, so a failed embed leaves the old passages in place (#610).
+        Caller holds ``_chroma_call_lock``.
+        """
+        if not hasattr(self.chroma_client, "prune_item_chunks"):
+            return
+        counts = {
+            m["parent_item_key"]: m["n_chunks"]
+            for m in metadatas
+            if "parent_item_key" in m and "n_chunks" in m
+        }
+        for item_key, n_chunks in counts.items():
+            self.chroma_client.prune_item_chunks(item_key, n_chunks)
+
     def _process_item_batch(
         self,
         items: list[dict[str, Any]],
@@ -3425,6 +3443,7 @@ class ZoteroSemanticSearch:
             try:
                 with self._chroma_call_lock:
                     self.chroma_client.upsert_documents(documents, metadatas, ids)
+                    self._prune_stale_chunks(metadatas)
                 for k in item_keys_order:
                     if k in existing_item_keys:
                         stats["updated"] += 1
