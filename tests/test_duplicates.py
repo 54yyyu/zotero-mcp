@@ -101,9 +101,26 @@ class FakeZoteroForDuplicates(FakeZotero):
         """
         return self._page(self._items, kwargs)
 
+    def _top_rows(self):
+        return [it for it in self._items
+                if not it.get("data", {}).get("parentItem")]
+
+    def top(self, **kwargs):
+        """Page top-level items, as /items/top does."""
+        return self._page(self._top_rows(), kwargs)
+
+    def num_items(self, **kwargs):
+        return len(self._top_rows())
+
     def collection_items(self, key, **kwargs):
         rows = [it for it in self._items
                 if key in it.get("data", {}).get("collections", [])]
+        return self._page(rows, kwargs)
+
+    def collection_items_top(self, key, **kwargs):
+        rows = [it for it in self._items
+                if key in it.get("data", {}).get("collections", [])
+                and not it.get("data", {}).get("parentItem")]
         return self._page(rows, kwargs)
 
 
@@ -1456,3 +1473,240 @@ class TestTitleRuleChangesAutoMerge:
         assert "### title:micro level study" in plan
         assert "**KEEP** `G1`" in plan
         assert "- trash `G3`" in plan
+
+
+# ---------------------------------------------------------------------------
+# Bounding the scan: ask for the size, and page only what gets compared
+# ---------------------------------------------------------------------------
+
+class _CountingDupFake(FakeZoteroForDuplicates):
+    """Records which endpoints the scan actually reached.
+
+    Set ``count_fails`` to make num_items() raise the way a library or API
+    that will not answer /items/top does. It still records the attempt, so a
+    test can tell "the count was tried and failed" from "the count was never
+    reached" — which is the difference between exercising the fallback and
+    passing vacuously against unpatched source.
+    """
+
+    def __init__(self, count_fails=False):
+        super().__init__()
+        self.calls = []
+        self.count_fails = count_fails
+
+    def num_items(self, **kwargs):
+        self.calls.append("num_items")
+        if self.count_fails:
+            raise RuntimeError("no count")
+        return super().num_items(**kwargs)
+
+    def items(self, **kwargs):
+        self.calls.append("items")
+        return super().items(**kwargs)
+
+    def top(self, **kwargs):
+        self.calls.append("top")
+        return super().top(**kwargs)
+
+
+class TestDuplicateScanBounds:
+    def test_oversize_library_refuses_without_paging_it_in(self, monkeypatch, dummy_ctx):
+        """The refusal should cost one count, not ~51 pages of items.
+
+        Previously the ceiling was only reachable by accumulating
+        _DUP_SCAN_MAX_ITEMS + 100 items and measuring the list, which took
+        163s against a real 16,859-item library.
+        """
+        fake = _CountingDupFake()
+        fake._items = _doi_groups(3000)  # 6000 top-level items, over the ceiling
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert "too large for duplicate scan" in result
+        assert "6000" in result
+        assert fake.calls == ["num_items"], (
+            f"expected a single count and no paging, got {fake.calls[:6]}"
+        )
+
+    def test_in_range_library_still_scans(self, monkeypatch, dummy_ctx):
+        """The precheck must not refuse a library that is actually in range."""
+        fake = _CountingDupFake()
+        fake._items = _doi_groups(3)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert "Found 3 duplicate groups" in result
+        assert "num_items" in fake.calls and "top" in fake.calls
+
+    def test_child_attachments_do_not_consume_the_budget(self, monkeypatch, dummy_ctx):
+        """Child items are discarded by grouping, so they must not be paged.
+
+        items() returns them and top() does not; on the measured library they
+        are 49.7% of /items (33,506 all, 16,859 top-level), so paging them
+        spent about half the budget on rows that were then discarded.
+        """
+        fake = _CountingDupFake()
+        items = _doi_groups(2)
+        for i, parent in enumerate(list(items)):
+            att = _make_item(f"ATT{i:04d}", "scan.pdf", item_type="attachment")
+            att["data"]["parentItem"] = parent["key"]
+            items.append(att)
+        fake._items = items
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        # 4 top-level items + 4 child attachments; only the former are counted.
+        assert fake.num_items() == 4
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+        assert "Found 2 duplicate groups" in result
+        assert "items" not in fake.calls, "the scan should not page child items"
+
+    def test_a_failed_count_falls_back_to_the_paging_guard(self, monkeypatch, dummy_ctx):
+        """The count is an optimisation; losing it must not break the scan."""
+        fake = _CountingDupFake(count_fails=True)
+        fake._items = _doi_groups(3)
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert "Found 3 duplicate groups" in result
+        # The count must have been tried and paging must have carried on
+        # regardless — without both, this passes whether or not the precheck
+        # exists at all.
+        assert fake.calls[0] == "num_items"
+        assert "top" in fake.calls
+
+    def test_paging_guard_still_refuses_when_the_count_is_unavailable(
+        self, monkeypatch, dummy_ctx
+    ):
+        """No count, over-size library: the scan must still refuse.
+
+        This is the branch the precheck normally spares us, and the only one
+        left that can report a library size — so it reports where paging
+        stopped rather than the real total, which its message says.
+        """
+        fake = _CountingDupFake(count_fails=True)
+        fake._items = _doi_groups(3000)  # 6000 top-level items
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+
+        assert "too large for duplicate scan" in result
+        assert "Found" not in result
+
+    def test_collection_scan_refuses_by_paging_without_asking_for_a_count(
+        self, monkeypatch, dummy_ctx
+    ):
+        """A collection scan has no cheap count to ask for.
+
+        num_collectionitems() counts a collection's items *including* children,
+        so it is only an upper bound on the top-level count and could never
+        refuse on its own. The scan should not spend a request discovering that.
+        """
+        fake = _CountingDupFake()
+        items = _doi_groups(3000)
+        for it in items:
+            it["data"]["collections"] = ["COLL0001"]
+        fake._items = items
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+
+        result = server.find_duplicates(
+            method="doi", collection_key="COLL0001", ctx=dummy_ctx
+        )
+
+        assert "too large for duplicate scan" in result
+        assert "num_items" not in fake.calls
+
+
+class _FullScanDupFake(FakeZoteroForDuplicates):
+    """The scan as it was before it paged top-level items only.
+
+    top() and collection_items_top() hand back what items() and
+    collection_items() return, children included, so running
+    _collect_duplicate_groups against this fake reproduces the old full scan.
+    """
+
+    def top(self, **kwargs):
+        return self.items(**kwargs)
+
+    def collection_items_top(self, key, **kwargs):
+        return self.collection_items(key, **kwargs)
+
+
+def _library_with_children():
+    """A library whose children and standalone items could confuse a scan.
+
+    250 top-level papers, each followed by an attachment and a note, so
+    /items is about three times as long as /items/top and the two scans page
+    different rows from the second row on. Children carry their parent's
+    title and DOI, which is the worst case for a scan that kept them by
+    mistake. Standalone attachments and notes are top-level, so top() pages
+    them too and only the itemType filter keeps them out of the groups; they
+    share titles with each other and with papers to make that filter matter.
+    """
+    items = []
+    for g in range(100):  # DOI pairs
+        for m in range(2):
+            items.append(_make_item(
+                f"D{g:03d}{m}", f"Paper {g}", doi=f"10.1000/paper{g:03d}",
+                collections=["COLL0001"] if g % 3 == 0 else [],
+            ))
+    for g in range(25):  # title-only pairs, no DOI
+        for m in range(2):
+            items.append(_make_item(
+                f"T{g:03d}{m}", f"Untitled Draft {g}",
+                collections=["COLL0001"] if g % 2 == 0 else [],
+            ))
+    papers, items = items, []
+    for p in papers:
+        items.append(p)
+        for kind in ("attachment", "note"):
+            child = _make_item(
+                f"{kind[0].upper()}{p['key']}", p["data"]["title"],
+                doi=p["data"]["DOI"], item_type=kind,
+                collections=p["data"]["collections"],
+            )
+            child["data"]["parentItem"] = p["key"]
+            items.append(child)
+    for i in range(6):  # standalone, so top-level, and sharing titles
+        title = "Paper 0" if i < 2 else "scan.pdf"
+        for kind in ("attachment", "note"):
+            items.append(_make_item(
+                f"S{kind[0].upper()}{i:02d}", title, item_type=kind,
+                collections=["COLL0001"],
+            ))
+    return items
+
+
+@pytest.mark.parametrize("method", ["doi", "title", "both"])
+@pytest.mark.parametrize("collection_key", [None, "COLL0001"])
+def test_top_level_scan_groups_exactly_as_a_full_scan(method, collection_key):
+    """Paging top-level items must find the same groups as paging every item.
+
+    Child items can only be attachments, notes or annotations, all of which
+    the grouping loop drops, so skipping them at the endpoint should change
+    nothing but the request count. This pins that: identical group keys and
+    identical members, in the same order, on whole-library and collection
+    scans alike.
+    """
+    from zotero_mcp.tools.write import _collect_duplicate_groups
+
+    library = _library_with_children()
+    new, old = FakeZoteroForDuplicates(), _FullScanDupFake()
+    new._items, old._items = library, list(library)
+
+    # The two scans really do page different rows, or this proves nothing.
+    assert len(new.top()) < len(old.top())
+
+    new_groups, new_err = _collect_duplicate_groups(new, method, collection_key)
+    old_groups, old_err = _collect_duplicate_groups(old, method, collection_key)
+
+    assert new_err is None and old_err is None
+    assert new_groups, "fixture should produce duplicate groups"
+
+    def members(groups):
+        return {k: [it["key"] for it in v] for k, v in groups.items()}
+
+    assert list(new_groups) == list(old_groups)
+    assert members(new_groups) == members(old_groups)
