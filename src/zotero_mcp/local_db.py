@@ -2041,8 +2041,19 @@ class LocalZoteroReader:
 
         return matching_items
 
-    def search_notes_local(self, query: str, limit: int = 20) -> list[dict]:
-        """Search notes in the local Zotero database by text content."""
+    def search_notes_local(
+        self, query: str, limit: int = 20, group_id: int | None = None
+    ) -> list[dict] | None:
+        """Search notes in the local Zotero database by text content.
+
+        Scoped like the other local searches: ``group_id`` 0 is the personal
+        library, a groupID one group, None every user/group library. Returns
+        None when the requested library isn't in this database.
+        """
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if lib_ids is None:
+            return None
+        lib_placeholders = ",".join("?" * len(lib_ids))
         conn = self._get_connection()
         cursor = conn.cursor()
         pattern = f"%{query}%"
@@ -2059,9 +2070,10 @@ class LocalZoteroReader:
             + _base_field_resolved_join("ptitle", "title", item_alias="pi")
             + """
             WHERE n.note LIKE ?
+            AND i.libraryID IN (""" + lib_placeholders + """)
             AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             LIMIT ?
-        """, (pattern, limit))
+        """, (pattern, *lib_ids, limit))
 
         results = []
         for row in cursor.fetchall():
@@ -2081,8 +2093,17 @@ class LocalZoteroReader:
             })
         return results
 
-    def search_annotations_local(self, query: str, limit: int = 20) -> list[dict]:
-        """Search annotations in the local Zotero database by text or comment."""
+    def search_annotations_local(
+        self, query: str, limit: int = 20, group_id: int | None = None
+    ) -> list[dict] | None:
+        """Search annotations in the local Zotero database by text or comment.
+
+        ``group_id`` scopes the search exactly as in ``search_notes_local``.
+        """
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if lib_ids is None:
+            return None
+        lib_placeholders = ",".join("?" * len(lib_ids))
         conn = self._get_connection()
         cursor = conn.cursor()
         pattern = f"%{query}%"
@@ -2102,9 +2123,10 @@ class LocalZoteroReader:
             + _base_field_resolved_join("gptitle", "title", item_alias="gpi")
             + """
             WHERE (ia.text LIKE ? OR ia.comment LIKE ?)
+            AND i.libraryID IN (""" + lib_placeholders + """)
             AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             LIMIT ?
-        """, (pattern, pattern, limit))
+        """, (pattern, pattern, *lib_ids, limit))
 
         # Map integer annotation types to names
         type_map = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}
