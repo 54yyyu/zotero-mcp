@@ -3181,6 +3181,18 @@ def update_item(
                 for k, v in data.items():
                     if k in preserved or k in new_template:
                         reshaped[k] = v
+                # Carry type-specific fields across through their shared base
+                # field (publicationTitle -> proceedingsTitle, websiteTitle ->
+                # blogTitle, ...) the way Zotero desktop does on a type change,
+                # instead of dropping the value.
+                new_fields = set(new_template) | _schema.valid_fields(item_type)
+                for k, v in data.items():
+                    if k in reshaped or v in ("", None):
+                        continue
+                    base = _schema.base_field_of(old_item_type, k)
+                    target = _schema.resolve_field(item_type, base)
+                    if target in new_fields and not reshaped.get(target):
+                        reshaped[target] = v
                 reshaped["itemType"] = item_type
                 data = reshaped
                 item["data"] = data
