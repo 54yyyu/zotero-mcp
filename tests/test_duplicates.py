@@ -1617,3 +1617,96 @@ class TestDuplicateScanBounds:
 
         assert "too large for duplicate scan" in result
         assert "num_items" not in fake.calls
+
+
+class _FullScanDupFake(FakeZoteroForDuplicates):
+    """The scan as it was before it paged top-level items only.
+
+    top() and collection_items_top() hand back what items() and
+    collection_items() return, children included, so running
+    _collect_duplicate_groups against this fake reproduces the old full scan.
+    """
+
+    def top(self, **kwargs):
+        return self.items(**kwargs)
+
+    def collection_items_top(self, key, **kwargs):
+        return self.collection_items(key, **kwargs)
+
+
+def _library_with_children():
+    """A library whose children and standalone items could confuse a scan.
+
+    250 top-level papers, each followed by an attachment and a note, so
+    /items is about three times as long as /items/top and the two scans page
+    different rows from the second row on. Children carry their parent's
+    title and DOI, which is the worst case for a scan that kept them by
+    mistake. Standalone attachments and notes are top-level, so top() pages
+    them too and only the itemType filter keeps them out of the groups; they
+    share titles with each other and with papers to make that filter matter.
+    """
+    items = []
+    for g in range(100):  # DOI pairs
+        for m in range(2):
+            items.append(_make_item(
+                f"D{g:03d}{m}", f"Paper {g}", doi=f"10.1000/paper{g:03d}",
+                collections=["COLL0001"] if g % 3 == 0 else [],
+            ))
+    for g in range(25):  # title-only pairs, no DOI
+        for m in range(2):
+            items.append(_make_item(
+                f"T{g:03d}{m}", f"Untitled Draft {g}",
+                collections=["COLL0001"] if g % 2 == 0 else [],
+            ))
+    papers, items = items, []
+    for p in papers:
+        items.append(p)
+        for kind in ("attachment", "note"):
+            child = _make_item(
+                f"{kind[0].upper()}{p['key']}", p["data"]["title"],
+                doi=p["data"]["DOI"], item_type=kind,
+                collections=p["data"]["collections"],
+            )
+            child["data"]["parentItem"] = p["key"]
+            items.append(child)
+    for i in range(6):  # standalone, so top-level, and sharing titles
+        title = "Paper 0" if i < 2 else "scan.pdf"
+        for kind in ("attachment", "note"):
+            items.append(_make_item(
+                f"S{kind[0].upper()}{i:02d}", title, item_type=kind,
+                collections=["COLL0001"],
+            ))
+    return items
+
+
+@pytest.mark.parametrize("method", ["doi", "title", "both"])
+@pytest.mark.parametrize("collection_key", [None, "COLL0001"])
+def test_top_level_scan_groups_exactly_as_a_full_scan(method, collection_key):
+    """Paging top-level items must find the same groups as paging every item.
+
+    Child items can only be attachments, notes or annotations, all of which
+    the grouping loop drops, so skipping them at the endpoint should change
+    nothing but the request count. This pins that: identical group keys and
+    identical members, in the same order, on whole-library and collection
+    scans alike.
+    """
+    from zotero_mcp.tools.write import _collect_duplicate_groups
+
+    library = _library_with_children()
+    new, old = FakeZoteroForDuplicates(), _FullScanDupFake()
+    new._items, old._items = library, list(library)
+
+    # The two scans really do page different rows, or this proves nothing.
+    assert len(new.top()) < len(old.top())
+
+    new_groups, new_err = _collect_duplicate_groups(new, method, collection_key)
+    old_groups, old_err = _collect_duplicate_groups(old, method, collection_key)
+
+    assert new_err is None and old_err is None
+    assert new_groups, "fixture should produce duplicate groups"
+
+    def members(groups):
+        return {k: [it["key"] for it in v] for k, v in groups.items()}
+
+    assert list(new_groups) == list(old_groups)
+    assert members(new_groups) == members(old_groups)
