@@ -227,6 +227,17 @@ def _csl_names_to_creators(names: list[dict], creator_type: str) -> list[dict]:
             entry = {"creatorType": creator_type}
             given = (n.get("given") or "").strip()
             family = (n.get("family") or "").strip()
+            # Particles and suffix are separate CSL keys; Zotero has only
+            # two name parts, so fold them back in ("van der" + "Maaten").
+            ndp = (n.get("non-dropping-particle") or "").strip()
+            if ndp and family:
+                family = ndp + ("" if ndp[-1] in "'’-" else " ") + family
+            dp = (n.get("dropping-particle") or "").strip()
+            if dp and given:
+                given = f"{given} {dp}"
+            suffix = (n.get("suffix") or "").strip()
+            if suffix and given:
+                given = f"{given}, {suffix}"
             if given:
                 entry["firstName"] = given
             if family:

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CSL JSON import keeps name particles and suffixes** (#639). Names exported with `non-dropping-particle`, `dropping-particle` or `suffix` (Better BibTeX, citation.js) lost them, so "van der Maaten" was stored as "Maaten". They are now folded into the last and first names.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed
