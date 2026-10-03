@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Semantic search is its own toolset, and hidden on installs without the `[semantic]` extra** (#572). `zotero_semantic_search` moves from core into a new `semantic` toolset that is on by default, so default installs see no change. `ZOTERO_MCP_TOOLSETS=none` now leaves it out too; use `none,semantic` to keep it. `semantic` and `search-admin` are left out automatically when ChromaDB isn't installed, so a base install no longer advertises tools that can only reply with install instructions; naming them in `ZOTERO_MCP_TOOLSETS` keeps them. The connector `search` keeps its keyword fallback.
+
 ## [0.14.0] - 2026-10-07
 
 ### Added

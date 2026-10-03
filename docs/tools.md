@@ -15,9 +15,9 @@ Set `ZOTERO_MCP_TOOLSETS` to control which groups are exposed:
 
 | Value | Effect |
 |---|---|
-| *(unset)* | Default profile — core tools plus `libraries`, `search-admin`, `pdf-geometry` |
+| *(unset)* | Default profile — core tools plus `semantic`, `libraries`, `search-admin`, `pdf-geometry` |
 | `all` | Everything (the pre-0.9 behaviour) |
-| `none` | Core tools only — the smallest surface |
+| `none` | Core tools only — the smallest surface (no semantic search; `none,semantic` adds it back) |
 | `scite,feeds` | Core plus the named groups |
 | `all,-scite` | Everything except the named groups |
 
@@ -28,17 +28,23 @@ group name is an error at startup rather than a silent no-op.
 |---|---|---|
 | `scite` | off | Scite citation tallies and retraction checks (calls scite.ai; pairs with the `[scite]` extra) |
 | `duplicates` | off | Find and merge duplicate items — library maintenance |
-| `discovery` | off | `find_related_papers`, `library_coverage` — corpus-level exploration |
+| `semantic` | **on** | `zotero_semantic_search` — needs the `[semantic]` extra |
+| `discovery` | off | `find_related_papers`, `library_coverage` — corpus-level exploration via OpenAlex |
 | `feeds` | off | Zotero RSS feed subscriptions |
 | `relations` | off | Explicit item-to-item "related items" links |
 | `libraries` | **on** | List and switch between personal/group libraries |
-| `search-admin` | **on** | Build and inspect the semantic search index |
+| `search-admin` | **on** | Build and inspect the semantic search index — needs the `[semantic]` extra |
 | `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
 | `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |
 
 `chatgpt-connector` is scoped by transport: it turns on automatically when the
 server is served over `streamable-http` or `sse` (how ChatGPT reaches it) and
 stays off for `stdio`. Name it explicitly to override either way.
+
+`semantic` and `search-admin` need the `[semantic]` extra. On an install
+without it they are left out automatically (logged at startup), unless you
+name them in `ZOTERO_MCP_TOOLSETS`, in which case they stay and answer with
+install instructions.
 
 Anything not listed above is **core** and always available.
 
