@@ -243,3 +243,137 @@ class TestExtractedDoc:
             page_count=1, source="pdf",
         )
         assert filled
+
+
+# ---------------------------------------------------------------------------
+# Text-layer fallback for scanner-OCR PDFs (#611)
+# ---------------------------------------------------------------------------
+
+
+class _FakePage:
+    def __init__(self, page, markdown, needs_ocr=False):
+        self.page = page
+        self.markdown = markdown
+        self.needs_ocr = needs_ocr
+
+
+class _FakeInspector:
+    """Stand-in for ``pdf_inspector`` with scriptable markdown output.
+
+    ``markdown`` maps a 0-indexed page to its markdown; a page mapped to
+    ``""`` is reported with ``needs_ocr=True``, the way pdf-inspector
+    reports a page whose only text is an invisible scanner-OCR layer.
+    """
+
+    def __init__(self, markdown, text="", raise_markdown=None):
+        self.markdown = markdown
+        self.text = text
+        self.raise_markdown = raise_markdown
+        self.text_calls = 0
+
+    def classify_pdf(self, path):
+        class _C:
+            page_count = len(self.markdown)
+        return _C()
+
+    def extract_pages_markdown(self, path, pages=None):
+        if self.raise_markdown is not None:
+            raise self.raise_markdown
+        wanted = range(len(self.markdown)) if pages is None else pages
+
+        class _R:
+            pass
+        result = _R()
+        result.pages = [
+            _FakePage(p, self.markdown[p], needs_ocr=not self.markdown[p])
+            for p in wanted
+        ]
+        return result
+
+    def extract_text(self, path):
+        self.text_calls += 1
+        return self.text
+
+
+@pytest.fixture
+def fake_inspector(monkeypatch):
+    def install(**kwargs):
+        fake = _FakeInspector(**kwargs)
+        monkeypatch.setattr("zotero_mcp.extract._pdf_inspector", lambda: fake)
+        return fake
+    return install
+
+
+class TestOcrLayerFallback:
+    def test_all_pages_flagged_needs_ocr_fall_back_to_the_text_layer(
+        self, fake_inspector
+    ):
+        fake_inspector(markdown=["", "", ""], text="Scanned decision text\n")
+        doc = extract_pdf("scan.pdf")
+        assert "Scanned decision text" in doc.text
+        assert doc.page_count == 3
+        assert doc.needs_ocr == ()
+        assert doc
+
+    def test_markdown_parse_error_falls_back_to_the_text_layer(
+        self, fake_inspector
+    ):
+        fake_inspector(
+            markdown=["", ""],
+            text="Ghostscript output\n",
+            raise_markdown=ValueError("invalid content stream"),
+        )
+        doc = extract_pdf("gs.pdf")
+        assert "Ghostscript output" in doc.text
+        assert doc.page_count == 2
+
+    def test_parse_error_with_no_text_layer_still_raises(self, fake_inspector):
+        fake_inspector(
+            markdown=["x"], text="", raise_markdown=ValueError("broken"),
+        )
+        with pytest.raises(ValueError, match="broken"):
+            extract_pdf("broken.pdf")
+
+    def test_normal_markdown_does_not_call_the_fallback(self, fake_inspector):
+        fake = fake_inspector(markdown=["# One", "Two"], text="unused")
+        doc = extract_pdf("ok.pdf")
+        assert doc.pages == ("# One", "Two")
+        assert fake.text_calls == 0
+
+    def test_one_text_page_among_empty_ones_does_not_fall_back(
+        self, fake_inspector
+    ):
+        # A genuinely mixed document (one born-digital page, the rest
+        # image-only) keeps its per-page markdown and OCR routing.
+        fake = fake_inspector(markdown=["Cover", "", ""], text="unused")
+        doc = extract_pdf("mixed.pdf")
+        assert fake.text_calls == 0
+        assert doc.needs_ocr == (1, 2)
+
+    def test_max_pages_keeps_page_numbering_and_truncation(
+        self, fake_inspector
+    ):
+        fake_inspector(markdown=["", "", "", ""], text="a" * 400)
+        doc = extract_pdf("scan.pdf", max_pages=2)
+        assert doc.page_numbers == (0,)
+        assert doc.page_count == 4
+        assert doc.truncated
+        # The text layer cannot be split by page, so the cap is applied
+        # proportionally rather than indexing the whole document.
+        assert 0 < len(doc.text) <= 200
+
+    def test_partial_page_selection_does_not_return_other_pages_text(
+        self, fake_inspector
+    ):
+        # The whole-document text layer cannot be attributed to page 2
+        # alone, so an explicit subset keeps the old (empty) result.
+        fake_inspector(markdown=["", "", ""], text="whole document")
+        doc = extract_pdf("scan.pdf", pages=[2])
+        assert doc.page_numbers == (2,)
+        assert "whole document" not in doc.text
+        assert doc.needs_ocr == (2,)
+
+    def test_selection_covering_every_page_falls_back(self, fake_inspector):
+        fake_inspector(markdown=["", ""], text="all of it")
+        doc = extract_pdf("scan.pdf", pages=[0, 1])
+        assert "all of it" in doc.text
