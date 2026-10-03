@@ -339,6 +339,38 @@ class TestMergeDuplicatesConfirm:
         assert "dup1Only" in merged_tags
         assert "dup2Only" in merged_tags
 
+    def test_tag_types_survive_the_merge(self, monkeypatch, dummy_ctx):
+        """The keeper's automatic tags stay automatic, and tags copied from a
+        duplicate keep the duplicate's type (#618)."""
+        fake = self._setup_merge(monkeypatch)
+        items = {i["key"]: i for i in fake._items}
+        items["KEEP"]["data"]["tags"] = [{"tag": "keeperAuto", "type": 1}, {"tag": "keeperOnly"}]
+        items["DUP1"]["data"]["tags"] = [{"tag": "dupAuto", "type": 1}, {"tag": "keeperAuto"}]
+
+        server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
+        )
+
+        keeper_tags = [u for u in fake.update_calls if u.get("key") == "KEEP"][0]["data"]["tags"]
+        by_name = {t["tag"]: t.get("type", 0) for t in keeper_tags}
+        assert by_name == {"keeperAuto": 1, "keeperOnly": 0, "dupAuto": 1, "dup2Only": 0}
+
+    def test_a_tag_manual_on_any_duplicate_is_merged_as_manual(self, monkeypatch, dummy_ctx):
+        """When duplicates disagree on a new tag's type, it is merged as manual:
+        "Delete Automatic Tags" never removes a manual tag, so nothing the user
+        added by hand can be lost."""
+        fake = self._setup_merge(monkeypatch)
+        items = {i["key"]: i for i in fake._items}
+        items["DUP1"]["data"]["tags"] = [{"tag": "both", "type": 1}]
+        items["DUP2"]["data"]["tags"] = [{"tag": "both"}]
+
+        server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
+        )
+
+        keeper_tags = [u for u in fake.update_calls if u.get("key") == "KEEP"][0]["data"]["tags"]
+        assert {"tag": "both"} in keeper_tags
+
     def test_children_reparented(self, monkeypatch, dummy_ctx):
         """Child items (notes, attachments, annotations) get parentItem set to keeper."""
         fake = self._setup_merge(monkeypatch)

@@ -506,6 +506,35 @@ class TestUpdateItemTags:
         assert "keep" in updated_tags
         assert "also-keep" in updated_tags
 
+    # Automatic tags (type 1) must stay automatic through incremental edits
+    # (#618): rebuilding the list from names alone turned them into manual tags.
+
+    def _update_with_typed_tags(self, monkeypatch, **kwargs):
+        item = _make_item()
+        item["data"]["tags"] = [{"tag": "MeSH heading", "type": 1}, {"tag": "manual"}]
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+        server.update_item(item_key="ABCD1234", ctx=DummyContext(), **kwargs)
+        return fake.update_calls[0]["data"]["tags"]
+
+    def test_add_tags_keeps_automatic_tags_automatic(self, monkeypatch):
+        tags = self._update_with_typed_tags(monkeypatch, add_tags=["extra"])
+        assert tags == [{"tag": "MeSH heading", "type": 1}, {"tag": "manual"}, {"tag": "extra"}]
+
+    def test_remove_tags_keeps_automatic_tags_automatic(self, monkeypatch):
+        tags = self._update_with_typed_tags(monkeypatch, remove_tags=["manual"])
+        assert tags == [{"tag": "MeSH heading", "type": 1}]
+
+    def test_adding_an_existing_name_does_not_retype_it(self, monkeypatch):
+        tags = self._update_with_typed_tags(monkeypatch, add_tags=["MeSH heading"])
+        assert {"tag": "MeSH heading", "type": 1} in tags
+        assert len(tags) == 2
+
+    def test_add_tags_accepts_tag_objects_with_a_type(self, monkeypatch):
+        tags = self._update_with_typed_tags(monkeypatch, add_tags=[{"tag": "imported", "type": 1}])
+        assert {"tag": "imported", "type": 1} in tags
+
     def test_tags_and_add_tags_mutually_exclusive(self, monkeypatch):
         """Providing both tags= and add_tags= should produce an error."""
         item = _make_item(tags=["x"])
