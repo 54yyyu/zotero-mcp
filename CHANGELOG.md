@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **BibTeX imports keep every author when the author list wraps across lines** (#631). `zotero_add_by_bibtex` and `zotero-cli add bibtex` split names only on a literal ` and `, so `Smith, John and` followed by a line break and `Doe, Jane` (how exported `.bib` files commonly wrap long author fields) became a single creator with first name `Smith, John and Doe,` and last name `Jane`. Names are now separated by `and` between any whitespace.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed
