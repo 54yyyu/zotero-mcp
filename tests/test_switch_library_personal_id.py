@@ -8,8 +8,8 @@ SQLite libraryID (normally 1), but `zotero_switch_library` only accepted
 import types
 
 import pytest
-
 from conftest import DummyContext
+
 from zotero_mcp import client as _client
 from zotero_mcp.tools import retrieval
 
