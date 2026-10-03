@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero-cli library switch` no longer claims the switch carries over** (#606). Each `zotero-cli` command is a new process, so a switch only lasted for that one command, while the message said "All tools now operate on this library" and the next command silently read the default library. The CLI now says the switch lasts for this command only and prints the `ZOTERO_LIBRARY_ID` / `ZOTERO_LIBRARY_TYPE` values to use instead; `library reset` says the same.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed
