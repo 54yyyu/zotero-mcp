@@ -250,6 +250,16 @@ def _force_update_requested() -> bool:
     return os.getenv("ZOTERO_MCP_FORCE_UPDATE", "").strip().lower() in {"1", "true", "yes"}
 
 
+def _update_lock_path() -> Path:
+    """Where the cross-process update lock lives.
+
+    One function so the test suite can point it at a temp dir: tests that
+    run update_database() used to take the user's real lock, so two test
+    runs at once, or a test run during a real update, made each other skip.
+    """
+    return Path.home() / ".config" / "zotero-mcp" / "update.lock"
+
+
 @contextlib.contextmanager
 def _acquire_update_lock(lock_path: Path):
     """Non-blocking exclusive flock over an update-database run.
@@ -2532,7 +2542,7 @@ class ZoteroSemanticSearch:
         # update_database on startup while the user may also run
         # `zotero-mcp update-db` manually. A cross-process flock avoids
         # double work and potential ChromaDB corruption.
-        lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
+        lock_path = _update_lock_path()
         lock_cm = _acquire_update_lock(lock_path)
         acquired = lock_cm.__enter__()
         if not acquired:
@@ -3647,7 +3657,7 @@ class ZoteroSemanticSearch:
                 "newer run covers the same items"
             )})
 
-        lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
+        lock_path = _update_lock_path()
         lock_cm = contextlib.nullcontext(True) if _skip_lock else _acquire_update_lock(lock_path)
         acquired = lock_cm.__enter__()
         if not acquired:
