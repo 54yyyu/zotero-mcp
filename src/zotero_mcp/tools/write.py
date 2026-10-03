@@ -869,6 +869,21 @@ def batch_update(
             "remove_tags, set_keys, and/or remove_keys."
         )
 
+    # Resolve a query/tag selection once and hand both halves the same keys.
+    # Searching again for the Extra half would run after the tag half has
+    # already edited tags, so tag='to-read' + remove_tags=['to-read'] found
+    # nothing and the Extra edits were silently dropped.
+    if tag_action and extra_action and not item_keys:
+        try:
+            item_keys = _search_item_keys(
+                _client.get_zotero_client(), query, _normalize_tag_selector(tag),
+                _helpers._normalize_limit(limit, default=50),
+            )
+        except Exception as e:
+            return f"Error selecting items: {_helpers.format_zotero_error(e)}"
+        if not item_keys:
+            return "No items found matching the given query/tag filters"
+
     reports = []
     if tag_action:
         reports.append(batch_update_tags(
