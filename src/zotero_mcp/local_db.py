@@ -681,6 +681,25 @@ def _snapshot_min_interval() -> float:
     except ValueError:
         return _DEFAULT_SNAPSHOT_MIN_INTERVAL
 
+
+#: Seconds after this process starts a write during which the copy throttle is
+#: bypassed, so a read that follows our own write sees it instead of a copy
+#: taken just before the write landed. A copy is still made only when the
+#: database or WAL has changed, so outside a burst of writes this costs nothing.
+_WRITE_BYPASS_WINDOW = 120.0
+_last_write_at: float | None = None
+
+
+def note_local_write() -> None:
+    """Record that this process is writing to Zotero; see _wal_snapshot_path."""
+    global _last_write_at
+    _last_write_at = time.monotonic()
+
+
+def _recently_wrote() -> bool:
+    return _last_write_at is not None and time.monotonic() - _last_write_at < _WRITE_BYPASS_WINDOW
+
+
 # One snapshot per database for the whole process, because readers are opened
 # per tool call: a copy per reader would copy the database on every call.
 _snapshot_lock = threading.Lock()
@@ -738,7 +757,7 @@ def _wal_snapshot_path(db_path: str) -> str | None:
             if cached and os.path.exists(cached[1]):
                 if cached[0] == before:
                     return cached[1]
-                if time.monotonic() - cached[2] < _snapshot_min_interval():
+                if time.monotonic() - cached[2] < _snapshot_min_interval() and not _recently_wrote():
                     # Changed, but copied too recently to copy again; the
                     # next read after the interval picks the change up.
                     return cached[1]
