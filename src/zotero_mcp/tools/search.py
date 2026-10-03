@@ -1412,7 +1412,8 @@ def semantic_search(
             # actually overlaps the query — over a blind head-truncation, so
             # the agent gets a citable quote rather than the abstract's opening.
             passage = result.get("matched_passage") or result.get("matched_text", "")
-            snippet = passage[:400] + "..." if len(passage) > 400 else passage
+            # Already bounded by semantic_search.snippet_width (default 320).
+            snippet = passage
 
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.

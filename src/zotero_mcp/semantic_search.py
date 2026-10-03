@@ -518,7 +518,12 @@ def _page_for_offset(text: str, offset: int) -> int | None:
     return text.count(_PAGE_SEPARATOR, 0, max(0, offset)) + 1
 
 
-def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
+# Width in characters of the quote returned with each search hit. Overridable with
+# ``semantic_search.snippet_width`` in config.json.
+DEFAULT_SNIPPET_WIDTH = 320
+
+
+def best_snippet(query: str, text: str, width: int = DEFAULT_SNIPPET_WIDTH) -> tuple[str, int]:
     """Return the ``width``-char window of *text* richest in query terms.
 
     Used to surface a *grounded* quote — the part of a matched document that
@@ -703,6 +708,35 @@ class ZoteroSemanticSearch:
         # Passage-level chunking (opt-in; default off preserves item-level
         # indexing and existing collections byte-for-byte).
         self._chunking_config = self._load_chunking_config()
+
+        # Width of the quote returned with each hit (semantic_search.snippet_width)
+        self._snippet_width = self._load_snippet_width()
+
+    def _load_snippet_width(self) -> int:
+        """Return ``semantic_search.snippet_width`` from the config file.
+
+        Unset, non-numeric or non-positive values fall back to
+        ``DEFAULT_SNIPPET_WIDTH``, so existing setups keep their behaviour.
+        """
+        if not (self.config_path and os.path.exists(self.config_path)):
+            return DEFAULT_SNIPPET_WIDTH
+        try:
+            with open(self.config_path) as f:
+                value = json.load(f).get("semantic_search", {}).get("snippet_width")
+        except Exception as e:
+            logger.warning(f"Error loading snippet_width: {e}")
+            return DEFAULT_SNIPPET_WIDTH
+        if value is None or isinstance(value, bool):
+            return DEFAULT_SNIPPET_WIDTH
+        try:
+            width = int(value)
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring invalid semantic_search.snippet_width: {value!r}")
+            return DEFAULT_SNIPPET_WIDTH
+        if width <= 0:
+            logger.warning(f"Ignoring non-positive semantic_search.snippet_width: {value!r}")
+            return DEFAULT_SNIPPET_WIDTH
+        return width
 
     def _load_chunking_config(self) -> dict[str, Any]:
         """Load passage-chunking configuration from file or use defaults.
@@ -4001,7 +4035,7 @@ class ZoteroSemanticSearch:
             document = documents[i] if i < len(documents) else ""
             meta = metadatas[i] if i < len(metadatas) else {}
 
-            passage, passage_offset = best_snippet(query, document)
+            passage, passage_offset = best_snippet(query, document, width=self._snippet_width)
 
             enriched_result: dict[str, Any] = {
                 "item_key": item_key,

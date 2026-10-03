@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable search-result quote width** (`semantic_search.snippet_width`). Each semantic search hit carries a quote from the matched passage: a 320-character window around the words of the query, or the start of the passage when none of them occur, which is the usual case for cross-language queries. The new optional setting in `config.json` sets the width, so it can be raised to the chunk size to return whole passages. When it is not set nothing changes. Invalid and non-positive values are ignored. See [Search result quotes](docs/configuration.md#search-result-quotes).
+
+### Changed
+
+- **Removed a redundant second truncation of the quote** in `zotero_semantic_search`. The quote is already at most 320 characters when it is built, so the extra `passage[:400]` cut never took effect; it would only have clipped a wider `snippet_width`.
+
 ### Fixed
 
 - **Duplicate detection agrees with itself** (#496). Duplicate grouping, the auto-merge DOI-conflict guard, the pre-add existence check and the semantic index's preprint filter now take their keys from `zotero_mcp.identifiers`, so DOIs match in canonical form (`10.1000/ABC`, `https://doi.org/10.1000/abc`) and titles fold the way Zotero's own duplicate finder folds them. A DOI field holding a placeholder such as `article` no longer groups every item that carries it, and re-adding a paper whose stored DOI differs only in case no longer creates a second copy.

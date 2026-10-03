@@ -207,6 +207,24 @@ To read one specific attachment regardless of priority, pass that attachment's o
 
 Extracted text is reliable for prose and unreliable for math and tables. `zotero_read_pdf_pages` flags the pages where that happens and can return those pages as images (`format='image'`).
 
+## Search result quotes
+
+Each semantic search hit comes with a quote from the matched passage: a window of text around the words of your query, or the start of the passage when none of them occur (typical for cross-language queries). The window is 320 characters wide by default. To change it, set `snippet_width` in `~/.config/zotero-mcp/config.json`:
+
+| Key | Default | What it does |
+|---|---|---|
+| `semantic_search.snippet_width` | not set (320 characters) | Width of the quote returned with each hit. Set it to `chunk_size` (1500 by default) or more to get whole passages. Invalid or non-positive values are ignored. |
+
+```json
+{
+  "semantic_search": {
+    "snippet_width": 1500
+  }
+}
+```
+
+The value `1500` is only an example. Longer quotes mean longer search results, so your assistant spends more context on each search. No re-indexing is needed.
+
 ## Command-line options
 
 ```bash

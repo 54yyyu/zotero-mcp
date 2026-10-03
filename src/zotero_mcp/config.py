@@ -73,6 +73,8 @@ class SemanticSearchConfig:
     zotero_db_path: str | None = None
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     include_fulltext: bool = True
+    # Width in characters of the quote returned with each search hit. None means the default (320).
+    snippet_width: int | None = None
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     # Per-library incremental-sync watermarks, keyed by group_id as a string

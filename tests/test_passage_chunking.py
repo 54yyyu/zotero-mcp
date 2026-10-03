@@ -279,3 +279,59 @@ def test_enrich_caps_at_limit(monkeypatch):
     }
     enriched = s._enrich_search_results(chroma_results, "q", limit=2)
     assert [r["item_key"] for r in enriched] == ["A", "B"]
+
+
+# ---------------------------------------------------------------------------
+# Configurable quote width (semantic_search.snippet_width)
+# ---------------------------------------------------------------------------
+
+
+def _wide_chunk_hit():
+    body = ("Alpha filler sentence. " * 30) + "The decisive finding is stated here. " + ("Omega filler sentence. " * 30)
+    return {
+        "ids": [["PAP1#0"]],
+        "distances": [[0.1]],
+        "documents": [[body]],
+        "metadatas": [[{"parent_item_key": "PAP1", "chunk_index": 0, "n_chunks": 1, "char_start": 0, "char_end": len(body)}]],
+    }
+
+
+def _search_with_config(monkeypatch, tmp_path, semantic_cfg):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"semantic_search": semantic_cfg}))
+    s = _chunking_search(monkeypatch)
+    s.config_path = str(cfg)
+    s._snippet_width = s._load_snippet_width()
+    s.zotero_client = _ZotItemStub()
+    return s
+
+
+def test_snippet_width_default_is_unchanged(monkeypatch, tmp_path):
+    """Without the setting the quote is exactly what best_snippet always returned."""
+    s = _search_with_config(monkeypatch, tmp_path, {})
+    assert s._snippet_width == semantic_search.DEFAULT_SNIPPET_WIDTH == 320
+    hit = _wide_chunk_hit()
+    for query in ("decisive finding", "zzz"):
+        enriched = s._enrich_search_results(hit, query, limit=10)
+        expected, _ = best_snippet(query, hit["documents"][0][0])
+        assert enriched[0]["matched_passage"] == expected
+        assert len(expected) <= 320
+
+
+def test_snippet_width_from_config_returns_whole_passage(monkeypatch, tmp_path):
+    s = _search_with_config(monkeypatch, tmp_path, {"snippet_width": 5000})
+    hit = _wide_chunk_hit()
+    enriched = s._enrich_search_results(hit, "zzz", limit=10)
+    assert enriched[0]["matched_passage"] == hit["documents"][0][0].strip()
+
+
+@pytest.mark.parametrize("bad", [0, -5, "abc", None, True])
+def test_snippet_width_invalid_falls_back_to_default(monkeypatch, tmp_path, bad):
+    s = _search_with_config(monkeypatch, tmp_path, {"snippet_width": bad})
+    assert s._snippet_width == 320
+
+
+def test_snippet_width_missing_config_file_uses_default(monkeypatch, tmp_path):
+    s = _search_with_config(monkeypatch, tmp_path, {})
+    s.config_path = str(tmp_path / "does-not-exist.json")
+    assert s._load_snippet_width() == 320

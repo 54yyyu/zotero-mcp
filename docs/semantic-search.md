@@ -108,6 +108,8 @@ zotero-mcp update-db --force-rebuild
 zotero-mcp db-status
 ```
 
+The length of the quote returned with each hit is set in [Search result quotes](configuration.md#search-result-quotes).
+
 How much of each PDF is extracted, and which attachment is read when an item has several, is set in [Text extraction settings](configuration.md#text-extraction-settings).
 
 ## Example queries
