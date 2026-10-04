@@ -1558,38 +1558,30 @@ _arxiv_identity = arxiv_identity
 _MAX_PDF_REDIRECTS = 5
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
-#: Ceiling on one downloaded PDF, in MB. The URL comes from the caller or a
+#: Ceiling on one downloaded PDF. The URL comes from the caller or a
 #: third-party metadata API, and the download runs under the global API lock,
 #: so without a ceiling a huge or endless response fills the disk and keeps
-#: every other write tool waiting until it ends.
-PDF_MAX_MB_ENV_VAR = "ZOTERO_MCP_MAX_PDF_MB"
-_DEFAULT_PDF_MAX_MB = 100
+#: every other write tool waiting until it ends. Generous on purpose: scanned
+#: books run to a few hundred MB.
+_PDF_MAX_BYTES = 500 * 1024 * 1024
 #: Wall-clock ceiling on one download. ``requests``' timeout only bounds each
-#: read, so a server that sends a byte every few seconds never trips it.
-_PDF_DOWNLOAD_DEADLINE = 120.0
+#: read, so a server that sends a byte every few seconds never trips it. With
+#: the size cap in place this only has to catch a stalled server.
+_PDF_DOWNLOAD_DEADLINE = 300.0
 
 
 class PdfDownloadError(Exception):
     """A PDF download was stopped for being too large or too slow."""
 
 
-def _pdf_max_bytes() -> int:
-    raw = os.environ.get(PDF_MAX_MB_ENV_VAR, "").strip()
-    try:
-        mb = float(raw) if raw else _DEFAULT_PDF_MAX_MB
-    except ValueError:
-        mb = _DEFAULT_PDF_MAX_MB
-    return int(max(mb, 1) * 1024 * 1024)
-
-
-def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DEADLINE) -> int:
-    """Write a streamed PDF response to ``filepath``; return the byte count.
+def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DEADLINE) -> None:
+    """Write a streamed PDF response to ``filepath``.
 
     Raises ``PdfDownloadError`` (after closing the response) once the body
     passes the size ceiling or the download runs past ``deadline`` seconds.
     The caller's temp directory removes the partial file.
     """
-    max_bytes = _pdf_max_bytes()
+    max_bytes = _PDF_MAX_BYTES
     limit_mb = max_bytes // (1024 * 1024)
     try:
         declared = int(resp.headers.get("Content-Length") or 0)
@@ -1598,8 +1590,7 @@ def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DE
     if declared > max_bytes:
         resp.close()
         raise PdfDownloadError(
-            f"PDF is {declared // (1024 * 1024)} MB, over the {limit_mb} MB limit "
-            f"(set {PDF_MAX_MB_ENV_VAR} to raise it)"
+            f"PDF is {declared // (1024 * 1024)} MB, over the {limit_mb} MB limit"
         )
     started = time.monotonic()
     total = 0
@@ -1609,8 +1600,7 @@ def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DE
             if total > max_bytes:
                 resp.close()
                 raise PdfDownloadError(
-                    f"PDF download passed the {limit_mb} MB limit "
-                    f"(set {PDF_MAX_MB_ENV_VAR} to raise it)"
+                    f"PDF download passed the {limit_mb} MB limit"
                 )
             if time.monotonic() - started > deadline:
                 resp.close()
@@ -1618,7 +1608,6 @@ def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DE
                     f"PDF download took longer than {int(deadline)} s"
                 )
             f.write(chunk)
-    return total
 
 
 def _url_resolves_to_public_host(url: str) -> bool:

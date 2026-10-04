@@ -829,7 +829,7 @@ class EndlessResponse(FakeResponse):
 
 class TestPdfDownloadCeilings:
     def test_endless_body_stops_at_size_limit(self, monkeypatch, dummy_ctx):
-        monkeypatch.setenv(_helpers.PDF_MAX_MB_ENV_VAR, "1")
+        monkeypatch.setattr(_helpers, "_PDF_MAX_BYTES", 1024 * 1024)
         fake = FakeZoteroForAttach()
         _patch_write_client(monkeypatch, fake)
         resp = EndlessResponse()
@@ -845,7 +845,7 @@ class TestPdfDownloadCeilings:
         assert fake.attachments == []
 
     def test_declared_oversize_is_refused_before_reading(self, monkeypatch, dummy_ctx):
-        monkeypatch.setenv(_helpers.PDF_MAX_MB_ENV_VAR, "1")
+        monkeypatch.setattr(_helpers, "_PDF_MAX_BYTES", 1024 * 1024)
         fake = FakeZoteroForAttach()
         _patch_write_client(monkeypatch, fake)
         resp = EndlessResponse(content_length=5 * 1024 * 1024)
@@ -871,9 +871,10 @@ class TestPdfDownloadCeilings:
     def test_normal_pdf_is_written_whole(self, tmp_path):
         body = b"%PDF-1.4 " + b"x" * 200_000
         path = tmp_path / "ok.pdf"
-        assert _helpers._stream_pdf_download(FakeResponse(content=body), str(path)) == len(body)
+        _helpers._stream_pdf_download(FakeResponse(content=body), str(path))
         assert path.read_bytes() == body
 
-    def test_bad_env_value_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv(_helpers.PDF_MAX_MB_ENV_VAR, "lots")
-        assert _helpers._pdf_max_bytes() == _helpers._DEFAULT_PDF_MAX_MB * 1024 * 1024
+    def test_limits_are_generous_fixed_values(self):
+        # Scanned books run past 100 MB, and a slow connection needs minutes.
+        assert _helpers._PDF_MAX_BYTES == 500 * 1024 * 1024
+        assert _helpers._PDF_DOWNLOAD_DEADLINE == 300.0

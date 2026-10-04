@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **PDF downloads have a size and time limit** (#644). `zotero_attach_file` with `url`, the open-access PDF step of `zotero_add_item` and the arXiv PDF step streamed the response to disk with no ceiling while holding the global API lock, so a huge or endless response filled the disk and a slow one kept every other write tool waiting. Downloads now stop at 100 MB (`ZOTERO_MCP_MAX_PDF_MB` changes it) or after 120 s, and a `Content-Length` over the limit is refused before reading.
+- **PDF downloads have a size and time limit** (#644). `zotero_attach_file` with `url`, the open-access PDF step of `zotero_add_item` and the arXiv PDF step streamed the response to disk with no ceiling while holding the global API lock, so a huge or endless response filled the disk and a slow one kept every other write tool waiting. Downloads now stop at 500 MB or after 300 s, and a `Content-Length` over the limit is refused before reading.
 
 ## [0.13.2] - 2026-10-04
 
