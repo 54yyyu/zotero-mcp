@@ -3,27 +3,23 @@
 export const WELCOME_STYLES = `
 @keyframes zmc-lift { from { opacity: 0; transform: translateY(10px); } }
 @keyframes zmc-pop { from { opacity: 0; transform: scale(0.6); } 60% { transform: scale(1.06); } to { opacity: 1; transform: scale(1); } }
-@keyframes zmc-spark { from { opacity: 0; transform: scale(0) rotate(-120deg); } 70% { transform: scale(1.15) rotate(8deg); } to { opacity: 1; transform: none; } }
-@keyframes zmc-wave { 0%, 55%, 100% { transform: translateY(0); } 25% { transform: translateY(-5px); } }
-@keyframes zmc-twinkle { 0%, 100% { transform: scale(1) rotate(0); } 50% { transform: scale(1.14) rotate(10deg); } }
-@keyframes zmc-burst { 0% { transform: scale(1) rotate(0); } 40% { transform: scale(1.5) rotate(25deg); } 100% { transform: scale(1) rotate(0); } }
+@keyframes zmc-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.14); } }
+@keyframes zmc-burst { 0% { transform: scale(1); } 40% { transform: scale(1.5); } 100% { transform: scale(1); } }
 @keyframes zmc-spray { from { opacity: 1; transform: translate(0, 0) scale(1); } to { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.3); } }
 @keyframes zmc-spin { to { transform: rotate(360deg); } }
 @keyframes zmc-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 @keyframes zmc-ripple { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent); } to { box-shadow: 0 0 0 8px transparent; } }
 
 /* ---------- the logo ---------- */
-.zmc .mark :is(.mk-b, .mk-d, .mk-w, .mk-t, .mk-s, .mk-p) { transform-box: fill-box; transform-origin: center; }
+.zmc .mark :is(.mk-b, .mk-t, .mk-s, .mk-p) { transform-box: fill-box; transform-origin: center; }
 .zmc .mk-p { opacity: 0; }
 .zmc .mark--hero { width: 64px; height: 64px; margin-bottom: var(--s3); }
 .zmc .mark--hero .mk-b { animation: zmc-pop 560ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
-.zmc .mark--hero .mk-d { animation: zmc-pop 360ms ease-out calc(420ms + var(--i) * 90ms) both; }
-.zmc .mark--hero .mk-s { animation: zmc-spark 700ms cubic-bezier(0.2, 0.9, 0.3, 1.1) 560ms both; }
-.zmc .mark--hero .mk-t { animation: zmc-twinkle 3.6s ease-in-out 1.6s infinite; }
-.zmc .mark--busy .mk-w { animation: zmc-wave 1.3s ease-in-out calc(900ms + var(--i) * 140ms) infinite; }
-.zmc .mark--ready .mk-t { animation: zmc-burst 760ms ease-out; }
+.zmc .mark--hero .mk-s { animation: zmc-pop 520ms cubic-bezier(0.2, 0.9, 0.3, 1.4) 420ms both; }
+.zmc .mark--hero .mk-t { animation: zmc-breathe 3.6s ease-in-out 1.4s infinite; }
+.zmc .mark--busy .mk-t { animation: zmc-breathe 1.1s ease-in-out 0.9s infinite; }
+.zmc .mark--ready .mk-t, .zmc .mark--hello .mk-t { animation: zmc-burst 760ms ease-out; }
 .zmc .mark--ready .mk-p { animation: zmc-spray 820ms ease-out both; }
-.zmc .mark--hello .mk-t { animation: zmc-burst 760ms ease-out; }
 
 /* ---------- the screen ---------- */
 .zmc .wel { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--s4) var(--s4) 0; scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }

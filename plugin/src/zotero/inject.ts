@@ -21,7 +21,7 @@ export interface Injected {
 }
 
 const ICON = "data:image/svg+xml;utf8," + encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="context-stroke" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v5.5A1.5 1.5 0 0 1 13 11H8.5L5.5 13.5V11H3A1.5 1.5 0 0 1 1.5 9.5V4A1.5 1.5 0 0 1 3 2.5z"/><circle cx="5.3" cy="6.8" r=".85" fill="context-stroke" stroke="none"/><circle cx="8" cy="6.8" r=".85" fill="context-stroke" stroke="none"/><circle cx="10.7" cy="6.8" r=".85" fill="context-stroke" stroke="none"/></svg>');
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="context-stroke" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.7a6.3 6.3 0 1 1 0 12.6H2.7a1 1 0 0 1-1-1V8A6.3 6.3 0 0 1 8 1.7z"/><circle cx="8" cy="8" r="1.7" fill="context-stroke" stroke="none"/></svg>');
 
 export function injectPanel(win: any, load: (shadow: ShadowRoot) => Panel, prefs: { get(k: string): any; set(k: string, v: any): void; json<T>(k: string, fallback: T): T }): Injected | null {
   const doc = win.document;
