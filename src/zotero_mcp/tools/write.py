@@ -3618,12 +3618,22 @@ def _render_skipped(skipped: list[tuple], heading: str) -> list[str]:
     return lines
 
 
-def _attachment_sig(data: dict) -> tuple:
-    """Identity of an attachment for "the keeper already has this one" checks."""
+def _attachment_sig(data: dict) -> tuple | None:
+    """Identity of an attachment for "the keeper already has this one" checks.
+
+    Returns None when the attachment carries nothing that identifies its
+    content (no md5, path or url) — e.g. linked-file PDFs, which have no
+    filename or md5. Such attachments must never be treated as duplicates,
+    or a distinct file is left on the duplicate and trashed with it.
+    """
+    if not (data.get("md5") or data.get("path") or data.get("url")):
+        return None
     return (
+        data.get("linkMode", ""),
         data.get("contentType", ""),
         data.get("filename", ""),
         data.get("md5", ""),
+        data.get("path", ""),
         data.get("url", ""),
     )
 
@@ -3694,6 +3704,7 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         for kc in keeper_children
         if kc.get("data", {}).get("itemType") == "attachment"
     }
+    keeper_attachment_sigs.discard(None)
     skipped_attachment_count = sum(
         1
         for dup in duplicates
