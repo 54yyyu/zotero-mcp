@@ -12,6 +12,17 @@ import pytest
 
 from zotero_mcp import cli
 
+try:
+    from fastmcp.server.http import HostOriginGuardMiddleware  # noqa: F401
+
+    _HAS_GUARD = True
+except ImportError:  # fastmcp 3.x has no Host/Origin guard
+    _HAS_GUARD = False
+
+requires_guard = pytest.mark.skipif(
+    not _HAS_GUARD, reason="installed fastmcp has no HostOriginGuardMiddleware"
+)
+
 INIT = {
     "jsonrpc": "2.0", "id": 1, "method": "initialize",
     "params": {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -116,6 +127,7 @@ def _mw_cls():
     return pytest.importorskip("fastmcp.server.http").HostOriginGuardMiddleware
 
 
+@requires_guard
 def test_sse_gets_the_guard_as_middleware():
     from zotero_mcp.server import mcp
 
@@ -127,6 +139,7 @@ def test_sse_gets_the_guard_as_middleware():
     assert "host_origin_protection" not in kwargs
 
 
+@requires_guard
 def test_sse_guard_follows_the_user_setting(monkeypatch):
     from zotero_mcp.server import mcp
 
@@ -137,6 +150,7 @@ def test_sse_guard_follows_the_user_setting(monkeypatch):
     assert mw.kwargs["mode"] == "strict"
 
 
+@requires_guard
 def test_sse_guard_keeps_user_allowed_hosts(monkeypatch):
     import fastmcp
 
@@ -156,6 +170,7 @@ def test_sse_without_middleware_support_warns(capsys):
     assert "DNS rebinding" in capsys.readouterr().err
 
 
+@requires_guard
 def test_guarded_sse_app_rejects_a_rebound_host_and_serves_localhost():
     from starlette.testclient import TestClient
 
@@ -174,6 +189,7 @@ def test_guarded_sse_app_rejects_a_rebound_host_and_serves_localhost():
     assert local.status_code not in (421, 403)
 
 
+@requires_guard
 @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
 def test_operator_is_told_how_to_allow_a_proxy(transport, capsys):
     from zotero_mcp.server import mcp
