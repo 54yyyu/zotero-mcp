@@ -2332,7 +2332,7 @@ class LocalZoteroReader:
         placeholders = ",".join("?" * len(item_ids))
         rows = conn.execute(
             f"""
-            SELECT itg.itemID, t.name
+            SELECT itg.itemID, t.name, itg.type
             FROM itemTags itg
             JOIN tags t ON itg.tagID = t.tagID
             WHERE itg.itemID IN ({placeholders})
@@ -2341,7 +2341,12 @@ class LocalZoteroReader:
         ).fetchall()
         result: dict[int, list[dict]] = {}
         for row in rows:
-            result.setdefault(row["itemID"], []).append({"tag": row["name"]})
+            # As Zotero's API does: "type": 1 marks an automatic tag, and the
+            # key is left out for a manual one.
+            tag = {"tag": row["name"]}
+            if row["type"]:
+                tag["type"] = row["type"]
+            result.setdefault(row["itemID"], []).append(tag)
         return result
 
     def _hydrate_rows(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
