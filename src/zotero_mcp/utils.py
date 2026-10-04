@@ -1,7 +1,10 @@
+import contextlib
+import json
 import logging
 import os
 import re
 import sys
+import tempfile
 import threading
 from contextlib import contextmanager
 
@@ -66,6 +69,32 @@ def ensure_private_dir(path) -> None:
             )
     except OSError:
         pass
+
+
+def write_json_atomic(path, data) -> None:
+    """Write ``data`` as JSON to ``path``, owner-only, via a temp file and a rename.
+
+    A concurrent reader sees the old file or the new one, never half of it,
+    and a crash mid-write leaves the old file intact. The temp name is unique
+    per call, so concurrent writers (threads or processes) never share one,
+    and ``mkstemp`` creates it owner-only, so a credential is never readable
+    by others, even before the rename. A symlinked ``path`` is written through
+    (dotfile managers): replacing the link itself would leave the real file
+    stale.
+    """
+    from pathlib import Path
+
+    path = Path(path).resolve()
+    ensure_private_dir(path.parent)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(temp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_path)
+        raise
 
 
 def detect_install_flavor() -> str | None:
