@@ -1408,9 +1408,12 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         "ISSN": (cr.get("ISSN") or [""])[0],
     }
 
+    # A chapter's container is bookTitle and a conference paper's is
+    # proceedingsTitle; neither template has publicationTitle.
     container = (cr.get("container-title") or [""])[0]
-    if container:
-        field_map["publicationTitle"] = container
+    container_field = _citation_import._pick_container_field(zot_type, item_data)
+    if container and container_field:
+        field_map[container_field] = container
 
     abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
     if abstract:
