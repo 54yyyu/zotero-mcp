@@ -702,6 +702,76 @@ def note_local_write() -> None:
 _snapshot_lock = threading.Lock()
 _snapshots: dict[str, tuple[tuple, str, float, int]] = {}
 
+#: Snapshot directories are named ``zotero_mcp_db_<pid>_<random>`` so a later
+#: process can tell whose they are. Copies from before the pid was recorded
+#: are only removed once they are this old.
+_SNAPSHOT_PREFIX = "zotero_mcp_db_"
+_LEGACY_SNAPSHOT_MAX_AGE = 7 * 24 * 3600
+_swept_stale_snapshots = False
+
+
+_IS_WINDOWS = os.name == "nt"
+
+
+def _pid_alive(pid: int) -> bool:
+    if _IS_WINDOWS:
+        # os.kill(pid, 0) is not a liveness probe on Windows: signal 0 equals
+        # CTRL_C_EVENT there, so it can send Ctrl+C to processes on the
+        # console, and a failure is a generic OSError. Say "alive" and let the
+        # sweep fall back to the age rule.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Exists but belongs to someone else (EPERM), or the platform
+        # cannot tell: keep the directory.
+        return True
+    return True
+
+
+def _sweep_stale_snapshots() -> None:
+    """Remove snapshot directories left behind by processes that are gone.
+
+    ``_remove_snapshots`` runs at exit, but not when the process is stopped
+    by a signal: SIGTERM from launchd, systemd or Docker, or SIGKILL. Each
+    such stop used to leave a full copy of the user's library in the temp
+    directory, one per restart. Runs once per process, before its first copy.
+    """
+    global _swept_stale_snapshots
+    if _swept_stale_snapshots:
+        return
+    _swept_stale_snapshots = True
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        if not name.startswith(_SNAPSHOT_PREFIX):
+            continue
+        path = os.path.join(tmp, name)
+        owner = name[len(_SNAPSHOT_PREFIX):].split("_", 1)[0]
+        try:
+            if owner.isdigit() and "_" in name[len(_SNAPSHOT_PREFIX):]:
+                pid = int(owner)
+                if pid == os.getpid():
+                    continue
+                # Where liveness cannot be probed (Windows) only old copies go.
+                if _pid_alive(pid) and not (
+                    _IS_WINDOWS and now - os.path.getmtime(path) >= _LEGACY_SNAPSHOT_MAX_AGE
+                ):
+                    continue
+            elif now - os.path.getmtime(path) < _LEGACY_SNAPSHOT_MAX_AGE:
+                continue
+            if not os.path.isdir(path) or os.path.islink(path):
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
 
 @atexit.register
 def _remove_snapshots() -> None:
@@ -763,7 +833,8 @@ def _wal_snapshot_path(db_path: str) -> str | None:
                     # next read after the interval picks the change up. A copy
                     # made before our own latest write skips this, once.
                     return cached[1]
-            snap_dir = tempfile.mkdtemp(prefix="zotero_mcp_db_")
+            _sweep_stale_snapshots()
+            snap_dir = tempfile.mkdtemp(prefix=f"{_SNAPSHOT_PREFIX}{os.getpid()}_")
             snap = os.path.join(snap_dir, "zotero.sqlite")
             try:
                 shutil.copyfile(source, snap)
