@@ -171,9 +171,42 @@ def extract_pdf(
         wanted = None
         total = None
 
-    result = pdf_inspector.extract_pages_markdown(path, pages=wanted)
+    # The text-layer fallback is whole-document, so it can't stand in for an
+    # explicit subset of pages; a max_pages head is capped proportionally.
+    can_fall_back = pages is None or len(set(wanted)) == total
+
+    try:
+        result = pdf_inspector.extract_pages_markdown(path, pages=wanted)
+    except Exception as exc:
+        # Some producers (Ghostscript / PDFCreator) emit content streams the
+        # markdown pass rejects while the plain-text pass reads them (#611).
+        fallback = can_fall_back and _text_layer_fallback(
+            pdf_inspector, path, wanted=wanted, total=total, truncated=truncated,
+        )
+        if not fallback:
+            raise
+        logger.info(
+            "pdf-inspector markdown failed for %s (%s); used the text layer",
+            path, exc,
+        )
+        return fallback
+
     if total is None:
         total = len(result.pages)
+
+    # Scanner OCR layers (invisible text over a page image, as written by
+    # Xerox/ABBYY devices) come back as empty markdown with needs_ocr on every
+    # page, although the plain-text pass returns that layer (#611).
+    if (
+        can_fall_back
+        and result.pages
+        and not any((page.markdown or "").strip() for page in result.pages)
+    ):
+        fallback = _text_layer_fallback(
+            pdf_inspector, path, wanted=wanted, total=total, truncated=truncated,
+        )
+        if fallback is not None:
+            return fallback
 
     return _doc_from_pages(
         [page.markdown or "" for page in result.pages],
@@ -185,6 +218,40 @@ def extract_pdf(
         page_numbers=tuple(page.page for page in result.pages),
         needs_ocr=tuple(page.page for page in result.pages if page.needs_ocr),
         truncated=truncated,
+    )
+
+
+def _text_layer_fallback(
+    pdf_inspector, path: str, *, wanted: list[int] | None,
+    total: int | None, truncated: bool,
+) -> ExtractedDoc | None:
+    """Recover a PDF's text layer when the markdown pass yields nothing.
+
+    pdf-inspector's ``extract_text`` is whole-document only (its per-page and
+    positional APIs skip invisible text), so the result is one page attributed
+    to the first page requested. Under a ``max_pages`` cap the text is cut to
+    the same share of the document, so the indexer's limit still holds.
+    Returns ``None`` when there is no text layer either.
+    """
+    try:
+        text = pdf_inspector.extract_text(path) or ""
+    except Exception:
+        return None
+    if not text.strip():
+        return None
+    # The separator must only ever mark page boundaries.
+    text = text.replace(PAGE_SEPARATOR, "\n")
+    if total is None:
+        try:
+            total = pdf_page_count(path)
+        except Exception:
+            total = 1
+    if truncated and wanted and total:
+        text = text[: len(text) * len(wanted) // total]
+    first = wanted[0] if wanted else 0
+    return _doc_from_pages(
+        [text], page_count=total, source="pdf",
+        page_numbers=(first,), truncated=truncated,
     )
 
 
