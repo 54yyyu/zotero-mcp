@@ -271,7 +271,7 @@ const BASE = `
 .zmc .check__d { font-size: var(--fs-2); color: var(--ink-muted); overflow-wrap: anywhere; }
 .zmc .check__help { margin: var(--s2) 0 0; font-size: var(--fs-2); color: var(--ink-muted); line-height: 1.5; }
 .zmc .check__acts { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }
-.zmc .set { display: grid; gap: var(--s5); padding-top: var(--s2); }
+.zmc .set { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s5); padding-top: var(--s2); }
 .zmc .sec__t { margin-bottom: var(--s2); }
 .zmc .sec__hint { margin: var(--s2) 0 0; font-size: var(--fs-2); color: var(--ink-muted); line-height: 1.5; overflow-wrap: anywhere; }
 .zmc .keyrow { display: grid; gap: var(--s1); }

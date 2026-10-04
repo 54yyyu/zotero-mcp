@@ -179,6 +179,11 @@ export class Feed {
       this.lastTop = s.scrollTop;
       this.jump.hidden = this.stick;
     });
+    // The scroll event comes a frame late, and a token rendered in that gap would snap a reader back down. Intent to read
+    // upward (wheel up, PageUp, Home, arrow up) lets go of the bottom at once; reaching the bottom again takes it back.
+    const letGo = () => { if (this.scroller.scrollTop > 0) { this.stick = false; this.jump.hidden = false; } };
+    this.scroller.addEventListener("wheel", (e) => { if (e.deltaY < 0) letGo(); }, { passive: true });
+    this.scroller.addEventListener("keydown", (e) => { if (e.key === "PageUp" || e.key === "Home" || e.key === "ArrowUp") letGo(); });
     const RO = env.win.ResizeObserver;
     if (RO) new RO(() => { if (this.stick) this.toBottom(false); }).observe(this.inner);
   }
