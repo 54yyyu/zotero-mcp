@@ -164,6 +164,7 @@ zotero-cli synthesize --tag "to-read" --format json
 # Zotero chat plugin: where the .xpi is and how to install it
 zotero-cli plugin
 zotero-cli plugin --path
+zotero-cli plugin --reveal
 
 # Bulk edits across many items
 zotero-cli batch --item-keys ABC123,DEF456 --add-tags screened

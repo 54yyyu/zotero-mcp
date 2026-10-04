@@ -18,10 +18,10 @@ REPO = Path(__file__).resolve().parent.parent
 XPI = "src/zotero_mcp/chat_plugin/zotero-chat.xpi"
 
 
-def _run(monkeypatch, root: Path, *, path=False, json_out=False):
+def _run(monkeypatch, root: Path, *, path=False, json_out=False, reveal=False):
     """Run the command as if the package lived at <root>/src/zotero_mcp."""
     monkeypatch.setattr(cli_standalone, "__file__", str(root / "src" / "zotero_mcp" / "cli_standalone.py"))
-    cli_standalone.cmd_plugin(argparse.Namespace(path=path, json_out=json_out, verbose=False))
+    cli_standalone.cmd_plugin(argparse.Namespace(path=path, reveal=reveal, json_out=json_out, verbose=False))
 
 
 def _xpi_in(root: Path, rel: str) -> Path:
@@ -37,6 +37,8 @@ class TestParsing:
         assert "plugin" in _CMD_MAP
         assert parser.parse_args(["plugin"]).path is False
         assert parser.parse_args(["plugin", "--path"]).path is True
+        assert parser.parse_args(["plugin"]).reveal is False
+        assert parser.parse_args(["plugin", "--reveal"]).reveal is True
         assert parser.parse_args(["--json", "plugin"]).json_out is True
         assert parser.parse_args(["plugin", "--json"]).json_out is True
 
@@ -53,6 +55,14 @@ class TestPluginCommand:
         xpi = _xpi_in(tmp_path, XPI)
         _run(monkeypatch, tmp_path, path=True)
         assert capsys.readouterr().out == f"{xpi}\n"
+
+    def test_reveal_shows_the_file_and_still_prints_the_steps(self, tmp_path, monkeypatch, capsys):
+        xpi = _xpi_in(tmp_path, XPI)
+        shown = []
+        monkeypatch.setattr(cli_standalone, "_reveal", shown.append)
+        _run(monkeypatch, tmp_path, reveal=True)
+        assert shown == [xpi]
+        assert "Install Plugin From File" in capsys.readouterr().out
 
     def test_source_checkout_build_is_found(self, tmp_path, monkeypatch, capsys):
         xpi = _xpi_in(tmp_path, "plugin/dist/zotero-chat.xpi")

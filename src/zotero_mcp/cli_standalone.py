@@ -1228,6 +1228,18 @@ def cmd_path(args):
          text=text)
 
 
+def _reveal(path) -> None:
+    """Show a file in the system file manager, so the install dialog's file picker is one drag away."""
+    import os
+    import subprocess
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-R", str(path)], check=False)
+    elif sys.platform == "win32":
+        subprocess.run(["explorer", f"/select,{path}"], check=False)
+    else:
+        subprocess.run(["xdg-open", os.path.dirname(str(path))], check=False)
+
+
 def cmd_plugin(args):
     """Where the packaged Zotero chat plugin is, and how to install it."""
     from pathlib import Path
@@ -1244,6 +1256,8 @@ def cmd_plugin(args):
     if args.path:
         _out(args, "plugin", data={"path": str(xpi)}, text=str(xpi))
         return
+    if args.reveal:
+        _reveal(xpi)
     _out(args, "plugin", data={"path": str(xpi)}, text=(
         f"Zotero chat plugin: {xpi}\n"
         "Install it in Zotero: Tools > Plugins, click the gear, Install Plugin From File, "
@@ -1748,6 +1762,7 @@ def build_parser() -> argparse.ArgumentParser:
     # plugin
     pl_p = sub.add_parser("plugin", help="Locate the Zotero chat plugin (.xpi) and show how to install it")
     pl_p.add_argument("--path", action="store_true", help="Print only the path to the .xpi")
+    pl_p.add_argument("--reveal", action="store_true", help="Also show the .xpi in the file manager")
 
     # open -- point the Zotero reader at a page or an annotation
     op_p = sub.add_parser("open", help="Open an item's PDF in the Zotero reader at a page or annotation")

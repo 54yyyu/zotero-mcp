@@ -11,9 +11,25 @@ You need Zotero 7 or newer (developed and tested on Zotero 10), [`zotero-cli`](c
 ```bash
 zotero-cli plugin           # where the .xpi is, and how to install it
 zotero-cli plugin --path    # just the path, for scripts
+zotero-cli plugin --reveal  # also show the file in your file manager
 ```
 
 In Zotero: **Tools > Plugins**, click the gear, **Install Plugin From File**, and choose that file. The plugin updates itself from `plugin/updates.json` in this repository. You can also download `zotero-chat.xpi` from the [GitHub release](https://github.com/54yyyu/zotero-mcp/releases/latest).
+
+### Let your agent do it
+
+Paste this to Claude Code, Codex, pi or any other agent that has a shell:
+
+```text
+Install the Zotero chat plugin for me. Make sure zotero-cli is installed (`uv tool install zotero-mcp-server`,
+or `pipx install zotero-mcp-server`), then run `zotero-cli plugin --reveal`: it prints the path of zotero-chat.xpi
+and shows it in my file manager. If it says the file is missing, download
+https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-chat.xpi instead. Zotero cannot install a
+plugin from the command line, so finish by telling me the one step I do myself: in Zotero, Tools > Plugins, the
+gear, Install Plugin From File, and choose that file.
+```
+
+The agent does everything except the last click: Zotero offers no supported way to install a plugin from outside (opening the file with Zotero offers to import it as a library, and a plugin dropped into the profile folder arrives switched off), so the file picker stays a human step.
 
 From a source checkout there is no packaged copy; build it with `npm ci && npm run build` in `plugin/`, which writes `plugin/dist/zotero-chat.xpi`. `zotero-cli plugin` finds that one too.
 
