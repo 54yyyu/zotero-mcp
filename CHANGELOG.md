@@ -10,20 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **HTTP transports reject requests for a foreign host (DNS rebinding).** Served over `streamable-http` or `sse`, the server accepted any `Host` and `Origin`, so a web page could rebind its hostname to 127.0.0.1 and use every tool, writes and deletes included, from the user's browser. `serve` now turns on FastMCP's Host/Origin check in `auto` mode: on a loopback bind, requests must name localhost/127.0.0.1 and come from no origin or a local one (421/403 otherwise). FastMCP's own option does not reach its SSE app, so the check is attached to `sse` as middleware. Clients that connect to localhost, including through a VPN or `mcp-remote`, are unaffected. **A tunnel or reverse proxy that forwards its own hostname (ngrok's default) now needs that hostname in `FASTMCP_HTTP_ALLOWED_HOSTS='["host.example"]'`**, or the proxy must rewrite `Host`; `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=false` turns the check off. The server prints this on start-up, and docs/troubleshooting.md covers it. A FastMCP too old to support the check logs a warning.
+
 ### Fixed
 
 - **BibTeX imports keep every author when the author list wraps across lines** (#631). `zotero_add_by_bibtex` and `zotero-cli add bibtex` split names only on a literal ` and `, so `Smith, John and` followed by a line break and `Doe, Jane` (how exported `.bib` files commonly wrap long author fields) became a single creator with first name `Smith, John and Doe,` and last name `Jane`. Names are now separated by `and` between any whitespace.
-### Fixed
-
 - **Adding a book chapter or conference paper by DOI keeps the book or proceedings title** (#638). CrossRef's `container-title` was written only to `publicationTitle`, which `bookSection` and `conferencePaper` items do not have, so the container was dropped silently. It now goes to `bookTitle` / `proceedingsTitle`.
-### Fixed
-
 - **`zotero_batch_update` applies Extra edits to the items it selected** (#640). With both tag and Extra actions and a `tag`/`query` selector, the Extra half re-ran the search after the tag half had already edited tags, so `tag='to-read', remove_tags=['to-read'], set_keys={...}` removed the tag and then reported "No items found" for the Extra edits, which were never written. The selection is now resolved once and shared.
-### Fixed
-
 - **CSL JSON import keeps name particles and suffixes** (#639). Names exported with `non-dropping-particle`, `dropping-particle` or `suffix` (Better BibTeX, citation.js) lost them, so "van der Maaten" was stored as "Maaten". They are now folded into the last and first names.
-### Fixed
-
 - **Note search in local mode stays in the active library** (#632). `zotero_get_notes(query=...)` read `itemNotes` and `itemAnnotations` from SQLite with no library filter, so with group libraries synced, a personal-library search also returned the groups' notes and annotations (and a search after `zotero_switch_library` returned personal ones), even though the tool is documented as active-library only. The local queries are now scoped like the other local searches; a group that isn't in the local database falls back to the API.
 
 ## [0.13.2] - 2026-10-04
