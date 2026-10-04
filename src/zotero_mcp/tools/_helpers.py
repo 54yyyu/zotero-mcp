@@ -42,7 +42,7 @@ from zotero_mcp.identifiers import (
     normalize_doi,
     normalize_isbn,
 )
-from zotero_mcp.local_db import get_local_zotero_reader
+from zotero_mcp.local_db import get_local_zotero_reader, note_local_write
 from zotero_mcp.utils import _paginate
 
 
@@ -204,6 +204,10 @@ def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
     writing to the other is precisely the mismatch that forces hybrid mode to
     re-fetch every item before touching it.
     """
+    # Every write resolves its client here first. Lift the WAL-snapshot copy
+    # throttle so the next local read sees this write instead of a copy taken
+    # just before it landed (local_db._wal_snapshot_path).
+    note_local_write()
     if not _utils.is_local_mode():
         zot = _client.get_zotero_client()
         return zot, zot, "web"
