@@ -1145,6 +1145,12 @@ def list_libraries(*, ctx: Context) -> str:
         return f"Error listing libraries: {str(e)}"
 
 
+#: Closing sentence of a successful ``switch_library``. Right for the MCP
+#: server, whose process keeps the switch; zotero-cli replaces it (each command
+#: is a new process), so it lives here for both to use.
+SWITCH_SUCCESS_NOTE = "All tools now operate on this library."
+
+
 @mcp.tool(
     name="zotero_switch_library",
     description=(
@@ -1169,6 +1175,7 @@ def list_libraries(*, ctx: Context) -> str:
         "library_id='', library_type='default')."
     ),
 )
+
 @with_zotero_api_lock
 def switch_library(
     library_id: str,
@@ -1234,7 +1241,7 @@ def switch_library(
         if _library.get_library_backend().name == "sqlite":
             return (
                 f"Successfully switched to library **{library_id}** "
-                f"(type={library_type}). All tools now operate on this library."
+                f"(type={library_type}). {SWITCH_SUCCESS_NOTE}"
             )
         try:
             zot = _client.get_zotero_client()
@@ -1242,7 +1249,7 @@ def switch_library(
             zot.items()
             return (
                 f"Successfully switched to library **{library_id}** "
-                f"(type={library_type}). All tools now operate on this library."
+                f"(type={library_type}). {SWITCH_SUCCESS_NOTE}"
             )
         except Exception as e:
             # Roll back on failure
