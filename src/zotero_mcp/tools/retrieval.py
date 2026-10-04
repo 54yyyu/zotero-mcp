@@ -1211,7 +1211,13 @@ def switch_library(
             local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
             if local:
                 library_id = "0"
-            elif library_id in ("user", "0", "") and os.getenv("ZOTERO_LIBRARY_ID"):
+            elif (
+                library_id in ("user", "0", "")
+                and os.getenv("ZOTERO_LIBRARY_ID")
+                and (os.getenv("ZOTERO_LIBRARY_TYPE") or "user").strip().lower() != "group"
+            ):
+                # With a group configured, ZOTERO_LIBRARY_ID is a groupID,
+                # not the user's id, so there is nothing to map to.
                 library_id = os.getenv("ZOTERO_LIBRARY_ID")
 
         _client.set_active_library(library_id, library_type)
@@ -1288,7 +1294,7 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
                     valid_ids = {"0", "", "user"} | {
                         str(library["libraryID"]) for library in libraries if library["type"] == "user"
                     }
-                    if library_id not in valid_ids and library_id is not None:
+                    if library_id not in valid_ids:
                         return (
                             f"Personal library id '{library_id}' is not addressable "
                             f"in local mode. Use '0' or 'user', or switch to a group with "

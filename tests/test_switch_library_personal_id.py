@@ -74,3 +74,52 @@ def test_switch_user_keyword_normalizes(local_mode):
     result = retrieval.switch_library("user", "user", ctx=DummyContext())
     assert result.startswith("Successfully switched")
     assert _client.get_active_library()["library_id"] == "0"
+
+
+class _ProbeClient:
+    """Web-mode client stub that records which library the probe hits."""
+
+    def __init__(self, probed):
+        self._probed = probed
+
+    def add_parameters(self, **_kwargs):
+        pass
+
+    def items(self):
+        self._probed.append(_client.get_active_library())
+        return []
+
+
+@pytest.fixture
+def web_mode(monkeypatch):
+    monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
+    monkeypatch.setattr(
+        retrieval._library, "get_library_backend",
+        lambda: types.SimpleNamespace(name="web"),
+    )
+    probed = []
+    monkeypatch.setattr(retrieval._client, "get_zotero_client", lambda: _ProbeClient(probed))
+    _client.clear_active_library()
+    yield probed
+    _client.clear_active_library()
+
+
+@pytest.mark.parametrize("library_id", ["user", "0"])
+def test_web_user_keyword_maps_to_configured_user_id(web_mode, monkeypatch, library_id):
+    monkeypatch.setenv("ZOTERO_LIBRARY_ID", "12345")
+    monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "user")
+    result = retrieval.switch_library(library_id, "user", ctx=DummyContext())
+    assert result.startswith("Successfully switched")
+    assert web_mode == [{"library_id": "12345", "library_type": "user"}]
+
+
+@pytest.mark.parametrize("env_type", ["group", "Group", " GROUP "])
+@pytest.mark.parametrize("library_id", ["user", "0"])
+def test_web_user_keyword_not_mapped_to_group_id(web_mode, monkeypatch, library_id, env_type):
+    """With a group configured, ZOTERO_LIBRARY_ID is a groupID: never probe /users/<groupID>."""
+    monkeypatch.setenv("ZOTERO_LIBRARY_ID", "5294983")
+    monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", env_type)
+    retrieval.switch_library(library_id, "user", ctx=DummyContext())
+    assert web_mode, "probe should have run"
+    assert all(p["library_id"] != "5294983" for p in web_mode)
+    assert web_mode == [{"library_id": library_id, "library_type": "user"}]
