@@ -23,8 +23,8 @@ async function main(ctx) {
   check(session.supportsImages, "claude supports images (area chips)");
 
   // the bridge process exists while the session is open, and is gone after close()
-  // only OUR bridge: the user may run other ACP bridges (meeting-buddy, Zed) that must not be counted
-  const bridgePids = async () => (await bundle.spawner.run("/usr/bin/pgrep", ["-f", "zotero-chat/bridges/node_modules/@agentclientprotocol/claude-agent-acp"], { env: await bundle.spawner.baseEnv() })).stdout.trim().split("\n").filter(Boolean);
+  // only OUR bridge: children of this Zotero (-P), since the user may run other ACP bridges (meeting-buddy, Zed, their real Zotero's chat) that must not be counted
+  const bridgePids = async () => (await bundle.spawner.run("/usr/bin/pgrep", ["-P", String(Services.appinfo.processID), "-f", "zotero-chat/bridges/node_modules/@agentclientprotocol/claude-agent-acp"], { env: await bundle.spawner.baseEnv() })).stdout.trim().split("\n").filter(Boolean);
   check((await bridgePids()).length >= 1, "bridge running while the session is open");
   const tClose = Date.now();
   await session.close();
