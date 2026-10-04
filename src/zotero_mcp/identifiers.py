@@ -22,6 +22,7 @@ from __future__ import annotations
 import html
 import re
 import unicodedata
+from urllib.parse import unquote
 
 __all__ = [
     "normalize_doi",
@@ -38,8 +39,10 @@ __all__ = [
 #: A well-formed DOI: the ``10.NNNN`` registrant prefix plus a suffix.
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 
+#: The DOI in a doi.org URL path, still percent-encoded: browsers encode
+#: the brackets of SICI DOIs, and some tools encode the prefix's slash.
 _DOI_IN_URL_RE = re.compile(
-    r"doi\.org/(10\.\d{4,9}/[^\s?#]+)", flags=re.IGNORECASE
+    r"doi\.org/(10\.\d{4,9}(?:/|%2F)[^\s?#]+)", flags=re.IGNORECASE
 )
 
 #: Punctuation that trails a DOI copied out of prose or a reference list.
@@ -70,7 +73,7 @@ def normalize_doi(raw):
     """Normalize a DOI string from various input formats.
 
     Accepts a bare DOI, a ``doi:`` prefixed form, or a ``doi.org`` /
-    ``dx.doi.org`` URL, and strips trailing punctuation picked up from
+    ``dx.doi.org`` URL (percent-decoding its path), and strips trailing punctuation picked up from
     surrounding prose (brackets the DOI itself opened are kept). Returns
     the canonical bare DOI, or ``None`` when the input is not a DOI.
 
@@ -86,7 +89,8 @@ def normalize_doi(raw):
         m = _DOI_IN_URL_RE.search(s)
         if not m:
             return None
-        s = m.group(1)
+        # Decoded only here: a URL path is percent-encoded, a bare DOI is not.
+        s = unquote(m.group(1))
     s = _strip_trailing_punct(s)
     if DOI_RE.match(s):
         return s
