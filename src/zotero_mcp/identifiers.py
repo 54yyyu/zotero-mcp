@@ -73,9 +73,10 @@ def normalize_doi(raw):
     """Normalize a DOI string from various input formats.
 
     Accepts a bare DOI, a ``doi:`` prefixed form, or a ``doi.org`` /
-    ``dx.doi.org`` URL (percent-decoding its path), and strips trailing punctuation picked up from
-    surrounding prose (brackets the DOI itself opened are kept). Returns
-    the canonical bare DOI, or ``None`` when the input is not a DOI.
+    ``dx.doi.org`` URL (percent-decoding its path), and strips trailing
+    punctuation picked up from surrounding prose (brackets the DOI itself
+    opened are kept). Returns the canonical bare DOI, or ``None`` when the
+    input is not a DOI.
 
     Case is preserved: DOIs are case-insensitive for resolution, but some
     consumers (Scite among them) echo back what they were given.

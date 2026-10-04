@@ -3622,7 +3622,7 @@ def _attachment_sig(data: dict) -> tuple | None:
     """Identity of an attachment for "the keeper already has this one" checks.
 
     Returns None when the attachment carries nothing that identifies its
-    content (no md5, path or url) — e.g. linked-file PDFs, which have no
+    content (no md5, path or url), e.g. linked-file PDFs, which have no
     filename or md5. Such attachments must never be treated as duplicates,
     or a distinct file is left on the duplicate and trashed with it.
     """
