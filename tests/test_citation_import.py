@@ -197,6 +197,28 @@ class TestAuthorParsing:
         c = _parse_bibtex_author_list("Cher")
         assert c == [{"creatorType": "author", "name": "Cher"}]
 
+    @pytest.mark.parametrize("sep", [" and\n  ", "\nand ", " and\t", "  and  "])
+    def test_split_on_and_surrounded_by_any_whitespace(self, sep):
+        """Exported .bib files wrap long author lists, so ``and`` often sits
+        next to a newline; it must still separate the names."""
+        c = _parse_bibtex_author_list(f"Smith, John{sep}Doe, Jane")
+        assert c == [
+            {"creatorType": "author", "firstName": "John", "lastName": "Smith"},
+            {"creatorType": "author", "firstName": "Jane", "lastName": "Doe"},
+        ]
+
+    def test_wrapped_author_list_survives_full_import(self):
+        bib = (
+            "@article{k,\n"
+            "  author = {Smith, John and Doe, Jane and\n"
+            "            Roe, Richard},\n"
+            "  title = {T}, year = {2020}\n}"
+        )
+        item = bibtex_entry_to_zotero(parse_bibtex(bib)[0], make_template)
+        assert [(c.get("lastName"), c.get("firstName")) for c in item["creators"]] == [
+            ("Smith", "John"), ("Doe", "Jane"), ("Roe", "Richard"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Date parsing

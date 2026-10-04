@@ -453,16 +453,26 @@ def _readable_config_for_update() -> dict:
     it also holds ``semantic_search`` and ``client_env``, and treating a
     transient read failure or a hand-editing typo as "empty" would drop both.
     """
-    if not ZOTERO_MCP_CONFIG_PATH.exists():
+    return read_config_for_update(ZOTERO_MCP_CONFIG_PATH)
+
+
+def read_config_for_update(path: str | Path) -> dict:
+    """``_readable_config_for_update`` for any config path. Raises OSError
+    when the file exists but is not a JSON object (or not valid UTF-8 / JSON)."""
+    path = Path(path)
+    if not path.exists():
         return {}
     try:
-        with open(ZOTERO_MCP_CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f) or {}
-    except json.JSONDecodeError as e:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except ValueError as e:  # JSONDecodeError and UnicodeDecodeError
         raise OSError(
-            f"{ZOTERO_MCP_CONFIG_PATH} is not valid JSON ({e}). Fix or remove "
+            f"{path} is not valid JSON ({e}). Fix or remove "
             "the file; refusing to overwrite it and lose the other settings."
         ) from e
+    if not isinstance(data, dict):
+        raise OSError(f"{path} does not hold a JSON object; refusing to overwrite it.")
+    return data
 
 
 def _local_write_enabled() -> bool:
@@ -538,20 +548,9 @@ def _local_key_remembered() -> bool | None:
 
 def _write_config(config: dict) -> None:
     """Persist the config file, owner-only, replacing it atomically."""
-    from zotero_mcp.utils import ensure_private_dir
+    from zotero_mcp.utils import write_json_atomic
 
-    ensure_private_dir(ZOTERO_MCP_CONFIG_PATH.parent)
-    temp_path = ZOTERO_MCP_CONFIG_PATH.with_suffix(".json.tmp")
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    # The file holds a credential — keep it owner-only. Best-effort; a no-op
-    # on platforms without POSIX permissions. Set before the rename so the
-    # key is never briefly world-readable at its final name.
-    try:
-        os.chmod(temp_path, 0o600)
-    except OSError:
-        pass
-    os.replace(temp_path, ZOTERO_MCP_CONFIG_PATH)
+    write_json_atomic(ZOTERO_MCP_CONFIG_PATH, config)
 
 
 def store_local_write_credentials(

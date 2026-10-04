@@ -17,6 +17,7 @@ silently.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -189,8 +190,13 @@ def _parse_bibtex_author_list(raw: str) -> list[dict[str, str]]:
     return creators
 
 
+# BibTeX separates names with "and" between any whitespace, newlines
+# included: exported .bib files wrap long author lists mid-field.
+_AND_SEPARATOR = re.compile(r"\s+and\s+", re.IGNORECASE)
+
+
 def _split_bibtex_authors(raw: str) -> list[str]:
-    """Split on ' and ' while respecting brace groups."""
+    """Split on whitespace-delimited ``and`` while respecting brace groups."""
     out = []
     buf = []
     depth = 0
@@ -203,10 +209,10 @@ def _split_bibtex_authors(raw: str) -> list[str]:
         elif ch == "}":
             depth = max(0, depth - 1)
             buf.append(ch)
-        elif depth == 0 and raw[i:i + 5].lower() == " and ":
+        elif depth == 0 and (sep := _AND_SEPARATOR.match(raw, i)):
             out.append("".join(buf))
             buf = []
-            i += 5
+            i = sep.end()
             continue
         else:
             buf.append(ch)
@@ -227,6 +233,17 @@ def _csl_names_to_creators(names: list[dict], creator_type: str) -> list[dict]:
             entry = {"creatorType": creator_type}
             given = (n.get("given") or "").strip()
             family = (n.get("family") or "").strip()
+            # Particles and suffix are separate CSL keys; Zotero has only
+            # two name parts, so fold them back in ("van der" + "Maaten").
+            ndp = (n.get("non-dropping-particle") or "").strip()
+            if ndp and family:
+                family = ndp + ("" if ndp[-1] in "'’-" else " ") + family
+            dp = (n.get("dropping-particle") or "").strip()
+            if dp and given:
+                given = f"{given} {dp}"
+            suffix = (n.get("suffix") or "").strip()
+            if suffix and given:
+                given = f"{given}, {suffix}"
             if given:
                 entry["firstName"] = given
             if family:

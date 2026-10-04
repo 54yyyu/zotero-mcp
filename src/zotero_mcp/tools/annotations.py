@@ -1014,21 +1014,33 @@ def search_notes(
             from zotero_mcp.local_db import get_local_zotero_reader
             reader = get_local_zotero_reader()
             if reader:
+                # Same scope as the API path: the active library only.
+                group_id = _client.get_active_group_id()
+                local_notes = local_annotations = None
                 try:
-                    note_results = reader.search_notes_local(query, limit)
-                    ctx.info(f"Local note search: {len(note_results)} results")
+                    local_notes = reader.search_notes_local(query, limit, group_id=group_id)
                 except Exception as e:
+                    local_notes = []
                     ctx.warning(f"Local note search failed: {e}")
 
                 try:
-                    annotation_results = reader.search_annotations_local(query, limit)
-                    ctx.info(f"Local annotation search: {len(annotation_results)} results")
+                    local_annotations = reader.search_annotations_local(
+                        query, limit, group_id=group_id
+                    )
                 except Exception as e:
+                    local_annotations = []
                     ctx.warning(f"Local annotation search failed: {e}")
                 finally:
                     reader.close()
 
-                return _format_search_results(query, note_results, annotation_results, raw_html=raw_html)
+                # None: the active library isn't in the local database (e.g.
+                # a group not synced here); let the API path answer instead.
+                if local_notes is not None and local_annotations is not None:
+                    ctx.info(f"Local note search: {len(local_notes)} results")
+                    ctx.info(f"Local annotation search: {len(local_annotations)} results")
+                    return _format_search_results(
+                        query, local_notes, local_annotations, raw_html=raw_html
+                    )
         except Exception as e:
             ctx.warning(f"Local search unavailable, falling back to API: {e}")
 
