@@ -4,7 +4,7 @@ import type { BackendStatus, DoctorCheck, PanelHost } from "../types.ts";
 import { errMessage } from "./dom.ts";
 
 /** Which failing check matters most, in order; the first two stop the chat from working at all. */
-const PRIORITY: DoctorCheck["id"][] = ["node", "backend", "zotero-api", "cli", "write-access"];
+export const PRIORITY: DoctorCheck["id"][] = ["node", "backend", "zotero-api", "cli", "write-access"];
 export const BLOCKING = new Set<DoctorCheck["id"]>(["node", "backend"]);
 
 export type HealthState = "unknown" | "checking" | "ok" | "warn" | "bad";
@@ -17,6 +17,9 @@ export class Health {
   private changed: () => void;
 
   constructor(host: PanelHost, changed: () => void) { this.host = host; this.changed = changed; }
+
+  /** A check is running now (the last result, if any, is still in `checks`). */
+  get busy(): boolean { return this.checking; }
 
   get failing(): DoctorCheck[] {
     return (this.checks ?? []).filter((c) => !c.ok).sort((a, b) => PRIORITY.indexOf(a.id) - PRIORITY.indexOf(b.id));

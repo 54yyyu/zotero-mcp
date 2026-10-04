@@ -406,6 +406,54 @@ await test("history: each chat shows its folder; Copy terminal command copies th
   assert.equal((await sim(p, () => window.__zmc.sim.preparedCwd))[1], undefined, "a new chat uses the setting");
 });
 
+await test("welcome: first run shows it instead of the chat; the checks settle one by one; a failing check is fixed in place; Start chatting hands over", async (p) => {
+  assert.equal(await p.locator(".cin").isVisible(), false, "the chat is not showing yet");
+  assert.match(await p.locator(".wel h2").innerText(), /Chat with your library/);
+  assert.equal(await p.locator(".wcard").count(), 3);
+  assert.equal(await p.locator(".wcard[aria-checked=true]").innerText().then((t) => t.split("\n")[0]), "Claude Code");
+  await p.waitForSelector(".wrow--pending");
+  await p.waitForSelector(".wrow--bad", { timeout: 4000 });
+  await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".wrow--pending"));
+  assert.equal(await p.locator(".wrow--bad").count(), 1);
+  assert.match(await p.locator(".wrow--bad").innerText(), /zotero-cli/);
+  assert.equal(await p.locator(".wfoot .btn--solid").count(), 0, "not ready: no primary button yet");
+  await p.locator(".wrow--bad .btn").click();
+  await p.waitForSelector(".wready", { timeout: 6000 });
+  assert.match(await p.locator(".wready").innerText(), /All set. You'll chat with Claude Code \(Claude Max\)/);
+  assert.ok(await p.locator(".mark--ready").count(), "the logo celebrates");
+  await p.locator(".wfoot .btn--solid").click();
+  await p.locator(".cin").waitFor({ state: "visible" });
+  assert.equal(await p.locator(".wel").count(), 0);
+  assert.equal(await p.evaluate(() => window.__zmc.host.getSettings().welcomed), true);
+  await send(p, "hello");
+  await done(p);
+}, { params: { welcome: "1", doctor: "cli" } });
+
+await test("welcome: choosing an agent changes the backend; an agent that is not ready says what to do; Esc does not skip it; Skip setup does", async (p) => {
+  await p.locator(".wcard", { has: p.getByText("pi", { exact: true }) }).click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().backend === "pi");
+  assert.equal(await p.locator(".wcard[aria-checked=true]").count(), 1);
+  await p.locator(".wcard", { hasText: "Codex" }).click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().backend === "codex");
+  assert.match(await p.locator(".wel__hint").first().innerText(), /codex login/);
+  assert.match(await p.locator(".wcard--on").innerText(), /codex is not installed/);
+  await p.keyboard.press("Escape");
+  assert.equal(await p.locator(".wel").count(), 1);
+  await p.getByRole("button", { name: "Settings" }).first().click();
+  await p.waitForSelector("section.sec");
+  await p.keyboard.press("Escape");
+  await p.waitForSelector(".wel");
+  await p.locator(".wfoot__skip").click();
+  await p.locator(".cin").waitFor({ state: "visible" });
+  assert.equal(await p.evaluate(() => window.__zmc.host.getSettings().welcomed), true);
+}, { params: { welcome: "1" } });
+
+await test("welcome: if the chosen agent is unusable and another works, it starts on the one that works", async (p) => {
+  await p.waitForFunction(() => window.__zmc.host.getSettings().backend === "pi");
+  await p.waitForSelector(".wcard--on");
+  assert.match(await p.locator(".wcard--on").innerText(), /pi/);
+}, { params: { welcome: "1", doctor: "backend" } });
+
 await test("theme follows the host; close is an event for the glue", async (p) => {
   assert.equal(await p.locator(".zmc").getAttribute("data-theme"), "light");
   await sim(p, () => window.__zmc.sim.setTheme("dark"));

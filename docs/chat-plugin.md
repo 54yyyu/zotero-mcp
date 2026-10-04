@@ -19,7 +19,7 @@ From a source checkout there is no packaged copy; build it with `npm ci && npm r
 
 ## First run
 
-Open the panel from the toolbar button. A first-run check lists what is missing and, where it can, offers a one-click fix:
+Open the panel from the toolbar button. The first time, a short welcome has you choose your agent (Claude Code, Codex or pi, each marked ready or not), then runs a check that lists what is missing and, where it can, offers a one-click fix. "Skip setup" leaves it for later; the dot at the top of the panel always shows what is missing. The check covers:
 
 - Zotero's local API is reachable. In Zotero's settings, turn on "Allow other applications on this computer to communicate with Zotero".
 - Writes are authorized (Zotero 10 or newer). Run `zotero-mcp authorize-local` once and choose "Always Allow".

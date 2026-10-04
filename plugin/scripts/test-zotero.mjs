@@ -6,12 +6,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const welcomed = ["--pref", 'extensions.zotero-chat.settings={"welcomed":true}']; // the suites that drive the chat start past the first-run welcome
 const suites = [
   ["budget", []],
   ["context", []],
   ["host", []],
-  ["chat", ["--mock-agent"]],
-  ["ui", ["--mock-agent"]],
+  ["chat", ["--mock-agent", ...welcomed]],
+  ["ui", ["--mock-agent", ...welcomed]],
+  ["welcome", ["--mock-agent"]],
   ["agent", []], // the real bridge's handshake: no prompt, no tokens
   ["cli-install", ["--home", "home-fresh"]], // a machine with nothing: uv, then zotero-cli (stubbed downloads; ZMC_REAL_INSTALL=1 for real)
   ...(process.env.ZMC_LIVE ? [["live", []]] : []),

@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   showThinking: true,
   expandTools: false,
   openAtStart: false,
+  welcomed: false,
   chatFolder: "",
 };
 

@@ -1,6 +1,6 @@
 // The preview page: the panel over a FakeHost. URL parameters pick the scenario:
 //   ?theme=dark  &doctor=ok|zotero-api|write-access|cli|node|backend|many
-//   &ctx=item|selection|area|none  &speed=0  &stress=1  &nohistory=1
+//   &ctx=item|selection|area|none  &speed=0  &stress=1  &nohistory=1  &welcome=1
 // `window.__zmc` exposes the host's `sim` and the panel handle to Playwright.
 import { mountPanel } from "../src/ui/index.ts";
 import { FakeHost } from "../src/ui/fake-host.ts";
@@ -15,6 +15,7 @@ const host = new FakeHost({
   catalogDelay: q.has("catalogDelay") ? Number(q.get("catalogDelay")) : undefined,
   stress: q.has("stress"),
   noHistory: q.has("nohistory"),
+  welcome: q.has("welcome"),
 });
 const mount = document.getElementById("host") as HTMLElement;
 const shadow = mount.attachShadow({ mode: "open" });

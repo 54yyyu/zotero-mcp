@@ -230,6 +230,8 @@ export interface PanelSettings {
   expandTools: boolean;
   /** The panel is open when Zotero starts. */
   openAtStart: boolean;
+  /** The first-run welcome (agent choice and setup check) has been finished or skipped. */
+  welcomed: boolean;
   /** Where new chats run: the agent's working directory, and where the zotero-cli skill is installed. "" = the default folder. */
   chatFolder: string;
 }

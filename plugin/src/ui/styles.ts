@@ -4,6 +4,7 @@
 // control heights (24 28 32 36), icons (14 16). px, not rem: the host window's root font size must not
 // scale it. Container queries, not media queries: the panel's width is not the window's.
 import { CHAT_STYLES } from "./styles-chat.ts";
+import { WELCOME_STYLES } from "./styles-welcome.ts";
 
 const BASE = `
 :host { display: block; height: 100%; min-width: 0; }
@@ -144,7 +145,7 @@ const BASE = `
 /* ---------- empty state ---------- */
 .zmc .emptywrap { display: flex; flex-direction: column; gap: var(--s4); width: 100%; }
 .zmc .empty { text-align: center; color: var(--ink-muted); padding: var(--s2) 0; }
-.zmc .mark { width: 32px; height: 32px; margin: 0 auto var(--s3); } .zmc .mark svg { width: 100%; height: 100%; }
+.zmc .mark { width: 40px; height: 40px; margin: 0 auto var(--s3); } .zmc .mark svg { width: 100%; height: 100%; overflow: visible; }
 .zmc .empty h2 { font-size: var(--fs-6); line-height: 1.25; letter-spacing: -0.01em; color: var(--ink); margin-bottom: var(--s2); }
 .zmc .empty__lead { margin: 0 auto; max-width: 24rem; line-height: 1.5; }
 .zmc .prompts { margin: var(--s5) auto 0; max-width: 28rem; text-align: left; }
@@ -324,4 +325,4 @@ const BASE = `
 .zmc .set__saved span:empty { display: none; }
 `;
 
-export const STYLES = BASE + CHAT_STYLES;
+export const STYLES = BASE + CHAT_STYLES + WELCOME_STYLES;

@@ -12,8 +12,9 @@ import { BLOCKING, Health } from "./health.ts";
 import { Feed } from "./messages.ts";
 import { settingsView } from "./settings.ts";
 import { BACKEND_LABEL, emptyState, historyView, setupCard, statusView } from "./views.ts";
+import { welcomeView } from "./welcome.ts";
 
-type View = "chat" | "history" | "settings" | "status";
+type View = "chat" | "history" | "settings" | "status" | "welcome";
 
 export const mountPanel: MountPanel = (root, host) => {
   initEnv(root);
@@ -43,6 +44,7 @@ class Panel {
   private focusPrompts = false;
   private pendingRender = false;
   private emptyShown: boolean | null = null;
+  private autoPicked = false;
   private disposers: (() => void)[] = [];
   private catalogs = new Map<BackendId, Catalog>();
 
@@ -109,6 +111,7 @@ class Panel {
     void this.loadCatalog(false);
     this.render();
     void this.health.refresh();
+    if (!host.getSettings().welcomed) this.show("welcome");
 
     this.handle = {
       dispose: () => this.dispose(),
@@ -120,6 +123,8 @@ class Panel {
   // ───────────────────────────── screens ─────────────────────────────
 
   private show(v: View): void {
+    // Until the welcome is finished or skipped it stands in for the chat.
+    if (v === "chat" && !this.host.getSettings().welcomed) v = "welcome";
     this.view = v;
     this.app.dataset.view = v;
     this.chatEl.hidden = v !== "chat";
@@ -133,23 +138,33 @@ class Panel {
     const host = this.host;
     const screen =
       v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); } })
+      : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
       : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), focusPrompts: this.focusPrompts });
     this.focusPrompts = false;
     this.activeView = screen;
     this.viewEl.append(screen.el);
     this.activeView.refresh?.();
-    (this.viewEl.querySelector(".vw__head button") as HTMLElement | null)?.focus();
+    (this.viewEl.querySelector(".vw__head button, .wcard--on") as HTMLElement | null)?.focus();
   }
 
   private onKey(e: KeyboardEvent): void {
-    if (e.key !== "Escape" || this.view === "chat" || e.defaultPrevented || (e.target as HTMLElement | null)?.tagName === "SELECT") return;
+    if (e.key !== "Escape" || this.view === "chat" || this.view === "welcome" || e.defaultPrevented || (e.target as HTMLElement | null)?.tagName === "SELECT") return;
     e.preventDefault();
     this.show("chat");
   }
 
   /** A notice in the chat that is not saved with it. */
   private warn(message: string): void { this.chat.dispatch({ t: "notice", level: "warn", message }, false); }
+
+  private async finishWelcome(): Promise<void> {
+    await this.host.setSettings({ welcomed: true });
+    this.show("chat");
+    if (!env.win.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      this.chatEl.animate?.([{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "none" }], { duration: 360, easing: "ease-out" });
+      this.root.querySelector(".empty .mark")?.classList.add("mark--hello");
+    }
+  }
 
   private async open(target: string | ZoteroRef): Promise<void> {
     try { await this.host.open(target); } catch (e) { this.warn(`Couldn't open that in Zotero: ${errMessage(e)}`); }
@@ -189,6 +204,21 @@ class Panel {
     this.statusBtn.setAttribute("aria-label", `${label}. Status: ${tip}`);
     this.composer.setBlocked(this.health.blockReason());
     this.paintEmpty();
+    if (this.view === "welcome") {
+      this.autoPick();
+      this.activeView?.render?.();
+    }
+  }
+
+  /** On the welcome, once the agents are known: if the chosen one is not usable and another is, start with that one. */
+  private autoPick(): void {
+    const st = this.health.statuses;
+    if (this.autoPicked || !st) return;
+    this.autoPicked = true;
+    const chosen = this.host.getSettings().backend;
+    const alt = st.find((b) => b.available);
+    if (st.find((b) => b.id === chosen)?.available || !alt) return;
+    void this.host.setSettings({ backend: alt.id }).then(() => { this.onSettings(); void this.health.refresh(); });
   }
 
   private onSettings(): void {
@@ -270,6 +300,7 @@ class Panel {
 
   private runPrompt(p: PromptEntry): void {
     this.show("chat");
+    if (this.view === "welcome") return;
     if (this.chat.busy || this.health.blockReason()) { this.composer.setText(p.text); this.composer.focus(); return; }
     this.send(p.text, false);
   }

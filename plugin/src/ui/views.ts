@@ -7,15 +7,19 @@ import { shortPath } from "./settings-model.ts";
 export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
 export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi"];
 
-/** The logo (assets/logo.svg): a chat bubble with typing dots and the agent's red spark; it follows the theme. */
-export const mark = (): HTMLElement => h("div.mark", null, svg("svg", { viewBox: "0 0 128 128", "aria-hidden": "true" },
-  svg("path", { d: "M24 20H104a14 14 0 0 1 14 14V78a14 14 0 0 1-14 14H64L40 112V92H24a14 14 0 0 1-14-14V34a14 14 0 0 1 14-14Z", fill: "var(--ink)" }),
-  ...[40, 64, 88].map((cx) => svg("circle", { cx: String(cx), cy: "56", r: "7.5", fill: "var(--paper-raised)" })),
-  svg("path", { d: "M100 0L106.6 15.4L122 22L106.6 28.6L100 44L93.4 28.6L78 22L93.4 15.4Z", fill: "var(--agent)" })));
+/**
+ * The logo (assets/logo.svg): a chat bubble with typing dots and the agent's red spark; it follows the theme. The parts carry
+ * classes so the welcome can animate them (styles-welcome.ts); the little dots around the spark only show in that burst.
+ */
+export const mark = (hero = false): HTMLElement => h(`div.mark${hero ? ".mark--hero" : ""}`, null, svg("svg", { viewBox: "-16 -16 160 160", "aria-hidden": "true" },
+  svg("path", { class: "mk-b", d: "M24 20H104a14 14 0 0 1 14 14V78a14 14 0 0 1-14 14H64L40 112V92H24a14 14 0 0 1-14-14V34a14 14 0 0 1 14-14Z", fill: "var(--ink)" }),
+  ...[40, 64, 88].map((cx, i) => svg("g", { class: "mk-w", style: `--i:${i}` }, svg("circle", { class: "mk-d", cx: String(cx), cy: "56", r: "7.5", fill: "var(--paper-raised)" }))),
+  ...[[-26, -14], [-6, -30], [22, -26], [28, 4], [14, 22], [-18, 16]].map(([dx, dy]) => svg("circle", { class: "mk-p", cx: "100", cy: "22", r: "2.4", fill: "var(--agent)", style: `--dx:${dx}px;--dy:${dy}px` })),
+  svg("g", { class: "mk-t" }, svg("path", { class: "mk-s", d: "M100 0L106.6 15.4L122 22L106.6 28.6L100 44L93.4 28.6L78 22L93.4 15.4Z", fill: "var(--agent)" }))));
 
 // ───────────────────────────── problems (the unavailable states) ─────────────────────────────
 
-const PROBLEM: Record<DoctorCheck["id"], { title: string; help: string }> = {
+export const PROBLEM: Record<DoctorCheck["id"], { title: string; help: string }> = {
   "zotero-api": {
     title: "Restart Zotero: its local API isn't answering",
     help: "A long-running Zotero can stop serving its local API. Restart Zotero (quit it and open it again), then press Recheck. If it still fails, turn on “Allow other applications on this computer to communicate with Zotero” in Zotero's Settings > Advanced.",
@@ -39,7 +43,7 @@ const PROBLEM: Record<DoctorCheck["id"], { title: string; help: string }> = {
 };
 
 /** The button that runs a check's fix, streaming its output into `log`; `after` runs when it ends. */
-function fixButton(check: DoctorCheck, cls: string, log: HTMLElement, after: () => void): HTMLButtonElement | null {
+export function fixButton(check: DoctorCheck, cls: string, log: HTMLElement, after: () => void): HTMLButtonElement | null {
   const fix = check.fix;
   if (!fix) return null;
   const btn = h(`button.btn.btn--sm${cls}`, { type: "button" }, fix.label) as HTMLButtonElement;

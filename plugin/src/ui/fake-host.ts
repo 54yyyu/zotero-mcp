@@ -24,6 +24,8 @@ interface FakeOptions {
   /** Start with no saved chats (the History empty state). */
   noHistory?: boolean;
   catalogDelay?: number;
+  /** Start as a first-run user: the welcome screen shows before the chat. */
+  welcome?: boolean;
 }
 
 interface Sim {
@@ -244,6 +246,7 @@ export class FakeHost implements PanelHost {
 
   constructor(o: FakeOptions = {}) {
     this._theme = o.theme ?? "light";
+    this.settings.welcomed = !o.welcome;
     const sim: Sim = {
       opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
       statuses: [
