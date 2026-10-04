@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **HTTP transports reject requests for a foreign host (DNS rebinding).** Served over `streamable-http` or `sse`, the server accepted any `Host` and `Origin`, so a web page could rebind its hostname to 127.0.0.1 and use every tool, writes and deletes included, from the user's browser. `serve` now turns on FastMCP's Host/Origin check in `auto` mode: on a loopback bind, requests must name localhost/127.0.0.1 and come from no origin or a local one (421/403 otherwise). FastMCP's own option does not reach its SSE app, so the check is attached to `sse` as middleware. Clients that connect to localhost, including through a VPN or `mcp-remote`, are unaffected. **A tunnel or reverse proxy that forwards its own hostname (ngrok's default) now needs that hostname in `FASTMCP_HTTP_ALLOWED_HOSTS='["host.example"]'`**, or the proxy must rewrite `Host`; `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=false` turns the check off. The server prints this on start-up, and docs/troubleshooting.md covers it. A FastMCP too old to support the check logs a warning.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed

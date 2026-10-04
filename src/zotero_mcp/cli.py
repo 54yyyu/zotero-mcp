@@ -218,6 +218,121 @@ def _preimport_semantic_search_on_main_thread() -> None:
         pass  # best-effort: a failed pre-import must not stop the server
 
 
+#: FastMCP's own setting for its Host/Origin guard. When the user has set it,
+#: their choice wins over ours.
+_HOST_ORIGIN_ENV_VAR = "FASTMCP_HTTP_HOST_ORIGIN_PROTECTION"
+
+
+_GUARD_OFF = {"0", "false", "no", "off"}
+_GUARD_STRICT = {"1", "true", "yes", "on"}
+
+
+def _is_loopback_bind(host: str) -> bool:
+    return host in ("localhost", "::1", "[::1]") or host.startswith("127.")
+
+
+def _guard_notice(host: str) -> None:
+    """Tell the operator the guard is on and how to get past it behind a proxy.
+
+    A tunnel or reverse proxy (ngrok, Cloudflare Tunnel, nginx) forwards its
+    public hostname as the Host header, which the guard answers with 421.
+    """
+    if not _is_loopback_bind(host):
+        return
+    print(
+        "Host/Origin check on (DNS-rebinding protection): requests must name "
+        "localhost or 127.0.0.1. Behind a tunnel or reverse proxy, allow its "
+        'hostname with FASTMCP_HTTP_ALLOWED_HOSTS=\'["your.host.example"]\' or '
+        "turn the check off with FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=false.",
+        file=sys.stderr,
+    )
+
+
+def _no_guard_warning() -> None:
+    print(
+        "Warning: this FastMCP version cannot validate Host/Origin headers, so a "
+        "web page could reach this server through DNS rebinding. Upgrade "
+        "fastmcp (pip install -U fastmcp) or use the stdio transport.",
+        file=sys.stderr,
+    )
+
+
+def _sse_guard_kwargs(server, setting: str, host: str) -> dict:
+    """The Host/Origin guard for SSE, which FastMCP's own option does not reach.
+
+    ``create_sse_app`` takes no ``host_origin_protection``, so the option is
+    accepted and silently ignored there. The guard is a plain ASGI middleware,
+    though, and ``run_http_async`` passes ``middleware`` through to the SSE app,
+    so it is attached that way, with the same defaults FastMCP uses for
+    streamable-http (loopback bind: only localhost; allowed hosts and origins
+    from FastMCP's own ``FASTMCP_HTTP_ALLOWED_*`` settings).
+    """
+    if setting in _GUARD_OFF:
+        return {}
+    import inspect
+
+    try:
+        import fastmcp
+        from fastmcp.server.http import HostOriginGuardMiddleware
+        from starlette.middleware import Middleware
+
+        params = inspect.signature(server.run_http_async).parameters
+    except (ImportError, AttributeError, TypeError, ValueError):
+        _no_guard_warning()
+        return {}
+    if "middleware" not in params:
+        _no_guard_warning()
+        return {}
+    mode = "strict" if setting in _GUARD_STRICT else "auto"
+    allowed_hosts = getattr(fastmcp.settings, "http_allowed_hosts", None)
+    allowed_origins = getattr(fastmcp.settings, "http_allowed_origins", None)
+    if mode == "auto" and _is_loopback_bind(host):
+        allowed_hosts = [*(allowed_hosts or []), host]
+    _guard_notice(host)
+    return {
+        "middleware": [
+            Middleware(
+                HostOriginGuardMiddleware,
+                allowed_hosts=allowed_hosts,
+                allowed_origins=allowed_origins,
+                mode=mode,
+            )
+        ]
+    }
+
+
+def _http_guard_kwargs(server, transport: str = "streamable-http", host: str = "localhost") -> dict:
+    """Keyword arguments that turn on FastMCP's Host/Origin guard for HTTP/SSE.
+
+    The HTTP transports serve every tool, writes included, to whatever reaches
+    the port. Over loopback that is meant to be just local clients, but a web
+    page can rebind its own hostname to 127.0.0.1 (DNS rebinding) and then talk
+    to the server same-origin from the user's browser; only a check of the Host
+    and Origin headers stops that, and FastMCP leaves its check off unless
+    asked. "auto" enforces localhost Host/Origin when bound to loopback and
+    leaves other binds alone. FastMCP releases without the option get a
+    warning instead. A ``FASTMCP_HTTP_HOST_ORIGIN_PROTECTION`` the user has set
+    wins (``false`` turns the guard off).
+    """
+    setting = os.environ.get(_HOST_ORIGIN_ENV_VAR, "").strip().lower()
+    if transport == "sse":
+        return _sse_guard_kwargs(server, setting, host)
+    if setting:
+        return {}
+    import inspect
+
+    run_http = getattr(server, "run_http_async", None)
+    try:
+        params = inspect.signature(run_http).parameters if run_http else {}
+    except (TypeError, ValueError):
+        params = {}
+    if "host_origin_protection" in params:
+        _guard_notice(host)
+        return {"host_origin_protection": "auto"}
+    _no_guard_warning()
+    return {}
+
+
 def _warmup_reranker_in_background() -> None:
     """Preload the reranker (if enabled) off the request path — see issue #283.
 
@@ -1402,13 +1517,13 @@ def main():
         elif transport == "streamable-http":
             host = getattr(args, "host", "localhost")
             port = getattr(args, "port", 8000)
-            mcp.run(transport="streamable-http", host=host, port=port)
+            mcp.run(transport="streamable-http", host=host, port=port, **_http_guard_kwargs(mcp, "streamable-http", host))
         elif transport == "sse":
             host = getattr(args, "host", "localhost")
             port = getattr(args, "port", 8000)
             import warnings
             warnings.warn("The SSE transport is deprecated and may be removed in a future version. New applications should use Streamable HTTP transport instead.", UserWarning)
-            mcp.run(transport="sse", host=host, port=port)
+            mcp.run(transport="sse", host=host, port=port, **_http_guard_kwargs(mcp, "sse", host))
 
 
 if __name__ == "__main__":
