@@ -38,6 +38,10 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 """
 
 
+# Commands for the person at the keyboard, not the agent: keep them out of the skill.
+HUMAN_ONLY = {"plugin"}
+
+
 def _format_action(action) -> str | None:
     if action.dest in ("help", "json_out", "verbose"):
         return None
@@ -126,7 +130,7 @@ def build() -> str:
 
     seen: set[int] = set()
     for name, sub in subparsers.choices.items():
-        if id(sub) in seen:
+        if id(sub) in seen or name in HUMAN_ONLY:
             continue
         seen.add(id(sub))
         names = aliases[id(sub)]

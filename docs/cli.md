@@ -159,6 +159,10 @@ zotero-cli related 10.1038/s41586-021-03819-2 --direction citations
 zotero-cli coverage --collection COLL01
 zotero-cli synthesize --tag "to-read" --format json
 
+# Zotero chat plugin: where the .xpi is and how to install it
+zotero-cli plugin
+zotero-cli plugin --path
+
 # Bulk edits across many items
 zotero-cli batch --item-keys ABC123,DEF456 --add-tags screened
 zotero-cli batch --query "machine learning" --add-tags survey --limit 100

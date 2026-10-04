@@ -105,6 +105,10 @@ An MCP server sends every tool's schema on every request, before you type anythi
 
 Use the MCP server when your client speaks MCP but has no shell (Claude Desktop, ChatGPT); use the skill when it has a shell. Both share one config. Details: [CLI and agent skill](https://github.com/54yyyu/zotero-mcp/blob/main/docs/cli.md).
 
+## 💬 Chat panel in Zotero
+
+A plugin that adds a chat panel to Zotero itself, driven by your own Claude Code, Codex or pi. It knows which item and page you have open and works your library through `zotero-cli`. It ships in the wheel: run `zotero-cli plugin` for the file and the install steps. Details: [Zotero chat plugin](https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md).
+
 ## 📖 Documentation
 
 | Guide | What's in it |
@@ -114,6 +118,7 @@ Use the MCP server when your client speaks MCP but has no shell (Claude Desktop,
 | [Semantic search](https://github.com/54yyyu/zotero-mcp/blob/main/docs/semantic-search.md) | Embedding models, building and updating the index |
 | [Tools](https://github.com/54yyyu/zotero-mcp/blob/main/docs/tools.md) | Every MCP tool, tool groups (`ZOTERO_MCP_TOOLSETS`), related items, PDF annotation extraction |
 | [CLI and agent skill](https://github.com/54yyyu/zotero-mcp/blob/main/docs/cli.md) | `zotero-cli` command reference, `--json` output, `install-skill` |
+| [Zotero chat plugin](https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md) | The chat panel inside Zotero: install, first run, agents and sign-in, privacy |
 | [Docker](https://github.com/54yyyu/zotero-mcp/blob/main/docs/docker-images.md) | Container images and runtime modes |
 | [Troubleshooting](https://github.com/54yyyu/zotero-mcp/blob/main/docs/troubleshooting.md) | Common problems and fixes |
 | [For AI agents](https://github.com/54yyyu/zotero-mcp/blob/main/docs/for-agents.md) | One guide for an agent setting up or using Zotero MCP |

@@ -1222,6 +1222,29 @@ def cmd_path(args):
          text=text)
 
 
+def cmd_plugin(args):
+    """Where the packaged Zotero chat plugin is, and how to install it."""
+    from pathlib import Path
+    name = "zotero-chat.xpi"
+    here = Path(__file__).resolve().parent
+    # Wheels carry it in chat_plugin/; a source checkout has it after `npm run build`.
+    xpi = next((p for p in (here / "chat_plugin" / name, here.parents[1] / "plugin" / "dist" / name)
+                if p.is_file()), None)
+    if xpi is None:
+        _fail(args, "plugin",
+              f"{name} is not built. Run `npm run build` in plugin/ of the zotero-mcp "
+              "repo, or download it from https://github.com/54yyyu/zotero-mcp/releases/latest",
+              "plugin_missing")
+    if args.path:
+        _out(args, "plugin", data={"path": str(xpi)}, text=str(xpi))
+        return
+    _out(args, "plugin", data={"path": str(xpi)}, text=(
+        f"Zotero chat plugin: {xpi}\n"
+        "Install it in Zotero: Tools > Plugins, click the gear, Install Plugin From File, "
+        "and choose that file.\n"
+        "Setup and first run: https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md"))
+
+
 def cmd_batch(args):
     setup_zotero_environment()
     _s, _r, _a, write_mod, _c = _import_tools()
@@ -1650,6 +1673,10 @@ def build_parser() -> argparse.ArgumentParser:
     pth_p = sub.add_parser("path", help="Show an attachment's path on disk")
     pth_p.add_argument("item_key")
 
+    # plugin
+    pl_p = sub.add_parser("plugin", help="Locate the Zotero chat plugin (.xpi) and show how to install it")
+    pl_p.add_argument("--path", action="store_true", help="Print only the path to the .xpi")
+
     # batch
     b_p = sub.add_parser("batch", help="Update tags/Extra fields across many items")
     b_p.add_argument("--item-keys", help="Comma-separated item keys")
@@ -1691,6 +1718,7 @@ _CMD_MAP = {
     "coverage": cmd_coverage,
     "synthesize": cmd_synthesize,
     "path": cmd_path,
+    "plugin": cmd_plugin,
     "batch": cmd_batch,
 }
 
@@ -1723,6 +1751,7 @@ Commands returning structured data
   annotations list      the annotations payload
   notes list            data.notes[] -- with both .text and .html
   config                data.settings
+  plugin                data.path
 
 Every other command returns {"text": "<the markdown it would have
 printed>"}. That is deliberate: those commands' answers really are status
