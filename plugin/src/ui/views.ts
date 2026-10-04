@@ -7,10 +7,11 @@ import { shortPath } from "./settings-model.ts";
 export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
 export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi"];
 
-/** The ring-and-dot mark (Parley's). */
-export const mark = (): HTMLElement => h("div.mark", null, svg("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" },
-  svg("circle", { cx: "12", cy: "12", r: "10", fill: "color-mix(in srgb, var(--agent) 14%, transparent)", stroke: "var(--agent)", "stroke-width": "1.6" }),
-  svg("circle", { cx: "12", cy: "12", r: "4", fill: "var(--agent)" })));
+/** The logo (assets/logo.svg): a chat bubble with typing dots and the agent's red spark; it follows the theme. */
+export const mark = (): HTMLElement => h("div.mark", null, svg("svg", { viewBox: "0 0 128 128", "aria-hidden": "true" },
+  svg("path", { d: "M24 20H104a14 14 0 0 1 14 14V78a14 14 0 0 1-14 14H64L40 112V92H24a14 14 0 0 1-14-14V34a14 14 0 0 1 14-14Z", fill: "var(--ink)" }),
+  ...[40, 64, 88].map((cx) => svg("circle", { cx: String(cx), cy: "56", r: "7.5", fill: "var(--paper-raised)" })),
+  svg("path", { d: "M100 0L106.6 15.4L122 22L106.6 28.6L100 44L93.4 28.6L78 22L93.4 15.4Z", fill: "var(--agent)" })));
 
 // ───────────────────────────── problems (the unavailable states) ─────────────────────────────
 

@@ -12,7 +12,7 @@ const BASE = `
   --paper: #f5f6f7; --paper-raised: #ffffff; --paper-sunk: #eceef0;
   --ink: #16181d; --ink-muted: #5f636b; --ink-faint: #80868e;
   --rule: #dfe2e6; --rule-strong: #c9ced4; --focus: #16181d;
-  --danger: #c0341c; --warn: #b35c00; --ok: #2f9e44; --agent: #087f5b; --link: #2563c9; --info: #3b5bdb;
+  --danger: #c0341c; --warn: #b35c00; --ok: #2f9e44; --agent: #cc2936; --link: #2563c9; --info: #3b5bdb;
   --tint-hover: color-mix(in srgb, var(--ink) 5%, transparent);
   --tint-on: color-mix(in srgb, var(--ink) 9%, transparent);
   --shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 6px 16px rgb(0 0 0 / 0.1);
@@ -33,7 +33,7 @@ const BASE = `
   --paper: #131519; --paper-raised: #1a1d22; --paper-sunk: #0e1013;
   --ink: #e6e8eb; --ink-muted: #a0a5ad; --ink-faint: #7d828a;
   --rule: #2a2e35; --rule-strong: #3b4048; --focus: #e6e8eb;
-  --danger: #ff8a7a; --warn: #ffb454; --ok: #51cf66; --agent: #38d9a9; --link: #79a8ff; --info: #748ffc;
+  --danger: #ff8a7a; --warn: #ffb454; --ok: #51cf66; --agent: #ff7b86; --link: #79a8ff; --info: #748ffc;
   --tint-hover: color-mix(in srgb, var(--ink) 6%, transparent);
   --tint-on: color-mix(in srgb, var(--ink) 11%, transparent);
   --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 6px 16px rgb(0 0 0 / 0.4);
