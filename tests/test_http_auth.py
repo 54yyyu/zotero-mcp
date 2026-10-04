@@ -1,5 +1,6 @@
 """HTTP authentication at the real FastMCP boundary and CLI configuration."""
 
+import asyncio
 import json
 import os
 import socket
@@ -294,6 +295,9 @@ def cli_fixture(monkeypatch, tmp_path):
     """Exercise real CLI parsing/configuration without starting a listener."""
     from zotero_mcp import cli
 
+    # The CLI adds fallback variables directly, outside monkeypatch.setenv.
+    # Keep those additions from leaking into subsequent tests.
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     for key in list(os.environ):
         if key.startswith("ZOTERO_"):
             monkeypatch.delenv(key)
@@ -376,13 +380,12 @@ def test_cli_rejects_raw_invalid_config_even_with_override(raw_token, cli_fixtur
     assert "Traceback" not in captured.err
 
 
-@pytest.mark.asyncio
-async def test_environment_token_takes_precedence_over_invalid_config(cli_fixture, monkeypatch):
+def test_environment_token_takes_precedence_over_invalid_config(cli_fixture, monkeypatch):
     cli_fixture.write_config({TOKEN_ENV: None})
     monkeypatch.setenv(TOKEN_ENV, TOKEN)
     cli_fixture.invoke("serve", "--transport", "streamable-http", "--host", "0.0.0.0")
-    assert await cli_fixture.mcp.auth.verify_token(TOKEN) is not None
-    assert await cli_fixture.mcp.auth.verify_token("None") is None
+    assert asyncio.run(cli_fixture.mcp.auth.verify_token(TOKEN)) is not None
+    assert asyncio.run(cli_fixture.mcp.auth.verify_token("None")) is None
 
 
 def test_empty_environment_token_does_not_fall_back_to_valid_config(cli_fixture, monkeypatch):
