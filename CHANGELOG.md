@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Index bookkeeping no longer wipes `config.json`** (#646). The savers for the sync watermark, index schema version and backfill count, and `--db-path`, read the config with any parse error treated as `{}` and wrote the result back in place. One typo from hand-editing the file, or a read that caught another process mid-write, followed by any `update-db` erased the web API key, the local write key and the embedding settings. They now refuse to overwrite a config they cannot parse (and log why), and every write goes through a temp file and an atomic rename, so readers never see half a file.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed
 
-- **Index bookkeeping no longer wipes `config.json`** (#646). The savers for the sync watermark, index schema version and backfill count, and `--db-path`, read the config with any parse error treated as `{}` and wrote the result back in place. One typo from hand-editing the file, or a read that caught another process mid-write, followed by any `update-db` erased the web API key, the local write key and the embedding settings. They now refuse to overwrite a config they cannot parse (and log why), and every write goes through a temp file and an atomic rename, so readers never see half a file.
 - **Duplicate detection agrees with itself** (#496). Duplicate grouping, the auto-merge DOI-conflict guard, the pre-add existence check and the semantic index's preprint filter now take their keys from `zotero_mcp.identifiers`, so DOIs match in canonical form (`10.1000/ABC`, `https://doi.org/10.1000/abc`) and titles fold the way Zotero's own duplicate finder folds them. A DOI field holding a placeholder such as `article` no longer groups every item that carries it, and re-adding a paper whose stored DOI differs only in case no longer creates a second copy.
 - **File uploads into a group library no longer go to your personal WebDAV** (#591). Group libraries always store files in Zotero Storage, but with `ZOTERO_WEBDAV_*` configured and writes going through the Web API, `zotero_add_item` and `zotero_attach_file` sent the file only to WebDAV and left the group attachment without one. Other attach paths PUT a second copy to WebDAV, and if that failed they deleted the group attachment even though its file was already in Zotero Storage. The WebDAV steps now skip group libraries.
 - **Automatic tags read as automatic in local mode** (#620). Items read from `zotero.sqlite` listed every tag without its type, so `zotero_get_item_metadata(format="json")` and other reads showed automatic tags as manual, unlike the Zotero API. They now carry `"type": 1`.
