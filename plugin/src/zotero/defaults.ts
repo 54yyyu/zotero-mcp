@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   enterToSend: true,
   showThinking: true,
   expandTools: false,
+  showUsage: false,
   openAtStart: false,
   welcomed: false,
   chatFolder: "",

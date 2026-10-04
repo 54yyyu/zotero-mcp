@@ -180,6 +180,7 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
         flag("enterToSend", "Press Enter to send", s.enterToSend ? "Shift+Enter adds a line." : "Enter adds a line; Cmd/Ctrl+Enter sends."),
         flag("showThinking", "Show the agent's thinking", "A collapsed Thinking row above each answer."),
         flag("expandTools", "Expand tool steps", "Show each step's input and output without a click."),
+        flag("showUsage", "Show tokens and cost", "A small line under each answer. Off by default."),
       ),
       section("Startup", flag("openAtStart", "Open the panel when Zotero starts", "")),
       prompts(s), folder(s), data(), keysRef(s),

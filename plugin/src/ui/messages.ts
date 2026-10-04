@@ -12,7 +12,7 @@ import { CHIP_ICON, clear, env, flashCheck, fmtTokens, h, icon, setKids } from "
 
 export type { MsgActions };
 
-interface PatchFlags { live: boolean; canRetry: boolean; showThinking: boolean; expandTools: boolean }
+interface PatchFlags { live: boolean; canRetry: boolean; showThinking: boolean; expandTools: boolean; showUsage: boolean }
 
 // ───────────────────────────── assistant message ─────────────────────────────
 
@@ -32,7 +32,7 @@ class AssistantView {
   private sourcesFor: AssistantMessage | null = null;
   private sources: CitedSource[] = [];
   private msg!: AssistantMessage;
-  private flags: PatchFlags = { live: false, canRetry: false, showThinking: true, expandTools: false };
+  private flags: PatchFlags = { live: false, canRetry: false, showThinking: true, expandTools: false, showUsage: false };
 
   private actions: MsgActions;
   private announce: (s: string) => void;
@@ -46,7 +46,7 @@ class AssistantView {
   patch(msg: AssistantMessage, flags: PatchFlags): void {
     const sameMsg = this.msg === msg;
     const f = this.flags;
-    const sameOpts = f.showThinking === flags.showThinking && f.expandTools === flags.expandTools;
+    const sameOpts = f.showThinking === flags.showThinking && f.expandTools === flags.expandTools && f.showUsage === flags.showUsage;
     if (sameMsg && sameOpts && f.live === flags.live && f.canRetry === flags.canRetry) return;
     this.msg = msg; this.flags = flags;
     this.el.dataset.state = msg.done ? msg.stop ?? "end_turn" : "running";
@@ -99,7 +99,8 @@ class AssistantView {
       ? h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Try again", title: "Try again", onclick: () => this.actions.retry(msg.id) }, icon("retry"))
       : null;
     const u = msg.usage;
-    const usage = u && (u.inputTokens || u.outputTokens || u.costUsd)
+    // Tokens and cost are off by default: a running price under every answer makes people hesitate to ask.
+    const usage = f.showUsage && u && (u.inputTokens || u.outputTokens || u.costUsd)
       ? [u.inputTokens ? `${fmtTokens(u.inputTokens)} in` : "", u.outputTokens ? `${fmtTokens(u.outputTokens)} out` : "", u.costUsd ? `$${u.costUsd.toFixed(u.costUsd < 0.1 ? 3 : 2)}` : ""].filter(Boolean).join(" · ")
       : "";
     const n = this.sources.length;
@@ -160,7 +161,7 @@ export class Feed {
   private empty: HTMLElement | null = null;
   private lastState: TranscriptState | null = null;
   private lastRetry = false;
-  private opts = { showThinking: true, expandTools: false };
+  private opts = { showThinking: true, expandTools: false, showUsage: false };
 
   private actions: MsgActions;
 
@@ -266,8 +267,8 @@ export class Feed {
   }
 
   /** The chat settings that change how messages look; applied to what is already shown too. */
-  setOptions(o: { showThinking: boolean; expandTools: boolean }): void {
-    if (o.showThinking === this.opts.showThinking && o.expandTools === this.opts.expandTools) return;
+  setOptions(o: { showThinking: boolean; expandTools: boolean; showUsage: boolean }): void {
+    if (o.showThinking === this.opts.showThinking && o.expandTools === this.opts.expandTools && o.showUsage === this.opts.showUsage) return;
     this.opts = o;
     if (this.lastState) this.update(this.lastState, this.lastRetry);
   }

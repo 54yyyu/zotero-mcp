@@ -53,6 +53,6 @@ export function defaultSettings(): PanelSettings {
       { id: "p4", title: "Compare key findings to other studies", text: "Compare the key findings to other studies in my library.", slot: 4 },
     ],
     followFocus: true, attachSelection: true, attachAreas: true,
-    enterToSend: true, showThinking: true, expandTools: false, openAtStart: false, welcomed: true, chatFolder: "",
+    enterToSend: true, showThinking: true, expandTools: false, showUsage: false, openAtStart: false, welcomed: true, chatFolder: "",
   };
 }

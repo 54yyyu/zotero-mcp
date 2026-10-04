@@ -267,7 +267,7 @@ class Panel {
   private applyBehavior(): void {
     const s = this.host.getSettings();
     this.composer.setEnterToSend(s.enterToSend);
-    this.feed.setOptions({ showThinking: s.showThinking, expandTools: s.expandTools });
+    this.feed.setOptions({ showThinking: s.showThinking, expandTools: s.expandTools, showUsage: s.showUsage });
   }
 
   // ───────────────────────────── the chat ─────────────────────────────

@@ -17,7 +17,7 @@ const MODE_HELP: Record<string, string> = {
 export const modeHelp = (m: ModeOption): string => MODE_HELP[m.id] ?? m.description ?? "";
 
 export type PerBackend = "model" | "mode" | "effort";
-export type FlagKey = "followFocus" | "attachSelection" | "attachAreas" | "enterToSend" | "showThinking" | "expandTools" | "openAtStart";
+export type FlagKey = "followFocus" | "attachSelection" | "attachAreas" | "enterToSend" | "showThinking" | "expandTools" | "showUsage" | "openAtStart";
 
 /** Model, mode and effort are saved per backend: ids from one backend mean nothing to another. */
 export const setPerBackend = (s: PanelSettings, key: PerBackend, backend: BackendId, id: string): Partial<PanelSettings> =>

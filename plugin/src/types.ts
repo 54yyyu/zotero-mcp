@@ -228,6 +228,8 @@ export interface PanelSettings {
   showThinking: boolean;
   /** Tool steps start expanded. */
   expandTools: boolean;
+  /** Tokens and cost under each answer. */
+  showUsage: boolean;
   /** The panel is open when Zotero starts. */
   openAtStart: boolean;
   /** The first-run welcome (agent choice and setup check) has been finished or skipped. */
