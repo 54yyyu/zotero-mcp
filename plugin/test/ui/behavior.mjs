@@ -272,9 +272,21 @@ await test("pickers: effort, model and mode act on the live session and save int
   await p.locator(".cin").click();
   await p.waitForFunction(() => window.__zmc.sim.closed === 0 && /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent));
   await p.locator(".pick--effort").click();
-  await p.getByRole("menuitemradio", { name: "High", exact: true }).click();
+  await p.locator('.eff__stop[title="High"]').click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().effort["claude-code"] === "high");
   assert.match(await p.locator(".pick--effort").innerText(), /High/);
+  assert.equal(await p.locator(".eff__cur").innerText(), "High");
+  // dragging along the track moves through the levels and applies the one it is released on
+  const t = await p.locator(".eff__track").boundingBox();
+  await p.mouse.move(t.x + t.width - 14, t.y + t.height / 2); await p.mouse.down();
+  await p.mouse.move(t.x + 14, t.y + t.height / 2, { steps: 8 }); await p.mouse.up();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().effort["claude-code"] === "low");
+  // the keys: arrows step, Enter applies and closes
+  await p.locator(".eff__track").focus();
+  await p.keyboard.press("ArrowRight"); await p.keyboard.press("ArrowRight");
+  await p.keyboard.press("Enter");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().effort["claude-code"] === "high");
+  assert.equal(await p.locator(".menu--effort").count(), 0);
   await p.locator(".pick--mode").click();
   await p.getByRole("menuitemradio", { name: /Plan/ }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().mode["claude-code"] === "plan");
@@ -580,7 +592,7 @@ for (const [name, params, run] of [
     const t = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".pick--effort .pick__t"); return [e.scrollWidth, e.clientWidth, e.textContent]; });
     assert.deepEqual([t[0] <= t[1], t[2]], [true, "Medium"], "the effort level is never the thing that truncates");
     await p.locator(".pick--effort").click();
-    await p.waitForSelector(".menu--effort .menu__item");
+    await p.waitForSelector(".menu--effort .eff");
     const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".menu--effort"), b = r(".pick--effort"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
     assert.ok(g.off < 3 && g.inside, "the effort menu opens under its own button, inside the composer");
   }],

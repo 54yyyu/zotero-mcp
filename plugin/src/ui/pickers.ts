@@ -1,7 +1,7 @@
 // The composer's three pickers (model, effort, permission mode) and the menu they open above it.
 // Each shows the live value; an empty list hides its button (pi has no modes, some backends no effort).
 import type { ModeOption, ModelOption } from "../types.ts";
-import { errMessage, h, icon, setKids } from "./dom.ts";
+import { env, errMessage, h, icon, setKids } from "./dom.ts";
 
 export interface Choices {
   models: ModelOption[]; model?: string | undefined;
@@ -61,6 +61,7 @@ export class Pickers {
   }
 
   close(): void {
+    this.menu?.querySelector(".eff")?.dispatchEvent(new env.win.CustomEvent("zmc-close-menu"));
     this.menu?.remove();
     this.menu = null;
     this.anchor = null;
@@ -92,6 +93,7 @@ export class Pickers {
     const list = kind === "model" ? c.models : kind === "effort" ? c.efforts : c.modes;
     const cur = kind === "model" ? c.model : kind === "effort" ? c.effort : c.mode;
     if (!list.length) { setKids(menu, h("div.menu__note", null, "This agent doesn't offer a choice here.")); return; }
+    if (kind === "effort") { setKids(menu, this.slider(list, cur, anchor)); return; }
     setKids(menu, list.map((o) => h("button.menu__item", {
       type: "button", role: "menuitemradio", "aria-checked": String(o.id === cur),
       onclick: () => { this.close(); anchor.focus(); this.opts.pick(kind, o.id); },
@@ -99,6 +101,80 @@ export class Pickers {
       h("span.menu__check", null, o.id === cur ? icon("check") : null),
       h("span.menu__tx", null, h("span.menu__t", null, o.name), o.description ? h("span.menu__d", null, o.description) : null))));
     ((menu.querySelector('[aria-checked="true"]') ?? menu.querySelector("button")) as HTMLElement | null)?.focus();
+  }
+
+  /**
+   * The effort levels as a stepped slider (after Claude's): drag, click a stop, or use the arrow keys; Faster at one end,
+   * Smarter at the other. A change is applied when the pointer is released, or a moment after the last key press.
+   */
+  private slider(levels: ModeOption[], current: string | undefined, anchor: HTMLElement): HTMLElement {
+    const n = levels.length;
+    let at = Math.max(0, levels.findIndex((l) => l.id === current));
+    let applied = at;
+    let timer = 0;
+    const cur = h("span.eff__cur");
+    const desc = h("div.eff__desc");
+    const fill = h("span.eff__fill");
+    const stops = levels.map((l) => h("span.eff__stop", { title: l.name }));
+    const track = h("div.eff__track", { role: "slider", tabindex: "0", "aria-label": "Effort", "aria-valuemin": "0", "aria-valuemax": String(n - 1), style: `--n:${n}` }, h("span.eff__line"), fill, ...stops);
+    const paint = () => {
+      cur.textContent = levels[at]?.name ?? "";
+      setKids(desc, levels[at]?.description ?? null);
+      desc.hidden = !levels[at]?.description;
+      track.setAttribute("aria-valuenow", String(at));
+      track.setAttribute("aria-valuetext", levels[at]?.name ?? "");
+      fill.style.setProperty("--at", String(at));
+      stops.forEach((s, i) => s.classList.toggle("eff__stop--on", i === at));
+    };
+    const apply = () => {
+      clearTimeout(timer);
+      timer = 0;
+      if (at === applied) return;
+      applied = at;
+      this.opts.pick("effort", levels[at]!.id);
+    };
+    const move = (i: number) => { at = Math.max(0, Math.min(n - 1, i)); paint(); };
+    const nearest = (x: number): number => {
+      const r = track.getBoundingClientRect();
+      const stop = stops[0]?.getBoundingClientRect().width || 24;
+      const span = Math.max(1, r.width - stop);
+      return Math.round(((x - r.left - stop / 2) / span) * (n - 1));
+    };
+    let dragging = false;
+    track.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      track.setPointerCapture?.(e.pointerId);
+      move(nearest(e.clientX));
+      track.focus({ preventScroll: true });
+      e.preventDefault();
+    });
+    track.addEventListener("pointermove", (e) => { if (dragging) move(nearest(e.clientX)); });
+    const release = () => { if (dragging) { dragging = false; apply(); } };
+    track.addEventListener("pointerup", release);
+    track.addEventListener("pointercancel", release);
+    track.addEventListener("keydown", (e) => {
+      const step = e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : 0;
+      if (step || e.key === "Home" || e.key === "End") {
+        e.preventDefault();
+        e.stopPropagation();
+        move(step ? at + step : e.key === "Home" ? 0 : n - 1);
+        clearTimeout(timer);
+        timer = setTimeout(apply, 250) as unknown as number;
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        apply();
+        this.close();
+        anchor.focus();
+      }
+    });
+    const box = h("div.eff", { role: "group", "aria-label": "Effort" },
+      h("div.eff__head", null, h("span.eff__t", null, "Effort"), cur),
+      h("div.eff__ends", null, h("span", null, "Faster"), h("span", null, "Smarter")), track, desc);
+    paint();
+    // A level chosen with the keys and closed before the pause still lands.
+    box.addEventListener("zmc-close-menu", apply);
+    queueMicrotask(() => track.focus({ preventScroll: true }));
+    return box;
   }
 
   private key(e: KeyboardEvent, anchor: HTMLElement): void {
