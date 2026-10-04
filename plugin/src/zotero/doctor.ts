@@ -14,10 +14,12 @@ async function httpStatus(spawner: Spawner, env: Record<string, string>, path: s
   return Number(r?.stdout.trim()) || 0;
 }
 
-/** Run a command and yield its output line by line; returns its exit code. */
-async function* stream(spawner: Spawner, env: Record<string, string>, cmd: string, args: string[]): AsyncGenerator<string, number | null> {
+/** Run a command and yield its output line by line; returns its exit code. A command still running after `maxMs` is killed: a stalled download must not leave the button spinning forever. */
+async function* stream(spawner: Spawner, env: Record<string, string>, cmd: string, args: string[], maxMs = 10 * 60_000): AsyncGenerator<string, number | null> {
   yield `$ ${cmd.split("/").pop()} ${args.join(" ")}`;
   const proc = await spawner.spawn(cmd, args, { env });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; void proc.kill(); }, maxMs);
   const lines: string[] = [];
   let wake: (() => void) | null = null;
   const push = (s: string) => { lines.push(...s.split("\n").filter(Boolean)); wake?.(); };
@@ -29,15 +31,30 @@ async function* stream(spawner: Spawner, env: Record<string, string>, cmd: strin
     if (lines.length) yield lines.shift()!;
     else await new Promise<void>((r) => { wake = r; });
   }
+  clearTimeout(timer);
+  if (timedOut) yield "Gave up waiting. Check your network and try again.";
   return proc.exited;
 }
 
-/** Install zotero-cli with the first of uv, pipx, pip that exists; yields the installer's output. */
-export function installCli(spawner: Spawner): () => AsyncIterable<string> {
+const localBin = (env: Record<string, string>): string[] => (env["HOME"] ? [`${env["HOME"]}/.local/bin`] : []);
+
+/** zotero-cli, also in ~/.local/bin: where uv puts it, and a Dock-launched Zotero's login PATH may not list that. */
+export const findCli = (spawner: Spawner, env: Record<string, string>) => findBinary(spawner, env, "zotero-cli", localBin(env));
+
+/**
+ * Install zotero-cli. uv first, because it brings its own Python (macOS ships 3.9, and zotero-mcp needs 3.10); on a machine
+ * with no uv it is fetched from astral.sh first, without touching the user's shell profile. pipx and pip are the fallbacks.
+ */
+export function installCli(spawner: Spawner, maxMs?: number): () => AsyncIterable<string> {
   return async function* () {
     const env = await spawner.baseEnv();
+    let uv = await findBinary(spawner, env, "uv", localBin(env));
+    if (!uv) {
+      yield "uv, the installer zotero-cli uses, is not installed. Fetching it from astral.sh first.";
+      const code = yield* stream(spawner, { ...env, UV_NO_MODIFY_PATH: "1" }, "/bin/sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], maxMs);
+      uv = code === 0 ? await findBinary(spawner, env, "uv", localBin(env)) : null;
+    }
     const attempts: [string, string[]][] = [];
-    const uv = await findBinary(spawner, env, "uv");
     if (uv) attempts.push([uv, ["tool", "install", "--upgrade", "zotero-mcp-server"]]);
     const pipx = await findBinary(spawner, env, "pipx");
     if (pipx) attempts.push([pipx, ["install", "--force", "zotero-mcp-server"]]);
@@ -48,8 +65,14 @@ export function installCli(spawner: Spawner): () => AsyncIterable<string> {
       return;
     }
     for (const [cmd, args] of attempts) {
-      const code = yield* stream(spawner, env, cmd, args);
-      if (code === 0) { yield "Installed."; return; }
+      const code = yield* stream(spawner, env, cmd, args, maxMs);
+      if (code === 0) {
+        yield "Installed.";
+        if (cmd === uv && !(env["PATH"] ?? "").split(":").some((p) => localBin(env).includes(p))) {
+          yield "The chat can use it now. To use zotero-cli in a terminal too, run `uv tool update-shell` and reopen the terminal.";
+        }
+        return;
+      }
       yield `Failed (exit ${code}).`;
     }
   };
@@ -86,11 +109,11 @@ export function createDoctor(deps: { win: any; spawner: Spawner; runtime: AgentR
     }
 
     // 2. zotero-cli
-    const cli = await findBinary(spawner, env, "zotero-cli");
+    const cli = await findCli(spawner, env);
     if (cli) {
       checks.push({ id: "cli", ok: true, label: "zotero-cli is installed", detail: cli });
     } else {
-      checks.push({ id: "cli", ok: false, label: "zotero-cli is not installed", detail: "The agent uses it to work with your library.", fix: { label: "Install zotero-cli", run: installCli(spawner) } });
+      checks.push({ id: "cli", ok: false, label: "zotero-cli is not installed", detail: "The agent uses it to work with your library. One click installs it, and uv (its installer) if you do not have that.", fix: { label: "Install zotero-cli", run: installCli(spawner) } });
     }
 
     // 3. node: the bridges are Node programs

@@ -1,11 +1,11 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
-import type { BackendId, ContextChip, PanelHost, PanelSettings, Spawner } from "../types.ts";
-import { buildBrief, createRuntime, findBinary, prepareWorkspace, resumeCommand } from "../agent/index.ts";
+import type { AgentRuntime, BackendId, ContextChip, PanelHost, PanelSettings, Spawner } from "../types.ts";
+import { buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker } from "./context.ts";
 import { withDefaults } from "./defaults.ts";
 import { describeContext } from "./describe.ts";
 import { dropChips } from "./drop.ts";
-import { createDoctor } from "./doctor.ts";
+import { createDoctor, findCli } from "./doctor.ts";
 import * as keychain from "./keychain.ts";
 import { openTarget } from "./open.ts";
 import { chipForHit, search } from "./search.ts";
@@ -36,7 +36,15 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
   const spawner = createGeckoSpawner();
   const context = new ContextTracker(opts.id);
   context.start(win);
-  const runtime = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges") });
+  const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges") });
+  // Wherever zotero-cli is, the agent's shell must find it: its folder goes on the agent's PATH.
+  const runtime: AgentRuntime = {
+    ...base,
+    async start(o) {
+      const cli = await findCli(spawner, await spawner.baseEnv());
+      return base.start(cli ? { ...o, path: [cli.slice(0, cli.lastIndexOf("/")), ...(o.path ?? [])] } : o);
+    },
+  };
   const store = createStore(PathUtils.join(dataDir, "sessions"));
 
   // Read on every context change, so parsed once and dropped when something saves.
@@ -105,7 +113,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     doctor,
     async prepareSession(resumeIn) {
       const env = await spawner.baseEnv();
-      const zoteroCli = await findBinary(spawner, env, "zotero-cli");
+      const zoteroCli = await findCli(spawner, env);
       // A chat being resumed runs in the folder it started in; agents look a session up by its folder.
       const cwd = await prepareWorkspace(spawner, resumeIn || chatFolder(), zoteroCli ? { zoteroCli } : {});
       const s = settings();
