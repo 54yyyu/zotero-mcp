@@ -506,6 +506,31 @@ class TestUpdateItemTags:
         assert "keep" in updated_tags
         assert "also-keep" in updated_tags
 
+    # Automatic tags (type 1) must stay automatic through incremental edits
+    # (#618): rebuilding the list from names alone turned them into manual tags.
+
+    def _update_with_typed_tags(self, monkeypatch, **kwargs):
+        item = _make_item()
+        item["data"]["tags"] = [{"tag": "MeSH heading", "type": 1}, {"tag": "manual"}]
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+        server.update_item(item_key="ABCD1234", ctx=DummyContext(), **kwargs)
+        return fake.update_calls[0]["data"]["tags"]
+
+    def test_add_tags_keeps_automatic_tags_automatic(self, monkeypatch):
+        tags = self._update_with_typed_tags(monkeypatch, add_tags=["extra"])
+        assert tags == [{"tag": "MeSH heading", "type": 1}, {"tag": "manual"}, {"tag": "extra"}]
+
+    def test_remove_tags_keeps_automatic_tags_automatic(self, monkeypatch):
+        tags = self._update_with_typed_tags(monkeypatch, remove_tags=["manual"])
+        assert tags == [{"tag": "MeSH heading", "type": 1}]
+
+    def test_adding_an_existing_name_does_not_retype_it(self, monkeypatch):
+        tags = self._update_with_typed_tags(monkeypatch, add_tags=["MeSH heading"])
+        assert {"tag": "MeSH heading", "type": 1} in tags
+        assert len(tags) == 2
+
     def test_tags_and_add_tags_mutually_exclusive(self, monkeypatch):
         """Providing both tags= and add_tags= should produce an error."""
         item = _make_item(tags=["x"])
@@ -1591,6 +1616,43 @@ class TestUpdateItemType:
         # Diff mentions the type change
         assert "item_type" in result
         assert "book" in result
+
+    def test_migrate_carries_base_mapped_fields(self, monkeypatch):
+        """journalArticle -> conferencePaper: publicationTitle must land in
+        proceedingsTitle (same base field), as Zotero desktop does, not be
+        silently dropped."""
+        item = _make_item(publication_title="Proc. of FooConf")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            fields={"item_type": "conferencePaper"},
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        assert d["itemType"] == "conferencePaper"
+        assert d.get("proceedingsTitle") == "Proc. of FooConf"
+        assert "publicationTitle" not in d
+        assert "Carried over to the new type: publicationTitle -> proceedingsTitle" in result
+        # Existing report lines keep their format.
+        assert "- **item_type**: 'journalArticle' -> 'conferencePaper'" in result
+
+    def test_migrate_without_carry_has_no_carried_line(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            fields={"item_type": "book"},
+            ctx=DummyContext(),
+        )
+
+        assert "Carried over" not in result
 
     def test_migrate_preserves_tags_and_collections(self, monkeypatch):
         item = _make_item(

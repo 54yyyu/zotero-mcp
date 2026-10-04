@@ -3161,11 +3161,15 @@ def update_item(
 
         # Handle item_type migration first so subsequent field updates are
         # validated against the NEW type's schema. Reshape by merging old
-        # data into the new type's template: overlapping typed fields are
-        # preserved; type-specific fields not present in the new template
-        # are dropped; internal bookkeeping fields (key, version, tags,
-        # collections, relations, creators, dateAdded, dateModified) are
-        # always preserved regardless of type.
+        # data into the new type's template: fields the new type shares by
+        # name are preserved; a type-specific field the new type names
+        # differently is carried over to its counterpart through the shared
+        # Zotero base field (publicationTitle -> proceedingsTitle) unless
+        # that target is already filled; fields with no counterpart on the
+        # new type are dropped; internal bookkeeping fields (key, version,
+        # tags, collections, relations, creators, dateAdded, dateModified)
+        # are always preserved regardless of type.
+        carried: list[tuple[str, str]] = []
         if item_type is not None:
             old_item_type = data.get("itemType", "")
             if old_item_type != item_type:
@@ -3181,6 +3185,19 @@ def update_item(
                 for k, v in data.items():
                     if k in preserved or k in new_template:
                         reshaped[k] = v
+                # Carry type-specific fields across through their shared base
+                # field (publicationTitle -> proceedingsTitle, websiteTitle ->
+                # blogTitle, ...) the way Zotero desktop does on a type change,
+                # instead of dropping the value.
+                new_fields = set(new_template) | _schema.valid_fields(item_type)
+                for k, v in data.items():
+                    if k in reshaped or v in ("", None):
+                        continue
+                    base = _schema.base_field_of(old_item_type, k)
+                    target = _schema.resolve_field(item_type, base)
+                    if target in new_fields and not reshaped.get(target):
+                        reshaped[target] = v
+                        carried.append((k, target))
                 reshaped["itemType"] = item_type
                 data = reshaped
                 item["data"] = data
@@ -3239,16 +3256,17 @@ def update_item(
             data["tags"] = [{"tag": t} for t in tag_list]
             changes.append(f"- **tags**: replaced with {tag_list}")
         elif add_tags is not None or remove_tags is not None:
-            existing = {t["tag"] for t in data.get("tags", [])}
+            to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
+            to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
+            # Existing tag dicts are kept verbatim so automatic (type 1)
+            # tags stay automatic.
+            data["tags"] = _helpers._apply_tag_changes(
+                data.get("tags", []), [{"tag": t} for t in to_add], to_remove
+            )
             if add_tags is not None:
-                to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
-                existing.update(to_add)
                 changes.append(f"- **tags**: added {to_add}")
             if remove_tags is not None:
-                to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
-                existing -= to_remove
                 changes.append(f"- **tags**: removed {list(to_remove)}")
-            data["tags"] = [{"tag": t} for t in sorted(existing)]
 
         # Collections — REPLACE membership (matches tags semantics and the
         # docstring contract). For incremental moves use
@@ -3317,7 +3335,14 @@ def update_item(
                 )
             else:
                 headline = f"Successfully updated item `{item_key}`:"
-            return f"{headline}\n\n" + "\n".join(changes) + skip_warning
+            carried_note = ""
+            if carried:
+                moves = ", ".join(f"{a} -> {b}" for a, b in carried)
+                carried_note = f"\n\nCarried over to the new type: {moves}"
+            return (
+                f"{headline}\n\n" + "\n".join(changes) + carried_note
+                + skip_warning
+            )
         return "Failed to update item: write operation returned failure"
 
     except ValueError as e:
@@ -3618,12 +3643,22 @@ def _render_skipped(skipped: list[tuple], heading: str) -> list[str]:
     return lines
 
 
-def _attachment_sig(data: dict) -> tuple:
-    """Identity of an attachment for "the keeper already has this one" checks."""
+def _attachment_sig(data: dict) -> tuple | None:
+    """Identity of an attachment for "the keeper already has this one" checks.
+
+    Returns None when the attachment carries nothing that identifies its
+    content (no md5, path or url), e.g. linked-file PDFs, which have no
+    filename or md5. Such attachments must never be treated as duplicates,
+    or a distinct file is left on the duplicate and trashed with it.
+    """
+    if not (data.get("md5") or data.get("path") or data.get("url")):
+        return None
     return (
+        data.get("linkMode", ""),
         data.get("contentType", ""),
         data.get("filename", ""),
         data.get("md5", ""),
+        data.get("path", ""),
         data.get("url", ""),
     )
 
@@ -3681,9 +3716,19 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
     all_collections = set(keeper_data.get("collections", []))
     total_children_to_move = 0
 
+    # One tag object per name from the duplicates, so a tag copied to the
+    # keeper keeps its type. If the duplicates disagree, manual (type 0) wins:
+    # "Delete Automatic Tags" never removes a manual tag.
+    dup_tag_objects: dict[str, dict] = {}
     for dup in duplicates:
         dup_data = dup["item"].get("data", {})
-        all_tags.update(t.get("tag", "") for t in dup_data.get("tags", []))
+        for t in dup_data.get("tags", []):
+            name = t.get("tag", "")
+            all_tags.add(name)
+            if t.get("type"):
+                dup_tag_objects.setdefault(name, {"tag": name, "type": t["type"]})
+            else:
+                dup_tag_objects[name] = {"tag": name}
         all_collections.update(dup_data.get("collections", []))
         total_children_to_move += len(dup["children"])
 
@@ -3694,6 +3739,7 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         for kc in keeper_children
         if kc.get("data", {}).get("itemType") == "attachment"
     }
+    keeper_attachment_sigs.discard(None)
     skipped_attachment_count = sum(
         1
         for dup in duplicates
@@ -3710,6 +3756,7 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         "dup_keys": list(dup_keys),
         "all_tags": all_tags,
         "new_tags": all_tags - keeper_tags,
+        "dup_tag_objects": dup_tag_objects,
         "new_collections": all_collections - set(keeper_data.get("collections", [])),
         "children_to_move": total_children_to_move - skipped_attachment_count,
         "skipped_attachment_count": skipped_attachment_count,
@@ -3754,8 +3801,11 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
 
     if plan["new_tags"]:
         keeper_data = keeper.get("data", {})
-        existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
-        keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | plan["all_tags"])]
+        # Keep the keeper's tag dicts verbatim (automatic tags stay type 1).
+        keeper_data["tags"] = _helpers._apply_tag_changes(
+            keeper_data.get("tags", []),
+            [plan["dup_tag_objects"].get(t, {"tag": t}) for t in sorted(plan["new_tags"])],
+        )
         _helpers._strip_unwritable_fields(keeper)
         resp = write_zot.update_item(keeper)
         if not _helpers._handle_write_response(resp, ctx):

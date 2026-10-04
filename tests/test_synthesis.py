@@ -457,3 +457,60 @@ def test_export_bibliography_library_wide_uses_top_level_items(monkeypatch):
     synthesis.export_bibliography(ctx=DummyContext())
 
     assert local.last_kwargs.get("include") == "bib"
+
+
+# ---------------------------------------------------------------------------
+# export_bibliography — numbering skips rows that render to nothing
+# ---------------------------------------------------------------------------
+
+
+class _WrapperRowsZotero(_BibZotero):
+    """Rows whose ``bib`` is non-empty HTML but holds no text.
+
+    Zotero's API can answer with rows like these between real entries (the
+    live case was a 12-item collection numbered 4, 5, 7, 9, …). They pass the
+    "field is empty" filter and only turn empty once the HTML is stripped.
+    """
+
+    def _render(self, kwargs):
+        if kwargs.get("include") == "bib":
+            entry = '<div class="csl-entry">{}</div>'
+            wrapper = '<div class="csl-bib-body"><div class="csl-entry"> </div></div>'
+            return [
+                {"key": "WRAP0001", "bib": wrapper},
+                {"key": "ABCD1234", "bib": entry.format("Alpha, A. (2020). One.")},
+                {"key": "WRAP0002", "bib": wrapper},
+                {"key": "EFGH5678", "bib": entry.format("Beta, B. (2021). Two.")},
+                {"key": "IJKL9012", "bib": entry.format("Gamma, C. (2022). Three.")},
+            ]
+        return super()._render(kwargs)
+
+
+def test_export_bibliography_numbers_entries_without_gaps(monkeypatch):
+    fake = _WrapperRowsZotero()
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
+
+    out = synthesis.export_bibliography(collection_key="COLL1234", ctx=DummyContext())
+
+    numbered = [line for line in out.splitlines() if line[:1].isdigit()]
+    assert numbered == [
+        "1. Alpha, A. (2020). One.",
+        "2. Beta, B. (2021). Two.",
+        "3. Gamma, C. (2022). Three.",
+    ]
+
+
+class _OnlyWrapperRowsZotero(_BibZotero):
+    def _render(self, kwargs):
+        if kwargs.get("include") == "bib":
+            return [{"key": "WRAP0001", "bib": '<div class="csl-entry"> </div>'}]
+        return super()._render(kwargs)
+
+
+def test_export_bibliography_all_rows_empty_after_cleaning(monkeypatch):
+    fake = _OnlyWrapperRowsZotero()
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
+
+    out = synthesis.export_bibliography(collection_key="COLL1234", ctx=DummyContext())
+
+    assert out == "No bibliography entries produced for collection COLL1234."

@@ -349,6 +349,21 @@ class ChromaClient:
         except Exception as e:
             logger.warning(f"delete_item_chunks({item_key}) failed: {e}")
 
+    def prune_item_chunks(self, item_key: str, keep: int) -> None:
+        """Delete an item's passages from ``chunk_index >= keep`` onward.
+
+        Called after an item's new passages ``<item_key>#0..keep-1`` have been
+        upserted, so a document that shrank leaves no orphaned tail, while a
+        failed re-embed leaves the old passages searchable instead of none.
+        Also drops a bare ``<item_key>`` document left by a pre-chunking index.
+        """
+        where = {"$and": [{"parent_item_key": item_key}, {"chunk_index": {"$gte": int(keep)}}]}
+        try:
+            self.collection.delete(where=where)
+            self.collection.delete(ids=[item_key])
+        except Exception as e:
+            logger.warning(f"prune_item_chunks({item_key}) failed: {e}")
+
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
         try:
