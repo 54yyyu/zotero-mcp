@@ -1034,7 +1034,7 @@ def search_notes(
                     reader.close()
 
                 # None: the active library isn't in the local database (e.g.
-                # a group not synced here) — let the API path answer instead.
+                # a group not synced here); let the API path answer instead.
                 if local_notes is not None and local_annotations is not None:
                     ctx.info(f"Local note search: {len(local_notes)} results")
                     ctx.info(f"Local annotation search: {len(local_annotations)} results")

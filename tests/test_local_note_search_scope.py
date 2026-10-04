@@ -5,7 +5,7 @@ its API path honours that because pyzotero is scoped to one library. The
 local-mode SQLite path queried ``itemNotes``/``itemAnnotations`` with no
 ``libraryID`` filter, so a personal-library search returned notes and
 annotations from every group library synced to the machine (and vice versa
-after ``zotero_switch_library``) — keys the follow-up tools then fail to
+after ``zotero_switch_library``); keys the follow-up tools then fail to
 resolve in the active library.
 """
 
