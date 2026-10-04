@@ -13,6 +13,7 @@ const suites = [
   ["chat", ["--mock-agent"]],
   ["ui", ["--mock-agent"]],
   ["agent", []], // the real bridge's handshake: no prompt, no tokens
+  ["cli-install", ["--home", "home-fresh"]], // a machine with nothing: uv, then zotero-cli (stubbed downloads; ZMC_REAL_INSTALL=1 for real)
   ...(process.env.ZMC_LIVE ? [["live", []]] : []),
 ];
 let failed = 0;

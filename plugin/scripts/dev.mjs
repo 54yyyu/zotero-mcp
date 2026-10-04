@@ -150,7 +150,17 @@ rmSync(out + ".log", { force: true });
 mkdirSync(shots, { recursive: true });
 const env = { ...process.env, ZMC_DEFAULT_CHAT_FOLDER: chatDefault, ZMC_TEST_PDF: testPdf, ZMC_TEST_OUT: out, ZMC_SNAPSHOT_DIR: shots, ZMC_KEEP: flag("keep") ? "1" : "" };
 if (script) env.ZMC_TEST_SCRIPT = resolve(script);
-for (const k of ["ZMC_LIVE", "ZMC_LIVE_HANDSHAKE", "ZMC_LIVE_BACKENDS", "ZMC_PI_AGENT_DIR"]) if (process.env[k]) env[k] = process.env[k];
+// --home <dir>: start Zotero as on a machine with nothing set up: that HOME (inside .dev/) and only the system PATH, so no uv, node or zotero-cli is found.
+const fresh = opt("home");
+if (fresh) {
+  const h = resolve(dev, fresh);
+  if (!h.startsWith(dev + "/")) die(`refusing: --home must be inside ${dev}`);
+  rmSync(h, { recursive: true, force: true });
+  mkdirSync(h, { recursive: true });
+  env.HOME = h;
+  env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+}
+for (const k of ["ZMC_LIVE", "ZMC_LIVE_HANDSHAKE", "ZMC_LIVE_BACKENDS", "ZMC_PI_AGENT_DIR", "ZMC_REAL_INSTALL"]) if (process.env[k]) env[k] = process.env[k];
 
 // -ZoteroDebugText is huge, so Zotero's own output is only kept when asked for (--debug).
 const logFile = join(dev, "zotero.log");
