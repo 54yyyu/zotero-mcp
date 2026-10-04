@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **CSL JSON import keeps name particles and suffixes** (#639). Names exported with `non-dropping-particle`, `dropping-particle` or `suffix` (Better BibTeX, citation.js) lost them, so "van der Maaten" was stored as "Maaten". They are now folded into the last and first names.
+### Fixed
+
+- **Note search in local mode stays in the active library** (#632). `zotero_get_notes(query=...)` read `itemNotes` and `itemAnnotations` from SQLite with no library filter, so with group libraries synced, a personal-library search also returned the groups' notes and annotations (and a search after `zotero_switch_library` returned personal ones), even though the tool is documented as active-library only. The local queries are now scoped like the other local searches; a group that isn't in the local database falls back to the API.
 
 ## [0.13.2] - 2026-10-04
 
