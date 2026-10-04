@@ -1601,7 +1601,7 @@ class TestUpdateItemType:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        server.update_item(
+        result = server.update_item(
             item_key="ABCD1234",
             fields={"item_type": "conferencePaper"},
             ctx=DummyContext(),
@@ -1611,6 +1611,23 @@ class TestUpdateItemType:
         assert d["itemType"] == "conferencePaper"
         assert d.get("proceedingsTitle") == "Proc. of FooConf"
         assert "publicationTitle" not in d
+        assert "Carried over to the new type: publicationTitle -> proceedingsTitle" in result
+        # Existing report lines keep their format.
+        assert "- **item_type**: 'journalArticle' -> 'conferencePaper'" in result
+
+    def test_migrate_without_carry_has_no_carried_line(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            fields={"item_type": "book"},
+            ctx=DummyContext(),
+        )
+
+        assert "Carried over" not in result
 
     def test_migrate_preserves_tags_and_collections(self, monkeypatch):
         item = _make_item(

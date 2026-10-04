@@ -3161,11 +3161,15 @@ def update_item(
 
         # Handle item_type migration first so subsequent field updates are
         # validated against the NEW type's schema. Reshape by merging old
-        # data into the new type's template: overlapping typed fields are
-        # preserved; type-specific fields not present in the new template
-        # are dropped; internal bookkeeping fields (key, version, tags,
-        # collections, relations, creators, dateAdded, dateModified) are
-        # always preserved regardless of type.
+        # data into the new type's template: fields the new type shares by
+        # name are preserved; a type-specific field the new type names
+        # differently is carried over to its counterpart through the shared
+        # Zotero base field (publicationTitle -> proceedingsTitle) unless
+        # that target is already filled; fields with no counterpart on the
+        # new type are dropped; internal bookkeeping fields (key, version,
+        # tags, collections, relations, creators, dateAdded, dateModified)
+        # are always preserved regardless of type.
+        carried: list[tuple[str, str]] = []
         if item_type is not None:
             old_item_type = data.get("itemType", "")
             if old_item_type != item_type:
@@ -3193,6 +3197,7 @@ def update_item(
                     target = _schema.resolve_field(item_type, base)
                     if target in new_fields and not reshaped.get(target):
                         reshaped[target] = v
+                        carried.append((k, target))
                 reshaped["itemType"] = item_type
                 data = reshaped
                 item["data"] = data
@@ -3329,7 +3334,14 @@ def update_item(
                 )
             else:
                 headline = f"Successfully updated item `{item_key}`:"
-            return f"{headline}\n\n" + "\n".join(changes) + skip_warning
+            carried_note = ""
+            if carried:
+                moves = ", ".join(f"{a} -> {b}" for a, b in carried)
+                carried_note = f"\n\nCarried over to the new type: {moves}"
+            return (
+                f"{headline}\n\n" + "\n".join(changes) + carried_note
+                + skip_warning
+            )
         return "Failed to update item: write operation returned failure"
 
     except ValueError as e:
