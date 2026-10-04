@@ -96,6 +96,16 @@ describe("session basics", () => {
     assert.equal(ofType(events, "turn_end")[0]!.stop, "max_tokens");
   });
 
+  it("StartOpts.path puts folders on the agent's PATH, so zotero-cli is found wherever it was installed", async () => {
+    const dump = join(tempDir("zmc-path-"), "env.json");
+    const { session } = await start({ path: ["/opt/zc/bin", "/opt/second/bin"], env: { MOCK_DUMP: dump } });
+    const dirs: string[] = JSON.parse(readFileSync(dump, "utf8")).env.PATH.split(":");
+    assert.ok(dirs.includes("/opt/zc/bin") && dirs.includes("/opt/second/bin"), "both folders are on the PATH");
+    assert.ok(dirs.indexOf("/opt/zc/bin") < dirs.indexOf("/opt/second/bin"), "in the order given");
+    assert.ok(dirs.indexOf("/opt/zc/bin") < dirs.indexOf("/usr/bin"), "ahead of the system folders");
+    await session.close();
+  });
+
   it("an ephemeral session asks Claude not to persist it; a normal one does not", async () => {
     const dump = join(tempDir("zmc-new-"), "new.json");
     const { session } = await start({ ephemeral: true, env: { MOCK_NEW_DUMP: dump } });

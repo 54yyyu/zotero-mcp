@@ -113,6 +113,8 @@ export interface StartOpts {
    * exported for other tools cannot silently turn a subscription chat into API billing. "api-key" leaves env alone.
    */
   auth?: "subscription" | "api-key";
+  /** Folders put first on the agent's PATH: where zotero-cli lives when the login PATH lacks it (`~/.local/bin` right after the plugin installed it). */
+  path?: string[];
   /** A throwaway session (reading a catalog): the backend is asked not to keep it. Claude honours that; Codex and pi cannot, so their probe leaves one small session file. */
   ephemeral?: boolean;
   /** Extra environment for the bridge, e.g. ANTHROPIC_API_KEY for API mode. */

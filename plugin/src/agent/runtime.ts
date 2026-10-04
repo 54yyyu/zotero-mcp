@@ -100,7 +100,8 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
     async start(start: StartOpts): Promise<AgentSession> {
       const spec = backendOf(start.backend);
       const login = await spawner.baseEnv();
-      const env = start.auth === "subscription" ? stripApiKeys(login, spec.apiKeyVars) : login;
+      const keyed = start.auth === "subscription" ? stripApiKeys(login, spec.apiKeyVars) : login;
+      const env = (start.path ?? []).reduceRight((e, dir) => withPathFirst(e, dir), keyed);
       const node = await resolveNode(env);
       if (!node) throw new Error(NODE_MISSING);
       const bridge = await ensureBridge({ spawner, env, node, bridgeDir, spec, ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) });
