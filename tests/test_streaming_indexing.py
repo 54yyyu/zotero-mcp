@@ -86,6 +86,9 @@ class FakeStreamingChromaClient:
     def delete_item_chunks(self, item_key, group_id=None):
         self.deleted_item_keys.append(item_key)
 
+    def prune_item_chunks(self, item_key, keep):
+        self.deleted_item_keys.append(item_key)
+
     def upsert_documents(self, documents, metadatas, ids):
         self.document_batches.append((list(documents), list(metadatas), list(ids)))
 
@@ -447,6 +450,7 @@ def test_chunked_streaming_keeps_accounting_per_item(monkeypatch):
     assert chroma.embedding_batches, "streaming path did not run"
     assert stats["updated_items"] == 1
     assert stats["added_items"] == 5
+    # Stale tail pruned after the write (#610).
     assert "ITEM0000" in chroma.deleted_item_keys
 
     committed = committed_ids(chroma)
