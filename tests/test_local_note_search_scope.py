@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from tests._search_corpus import SCHEMA
+from _search_corpus import SCHEMA
 from zotero_mcp import client as _client
 from zotero_mcp import server
 from zotero_mcp.local_db import LocalZoteroReader
