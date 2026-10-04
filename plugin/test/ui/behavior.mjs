@@ -243,6 +243,14 @@ await test("settings: switches save at once; Enter-to-send changes the composer'
   assert.equal(await p.locator(".ubub__text").first().innerText(), "first\nsecond");
 });
 
+await test("a tool step reads as what it does; the raw command stays in the tooltip", async (p) => {
+  await send(p, "compare");
+  await done(p);
+  const title = p.locator(".step__title").first();
+  assert.equal(await title.innerText(), "Search library for “hiring discrimination audit”");
+  assert.equal(await title.getAttribute("title"), 'cd /Users/you/Documents && zotero-cli --json search "hiring discrimination audit" --limit 10');
+});
+
 await test("settings: hiding the thinking and expanding tool steps apply to what is already shown", async (p) => {
   await send(p, "compare");
   await done(p);

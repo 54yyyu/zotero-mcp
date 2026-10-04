@@ -4,6 +4,7 @@ import type { PermissionOption, ToolKind, ZoteroRef } from "../types.ts";
 import type { AssistantMessage, Block, PlanEntry } from "./transcript.ts";
 import { MdView, pretty } from "./mdview.ts";
 import { h, icon, setKids, unwrapTicks } from "./dom.ts";
+import { stepTitle } from "./steptitle.ts";
 import type { IconName } from "./dom.ts";
 
 export interface MsgActions {
@@ -126,13 +127,15 @@ export function stepsSeg(): SegView {
   function row(b: Of<"tool">): HTMLElement {
     const opened = isOpen(b.id);
     const hasDetail = b.input !== undefined || !!b.output;
+    const raw = unwrapTicks(b.title);
+    const shown = stepTitle(raw);
     const btn = h("button.step__row", {
       type: "button", "aria-expanded": hasDetail ? String(opened) : null, disabled: hasDetail ? null : true,
       onclick: () => { toggled.set(b.id, !isOpen(b.id)); paint(); },
     },
       h("span.step__icon", null, icon(TOOL_ICON[b.kind] ?? "dot")),
       b.name ? h("span.step__name", null, b.name) : null,
-      h("span.step__title", null, unwrapTicks(b.title) || "Working"),
+      h("span.step__title", { title: raw && shown !== raw ? raw : null }, shown || "Working"),
       statusMark(b.status, stopped),
       hasDetail ? icon("chevDown", "step__chev") : null);
     const kids: HTMLElement[] = [btn];

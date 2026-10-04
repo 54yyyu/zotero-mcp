@@ -188,7 +188,7 @@ class FakeSession implements AgentSession {
 
     await this.stream(turn, "thought", "The user asks about hiring discrimination. I should search the library for audit studies, then read the callback table in the open paper before answering.");
     await this.stream(turn, "text", "I'll look for related research in your library first. ");
-    const search = { t: "tool", turn, id: "t1", name: "Bash", title: "Searched library · “hiring discrimination audit”", kind: "search" } as const;
+    const search = { t: "tool", turn, id: "t1", name: "Bash", title: "cd /Users/you/Documents && zotero-cli --json search \"hiring discrimination audit\" --limit 10", kind: "search" } as const;
     const read = { t: "tool", turn, id: "t2", name: "Read", title: "Read Bertrand and Mullainathan 2004 · pp. 6-9", kind: "read" } as const;
     this.emit({ ...search, status: "running", input: { query: "hiring discrimination audit", limit: 10 } });
     await sleep(this.sim.speed ? 350 : 0);
