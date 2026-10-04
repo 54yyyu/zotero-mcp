@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`zotero_batch_update` applies Extra edits to the items it selected** (#640). With both tag and Extra actions and a `tag`/`query` selector, the Extra half re-ran the search after the tag half had already edited tags, so `tag='to-read', remove_tags=['to-read'], set_keys={...}` removed the tag and then reported "No items found" for the Extra edits, which were never written. The selection is now resolved once and shared.
+### Fixed
+
+- **CSL JSON import keeps name particles and suffixes** (#639). Names exported with `non-dropping-particle`, `dropping-particle` or `suffix` (Better BibTeX, citation.js) lost them, so "van der Maaten" was stored as "Maaten". They are now folded into the last and first names.
 
 ## [0.13.2] - 2026-10-04
 
