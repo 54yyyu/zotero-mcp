@@ -8,16 +8,16 @@ embedding requests into Batch-API-sized chunk files.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import math
 import os
-import tempfile
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from zotero_mcp.utils import write_json_atomic
 
 # ---------------------------------------------------------------------------
 # Normalized batch-job state vocabulary
@@ -175,22 +175,12 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def save_manifest(manifest: dict[str, Any]) -> None:
-    manifest_path = Path(manifest["manifest_path"])
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     # Rewritten on every status refresh and import, and it is the only local
-    # record of a paid provider batch. Write a temp file and rename it, so a
-    # crash or a full disk mid-write leaves the previous manifest instead of
-    # a truncated one that _sorted_manifests then skips as unreadable.
-    fd, tmp = tempfile.mkstemp(prefix=".manifest.", suffix=".tmp", dir=manifest_path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
-        os.replace(tmp, manifest_path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-    _private_chmod(manifest_path)
+    # record of a paid provider batch. write_json_atomic writes a temp file and
+    # renames it, so a crash or a full disk mid-write leaves the previous
+    # manifest instead of a truncated one that _sorted_manifests then skips as
+    # unreadable. The file and its directory are owner-only.
+    write_json_atomic(Path(manifest["manifest_path"]), manifest)
 
 
 def load_manifest(path: Path) -> dict[str, Any]:

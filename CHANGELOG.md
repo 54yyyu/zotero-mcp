@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A failed batch-manifest save no longer loses the run** (#646). The manifest of an OpenAI/Gemini Batch API run, its only local record, was rewritten in place on every status refresh and import, so a crash or a full disk mid-write left truncated JSON. That run then disappeared from status and import, and an older run was treated as the newest. Manifests are now written to a temp file and renamed.
+- **A failed batch-manifest save no longer loses the run** (#646). The manifest of an OpenAI/Gemini Batch API run, its only local record, was rewritten in place on every status refresh and import, so a crash or a full disk mid-write left truncated JSON. That run then disappeared from status and import, and an older run was treated as the newest. Manifests are now written to a temp file and renamed. The full-text cache index now uses the same writer, which also removes a fixed temp file name that concurrent writers shared.
 
 ## [0.13.2] - 2026-10-04
 
