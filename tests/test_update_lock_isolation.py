@@ -7,7 +7,6 @@ test_streaming_indexing + test_sync_watermark_per_library with the real
 lock held).
 """
 
-import fcntl
 from pathlib import Path
 
 import pytest
@@ -27,6 +26,7 @@ def test_default_lock_path_is_unchanged_for_users(monkeypatch):
 
 
 def test_a_held_real_lock_does_not_affect_tests(tmp_path, monkeypatch):
+    fcntl = pytest.importorskip("fcntl")  # POSIX only; Windows has no flock
     # Hold a lock at the real path's name, but in a fake home, and check
     # update_database's lock acquisition uses the per-test path instead.
     fake_home = tmp_path / "home"
