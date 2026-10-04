@@ -7,6 +7,7 @@ and import, and an older run became "newest".
 """
 
 import json
+import sys
 
 import pytest
 
@@ -45,4 +46,5 @@ def test_save_round_trips_and_is_owner_only(tmp_path):
     batch_common.save_manifest(m)
     path = tmp_path / "run1" / "manifest.json"
     assert batch_common.load_manifest(path)["run_id"] == "run1"
-    assert path.stat().st_mode & 0o077 == 0
+    if sys.platform != "win32":  # POSIX file modes do not exist on Windows
+        assert path.stat().st_mode & 0o077 == 0
