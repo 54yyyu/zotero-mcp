@@ -2627,9 +2627,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             with tempfile.TemporaryDirectory() as tmpdir:
                 filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
                 filepath = os.path.join(tmpdir, filename)
-                with open(filepath, "wb") as f:
-                    for chunk in pdf_resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                _helpers._stream_pdf_download(pdf_resp, filepath)
                 webdav_suffix = _helpers._webdav_first_attach(
                     write_zot,
                     filename,
@@ -4980,9 +4978,10 @@ def _attach_from_url(write_zot, item_key, url, filename, ctx):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = os.path.join(tmpdir, filename)
-        with open(filepath, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+        try:
+            _helpers._stream_pdf_download(resp, filepath)
+        except _helpers.PdfDownloadError as e:
+            return f"Error: {e}."
         if os.path.getsize(filepath) < 1000:
             return (
                 "Error: Downloaded file is under 1 KB — likely an error "
