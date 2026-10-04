@@ -710,7 +710,16 @@ _LEGACY_SNAPSHOT_MAX_AGE = 7 * 24 * 3600
 _swept_stale_snapshots = False
 
 
+_IS_WINDOWS = os.name == "nt"
+
+
 def _pid_alive(pid: int) -> bool:
+    if _IS_WINDOWS:
+        # os.kill(pid, 0) is not a liveness probe on Windows: signal 0 equals
+        # CTRL_C_EVENT there, so it can send Ctrl+C to processes on the
+        # console, and a failure is a generic OSError. Say "alive" and let the
+        # sweep fall back to the age rule.
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -747,7 +756,13 @@ def _sweep_stale_snapshots() -> None:
         owner = name[len(_SNAPSHOT_PREFIX):].split("_", 1)[0]
         try:
             if owner.isdigit() and "_" in name[len(_SNAPSHOT_PREFIX):]:
-                if int(owner) == os.getpid() or _pid_alive(int(owner)):
+                pid = int(owner)
+                if pid == os.getpid():
+                    continue
+                # Where liveness cannot be probed (Windows) only old copies go.
+                if _pid_alive(pid) and not (
+                    _IS_WINDOWS and now - os.path.getmtime(path) >= _LEGACY_SNAPSHOT_MAX_AGE
+                ):
                     continue
             elif now - os.path.getmtime(path) < _LEGACY_SNAPSHOT_MAX_AGE:
                 continue

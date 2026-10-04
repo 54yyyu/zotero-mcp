@@ -9,6 +9,7 @@ reproduce that with a writer holding the same kind of lock Zotero holds.
 
 import os
 import sqlite3
+import sys
 
 import pytest
 
@@ -315,6 +316,7 @@ def test_snapshot_dir_names_its_process(zotero_like_db):
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot probe pid liveness; only old copies are swept")
 def test_copy_left_by_a_killed_process_is_removed(zotero_like_db):
     orphan = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_abcd1234")
     local_db._wal_snapshot_path(str(zotero_like_db[0]))
@@ -358,3 +360,17 @@ def test_unrelated_temp_entries_are_untouched(zotero_like_db):
     _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_abcd1234")
     local_db._wal_snapshot_path(str(zotero_like_db[0]))
     assert os.path.exists(other)
+
+
+def test_windows_never_probes_pids_and_sweeps_by_age_only(zotero_like_db, monkeypatch):
+    """os.kill(pid, 0) sends CTRL_C_EVENT on Windows, so it must not be called there."""
+    def no_kill(*a, **k):
+        raise AssertionError("os.kill must not be used as a liveness probe on Windows")
+
+    monkeypatch.setattr(local_db, "_IS_WINDOWS", True)
+    monkeypatch.setattr(local_db.os, "kill", no_kill)
+    fresh = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_abcd1234")
+    old = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_old12345", age=8 * 24 * 3600)
+    local_db._wal_snapshot_path(str(zotero_like_db[0]))
+    assert os.path.exists(fresh)  # cannot tell it is dead, so it stays while young
+    assert not os.path.exists(old)
