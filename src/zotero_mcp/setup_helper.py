@@ -613,6 +613,12 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
     env_settings = {
         "ZOTERO_LOCAL": "true" if local else "false"
     }
+    # Setup changes the Zotero connection, not HTTP authentication. Preserve
+    # even an invalid value so the serve-time validator can reject it safely.
+    existing_zotero = config["mcpServers"].get("zotero", {})
+    existing_env = existing_zotero.get("env", {}) if isinstance(existing_zotero, dict) else {}
+    if isinstance(existing_env, dict) and "ZOTERO_MCP_AUTH_TOKEN" in existing_env:
+        env_settings["ZOTERO_MCP_AUTH_TOKEN"] = existing_env["ZOTERO_MCP_AUTH_TOKEN"]
 
     # Add API key and library settings for web API
     if not local:
@@ -693,6 +699,9 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
     client_env = {
         "ZOTERO_LOCAL": "true" if local else "false"
     }
+    existing_env = full.get("client_env", {})
+    if isinstance(existing_env, dict) and "ZOTERO_MCP_AUTH_TOKEN" in existing_env:
+        client_env["ZOTERO_MCP_AUTH_TOKEN"] = existing_env["ZOTERO_MCP_AUTH_TOKEN"]
     # Persist global guard to disable Claude detection/output if requested
     if no_claude:
         client_env["ZOTERO_NO_CLAUDE"] = "true"
@@ -846,7 +855,7 @@ def main(cli_args=None):
             )
             print("\nSetup complete (standalone/web mode)!")
             print(f"Config saved to: {cfg_path}")
-            # Emit one-line client_env for easy copy/paste. Mask the API key
+            # Emit one-line client_env for easy copy/paste. Mask credentials
             # by default — single-line JSON is exactly what gets pasted into
             # bug reports / shared terminals; only print it in full on request.
             try:
@@ -857,15 +866,13 @@ def main(cli_args=None):
                 if show_secrets:
                     display_env = client_env
                 else:
-                    display_env = dict(client_env)
-                    if display_env.get("ZOTERO_API_KEY"):
-                        display_env["ZOTERO_API_KEY"] = _obfuscate_sensitive(
-                            display_env["ZOTERO_API_KEY"]
-                        )
+                    from zotero_mcp.cli import obfuscate_config_for_display
+
+                    display_env = obfuscate_config_for_display(client_env)
                 print("Client environment (single-line JSON):")
                 print(json.dumps(display_env, separators=(',', ':')))
-                if not show_secrets and client_env.get("ZOTERO_API_KEY"):
-                    print("  (API key masked — re-run with --show-secrets to print it in full)")
+                if not show_secrets and display_env != client_env:
+                    print("  (Secrets masked — re-run with --show-secrets to print them in full)")
             except Exception:
                 pass
             if semantic_config_changed:

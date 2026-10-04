@@ -59,7 +59,10 @@ def obfuscate_config_for_display(config):
 
     obfuscated = config.copy()
     for key in list(obfuscated):
-        if _is_sensitive_key(key):
+        if key == "ZOTERO_MCP_AUTH_TOKEN":
+            # Also hide invalid non-string values that HTTP startup rejects.
+            obfuscated[key] = "********"
+        elif _is_sensitive_key(key):
             obfuscated[key] = obfuscate_sensitive_value(obfuscated[key])
     return obfuscated
 
@@ -108,10 +111,14 @@ def load_standalone_env_vars():
         return {}
 
 
-def apply_environment_variables(env_vars):
+def apply_environment_variables(env_vars, *, validate_http_auth=False):
     """Apply environment variables to current process."""
     for key, value in env_vars.items():
         if key not in os.environ:  # Don't override existing env vars
+            if validate_http_auth and key == "ZOTERO_MCP_AUTH_TOKEN":
+                from zotero_mcp._http_auth import validate_auth_token
+
+                validate_auth_token(value)
             os.environ[key] = str(value)
 
 
@@ -418,11 +425,11 @@ def _print_batch_import(stats: dict, provider: str = "openai") -> None:
             print(f"- ... {len(stats['errors']) - 20} more")
 
 
-def setup_zotero_environment():
+def setup_zotero_environment(*, validate_http_auth=False):
     """Setup Zotero environment for CLI commands."""
     # Load standalone env first so global flags (e.g., ZOTERO_NO_CLAUDE) take effect
     standalone_env_vars = load_standalone_env_vars()
-    apply_environment_variables(standalone_env_vars)
+    apply_environment_variables(standalone_env_vars, validate_http_auth=validate_http_auth)
 
     # Respect global switch to disable Claude detection
     no_claude = str(os.environ.get("ZOTERO_NO_CLAUDE", "")).lower() in ("1", "true", "yes")
@@ -430,7 +437,7 @@ def setup_zotero_environment():
     # Load and apply Claude Desktop env unless disabled
     if not no_claude:
         claude_env_vars = load_claude_desktop_env_vars()
-        apply_environment_variables(claude_env_vars)
+        apply_environment_variables(claude_env_vars, validate_http_auth=validate_http_auth)
 
     # Apply fallback defaults for local Zotero if no config found.
     # Only apply when no API key is configured — if an API key exists,
@@ -633,13 +640,18 @@ def main():
     server_parser.add_argument(
         "--host",
         default="localhost",
-        help="Host to bind to for SSE transport (default: localhost)",
+        help="Host to bind to for HTTP transports (default: localhost)",
     )
     server_parser.add_argument(
         "--port",
         type=int,
         default=8000,
-        help="Port to bind to for SSE transport (default: 8000)",
+        help="Port to bind to for HTTP transports (default: 8000)",
+    )
+    server_parser.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="Allow HTTP on a non-loopback host without authentication (unsafe)",
     )
 
     # Setup command
@@ -1378,7 +1390,16 @@ def main():
         # Get transport with a default value if not specified
         transport = getattr(args, "transport", "stdio")
         # Ensure environment is initialized (Claude config or standalone config)
-        setup_zotero_environment()
+        try:
+            setup_zotero_environment(validate_http_auth=transport != "stdio")
+            if transport != "stdio":
+                from zotero_mcp._http_auth import configure_http_auth
+
+                configure_http_auth(
+                    mcp, args.host, allow_unauthenticated=args.allow_unauthenticated,
+                )
+        except ValueError as e:
+            server_parser.error(str(e))
         # Re-apply the toolset profile now that the transport is known. The
         # import-time call in server.py assumed stdio; an HTTP transport also
         # needs the ChatGPT connector tools. setup_zotero_environment() runs

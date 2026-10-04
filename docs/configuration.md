@@ -90,6 +90,12 @@ rather than opening a dialog that can't help.
 
 Environment variables set in the shell you launch a client from (for example `claude`) override the values in its config file.
 
+**HTTP authentication:**
+
+- `ZOTERO_MCP_AUTH_TOKEN`: Shared bearer token required by the `streamable-http`
+  and `sse` transports when configured. It does not affect `stdio`. See
+  [HTTP authentication and network access](#http-authentication-and-network-access).
+
 **Semantic search** (see [Semantic search](semantic-search.md)):
 - `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini, ollama)
 - `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
@@ -179,6 +185,82 @@ libraries is two items, and collapsing them would hide where each copy lives.
 - `ZOTERO_MCP_SCHEMA_CACHE`: Custom path for the refreshed schema cache
   (default: `~/.cache/zotero-mcp/schema.json`).
 
+## HTTP authentication and network access
+
+Set `ZOTERO_MCP_AUTH_TOKEN` before starting an HTTP server. Clients must send the
+same value in the `Authorization: Bearer <token>` header. This token controls
+access to Zotero MCP; it is separate from the Zotero web API key and local write
+authorization.
+
+Generate a token once and make the same value available to the server and each
+authorized client. For example, in Bash:
+
+```bash
+export ZOTERO_MCP_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+zotero-mcp serve --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+Or in PowerShell:
+
+```powershell
+$env:ZOTERO_MCP_AUTH_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
+zotero-mcp serve --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+These commands set the token for the current terminal and its child processes.
+Another terminal or a GUI client needs the same token supplied separately; do
+not generate a different value for each client.
+
+Alternatively, merge the following entry into the existing `client_env` object
+in `~/.config/zotero-mcp/config.json`, replacing the example value with your
+generated token and preserving the other settings:
+
+```json
+{
+  "client_env": {
+    "ZOTERO_MCP_AUTH_TOKEN": "REPLACE_WITH_YOUR_GENERATED_TOKEN"
+  }
+}
+```
+
+The process environment takes precedence over this saved value. Values loaded
+from an existing `.env` file also precede the standalone config; legacy Claude
+Desktop environment settings are used only when neither supplies a value. There is no
+`--token` argument or interactive token prompt during `serve`. Protect a config
+file containing the token as a secret, and do not commit it to version control.
+Restart the server and update its clients when rotating the token.
+
+An explicitly empty or invalid token is an HTTP startup configuration error;
+remove it from the environment and any config source supplying it to disable it.
+Use a generated token without spaces.
+When set, `ZOTERO_MCP_AUTH_TOKEN` takes precedence over an existing FastMCP
+authentication provider. When absent, that provider remains in effect.
+
+When neither a token nor an existing FastMCP authentication provider is
+configured, the HTTP transports behave as follows:
+
+| Bind address | Startup behavior |
+|---|---|
+| Loopback, such as `localhost`, `127.0.0.1`, or `::1` | Starts with one warning that authentication is disabled. |
+| Non-loopback, such as `0.0.0.0`, `::`, or a LAN address | Refuses to start unless `--allow-unauthenticated` is explicitly supplied. |
+
+`--allow-unauthenticated` permits an intentionally unauthenticated network
+listener; it does not disable a configured token. Use it only when access is
+controlled separately. A reverse proxy or tunnel can expose even a loopback
+listener, so the bind-address check does not make a public tunnel safe.
+
+A valid token gives access to all enabled tools with the running server's
+permissions, including writes if Zotero write access is configured. This is a
+shared secret, with no per-user identity or scopes. Use HTTPS for connections
+outside the local machine; bearer authentication does not encrypt traffic.
+Never put the token in a URL. An MCP session ID, including an SSE `session_id`,
+identifies a session and provides no authentication.
+
+Prefer `streamable-http` at `/mcp`; the deprecated `sse` transport requires the
+same bearer header on its requests. Local `stdio` clients continue to work
+without HTTP authentication. See [authenticated client examples](getting-started.md#authenticated-http-clients)
+and the [ChatGPT tunnel setup](getting-started.md#integrating-with-openais-chatgpt).
+
 ## Text extraction settings
 
 PDFs are parsed with [pdf-inspector](https://github.com/firecrawl/pdf-inspector), which produces Markdown with the document's heading structure intact. These keys live under `semantic_search.extraction` in `~/.config/zotero-mcp/config.json`:
@@ -217,6 +299,12 @@ zotero-mcp serve
 
 # Specify transport method
 zotero-mcp serve --transport stdio|streamable-http|sse
+
+# HTTP network listener (set ZOTERO_MCP_AUTH_TOKEN first)
+zotero-mcp serve --transport streamable-http --host 0.0.0.0 --port 8000
+
+# Explicitly allow a network listener without a token (see access controls above)
+zotero-mcp serve --transport streamable-http --host 0.0.0.0 --allow-unauthenticated
 
 # Setup and configuration
 zotero-mcp setup --help                    # Get help on setup options
