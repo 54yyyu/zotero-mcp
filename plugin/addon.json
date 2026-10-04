@@ -1,0 +1,10 @@
+{
+  "name": "Zotero MCP Chat",
+  "id": "chat@zotero-mcp",
+  "slug": "zotero-chat",
+  "version": "0.1.0",
+  "description": "A chat panel in Zotero for your own AI agent (Claude Code, Codex, pi). It reads what you are reading and works your library through zotero-cli.",
+  "homepage": "https://github.com/54yyyu/zotero-mcp",
+  "updateUrl": "https://raw.githubusercontent.com/54yyyu/zotero-mcp/main/plugin/updates.json",
+  "minZotero": "7.0"
+}

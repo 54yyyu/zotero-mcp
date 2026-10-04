@@ -1,0 +1,25 @@
+// Every in-Zotero suite, in a throwaway Zotero each (see dev.mjs for the isolation rules).
+//   node scripts/test-zotero.mjs            no tokens spent
+//   ZMC_LIVE=1 node scripts/test-zotero.mjs also runs the live Claude test (a few hundred tokens)
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const suites = [
+  ["budget", []],
+  ["context", []],
+  ["host", []],
+  ["chat", ["--mock-agent"]],
+  ["ui", ["--mock-agent"]],
+  ["agent", []], // the real bridge's handshake: no prompt, no tokens
+  ...(process.env.ZMC_LIVE ? [["live", []]] : []),
+];
+let failed = 0;
+for (const [name, extra] of suites) {
+  const r = spawnSync("node", [join(root, "scripts", "dev.mjs"), "--script", `test/zotero/${name}.js`, "--build", ...extra], { cwd: root, encoding: "utf8" });
+  const ok = /"ok": true/.test(r.stdout);
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
+  if (!ok) { failed++; console.log((r.stdout + r.stderr).split("\n").filter((l) => /error|FAILED|dev:/.test(l)).slice(0, 6).join("\n")); }
+}
+process.exit(failed ? 1 : 0);
