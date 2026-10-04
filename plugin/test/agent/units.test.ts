@@ -263,6 +263,16 @@ describe("workspace", () => {
     assert.deepEqual(install.args, ["install-skill", "--target", "claude", "--target", "agents", "--root", "/data/ws"]);
   });
 
+  it("the panel's own folder gets --force, so a newer skill replaces an old copy; any other folder does not", async () => {
+    const mk = () => recording((cmd, args) => (cmd === "/bin/sh" && args[1]!.includes("command -v") ? { code: 0, stdout: "/fake/bin/zotero-mcp\n" } : { code: 0, stdout: "" }));
+    const own = mk();
+    await prepareWorkspace(own.spawner, "/data/ws", { refresh: true });
+    assert.ok(own.calls.find((c) => c.args.includes("install-skill"))!.args.includes("--force"));
+    const theirs = mk();
+    await prepareWorkspace(theirs.spawner, "/data/ws");
+    assert.ok(!theirs.calls.find((c) => c.args.includes("install-skill"))!.args.includes("--force"));
+  });
+
   it("prefers the zotero-mcp beside the given zotero-cli, falls back to uv tool run", async () => {
     const bin = fakeBin({ "zotero-mcp": "exit 0", "zotero-cli": "exit 0" });
     const { spawner, calls } = recording((cmd, args) => {

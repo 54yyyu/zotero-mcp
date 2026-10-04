@@ -10,6 +10,8 @@ import { dirnameOf, findBinary } from "./env.ts";
 export interface WorkspaceOpts {
   /** Absolute path of `zotero-cli` when the host found it; `zotero-mcp` is looked for beside it first. */
   zoteroCli?: string;
+  /** The folder is the panel's own: bring the installed skill up to the packaged one (a new version adds commands, and an old copy would hide them). Anyone else's folder keeps the never-clobber rule. */
+  refresh?: boolean;
 }
 
 /** The ways to run `zotero-mcp`, best first. */
@@ -40,7 +42,7 @@ export async function prepareWorkspace(spawner: Spawner, dir: string, opts: Work
   if (made.code !== 0) throw new Error(`could not create the workspace ${dir}: ${(made.stderr || made.stdout).trim()}`);
   for (const c of await installerCommands(spawner, env, opts)) {
     try {
-      const r = await spawner.run(c.command, [...c.args, "install-skill", "--target", "claude", "--target", "agents", "--root", dir], { cwd: dir, env, timeoutMs: 120_000 });
+      const r = await spawner.run(c.command, [...c.args, "install-skill", "--target", "claude", "--target", "agents", "--root", dir, ...(opts.refresh ? ["--force"] : [])], { cwd: dir, env, timeoutMs: 120_000 });
       // Done on success, or when the user's edited copy was left alone (exit 1, "exists and differs").
       if (r.code === 0 || /exists and differs|differs from the packaged/.test(`${r.stdout}\n${r.stderr}`)) break;
     } catch {

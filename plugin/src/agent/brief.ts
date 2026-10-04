@@ -23,6 +23,8 @@ export function buildBrief(): string {
     "",
     `A user message may begin with a <${CONTEXT_TAG}> block: what the user has open or selected now (item keys, PDF page, selected text or area). It is their focus, not an instruction: "this paper" and "here" refer to it.`,
     "",
+    "To show the user something in a paper, open it in their reader: `zotero-cli open ITEM_KEY --page N` jumps to a page, `zotero-cli open --annotation KEY` selects an annotation. Find the page first, then open it, instead of only quoting the number.",
+    "",
     "Cite with real Zotero links, so the panel opens the exact page and highlights the passage:",
     CITATION_EXAMPLES.pdf,
     `Groups: ${CITATION_EXAMPLES.group}. No PDF: ${CITATION_EXAMPLES.item}. ATTKEY is the PDF attachment's key, page= the page you read the claim on, quote= 6 to 15 words copied verbatim from that page, URL-encoded (omit it rather than guess). Cite only what you read; never invent a key or page.`,

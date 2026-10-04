@@ -105,7 +105,7 @@ test("the shortcut reference follows the platform and the send key", () => {
 
 test("chat folder: choose saves it, use default clears it, a cancelled picker changes nothing; about() reports the folder in use", async () => {
   const h = host();
-  assert.equal(h.about().workspace, "/Users/you/Documents/Zotero Chat");
+  assert.equal(h.about().workspace, "/Users/you/Documents/Zotero-Chat");
   const picked = await h.chooseFolder(h.about().workspace);
   assert.ok(picked);
   await h.setSettings(setFolder(picked));
@@ -115,7 +115,7 @@ test("chat folder: choose saves it, use default clears it, a cancelled picker ch
   assert.equal(await h.chooseFolder(), null);
   assert.equal(h.getSettings().chatFolder, picked);
   await h.setSettings(setFolder(""));
-  assert.equal(h.about().workspace, "/Users/you/Documents/Zotero Chat");
+  assert.equal(h.about().workspace, "/Users/you/Documents/Zotero-Chat");
 });
 
 test("a path is shortened in the middle, keeping the start and the last folder", () => {
@@ -137,7 +137,7 @@ test("resume commands per backend, with the folder quoted for the shell", async 
 
 test("prepareSession takes the saved chat's folder, else the setting", async () => {
   const h = host();
-  assert.equal((await h.prepareSession()).cwd, "/Users/you/Documents/Zotero Chat");
+  assert.equal((await h.prepareSession()).cwd, "/Users/you/Documents/Zotero-Chat");
   assert.equal((await h.prepareSession("/some/old/folder")).cwd, "/some/old/folder");
   await h.setSettings(setFolder("/new/folder"));
   assert.equal((await h.prepareSession()).cwd, "/new/folder");

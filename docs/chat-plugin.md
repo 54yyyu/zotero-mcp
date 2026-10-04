@@ -61,12 +61,12 @@ The panel opens and closes from the toolbar button, or with Cmd+Option+L (Ctrl+A
 
 ## The chat folder, and continuing a chat in a terminal
 
-Every chat is a normal agent session that runs in a folder, by default `~/Documents/Zotero Chat`. The panel installs the `zotero-cli` skill there (under `.claude/skills` and `.agents/skills`, plus a marked block in `AGENTS.md`; it only changes what it marked, so if you pick a folder you already use, the rest of your files are left alone). Change the folder in the settings; it applies to new chats. Each chat remembers the folder it started in, so changing the setting never breaks an old one.
+Every chat is a normal agent session that runs in a folder, by default `~/Documents/Zotero-Chat`. The panel installs the `zotero-cli` skill there (under `.claude/skills` and `.agents/skills`, plus a marked block in `AGENTS.md`; it only changes what it marked, so if you pick a folder you already use, the rest of your files are left alone). Change the folder in the settings; it applies to new chats. Each chat remembers the folder it started in, so changing the setting never breaks an old one.
 
 Because the agent keeps the session itself, you can continue a chat from a terminal. In the history list, **Copy terminal command** gives you the right command for that chat, for example:
 
 ```bash
-cd '/Users/you/Documents/Zotero Chat' && claude --resume <session id>
+cd '/Users/you/Documents/Zotero-Chat' && claude --resume <session id>
 ```
 
 Codex uses `codex resume <session id>` and pi uses `pi --session <session id>`. Two things to know: do not run the same chat in the panel and in a terminal at the same time, and what you add in the terminal does not show up in the panel's history list (the panel keeps its own copy of the conversation; the agent's context has it).

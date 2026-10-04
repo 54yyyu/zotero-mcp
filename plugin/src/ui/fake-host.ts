@@ -53,7 +53,7 @@ interface Sim {
   closed: number;
 }
 
-const DEFAULT_FOLDER = "/Users/you/Documents/Zotero Chat";
+const DEFAULT_FOLDER = "/Users/you/Documents/Zotero-Chat";
 const CITE = (k: string, p: number) => `zotero://open-pdf/library/items/${k}?page=${p}`;
 
 const SAMPLE_ANSWER = `Based on **Bertrand and Mullainathan (2004)** and the follow-ups in your library, the callback gap largely persists.

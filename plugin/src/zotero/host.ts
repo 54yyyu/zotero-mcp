@@ -22,7 +22,7 @@ export interface HostBundle {
 
 export function createHost(opts: { id: string; version: string; win: any; dataDir: string }): HostBundle {
   const { win, dataDir } = opts;
-  // Where chats run. Visible and predictable (~/Documents/Zotero Chat) rather than buried in the profile, so a chat can
+  // Where chats run. Visible and predictable (~/Documents/Zotero-Chat) rather than buried in the profile, so a chat can
   // be continued from a terminal; the user can point it anywhere in the settings.
   // ZMC_DEFAULT_CHAT_FOLDER is for the test harness, which must never write into the real home.
   const defaultFolder = (): string => {
@@ -30,7 +30,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     if (forced) return forced;
     const home = Services.dirsvc.get("Home", Ci.nsIFile);
     const docs = home.clone(); docs.append("Documents");
-    return PathUtils.join(docs.exists() ? docs.path : home.path, "Zotero Chat");
+    return PathUtils.join(docs.exists() ? docs.path : home.path, "Zotero-Chat");
   };
   const chatFolder = () => settings().chatFolder || defaultFolder();
   const spawner = createGeckoSpawner();
@@ -115,7 +115,8 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       const env = await spawner.baseEnv();
       const zoteroCli = await findCli(spawner, env);
       // A chat being resumed runs in the folder it started in; agents look a session up by its folder.
-      const cwd = await prepareWorkspace(spawner, resumeIn || chatFolder(), zoteroCli ? { zoteroCli } : {});
+      const dir = resumeIn || chatFolder();
+      const cwd = await prepareWorkspace(spawner, dir, { ...(zoteroCli ? { zoteroCli } : {}), refresh: dir === defaultFolder() });
       const s = settings();
       const key = s.auth[s.backend] === "api-key" ? await keychain.getApiKey(s.backend) : null;
       const varName = keychain.API_KEY_ENV[s.backend];

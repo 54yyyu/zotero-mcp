@@ -105,7 +105,7 @@ async function main(ctx) {
   Services.env.set("ZMC_DEFAULT_CHAT_FOLDER", "");
   const realDefault = host.about().workspace;
   Services.env.set("ZMC_DEFAULT_CHAT_FOLDER", defaultFolder);
-  check(/\/Zotero Chat$/.test(realDefault) && !realDefault.includes("zotero-chat/workspace") && !realDefault.includes("/Profiles/"), "the real default is visible and predictable, not buried in the profile: " + realDefault);
+  check(/\/Zotero-Chat$/.test(realDefault) && !realDefault.includes("zotero-chat/workspace") && !realDefault.includes("/Profiles/"), "the real default is visible and predictable, not buried in the profile: " + realDefault);
   const customFolder = PathUtils.join(Zotero.getTempDirectory().path, "my-chat-folder");
   await host.setSettings({ chatFolder: customFolder });
   check(host.about().workspace === customFolder, "setting changes where chats run");
