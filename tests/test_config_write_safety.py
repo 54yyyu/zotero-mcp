@@ -8,6 +8,7 @@ erased everything else in the file.
 """
 
 import json
+import sys
 import threading
 
 import pytest
@@ -57,6 +58,7 @@ def test_valid_config_keeps_the_other_sections(tmp_path, save):
     assert saved["semantic_search"]["embedding_model"] == "openai"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes do not exist on Windows")
 def test_saves_are_owner_only(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(json.dumps(FULL))
