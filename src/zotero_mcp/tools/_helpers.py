@@ -872,6 +872,27 @@ def _normalize_str_list_input(value, field_name="value"):
     raise ValueError(f"{field_name} must be a list of strings or a string")
 
 
+def _apply_tag_changes(existing, add=None, remove=None):
+    """Return a new tag list: *existing* kept verbatim (incl. ``type``),
+    names in *remove* dropped, and *add* tags not already present appended.
+
+    *add* is a list of tag dicts (``{"tag": name}``, optionally with
+    ``type``); *remove* an iterable of names. Never rebuilds existing tags from their names,
+    which would silently turn automatic (type 1) tags into manual ones.
+    """
+    remove_set = set(remove or ())
+    result = [
+        dict(t) for t in (existing or [])
+        if isinstance(t, dict) and t.get("tag") not in remove_set
+    ]
+    present = {t.get("tag") for t in result}
+    for t in add or ():
+        if t["tag"] not in present and t["tag"] not in remove_set:
+            result.append(dict(t))
+            present.add(t["tag"])
+    return result
+
+
 def _normalize_tag_filter(value):
     """Normalize a tag-filter argument into a list[str] for pyzotero.
 

@@ -3239,16 +3239,17 @@ def update_item(
             data["tags"] = [{"tag": t} for t in tag_list]
             changes.append(f"- **tags**: replaced with {tag_list}")
         elif add_tags is not None or remove_tags is not None:
-            existing = {t["tag"] for t in data.get("tags", [])}
+            to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
+            to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
+            # Existing tag dicts are kept verbatim so automatic (type 1)
+            # tags stay automatic.
+            data["tags"] = _helpers._apply_tag_changes(
+                data.get("tags", []), [{"tag": t} for t in to_add], to_remove
+            )
             if add_tags is not None:
-                to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
-                existing.update(to_add)
                 changes.append(f"- **tags**: added {to_add}")
             if remove_tags is not None:
-                to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
-                existing -= to_remove
                 changes.append(f"- **tags**: removed {list(to_remove)}")
-            data["tags"] = [{"tag": t} for t in sorted(existing)]
 
         # Collections — REPLACE membership (matches tags semantics and the
         # docstring contract). For incremental moves use
@@ -3691,9 +3692,19 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
     all_collections = set(keeper_data.get("collections", []))
     total_children_to_move = 0
 
+    # One tag object per name from the duplicates, so a tag copied to the
+    # keeper keeps its type. If the duplicates disagree, manual (type 0) wins:
+    # "Delete Automatic Tags" never removes a manual tag.
+    dup_tag_objects: dict[str, dict] = {}
     for dup in duplicates:
         dup_data = dup["item"].get("data", {})
-        all_tags.update(t.get("tag", "") for t in dup_data.get("tags", []))
+        for t in dup_data.get("tags", []):
+            name = t.get("tag", "")
+            all_tags.add(name)
+            if t.get("type"):
+                dup_tag_objects.setdefault(name, {"tag": name, "type": t["type"]})
+            else:
+                dup_tag_objects[name] = {"tag": name}
         all_collections.update(dup_data.get("collections", []))
         total_children_to_move += len(dup["children"])
 
@@ -3721,6 +3732,7 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         "dup_keys": list(dup_keys),
         "all_tags": all_tags,
         "new_tags": all_tags - keeper_tags,
+        "dup_tag_objects": dup_tag_objects,
         "new_collections": all_collections - set(keeper_data.get("collections", [])),
         "children_to_move": total_children_to_move - skipped_attachment_count,
         "skipped_attachment_count": skipped_attachment_count,
@@ -3765,8 +3777,11 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
 
     if plan["new_tags"]:
         keeper_data = keeper.get("data", {})
-        existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
-        keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | plan["all_tags"])]
+        # Keep the keeper's tag dicts verbatim (automatic tags stay type 1).
+        keeper_data["tags"] = _helpers._apply_tag_changes(
+            keeper_data.get("tags", []),
+            [plan["dup_tag_objects"].get(t, {"tag": t}) for t in sorted(plan["new_tags"])],
+        )
         _helpers._strip_unwritable_fields(keeper)
         resp = write_zot.update_item(keeper)
         if not _helpers._handle_write_response(resp, ctx):
