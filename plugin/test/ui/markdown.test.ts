@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, collectSources, citeLabel, decodeEntities, mdToTree, parseZoteroUri, safeHref, safeImageSrc, walk } from "../../src/ui/markdown.ts";
+import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, collectSources, citeLabel, citeTitle, decodeEntities, mdToTree, parseZoteroUri, safeHref, safeImageSrc, walk } from "../../src/ui/markdown.ts";
 import type { MdNode } from "../../src/ui/markdown.ts";
 import { HOSTILE_SHAPES, XSS_CORPUS } from "./corpus.ts";
 
@@ -147,4 +147,28 @@ test("punctuation after a citation chip is glued to it", () => {
   assert.ok(wraps.every((w) => typeof w.kids?.[0] !== "string" && (w.kids?.[0] as { tag: string }).tag === "cite"));
   assert.equal(violation(t), null);
   assert.equal(collectSources(["see [A 2009, p.8](zotero://open-pdf/library/items/ABCD1234?page=8)."]).length, 1);
+});
+
+const Q = "zotero://open-pdf/library/items/ABCD1234?page=8&quote=white%20applicants%20were%20called%20back%20more";
+test("a quote rides on the citation link: parsed as plain text, shown as the chip's tooltip, the label unchanged", () => {
+  assert.deepEqual(parseZoteroUri(Q), { libraryID: 1, itemKey: "ABCD1234", page: 8, quote: "white applicants were called back more", action: "open-pdf" });
+  assert.equal(parseZoteroUri("zotero://open-pdf/library/items/ABCD1234?page=8&quote=a+b%22%3Cscript%3E")?.quote, 'a b"<script>');
+  assert.equal(citeTitle(Q), "“white applicants were called back more”");
+  assert.equal(citeTitle("zotero://open-pdf/library/items/ABCD1234?page=8"), "open-pdf/library/items/ABCD1234?page=8");
+  const cite = [...walk(mdToTree(`See [Pager 2009, p.8](${Q}).`))].find((n) => n.tag === "cite");
+  assert.deepEqual(cite, { tag: "cite", attrs: { href: Q }, kids: ["Pager 2009, p.8"] });
+});
+test("a quote cannot turn a link into anything else", () => {
+  for (const bad of ["zotero://open-pdf/library/items/ABCD1234?page=8&quote=a b", "zotero://open-pdf/library/items/ABCD1234?page=8&quote=a\tb", "javascript:alert(1)//zotero://x?quote=1"]) {
+    assert.equal(safeHref(bad), null, bad);
+  }
+  const tree = mdToTree("[x](zotero://open-pdf/library/items/ABCD1234?page=8&quote=%22%3E%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E)");
+  assert.equal(violation(tree), null);
+});
+test("sources: one row per item, pages once, the fold's link without the quote", () => {
+  const [s] = collectSources([`[P 2009, p.8](${Q}) and [P 2009, p.8](zotero://open-pdf/library/items/ABCD1234?page=8&quote=another%20passage%20on%20the%20same%20page) and [P 2009, p.9](zotero://open-pdf/library/items/ABCD1234?quote=x%20y&page=9)`]);
+  assert.equal(s?.href, "zotero://open-pdf/library/items/ABCD1234?page=8");
+  assert.deepEqual(s?.pages, [8, 9]);
+  assert.equal(collectSources(["[a](zotero://open-pdf/library/items/ABCD1234?quote=x%20y&page=9)"])[0]?.href, "zotero://open-pdf/library/items/ABCD1234?page=9");
+  assert.equal(collectSources(["[a](zotero://open-pdf/library/items/ABCD1234?quote=x%20y)"])[0]?.href, "zotero://open-pdf/library/items/ABCD1234");
 });

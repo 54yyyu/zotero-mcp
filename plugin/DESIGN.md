@@ -51,6 +51,9 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
   `Zotero.PDFWorker.renderAttachmentAnnotations(attachmentID)` if absent).
 - `Zotero.Reader.open(attachmentID, { pageLabel })` / `{ annotationID }` is how `zotero://open-pdf/...?page=N` links are followed.
 - State read out of the reader (`_internalReader._state.*`) lives in the reader window's JS compartment. Iterate it or `Array.from` it before calling array methods: `flatMap` on such an array hands back the callback's arrays wrapped instead of flattened (a chip arrived as `{"0": chip}`).
+- The PDF view's `navigate({ position: { pageIndex, rects } })` scrolls there and flashes the rects in the selection color for
+  2 s (`_highlightPosition`), no annotation. A page's glyphs are `view._pdfPages[i].chars` after `await view._ensureBasicPageData(i)`
+  (`c`, `rect`, `inlineRect`, `rotation`, `lineBreakAfter`, ...); `_lastView` can be the Reading Mode overlay, which has none.
 - Zotero's localized `firstCreator` carries invisible bidi isolates ("⁨Bertrand⁩ and ⁨Mullainathan⁩"): strip them before they reach chips or prompts.
 - A request from Zotero's own window to its own local server fails (NetworkError). The doctor asks from outside, with
   `curl`, which is also what zotero-cli is: it catches the server that has gone quiet.
@@ -86,7 +89,10 @@ Short. It states: you are in a Zotero side panel; use `zotero-cli` (the skill is
 the user's current focus arrives in each message as a `<zotero-context>` block; **cite with real Zotero links**
 `[Pager et al. 2009, p.8](zotero://open-pdf/library/items/ATTKEY?page=8)` (groups: `zotero://open-pdf/groups/<id>/items/KEY?page=8`;
 items without a PDF: `zotero://select/library/items/KEY`). The panel turns those links into citation chips and a click
-opens the page. Because they are ordinary Zotero URIs they stay valid when pasted into a note.
+opens the page. Because they are ordinary Zotero URIs they stay valid when pasted into a note. An optional `&quote=` (6 to 15 words
+copied verbatim, URL-encoded) makes a click also flash that passage for 2 s: `zotero/quote.ts` finds it in the page's text
+(letters and digits only, so spacing, hyphenation, ligatures and quote styles never decide; then its first or last 8 words;
+then the pages either side) and the reader draws it; not found is a plain page jump. Zotero's own handler ignores the param.
 
 The workspace (`<profile>/zotero-chat/workspace`) gets the skill via `zotero-mcp install-skill --target claude --target agents --root <workspace>`.
 

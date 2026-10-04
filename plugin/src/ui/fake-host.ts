@@ -58,7 +58,7 @@ const CITE = (k: string, p: number) => `zotero://open-pdf/library/items/${k}?pag
 
 const SAMPLE_ANSWER = `Based on **Bertrand and Mullainathan (2004)** and the follow-ups in your library, the callback gap largely persists.
 
-- **Field experiments.** Resumes with white-sounding names received about 50% more callbacks [Bertrand and Mullainathan 2004, p.8](${CITE("BM2004AB", 8)}).
+- **Field experiments.** Resumes with white-sounding names received about 50% more callbacks [Bertrand and Mullainathan 2004, p.8](${CITE("BM2004AB", 8)}&quote=${encodeURIComponent("applicants with White names receive 50 percent more callbacks for interviews")}).
 - **Audit studies.** The same pattern shows up in person: a clear racial hierarchy among equally qualified applicants [Pager et al. 2009, p.9](${CITE("PAGER009", 9)}), including for applicants with no criminal record [Pager et al. 2009, p.12](${CITE("PAGER009", 12)}).
 - **Meta-analysis.** No decline in discrimination against Black applicants in 25 years [Quillian et al. 2017, p.4](${CITE("QUIL2017", 4)}).
 

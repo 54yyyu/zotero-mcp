@@ -2,7 +2,7 @@
 // textContent/setAttribute: never innerHTML, never a parsed string. The allow-lists from markdown.ts are
 // enforced again here, so a bug in the tree builder still cannot create a <script> or an onerror.
 import type { Token } from "marked";
-import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, blockNodes, lexBlocks, safeHref, safeImageSrc } from "./markdown.ts";
+import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc } from "./markdown.ts";
 import type { MdNode } from "./markdown.ts";
 import { copyText, env, flashCheck, h, icon } from "./dom.ts";
 
@@ -68,7 +68,7 @@ function toDom(node: MdNode): Node {
     case "cite": {
       const href = safeHref(attrs.href);
       if (!href) return env.doc.createTextNode(textOf(node));
-      return h("button.cite", { type: "button", dataset: { href }, title: href.replace(/^zotero:\/\//, "") }, h("span.cite__t", null, icon("item"), textOf(node)));
+      return h("button.cite", { type: "button", dataset: { href }, title: citeTitle(href) }, h("span.cite__t", null, icon("item"), textOf(node)));
     }
     case "tablewrap": return h("div.md-table", null, ...kids.map(toDom));
     case "img": {

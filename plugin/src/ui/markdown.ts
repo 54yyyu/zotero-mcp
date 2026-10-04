@@ -55,6 +55,8 @@ export interface ZoteroLink {
   itemKey: string;
   page?: number;
   annotationKey?: string;
+  /** The cited words (`&quote=`), which the reader flashes on the page. Only ever text to search for. */
+  quote?: string;
   /** open-pdf (a page of an attachment) or select (an item in the library). */
   action: "open-pdf" | "select" | "open-note" | "other";
 }
@@ -68,14 +70,25 @@ export function parseZoteroUri(uri: string): ZoteroLink | null {
   const params = new URLSearchParams(q);
   const pg = Number(params.get("page"));
   const ann = params.get("annotation");
+  const quote = params.get("quote")?.trim().slice(0, 500);
   return {
     libraryID: m[3] ? Number(m[3]) : 1,
     itemKey: (m[4] as string).toUpperCase(),
     ...(Number.isFinite(pg) && pg > 0 ? { page: pg } : {}),
     ...(ann && /^[A-Za-z0-9]{8}$/.test(ann) ? { annotationKey: ann } : {}),
+    ...(quote ? { quote } : {}),
     action,
   };
 }
+
+/** A citation chip's tooltip: the quoted words when the link carries them, else where it points. */
+export function citeTitle(href: string): string {
+  const q = parseZoteroUri(href)?.quote;
+  return q ? `“${q}”` : href.replace(/^zotero:\/\//, "");
+}
+
+/** The link without its `quote`: the sources fold opens the page, it lists several. */
+const withoutQuote = (href: string): string => href.replace(/([?&])quote=[^&#]*&?/, "$1").replace(/[?&]$/, "");
 
 // ───────────────────────────── entities ─────────────────────────────
 
@@ -367,7 +380,7 @@ export function collectSources(texts: string[]): CitedSource[] {
       const key = `${z.libraryID}/${z.itemKey}`;
       let s = map.get(key);
       if (!s) {
-        s = { key, libraryID: z.libraryID, itemKey: z.itemKey, label: citeLabel(plain(n.kids ?? [])), href, pages: [] };
+        s = { key, libraryID: z.libraryID, itemKey: z.itemKey, label: citeLabel(plain(n.kids ?? [])), href: withoutQuote(href), pages: [] };
         map.set(key, s);
       }
       if (z.page && !s.pages.includes(z.page)) s.pages.push(z.page);

@@ -51,6 +51,14 @@ await test("citation chips open the page; sources list each item once", async (p
   await p.locator(".foot__src").click();
   assert.equal(await p.locator(".source").count(), 3);
   assert.match(await p.locator(".source").nth(1).innerText(), /Pager et al\. 2009\s*pp\. 9, 12/);
+  // a link with &quote=: the chip's label stays "Author year, p.N", the tooltip shows the quote, a click passes it on
+  const quoted = p.locator(".cite").first();
+  assert.equal(await quoted.innerText(), "Bertrand and Mullainathan 2004, p.8");
+  assert.equal(await quoted.getAttribute("title"), "“applicants with White names receive 50 percent more callbacks for interviews”");
+  await quoted.click();
+  assert.match((await sim(p, () => window.__zmc.sim.opened)).at(-1), /^zotero:\/\/open-pdf\/library\/items\/BM2004AB\?page=8&quote=applicants%20with%20White/);
+  await p.locator(".source").first().click();
+  assert.equal((await sim(p, () => window.__zmc.sim.opened)).at(-1), "zotero://open-pdf/library/items/BM2004AB?page=8", "the sources fold opens the page");
   await p.locator("a", { hasText: "the OSF page" }).click();
   assert.equal((await sim(p, () => window.__zmc.sim.opened)).at(-1), "https://osf.io/example", "http links go through host.open, the window never navigates");
 });
