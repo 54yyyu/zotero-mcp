@@ -17,8 +17,14 @@ from zotero_mcp.local_db import LocalZoteroReader
 
 
 @pytest.fixture(autouse=True)
-def _fresh_snapshot_cache(monkeypatch):
+def _fresh_snapshot_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(local_db, "_snapshots", {})
+    # Copies go under tmp_path: the per-test cache reset above hides them
+    # from the atexit cleanup, so in the real temp dir they would pile up.
+    snap_tmp = tmp_path / "snapshots"
+    snap_tmp.mkdir()
+    monkeypatch.setattr(local_db.tempfile, "tempdir", str(snap_tmp))
+    monkeypatch.setattr(local_db, "_swept_stale_snapshots", False, raising=False)
     monkeypatch.delenv(local_db.DB_SNAPSHOT_ENV_VAR, raising=False)
     monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "0")
 
@@ -272,3 +278,83 @@ def test_backend_reader_is_refreshed_when_reused(monkeypatch):
     finally:
         library._thread_state.reader = None
 
+
+
+# ---------------------------------------------------------------------------
+# Copies left behind by processes stopped with a signal
+# ---------------------------------------------------------------------------
+
+
+def _dead_pid():
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def _fake_snapshot(name, age=0):
+    import tempfile
+    import time
+
+    path = os.path.join(tempfile.gettempdir(), name)
+    os.makedirs(path)
+    with open(os.path.join(path, "zotero.sqlite"), "wb") as f:
+        f.write(b"library copy")
+    if age:
+        t = time.time() - age
+        os.utime(path, (t, t))
+    return path
+
+
+def test_snapshot_dir_names_its_process(zotero_like_db):
+    snap = local_db._wal_snapshot_path(str(zotero_like_db[0]))
+    assert os.path.basename(os.path.dirname(snap)).startswith(
+        f"zotero_mcp_db_{os.getpid()}_"
+    )
+
+
+def test_copy_left_by_a_killed_process_is_removed(zotero_like_db):
+    orphan = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_abcd1234")
+    local_db._wal_snapshot_path(str(zotero_like_db[0]))
+    assert not os.path.exists(orphan)
+
+
+def test_copy_of_a_running_process_is_kept(zotero_like_db):
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        live = _fake_snapshot(f"zotero_mcp_db_{proc.pid}_abcd1234")
+        local_db._wal_snapshot_path(str(zotero_like_db[0]))
+        assert os.path.exists(live)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_legacy_copies_are_removed_only_when_old(zotero_like_db):
+    fresh = _fake_snapshot("zotero_mcp_db_7ah8d9h6")
+    old = _fake_snapshot("zotero_mcp_db_s5gwycjq", age=8 * 24 * 3600)
+    local_db._wal_snapshot_path(str(zotero_like_db[0]))
+    assert os.path.exists(fresh)
+    assert not os.path.exists(old)
+
+
+def test_sweep_runs_once_per_process(zotero_like_db):
+    local_db._wal_snapshot_path(str(zotero_like_db[0]))
+    orphan = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_later123")
+    local_db._sweep_stale_snapshots()
+    assert os.path.exists(orphan)
+
+
+def test_unrelated_temp_entries_are_untouched(zotero_like_db):
+    import tempfile
+
+    other = os.path.join(tempfile.gettempdir(), "someone_elses_dir")
+    os.makedirs(other)
+    _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_abcd1234")
+    local_db._wal_snapshot_path(str(zotero_like_db[0]))
+    assert os.path.exists(other)

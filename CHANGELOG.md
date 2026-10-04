@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stopped servers no longer leave copies of the library behind** (#645). The SQLite backend reads a private copy of `zotero.sqlite` plus its WAL (#536) and deleted it only at a normal exit, so every stop by SIGTERM (launchd, systemd, Docker) or SIGKILL left a full copy of the library in the temp directory, one per restart. Copies are now named after their process, and each process removes those of processes that are gone before making its first one; unnamed copies from older versions go once they are a week old. The snapshot tests no longer leave copies in the real temp directory either.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed
