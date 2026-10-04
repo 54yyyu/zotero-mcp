@@ -11,6 +11,7 @@ import re
 import socket
 import tempfile
 import threading
+import time
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlparse
 
@@ -1557,6 +1558,68 @@ _arxiv_identity = arxiv_identity
 _MAX_PDF_REDIRECTS = 5
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
+#: Ceiling on one downloaded PDF, in MB. The URL comes from the caller or a
+#: third-party metadata API, and the download runs under the global API lock,
+#: so without a ceiling a huge or endless response fills the disk and keeps
+#: every other write tool waiting until it ends.
+PDF_MAX_MB_ENV_VAR = "ZOTERO_MCP_MAX_PDF_MB"
+_DEFAULT_PDF_MAX_MB = 100
+#: Wall-clock ceiling on one download. ``requests``' timeout only bounds each
+#: read, so a server that sends a byte every few seconds never trips it.
+_PDF_DOWNLOAD_DEADLINE = 120.0
+
+
+class PdfDownloadError(Exception):
+    """A PDF download was stopped for being too large or too slow."""
+
+
+def _pdf_max_bytes() -> int:
+    raw = os.environ.get(PDF_MAX_MB_ENV_VAR, "").strip()
+    try:
+        mb = float(raw) if raw else _DEFAULT_PDF_MAX_MB
+    except ValueError:
+        mb = _DEFAULT_PDF_MAX_MB
+    return int(max(mb, 1) * 1024 * 1024)
+
+
+def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DEADLINE) -> int:
+    """Write a streamed PDF response to ``filepath``; return the byte count.
+
+    Raises ``PdfDownloadError`` (after closing the response) once the body
+    passes the size ceiling or the download runs past ``deadline`` seconds.
+    The caller's temp directory removes the partial file.
+    """
+    max_bytes = _pdf_max_bytes()
+    limit_mb = max_bytes // (1024 * 1024)
+    try:
+        declared = int(resp.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > max_bytes:
+        resp.close()
+        raise PdfDownloadError(
+            f"PDF is {declared // (1024 * 1024)} MB, over the {limit_mb} MB limit "
+            f"(set {PDF_MAX_MB_ENV_VAR} to raise it)"
+        )
+    started = time.monotonic()
+    total = 0
+    with open(filepath, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            total += len(chunk)
+            if total > max_bytes:
+                resp.close()
+                raise PdfDownloadError(
+                    f"PDF download passed the {limit_mb} MB limit "
+                    f"(set {PDF_MAX_MB_ENV_VAR} to raise it)"
+                )
+            if time.monotonic() - started > deadline:
+                resp.close()
+                raise PdfDownloadError(
+                    f"PDF download took longer than {int(deadline)} s"
+                )
+            f.write(chunk)
+    return total
+
 
 def _url_resolves_to_public_host(url: str) -> bool:
     """Return ``True`` only if ``url`` is http(s) and its host resolves
@@ -1653,9 +1716,7 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = f"{doi.replace('/', '_')}.pdf"
             filepath = os.path.join(tmpdir, filename)
-            with open(filepath, "wb") as f:
-                for chunk in pdf_resp.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            _stream_pdf_download(pdf_resp, filepath)
 
             if os.path.getsize(filepath) < 1000:
                 ctx.info("Downloaded file too small, likely not a real PDF")
