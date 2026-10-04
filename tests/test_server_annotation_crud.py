@@ -110,6 +110,23 @@ def test_update_annotation_adds_and_removes_tags(monkeypatch):
     assert final_tags == {"keep", "new"}
 
 
+def test_update_annotation_keeps_automatic_tags_automatic(monkeypatch):
+    """Incremental tag edits keep each existing tag's type (#618)."""
+    item = _annotation_item("ANNO0001")
+    item["data"]["tags"] = [{"tag": "auto", "type": 1}, {"tag": "drop"}]
+    fake = FakeZoteroForAnnotationUpdate({"ANNO0001": item})
+    _patch_client(monkeypatch, fake)
+
+    server.update_annotation(
+        annotation_key="ANNO0001",
+        add_tags=["new"],
+        remove_tags=["drop"],
+        ctx=DummyContext(),
+    )
+
+    assert fake.updated[0]["data"]["tags"] == [{"tag": "auto", "type": 1}, {"tag": "new"}]
+
+
 def test_update_annotation_rejects_tags_with_add_tags(monkeypatch):
     fake = FakeZoteroForAnnotationUpdate({"ANNO0001": _annotation_item("ANNO0001")})
     _patch_client(monkeypatch, fake)

@@ -2299,18 +2299,15 @@ def update_annotation(
             data["tags"] = [{"tag": t} for t in tag_list]
             changes.append(f"- **tags**: replaced with {tag_list}")
         elif add_tags is not None or remove_tags is not None:
-            existing = {t["tag"] for t in data.get("tags", [])}
+            to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
+            to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
+            data["tags"] = _helpers._apply_tag_changes(
+                data.get("tags", []), [{"tag": t} for t in to_add], to_remove
+            )
             if add_tags is not None:
-                to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
-                existing.update(to_add)
                 changes.append(f"- **tags**: added {to_add}")
             if remove_tags is not None:
-                to_remove = set(
-                    _helpers._normalize_str_list_input(remove_tags, "remove_tags")
-                )
-                existing -= to_remove
                 changes.append(f"- **tags**: removed {list(to_remove)}")
-            data["tags"] = [{"tag": t} for t in sorted(existing)]
 
         if not changes:
             return "No changes to apply."

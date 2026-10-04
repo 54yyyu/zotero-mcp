@@ -339,6 +339,38 @@ class TestMergeDuplicatesConfirm:
         assert "dup1Only" in merged_tags
         assert "dup2Only" in merged_tags
 
+    def test_tag_types_survive_the_merge(self, monkeypatch, dummy_ctx):
+        """The keeper's automatic tags stay automatic, and tags copied from a
+        duplicate keep the duplicate's type (#618)."""
+        fake = self._setup_merge(monkeypatch)
+        items = {i["key"]: i for i in fake._items}
+        items["KEEP"]["data"]["tags"] = [{"tag": "keeperAuto", "type": 1}, {"tag": "keeperOnly"}]
+        items["DUP1"]["data"]["tags"] = [{"tag": "dupAuto", "type": 1}, {"tag": "keeperAuto"}]
+
+        server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
+        )
+
+        keeper_tags = [u for u in fake.update_calls if u.get("key") == "KEEP"][0]["data"]["tags"]
+        by_name = {t["tag"]: t.get("type", 0) for t in keeper_tags}
+        assert by_name == {"keeperAuto": 1, "keeperOnly": 0, "dupAuto": 1, "dup2Only": 0}
+
+    def test_a_tag_manual_on_any_duplicate_is_merged_as_manual(self, monkeypatch, dummy_ctx):
+        """When duplicates disagree on a new tag's type, it is merged as manual:
+        "Delete Automatic Tags" never removes a manual tag, so nothing the user
+        added by hand can be lost."""
+        fake = self._setup_merge(monkeypatch)
+        items = {i["key"]: i for i in fake._items}
+        items["DUP1"]["data"]["tags"] = [{"tag": "both", "type": 1}]
+        items["DUP2"]["data"]["tags"] = [{"tag": "both"}]
+
+        server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
+        )
+
+        keeper_tags = [u for u in fake.update_calls if u.get("key") == "KEEP"][0]["data"]["tags"]
+        assert {"tag": "both"} in keeper_tags
+
     def test_children_reparented(self, monkeypatch, dummy_ctx):
         """Child items (notes, attachments, annotations) get parentItem set to keeper."""
         fake = self._setup_merge(monkeypatch)
@@ -622,6 +654,52 @@ class TestMergeDuplicatesPagination:
         assert "DUPATT01" not in reparented_keys, (
             "duplicate attachment should be skipped, not re-parented onto keeper"
         )
+        assert "1 duplicate attachments skipped" in result
+
+
+def _make_linked_pdf(key, parent, path):
+    """A linked-file PDF as the Zotero API returns it: ``path``, no filename/md5."""
+    return {"key": key, "version": 1, "data": {
+        "key": key,
+        "itemType": "attachment",
+        "parentItem": parent,
+        "linkMode": "linked_file",
+        "title": "Full Text PDF",
+        "contentType": "application/pdf",
+        "path": path,
+    }}
+
+
+class TestMergeDuplicatesLinkedFiles:
+    """Linked-file attachments carry no filename or md5, so the dedupe
+    signature must not treat two different linked PDFs as the same file."""
+
+    def _run(self, monkeypatch, dummy_ctx, keeper_path, dup_path):
+        fake = FakeZoteroForDuplicates()
+        keep_att = _make_linked_pdf("KATT", "KEEP", keeper_path)
+        dup_att = _make_linked_pdf("DATT", "DUP1", dup_path)
+        fake._items = [_make_item("KEEP", "Keeper"), _make_item("DUP1", "Dup"),
+                       keep_att, dup_att]
+        fake._children = {"KEEP": [keep_att], "DUP1": [dup_att]}
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        result = server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
+        )
+        return fake, result
+
+    def test_different_linked_pdf_is_moved_not_trashed(self, monkeypatch, dummy_ctx):
+        fake, result = self._run(monkeypatch, dummy_ctx,
+                                 "/Users/me/Papers/smith-2020-preprint.pdf",
+                                 "/Users/me/Papers/smith-2021-published.pdf")
+        moved = [u for u in fake.update_calls
+                 if u.get("key") == "DATT" and u["data"].get("parentItem") == "KEEP"]
+        assert moved, "distinct linked PDF was left on the duplicate and trashed with it"
+        assert "duplicate attachments skipped" not in result
+
+    def test_same_linked_pdf_is_still_skipped(self, monkeypatch, dummy_ctx):
+        fake, result = self._run(monkeypatch, dummy_ctx,
+                                 "/Users/me/Papers/smith.pdf", "/Users/me/Papers/smith.pdf")
+        assert "DATT" not in {u.get("key") for u in fake.update_calls}
         assert "1 duplicate attachments skipped" in result
 
 

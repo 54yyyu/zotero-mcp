@@ -445,10 +445,10 @@ def export_bibliography(
             )
 
         entries = _render_entries(rendered)
+        scope = (
+            f" for collection {collection_key}" if collection_key else (" for the requested items" if keys else "")
+        )
         if not entries:
-            scope = (
-                f" for collection {collection_key}" if collection_key else (" for the requested items" if keys else "")
-            )
             return f"No bibliography entries produced{scope}."
 
         format_label = {
@@ -463,10 +463,13 @@ def export_bibliography(
 
         header = f"# {format_label} ({style})"
         lines = [header, ""]
-        for i, entry in enumerate(entries, 1):
-            clean = _utils.clean_html(entry).strip()
-            if not clean:
-                continue
+        # Drop entries that are empty once the HTML is stripped *before*
+        # numbering them; otherwise each one uses up a number and the list
+        # comes out 4, 5, 7, 9, …
+        cleaned = [c for c in (_utils.clean_html(e).strip() for e in entries) if c]
+        if not cleaned:
+            return f"No bibliography entries produced{scope}."
+        for i, clean in enumerate(cleaned, 1):
             lines.append(f"{i}. {clean}")
         return "\n".join(lines)
 

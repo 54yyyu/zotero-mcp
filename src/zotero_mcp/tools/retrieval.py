@@ -1019,7 +1019,7 @@ def get_tags(
     name="zotero_list_libraries",
     description=(
         "List every Zotero library this MCP can address: the user's "
-        "personal library (libraryID=1 conventionally), all group "
+        "personal library (switch to it with library_type='user'), all group "
         "libraries the user is a member of (with groupID), and (in "
         "local mode) RSS feed libraries. Each entry shows the "
         "library/group ID, display name, and item count. "
@@ -1079,7 +1079,8 @@ def list_libraries(*, ctx: Context) -> str:
                     for lib in user_libs:
                         output.append(
                             f"- **My Library** — {lib['itemCount']} items "
-                            f"(libraryID={lib['libraryID']})"
+                            f"(libraryID={lib['libraryID']}; switch with "
+                            f"library_type='user')"
                         )
                     output.append("")
 
@@ -1155,7 +1156,7 @@ def list_libraries(*, ctx: Context) -> str:
         "first; don't guess. "
         "library_id: library ID string as returned by "
         "zotero_list_libraries (numeric for user/group, numeric for "
-        "feeds). "
+        "feeds); for the personal library 'user' or '0' also work. "
         "library_type: 'user' — the personal library; 'group' (default) "
         "— a group library; 'feeds' — a local RSS feed library; "
         "'default' — RESET to whatever the ZOTERO_LIBRARY_ID / "
@@ -1180,7 +1181,8 @@ def switch_library(
 
     Args:
         library_id: The library/group ID to switch to.
-            For user library: "0" (local mode) or your user ID (web mode).
+            For user library: "0" or "user"; in local mode also the
+            libraryID zotero_list_libraries shows; in web mode your user ID.
             For group libraries: the groupID (e.g. "6069773").
         library_type: "user", "group", or "default" to reset to env var defaults.
         ctx: MCP context
@@ -1202,6 +1204,21 @@ def switch_library(
         error = validate_library_switch(library_id, library_type)
         if error:
             return error
+
+        if library_type == "user":
+            # #603: "user", "0" and (local mode) the SQLite libraryID that
+            # zotero_list_libraries shows all name the one personal library.
+            local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
+            if local:
+                library_id = "0"
+            elif (
+                library_id in ("user", "0", "")
+                and os.getenv("ZOTERO_LIBRARY_ID")
+                and (os.getenv("ZOTERO_LIBRARY_TYPE") or "user").strip().lower() != "group"
+            ):
+                # With a group configured, ZOTERO_LIBRARY_ID is a groupID,
+                # not the user's id, so there is nothing to map to.
+                library_id = os.getenv("ZOTERO_LIBRARY_ID")
 
         _client.set_active_library(library_id, library_type)
         ctx.info(f"Switched to library {library_id} (type={library_type})")
@@ -1272,10 +1289,15 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
                     # serving reads, so the check has to live here instead.
                     # A local database holds exactly one personal library,
                     # addressed as "0" by convention (see get_zotero_client).
-                    if library_id not in ("0", "", None):
+                    # zotero_list_libraries shows its SQLite libraryID, so
+                    # accept that too (#603).
+                    valid_ids = {"0", "", "user"} | {
+                        str(library["libraryID"]) for library in libraries if library["type"] == "user"
+                    }
+                    if library_id not in valid_ids:
                         return (
                             f"Personal library id '{library_id}' is not addressable "
-                            f"in local mode. Use '0', or switch to a group with "
+                            f"in local mode. Use '0' or 'user', or switch to a group with "
                             f"library_type='group'."
                         )
                 elif library_type == "feed":

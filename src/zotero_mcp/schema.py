@@ -160,8 +160,9 @@ def base_field_of(item_type: str, field: str) -> str:
     :func:`resolve_field` (``nameOfAct`` -> ``title`` for a statute; a native
     field is its own base).
 
-    Not used within this module; provided for the deferred read-side migration
-    that will render renamed-title items by their real name.
+    ``update_item`` uses it on an item type change to carry a value from the
+    old type's field to the new type's field that shares its base
+    (``publicationTitle`` -> ``proceedingsTitle`` via ``publicationTitle``).
     """
     return _fields(item_type).get(field, field)
 
