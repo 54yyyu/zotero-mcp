@@ -19,7 +19,6 @@ from zotero_mcp.local_db import LocalZoteroReader
 @pytest.fixture(autouse=True)
 def _fresh_snapshot_cache(monkeypatch):
     monkeypatch.setattr(local_db, "_snapshots", {})
-    monkeypatch.setattr(local_db, "_last_write_at", None, raising=False)
     monkeypatch.delenv(local_db.DB_SNAPSHOT_ENV_VAR, raising=False)
     monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "0")
 
@@ -144,20 +143,112 @@ def test_snapshot_is_not_recopied_inside_the_min_interval(zotero_like_db, monkey
     assert local_db._wal_snapshot_path(str(path)) != first
 
 
-def test_own_write_bypasses_the_min_interval(zotero_like_db, monkeypatch):
-    """A read right after this process writes must not get the pre-write copy."""
+def _count_copies(monkeypatch):
+    copies = [0]
+    real = local_db.shutil.copyfile
+
+    def counting(src, dst, *a, **k):
+        if str(dst).endswith("zotero.sqlite"):
+            copies[0] += 1
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(local_db.shutil, "copyfile", counting)
+    return copies
+
+
+def _snapshot_keys(snap):
+    conn = sqlite3.connect(snap)
+    try:
+        return {row[0] for row in conn.execute("SELECT key FROM items")}
+    finally:
+        conn.close()
+
+
+def test_read_after_own_write_sees_it_then_throttle_applies_again(zotero_like_db, monkeypatch):
     path, writer = zotero_like_db
     monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "30")
     clock = [1000.0]
     monkeypatch.setattr(local_db.time, "monotonic", lambda: clock[0])
+    copies = _count_copies(monkeypatch)
 
     first = local_db._wal_snapshot_path(str(path))
+    assert copies[0] == 1
+
+    # Our own write lands inside the throttle window.
     local_db.note_local_write()
     writer.execute("INSERT INTO items (key) VALUES ('OWNWRITE')")
     writer.commit()
 
     clock[0] += 1
-    assert local_db._wal_snapshot_path(str(path)) != first
+    second = local_db._wal_snapshot_path(str(path))
+    assert second != first
+    assert "OWNWRITE" in _snapshot_keys(second)
+    assert copies[0] == 2
+
+    # (b) one-shot: another change right after, with no new write of ours,
+    # is throttled again instead of copying a second time.
+    writer.execute("INSERT INTO items (key) VALUES ('ZOTEROEDIT')")
+    writer.commit()
+    clock[0] += 1
+    assert local_db._wal_snapshot_path(str(path)) == second
+    assert copies[0] == 2
+
+
+def test_several_writes_before_a_read_cost_one_copy(zotero_like_db, monkeypatch):
+    path, writer = zotero_like_db
+    monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "30")
+    clock = [1000.0]
+    monkeypatch.setattr(local_db.time, "monotonic", lambda: clock[0])
+    copies = _count_copies(monkeypatch)
+    local_db._wal_snapshot_path(str(path))
+
+    for n in range(5):
+        local_db.note_local_write()
+        writer.execute("INSERT INTO items (key) VALUES (?)", (f"W{n}",))
+        writer.commit()
+    clock[0] += 1
+    snap = local_db._wal_snapshot_path(str(path))
+    assert {f"W{n}" for n in range(5)} <= _snapshot_keys(snap)
+    assert copies[0] == 2
+    clock[0] += 1
+    assert local_db._wal_snapshot_path(str(path)) == snap
+    assert copies[0] == 2
+
+
+def test_write_with_no_snapshot_yet_costs_nothing_extra(zotero_like_db, monkeypatch):
+    path, _writer = zotero_like_db
+    monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "30")
+    copies = _count_copies(monkeypatch)
+    local_db.note_local_write()
+    local_db._wal_snapshot_path(str(path))
+    local_db._wal_snapshot_path(str(path))
+    assert copies[0] == 1
+
+
+def test_stale_mark_survives_a_read_that_sees_no_change(zotero_like_db, monkeypatch):
+    """A read before our write lands finds the files unchanged and keeps the
+    copy; the stale mark must still be there for the read after the write."""
+    path, writer = zotero_like_db
+    monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "30")
+    clock = [1000.0]
+    monkeypatch.setattr(local_db.time, "monotonic", lambda: clock[0])
+    first = local_db._wal_snapshot_path(str(path))
+
+    local_db.note_local_write()
+    assert local_db._wal_snapshot_path(str(path)) == first  # nothing changed yet
+    writer.execute("INSERT INTO items (key) VALUES ('LANDED')")
+    writer.commit()
+    clock[0] += 1
+    assert "LANDED" in _snapshot_keys(local_db._wal_snapshot_path(str(path)))
+
+
+def test_burst_of_reads_without_writes_copies_at_most_once(zotero_like_db, monkeypatch):
+    path, _writer = zotero_like_db
+    monkeypatch.setenv(local_db.DB_SNAPSHOT_MIN_INTERVAL_ENV_VAR, "30")
+    copies = _count_copies(monkeypatch)
+    for _ in range(20):
+        local_db._wal_snapshot_path(str(path))
+    assert copies[0] == 1
 
 
 def test_backend_reader_is_refreshed_when_reused(monkeypatch):

@@ -682,34 +682,31 @@ def _snapshot_min_interval() -> float:
         return _DEFAULT_SNAPSHOT_MIN_INTERVAL
 
 
-#: Seconds after this process starts a write during which the copy throttle is
-#: bypassed, so a read that follows our own write sees it instead of a copy
-#: taken just before the write landed. A copy is still made only when the
-#: database or WAL has changed, so outside a burst of writes this costs nothing.
-_WRITE_BYPASS_WINDOW = 120.0
-_last_write_at: float | None = None
+# Bumped each time this process is about to write to Zotero. A snapshot copied
+# under an older value is stale: the next read takes one fresh copy regardless of
+# the throttle, then the throttle applies again. Kept apart from _snapshot_lock
+# so a write never waits for a copy in progress.
+_write_gen = 0
+_write_gen_lock = threading.Lock()
 
 
 def note_local_write() -> None:
-    """Record that this process is writing to Zotero; see _wal_snapshot_path."""
-    global _last_write_at
-    _last_write_at = time.monotonic()
-
-
-def _recently_wrote() -> bool:
-    return _last_write_at is not None and time.monotonic() - _last_write_at < _WRITE_BYPASS_WINDOW
+    """Mark the current database copy stale; see _wal_snapshot_path."""
+    global _write_gen
+    with _write_gen_lock:
+        _write_gen += 1
 
 
 # One snapshot per database for the whole process, because readers are opened
 # per tool call: a copy per reader would copy the database on every call.
 _snapshot_lock = threading.Lock()
-_snapshots: dict[str, tuple[tuple, str, float]] = {}
+_snapshots: dict[str, tuple[tuple, str, float, int]] = {}
 
 
 @atexit.register
 def _remove_snapshots() -> None:
     """Delete this process's database copies; they hold the whole library."""
-    for _sig, snap, _made_at in list(_snapshots.values()):
+    for _sig, snap, _made_at, _gen in list(_snapshots.values()):
         shutil.rmtree(os.path.dirname(snap), ignore_errors=True)
     _snapshots.clear()
 
@@ -736,7 +733,10 @@ def _wal_snapshot_path(db_path: str) -> str | None:
     is already current), when snapshots are disabled, or when a copy could not
     be made consistently; callers then read in place as before.
 
-    The copy is reused until either file's size or mtime changes. A file that
+    The copy is reused until either file's size or mtime changes (and, within
+    ``ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL`` of the last copy, even then). A write
+    made by this process (``note_local_write``) marks the copy stale, so the
+    next read copies once whatever the interval says. A file that
     changes while it is being copied is retried, since a checkpoint running
     mid-copy could pair a new main file with an old WAL. SQLite checks WAL
     frame checksums on open, so a WAL copied while Zotero appended to it
@@ -752,14 +752,16 @@ def _wal_snapshot_path(db_path: str) -> str | None:
 
     with _snapshot_lock:
         for _attempt in range(3):
+            gen = _write_gen
             before = (_file_signature(source), _file_signature(wal))
             cached = _snapshots.get(source)
             if cached and os.path.exists(cached[1]):
                 if cached[0] == before:
                     return cached[1]
-                if time.monotonic() - cached[2] < _snapshot_min_interval() and not _recently_wrote():
+                if cached[3] == gen and time.monotonic() - cached[2] < _snapshot_min_interval():
                     # Changed, but copied too recently to copy again; the
-                    # next read after the interval picks the change up.
+                    # next read after the interval picks the change up. A copy
+                    # made before our own latest write skips this, once.
                     return cached[1]
             snap_dir = tempfile.mkdtemp(prefix="zotero_mcp_db_")
             snap = os.path.join(snap_dir, "zotero.sqlite")
@@ -780,7 +782,7 @@ def _wal_snapshot_path(db_path: str) -> str | None:
                 # Best effort: an open connection elsewhere keeps its files
                 # alive on POSIX, and on Windows the directory is left behind.
                 shutil.rmtree(os.path.dirname(cached[1]), ignore_errors=True)
-            _snapshots[source] = (before, snap, time.monotonic())
+            _snapshots[source] = (before, snap, time.monotonic(), gen)
             return snap
     logger.warning(
         "%s kept changing while it was being copied; reading it in place.", source

@@ -186,8 +186,8 @@ def test_resolving_a_write_client_lifts_the_snapshot_throttle(web_mode, monkeypa
     from zotero_mcp import local_db
 
     monkeypatch.setattr(_client, "get_zotero_client", lambda: fake_zot)
-    monkeypatch.setattr(local_db, "_last_write_at", None, raising=False)
+    before = local_db._write_gen
 
     _helpers.resolve_write_client()
 
-    assert local_db._recently_wrote()
+    assert local_db._write_gen == before + 1

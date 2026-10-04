@@ -129,9 +129,10 @@ narrower than the API's. Writes always go through Zotero.
 - `ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL`: Zotero keeps recent changes in a WAL file
   next to `zotero.sqlite`, so reads use a private copy of the database plus that
   file. The copy is refreshed when Zotero writes, at most once per this many
-  seconds (default `5`). For two minutes after zotero-mcp itself writes, that
-  limit is lifted so a read right after a write sees it. `ZOTERO_MCP_DB_SNAPSHOT=0` reads the database in place
-  instead, which never copies but misses changes until Zotero checkpoints.
+  seconds (default `5`). The first read after zotero-mcp itself writes always
+  takes a fresh copy, so it sees that write, and the limit then applies again.
+  `ZOTERO_MCP_DB_SNAPSHOT=0` reads the database in place instead, which never
+  copies but misses changes until Zotero checkpoints.
 
 **Global search across libraries:**
 
