@@ -460,14 +460,14 @@ def _readable_config_for_update() -> dict:
 
 def read_config_for_update(path: str | Path) -> dict:
     """``_readable_config_for_update`` for any config path. Raises OSError
-    when the file exists but is not a JSON object."""
+    when the file exists but is not a JSON object (or not valid UTF-8 / JSON)."""
     path = Path(path)
     if not path.exists():
         return {}
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f) or {}
-    except json.JSONDecodeError as e:
+    except ValueError as e:  # JSONDecodeError and UnicodeDecodeError
         raise OSError(
             f"{path} is not valid JSON ({e}). Fix or remove "
             "the file; refusing to overwrite it and lose the other settings."
@@ -558,7 +558,9 @@ def write_config_atomic(path: str | Path, config: dict) -> None:
     so a concurrent reader sees the old file or the new one, never half."""
     from zotero_mcp.utils import ensure_private_dir
 
-    path = Path(path)
+    # Write through a symlinked config (dotfile managers): replacing the link
+    # itself would leave the real file stale.
+    path = Path(path).resolve()
     ensure_private_dir(path.parent)
     # A unique temp name per write, so concurrent writers (threads or
     # processes) never share one. mkstemp creates it owner-only, so the

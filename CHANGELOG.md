@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Index bookkeeping no longer wipes `config.json`** (#646). The savers for the sync watermark, index schema version and backfill count, and `--db-path`, read the config with any parse error treated as `{}` and wrote the result back in place. One typo from hand-editing the file, or a read that caught another process mid-write, followed by any `update-db` erased the web API key, the local write key and the embedding settings. They now refuse to overwrite a config they cannot parse (and log why), and every write goes through a temp file and an atomic rename, so readers never see half a file.
+- **Index bookkeeping no longer wipes `config.json`** (#646). The savers for the sync watermark, index schema version and backfill count, and `--db-path`, read the config with any parse error treated as `{}` and wrote the result back in place. One typo from hand-editing the file, or a read that caught another process mid-write, followed by any `update-db` erased the web API key, the local write key and the embedding settings. They now refuse to overwrite a config they cannot parse (and log why), and every write goes through a temp file and an atomic rename, so readers never see half a file. A config that is a symlink is written through, so the file it points to stays current. A config that is not valid UTF-8 is treated like invalid JSON.
 
 ## [0.13.2] - 2026-10-04
 

@@ -48,6 +48,31 @@ def test_invalid_config_is_left_untouched(tmp_path, save):
 
 
 @pytest.mark.parametrize("save", SAVERS.values(), ids=SAVERS.keys())
+def test_config_with_invalid_utf8_is_left_untouched(tmp_path, save):
+    path = tmp_path / "config.json"
+    broken = b'{"client_env": {"ZOTERO_API_KEY": "SECRET\xff"}}'  # not valid UTF-8
+    path.write_bytes(broken)
+    save(_searcher(path))  # must not raise, must not write
+    assert path.read_bytes() == broken
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need extra privileges on Windows")
+@pytest.mark.parametrize("save", SAVERS.values(), ids=SAVERS.keys())
+def test_a_symlinked_config_is_written_through(tmp_path, save):
+    real = tmp_path / "dotfiles" / "config.json"
+    real.parent.mkdir()
+    real.write_text(json.dumps(FULL))
+    link = tmp_path / "home" / "config.json"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    save(_searcher(link))
+    assert link.is_symlink()
+    saved = json.loads(real.read_text())
+    assert saved["client_env"] == FULL["client_env"]
+    assert "semantic_search" in saved and saved != FULL
+
+
+@pytest.mark.parametrize("save", SAVERS.values(), ids=SAVERS.keys())
 def test_valid_config_keeps_the_other_sections(tmp_path, save):
     path = tmp_path / "config.json"
     path.write_text(json.dumps(FULL))

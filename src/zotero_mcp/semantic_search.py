@@ -1086,9 +1086,6 @@ class ZoteroSemanticSearch:
         if not self.config_path:
             return
 
-        config_dir = Path(self.config_path).parent
-        ensure_private_dir(config_dir)
-
         full_config = self._config_for_update()
         if full_config is None:
             return
@@ -1133,8 +1130,6 @@ class ZoteroSemanticSearch:
         """Record that the collection's metadata now matches ``version``."""
         if not self.config_path:
             return
-        config_dir = Path(self.config_path).parent
-        ensure_private_dir(config_dir)
         full_config = self._config_for_update()
         if full_config is None:
             return
