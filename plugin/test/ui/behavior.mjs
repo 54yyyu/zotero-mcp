@@ -362,7 +362,7 @@ await test("a citation chip keeps its trailing punctuation: no line starts with 
 await test("settings: chat folder choose, cancel and use default; the section explains itself", async (p) => {
   await openSettings(p);
   const folder = () => p.locator(".folder__p").innerText();
-  assert.equal(await folder(), "/Users/you/Documents/Zotero Chat");
+  assert.equal(await folder(), "/Users/you/Documents/Zotero-Chat");
   await p.getByRole("button", { name: "Use default" }).isDisabled().then((d) => assert.ok(d, "nothing to reset yet"));
   await p.getByRole("button", { name: "Choose…" }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().chatFolder.endsWith("paper-notes"));
@@ -377,7 +377,7 @@ await test("settings: chat folder choose, cancel and use default; the section ex
   assert.match(await p.locator("section.sec", { hasText: "Chat folder" }).innerText(), /remembers its own folder[\s\S]*\.claude\/skills and AGENTS\.md/);
   await p.getByRole("button", { name: "Use default" }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().chatFolder === "");
-  assert.equal(await folder(), "/Users/you/Documents/Zotero Chat");
+  assert.equal(await folder(), "/Users/you/Documents/Zotero-Chat");
 });
 
 await test("history: each chat shows its folder; Copy terminal command copies the backend's command and says Copied; a resumed chat starts in its own folder", async (p) => {
@@ -558,6 +558,16 @@ for (const [name, params, run] of [
   ["empty", {}, async () => {}],
   ["answer", {}, async (p) => { await send(p, "compare"); await done(p); await p.locator(".foot__src").click(); await p.locator(".step__row").first().click(); }],
   ["chips", { ctx: "area" }, async (p) => { await p.locator(".cin").click(); await p.keyboard.type("@Discrim"); await p.waitForSelector(".pop__i"); await p.keyboard.press("Enter"); await p.waitForTimeout(200); }],
+  ["long model name", {}, async (p) => {
+    await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent) && !window.__zmc.shadow.querySelector(".pick--effort").hidden);
+    await p.evaluate(() => { window.__zmc.shadow.querySelector(".pick--model .pick__t").textContent = "Claude Opus 5.5 with a very long name and a million tokens of context"; });
+    const t = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".pick--effort .pick__t"); return [e.scrollWidth, e.clientWidth, e.textContent]; });
+    assert.deepEqual([t[0] <= t[1], t[2]], [true, "Medium"], "the effort level is never the thing that truncates");
+    await p.locator(".pick--effort").click();
+    await p.waitForSelector(".menu--effort .menu__item");
+    const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".menu--effort"), b = r(".pick--effort"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
+    assert.ok(g.off < 3 && g.inside, "the effort menu opens under its own button, inside the composer");
+  }],
   ["popup", {}, async (p) => { await p.locator('button[aria-label="Add a source"]').click(); await p.waitForSelector(".pop__i"); }],
   ["permission", { speed: 5 }, async (p) => { await send(p, "add a note"); await p.waitForSelector(".perm__opts"); }],
   ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],

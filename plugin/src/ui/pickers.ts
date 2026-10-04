@@ -76,6 +76,7 @@ export class Pickers {
     const menu = h(`div.menu.menu--${kind}`, { role: "menu", "aria-label": TITLE[kind].split(":")[0] }, h("div.menu__note", null, "Loading…"));
     this.menu = menu;
     this.host.appendChild(menu);
+    if (kind === "effort") menu.style.left = `${Math.max(0, Math.min(anchor.offsetLeft, this.host.clientWidth - menu.offsetWidth))}px`;
     menu.addEventListener("keydown", (e) => this.key(e as KeyboardEvent, anchor));
     let c: Choices;
     try {

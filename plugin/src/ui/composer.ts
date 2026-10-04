@@ -65,7 +65,7 @@ export class Composer {
 
     const b = this.pickers.buttons;
     append(this.el, [this.pop.el, this.chipsEl, this.ta,
-      h("div.ctools", null, this.plusBtn, b.model, h("span.ctools__fill"), b.effort, b.mode, this.sendBtn)]);
+      h("div.ctools", null, this.plusBtn, b.model, b.effort, h("span.ctools__fill"), b.mode, this.sendBtn)]);
     this.wireDrop();
     env.doc.addEventListener("pointerdown", this.outside, true);
     this.syncSend();
