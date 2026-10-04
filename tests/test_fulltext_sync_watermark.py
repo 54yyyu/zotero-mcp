@@ -280,3 +280,65 @@ def test_update_database_holds_watermark_when_items_still_failed(
 
     saved = json.loads(config.read_text())
     assert saved["semantic_search"]["last_sync_version"] == 10
+
+
+class RecordingChroma(FakeChroma):
+    """FakeChroma that records upserts and prunes; upserts of ``bad_ids`` fail."""
+
+    embedding_function = None
+
+    def __init__(self, bad_ids=()):
+        super().__init__()
+        self.bad_ids = set(bad_ids)
+        self.upserted = []
+        self.pruned = []
+
+    def upsert_documents(self, documents, metadatas, ids):
+        if self.bad_ids & set(ids):
+            raise RuntimeError("embedding provider unavailable")
+        self.upserted.extend(ids)
+
+    def prune_item_chunks(self, item_key, keep):
+        self.pruned.append((item_key, keep))
+
+
+def _retry_run(tmp_path, monkeypatch, chroma, passages):
+    db = tmp_path / "zotero.sqlite"
+    make_zotero_db(db, ["AAAA1111"])
+    config = tmp_path / "config.json"
+    _write_config(config, last_sync_version=10)
+    s = make_search(
+        db,
+        FakeVersionsZotero({"AAAA1111": 5}, library_version=12),
+        config_path=config,
+    )
+    s.chroma_client = chroma
+    item = {"key": "AAAA1111", "data": {"title": "T"}}
+    monkeypatch.setattr(s, "_get_items_from_source", lambda **kw: [item])
+
+    def failing_batch(batch, force_rebuild, failed_docs):
+        for i in range(passages):
+            meta = {"parent_item_key": "AAAA1111", "chunk_index": i, "n_chunks": passages}
+            failed_docs.append((f"text {i}", meta, f"AAAA1111#{i}"))
+        return {"processed": 1, "added": 0, "updated": 0, "skipped": 0, "errors": passages}
+
+    monkeypatch.setattr(s, "_process_item_batch", failing_batch)
+    s.update_database(extract_fulltext=True, include_fulltext=False)
+    return json.loads(config.read_text())
+
+
+def test_retry_prunes_once_per_item_not_per_passage(tmp_path, monkeypatch):
+    """The end-of-run retry writes every passage, then prunes the item once."""
+    chroma = RecordingChroma()
+    saved = _retry_run(tmp_path, monkeypatch, chroma, passages=3)
+    assert len(chroma.upserted) == 3
+    assert chroma.pruned == [("AAAA1111", 3)]
+    assert saved["semantic_search"]["last_sync_version"] == 12
+
+
+def test_retry_does_not_prune_item_with_remaining_failure(tmp_path, monkeypatch):
+    """An item with a passage that still fails keeps its old passages."""
+    chroma = RecordingChroma(bad_ids={"AAAA1111#1"})
+    saved = _retry_run(tmp_path, monkeypatch, chroma, passages=3)
+    assert chroma.pruned == []
+    assert saved["semantic_search"]["last_sync_version"] == 10

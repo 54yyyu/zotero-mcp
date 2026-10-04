@@ -2957,10 +2957,17 @@ class ZoteroSemanticSearch:
                 _retry_time.sleep(1)  # Brief pause before retry
 
                 retry_ok = 0
+                # Items whose passages all got written, and items with any
+                # passage still failing. Pruning waits until the item's
+                # passages are done, then runs once per item, not per passage.
+                retried_metas: dict[str, dict[str, Any]] = {}
+                still_failing: set[str] = set()
                 for doc, meta, doc_id in _failed_docs:
+                    parent = meta.get("parent_item_key")
                     try:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
-                        self._prune_stale_chunks([meta])
+                        if parent is not None:
+                            retried_metas[parent] = meta
                         retry_ok += 1
                         stats["errors"] -= 1  # Remove from error count
                         # Don't classify as added vs updated — when the
@@ -2970,7 +2977,15 @@ class ZoteroSemanticSearch:
                         stats["recovered_items"] += 1
                     except Exception as e2:
                         retry_fail += 1
+                        if parent is not None:
+                            still_failing.add(parent)
                         logger.error(f"Retry failed for {doc_id}: {e2}")
+
+                # No workers are running here, so _chroma_call_lock is not
+                # needed for this prune.
+                self._prune_stale_chunks(
+                    [m for k, m in retried_metas.items() if k not in still_failing]
+                )
 
                 try:
                     sys.stderr.write(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
@@ -2999,6 +3014,8 @@ class ZoteroSemanticSearch:
             # Likewise when items still failed after the retry (#610): in
             # incremental mode they would never appear in a later
             # item_versions(since=...) result, so they would stay unindexed.
+            # Trade-off: an item that always fails keeps the watermark back
+            # on every run. Persisting failed keys instead is a follow-up.
             self.update_config["last_update"] = datetime.now().isoformat()
             if stats.get("deletion_skipped_reason") or retry_fail:
                 self._save_update_config()
@@ -3391,7 +3408,9 @@ class ZoteroSemanticSearch:
 
         Runs after a successful upsert, never before: write first, then
         prune, so a failed embed leaves the old passages in place (#610).
-        Caller holds ``_chroma_call_lock``.
+        Worker paths call this under ``_chroma_call_lock``. The end-of-run
+        retry calls it without the lock, which is safe because no workers
+        are running by then. It prunes once per item in ``metadatas``.
         """
         if not hasattr(self.chroma_client, "prune_item_chunks"):
             return
