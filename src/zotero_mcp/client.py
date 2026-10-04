@@ -2,7 +2,6 @@
 Zotero client wrapper for MCP server.
 """
 
-import contextlib
 import functools
 import json
 import logging
@@ -10,7 +9,6 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -550,30 +548,9 @@ def _local_key_remembered() -> bool | None:
 
 def _write_config(config: dict) -> None:
     """Persist the config file, owner-only, replacing it atomically."""
-    write_config_atomic(ZOTERO_MCP_CONFIG_PATH, config)
+    from zotero_mcp.utils import write_json_atomic
 
-
-def write_config_atomic(path: str | Path, config: dict) -> None:
-    """Write ``config`` to ``path`` owner-only via a temp file and a rename,
-    so a concurrent reader sees the old file or the new one, never half."""
-    from zotero_mcp.utils import ensure_private_dir
-
-    # Write through a symlinked config (dotfile managers): replacing the link
-    # itself would leave the real file stale.
-    path = Path(path).resolve()
-    ensure_private_dir(path.parent)
-    # A unique temp name per write, so concurrent writers (threads or
-    # processes) never share one. mkstemp creates it owner-only, so the
-    # credential is never readable by others, even before the rename.
-    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-        os.replace(temp_path, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(temp_path)
-        raise
+    write_json_atomic(ZOTERO_MCP_CONFIG_PATH, config)
 
 
 def store_local_write_credentials(

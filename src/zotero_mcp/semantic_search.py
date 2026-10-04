@@ -34,7 +34,6 @@ from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_active_group_id, get_zotero_client
 from .client import read_config_for_update as _read_config_for_update
-from .client import write_config_atomic as _write_config_atomic
 
 # Re-exported so callers keep importing them from here, while the
 # ChromaDB-free definitions stay importable without this module (#485).
@@ -50,7 +49,14 @@ from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .identifiers import metadata_match_keys
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
-from .utils import _paginate, ensure_private_dir, format_creators, is_local_mode, suppress_stdout
+from .utils import (
+    _paginate,
+    ensure_private_dir,
+    format_creators,
+    is_local_mode,
+    suppress_stdout,
+    write_json_atomic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1110,7 +1116,7 @@ class ZoteroSemanticSearch:
                 full_config["semantic_search"]["last_sync_version"] = int(last_sync_version)
 
         try:
-            _write_config_atomic(self.config_path, full_config)
+            write_json_atomic(self.config_path, full_config)
         except Exception as e:
             logger.error(f"Error saving update config: {e}")
 
@@ -1135,7 +1141,7 @@ class ZoteroSemanticSearch:
             return
         full_config.setdefault("semantic_search", {})["index_schema_version"] = int(version)
         try:
-            _write_config_atomic(self.config_path, full_config)
+            write_json_atomic(self.config_path, full_config)
         except Exception as e:
             logger.error(f"Error saving index_schema_version: {e}")
 
@@ -1163,7 +1169,7 @@ class ZoteroSemanticSearch:
         else:
             section.pop("backfill_unattributed", None)
         try:
-            _write_config_atomic(self.config_path, full_config)
+            write_json_atomic(self.config_path, full_config)
         except Exception as e:
             logger.error(f"Error saving backfill_unattributed: {e}")
 

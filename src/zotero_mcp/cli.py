@@ -127,7 +127,8 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
         db_path: Path to the Zotero database file
     """
     try:
-        from zotero_mcp.client import read_config_for_update, write_config_atomic
+        from zotero_mcp.client import read_config_for_update
+        from zotero_mcp.utils import write_json_atomic
 
         # Raises on a file that exists but cannot be parsed, rather than
         # replacing it (and the credentials in it) with just db_path.
@@ -137,7 +138,7 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
         full_config["zotero_db_path"] = db_path
 
         # Atomic and owner-only: the config can hold credentials.
-        write_config_atomic(config_path, full_config)
+        write_json_atomic(config_path, full_config)
 
         print(f"Saved Zotero database path to config: {config_path}")
 
