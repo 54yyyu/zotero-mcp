@@ -1617,6 +1617,43 @@ class TestUpdateItemType:
         assert "item_type" in result
         assert "book" in result
 
+    def test_migrate_carries_base_mapped_fields(self, monkeypatch):
+        """journalArticle -> conferencePaper: publicationTitle must land in
+        proceedingsTitle (same base field), as Zotero desktop does, not be
+        silently dropped."""
+        item = _make_item(publication_title="Proc. of FooConf")
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            fields={"item_type": "conferencePaper"},
+            ctx=DummyContext(),
+        )
+
+        d = fake.update_calls[0]["data"]
+        assert d["itemType"] == "conferencePaper"
+        assert d.get("proceedingsTitle") == "Proc. of FooConf"
+        assert "publicationTitle" not in d
+        assert "Carried over to the new type: publicationTitle -> proceedingsTitle" in result
+        # Existing report lines keep their format.
+        assert "- **item_type**: 'journalArticle' -> 'conferencePaper'" in result
+
+    def test_migrate_without_carry_has_no_carried_line(self, monkeypatch):
+        item = _make_item()
+        fake = FakeZoteroForUpdate(items=[item])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ABCD1234",
+            fields={"item_type": "book"},
+            ctx=DummyContext(),
+        )
+
+        assert "Carried over" not in result
+
     def test_migrate_preserves_tags_and_collections(self, monkeypatch):
         item = _make_item(
             tags=["keep-me", "also-me"],
