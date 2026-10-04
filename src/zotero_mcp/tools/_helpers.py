@@ -872,59 +872,12 @@ def _normalize_str_list_input(value, field_name="value"):
     raise ValueError(f"{field_name} must be a list of strings or a string")
 
 
-def _normalize_tag_write_input(value, field_name="tags"):
-    """Normalize a tag argument for a write into Zotero tag dicts.
-
-    Accepts bare names (``"x"``), Zotero tag dicts (``{"tag": "x", "type":
-    1}``), lists mixing both, or the same as a JSON string. ``type`` is kept
-    when given and omitted otherwise (Zotero then stores a manual tag).
-    """
-    if value is None:
-        return []
-    if isinstance(value, dict):
-        value = [value]
-    elif isinstance(value, str):
-        raw = value.strip()
-        if raw[:1] in ("[", "{"):
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, list | dict):
-                return _normalize_tag_write_input(parsed, field_name)
-        return [{"tag": t} for t in _normalize_str_list_input(value, field_name)]
-    if not isinstance(value, list | tuple):
-        raise ValueError(f"{field_name} must be a list of strings/tag objects or a string")
-    out: list[dict] = []
-    seen: set[str] = set()
-    for entry in value:
-        if isinstance(entry, dict):
-            name = str(entry.get("tag") or entry.get("name") or "").strip()
-            if not name:
-                continue
-            tag = {"tag": name}
-            if entry.get("type") is not None:
-                if entry["type"] not in (0, 1) or isinstance(entry["type"], bool):
-                    raise ValueError(f"{field_name}: tag type must be 0 or 1, got {entry['type']!r}")
-                tag["type"] = int(entry["type"])
-        else:
-            name = str(entry).strip()
-            if not name:
-                continue
-            tag = {"tag": name}
-        if name in seen:
-            continue
-        seen.add(name)
-        out.append(tag)
-    return out
-
-
 def _apply_tag_changes(existing, add=None, remove=None):
     """Return a new tag list: *existing* kept verbatim (incl. ``type``),
     names in *remove* dropped, and *add* tags not already present appended.
 
-    *add* is a list of tag dicts (see _normalize_tag_write_input); *remove*
-    an iterable of names. Never rebuilds existing tags from their names,
+    *add* is a list of tag dicts (``{"tag": name}``, optionally with
+    ``type``); *remove* an iterable of names. Never rebuilds existing tags from their names,
     which would silently turn automatic (type 1) tags into manual ones.
     """
     remove_set = set(remove or ())

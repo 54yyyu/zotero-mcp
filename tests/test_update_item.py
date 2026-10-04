@@ -531,10 +531,6 @@ class TestUpdateItemTags:
         assert {"tag": "MeSH heading", "type": 1} in tags
         assert len(tags) == 2
 
-    def test_add_tags_accepts_tag_objects_with_a_type(self, monkeypatch):
-        tags = self._update_with_typed_tags(monkeypatch, add_tags=[{"tag": "imported", "type": 1}])
-        assert {"tag": "imported", "type": 1} in tags
-
     def test_tags_and_add_tags_mutually_exclusive(self, monkeypatch):
         """Providing both tags= and add_tags= should produce an error."""
         item = _make_item(tags=["x"])

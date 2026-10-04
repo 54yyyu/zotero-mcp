@@ -3069,9 +3069,7 @@ def _unknown_fields_error(unknown: list[str], item_type: str) -> str:
         "(overlapping fields kept, type-specific ones dropped). "
         "TAG SEMANTICS (easy to get wrong): tags REPLACES the whole tag "
         "list; add_tags/remove_tags are incremental and preferred. They "
-        "are mutually exclusive with tags. Existing tags keep their type "
-        "(automatic tags stay automatic); tags/add_tags entries may also be "
-        "{tag, type} objects, type 1 = automatic. "
+        "are mutually exclusive with tags. "
         "collections (keys) and collection_names likewise REPLACE "
         "membership — pass collections=[] to clear it; for incremental "
         "moves use zotero_set_item_collections. "
@@ -3088,8 +3086,8 @@ def update_item(
     item_key: str,
     fields: dict | str | None = None,
     creators: list[dict] | str | None = None,
-    tags: list[str | dict] | str | None = None,
-    add_tags: list[str | dict] | str | None = None,
+    tags: list[str] | str | None = None,
+    add_tags: list[str] | str | None = None,
     remove_tags: list[str] | str | None = None,
     collections: list[str] | str | None = None,
     collection_names: list[str] | str | None = None,
@@ -3123,9 +3121,7 @@ def update_item(
             ``fields['creators']``).
         tags / add_tags / remove_tags: mutually exclusive; ``tags``
         REPLACES the full tag list, ``add_tags`` / ``remove_tags`` are
-        incremental. Prefer the incremental forms. ``tags`` / ``add_tags``
-        entries may be names or ``{"tag": name, "type": 0|1}`` objects
-        (type 1 = automatic). Existing tags keep their type.
+        incremental. Prefer the incremental forms.
         collections / collection_names: REPLACE collection memberships;
         for incremental moves use zotero_set_item_collections instead.
         ctx: MCP context.
@@ -3239,17 +3235,19 @@ def update_item(
 
         # Tags
         if tags is not None:
-            new_tags = _helpers._normalize_tag_write_input(tags, "tags")
-            data["tags"] = new_tags
-            changes.append(f"- **tags**: replaced with {[t['tag'] for t in new_tags]}")
+            tag_list = _helpers._normalize_str_list_input(tags, "tags")
+            data["tags"] = [{"tag": t} for t in tag_list]
+            changes.append(f"- **tags**: replaced with {tag_list}")
         elif add_tags is not None or remove_tags is not None:
-            to_add = _helpers._normalize_tag_write_input(add_tags, "add_tags")
+            to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
             to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
             # Existing tag dicts are kept verbatim so automatic (type 1)
             # tags stay automatic.
-            data["tags"] = _helpers._apply_tag_changes(data.get("tags", []), to_add, to_remove)
+            data["tags"] = _helpers._apply_tag_changes(
+                data.get("tags", []), [{"tag": t} for t in to_add], to_remove
+            )
             if add_tags is not None:
-                changes.append(f"- **tags**: added {[t['tag'] for t in to_add]}")
+                changes.append(f"- **tags**: added {to_add}")
             if remove_tags is not None:
                 changes.append(f"- **tags**: removed {list(to_remove)}")
 
