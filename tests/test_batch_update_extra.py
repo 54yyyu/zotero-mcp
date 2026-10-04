@@ -358,3 +358,42 @@ def test_batch_update_reports_no_match_for_unknown_keys(monkeypatch):
     )
 
     assert "No items found" in result
+
+
+class FakeZoteroTagFilter(FakeZoteroForBatch):
+    """Search honours the ``tag`` parameter against the items' live tags."""
+
+    def items(self):
+        tag = self.params.get("tag")
+        out = list(self._items.values())
+        if tag:
+            out = [it for it in out
+                   if tag in {t["tag"] for t in it["data"].get("tags", [])}]
+        return out
+
+
+def test_batch_update_selects_once_when_tag_action_removes_selector_tag(monkeypatch):
+    """tag='to-read' + remove_tags=['to-read'] + set_keys: the Extra edits
+    must apply to the items the selector matched, not to a re-search run
+    after the tag half already removed the selector tag."""
+    items = [
+        {"key": "ITEM0001", "data": {"itemType": "journalArticle", "extra": "",
+                                     "tags": [{"tag": "to-read"}]}},
+        {"key": "ITEM0002", "data": {"itemType": "journalArticle", "extra": "",
+                                     "tags": [{"tag": "other"}]}},
+    ]
+    fake = FakeZoteroTagFilter(items)
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+
+    result = write.batch_update(
+        tag="to-read",
+        remove_tags=["to-read"],
+        set_keys={"tex.status": "read"},
+        ctx=DummyContext(),
+    )
+
+    assert fake._items["ITEM0001"]["data"]["tags"] == []
+    assert fake._items["ITEM0001"]["data"]["extra"] == "tex.status: read"
+    assert fake._items["ITEM0002"]["data"]["extra"] == ""
+    assert "No items found" not in result

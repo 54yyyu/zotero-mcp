@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Adding a book chapter or conference paper by DOI keeps the book or proceedings title** (#638). CrossRef's `container-title` was written only to `publicationTitle`, which `bookSection` and `conferencePaper` items do not have, so the container was dropped silently. It now goes to `bookTitle` / `proceedingsTitle`.
+### Fixed
+
+- **`zotero_batch_update` applies Extra edits to the items it selected** (#640). With both tag and Extra actions and a `tag`/`query` selector, the Extra half re-ran the search after the tag half had already edited tags, so `tag='to-read', remove_tags=['to-read'], set_keys={...}` removed the tag and then reported "No items found" for the Extra edits, which were never written. The selection is now resolved once and shared.
 
 ## [0.13.2] - 2026-10-04
 
