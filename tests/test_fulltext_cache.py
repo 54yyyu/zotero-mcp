@@ -259,3 +259,27 @@ def test_update_db_survives_a_broken_cache(cfg, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "could not purge stale fulltext cache entries" in out
     assert "Database update completed" in out
+
+
+def test_index_is_written_atomically_without_a_shared_temp_name(tmp_path):
+    """Concurrent saves used to share one fixed ``index.json.tmp``."""
+    import threading
+
+    errors = []
+
+    def save(n):
+        try:
+            for i in range(20):
+                fulltext_cache._save_index_unlocked(tmp_path, {"writer": n, "i": i})
+        except Exception as e:  # pragma: no cover - failure path
+            errors.append(e)
+
+    threads = [threading.Thread(target=save, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert "writer" in json.loads((tmp_path / "index.json").read_text())
+    assert [p.name for p in tmp_path.iterdir()] == ["index.json"]
