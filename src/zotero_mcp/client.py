@@ -2,6 +2,7 @@
 Zotero client wrapper for MCP server.
 """
 
+import contextlib
 import functools
 import json
 import logging
@@ -9,6 +10,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -453,16 +455,26 @@ def _readable_config_for_update() -> dict:
     it also holds ``semantic_search`` and ``client_env``, and treating a
     transient read failure or a hand-editing typo as "empty" would drop both.
     """
-    if not ZOTERO_MCP_CONFIG_PATH.exists():
+    return read_config_for_update(ZOTERO_MCP_CONFIG_PATH)
+
+
+def read_config_for_update(path: str | Path) -> dict:
+    """``_readable_config_for_update`` for any config path. Raises OSError
+    when the file exists but is not a JSON object."""
+    path = Path(path)
+    if not path.exists():
         return {}
     try:
-        with open(ZOTERO_MCP_CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f) or {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f) or {}
     except json.JSONDecodeError as e:
         raise OSError(
-            f"{ZOTERO_MCP_CONFIG_PATH} is not valid JSON ({e}). Fix or remove "
+            f"{path} is not valid JSON ({e}). Fix or remove "
             "the file; refusing to overwrite it and lose the other settings."
         ) from e
+    if not isinstance(data, dict):
+        raise OSError(f"{path} does not hold a JSON object; refusing to overwrite it.")
+    return data
 
 
 def _local_write_enabled() -> bool:
@@ -538,20 +550,28 @@ def _local_key_remembered() -> bool | None:
 
 def _write_config(config: dict) -> None:
     """Persist the config file, owner-only, replacing it atomically."""
+    write_config_atomic(ZOTERO_MCP_CONFIG_PATH, config)
+
+
+def write_config_atomic(path: str | Path, config: dict) -> None:
+    """Write ``config`` to ``path`` owner-only via a temp file and a rename,
+    so a concurrent reader sees the old file or the new one, never half."""
     from zotero_mcp.utils import ensure_private_dir
 
-    ensure_private_dir(ZOTERO_MCP_CONFIG_PATH.parent)
-    temp_path = ZOTERO_MCP_CONFIG_PATH.with_suffix(".json.tmp")
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    # The file holds a credential — keep it owner-only. Best-effort; a no-op
-    # on platforms without POSIX permissions. Set before the rename so the
-    # key is never briefly world-readable at its final name.
+    path = Path(path)
+    ensure_private_dir(path.parent)
+    # A unique temp name per write, so concurrent writers (threads or
+    # processes) never share one. mkstemp creates it owner-only, so the
+    # credential is never readable by others, even before the rename.
+    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
-        os.chmod(temp_path, 0o600)
-    except OSError:
-        pass
-    os.replace(temp_path, ZOTERO_MCP_CONFIG_PATH)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        os.replace(temp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_path)
+        raise
 
 
 def store_local_write_credentials(

@@ -33,6 +33,8 @@ except Exception:
 from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_active_group_id, get_zotero_client
+from .client import read_config_for_update as _read_config_for_update
+from .client import write_config_atomic as _write_config_atomic
 
 # Re-exported so callers keep importing them from here, while the
 # ChromaDB-free definitions stay importable without this module (#485).
@@ -1060,6 +1062,20 @@ class ZoteroSemanticSearch:
             section.get("last_sync_version"), library_key
         )
 
+    def _config_for_update(self) -> dict | None:
+        """The config file for a read-modify-write, or None to skip the write.
+
+        A file that exists but cannot be parsed (a typo from hand-editing, or
+        another process caught mid-write) also holds the API key, the local
+        write key and the embedding settings; rewriting it from ``{}`` would
+        drop all of them, so the save is skipped and logged instead.
+        """
+        try:
+            return _read_config_for_update(self.config_path)
+        except OSError as e:
+            logger.error(f"Not saving index state: {e}")
+            return None
+
     def _save_update_config(
         self,
         last_sync_version: int | None = None,
@@ -1073,14 +1089,9 @@ class ZoteroSemanticSearch:
         config_dir = Path(self.config_path).parent
         ensure_private_dir(config_dir)
 
-        # Load existing config or create new one
-        full_config = {}
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path) as f:
-                    full_config = json.load(f)
-            except Exception:
-                pass
+        full_config = self._config_for_update()
+        if full_config is None:
+            return
 
         # Update semantic search config
         if "semantic_search" not in full_config:
@@ -1102,8 +1113,7 @@ class ZoteroSemanticSearch:
                 full_config["semantic_search"]["last_sync_version"] = int(last_sync_version)
 
         try:
-            with open(self.config_path, "w") as f:
-                json.dump(full_config, f, indent=2)
+            _write_config_atomic(self.config_path, full_config)
         except Exception as e:
             logger.error(f"Error saving update config: {e}")
 
@@ -1125,17 +1135,12 @@ class ZoteroSemanticSearch:
             return
         config_dir = Path(self.config_path).parent
         ensure_private_dir(config_dir)
-        full_config = {}
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path) as f:
-                    full_config = json.load(f)
-            except Exception:
-                pass
+        full_config = self._config_for_update()
+        if full_config is None:
+            return
         full_config.setdefault("semantic_search", {})["index_schema_version"] = int(version)
         try:
-            with open(self.config_path, "w") as f:
-                json.dump(full_config, f, indent=2)
+            _write_config_atomic(self.config_path, full_config)
         except Exception as e:
             logger.error(f"Error saving index_schema_version: {e}")
 
@@ -1154,21 +1159,16 @@ class ZoteroSemanticSearch:
         """Persist the unattributed-doc count so later updates keep warning."""
         if not self.config_path:
             return
-        full_config = {}
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path) as f:
-                    full_config = json.load(f)
-            except Exception:
-                pass
+        full_config = self._config_for_update()
+        if full_config is None:
+            return
         section = full_config.setdefault("semantic_search", {})
         if count:
             section["backfill_unattributed"] = int(count)
         else:
             section.pop("backfill_unattributed", None)
         try:
-            with open(self.config_path, "w") as f:
-                json.dump(full_config, f, indent=2)
+            _write_config_atomic(self.config_path, full_config)
         except Exception as e:
             logger.error(f"Error saving backfill_unattributed: {e}")
 
