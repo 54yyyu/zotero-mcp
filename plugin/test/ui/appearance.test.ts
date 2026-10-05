@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { ACCENTS, BACKGROUNDS, DEFAULT_APPEARANCE, accentVars, contrast, readAppearance, reach, textOn } from "../../src/ui/appearance.ts";
 import { withDefaults } from "../../src/zotero/defaults.ts";
 
-test("a missing or broken appearance reads as the default: glass on, our red, no background", () => {
+test("a missing or broken appearance reads as the default: glass on, mono, no background", () => {
   for (const raw of [undefined, null, "glass", 3, [], {}]) assert.deepEqual(readAppearance(raw), DEFAULT_APPEARANCE);
   assert.deepEqual(withDefaults({}).appearance, DEFAULT_APPEARANCE);
   assert.equal(DEFAULT_APPEARANCE.glass, true);
@@ -18,13 +18,15 @@ test("each field is checked on its own: one bad value never resets the others", 
   assert.equal(readAppearance({ glass: false }).glass, false);
 });
 
-test("accent: only #rrggbb, and our red is stored as the default", () => {
+test("accent: only #rrggbb; mono is the default (\"\"), and our red is a colour like any other", () => {
   for (const bad of ["red", "#fff", "#12345g", "url(x)", "#1234567", 0x2563c9]) assert.equal(readAppearance({ accent: bad }).accent, "", String(bad));
-  assert.equal(readAppearance({ accent: "#CC2936" }).accent, "");
+  assert.equal(readAppearance({ accent: "#CC2936" }).accent, "#cc2936");
 });
 
 test("background: none, a preset, or the picture only when one is saved", () => {
   for (const b of BACKGROUNDS) assert.equal(readAppearance({ background: b.id }).background, b.id);
+  assert.equal(BACKGROUNDS[0]!.id, "glow", "the glow is a choice, not a given");
+  assert.equal(readAppearance({ background: "none" }).background, "none", "a saved \"none\" stays Plain: no glow");
   assert.equal(readAppearance({ background: "plaid" }).background, "none");
   assert.equal(readAppearance({ background: "image" }).background, "none", "no picture saved");
   assert.deepEqual([readAppearance({ background: "image", image: "kyoto.jpg" }).background, readAppearance({ image: "x".repeat(500) }).image.length], ["image", 120]);
@@ -51,5 +53,7 @@ test("any accent stays readable: links 4.5:1 on the paper, text on the fill pick
       assert.ok(contrast(fill, on) >= Math.max(contrast(fill, "#ffffff"), contrast(fill, "#16181d")) - 1e-9, `${hex} on-accent ${t}`);
     }
   }
-  assert.deepEqual([accentVars("")["--accent-l"], accentVars("")["--accent-d"]], ["#cc2936", "#ff7b86"], "the default is our red, in both themes");
+  const mono = accentVars("");
+  assert.deepEqual([mono["--accent-l"], mono["--accent-d"], mono["--on-accent-l"], mono["--on-accent-d"]], ["#16181d", "#e6e8eb", "#ffffff", "#16181d"], "mono: a black send button with a white arrow in light, the reverse in dark");
+  assert.deepEqual([accentVars("#cc2936")["--accent-l"], accentVars("#cc2936")["--accent-d"]], ["#cc2936", "#ff7b86"], "the Red swatch keeps its own dark tone");
 });

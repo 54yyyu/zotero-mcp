@@ -174,14 +174,17 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
 - **Lazy**: `mdview.ts` imports `diagram.ts` dynamically on the first svg block; esbuild bundles it as a lazily initialised
   module, so a chat without diagrams never runs it, and its stylesheet is added to the shadow root on first use.
 - Light and dark; follows Zotero's theme (`host.theme()`); keyboard accessible; works from 300 px to 700 px wide.
-- Appearance (`ui/appearance.ts` validates and applies it, `ui/styles-look.ts` draws it): glass (default on), accent, background,
-  text size, density. `Look` writes data attributes and CSS variables on `.zmc`, so a change shows at once and nothing re-renders.
-  Glass is faux glass inside our root (Gecko gives a plugin no OS vibrancy): `.zmc::before` is the gradient or picture, `::after` the
-  veil and three faint glows; cards are translucent with a bright edge; only the composer, menus and jump pill blur
-  (`backdrop-filter`), so a long chat scrolls as cheaply as without it. The accent's fill, its text-safe `--accent-ink` (4.5:1 on
-  the paper and on a dark glass card) and the text on it are computed by WCAG contrast, so any colour stays readable; `--agent`,
-  `--link` and `--focus` follow it, the logo keeps `--brand`. `.zmc[data-accent="custom"]` is set only when the user chose an accent other than our red (the
-  diagrams keep their own blue otherwise). A picture is downscaled to 1600 px JPEG in `zotero/image.ts` and kept
+- Appearance (`ui/appearance.ts` validates and applies it, `ui/styles-look.ts` draws it): glass (default on), accent (default
+  Mono), background (default Plain), text size, density. `Look` writes data attributes and CSS variables on `.zmc`, so a change
+  shows at once and nothing re-renders. Glass is faux glass inside our root (Gecko gives a plugin no OS vibrancy): translucent
+  cards with a bright edge over the backdrop, and a blur (`backdrop-filter`) only on the composer, menus and jump pill, so a long
+  chat scrolls as cheaply as without it. The backdrop is `.zmc::before`: nothing for Plain (`background: "none"`, the paper), the
+  three faint glows for Glow, a gradient preset, or the picture (with its veil on `::after`). Mono (accent `""`) is our ink,
+  #16181d / #e6e8eb: the send button, working dot, switches and selections are black and white, and links keep the calm link
+  blue. A chosen accent (Red is a swatch like the others) sets `.zmc[data-accent="custom"]`; only then do links and the glow
+  follow it (the diagrams keep their own blue otherwise). Its text-safe `--accent-ink` (4.5:1 on the paper and on a dark glass
+  card) and the text on the fill are computed by WCAG contrast. `--agent` and `--focus` follow the accent; the logo's Z keeps
+  `--brand` red. A picture is downscaled to 1600 px JPEG in `zotero/image.ts` and kept
   as `<dataDir>/background.jpg` (prefs hold its name only), read back when the panel mounts.
 - Unavailable states are designed too: no backend, not logged in, zotero-cli missing, Zotero's local API off (23119 silent: "restart Zotero").
 

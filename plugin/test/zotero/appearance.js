@@ -38,14 +38,14 @@ async function main(ctx) {
   };
   await theme("light");
 
-  // 1. the default: glass on, our red, and Gecko really computes the blur on the composer's frost layer
+  // 1. the default: glass on, mono, and Gecko really computes the blur on the composer's frost layer
   check(zmc().dataset.glass === "on" && zmc().dataset.bg === "none", "glass on, no background by default: " + JSON.stringify(zmc().dataset));
-  check(cssVar("--accent") === "#cc2936", "our red is the default accent: " + cssVar("--accent"));
+  check(cssVar("--accent") === "#16181d" && cssVar("--link") === "#2563c9", "mono ink is the default accent, links stay blue: " + cssVar("--accent") + " " + cssVar("--link"));
   const frost = win.getComputedStyle($(".composer"), "::before").backdropFilter;
   out.backdropFilter = frost;
   check(/blur\(18px\)/.test(frost), "Gecko computes backdrop-filter on the composer: " + frost);
   check(win.CSS.supports("backdrop-filter", "blur(1px)"), "backdrop-filter supported (else the fallback applies)");
-  check(/radial-gradient/.test(win.getComputedStyle(zmc(), "::after").backgroundImage), "the glow is drawn");
+  check(win.getComputedStyle(zmc(), "::before").display === "none" && win.getComputedStyle(zmc(), "::after").display === "none", "Plain by default: no glow, no backdrop layer");
   await say("SCENARIO:rich ATT=ABCD1234");
   await ctx.snapshot("look-1-glass-answer-light");
 
@@ -67,8 +67,10 @@ async function main(ctx) {
   await ctx.waitFor(() => host.getSettings().appearance.accent === "#8a2be2", "the custom colour is saved");
   await ctx.waitFor(() => byLabel("Accent colour as hex"), "the hex field shows for a custom colour");
   click(byLabel("Red"), "Red swatch");
+  await ctx.waitFor(() => host.getSettings().appearance.accent === "#cc2936" && zmc().dataset.accent === "custom", "our red is a chosen colour");
+  click(byLabel("Mono"), "Mono swatch");
   await ctx.waitFor(() => host.getSettings().appearance.accent === "", "back to the default");
-  check(!zmc().hasAttribute("data-accent"), "the default red has no data-accent");
+  check(!zmc().hasAttribute("data-accent"), "mono has no data-accent");
   click(byLabel("Dawn"), "Dawn tile");
   await ctx.waitFor(() => zmc().dataset.bg === "dawn", "a preset paints the backdrop");
   check(/gradient/.test(win.getComputedStyle(zmc(), "::before").backgroundImage), "the preset is a gradient on ::before");
@@ -113,12 +115,12 @@ async function main(ctx) {
 
   // 5. dark
   await theme("dark");
-  check(cssVar("--accent") === "#ff7b86", "our red's dark variant: " + cssVar("--accent"));
+  check(cssVar("--accent") === "#e6e8eb", "mono in dark is near-white: " + cssVar("--accent"));
   await ctx.snapshot("look-4-picture-answer-dark");
   const host2 = ctx.plugin.panel().host;
   click($$("button").find((b) => b.getAttribute("aria-label") === "Settings"), "settings button");
   await ctx.waitFor(() => root.querySelector('section.sec[aria-label="Appearance"]'), "the Appearance card");
-  click($$("button").find((b) => b.getAttribute("aria-label") === "No background"), "No background tile");
+  click($$("button").find((b) => b.getAttribute("aria-label") === "Plain"), "Plain tile");
   await ctx.waitFor(() => zmc().dataset.bg === "none" && host2.getSettings().appearance.image === "evening-hills.png", "plain glass; the picture is kept for later");
   root.querySelector('section.sec[aria-label="Appearance"]').scrollIntoView({ block: "start" });
   await ctx.sleep(300);

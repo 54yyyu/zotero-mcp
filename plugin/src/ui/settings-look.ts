@@ -44,16 +44,16 @@ export function appearanceCard(host: PanelHost, look: Look, save: (patch: Partia
       },
     });
     const tiles = [
-      { id: "none", label: "No background", mod: "none" },
+      { id: "none", label: "Plain", mod: "none" },
       ...BACKGROUNDS.map((b) => ({ id: b.id, label: b.name, mod: b.id })),
       ...(a.image ? [{ id: "image", label: `Your picture (${a.image})`, mod: "image" }] : []),
     ];
     return section("Appearance", "How the panel looks. Changes show as you make them.",
-      switchRow("Glass", "Translucent cards over a soft backdrop.", a.glass, (on) => void save({ glass: on })),
+      switchRow("Glass", "Frosted, translucent cards and menus.", a.glass, (on) => void save({ glass: on })),
       row("Accent colour",
-        swatches("Accent colour", "sw", ACCENTS.map((c) => ({ id: c.id, label: c.name, style: `--cl:${c.light};--cd:${c.dark}` })), custom ? "custom" : a.accent, (id) => void save({ accent: id }),
+        swatches("Accent colour", "sw", ACCENTS.map((c) => ({ id: c.id, label: c.name, style: `--cl:${c.light};--cd:${c.dark}`, mod: c.id ? undefined : "mono" })), custom ? "custom" : a.accent, (id) => void save({ accent: id }),
           h(`label.sw.sw--custom${custom ? ".sw--on" : ""}`, null, color)),
-        "The send button, links, selections and the working dot. The logo stays red."),
+        "The send button, selections, the working dot and, once you pick a colour, links. Mono is black and white."),
       custom ? row("Hex", hex) : null,
       row("Background",
         [swatches("Background", "bgsw", tiles, a.background, (id) => void save({ background: id })),

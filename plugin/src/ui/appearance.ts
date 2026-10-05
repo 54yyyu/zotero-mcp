@@ -7,10 +7,10 @@ export const DEFAULT_APPEARANCE: Appearance = {
   glass: true, accent: "", background: "none", image: "", imageVisibility: 50, imageBlur: 0, textSize: "default", density: "comfortable",
 };
 
-/** The swatches, each a light and a dark colour. The first is ours and is the default (saved as ""). */
-const DEFAULT_ACCENT = { id: "", name: "Red", light: "#cc2936", dark: "#ff7b86" };
+/** The swatches, each a light and a dark colour. The first, Mono (our ink), is the default and is saved as "". */
 export const ACCENTS = [
-  DEFAULT_ACCENT,
+  { id: "", name: "Mono", light: "#16181d", dark: "#e6e8eb" },
+  { id: "#cc2936", name: "Red", light: "#cc2936", dark: "#ff7b86" },
   { id: "#d9480f", name: "Orange", light: "#d9480f", dark: "#ff922b" },
   { id: "#2b8a3e", name: "Green", light: "#2b8a3e", dark: "#69db7c" },
   { id: "#0b7285", name: "Teal", light: "#0b7285", dark: "#66d9e8" },
@@ -18,8 +18,10 @@ export const ACCENTS = [
   { id: "#6741d9", name: "Violet", light: "#6741d9", dark: "#b197fc" },
 ];
 
-/** Soft gradients drawn by CSS (styles-look.ts), so they cost no bytes and follow light and dark. */
+/** Drawn by CSS (styles-look.ts), so they cost no bytes and follow light and dark: the glow (three faint washes of colour)
+ * and soft gradients. "none" (Plain, the default) is just the paper. */
 export const BACKGROUNDS = [
+  { id: "glow", name: "Glow" },
   { id: "mist", name: "Mist" },
   { id: "dawn", name: "Dawn" },
   { id: "sage", name: "Sage" },
@@ -39,7 +41,7 @@ export function readAppearance(raw: unknown): Appearance {
   const accent = typeof s.accent === "string" && HEX.test(s.accent) ? s.accent.toLowerCase() : "";
   return {
     glass: typeof s.glass === "boolean" ? s.glass : d.glass,
-    accent: accent === DEFAULT_ACCENT.light ? "" : accent,
+    accent,
     background: oneOf(s.background, ["none", ...BACKGROUNDS.map((b) => b.id), ...(image ? ["image"] : [])], "none"),
     image,
     imageVisibility: num(s.imageVisibility, 0, 100, d.imageVisibility),
@@ -123,17 +125,14 @@ export class Look {
       glass: a.glass ? "on" : "off", size: a.textSize, density: a.density,
       bg: wantsImage ? (this.image ? "image" : "none") : a.background,
     });
-    const fade = wantsImage ? 1 - a.imageVisibility / 100 : 1;
     const vars: Record<string, string> = {
       ...accentVars(a.accent),
       // The veil is the panel's paper laid over the picture: at full visibility 30% of it stays, so text keeps its contrast.
       "--bg-veil": `${Math.round(100 - a.imageVisibility * 0.7)}%`,
       "--bg-blur": `${a.imageBlur}px`,
-      // The glow (stronger on dark paper) sits over the picture, so it fades as the picture is turned up.
-      "--glow-l": `${Math.round(14 * fade)}%`, "--glow-d": `${Math.round(20 * fade)}%`,
     };
     for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v);
-    // The contract with the diagrams: data-accent="custom" only when the user chose an accent other than our red.
+    // The contract with the diagrams: data-accent="custom" only when the user chose an accent other than mono.
     if (a.accent) el.dataset.accent = "custom"; else delete el.dataset.accent;
     if (wantsImage && !this.image && !this.loading) {
       this.loading = true;

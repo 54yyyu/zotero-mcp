@@ -631,7 +631,8 @@ const look = (p) => p.evaluate(() => { const z = window.__zmc.shadow.querySelect
 const appearance = (p) => p.evaluate(() => JSON.parse(JSON.stringify(window.__zmc.host.getSettings().appearance)));
 
 await test("appearance: glass, accent, background, size and density apply live and are saved", async (p) => {
-  assert.deepEqual([(await look(p)).glass, (await look(p)).bg, (await look(p)).accent], ["on", "none", "#cc2936"], "glass on, no background, our red by default");
+  assert.deepEqual([(await look(p)).glass, (await look(p)).bg, (await look(p)).accent], ["on", "none", "#16181d"], "glass on, no background, mono by default");
+  assert.equal(await p.evaluate(() => getComputedStyle(window.__zmc.shadow.querySelector(".zmc")).getPropertyValue("--link").trim()), "#2563c9", "links stay the calm blue by default");
   assert.equal(await p.evaluate(() => window.__zmc.shadow.querySelector(".zmc").hasAttribute("data-accent")), false);
   await openSettings(p);
   const card = p.locator('section.sec[aria-label="Appearance"]');
@@ -655,8 +656,15 @@ await test("appearance: glass, accent, background, size and density apply live a
   assert.equal((await appearance(p)).accent, "#12a150", "a bad hex is refused, not saved");
   // the send button wears the accent, in readable text
   await card.getByRole("radio", { name: "Red" }).click();
-  assert.equal((await appearance(p)).accent, "", "our red is saved as the default");
-  assert.equal(await p.evaluate(() => window.__zmc.shadow.querySelector(".zmc").hasAttribute("data-accent")), false, "the default red: no data-accent");
+  assert.equal((await appearance(p)).accent, "#cc2936", "our red is a chosen colour");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.querySelector(".zmc").getAttribute("data-accent")), "custom");
+  await card.getByRole("radio", { name: "Mono" }).click();
+  assert.equal((await appearance(p)).accent, "", "mono is the default");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.querySelector(".zmc").hasAttribute("data-accent")), false, "mono: no data-accent");
+  const layer = () => p.evaluate(() => getComputedStyle(window.__zmc.shadow.querySelector(".zmc"), "::before").display);
+  assert.deepEqual([(await look(p)).bg, await layer()], ["none", "none"], "Plain by default: no glow, no backdrop");
+  await card.getByRole("radio", { name: "Glow" }).click();
+  assert.deepEqual([(await look(p)).bg, /radial-gradient/.test((await look(p)).before)], ["glow", true], "Glow is a choice");
   await card.getByRole("radio", { name: "Dawn" }).click();
   const l = await look(p);
   assert.deepEqual([l.bg, /gradient/.test(l.before)], ["dawn", true], "a preset paints the backdrop");
@@ -667,7 +675,7 @@ await test("appearance: glass, accent, background, size and density apply live a
   await p.getByRole("button", { name: "Back to the chat" }).click();
   await p.locator(".cin").fill("x");
   const send = await p.evaluate(() => getComputedStyle(window.__zmc.shadow.querySelector(".send")).backgroundColor);
-  assert.equal(send, "rgb(204, 41, 54)", "Send is the accent (flat, so no gem)");
+  assert.equal(send, "rgb(22, 24, 29)", "Send is the accent, mono ink (flat, so no gem)");
   assert.deepEqual(await appearance(p), { glass: false, accent: "", background: "dawn", image: "", imageVisibility: 50, imageBlur: 0, textSize: "large", density: "compact" });
 });
 

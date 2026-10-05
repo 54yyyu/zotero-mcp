@@ -1,18 +1,20 @@
 // The look (appearance.ts sets the data attributes and variables read here): the accent, the glass, the backdrop, text
 // size and density, and the settings screen's cards. Glass is faux glass inside our own root (Gecko gives a plugin no
-// OS vibrancy): a backdrop behind everything (.zmc::before is the gradient or the picture, ::after the veil and three
-// faint glows), translucent cards with a bright edge and a soft shadow, and a real backdrop blur on the three floating
-// surfaces only (composer, menus, the jump pill), so a long chat scrolls as cheaply as without it.
+// OS vibrancy): translucent cards with a bright edge and a soft shadow over the backdrop (.zmc::before: plain paper by
+// default, or the glow, a gradient or the picture; ::after the picture's veil), and a real backdrop blur on the three
+// floating surfaces only (composer, menus, the jump pill), so a long chat scrolls as cheaply as without it.
 export const LOOK_STYLES = `
-/* ---------- the accent: --agent follows it, so every dot, caret and link does; the logo keeps --brand ---------- */
+/* ---------- the accent: mono ink by default; --agent and --focus follow it, links only once the user chose a colour
+   (until then they stay the calm link blue of styles.ts); the logo's Z keeps --brand red ---------- */
 .zmc {
-  --accent: var(--accent-l, #cc2936); --accent-ink: var(--accent-ink-l, #cc2936); --on-accent: var(--on-accent-l, #ffffff);
-  --brand: #cc2936; --agent: var(--accent); --link: var(--accent-ink); --focus: var(--accent-ink);
+  --accent: var(--accent-l, #16181d); --accent-ink: var(--accent-ink-l, #16181d); --on-accent: var(--on-accent-l, #ffffff);
+  --brand: #cc2936; --agent: var(--accent); --focus: var(--accent-ink);
 }
 .zmc[data-theme="dark"] {
-  --accent: var(--accent-d, #ff7b86); --accent-ink: var(--accent-ink-d, #ff7b86); --on-accent: var(--on-accent-d, #16181d);
-  --brand: #ff7b86; --agent: var(--accent); --link: var(--accent-ink); --focus: var(--accent-ink);
+  --accent: var(--accent-d, #e6e8eb); --accent-ink: var(--accent-ink-d, #e6e8eb); --on-accent: var(--on-accent-d, #16181d);
+  --brand: #ff7b86; --agent: var(--accent); --focus: var(--accent-ink);
 }
+.zmc[data-accent="custom"] { --link: var(--accent-ink); }
 .zmc[data-glass] .send:not(:disabled):not(.send--stop) { background: var(--accent); color: var(--on-accent); transition: filter var(--ease), transform var(--ease); }
 .zmc[data-glass] .send:hover:not(:disabled):not(.send--stop) { filter: brightness(1.08); }
 .zmc[data-glass] .ubub { background: color-mix(in srgb, var(--accent) 7%, var(--paper-raised)); border-color: color-mix(in srgb, var(--accent) 22%, var(--rule)); }
@@ -45,18 +47,17 @@ export const LOOK_STYLES = `
 .zmc[data-theme="dark"][data-bg="sage"]::before { background: radial-gradient(90% 55% at 0% 0%, #1b2c22, transparent 70%), linear-gradient(170deg, #131815, #141a17 60%, #151917); }
 .zmc[data-theme="dark"][data-bg="dusk"]::before { background: radial-gradient(90% 55% at 100% 0%, #25244a, transparent 70%), radial-gradient(80% 50% at 0% 100%, #33203a, transparent 70%), linear-gradient(170deg, #141526, #16152a 55%, #1b1626); }
 .zmc[data-theme="dark"][data-bg="sand"]::before { background: radial-gradient(90% 55% at 100% 0%, #362b1c, transparent 70%), linear-gradient(170deg, #1a1814, #1c1915 60%, #191714); }
-/* the veil fades the picture into the panel; the glow is three faint washes of colour (none over a gradient, which is one already) */
-.zmc { --glow: var(--glow-l, 14%); }
-.zmc[data-theme="dark"] { --glow: var(--glow-d, 20%); }
+/* Plain ("none", the default) is the paper alone. Glow is three faint washes of colour; the veil fades a picture into the panel */
+.zmc { --glow: 14%; --glow-a: #7c9cc9; } /* mono: a cool blue-grey wash; a chosen accent glows in its own colour */
+.zmc[data-accent="custom"] { --glow-a: var(--accent); }
+.zmc[data-theme="dark"] { --glow: 20%; }
 .zmc {
-  --glows: radial-gradient(70% 40% at 0% 0%, color-mix(in srgb, var(--accent) var(--glow), transparent), transparent 72%),
+  --glows: radial-gradient(70% 40% at 0% 0%, color-mix(in srgb, var(--glow-a) var(--glow), transparent), transparent 72%),
     radial-gradient(60% 36% at 100% 45%, color-mix(in srgb, #3bb4c9 var(--glow), transparent), transparent 72%),
     radial-gradient(75% 38% at 15% 100%, color-mix(in srgb, #8b7cf6 var(--glow), transparent), transparent 72%);
 }
-.zmc:is([data-glass="on"][data-bg="none"], [data-bg="image"])::after { display: block; }
-.zmc[data-glass="on"][data-bg="none"]::after { background: var(--glows); }
-.zmc[data-bg="image"]::after { background: color-mix(in srgb, var(--paper) var(--bg-veil, 65%), transparent); }
-.zmc[data-glass="on"][data-bg="image"]::after { background: var(--glows), color-mix(in srgb, var(--paper) var(--bg-veil, 65%), transparent); }
+.zmc[data-bg="glow"]::before { background: var(--glows); }
+.zmc[data-bg="image"]::after { display: block; background: color-mix(in srgb, var(--paper) var(--bg-veil, 65%), transparent); }
 /* over a picture, text drawn straight on it gets a soft halo of the paper colour so it keeps its contrast */
 .zmc[data-bg="image"] :is(.md, .empty, .vempty, .hist__group, .wel__hero, .working, .foot) { text-shadow: 0 0 4px var(--paper); }
 .zmc:not([data-bg="none"]) .hist__search, .zmc[data-glass="on"] .hist__search { background: transparent; }
@@ -90,6 +91,9 @@ export const LOOK_STYLES = `
 /* the cards that carry a coloured edge keep it */
 .zmc[data-glass="on"] :is(.setup, .check--bad, .notice, .perm:not(.perm--done), .inlineerr, .wrow--bad) { background: var(--glass); border-color: var(--glass-line); }
 .zmc[data-glass="on"] .ubub { background: color-mix(in srgb, var(--accent) 8%, var(--glass)); border-color: color-mix(in srgb, var(--accent) 24%, var(--glass-line)); box-shadow: var(--glass-sheen); }
+/* mono: a quiet grey bubble, no ink-coloured edge */
+.zmc[data-glass]:not([data-accent]) .ubub { background: color-mix(in srgb, var(--ink) 4%, var(--paper-raised)); border-color: var(--rule); }
+.zmc[data-glass="on"]:not([data-accent]) .ubub { background: color-mix(in srgb, var(--ink) 4%, var(--glass)); border-color: var(--glass-line); }
 .zmc[data-glass="on"] :is(.input, .folder) { background: var(--glass-strong); border-color: var(--glass-line); }
 .zmc[data-glass="on"] .input:hover:not(:disabled):not(:focus) { border-color: var(--rule-strong); }
 .zmc[data-glass="on"] .seg { background: color-mix(in srgb, var(--ink) 5%, transparent); border-color: var(--glass-line); }
@@ -116,9 +120,10 @@ export const LOOK_STYLES = `
 }
 /* the send button: a small gem of the accent */
 .zmc[data-glass="on"] .send:not(:disabled):not(.send--stop) {
-  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 80%, #ffffff), var(--accent) 52%, color-mix(in srgb, var(--accent) 82%, #5b3df5));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 80%, #ffffff), var(--accent) 52%, color-mix(in srgb, var(--accent) 82%, var(--gem-tint, #5b3df5)));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), 0 4px 12px -3px color-mix(in srgb, var(--accent) 60%, transparent);
 }
+.zmc:not([data-accent]) { --gem-tint: var(--accent); } /* mono: a plain ink gem, no violet */
 .zmc[data-glass="on"] .send:hover:not(:disabled):not(.send--stop) { transform: translateY(-1px); }
 .zmc[data-glass="on"] .send:disabled { background: color-mix(in srgb, var(--ink) 7%, transparent); }
 /* pills that lift a pixel */
@@ -159,6 +164,7 @@ export const LOOK_STYLES = `
 .zmc[data-theme="dark"] .sw { --c: var(--cd); }
 .zmc .sw:hover { transform: scale(1.08); }
 .zmc :is(.sw[aria-checked="true"], .sw--on) { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12), 0 0 0 2px var(--paper-raised), 0 0 0 4px var(--c); }
+.zmc .sw.sw--mono { background: linear-gradient(135deg, #16181d 50%, #e6e8eb 50%); }
 .zmc .sw--custom { background: conic-gradient(from 180deg, #e64980, #fab005, #40c057, #15aabf, #4c6ef5, #be4bdb, #e64980); }
 .zmc .sw--custom::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--c, var(--paper-raised)); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.1); }
 .zmc .sw--custom.sw--on { --c: var(--accent); }
@@ -168,7 +174,8 @@ export const LOOK_STYLES = `
 .zmc .bgsw { position: relative; flex: none; width: 40px; height: 30px; padding: 0; border: 1px solid var(--rule-strong); border-radius: var(--r1); background: var(--paper); cursor: pointer; overflow: hidden; transition: transform var(--ease), box-shadow var(--ease); }
 .zmc .bgsw:hover { transform: translateY(-1px); }
 .zmc .bgsw[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.zmc .bgsw--none::after { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1.5px; background: var(--ink-faint); transform: rotate(40deg); }
+.zmc .bgsw--none { background: var(--paper); }
+.zmc .bgsw--glow { background: radial-gradient(90% 80% at 0% 0%, rgb(124 156 201 / 0.55), transparent 70%), radial-gradient(80% 70% at 100% 55%, rgb(59 180 201 / 0.45), transparent 70%), radial-gradient(90% 80% at 15% 100%, rgb(139 124 246 / 0.45), transparent 70%), var(--paper); }
 .zmc .bgsw--image { background: var(--bg-img, var(--paper-sunk)) center / cover; }
 .zmc .bgsw--mist { background: linear-gradient(170deg, #eef2f6, #dbe6f3); }
 .zmc .bgsw--dawn { background: linear-gradient(150deg, #fbe0d0, #f5e9ee 50%, #e5e0f7); }
