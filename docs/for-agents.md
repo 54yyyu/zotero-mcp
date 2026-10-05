@@ -75,6 +75,7 @@ Search modes: `items` (default: title, author, phrase), `semantic` (meaning; nee
 
 ```bash
 zotero-cli --json outline ITEM_KEY                              # find the section
+zotero-cli --json read ITEM_KEY --find "robustness check"       # which pages say it, with snippets
 zotero-cli --json read ITEM_KEY --start-page 3 --end-page 8     # read only those pages
 ```
 

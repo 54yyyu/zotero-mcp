@@ -57,9 +57,10 @@ class TestParsing:
         assert command in _CMD_MAP
 
     def test_read_requires_a_start_page(self):
-        """A page range with no start is a typo, not a default."""
+        """A page range with no start is a typo, not a default (unless --find)."""
+        parsed = build_parser().parse_args(["read", "K1"])
         with pytest.raises(SystemExit):
-            build_parser().parse_args(["read", "K1"])
+            cli_standalone.cmd_read(parsed)
 
     def test_read_end_page_defaults_to_none(self):
         parsed = build_parser().parse_args(["read", "K1", "--start-page", "3"])

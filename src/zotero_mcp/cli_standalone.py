@@ -1100,10 +1100,26 @@ def cmd_read(args):
     """Read a page range out of an item's PDF, as text or as page images."""
     rect = _parse_rect(getattr(args, "rect", None))
     as_image = getattr(args, "format", "text") == "image"
+    find = getattr(args, "find", None)
     if rect is not None and not as_image:
         raise _cli_json.CliError("--rect needs --format image", code="bad_rect")
+    if find is not None and as_image:
+        raise _cli_json.CliError("--find searches text; it cannot go with --format image",
+                                 code="bad_find")
+    if find is None and args.start_page is None:
+        _fail(args, "read", "--start-page is required (a page range with no start is a typo; "
+                            "use --find to search instead)", "missing_start_page")
     setup_zotero_environment()
     from zotero_mcp.tools import read_pdf as read_pdf_mod
+
+    if find is not None:
+        result = read_pdf_mod.find_in_pdf(
+            args.item_key, find, args.start_page, args.end_page,
+            context=getattr(args, "context", 12), ctx=_ctx(args),
+        )
+        _out(args, "read", data=result if _json_mode(args) else None,
+             text=read_pdf_mod.format_find(result))
+        return
 
     if as_image:
         import os
@@ -1699,9 +1715,16 @@ def build_parser() -> argparse.ArgumentParser:
     # read -- page ranges out of an item's PDF
     rd_p = sub.add_parser("read", help="Read a page range from an item's PDF")
     rd_p.add_argument("item_key")
-    rd_p.add_argument("--start-page", type=int, required=True)
+    rd_p.add_argument("--start-page", type=int, default=None,
+                      help="First page (required unless --find is given)")
     rd_p.add_argument("--end-page", type=int, default=None,
-                      help="Defaults to --start-page (a single page)")
+                      help="Defaults to --start-page (a single page); with --find, the last page")
+    rd_p.add_argument("--find", metavar="TEXT",
+                      help="Locate TEXT instead of reading: ranked pages with short snippets "
+                           "(ignores case, punctuation and hyphenation); --start-page/--end-page "
+                           "narrow the search")
+    rd_p.add_argument("--context", type=int, default=12,
+                      help="With --find: words of context on each side of a match (1-60, default 12)")
     rd_p.add_argument("--format", choices=["text", "image"], default="text",
                       help="image writes PNG page images (up to 10 pages) for math, figures and tables")
     rd_p.add_argument("--rect", help="With --format image: crop the start page to x,y,width,height "
@@ -1841,6 +1864,8 @@ Commands returning structured data
   get collections       data.collections[]
   get tags              data.tags[]
   get fulltext          data.text, data.chars
+  read --find           data.mode, data.matches[] (page, hits, snippets[]),
+                        data.more_pages[], data.hits, data.total_pages
   get bibtex            data.bibtex
   annotations list      the annotations payload
   notes list            data.notes[] -- with both .text and .html

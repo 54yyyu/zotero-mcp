@@ -87,10 +87,13 @@ with it; `--collection` does not, because a collection lives inside one library.
 ## Reading efficiently
 
 `get fulltext` on a book-length PDF returns a great deal of text. When you
-need one section, use the outline to find it and read only those pages:
+need one section, use the outline to find it and read only those pages. To
+locate a passage by its words, `--find` returns the matching pages with short
+snippets instead of the pages themselves:
 
 ```bash
 zotero-cli --json outline ABCD1234
+zotero-cli --json read ABCD1234 --find "robustness check"
 zotero-cli --json read ABCD1234 --start-page 42 --end-page 55
 ```
 

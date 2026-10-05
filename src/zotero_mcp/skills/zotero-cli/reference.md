@@ -334,8 +334,10 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ## `read`
 
  - `<item_key>`
- - `--start-page` -- **required**
- - `--end-page` -- Defaults to --start-page (a single page)
+ - `--start-page` -- First page (required unless --find is given)
+ - `--end-page` -- Defaults to --start-page (a single page); with --find, the last page
+ - `--find` -- Locate TEXT instead of reading: ranked pages with short snippets (ignores case, punctuation and hyphenation); --start-page/--end-page narrow the search
+ - `--context` -- default `12` -- With --find: words of context on each side of a match (1-60, default 12)
  - `--format` -- one of `text`, `image` -- default `text` -- image writes PNG page images (up to 10 pages) for math, figures and tables
  - `--rect` -- With --format image: crop the start page to x,y,width,height (normalized 0-1), e.g. from `zotero-cli layout`
  - `--out` -- With --format image: directory for the PNG files (default: a new temporary directory)

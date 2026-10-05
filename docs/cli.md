@@ -136,6 +136,7 @@ zotero-cli duplicates find
 
 # Reading PDFs — find the section first, then read only those pages
 zotero-cli outline ABC123
+zotero-cli read ABC123 --find "robustness check"          # ranked pages with short snippets, not whole pages
 zotero-cli read ABC123 --start-page 42 --end-page 55      # flags garbled math, figures, tables
 zotero-cli read ABC123 --start-page 44 --format image    # PNG page images (up to 10 pages)
 zotero-cli read ABC123 --start-page 44 --format image --rect 0.35,0.49,0.3,0.05   # zoom in
