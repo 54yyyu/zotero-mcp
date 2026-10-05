@@ -77,7 +77,7 @@ export class Pickers {
     const menu = h(`div.menu.menu--${kind}`, { role: "menu", "aria-label": TITLE[kind].split(":")[0] }, h("div.menu__note", null, "Loading…"));
     this.menu = menu;
     this.host.appendChild(menu);
-    if (kind === "effort") menu.style.left = `${Math.max(0, Math.min(anchor.offsetLeft, this.host.clientWidth - menu.offsetWidth))}px`;
+    this.place(menu, anchor, kind);
     menu.addEventListener("keydown", (e) => this.key(e as KeyboardEvent, anchor));
     let c: Choices;
     try {
@@ -93,14 +93,23 @@ export class Pickers {
     const list = kind === "model" ? c.models : kind === "effort" ? c.efforts : c.modes;
     const cur = kind === "model" ? c.model : kind === "effort" ? c.effort : c.mode;
     if (!list.length) { setKids(menu, h("div.menu__note", null, "This agent doesn't offer a choice here.")); return; }
-    if (kind === "effort") { setKids(menu, this.slider(list, cur, anchor)); return; }
+    if (kind === "effort") { setKids(menu, this.slider(list, cur, anchor)); this.place(menu, anchor, kind); return; }
     setKids(menu, list.map((o) => h("button.menu__item", {
       type: "button", role: "menuitemradio", "aria-checked": String(o.id === cur),
       onclick: () => { this.close(); anchor.focus(); this.opts.pick(kind, o.id); },
     },
       h("span.menu__check", null, o.id === cur ? icon("check") : null),
       h("span.menu__tx", null, h("span.menu__t", null, o.name), o.description ? h("span.menu__d", null, o.description) : null))));
+    this.place(menu, anchor, kind);
     ((menu.querySelector('[aria-checked="true"]') ?? menu.querySelector("button")) as HTMLElement | null)?.focus();
+  }
+
+  /** The menu opens straight above its own button, like a dropdown, not above the whole composer; it grows upward and never past the top. */
+  private place(menu: HTMLElement, anchor: HTMLElement, kind: PickKind): void {
+    const gap = 4;
+    menu.style.bottom = `${this.host.offsetHeight - anchor.offsetTop + gap}px`;
+    menu.style.maxHeight = `${Math.max(120, Math.min(304, anchor.getBoundingClientRect().top - 12))}px`;
+    if (kind !== "mode") menu.style.left = `${Math.max(0, Math.min(anchor.offsetLeft, this.host.clientWidth - menu.offsetWidth))}px`;
   }
 
   /**
@@ -127,7 +136,7 @@ export class Pickers {
       stops.forEach((s, i) => s.classList.toggle("eff__stop--on", i === at));
     };
     const apply = () => {
-      clearTimeout(timer);
+      env.win.clearTimeout(timer);
       timer = 0;
       if (at === applied) return;
       applied = at;
@@ -158,8 +167,8 @@ export class Pickers {
         e.preventDefault();
         e.stopPropagation();
         move(step ? at + step : e.key === "Home" ? 0 : n - 1);
-        clearTimeout(timer);
-        timer = setTimeout(apply, 250) as unknown as number;
+        env.win.clearTimeout(timer);
+        timer = env.win.setTimeout(apply, 250);
       } else if (e.key === "Enter") {
         e.preventDefault();
         apply();
@@ -173,7 +182,7 @@ export class Pickers {
     paint();
     // A level chosen with the keys and closed before the pause still lands.
     box.addEventListener("zmc-close-menu", apply);
-    queueMicrotask(() => track.focus({ preventScroll: true }));
+    env.win.setTimeout(() => track.focus({ preventScroll: true }), 0); // after the menu is in the page
     return box;
   }
 

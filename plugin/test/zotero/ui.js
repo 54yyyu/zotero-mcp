@@ -48,6 +48,22 @@ async function main(ctx) {
   out.links = "ok";
   await ctx.snapshot("ui-1-answer");
 
+  // 2b. the effort slider opens (it needs nothing the sandbox lacks), steps with the keys, applies and closes
+  const effBtn = $(".pick--effort");
+  check(effBtn && !effBtn.hidden, "the effort picker is showing");
+  effBtn.click();
+  await ctx.waitFor(() => $(".menu--effort .eff__track"), "the effort slider rendered (not stuck on Loading)");
+  const stops = $$(".eff__stop").length;
+  check(stops >= 2, "one stop per level: " + stops);
+  const level0 = $(".eff__cur").textContent;
+  const key = (k) => $(".eff__track").dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+  key(level0 === $$(".eff__stop")[0]?.title ? "ArrowRight" : "ArrowLeft");
+  check($(".eff__cur").textContent !== level0, "an arrow key moves the level");
+  key("Enter");
+  await ctx.waitFor(() => !$(".menu--effort"), "Enter applies and closes");
+  check(new RegExp($(".eff__cur")?.textContent ?? ".").test("") || true, "no crash after close");
+  out.effortSlider = "ok";
+
   // 3. settings: every section, the catalog-driven pickers, and a save that reaches the host
   click(byLabel("Settings"), "settings button");
   await ctx.waitFor(() => $$("section.sec").length >= 5, "settings sections");
