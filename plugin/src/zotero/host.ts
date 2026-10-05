@@ -1,19 +1,16 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
-import type { AgentRuntime, BackendId, ContextChip, PanelHost, PanelSettings, Spawner } from "../types.ts";
-import { DRAWING_GUIDE, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
+import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, Spawner } from "../types.ts";
+import { DRAWING_GUIDE, FORMAT_GUIDE, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker } from "./context.ts";
-import { withDefaults } from "./defaults.ts";
 import { describeContext } from "./describe.ts";
 import { dropChips } from "./drop.ts";
-import { createImages } from "./image.ts";
 import { createDoctor, findCli } from "./doctor.ts";
 import * as keychain from "./keychain.ts";
 import { saveNote } from "./note.ts";
 import { openTarget } from "./open.ts";
 import { chipForHit, search } from "./search.ts";
 import { createGeckoSpawner } from "./spawn-gecko.ts";
-import { prefs } from "./settings.ts";
-import { createStore } from "./store.ts";
+import { createSettingsHost } from "./settings-host.ts";
 
 export interface HostBundle {
   host: PanelHost;
@@ -21,44 +18,35 @@ export interface HostBundle {
   context: ContextTracker;
   /** chooseImage without the picker: the in-Zotero test imports a file through it. */
   importImage(path: string): Promise<{ name: string; dataUrl: string }>;
+  /** A catalog this panel has read, for Zotero's Settings pane, which must not start an agent to show one. */
+  knownCatalog(b: BackendId): Catalog | undefined;
   dispose(): void;
 }
 
 export function createHost(opts: { id: string; version: string; win: any; dataDir: string }): HostBundle {
   const { win, dataDir } = opts;
-  // Where chats run. Visible and predictable (~/Documents/Zotero-Chat) rather than buried in the profile, so a chat can
-  // be continued from a terminal; the user can point it anywhere in the settings.
-  // ZMC_DEFAULT_CHAT_FOLDER is for the test harness, which must never write into the real home.
-  const defaultFolder = (): string => {
-    const forced = Services.env.get("ZMC_DEFAULT_CHAT_FOLDER");
-    if (forced) return forced;
-    const home = Services.dirsvc.get("Home", Ci.nsIFile);
-    const docs = home.clone(); docs.append("Documents");
-    return PathUtils.join(docs.exists() ? docs.path : home.path, "Zotero-Chat");
-  };
-  const chatFolder = () => settings().chatFolder || defaultFolder();
+  const sh = createSettingsHost(opts);
+  const { settings, store, images, chatFolder, defaultFolder } = sh;
   const spawner = createGeckoSpawner();
   const context = new ContextTracker(opts.id);
   context.start(win);
   const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges") });
+  const known = new Map<BackendId, Catalog>();
   // Wherever zotero-cli is, the agent's shell must find it: its folder goes on the agent's PATH.
   const runtime: AgentRuntime = {
     ...base,
+    catalog: (b) => base.catalog(b).then((c) => { known.set(b, c); return c; }),
     async start(o) {
       const cli = await findCli(spawner, await spawner.baseEnv());
       return base.start(cli ? { ...o, path: [cli.slice(0, cli.lastIndexOf("/")), ...(o.path ?? [])] } : o);
     },
   };
-  const store = createStore(PathUtils.join(dataDir, "sessions"));
-  const images = createImages(win, dataDir);
-
-  // Read on every context change, so parsed once and dropped when something saves.
-  let cached: PanelSettings | null = null;
-  const settings = (): PanelSettings => (cached ??= withDefaults(prefs.json<Partial<PanelSettings>>("settings", {})));
   const doctor = createDoctor({ win, spawner, runtime, settings });
-  const dark = win.matchMedia("(prefers-color-scheme: dark)");
+  // The context settings decide what the tracker hands over, wherever they were changed.
+  const offSettings = sh.host.onSettingsChange(() => context.refresh());
 
   const host: PanelHost = {
+    ...sh.host,
     runtime,
     currentContext() {
       const s = settings();
@@ -81,39 +69,13 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     dropChips: (data) => dropChips(context, data),
     describeContext: (chips: ContextChip[]) => describeContext(chips),
 
-    getSettings: settings,
-    async setSettings(patch) {
-      prefs.setJson("settings", { ...prefs.json("settings", {}), ...patch });
-      cached = null;
-      context.refresh();
-    },
-    async resetSettings() {
-      prefs.set("settings", "");
-      await images.remove();
-      cached = null;
-      context.refresh();
-    },
-    setApiKey: keychain.setApiKey,
-    hasApiKey: async (b: BackendId) => !!(await keychain.getApiKey(b)),
+    async setSettings(patch) { await sh.host.setSettings(patch); context.refresh(); },
+    async resetSettings() { await sh.host.resetSettings(); context.refresh(); },
 
     sessions: () => store.sessions(),
     loadEvents: (id) => store.loadEvents(id),
     appendEvent: (s, ev) => store.appendEvent(s, ev),
     deleteSession: (id) => store.deleteSession(id),
-    clearHistory: () => store.clearAll(),
-    async revealWorkspace() {
-      await IOUtils.makeDirectory(chatFolder(), { createAncestors: true, ignoreExisting: true });
-      Zotero.File.reveal(chatFolder());
-    },
-    about: () => ({ version: opts.version, workspace: chatFolder() }),
-
-    async chooseFolder(start) {
-      const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      fp.init(win.browsingContext, "Choose the chat folder", Ci.nsIFilePicker.modeGetFolder);
-      if (start) try { fp.displayDirectory = Zotero.File.pathToFile(start); } catch { /* a folder that no longer exists */ }
-      const result: number = await new Promise((r) => fp.open(r));
-      return result === Ci.nsIFilePicker.returnOK ? fp.file.path : null;
-    },
     async saveFile(name, data, mime) {
       const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
       const ext = /\.([a-z0-9]{1,5})$/i.exec(name)?.[1]?.toLowerCase() ?? "";
@@ -129,9 +91,6 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       return path;
     },
     saveNote: (note) => saveNote(win, context, note),
-    chooseImage: () => images.choose(),
-    loadImage: () => images.load(),
-    removeImage: () => images.remove(),
     resumeCommand: (s) => resumeCommand(s.backend, s.cwd, s.agentSessionId),
 
     doctor,
@@ -144,14 +103,8 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       const s = settings();
       const key = s.auth[s.backend] === "api-key" ? await keychain.getApiKey(s.backend) : null;
       const varName = keychain.API_KEY_ENV[s.backend];
-      return { cwd, brief: `${buildBrief()}\n\n${DRAWING_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
-    },
-
-    theme: () => (dark.matches ? "dark" : "light"),
-    onThemeChange(cb) {
-      dark.addEventListener("change", cb);
-      return () => dark.removeEventListener("change", cb);
+      return { cwd, brief: `${buildBrief()}\n\n${DRAWING_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
   };
-  return { host, spawner, context, importImage: images.importImage, dispose: () => context.stop() };
+  return { host, spawner, context, importImage: images.importImage, knownCatalog: (b) => known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
 }

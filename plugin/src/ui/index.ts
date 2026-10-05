@@ -55,11 +55,13 @@ class Panel {
   private autoPicked = false;
   private disposers: (() => void)[] = [];
   private catalogs = new Map<BackendId, Catalog>();
+  private seenImage: string;
 
   constructor(root: ShadowRoot, host: PanelHost) {
     this.root = root;
     this.host = host;
     this.chips = new ChipState(host);
+    this.seenImage = host.getSettings().appearance.image;
     this.health = new Health(host, () => this.onHealth());
     this.chat = new Chat({
       host,
@@ -125,7 +127,8 @@ class Panel {
     this.look.apply();
     root.append(h("style", { text: STYLES }), this.app);
 
-    this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }));
+    this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }),
+      host.onSettingsChange(() => this.onOutsideSettings()));
     this.refreshChips();
     this.onHealth();
     this.applyBehavior();
@@ -250,6 +253,14 @@ class Panel {
     if (!this.chat.tr.messages.length && this.chat.session && !this.chat.sending) void this.chat.closeSession();
     void this.loadCatalog(false);
     void this.health.refreshStatuses();
+  }
+
+  /** Saved elsewhere (Zotero's Settings pane, another window): the look, the behaviour, the pickers and an open settings screen follow. */
+  private onOutsideSettings(): void {
+    const image = this.host.getSettings().appearance.image;
+    if (image !== this.seenImage) { this.seenImage = image; this.look.setImage(null); } else this.look.apply(); // a new picture is read again
+    this.onSettings();
+    if (this.view === "settings") this.activeView?.render?.();
   }
 
   /** What the composer's pickers show: the live session's values, else the saved choice over the backend's catalog. */

@@ -346,6 +346,19 @@ await test("pickers: effort, model and mode act on the live session and save int
   assert.match(await p.locator(".pick--model .pick__e").innerText(), /Off/, "pi's own effort default");
 });
 
+await test("settings saved elsewhere (Zotero's Settings pane) apply to the open panel at once, settings screen included", async (p) => {
+  await openSettings(p);
+  const before = await settings(p);
+  await sim(p, (a) => window.__zmc.sim.setSettingsElsewhere({ enterToSend: false, appearance: { ...a, glass: false, textSize: "large" } }), before.appearance);
+  const zmc = await p.evaluate(() => ({ ...window.__zmc.shadow.querySelector(".zmc").dataset }));
+  assert.deepEqual([zmc.glass, zmc.size], ["off", "large"], "the look follows");
+  assert.equal(await p.getByRole("switch", { name: /Press Enter to send/ }).isChecked(), false, "the open settings screen re-renders");
+  await p.getByRole("button", { name: "Back to the chat" }).click();
+  await p.locator(".cin").fill("first");
+  await p.locator(".cin").press("Enter");
+  assert.equal(await p.locator(".cin").inputValue(), "first\n", "Enter-to-send off reached the composer");
+});
+
 const agentTab = (p, name) => p.locator(".mdd__agent", { hasText: name });
 await test("agent switch: an empty chat switches at once; a chat with messages asks first and is never cut silently", async (p) => {
   await p.locator(".pick--model").click();

@@ -1,7 +1,7 @@
 // How the panel looks: glass, accent colour, background, text size, density. The pure part (validation, the accent's
 // colours by WCAG contrast) is unit-tested; `Look` writes the choice onto the panel's root as data attributes and CSS
 // variables, so a change shows at once and nothing re-renders. The CSS that reads them is styles-look.ts.
-import type { Appearance, PanelHost } from "../types.ts";
+import type { Appearance, SettingsHost } from "../types.ts";
 
 export const DEFAULT_APPEARANCE: Appearance = {
   glass: true, accent: "", background: "none", image: "", imageVisibility: 50, imageBlur: 0, textSize: "default", density: "comfortable",
@@ -108,11 +108,11 @@ export function accentVars(accent: string): Record<string, string> {
 /** Puts an appearance on the panel's root element. Owns the background picture, read from the host once, when first shown. */
 export class Look {
   private el: HTMLElement;
-  private host: PanelHost;
+  private host: Pick<SettingsHost, "getSettings" | "loadImage">;
   private image: string | null = null;
   private loading = false;
 
-  constructor(el: HTMLElement, host: PanelHost) {
+  constructor(el: HTMLElement, host: Pick<SettingsHost, "getSettings" | "loadImage">) {
     this.el = el;
     this.host = host;
   }

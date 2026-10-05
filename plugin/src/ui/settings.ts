@@ -1,7 +1,7 @@
 // The settings screen, as stacked cards: agent (backend, sign-in, model, effort, permissions from the backend's
 // catalog), appearance (settings-look.ts), context, chat, prompts, chat folder, data, about. Every change saves at once
 // through `save(patch)`; the patches are built in settings-model.ts.
-import type { Appearance, BackendId, BackendStatus, Catalog, PanelHost, PanelSettings } from "../types.ts";
+import type { Appearance, BackendId, BackendStatus, Catalog, PanelSettings, SettingsHost } from "../types.ts";
 import type { Look } from "./appearance.ts";
 import { clear, env, errMessage, h, icon, isMac, nextId } from "./dom.ts";
 import { addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, setSlot, shortPath, shortcuts } from "./settings-model.ts";
@@ -14,7 +14,8 @@ import { BACKEND_LABEL, BACKENDS, frame } from "./views.ts";
 type CatState = { state: "loading" } | { state: "ok"; catalog: Catalog } | { state: "error"; error: string };
 
 export interface SettingsDeps {
-  back(): void;
+  /** The panel's way back to the chat; Zotero's Settings pane has none (and no header: Zotero shows its own title). */
+  back?: () => void;
   statuses(): BackendStatus[] | null;
   refreshStatuses(): void;
   /** Something that other parts of the panel show has changed. */
@@ -22,9 +23,14 @@ export interface SettingsDeps {
   /** Applies the appearance (saved, or a draft while a slider is dragged). */
   look: Look;
   focusPrompts: boolean;
+  /**
+   * Whether reading this backend's catalog costs nothing now (the open panel already read it). Reading one starts the agent
+   * for a moment, so where this says no (Zotero's Settings pane) it waits for a button. Omitted: always read.
+   */
+  catalogReady?: (b: BackendId) => boolean;
 }
 
-export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElement; render(): void } {
+export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLElement; render(): void } {
   const body = h("div.set");
   const cats = new Map<BackendId, CatState>();
   const keys: Partial<Record<BackendId, boolean>> = {};
@@ -71,7 +77,10 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
     const cur = sts?.find((x) => x.id === b);
     const cat = cats.get(b);
     const parts: HTMLElement[] = [];
-    if (!cat || cat.state === "loading") {
+    if (!cat && o.catalogReady && !o.catalogReady(b)) {
+      parts.push(h("div.field", null, hint(`The model, effort and permissions are read from ${BACKEND_LABEL[b]} itself, which starts it for a moment.`),
+        h("div", null, h("button.btn.btn--sm", { type: "button", onclick: () => loadCatalog(b, true) }, `Show ${BACKEND_LABEL[b]}'s options`))));
+    } else if (!cat || cat.state === "loading") {
       parts.push(h("div.sk-group", { "aria-busy": "true", "aria-label": `Reading ${BACKEND_LABEL[b]}'s options` }, h("div.sk.sk--field"), h("div.sk.sk--field"), h("div.sk.sk--block")));
     } else if (cat.state === "error") {
       parts.push(h("div.inlineerr", { role: "alert" }, icon("warn"),
@@ -95,7 +104,7 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
       hint(sts ? (cur?.available ? `${cur.label} is ready.` : `${cur?.label ?? BACKEND_LABEL[b]} isn't ready: ${cur?.reason ?? "not found"}.`) : "Looking for agents…"),
       signIn(s),
       parts.length ? h("div.fields", null, ...parts) : null,
-      hint("Backend, model, effort and permissions apply to your next new chat; the pickers under the message box change the current one."));
+      hint("These apply to your next new chat; the model and mode buttons under the message box change the current one."));
   }
 
   function signIn(s: PanelSettings): HTMLElement {
@@ -175,7 +184,7 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
 
   function render() {
     const s = host.getSettings();
-    loadCatalog(s.backend);
+    if (!o.catalogReady || o.catalogReady(s.backend)) loadCatalog(s.backend);
     // Rebuilding the page must not drop the keyboard user's place: refocus the control that had focus.
     const focused = (body.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     const fid = focused && body.contains(focused) ? focused.dataset.fid : undefined;
@@ -200,7 +209,7 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
     if (o.focusPrompts) { o.focusPrompts = false; env.win.setTimeout(() => body.querySelector("#prompts")?.scrollIntoView({ block: "start" }), 0); }
   }
 
-  const el = frame("Settings", o.back, body);
+  const el = o.back ? frame("Settings", o.back, body) : body;
   o.refreshStatuses();
   render();
   void Promise.all(BACKENDS.map((b) => host.hasApiKey(b).then((v) => (keys[b] = v), () => (keys[b] = false)))).then(render);

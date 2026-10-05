@@ -1,5 +1,5 @@
 // Prefs under extensions.zotero-chat.*. Secrets never go here (see keychain.ts).
-const PREFIX = "extensions.zotero-chat.";
+export const PREFIX = "extensions.zotero-chat.";
 
 export const prefs = {
   get(key: string): any {

@@ -14,7 +14,8 @@ const suites = [
   ["chat", ["--mock-agent", ...welcomed]],
   ["context-economy", ["--mock-agent", ...welcomed]], // the same selection twice is sent once; real block sizes
   ["ui", ["--mock-agent", ...welcomed]],
-  ["appearance", ["--mock-agent", ...welcomed]], // glass, accent, a preset and a picture through the real host; persists across a remount
+  ["appearance", ["--mock-agent", ...welcomed]],
+  ["prefpane", ["--mock-agent", ...welcomed]], // the Zotero Chat pane in Zotero's Settings: lazy, no agent started, live both ways // glass, accent, a preset and a picture through the real host; persists across a remount
   ["diagram", ["--mock-agent", ...welcomed]], // ```svg answers as themed figures; Copy and Save through the host
   ["notes", ["--mock-agent", ...welcomed]], // Save as note: real child/standalone notes, math and links in the HTML, diagrams as embedded images the editor renders
   ["cite", ["--mock-agent"]], // a quote link flashes the sentence in the reader

@@ -28,7 +28,8 @@ export async function maybeRunTestScript(plugin: any, win: any): Promise<void> {
         await sleep(100);
       }
     },
-    snapshot: (name: string) => snapshot(win, PathUtils.join(shots, `${name}.png`)),
+    /** A snapshot of the main window, or of `of` (Zotero's Settings window, say). */
+    snapshot: (name: string, of: any = win) => snapshot(of, PathUtils.join(shots, `${name}.png`)),
     env: (k: string) => Services.env.get(k),
   };
   let result: unknown, error: string | null = null;

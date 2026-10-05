@@ -60,6 +60,8 @@ interface Sim {
   speed: number;
   setContext(kind: "item" | "selection" | "area" | "none"): void;
   setTheme(t: "light" | "dark"): void;
+  /** Settings saved somewhere else (Zotero's Settings pane): the panel hears of it as it would from the pref observer. */
+  setSettingsElsewhere(patch: Partial<PanelSettings>): void;
   statuses: BackendStatus[];
   writes: { session: string; ev: ChatEvent }[];
   keys: Partial<Record<BackendId, string>>;
@@ -256,6 +258,7 @@ export class FakeHost implements PanelHost {
   private ctx: ContextChip[] = [];
   private ctxCbs = new Set<() => void>();
   private themeCbs = new Set<() => void>();
+  private settingsCbs = new Set<() => void>();
   private _theme: "light" | "dark";
   private store = new Map<string, { meta: SavedSession; events: ChatEvent[] }>();
   private fixed = new Set<string>();
@@ -272,6 +275,7 @@ export class FakeHost implements PanelHost {
       ],
       setContext: (k) => { this.ctx = k === "none" ? [] : k === "selection" ? [ITEM_CHIP, SELECTION_CHIP] : k === "area" ? [{ ...ITEM_CHIP, id: "reader:LUND2021", label: "Lundberg 2021 - The G…", ref: { libraryID: 1, itemKey: "LUND2021" } }, AREA_CHIP] : [ITEM_CHIP]; for (const cb of [...this.ctxCbs]) cb(); },
       setTheme: (t) => { this._theme = t; for (const cb of [...this.themeCbs]) cb(); },
+      setSettingsElsewhere: (patch) => { this.settings = { ...this.settings, ...patch }; for (const cb of [...this.settingsCbs]) cb(); },
     };
     this.sim = sim;
     this.ctx = [];
@@ -424,4 +428,5 @@ export class FakeHost implements PanelHost {
   // --- theme
   theme() { return this._theme; }
   onThemeChange(cb: () => void) { this.themeCbs.add(cb); return () => { this.themeCbs.delete(cb); }; }
+  onSettingsChange(cb: () => void) { this.settingsCbs.add(cb); return () => { this.settingsCbs.delete(cb); }; }
 }

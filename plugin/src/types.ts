@@ -345,7 +345,13 @@ export interface PanelHost {
   /** "light" | "dark", and a callback for when Zotero's theme changes. */
   theme(): "light" | "dark";
   onThemeChange(cb: () => void): () => void;
+  /** The settings were changed elsewhere (Zotero's Settings pane, another window): reapply them. Not called for this host's own saves. */
+  onSettingsChange(cb: () => void): () => void;
 }
+
+/** What the settings screen needs, and all that Zotero's Settings pane provides (zotero/settings-host.ts). */
+export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "resetSettings" | "setApiKey" | "hasApiKey" | "clearHistory" | "revealWorkspace"
+  | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "theme" | "onThemeChange" | "onSettingsChange"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
 
 /** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. */
 export type MountPanel = (root: ShadowRoot, host: PanelHost) => { dispose(): void; focusComposer(): void; runPrompt(slot: number): void };

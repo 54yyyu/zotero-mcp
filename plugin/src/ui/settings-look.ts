@@ -1,7 +1,7 @@
 // The Appearance card: glass, accent colour, background (a gradient or the user's own picture), text size, density.
 // Every change shows at once: a saved one is applied by `save`, a slider or the colour picker being dragged previews
 // through `look.apply(draft)` and saves on release.
-import type { Appearance, PanelHost } from "../types.ts";
+import type { Appearance, SettingsHost } from "../types.ts";
 import { ACCENTS, BACKGROUNDS } from "./appearance.ts";
 import type { Look } from "./appearance.ts";
 import { errMessage, h } from "./dom.ts";
@@ -9,7 +9,7 @@ import { row, section, seg, slider, swatches, switchRow } from "./settings-parts
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
-export function appearanceCard(host: PanelHost, look: Look, save: (patch: Partial<Appearance>) => Promise<void>, render: () => void): () => HTMLElement {
+export function appearanceCard(host: SettingsHost, look: Look, save: (patch: Partial<Appearance>) => Promise<void>, render: () => void): () => HTMLElement {
   let msg = "";
   let busy = false;
   const fail = (e: unknown) => { msg = errMessage(e); render(); };

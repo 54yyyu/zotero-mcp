@@ -26,7 +26,7 @@ writeFileSync(join(out, "manifest.json"), JSON.stringify({
   applications: { zotero: { id: addon.id, update_url: addon.updateUrl, strict_min_version: addon.minZotero, strict_max_version: "*" } },
 }, null, 2));
 
-cpSync(join(root, "bootstrap.js"), join(out, "bootstrap.js"));
+for (const f of ["bootstrap.js", "prefpane.xhtml", "prefpane.js"]) cpSync(join(root, f), join(out, f));
 cpSync(join(root, "assets"), join(out, "assets"), { recursive: true });
 
 // Two scripts, IIFE (Gecko's subscript loader takes no module syntax): plugin.js is what Zotero loads at startup,
