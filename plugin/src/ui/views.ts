@@ -8,13 +8,14 @@ export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude
 export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi"];
 
 /**
- * The logo (assets/logo.svg): a round chat bubble with one softened corner and the agent's red dot. It follows the theme.
- * The parts carry classes so the welcome can animate them (styles-welcome.ts); the small dots only show in the burst.
+ * The logo (assets/logo.svg): a hollow square chat box with a small tail, and a red Z in it. It follows the theme. The parts
+ * carry classes so the welcome can animate them (styles-welcome.ts: the lines draw in, the Z breathes while the check runs and
+ * bursts when it is done); the small dots only show in the burst.
  */
 export const mark = (hero = false): HTMLElement => h(`div.mark${hero ? ".mark--hero" : ""}`, null, svg("svg", { viewBox: "-16 -16 160 160", "aria-hidden": "true" },
-  svg("path", { class: "mk-b", d: "M64 10a54 54 0 1 1 0 108H16a6 6 0 0 1-6-6V64A54 54 0 0 1 64 10Z", fill: "var(--ink)" }),
-  ...[[67, 28], [28, 67], [-28, 67], [-67, 28], [-67, -28], [-28, -67], [28, -67], [67, -28]].map(([dx, dy]) => svg("circle", { class: "mk-p", cx: "64", cy: "64", r: "3", fill: "var(--agent)", style: `--dx:${dx}px;--dy:${dy}px` })),
-  svg("g", { class: "mk-t" }, svg("circle", { class: "mk-s", cx: "64", cy: "64", r: "17", fill: "var(--agent)" }))));
+  svg("path", { class: "mk-b", d: "M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z", fill: "none", stroke: "var(--ink)", "stroke-width": "5.5", "stroke-linejoin": "round", "stroke-linecap": "round", pathLength: "1" }),
+  ...[[67, 28], [28, 67], [-28, 67], [-67, 28], [-67, -28], [-28, -67], [28, -67], [67, -28]].map(([dx, dy]) => svg("circle", { class: "mk-p", cx: "64", cy: "58", r: "3", fill: "var(--agent)", style: `--dx:${dx}px;--dy:${dy}px` })),
+  svg("g", { class: "mk-t" }, svg("path", { class: "mk-s", d: "M47 39H81L47 77H81", fill: "none", stroke: "var(--agent)", "stroke-width": "8", "stroke-linejoin": "round", "stroke-linecap": "round", pathLength: "1" }))));
 
 // ───────────────────────────── problems (the unavailable states) ─────────────────────────────
 

@@ -11,11 +11,12 @@ export const WELCOME_STYLES = `
 @keyframes zmc-ripple { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent); } to { box-shadow: 0 0 0 8px transparent; } }
 
 /* ---------- the logo ---------- */
-.zmc .mark :is(.mk-b, .mk-t, .mk-s, .mk-p) { transform-box: fill-box; transform-origin: center; }
+.zmc .mark :is(.mk-t, .mk-p) { transform-box: fill-box; transform-origin: center; }
 .zmc .mk-p { opacity: 0; }
 .zmc .mark--hero { width: 64px; height: 64px; margin-bottom: var(--s3); }
-.zmc .mark--hero .mk-b { animation: zmc-pop 560ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
-.zmc .mark--hero .mk-s { animation: zmc-pop 520ms cubic-bezier(0.2, 0.9, 0.3, 1.4) 420ms both; }
+.zmc .mark--hero :is(.mk-b, .mk-s) { stroke-dasharray: 1; }
+.zmc .mark--hero .mk-b { animation: zmc-draw 760ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.zmc .mark--hero .mk-s { animation: zmc-draw 520ms cubic-bezier(0.4, 0, 0.2, 1) 560ms both; }
 .zmc .mark--hero .mk-t { animation: zmc-breathe 3.6s ease-in-out 1.4s infinite; }
 .zmc .mark--busy .mk-t { animation: zmc-breathe 1.1s ease-in-out 0.9s infinite; }
 .zmc .mark--ready .mk-t, .zmc .mark--hello .mk-t { animation: zmc-burst 760ms ease-out; }
