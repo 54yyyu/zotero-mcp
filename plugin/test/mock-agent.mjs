@@ -15,7 +15,7 @@
 //   MOCK_DUMP=<file>               write argv/cwd/pid/env facts to this file at startup (env-cleaning tests)
 //   MOCK_GRANDCHILD=1              also start a `sleep` grandchild in the same process group (its pid goes in the dump)
 import { spawn as spawnChild } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const variant = process.env.MOCK_VARIANT ?? "claude";
 const BANNER = "STARTUP BANNER (must not be shown)";
@@ -268,6 +268,15 @@ async function prompt(id, params) {
   }
   if (text.includes("SCENARIO:whoami")) {
     chunk(JSON.stringify({ model: s?.model, mode: s?.mode, effort: s?.effort, images }));
+    return end();
+  }
+  if (text.includes("SCENARIO:diagrams") || text.includes("SCENARIO:hostile-svg")) {
+    // The sample drawings of src/ui/fake-diagrams.ts (read as text: plain template literals), streamed in small chunks.
+    const src = readFileSync(new URL("../src/ui/fake-diagrams.ts", import.meta.url), "utf8");
+    const svg = (name) => new RegExp(`export const ${name} = \`([^\`]*)\``).exec(src)?.[1] ?? "";
+    const fence = (name) => "```svg\n" + svg(name) + "\n```\n\n";
+    const md = text.includes("SCENARIO:hostile-svg") ? fence("HOSTILE") + "After the drawing." : `How it works:\n\n${fence("PIPELINE")}Where the designs sit:\n\n${fence("MATRIX")}${fence("CAUSAL")}Done.`;
+    for (let i = 0; i < md.length; i += 400) chunk(md.slice(i, i + 400));
     return end();
   }
   // Default: a plain reply streamed in chunks.

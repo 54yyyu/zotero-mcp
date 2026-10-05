@@ -13,6 +13,7 @@ const suites = [
   ["host", []],
   ["chat", ["--mock-agent", ...welcomed]],
   ["ui", ["--mock-agent", ...welcomed]],
+  ["diagram", ["--mock-agent", ...welcomed]], // ```svg answers as themed figures; Copy and Save through the host
   ["cite", ["--mock-agent"]], // a quote link flashes the sentence in the reader
   ["welcome", ["--mock-agent"]],
   ["agent", []], // the real bridge's handshake: no prompt, no tokens
