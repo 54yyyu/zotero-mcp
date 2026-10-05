@@ -951,53 +951,6 @@ await test("at 300px a drawing keeps its labels readable and scrolls sideways, w
   await p.waitForFunction(() => window.__zmc.shadow.querySelector(".dg__fig").dataset.fade === "l");
 }, { width: 300 });
 
-// no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
-const OVERFLOW = () => {
-  const root = window.__zmc.shadow;
-  const app = root.querySelector(".zmc").getBoundingClientRect();
-  const out = [];
-  for (const el of root.querySelectorAll(".zmc *")) {
-    if (el.closest(".md-table, .code pre, .math--display, .sd__pre, .fixlog, .thought__body, svg, [hidden]") || el.tagName === "svg") continue;
-    const r = el.getBoundingClientRect();
-    if (r.width && r.right > app.right + 1) out.push(`${el.tagName.toLowerCase()}.${el.className}`);
-    if (r.width && r.left < app.left - 1) out.push(`left:${el.tagName.toLowerCase()}.${el.className}`);
-  }
-  for (const s of root.querySelectorAll(".feed, .vw__body, .composer, .hd, .dock")) if (s.scrollWidth > s.clientWidth + 1) out.push(`scrollX:${s.className}`);
-  return [...new Set(out)];
-};
-for (const [name, params, run] of [
-  ["empty", {}, async () => {}],
-  ["answer", {}, async (p) => { await send(p, "compare"); await done(p); await p.locator(".foot__src").click(); await p.locator(".step__row").first().click(); }],
-  ["chips", { ctx: "area" }, async (p) => { await p.locator(".cin").click(); await p.keyboard.type("@Discrim"); await p.waitForSelector(".pop__i"); await p.keyboard.press("Enter"); await p.waitForTimeout(200); }],
-  ["long model name", {}, async (p) => {
-    await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent) && window.__zmc.shadow.querySelector(".pick--model .pick__e"));
-    await p.evaluate(() => { window.__zmc.shadow.querySelector(".pick--model .pick__t").textContent = "Claude Opus 5.5 with a very long name and a million tokens of context"; });
-    const t = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".pick--model .pick__e"); return [e.scrollWidth, e.clientWidth, e.textContent]; });
-    assert.deepEqual([t[0] <= t[1], t[2]], [true, "Medium"], "the effort level is never the thing that truncates");
-    await p.locator(".pick--model").click();
-    await p.waitForSelector(".mdd .eff__track");
-    const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".mdd"), b = r(".pick--model"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
-    assert.ok(g.off < 3 && g.inside, "the dropdown opens above its own button, inside the composer");
-  }],
-  ["diagram", {}, async (p) => { await send(p, "draw it"); await done(p); await p.locator(".dg").first().hover(); await p.locator(".dg").first().locator('button[aria-label="Show the SVG source"]').click(); }],
-  ["meter", {}, async (p) => { await p.evaluate(() => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; }); await send(p, "hello"); await done(p); await p.waitForSelector(".cnote:not([hidden])"); }],
-  ["popup", {}, async (p) => { await p.locator('button[aria-label="Add a source"]').click(); await p.waitForSelector(".pop__i"); }],
-  ["permission", { speed: 5 }, async (p) => { await send(p, "add a note"); await p.waitForSelector(".perm__opts"); }],
-  ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],
-  ["history", {}, async (p) => { await p.locator('button[aria-label="History"]').click(); await p.waitForSelector(".hrow__main"); }],
-  ["settings", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForTimeout(300); }],
-  ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],
-  ["status", { doctor: "many" }, async (p) => { await p.locator(".stat").click(); await p.waitForSelector(".check"); }],
-  ["setup", { doctor: "many" }, async (p) => { await p.locator(".setup").waitFor(); }],
-  ["welcome", { welcome: "1", doctor: "many" }, async (p) => { await p.waitForSelector(".wrow--bad"); await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".wrow--pending")); await p.locator(".wrow--bad .btn").first().click(); await p.waitForTimeout(500); }],
-]) {
-  for (const width of [300, 320]) for (const dark of [false, true]) {
-    await test(`no overflow at ${width}px ${dark ? "dark" : "light"}: ${name}`, async (p) => { await run(p); await p.waitForTimeout(150); assert.deepEqual(await p.evaluate(OVERFLOW), []); }, { width, dark, params });
-  }
-}
-
-await browser.close();
-console.log(`${n} passed`);
 await test("save as note: the answer goes to the host with its question as the title and a PNG per drawing; the line confirms, Open selects it, a failure says why", async (p) => {
   await send(p, "draw it");
   await done(p);
@@ -1025,6 +978,40 @@ await test("save as note: the answer goes to the host with its question as the t
   await send(p, "plain");
   await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
   await p.locator('button[aria-label="Save as a Zotero note"]').last().click();
+  await p.waitForFunction(() => window.__zmc.sim.notes.length === 2);
+  assert.deepEqual(await sim(p, () => window.__zmc.sim.notes[1]), { title: "plain", markdown: "Plain **answer** with $x^2$.", images: [] });
+});
+
+await test("a diagram's Add to a note saves that drawing alone, titled, with its PNG; the card says so", async (p) => {
+  await send(p, "draw it");
+  await done(p);
+  const card = p.locator(".dg").nth(1);
+  await card.hover();
+  await card.locator('button[aria-label="Add to a note"]').click();
+  await card.locator(".noteline").waitFor();
+  const n = (await sim(p, () => window.__zmc.sim.notes))[0];
+  assert.equal(n.title, "Designs by control and external validity");
+  assert.match(n.markdown, /^```svg\n<svg[\s\S]*<\/svg>\n```$/);
+  assert.equal(n.images.length, 1);
+  assert.ok(n.images[0].png && n.images[0].width === 360, JSON.stringify(n.images));
+  assert.equal(await p.locator(".dg .noteline").count(), 1, "only that card shows the line");
+  await card.locator(".noteline .lnk").click();
+  assert.equal((await sim(p, () => window.__zmc.sim.opened)).at(-1), "zotero://select/library/items/NOTE0001");
+});
+
+await test("explain better: only on the last finished answer; it asks again, intuition first, with the same context", async (p) => {
+  await send(p, "compare");
+  await done(p);
+  assert.equal(await p.locator('button[aria-label="Explain it better"]').count(), 1);
+  await p.locator('button[aria-label="Explain it better"]').click();
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
+  const last = (await sim(p, () => window.__zmc.sim.prompts)).at(-1).text;
+  assert.match(last, /<zotero-context>[\s\S]*<\/zotero-context>\n\nExplain that again from the intuition first, with a tiny example, then the details\.$/);
+  assert.equal(await p.locator(".ubub__text").last().innerText(), "Explain that again from the intuition first, with a tiny example, then the details.");
+  assert.equal(await p.locator('button[aria-label="Explain it better"]').count(), 1, "the earlier answer lost it");
+  assert.equal(await p.locator('.msg--assistant').last().locator('button[aria-label="Explain it better"]').count(), 1);
+});
+
 const WIDE_MATH = String.raw`$$\hat{\tau} = \frac{1}{n}\sum_{i=1}^{n}\left(\frac{T_i Y_i}{e(X_i)} - \frac{(1-T_i)Y_i}{1-e(X_i)}\right)$$
 
 $$\mathcal{L}(\theta) = \sum_{i=1}^{n} \log p_\theta(y_i \mid x_i) + \lambda_1 \lVert \theta \rVert_1 + \lambda_2 \lVert \theta \rVert_2^2 + \sum_{j=1}^{m} \mu_j \, g_j(\theta) + \sum_{k=1}^{K} \nu_k h_k(\theta) + \gamma \, \mathrm{KL}\left(q_\phi(z \mid x) \,\Vert\, p(z)\right)$$
@@ -1088,6 +1075,19 @@ Done.`;
       clone.querySelectorAll(".math:not(.math--raw), .code").forEach((e) => e.remove());
       for (const bad of ["$$", "\\frac", "\\[", "\\(", "\\Delta", "\\int", "| Study", "|---"]) if (clone.textContent.includes(bad)) window.__seen.add(bad);
       if (md.querySelector(".math--error")) window.__seen.add("a formula error");
+    };
+    new MutationObserver(tick).observe(window.__zmc.shadow.querySelector(".feed__inner"), { subtree: true, childList: true, characterData: true });
+  });
+  await sim(p, (t) => { window.__zmc.sim.nextAnswer = t; window.__zmc.sim.speed = 4; }, ans);
+  await send(p, "x");
+  await done(p);
+  const r = await p.evaluate(() => ({ seen: [...window.__seen], kept: !!window.__first && window.__first === window.__zmc.shadow.querySelector(".msg--assistant .md p") }));
+  assert.deepEqual(r, { seen: [], kept: true });
+  assert.equal(await p.locator(".msg--assistant .math--display").count(), 3, "$$, \\[ \\] and the math fence");
+  assert.equal(await p.locator(".msg--assistant table").count(), 1);
+  assert.match(await p.locator(".msg--assistant .md").innerText(), /cost is \$5 or \$10 today/, "money stays text");
+});
+
 await test("the formatting subset renders (underline, strike, sub/sup, Zotero's colours) and goes to a note as written; anything else stays inert", async (p) => {
   const ans = 'Water is H<sub>2</sub>O and E = mc<sup>2</sup>; <u>underlined</u>, <s>struck</s>, <mark>marked</mark>, <span style="color: red">red text</span>, <span style="background-color: green">green highlight</span>, <span style="color: url(https://evil.example/x)" onclick="window.__pwned=1">plain</span>, <font color="red">font</font>.';
   await sim(p, (t) => { window.__zmc.sim.nextAnswer = t; }, ans);
@@ -1105,19 +1105,6 @@ await test("the formatting subset renders (underline, strike, sub/sup, Zotero's 
   await p.locator('button[aria-label="Save as a Zotero note"]').click();
   await p.waitForFunction(() => window.__zmc.sim.notes.length === 1);
   assert.equal((await sim(p, () => window.__zmc.sim.notes[0])).markdown, ans, "the note gets the answer as written; the host converts it");
-});
-
-    };
-    new MutationObserver(tick).observe(window.__zmc.shadow.querySelector(".feed__inner"), { subtree: true, childList: true, characterData: true });
-  });
-  await sim(p, (t) => { window.__zmc.sim.nextAnswer = t; window.__zmc.sim.speed = 4; }, ans);
-  await send(p, "x");
-  await done(p);
-  const r = await p.evaluate(() => ({ seen: [...window.__seen], kept: !!window.__first && window.__first === window.__zmc.shadow.querySelector(".msg--assistant .md p") }));
-  assert.deepEqual(r, { seen: [], kept: true });
-  assert.equal(await p.locator(".msg--assistant .math--display").count(), 3, "$$, \\[ \\] and the math fence");
-  assert.equal(await p.locator(".msg--assistant table").count(), 1);
-  assert.match(await p.locator(".msg--assistant .md").innerText(), /cost is \$5 or \$10 today/, "money stays text");
 });
 
 // no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
@@ -1167,37 +1154,3 @@ for (const [name, params, run] of [
 
 await browser.close();
 console.log(`${n} passed`);
-  await p.waitForFunction(() => window.__zmc.sim.notes.length === 2);
-  assert.deepEqual(await sim(p, () => window.__zmc.sim.notes[1]), { title: "plain", markdown: "Plain **answer** with $x^2$.", images: [] });
-});
-
-await test("a diagram's Add to a note saves that drawing alone, titled, with its PNG; the card says so", async (p) => {
-  await send(p, "draw it");
-  await done(p);
-  const card = p.locator(".dg").nth(1);
-  await card.hover();
-  await card.locator('button[aria-label="Add to a note"]').click();
-  await card.locator(".noteline").waitFor();
-  const n = (await sim(p, () => window.__zmc.sim.notes))[0];
-  assert.equal(n.title, "Designs by control and external validity");
-  assert.match(n.markdown, /^```svg\n<svg[\s\S]*<\/svg>\n```$/);
-  assert.equal(n.images.length, 1);
-  assert.ok(n.images[0].png && n.images[0].width === 360, JSON.stringify(n.images));
-  assert.equal(await p.locator(".dg .noteline").count(), 1, "only that card shows the line");
-  await card.locator(".noteline .lnk").click();
-  assert.equal((await sim(p, () => window.__zmc.sim.opened)).at(-1), "zotero://select/library/items/NOTE0001");
-});
-
-await test("explain better: only on the last finished answer; it asks again, intuition first, with the same context", async (p) => {
-  await send(p, "compare");
-  await done(p);
-  assert.equal(await p.locator('button[aria-label="Explain it better"]').count(), 1);
-  await p.locator('button[aria-label="Explain it better"]').click();
-  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
-  const last = (await sim(p, () => window.__zmc.sim.prompts)).at(-1).text;
-  assert.match(last, /<zotero-context>[\s\S]*<\/zotero-context>\n\nExplain that again from the intuition first, with a tiny example, then the details\.$/);
-  assert.equal(await p.locator(".ubub__text").last().innerText(), "Explain that again from the intuition first, with a tiny example, then the details.");
-  assert.equal(await p.locator('button[aria-label="Explain it better"]').count(), 1, "the earlier answer lost it");
-  assert.equal(await p.locator('.msg--assistant').last().locator('button[aria-label="Explain it better"]').count(), 1);
-});
-
