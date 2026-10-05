@@ -17,25 +17,32 @@ export interface DiagramOpts {
 // ───────────────────────────── styles (once per shadow root) ─────────────────────────────
 
 const soft = (k: number) => HUES.map((x) => `--dg-${x}-soft: color-mix(in srgb, var(--dg-${x}) ${Math.round(k * 100)}%, transparent);`).join(" ");
-const hues = (m: Record<string, string>) => HUES.map((x) => `--dg-${x}: ${x === "accent" ? `var(--accent, ${m[x]})` : m[x]};`).join(" ");
+const hues = (m: Record<string, string>) => HUES.map((x) => `--dg-${x}: ${m[x]};`).join(" ");
+/** Below this scale a drawing scrolls sideways instead of shrinking: 12px labels stay about 11px. */
+const MIN_SCALE = 0.9;
 
 const CSS = `
 .zmc .dg {
   --dg-ink: var(--ink); --dg-muted: var(--ink-muted); --dg-line: color-mix(in srgb, var(--ink) 30%, transparent);
   --dg-surface: color-mix(in srgb, var(--ink) 5%, transparent);
   ${hues(HUE_LIGHT)} ${soft(SOFT_LIGHT)}
-  position: relative; padding: var(--s4) var(--s2); border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper-raised);
+  position: relative; min-width: 0; padding: var(--s1) var(--s2) var(--s3); border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper-raised);
 }
 .zmc[data-theme="dark"] .dg { ${hues(HUE_DARK)} ${soft(SOFT_DARK)} --dg-surface: color-mix(in srgb, var(--ink) 7%, transparent); background: color-mix(in srgb, var(--ink) 3%, var(--paper)); }
+/* the user's own accent only when they chose one (appearance sets data-accent="custom"); else the calm blue above */
+.zmc[data-accent="custom"] .dg, .zmc[data-accent="custom"][data-theme="dark"] .dg { --dg-accent: var(--accent); }
+.zmc .dg__head { display: flex; align-items: center; gap: var(--s2); height: 28px; margin-bottom: var(--s1); }
+.zmc .dg__cap { flex: 1; min-width: 0; padding-left: var(--s1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-faint); font-size: var(--fs-1); }
+.zmc .dg__fig { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
+.zmc .dg__fig[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.zmc .dg__fig[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+.zmc .dg__fig[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 .zmc .dg__fig svg { display: block; width: 100%; height: auto; max-height: 560px; margin: 0 auto; overflow: visible; fill: var(--dg-ink); font-family: var(--font); }
 .zmc .dg__fig :is(text, tspan) { font-family: var(--font); }
-.zmc .dg__bar {
-  position: absolute; top: var(--s1); right: var(--s1); display: flex; align-items: center; gap: 1px; padding: 2px;
-  border: 1px solid var(--rule); border-radius: var(--r1); background: var(--paper-raised); box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
-  opacity: 0; transition: opacity var(--ease);
-}
+.zmc .dg__bar { flex: none; display: flex; align-items: center; gap: 1px; opacity: 0; transition: opacity var(--ease); }
 .zmc .dg:hover .dg__bar, .zmc .dg__bar:focus-within, .zmc .dg--src .dg__bar { opacity: 1; }
 @media (hover: none) { .zmc .dg__bar { opacity: 1; } }
+@container zmc (max-width: 380px) { .zmc .dg__bar { opacity: 1; margin-left: auto; } .zmc .dg__cap { display: none; } } /* narrow: the strip is the toolbar */
 .zmc .dg__bar .iconbtn { width: 24px; height: 24px; border-radius: var(--r0); }
 .zmc .dg__bar .iconbtn svg { width: 14px; height: 14px; }
 .zmc .dg__btn { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 6px 0 4px; border: 0; border-radius: var(--r0); background: none; color: var(--ink-muted); font: 500 var(--fs-1)/1 var(--font); letter-spacing: 0.02em; }
@@ -91,9 +98,19 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
   const fig = build(tree);
   fig.setAttribute("role", "img");
   fig.setAttribute("aria-label", tree.attrs["aria-label"] || title || "Diagram");
-  // Never larger than 1.3x its own size: 12px labels stay readable, never billboard-size in a wide panel.
+  // Between 0.9x and 1.3x its own size: labels never billboard-size in a wide panel, never below ~11px in a narrow one
+  // (there it scrolls sideways, with a soft fade on the side that has more).
   fig.style.maxWidth = `${Math.round(fit.box[2] * 1.3)}px`;
+  fig.style.minWidth = `${Math.round(fit.box[2] * MIN_SCALE)}px`;
   const figWrap = h("div.dg__fig", null, fig);
+  const edges = () => {
+    const { scrollLeft: l, scrollWidth: sw, clientWidth: cw } = figWrap;
+    const fade = (l > 1 ? "l" : "") + (l + cw < sw - 1 ? "r" : "");
+    if (fade) figWrap.dataset.fade = fade; else delete figWrap.dataset.fade;
+  };
+  figWrap.addEventListener("scroll", edges, { passive: true });
+  const RO = env.win.ResizeObserver;
+  if (RO) new RO(edges).observe(figWrap);
 
   let srcEl: HTMLElement | null = null;
   const btn = (label: string, ic: IconName, run: (b: HTMLElement) => unknown) => {
@@ -110,11 +127,12 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
   });
   sourceBtn.setAttribute("aria-pressed", "false");
   const name = fileName(title);
-  // Files are light whatever the panel's theme: the user's light accent (appearance.ts sets --accent-l), else the light one in use.
+  // Files are light whatever the panel's theme, with the same accent rule: the blue, or the user's own (light) accent.
   const accent = () => {
+    const app = card.closest(".zmc");
+    if (app?.getAttribute("data-accent") !== "custom") return undefined;
     const cs = env.win.getComputedStyle(card);
-    const dark = card.closest(".zmc")?.getAttribute("data-theme") === "dark";
-    return cs.getPropertyValue("--accent-l").trim() || (dark ? undefined : cs.getPropertyValue("--dg-accent").trim()) || undefined;
+    return cs.getPropertyValue("--accent-l").trim() || (app.getAttribute("data-theme") === "dark" ? undefined : cs.getPropertyValue("--accent").trim()) || undefined;
   };
   const exported = () => serializeSvg(tree, fit, exportPalette(accent()));
   const copyBtn = btn("Copy as an image", "copy", async (b) => done(b, await copyPng(exported(), fit.box[2], fit.box[3])));
@@ -134,7 +152,7 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
   const bar = h("div.dg__bar", { role: "toolbar", "aria-label": "Diagram" }, sourceBtn, copyBtn,
     opts.saveFile ? [h("span.dg__sep"), saveBtn("PNG"), saveBtn("SVG")] : null);
   card.className = "dg";
-  card.replaceChildren(figWrap, bar);
+  card.replaceChildren(h("div.dg__head", null, h("span.dg__cap", { "aria-hidden": "true" }, title), bar), figWrap);
   ensureStyles(card);
   env.win.queueMicrotask?.(() => ensureStyles(card)); // the card is in the shadow root by now
   return true;

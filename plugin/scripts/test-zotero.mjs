@@ -14,6 +14,7 @@ const suites = [
   ["chat", ["--mock-agent", ...welcomed]],
   ["context-economy", ["--mock-agent", ...welcomed]], // the same selection twice is sent once; real block sizes
   ["ui", ["--mock-agent", ...welcomed]],
+  ["appearance", ["--mock-agent", ...welcomed]], // glass, accent, a preset and a picture through the real host; persists across a remount
   ["diagram", ["--mock-agent", ...welcomed]], // ```svg answers as themed figures; Copy and Save through the host
   ["cite", ["--mock-agent"]], // a quote link flashes the sentence in the reader
   ["welcome", ["--mock-agent"]],

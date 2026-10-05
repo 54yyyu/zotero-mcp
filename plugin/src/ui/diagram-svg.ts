@@ -22,9 +22,9 @@ export const PALETTE: readonly string[] = [...NEUTRALS, ...HUES, ...HUES.map((h)
 const PALETTE_SET = new Set(PALETTE);
 
 type Hue = (typeof HUES)[number];
-/** Light and dark values of the hues; ink, muted, line and surface come from the panel's own tokens. */
-export const HUE_LIGHT: Record<Hue, string> = { accent: "#2f6fd6", teal: "#0f8b98", violet: "#6c55d4", orange: "#d2612b", red: "#c9373f", green: "#2c9154" };
-export const HUE_DARK: Record<Hue, string> = { accent: "#7aa7ff", teal: "#45c2cc", violet: "#a897f5", orange: "#f39a62", red: "#f27d80", green: "#5dcb8a" };
+/** Light and dark values of the hues (accent is a calm blue unless the user chose an accent); ink, muted, line and surface come from the panel's own tokens. */
+export const HUE_LIGHT: Record<Hue, string> = { accent: "#3b5bdb", teal: "#0f8b98", violet: "#6c55d4", orange: "#d2612b", red: "#c9373f", green: "#2c9154" };
+export const HUE_DARK: Record<Hue, string> = { accent: "#748ffc", teal: "#45c2cc", violet: "#a897f5", orange: "#f39a62", red: "#f27d80", green: "#5dcb8a" };
 /** How strong a `-soft` fill is (over the card), light and dark. */
 export const SOFT_LIGHT = 0.14;
 export const SOFT_DARK = 0.24;

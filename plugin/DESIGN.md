@@ -143,12 +143,15 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
   `createElementNS`.
 - **Theme**: the agent colours only by palette name: `ink muted line surface accent teal violet orange red green` and
   `<hue>-soft` fills. A name becomes `style: fill: var(--dg-<name>)`; `--dg-ink/muted/line/surface` come from the panel's own
-  tokens, the hues have a light and a dark set, `accent` is the user's accent (`--accent`), soft fills are `color-mix` tints. A
+  tokens, the hues have a light and a dark set, `accent` is a calm blue (#3b5bdb / #748ffc) unless the user chose an accent
+  (`.zmc[data-accent="custom"]`, then `--accent`; exports follow the same rule), soft fills are `color-mix` tints. A
   literal colour the model slips in is mapped to the nearest name by lightness and hue (greys to ink/muted/line/surface, light
   tints to `-soft`). So a drawing follows the theme and the accent live.
 - **Fit**: the viewBox (or width/height, or 360x240), width/height dropped, a leading full-size background rect dropped (the
-  card is the background), displayed at most 1.3x its own size so 12px labels never become billboard text.
-- **Card**: soft surface, 1px rule, 10px radius; a toolbar that fades in on hover or keyboard focus: Source (the code block),
+  card is the background), displayed between 0.9x and 1.3x its own size: 12px labels never become billboard text, and never
+  shrink below about 11px; a drawing wider than a narrow panel scrolls sideways inside its card, with a soft fade on the edge that has more.
+- **Card**: soft surface, 1px rule, 10px radius; a slim header strip above the drawing (its title, quiet) holds the toolbar, which
+  fades in on hover or keyboard focus in reserved space (always shown on touch and in panels under 380px): Source (the code block),
   Copy (PNG via `ClipboardItem`; the SVG text if images cannot be copied), Save as PNG (on white, at least 1400 px wide or 2x)
   and Save as SVG (palette baked in as hex from a light export palette, so the file reads anywhere) through
   `PanelHost.saveFile` (Zotero's Save dialog). "Add to a note" (`host.saveNote`) slots in after Save when it exists.

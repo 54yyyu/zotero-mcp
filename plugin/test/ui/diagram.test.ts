@@ -179,6 +179,9 @@ describe("diagram export", () => {
     assert.equal(exportPalette("#AA0000").accent, "#aa0000");
     assert.equal(exportPalette("not a colour").accent, exportPalette().accent);
   });
+  it("the default accent is the calm blue", () => {
+    assert.equal(exportPalette().accent, "#3b5bdb");
+  });
   it("soft fills are opaque tints of their hue", () => {
     const pal = exportPalette();
     for (const n of PALETTE) assert.match(pal[n] as string, /^#[0-9a-f]{6}$/, n);

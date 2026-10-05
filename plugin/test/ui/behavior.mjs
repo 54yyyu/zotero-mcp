@@ -644,6 +644,7 @@ await test("diagrams render as themed figures; the toolbar shows on hover and fo
   await p.locator(".dg").first().locator('button[aria-label="Save as SVG"]').click();
   await p.waitForFunction(() => window.__zmc.sim.saved.length === 2);
   const saved = await sim(p, () => window.__zmc.sim.saved);
+  saved.sort((a, b) => a.name.localeCompare(b.name)); // the PNG takes longer to make
   assert.deepEqual(saved.map((x) => [x.name, x.mime]), [["from-question-to-cited-answer.png", "image/png"], ["from-question-to-cited-answer.svg", "image/svg+xml"]]);
   assert.equal(saved[0].head, "89504e470d0a1a0a", "a PNG signature");
   assert.ok(saved[0].size > 20000, `a large PNG (${saved[0].size} bytes)`);
@@ -698,6 +699,42 @@ await test("an invalid diagram is shown as its code; dark theme recolours a draw
   const want = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".dg"); const d = document.createElement("i"); d.style.color = getComputedStyle(e).getPropertyValue("--dg-accent"); e.append(d); const c = getComputedStyle(d).color; d.remove(); return c; });
   assert.equal(dark, want, "the dark theme's accent");
 });
+
+await test("diagram accent is blue unless the user chose an accent; the toolbar sits above the drawing", async (p) => {
+  await send(p, "draw it");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".dg__fig svg").length === 3, null, { timeout: 8000 });
+  const stroke = () => p.evaluate(() => getComputedStyle(window.__zmc.shadow.querySelectorAll(".dg__fig svg")[0].querySelectorAll("rect")[1]).stroke);
+  assert.equal(await stroke(), "rgb(59, 91, 219)", "the calm default blue");
+  // the appearance contract: data-accent="custom" and --accent on the root when (and only when) the user picked one
+  await p.evaluate(() => { const z = window.__zmc.shadow.querySelector(".zmc"); z.dataset.accent = "custom"; z.style.setProperty("--accent", "#c2410c"); z.style.setProperty("--accent-l", "#c2410c"); });
+  assert.equal(await stroke(), "rgb(194, 65, 12)");
+  await p.locator(".dg").first().hover();
+  await p.locator(".dg").first().locator('button[aria-label="Save as SVG"]').click();
+  await p.waitForFunction(() => window.__zmc.sim.saved.length === 1);
+  const svgFile = await sim(p, () => window.__zmc.sim.saved[0].head);
+  assert.ok(!svgFile.includes("#3b5bdb"), "the export follows the custom accent too");
+  await p.evaluate(() => { const z = window.__zmc.shadow.querySelector(".zmc"); delete z.dataset.accent; });
+  assert.equal(await stroke(), "rgb(59, 91, 219)");
+  // the toolbar never covers the drawing, and showing it moves nothing
+  const box = () => p.evaluate(() => { const c = window.__zmc.shadow.querySelectorAll(".dg")[1]; const top = c.getBoundingClientRect().top; const r = (s) => c.querySelector(s).getBoundingClientRect(); return { bar: r(".dg__bar").bottom - top, fig: r(".dg__fig svg").top - top }; });
+  await p.mouse.move(5, 5); await p.waitForTimeout(200);
+  const rest = await box();
+  await p.locator(".dg").nth(1).hover(); await p.waitForTimeout(200);
+  const hover = await box();
+  assert.ok(hover.bar <= hover.fig, `toolbar above the drawing: ${JSON.stringify(hover)}`);
+  assert.equal(rest.fig, hover.fig, "nothing jumps when the toolbar shows");
+});
+
+await test("at 300px a drawing keeps its labels readable and scrolls sideways, with a soft edge", async (p) => {
+  await send(p, "draw it");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".dg__fig svg").length === 3, null, { timeout: 8000 });
+  await p.waitForTimeout(200);
+  const g = await p.evaluate(() => { const w = window.__zmc.shadow.querySelector(".dg__fig"); const s = w.querySelector("svg"); return { scale: s.getBoundingClientRect().width / 360, scrolls: w.scrollWidth > w.clientWidth, fade: w.dataset.fade, bar: getComputedStyle(window.__zmc.shadow.querySelector(".dg__bar")).opacity }; });
+  assert.ok(g.scale >= 0.89, `scale ${g.scale}`);
+  assert.deepEqual([g.scrolls, g.fade, g.bar], [true, "r", "1"], "scrolls, fades on the right, toolbar always shown when narrow");
+  await p.evaluate(() => { const w = window.__zmc.shadow.querySelector(".dg__fig"); w.scrollLeft = w.scrollWidth; });
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".dg__fig").dataset.fade === "l");
+}, { width: 300 });
 
 // no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
 const OVERFLOW = () => {

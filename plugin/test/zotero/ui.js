@@ -70,7 +70,7 @@ async function main(ctx) {
   await ctx.waitFor(() => $$("select, [role=radio]").length > 4, "pickers populated from the catalog");
   const sections = $$("section.sec").map((s) => s.getAttribute("aria-label"));
   out.sections = sections;
-  for (const want of [/agent/i, /sign/i, /context/i, /chat/i, /prompt/i, /folder/i, /data/i]) check(sections.some((t) => want.test(t)), `a "${want}" section exists in: ${sections}`);
+  for (const want of [/agent/i, /appearance/i, /context/i, /chat/i, /prompt/i, /folder/i, /data/i, /about/i]) check(sections.some((t) => want.test(t)), `a "${want}" section exists in: ${sections}`);
   const modeRadios = $$("[role=radio]").map((r) => r.textContent.trim()).filter(Boolean);
   out.radios = modeRadios.slice(0, 12);
   check(modeRadios.some((t) => /plan/i.test(t)), "permission modes come from the agent: " + modeRadios);
@@ -86,7 +86,7 @@ async function main(ctx) {
   // 4. the chat folder row: choose (picker stubbed), shown, and stored
   const picked = PathUtils.join(Zotero.getTempDirectory().path, "picked-chat-folder");
   host.chooseFolder = async () => picked;
-  click($$("button").find((b) => /^Choose/.test(b.textContent.trim())), "Choose… button");
+  click($$("button").find((b) => b.textContent.trim() === "Choose\u2026"), "Choose… button");
   await ctx.waitFor(() => host.getSettings().chatFolder === picked, "the chosen folder is saved");
   await ctx.waitFor(() => text().includes("picked-chat-folder"), "the row shows the folder");
   click($$("button").find((b) => /Use default/.test(b.textContent)), "Use default");
