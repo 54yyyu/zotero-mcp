@@ -107,5 +107,21 @@ async function main(ctx) {
   out.measure.turn2 = { tokens: tokens(secondBlock), text: secondBlock.trim() };
   out.measure.brief = a.brief ? { words: a.brief.split(/\s+/).length, chars: a.brief.length, tokens: tokens(a.brief) } : null;
   await ctx.snapshot("context-economy");
+
+  // "This page" in the + popup: first while a PDF is open, the page as an image chip, described as the whole page.
+  const first = (await host.search(""))[0];
+  check(first?.kind === "page" && /^This page \(p\. \d+\)$/.test(first.title), "the page hit comes first: " + JSON.stringify(first));
+  check(!(await host.search("Bell")).some((x) => x.kind === "page") && (await host.search("page"))[0]?.kind === "page", "only for an empty query or 'page'");
+  root.querySelector('button[aria-label="Add a source"]').click();
+  const row = await ctx.waitFor(() => [...root.querySelectorAll(".pop__i")].find((li) => li.textContent.startsWith(first.title)), "the page row");
+  row.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  const card = await ctx.waitFor(() => [...root.querySelectorAll(".area")].find((el) => /Page \d+/.test(el.textContent) && el.querySelector("img.area__img")), "the page chip");
+  check(/Go to Page/.test(card.textContent), "its action says Page");
+  const pageImg = card.querySelector("img.area__img");
+  await ctx.waitFor(() => pageImg.complete && pageImg.naturalWidth > 0, "the page image decodes");
+  out.pageImage = [pageImg.naturalWidth, pageImg.naturalHeight];
+  check(Math.max(pageImg.naturalWidth, pageImg.naturalHeight) <= 1568 && pageImg.naturalWidth > 200, "a real page image, at most 1568 px: " + out.pageImage);
+  const described = host.describeContext([await host.chipFor(first)]);
+  check(/the whole page p\.\d+: the image is attached/.test(described.text) && described.images.length === 1 && described.images[0].mime === "image/png", "described as the whole page: " + described.text);
   return out;
 }

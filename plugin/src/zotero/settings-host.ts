@@ -26,7 +26,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
 
   // Read on every context change, so parsed once; dropped whenever the pref changes, from here or elsewhere.
   let cached: PanelSettings | null = null;
-  const settings = (): PanelSettings => (cached ??= withDefaults(prefs.json<Partial<PanelSettings>>("settings", {})));
+  const settings = (): PanelSettings => (cached ??= withDefaults(prefs.json<Partial<PanelSettings>>("settings", {}), Zotero.locale));
   const listeners = new Set<() => void>();
   let writing = false;
   const observer = Zotero.Prefs.registerObserver(`${PREFIX}settings`, () => {

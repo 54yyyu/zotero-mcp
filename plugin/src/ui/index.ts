@@ -141,7 +141,6 @@ class Panel {
       dispose: () => this.dispose(),
       focusComposer: () => { this.show("chat"); this.composer.focus(); },
       runPrompt: (slot) => { const p = host.getSettings().prompts.find((x) => x.slot === slot); if (p) this.runPrompt(p); },
-      addChip: (c) => { this.show("chat"); this.chips.add(c); this.refreshChips(); this.composer.focus(); },
     };
   }
 

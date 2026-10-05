@@ -266,7 +266,7 @@ await test("mode and model pickers apply and persist", async (p) => {
   await p.waitForFunction(() => /Haiku/.test(window.__zmc.shadow.querySelector(".pick--model").textContent));
 });
 
-const openSettings = async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".field"); };
+const openSettings = async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector('section[aria-label="Agent"] .field'); };
 const toggle = (p, label) => p.getByRole("switch", { name: label }).click();
 const settings = (p) => p.evaluate(() => JSON.parse(JSON.stringify(window.__zmc.host.getSettings())));
 
@@ -461,7 +461,7 @@ await test("model dropdown at 300px: one button beside the ring and the mode; th
 await test("settings: the agent section shows loading, then the catalog; a failing backend shows an error with Try again", async (p) => {
   await p.locator('button[aria-label="Settings"]').click();
   await p.waitForSelector(".sk-group");
-  await p.waitForSelector(".field", { timeout: 6000 });
+  await p.waitForSelector('section[aria-label="Agent"] .field', { timeout: 6000 });
   assert.equal(await p.locator(".sk-group").count(), 0);
   assert.equal(await p.locator(".radio").count(), 5);
   await p.locator(".seg__opt", { hasText: /^Codex$/ }).first().click();
@@ -474,9 +474,56 @@ await test("settings: the agent section shows loading, then the catalog; a faili
   await p.locator(".radio", { hasText: "Read only" }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().mode.codex === "read-only");
   assert.equal((await settings(p)).mode["claude-code"], "");
-  await p.locator(".field", { hasText: "Model" }).locator("select").selectOption("gpt-5");
+  await p.locator('section[aria-label="Agent"] .field', { hasText: "Model" }).locator("select").selectOption("gpt-5");
   await p.waitForFunction(() => window.__zmc.host.getSettings().model.codex === "gpt-5");
 }, { params: { catalogDelay: 1200 } });
+
+await test("settings: Translate: the switch, the target language, and the model from the catalog the screen already read", async (p) => {
+  await openSettings(p);
+  const card = p.locator('section[aria-label="Translate"]');
+  await card.scrollIntoViewIfNeeded();
+  const sw = card.getByRole("switch", { name: /Show Translate when text is selected/ });
+  assert.equal(await sw.isChecked(), true, "on by default");
+  await sw.click();
+  assert.equal((await settings(p)).translate, false);
+  await sw.click();
+  assert.equal((await settings(p)).translate, true);
+
+  const lang = card.getByRole("combobox", { name: "Translate into" });
+  const langs = await lang.locator("option").allInnerTexts();
+  assert.equal(langs.length, 18);
+  assert.deepEqual(langs.slice(0, 5), ["English", "中文 (简体)", "中文 (繁體)", "日本語", "한국어"], "named as each language names itself");
+  assert.equal(await lang.inputValue(), "en");
+  await lang.selectOption("zh-Hans");
+  assert.equal((await settings(p)).translateTo, "zh-Hans");
+
+  const model = card.getByRole("combobox", { name: "Model" });
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('section[aria-label="Translate"] select[aria-label="Model"] option').length > 1);
+  assert.deepEqual(await model.locator("option").allInnerTexts(), ["Fastest available (recommended)", "Claude Opus", "Claude Sonnet", "Claude Haiku", "Claude Opus 4.1", "Claude Sonnet 4", "Claude Haiku 3.5"]);
+  assert.equal(await model.inputValue(), "", "Fastest available is the default");
+  await model.selectOption("haiku");
+  assert.deepEqual((await settings(p)).translateModel, { "claude-code": "haiku", codex: "", pi: "" }, "saved per agent");
+  assert.equal((await settings(p)).model["claude-code"], "", "the chat's model is another setting");
+
+  // Another agent: its own models, and its own (default) choice.
+  await p.locator(".seg__opt", { hasText: /^pi$/ }).first().click();
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector('section[aria-label="Translate"] select[aria-label="Model"] option[value="small"]'));
+  assert.deepEqual(await card.getByRole("combobox", { name: "Model" }).locator("option").allInnerTexts(), ["Fastest available (recommended)", "Provider default", "Small and fast"]);
+  assert.equal(await card.getByRole("combobox", { name: "Model" }).inputValue(), "");
+});
+
+await test("settings: Translate's model list shows only the default when no catalog is known (nothing is started to fill it)", async (p) => {
+  await sim(p, () => { window.__zmc.sim.catalogFails = ["claude-code"]; });
+  await p.locator('button[aria-label="Settings"]').click();
+  await p.waitForSelector(".inlineerr");
+  const model = p.locator('section[aria-label="Translate"]').getByRole("combobox", { name: "Model" });
+  assert.deepEqual(await model.locator("option").allInnerTexts(), ["Fastest available (recommended)"]);
+  // a choice saved earlier stays visible (by its id) rather than silently showing the default
+  await sim(p, () => window.__zmc.host.setSettings({ translateModel: { "claude-code": "haiku", codex: "", pi: "" } }));
+  await p.locator('section[aria-label="Translate"]').getByRole("switch").click();
+  assert.deepEqual(await model.locator("option").allInnerTexts(), ["Fastest available (recommended)", "haiku"]);
+  assert.equal(await model.inputValue(), "haiku");
+});
 
 await test("settings: clear history and reset settings ask first, then reach the host", async (p) => {
   await openSettings(p);

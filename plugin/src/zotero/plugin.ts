@@ -15,6 +15,8 @@ class ChatPlugin {
   /** Milliseconds spent reading plugin.js, in startup (of it, registering the Settings pane), and in loading panel.js for the panel or the pane: the budget tests' numbers. */
   readonly timing = { loadMs: 0, startupMs: 0, paneRegisterMs: 0, panelLoadMs: null as number | null, paneLoadMs: null as number | null };
   private panelModule: any = null;
+  /** The reader's Translate (panel.js createTranslate), made on its first press. */
+  private translate: ReturnType<typeof import("./panel.ts").createTranslate> | null = null;
 
   constructor(init: InitArgs) {
     this.init = init;
@@ -33,8 +35,8 @@ class ChatPlugin {
     if (__TEST_HOOKS__ && first) await maybeRunTestScript(this, first);
   }
 
-  /** panel.js is a second bundle, read on first use so that Zotero's startup pays only for the container and button. */
-  private loadPanel(win: any, shadow: ShadowRoot): Panel {
+  /** panel.js is a second bundle, read on first use (the panel, or Translate) so that Zotero's startup pays only for the container and button. */
+  private module(): any {
     if (!this.panelModule) {
       const t0 = Date.now();
       const scope: any = { Zotero, Services, ChromeUtils, IOUtils, PathUtils, Components, Cc, Ci };
@@ -42,7 +44,11 @@ class ChatPlugin {
       this.panelModule = scope.ZoteroChatPanel;
       this.timing.panelLoadMs = Date.now() - t0;
     }
-    return this.panelModule.createPanel({ id: this.init.id, version: this.init.version, win, dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat"), shadow });
+    return this.panelModule;
+  }
+
+  private loadPanel(win: any, shadow: ShadowRoot): Panel {
+    return this.module().createPanel({ id: this.init.id, version: this.init.version, win, dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat"), shadow });
   }
 
   /**
@@ -83,20 +89,26 @@ class ChatPlugin {
     root.addEventListener("unload", () => pane.dispose(), { once: true });
   }
 
-  /** "Ask in chat" in the reader's text selection popup, styled like its own buttons. Nothing loads until it is pressed. */
+  /**
+   * "Translate" in the reader's text selection popup, styled like its own buttons, unless the setting is off (read as the
+   * popup renders, so a change applies to the next selection). Nothing loads until it is pressed; the translation then
+   * appears in this popup, under the button.
+   */
   private onSelectionPopup = (event: any): void => {
-    if (!event.params?.annotation?.text?.trim()) return;
+    if (!event.params?.annotation?.text?.trim() || prefs.json<{ translate?: boolean }>("settings", {}).translate === false) return;
+    const box = event.doc.createElement("div");
     const b = event.doc.createElement("button");
     b.className = "toolbar-button wide-button";
     b.setAttribute("data-tabstop", "1");
-    b.textContent = "Ask in chat";
+    b.setAttribute("aria-expanded", "false");
+    b.textContent = "Translate";
     b.addEventListener("click", () => {
-      const injected = this.windows.get(Zotero.getMainWindow());
-      if (!injected) return;
-      injected.show();
-      injected.ensure().askAbout(event);
+      this.translate ??= this.module().createTranslate({ dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat") });
+      this.translate!.toggle(event, box, b);
     });
-    event.append(b);
+    box.append(b);
+    event.append(box);
+    this.translate?.revive(event, box, b); // the reader re-rendered this popup: a translation already showing stays
   };
 
   /** The loaded panel of a window (loading it if need be). */
@@ -118,6 +130,7 @@ class ChatPlugin {
   async shutdown(): Promise<void> {
     Services.obs.removeObserver(this.paneObserver, PANE_TOPIC); // Zotero drops the pane itself when a plugin shuts down
     for (const win of [...this.windows.keys()]) this.onMainWindowUnload(win);
+    this.translate?.dispose();
   }
 }
 

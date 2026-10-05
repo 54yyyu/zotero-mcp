@@ -124,6 +124,13 @@ export interface StartOpts {
   ephemeral?: boolean;
   /** Extra environment for the bridge, e.g. ANTHROPIC_API_KEY for API mode. */
   env?: Record<string, string>;
+  /**
+   * A session that can only answer (the translator): `brief` is its whole system prompt, and nothing of the user's setup
+   * loads. Claude: the brief replaces Claude Code's prompt, no tools, no settings, skills or MCP servers, not kept. Codex:
+   * read-only sandbox, no network or web search, never asks. pi: started with --no-tools, no extensions, skills or context
+   * files, no session kept. Every permission request is still the caller's to refuse.
+   */
+  locked?: boolean;
 }
 
 export interface PromptInput {
@@ -249,6 +256,14 @@ export interface PanelSettings {
   welcomed: boolean;
   /** Where new chats run: the agent's working directory, and where the zotero-cli skill is installed. "" = the default folder. */
   chatFolder: string;
+
+  // Translate, in the reader's text selection popup.
+  /** The popup shows a Translate button. */
+  translate: boolean;
+  /** The target language's id (ui/settings-model.ts LANGUAGES); the default follows Zotero's own language. */
+  translateTo: string;
+  /** Per backend: the translator's model; "" = the fastest one the backend offers. */
+  translateModel: Record<BackendId, string>;
   appearance: Appearance;
 }
 
@@ -355,8 +370,4 @@ export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "rese
   | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "theme" | "onThemeChange" | "onSettingsChange"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
 
 /** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. */
-export type MountPanel = (root: ShadowRoot, host: PanelHost) => {
-  dispose(): void; focusComposer(): void; runPrompt(slot: number): void;
-  /** A chip added by hand (the reader's "Ask in chat"), then the composer focused. */
-  addChip(chip: ContextChip): void;
-};
+export type MountPanel = (root: ShadowRoot, host: PanelHost) => { dispose(): void; focusComposer(): void; runPrompt(slot: number): void };

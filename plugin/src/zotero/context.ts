@@ -37,7 +37,7 @@ export function refOf(item: any, extra: Partial<ZoteroRef> = {}): ZoteroRef {
 
 export class ContextTracker {
   private listeners = new Set<() => void>();
-  private selections = new Map<number, { text: string; pageIndex: number | null; pageLabel: string | null; at: number }>();
+  private selections = new Map<number, { text: string; pageIndex: number | null; pageLabel: string | null }>();
   private notifierID: string | null = null;
   private disposers: (() => void)[] = [];
   private images = new Map<string, { mime: "image/png"; data: string }>();
@@ -45,17 +45,13 @@ export class ContextTracker {
   private lastSig = "";
   /** Per attachment id: its annotations counted by kind, in all and per page. Cleared by the item notifier, so a turn costs a lookup. */
   private annIndex = new Map<number, { n: number; all: Counts; pages: Map<number, Counts> }>();
-  private onPopup = (event: any) => { this.takeSelection(event); };
-
-  /** A renderTextSelectionPopup event's selection, kept for its reader; returns its chip (null when it has no text). */
-  takeSelection(event: any): ContextChip | null {
+  /** A renderTextSelectionPopup event's selection, kept for its reader. */
+  private onPopup = (event: any) => {
     const a = event.params?.annotation;
-    const att = event.reader?._item;
-    if (!a?.text || !att) return null;
-    this.selections.set(event.reader.itemID, { text: a.text, pageIndex: a.position?.pageIndex ?? null, pageLabel: a.pageLabel ?? null, at: Date.now() });
+    if (!a?.text || !event.reader?._item) return;
+    this.selections.set(event.reader.itemID, { text: a.text, pageIndex: a.position?.pageIndex ?? null, pageLabel: a.pageLabel ?? null });
     this.changed();
-    return this.selectionChip(att);
-  }
+  };
 
   private pluginID: string;
 

@@ -87,7 +87,13 @@ Answers and notes share a little formatting beyond Markdown: underline, striketh
 
 Hover a display formula for **Copy TeX**. A formula too wide for the panel shrinks a little, then scrolls sideways. While an answer streams, half-written formulas and tables wait until they are complete.
 
-In the reader, select text and press **Ask in chat** to put it in the composer; in the composer's **+** menu, **This page** attaches the page you are on as an image.
+Text you select in the reader goes into the composer as a **Text Selection** chip by itself (remove the chip if you do not want it sent); in the composer's **+** menu, **This page** attaches the page you are on as an image.
+
+## Translate
+
+Select a word, a sentence or a paragraph in a PDF and press **Translate** in Zotero's selection popup: the translation appears in the same popup, under the buttons, as it is written. **Copy** copies it; the language under it translates this selection into another language without changing your setting; Esc, a click elsewhere or a new selection closes it, as always. In the settings (the **Translate** card, also in Zotero's Settings pane) you can hide the button, choose the language (by default Zotero's own), and the model: **Fastest available** picks the model your agent itself describes as fast (Claude's Haiku, Codex's Luna; for pi, your chat model), or choose any of the agent's models.
+
+It uses the agent you chat with, in a session of its own: it is told only to translate (and never to follow instructions found in the text), it gets no tools, none of your chats, and none of your agent's settings or skills; Codex runs read-only, and any request to use a tool is refused. Nothing starts until the first press; the session then stays ready for about five minutes. The first translation after that takes a few seconds; later ones usually start within one or two.
 
 ## The chat folder, and continuing a chat in a terminal
 
@@ -103,7 +109,7 @@ Codex uses `codex resume <session id>` and pi uses `pi --session <session id>`. 
 
 ## Privacy
 
-The plugin has no server and sends nothing itself. What leaves your machine is whatever the agent you chose sends to its own provider: your messages, the context block the panel adds to them (the open item, page and selection), and anything the agent reads or fetches while working, such as PDF text. The panel's chat history is stored locally in your Zotero profile, under `zotero-chat/sessions/`. The agent keeps its own record of each session as well (for Claude Code under `~/.claude/projects`, for Codex under `~/.codex/sessions`, for pi under `~/.pi/agent/sessions`); that is what makes terminal resume work, and it follows that agent's own settings and retention.
+The plugin has no server and sends nothing itself. What leaves your machine is whatever the agent you chose sends to its own provider: your messages, the context block the panel adds to them (the open item, page and selection), and anything the agent reads or fetches while working, such as PDF text. The panel's chat history is stored locally in your Zotero profile, under `zotero-chat/sessions/`. The agent keeps its own record of each session as well (for Claude Code under `~/.claude/projects`, for Codex under `~/.codex/sessions`, for pi under `~/.pi/agent/sessions`); that is what makes terminal resume work, and it follows that agent's own settings and retention. Translate sends the selected text (up to 6,000 characters) to the same provider; Claude and pi keep no record of those sessions, Codex keeps its usual one.
 
 ## Troubleshooting
 

@@ -13,7 +13,7 @@ const send = async (p, text) => { await p.locator(".cin").fill(text); await p.lo
 const done = (p, state = "end_turn") => p.waitForSelector(`.msg--assistant[data-state="${state}"]`, { timeout: 8000 });
 const settle = (p, ms = 250) => p.waitForTimeout(ms);
 const toTop = (p) => p.evaluate(() => { const f = window.__zmc.shadow.querySelector(".feed"); f.scrollTop = 0; });
-const openSettings = async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".field"); await settle(p, 200); };
+const openSettings = async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector('section[aria-label="Agent"] .field'); await settle(p, 200); };
 const pickBackend = (p, name) => p.locator(".seg__opt", { hasText: new RegExp(`^${name}$`) }).first().click();
 const toSection = async (p, title) => { await p.evaluate((t) => { const s = [...window.__zmc.shadow.querySelectorAll("section.sec")].find((x) => x.getAttribute("aria-label") === t); const b = window.__zmc.shadow.querySelector(".vw__body"); b.scrollTop = s.offsetTop - 8; }, title); await settle(p, 150); };
 const scrollBy = (p, y) => p.evaluate((y) => { const f = window.__zmc.shadow.querySelector(".feed"); f.scrollTop = y; }, y);

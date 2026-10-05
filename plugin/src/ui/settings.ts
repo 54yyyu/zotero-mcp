@@ -4,7 +4,7 @@
 import type { Appearance, BackendId, BackendStatus, Catalog, PanelSettings, SettingsHost } from "../types.ts";
 import type { Look } from "./appearance.ts";
 import { clear, env, errMessage, h, icon, isMac, nextId } from "./dom.ts";
-import { addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, setSlot, shortPath, shortcuts } from "./settings-model.ts";
+import { LANGUAGES, addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, setSlot, shortPath, shortcuts } from "./settings-model.ts";
 import type { FlagKey } from "./settings-model.ts";
 import { confirmAction, hint, radios, section, seg, selectField, sub, switchRow } from "./settings-parts.ts";
 import { appearanceCard } from "./settings-look.ts";
@@ -134,6 +134,21 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
           keyMsg ? h("p.sec__hint", { role: "status" }, keyMsg) : null));
   }
 
+  /** The reader's Translate button. Its model list is the catalog this screen already has; none known, only the default. */
+  function translate(s: PanelSettings): HTMLElement {
+    const b = s.backend;
+    const cat = cats.get(b);
+    const models = cat?.state === "ok" ? cat.catalog.models : [];
+    const chosen = s.translateModel[b] ?? "";
+    const list = chosen && !models.some((m) => m.id === chosen) ? [...models, { id: chosen, name: chosen }] : models;
+    return section("Translate", "Select text in a PDF, press Translate, and the translation appears in the same popup.",
+      flag("translate", "Show Translate when text is selected", "A button in the reader's selection popup."),
+      h("div.fields", null,
+        selectField("Translate into", LANGUAGES.map((l) => ({ id: l.id, label: l.label })), s.translateTo, (id) => void save({ translateTo: id })),
+        selectField("Model", [{ id: "", label: "Fastest available (recommended)" }, ...list.map((m) => ({ id: m.id, label: m.name }))], chosen, (id) => void save(setPerBackend(s, "translateModel", b, id)))),
+      hint(`Runs on ${BACKEND_LABEL[b]} in a session of its own: no tools, nothing from your chats.`));
+  }
+
   function prompts(s: PanelSettings): HTMLElement {
     const list = s.prompts;
     const rows = list.map((p, i) => {
@@ -203,7 +218,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
         flag("showUsage", "Show tokens and cost", "A small line under each answer. Off by default."),
         flag("openAtStart", "Open the panel when Zotero starts", ""),
       ),
-      prompts(s), folder(s), data(), about(s),
+      translate(s), prompts(s), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));
     if (fid) (body.querySelector(`[data-fid="${CSS.escape(fid)}"]`) as HTMLElement | null)?.focus({ preventScroll: true });
     if (o.focusPrompts) { o.focusPrompts = false; env.win.setTimeout(() => body.querySelector("#prompts")?.scrollIntoView({ block: "start" }), 0); }

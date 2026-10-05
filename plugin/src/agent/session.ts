@@ -295,10 +295,11 @@ export class AcpAgentSession implements AgentSession {
   static async open(client: AcpClient, spec: BackendSpec, opts: StartOpts): Promise<AcpAgentSession> {
     try {
       const init = await client.initialize();
-      // A probe (catalog) must not litter the user's own session list: Claude's SDK takes persistSession: false.
-      const meta = spec.briefVia === "system-prompt"
-        ? { _meta: { systemPrompt: { append: opts.brief }, ...(opts.ephemeral ? { claudeCode: { options: { persistSession: false } } } : {}) } }
-        : {};
+      // A probe (catalog) must not litter the user's own session list: Claude's SDK takes persistSession: false. A locked
+      // session's brief is a string, which replaces Claude Code's own prompt instead of appending to it.
+      const meta = spec.briefVia !== "system-prompt" ? {}
+        : opts.locked ? { _meta: { systemPrompt: opts.brief, claudeCode: { options: { persistSession: false, tools: [], settingSources: [], strictMcpConfig: true } } } }
+        : { _meta: { systemPrompt: { append: opts.brief }, ...(opts.ephemeral ? { claudeCode: { options: { persistSession: false } } } : {}) } };
       let sessionId: string;
       let res: Obj;
       if (opts.resumeSessionId) {

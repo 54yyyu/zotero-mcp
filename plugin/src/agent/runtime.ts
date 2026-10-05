@@ -2,7 +2,7 @@
 // Process spawning is injected (Spawner); this file has no node:*, DOM or Zotero imports.
 import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, Spawner, StartOpts } from "../types.ts";
 import { AcpClient } from "./acp.ts";
-import { BACKEND_IDS, backendOf, findCli, probeLogin } from "./backends.ts";
+import { BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from "./backends.ts";
 import { ensureBridge, locateBridge } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
@@ -27,6 +27,25 @@ const NODE_MISSING = "node was not found on your login PATH. Install Node.js (ht
  * folder holding anything is never touched.
  */
 export const CATALOG_CLEANUP = 'real=$(cd "$1" && pwd -P); d="$HOME/.claude/projects/$(printf %s "$real" | sed "s/[^A-Za-z0-9]/-/g")"; rmdir "$d/memory" "$d" 2>/dev/null; rm -rf "$1"';
+
+/**
+ * What locks a Codex or pi bridge down (StartOpts.locked); Claude's lock is in session/new's _meta (session.ts).
+ * Codex: config overrides (codex-acp hands CODEX_CONFIG to thread/start). pi: pi-acp starts PI_ACP_PI_COMMAND, here a
+ * script in the session's folder that runs the user's pi without tools, extensions, skills, templates or context files, and
+ * keeps no session. (codex-acp cannot make a thread ephemeral: Codex keeps its usual session file.)
+ */
+async function lockedEnv(spawner: Spawner, env: Record<string, string>, spec: BackendSpec, cwd: string): Promise<Record<string, string>> {
+  if (spec.id === "codex") return { CODEX_CONFIG: JSON.stringify({ sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled" }) };
+  if (spec.id !== "pi") return {};
+  const pi = await findCli(spawner, env, spec);
+  if (!pi) throw new Error(spec.cli!.hint);
+  const script = `${cwd}/pi-locked.sh`;
+  const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const body = `#!/bin/sh\nexec ${q(pi)} --no-tools --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session "$@"\n`;
+  const r = await spawner.run("/bin/sh", ["-c", 'printf "%s" "$2" > "$1" && chmod 700 "$1"', "sh", script, body], { env, timeoutMs: 10_000 });
+  if (r.code !== 0) throw new Error(`could not prepare pi for translation: ${r.stderr.trim() || "write failed"}`);
+  return { PI_ACP_PI_COMMAND: script };
+}
 
 export function createRuntime(opts: RuntimeOpts): AgentRuntime {
   const { spawner, bridgeDir } = opts;
@@ -106,7 +125,8 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
       if (!node) throw new Error(NODE_MISSING);
       const bridge = await ensureBridge({ spawner, env, node, bridgeDir, spec, ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) });
       const claude = spec.claudeMeta ? await findCli(spawner, withPathFirst(env, dirnameOf(node)), spec) : null;
-      const childEnv = bridgeEnv(env, { claudeExecutable: claude, node, ...(start.env ? { extra: start.env } : {}) });
+      const extra = { ...start.env, ...(start.locked ? await lockedEnv(spawner, env, spec, start.cwd) : {}) };
+      const childEnv = bridgeEnv(env, { claudeExecutable: claude, node, extra });
       const client = await AcpClient.spawn({
         spawner,
         command: node,

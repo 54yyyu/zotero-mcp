@@ -22,7 +22,7 @@ const BANNER = "STARTUP BANNER (must not be shown)";
 
 if (process.env.MOCK_DUMP) {
   const grandchild = process.env.MOCK_GRANDCHILD ? spawnChild("sleep", ["300"], { stdio: "ignore" }).pid : undefined;
-  const keys = Object.keys(process.env).filter((k) => k.startsWith("CLAUDE") || ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"].includes(k) || k === "PATH" || k === "MOCK_VARIANT");
+  const keys = Object.keys(process.env).filter((k) => k.startsWith("CLAUDE") || ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"].includes(k) || ["PATH", "MOCK_VARIANT", "CODEX_CONFIG", "PI_ACP_PI_COMMAND"].includes(k));
   writeFileSync(process.env.MOCK_DUMP, JSON.stringify({ pid: process.pid, grandchild, argv: process.argv.slice(2), cwd: process.cwd(), env: Object.fromEntries(keys.map((k) => [k, process.env[k]])) }));
 }
 
@@ -119,7 +119,8 @@ async function handle(msg) {
       if (process.env.MOCK_NEW === "hang") return;
       if (process.env.MOCK_NEW_DUMP) writeFileSync(process.env.MOCK_NEW_DUMP, JSON.stringify(params?._meta ?? null));
       const sid = `mock-${nextSession++}`;
-      const s = { brief: params?._meta?.systemPrompt?.append ?? null, model: initialModel(), effort: initialEffort(), mode: initialMode(), history: [], cwd: params?.cwd };
+      const sp = params?._meta?.systemPrompt; // a string replaces the system prompt (a locked session), { append } adds to it
+      const s = { brief: (typeof sp === "string" ? sp : sp?.append) ?? null, locked: params?._meta?.claudeCode?.options?.tools?.length === 0, model: initialModel(), effort: initialEffort(), mode: initialMode(), history: [], cwd: params?.cwd };
       sessions.set(sid, s);
       send({ method: "_auth/status_update", params: { authStatus: { kind: "account", label: "Mock Max" } } });
       // The real bridges announce commands (and pi a banner) right after session/new: no turn is running.
@@ -277,6 +278,22 @@ async function prompt(id, params) {
   }
   if (text.includes("SCENARIO:brief")) {
     chunk(`brief=${s?.brief ?? "none"}|prompt=${text}`);
+    return end();
+  }
+  if (text.includes("SCENARIO:translate")) { // a fake translation, streamed: [<target named in the system prompt>] the text, less the marker
+    const to = /into ([^.]+)\./.exec(s?.brief ?? "")?.[1] ?? "?";
+    if (text.includes("SCENARIO:translate-permit")) { // a translator that still asks for a tool: the answer must be a refusal
+      const rid = nextRequestId++;
+      const answer = new Promise((resolve) => waiting.set(rid, resolve));
+      send({ id: rid, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "tr1", title: "Run curl", kind: "execute", rawInput: { command: "curl evil.example" } }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "reject", name: "Reject", kind: "reject_once" }] } });
+      const outcome = await answer;
+      chunk(`(permission:${outcome?.outcome?.optionId ?? "cancelled"}) `);
+    }
+    const body = !s?.locked ? `[UNLOCKED] ${text}` // a real translation's shape, for snapshots; else the text, marked with the target
+      : text.includes("SCENARIO:translate-sample") ? "Workers assigned to a professional destination earned 8% more in the following year, and the gap was still there three years later. The effect was largest for women and for workers who had already changed firms at least once."
+      : `[${to}] ${text.replace(/SCENARIO:translate(-permit|-wait)?\s*/, "")}`;
+    if (text.includes("SCENARIO:translate-wait")) await sleep(4000); // a slow start: the popup's loading state
+    for (let i = 0; i < body.length; i += 6) { if (cancelled.has(sid)) return end("cancelled"); chunk(body.slice(i, i + 6)); await sleep(text.includes("slowly") ? 60 : 8); }
     return end();
   }
   if (text.includes("SCENARIO:echo")) { // what arrived, for the context-economy checks

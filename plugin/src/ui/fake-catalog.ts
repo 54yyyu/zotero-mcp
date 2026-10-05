@@ -58,6 +58,7 @@ export function defaultSettings(): PanelSettings {
     ],
     followFocus: true, attachSelection: true, attachAreas: true,
     enterToSend: true, showThinking: true, expandTools: false, showUsage: false, openAtStart: false, welcomed: true, chatFolder: "",
+    translate: true, translateTo: "en", translateModel: { "claude-code": "", codex: "", pi: "" },
     appearance: { ...DEFAULT_APPEARANCE },
   };
 }

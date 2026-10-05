@@ -1,5 +1,6 @@
 import type { BackendId, PanelSettings, PromptEntry } from "../types.ts";
 import { DEFAULT_APPEARANCE, readAppearance } from "../ui/appearance.ts";
+import { LANGUAGES, languageForLocale } from "../ui/settings-model.ts";
 
 export const DEFAULT_PROMPTS: PromptEntry[] = [
   { id: "summary-detailed", slot: 1, title: "Detailed summary", text: "Give a detailed summary of this paper: the question, the data and method, the main results, and the limitations. Cite the pages." },
@@ -28,16 +29,26 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   openAtStart: false,
   welcomed: false,
   chatFolder: "",
+  translate: true,
+  translateTo: "en", // withDefaults puts Zotero's own language here
+  translateModel: each(""),
   appearance: DEFAULT_APPEARANCE,
 };
 
-/** Saved settings laid over the defaults; the per-backend maps merge key by key so a new backend never has holes, and the appearance is validated field by field. */
-export function withDefaults(saved: Partial<PanelSettings>): PanelSettings {
+/**
+ * Saved settings laid over the defaults; the per-backend maps merge key by key so a new backend never has holes, and the
+ * appearance is validated field by field. The translate target is a known language, else the one `locale` (Zotero's UI
+ * language) reads.
+ */
+export function withDefaults(saved: Partial<PanelSettings>, locale?: string): PanelSettings {
   const d = DEFAULT_SETTINGS;
   return {
     ...d, ...saved,
     model: { ...d.model, ...saved.model }, mode: { ...d.mode, ...saved.mode },
     effort: { ...d.effort, ...saved.effort }, auth: { ...d.auth, ...saved.auth },
+    translate: typeof saved.translate === "boolean" ? saved.translate : d.translate,
+    translateTo: LANGUAGES.some((l) => l.id === saved.translateTo) ? saved.translateTo! : languageForLocale(locale),
+    translateModel: { ...d.translateModel, ...saved.translateModel },
     appearance: readAppearance(saved.appearance),
   };
 }

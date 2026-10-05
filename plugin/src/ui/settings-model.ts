@@ -17,14 +17,45 @@ const MODE_HELP: Record<string, string> = {
 export const modeHelp = (m: ModeOption): string => MODE_HELP[m.id] ?? m.description ?? "";
 
 export type PerBackend = "model" | "mode" | "effort";
-export type FlagKey = "followFocus" | "attachSelection" | "attachAreas" | "enterToSend" | "showThinking" | "expandTools" | "showUsage" | "openAtStart";
+export type FlagKey = "followFocus" | "attachSelection" | "attachAreas" | "enterToSend" | "showThinking" | "expandTools" | "showUsage" | "openAtStart" | "translate";
 
-/** Model, mode and effort are saved per backend: ids from one backend mean nothing to another. */
-export const setPerBackend = (s: PanelSettings, key: PerBackend, backend: BackendId, id: string): Partial<PanelSettings> =>
+/** Model, mode, effort and the translator's model are saved per backend: ids from one backend mean nothing to another. */
+export const setPerBackend = (s: PanelSettings, key: PerBackend | "translateModel", backend: BackendId, id: string): Partial<PanelSettings> =>
   ({ [key]: { ...s[key], [backend]: id } }) as Partial<PanelSettings>;
 
 /** The value in force: the saved choice, else the backend's own default from its catalog ("" when unknown). */
 export const effective = (s: PanelSettings, cat: Catalog | undefined, key: PerBackend, backend: BackendId): string => s[key][backend] || cat?.[key] || "";
+
+/** Translate targets: `label` as the language names itself (the settings list), `name` in English (the translator's prompt). */
+export const LANGUAGES: { id: string; label: string; name: string }[] = [
+  { id: "en", label: "English", name: "English" },
+  { id: "zh-Hans", label: "中文 (简体)", name: "Simplified Chinese" },
+  { id: "zh-Hant", label: "中文 (繁體)", name: "Traditional Chinese" },
+  { id: "ja", label: "日本語", name: "Japanese" },
+  { id: "ko", label: "한국어", name: "Korean" },
+  { id: "es", label: "Español", name: "Spanish" },
+  { id: "fr", label: "Français", name: "French" },
+  { id: "de", label: "Deutsch", name: "German" },
+  { id: "pt", label: "Português", name: "Portuguese" },
+  { id: "it", label: "Italiano", name: "Italian" },
+  { id: "ru", label: "Русский", name: "Russian" },
+  { id: "ar", label: "العربية", name: "Arabic" },
+  { id: "tr", label: "Türkçe", name: "Turkish" },
+  { id: "nl", label: "Nederlands", name: "Dutch" },
+  { id: "pl", label: "Polski", name: "Polish" },
+  { id: "hi", label: "हिन्दी", name: "Hindi" },
+  { id: "id", label: "Bahasa Indonesia", name: "Indonesian" },
+  { id: "vi", label: "Tiếng Việt", name: "Vietnamese" },
+];
+
+export const language = (id: string) => LANGUAGES.find((l) => l.id === id) ?? LANGUAGES[0]!;
+
+/** The language a UI locale ("zh-CN", "pt-BR", "ja-JP") reads; English when it is not in the list. */
+export function languageForLocale(locale: string | undefined): string {
+  const [lang = "", region = ""] = (locale ?? "").replace("_", "-").split("-");
+  if (lang.toLowerCase() === "zh") return /^(tw|hk|mo|hant)$/i.test(region) ? "zh-Hant" : "zh-Hans";
+  return LANGUAGES.find((l) => l.id === lang.toLowerCase())?.id ?? "en";
+}
 
 export const setFolder = (path: string): Partial<PanelSettings> => ({ chatFolder: path });
 
