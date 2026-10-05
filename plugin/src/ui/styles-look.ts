@@ -110,7 +110,7 @@ export const LOOK_STYLES = `
    root of everything inside it, so the menus and the @ popup (its children) would only blur the composer */
 .zmc[data-glass="on"] .composer { background: transparent; isolation: isolate; transition: border-color var(--ease), box-shadow var(--ease); }
 .zmc[data-glass="on"] .composer::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--glass); backdrop-filter: blur(18px) saturate(170%); pointer-events: none; }
-.zmc[data-glass="on"] .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 26%, var(--glass-edge)); box-shadow: var(--glass-sheen), 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent), var(--glass-shadow); }
+.zmc[data-glass="on"] .composer:focus-within { border-color: color-mix(in srgb, var(--ink) 22%, var(--glass-edge)); }
 .zmc[data-glass="on"][data-theme="light"] .composer { border-color: color-mix(in srgb, #ffffff 70%, var(--glass-line)); }
 .zmc[data-glass="on"] :is(.menu, .pop, .jump) { background: var(--glass-strong); backdrop-filter: blur(27px) saturate(180%); }
 .zmc[data-glass="on"] :is(.menu__item:hover, .menu__item:focus-visible, .pop__i--on) { background: color-mix(in srgb, var(--accent) 11%, transparent); }
