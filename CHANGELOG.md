@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_export_bibliography(item_keys=...)` renders every requested item** (#662). Keys were fetched from `/items`, which also returns each item's notes and attachments, so those filled the 100-row page: 60 keys gave 52 entries and 80 gave 53, with no warning, in every format. Keys now go to `/items/top` in batches of 50, Zotero's limit for one `itemKey` filter.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security

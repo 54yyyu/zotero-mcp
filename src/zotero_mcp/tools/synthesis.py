@@ -387,31 +387,48 @@ def export_bibliography(
         # and local-only users no longer need web credentials (#371).
         zot = _helpers._get_bibliography_client(ctx)
 
+        # Requested keys go to /items/top, in batches of 50 (Zotero's cap for
+        # an itemKey filter). /items also answers with each item's notes and
+        # attachments, which filled the 100-row page and silently dropped
+        # requested items.
+        key_batches = [",".join(keys[i:i + 50]) for i in range(0, len(keys or []), 50)]
+
+        def _bibtex_text(raw):
+            if hasattr(raw, "entries"):
+                # pyzotero parses a format=bibtex response into a
+                # bibtexparser BibDatabase; serialise it back to .bib text.
+                import bibtexparser
+
+                raw = bibtexparser.dumps(raw)
+            return raw.decode("utf-8") if isinstance(raw, bytes) else raw
+
         try:
             if export_format == "bibtex":
                 # A whole-file export, not per-item entries: the API returns the
                 # concatenated .bib as raw bytes rather than a list.
                 if keys:
-                    raw = zot.items(itemKey=",".join(keys), format="bibtex", limit=100)
+                    rendered = "\n".join(
+                        _bibtex_text(zot.top(itemKey=batch, format="bibtex", limit=100))
+                        for batch in key_batches
+                    )
                 elif collection_key:
-                    raw = zot.collection_items(collection_key, format="bibtex", limit=100)
+                    rendered = _bibtex_text(
+                        zot.collection_items(collection_key, format="bibtex", limit=100)
+                    )
                 else:
                     # Top-level items only. Attachments and notes have no
                     # bibliography entry, so including them would pad the
                     # export with blanks and crowd out real references.
-                    raw = zot.top(format="bibtex", limit=100)
-                if hasattr(raw, "entries"):
-                    # pyzotero parses a format=bibtex response into a
-                    # bibtexparser BibDatabase; serialise it back to .bib text.
-                    import bibtexparser
-
-                    raw = bibtexparser.dumps(raw)
-                rendered = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                    rendered = _bibtex_text(zot.top(format="bibtex", limit=100))
             else:
                 include = "bib" if export_format == "bib" else "citation"
                 fetch_kwargs = {"include": include, "style": style}
                 if keys:
-                    rows = zot.items(itemKey=",".join(keys), limit=100, **fetch_kwargs)
+                    rows = [
+                        row
+                        for batch in key_batches
+                        for row in zot.top(itemKey=batch, limit=100, **fetch_kwargs)
+                    ]
                     # The local API answers an itemKey filter on this endpoint
                     # with the requested items *plus* others, so the response
                     # cannot be trusted as the selection. Filter to what was
