@@ -131,20 +131,31 @@ await test("an unchanged area and selection go once; later turns only name them"
   assert.match(b.text, /Still in focus, unchanged[^\n]*selected area p\.19 \(annotation ANNAREA1\)/);
 });
 
-await test("context meter: silent without numbers, quiet NN% from 40%, a new-chat nudge from 85%", async (p) => {
-  await send(p, "hello");
-  await done(p);
+await test("context meter: hidden without numbers, a ring whenever the backend says, amber at 70%, red and a new-chat nudge at 85%", async (p) => {
+  const turn = async (q, k) => { await send(p, q); await p.waitForFunction((n) => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === n, k); };
+  const level = () => p.locator(".cmeter").getAttribute("data-level");
+  await turn("hello", 1);
   assert.equal(await p.locator(".cmeter").isVisible(), false, "the backend reported nothing: no meter");
   await sim(p, () => { window.__zmc.sim.contextUsage = { used: 30000, size: 200000 }; });
-  await send(p, "again"); await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
-  assert.equal(await p.locator(".cmeter").isVisible(), false, "15% stays quiet");
+  await turn("again", 2);
+  assert.ok(await p.locator(".cmeter").isVisible(), "15%: the ring shows, quietly");
+  assert.equal(await level(), "");
   await sim(p, () => { window.__zmc.sim.contextUsage = { used: 124000, size: 200000 }; });
-  await send(p, "more"); await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 3);
-  assert.equal(await p.locator(".cmeter__pct").innerText(), "62%");
-  assert.equal(await p.locator(".cmeter").getAttribute("title"), "Context: 62% full. Older parts are summarised automatically.");
+  await turn("more", 3);
+  assert.equal(await p.locator(".cmeter").getAttribute("title"), "Context: 62% full (124k of 200k tokens). Older parts are summarised automatically.");
+  assert.equal(await p.locator(".cmeter").getAttribute("aria-label"), await p.locator(".cmeter").getAttribute("title"));
+  assert.equal(await p.locator(".cmeter__arc").getAttribute("stroke-dasharray"), "62 100");
+  assert.equal(await level(), "");
+  await sim(p, () => { window.__zmc.sim.contextUsage = { used: 150000, size: 200000 }; });
+  await turn("warmer", 4);
+  assert.equal(await level(), "warm");
   assert.equal(await p.locator(".cnote").isVisible(), false);
+  await sim(p, () => { window.__zmc.sim.contextUsage = { used: 176000, size: 1000000 }; });
+  await turn("a bigger window", 5);
+  assert.match(await p.locator(".cmeter").getAttribute("title"), /^Context: 18% full \(176k of 1M tokens\)/);
   await sim(p, () => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; });
-  await send(p, "even more"); await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 4);
+  await turn("even more", 6);
+  assert.equal(await level(), "full");
   assert.ok(await p.locator(".cnote").isVisible(), "88%: the suggestion shows");
   await p.locator(".cnote").getByRole("button", { name: "Dismiss" }).click();
   assert.equal(await p.locator(".cnote").isVisible(), false, "dismissed");

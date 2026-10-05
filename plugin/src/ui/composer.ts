@@ -29,9 +29,10 @@ export interface ComposerOpts {
   onNewChat(): void;
 }
 
-/** The meter shows from this fill on; the suggestion to start over from FULL_AT. */
-const SHOW_AT = 40;
+/** The meter turns amber from WARM_AT; from FULL_AT it turns red and a new chat is suggested. */
+const WARM_AT = 70;
 const FULL_AT = 85;
+const kTokens = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
 
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
@@ -52,7 +53,6 @@ export class Composer {
   private warmed = false;
   private meter = h("span.cmeter", { hidden: true, role: "img" });
   private meterArc = svg("circle", { cx: "8", cy: "8", r: "6", pathLength: "100", class: "cmeter__arc" });
-  private meterPct = h("span.cmeter__pct");
   private longNote: HTMLElement;
   private noteDismissed = false;
 
@@ -74,7 +74,7 @@ export class Composer {
     this.pickers = new Pickers(this.el, { load: () => opts.loadChoices(), pick: (k, id) => opts.onPick(k, id), checkSetup: () => opts.checkSetup() });
     this.sendBtn = h("button.send", { type: "button", "aria-label": "Send", title: "Send (Enter)", onclick: () => this.send() }, icon("send")) as HTMLButtonElement;
 
-    append(this.meter, [svg("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, svg("circle", { cx: "8", cy: "8", r: "6", class: "cmeter__track" }), this.meterArc), this.meterPct]);
+    this.meter.appendChild(svg("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, svg("circle", { cx: "8", cy: "8", r: "6", class: "cmeter__track" }), this.meterArc));
     this.longNote = h("div.cnote", { hidden: true, role: "status" },
       h("span.cnote__t", null, "This chat is getting long. A new chat starts fresh and carries nothing over."),
       h("button.lnk", { type: "button", onclick: () => opts.onNewChat() }, icon("plus"), "New chat"),
@@ -122,19 +122,18 @@ export class Composer {
   setText(t: string): void { this.ta.value = t; this.autosize(); this.syncSend(); }
   clearDraft(): void { this.setText(""); }
 
-  /** How full the agent's context is (null: the backend does not say). Quiet below SHOW_AT, a suggestion from FULL_AT. */
-  setContextFill(fill: { pct: number } | null): void {
+  /** How full the agent's context is: a ring whenever the backend says (hidden when it does not), a new-chat suggestion from FULL_AT. */
+  setContextFill(fill: { pct: number; used: number; size: number } | null): void {
     const pct = fill?.pct ?? 0;
-    this.meter.hidden = pct < SHOW_AT;
+    this.meter.hidden = !fill;
     if (pct < FULL_AT) this.noteDismissed = false;
     this.longNote.hidden = pct < FULL_AT || this.noteDismissed;
-    if (this.meter.hidden) return;
-    const tip = `Context: ${pct}% full. Older parts are summarised automatically.`;
+    if (!fill) return;
+    const tip = `Context: ${pct}% full (${kTokens(fill.used)} of ${kTokens(fill.size)} tokens). Older parts are summarised automatically.`;
     this.meter.title = tip;
     this.meter.setAttribute("aria-label", tip);
-    this.meter.classList.toggle("cmeter--full", pct >= FULL_AT);
+    this.meter.dataset["level"] = pct >= FULL_AT ? "full" : pct >= WARM_AT ? "warm" : "";
     this.meterArc.setAttribute("stroke-dasharray", `${pct} 100`);
-    this.meterPct.textContent = `${pct}%`;
   }
 
   setChips(chips: ContextChip[]): void {
