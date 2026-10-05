@@ -3663,6 +3663,23 @@ def _attachment_sig(data: dict) -> tuple | None:
     )
 
 
+def _has_children(write_zot, item_key: str) -> bool:
+    """Whether an attachment has children (annotations, an embedded note).
+
+    Annotations are asked for by type: Zotero's local API leaves them out of
+    a plain children listing. An unanswerable check counts as "has children":
+    the caller then moves the attachment instead of trashing it, which can
+    never lose anything.
+    """
+    try:
+        return bool(
+            write_zot.children(item_key, limit=1)
+            or write_zot.children(item_key, itemType="annotation", limit=1)
+        )
+    except Exception:
+        return True
+
+
 def _keeper_rank(entry: dict) -> tuple:
     """Sort key for keeper selection — the lowest-sorting member is the keeper.
 
@@ -3740,13 +3757,18 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         if kc.get("data", {}).get("itemType") == "attachment"
     }
     keeper_attachment_sigs.discard(None)
-    skipped_attachment_count = sum(
-        1
+    # A copy of a file the keeper already has is left on the duplicate and
+    # trashed with it, unless it carries annotations or a note of its own:
+    # those live on that copy, not on the keeper's, so it moves instead.
+    skip_attachment_keys = {
+        child.get("key")
         for dup in duplicates
         for child in dup["children"]
         if child.get("data", {}).get("itemType") == "attachment"
         and _attachment_sig(child.get("data", {})) in keeper_attachment_sigs
-    )
+        and not _has_children(write_zot, child.get("key"))
+    }
+    skipped_attachment_count = len(skip_attachment_keys)
 
     return {
         "keeper_key": keeper_key,
@@ -3761,6 +3783,7 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         "children_to_move": total_children_to_move - skipped_attachment_count,
         "skipped_attachment_count": skipped_attachment_count,
         "keeper_attachment_sigs": keeper_attachment_sigs,
+        "skip_attachment_keys": skip_attachment_keys,
     }
 
 
@@ -3826,8 +3849,9 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
                 fresh_child = write_zot.item(child_key)
                 child_data = fresh_child.get("data", {})
                 if (
-                    child_data.get("itemType") == "attachment"
+                    child_key in plan["skip_attachment_keys"]
                     and _attachment_sig(child_data) in plan["keeper_attachment_sigs"]
+                    and not _has_children(write_zot, child_key)
                 ):
                     result["skipped_dupes"].append(child_key)
                     continue

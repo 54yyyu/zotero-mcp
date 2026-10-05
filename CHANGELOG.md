@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Merging duplicates no longer trashes the annotations on a duplicate's PDF** (#661). When a duplicate's attachment is the same file as one the keeper already has (same md5), `zotero_merge_duplicates` left it on the duplicate and trashed it, along with every highlight and note the user had made on that copy, and still reported "Merge complete". Such an attachment is now moved to the keeper whenever it has annotations or a child note, so the keeper may end up with two copies of the file but nothing is lost. Zotero's local API lists annotations only when asked for them by type, so the check asks for them explicitly.
+
 ## [0.13.2] - 2026-10-04
 
 ### Fixed
