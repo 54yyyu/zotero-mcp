@@ -279,14 +279,6 @@ async function prompt(id, params) {
     chunk(`brief=${s?.brief ?? "none"}|prompt=${text}`);
     return end();
   }
-  if (text.includes("SCENARIO:maxtok")) {
-    chunk("cut off");
-    return end("max_tokens");
-  }
-  if (text.includes("SCENARIO:brief")) {
-    chunk(`brief=${s?.brief ?? "none"}|prompt=${text}`);
-    return end();
-  }
   if (text.includes("SCENARIO:echo")) { // what arrived, for the context-economy checks
     chunk(JSON.stringify({ prompt: text, images, brief: s?.brief ?? null }));
     return end();
