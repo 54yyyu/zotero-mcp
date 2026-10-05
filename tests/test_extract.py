@@ -146,6 +146,88 @@ class TestExtractHtml:
         snapshot.write_bytes(b"<p>caf\xe9</p>")
         assert "caf" in extract_html(snapshot).text
 
+    def test_embedded_data_images_are_dropped(self, tmp_path):
+        # Connector snapshots inline images as data: URIs; copying them into
+        # the Markdown turned a 33K-character article into 6.1M characters.
+        payload = "iVBORw0KGgo" + "A" * 200_000
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            f'<p>Before</p><img alt="Logo" src="data:image/png;base64,{payload}">'
+            '<p>After</p>'
+        )
+        text = extract_html(snapshot).text
+        assert "Before" in text and "After" in text
+        assert "base64" not in text
+        assert len(text) < 200
+
+    def test_svg_data_uri_with_parentheses_is_dropped(self, tmp_path):
+        # A utf8 SVG URI can contain ")", which would end a Markdown image
+        # early; dropping at the element level avoids parsing it at all.
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            "<p>Text</p><img src=\"data:image/svg+xml;utf8,<svg>"
+            "<path d='M0 0 (1)'/></svg>\">"
+        )
+        text = extract_html(snapshot).text
+        assert "Text" in text
+        assert "svg" not in text
+
+    def test_data_images_inside_links_leave_the_link_text(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<a href="https://example.org/">'
+            '<img alt="Home" src="data:image/png;base64,AAAA">Home page</a>'
+        )
+        text = extract_html(snapshot).text
+        assert "https://example.org/" in text
+        assert "Home page" in text
+        assert "AAAA" not in text
+
+    def test_data_images_leave_a_marker_with_alt_text(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<img alt="  Figure 2:\n adoption [2024] " src="data:image/png;base64,AAAA">'
+            '<img src="data:image/png;base64,BBBB">'
+            '<img alt="   " src="data:image/gif;base64,CCCC">'
+        )
+        text = extract_html(snapshot).text
+        assert "[image: Figure 2: adoption 2024]" in text
+        assert text.count("[image]") == 2
+
+    def test_data_video_posters_and_sources_are_dropped(self, tmp_path):
+        # markdownify renders <video> as an image of its poster, so a data:
+        # poster leaked base64 the same way an <img> did.
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<video poster="data:image/png;base64,PPPP">No video support.</video>'
+            '<video poster="data:image/png;base64,QQQQ" src="https://example.org/a.mp4">'
+            "Clip</video>"
+            '<video><source src="data:video/mp4;base64,SSSS">'
+            '<source src="https://example.org/b.mp4">Fallback</video>'
+        )
+        text = extract_html(snapshot).text
+        for payload in ("PPPP", "QQQQ", "SSSS", "data:"):
+            assert payload not in text
+        assert "No video support." in text
+        assert "https://example.org/a.mp4" in text
+        assert "https://example.org/b.mp4" in text
+
+    def test_data_links_keep_only_their_text(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<p><a href="data:application/pdf;base64,LLLL">Download</a> and '
+            '<a href="https://example.org/">site</a></p>'
+        )
+        text = extract_html(snapshot).text
+        assert "LLLL" not in text and "data:" not in text
+        assert "Download" in text
+        assert "[site](https://example.org/)" in text
+
+    def test_remote_images_are_kept(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text('<img alt="Figure 1" src="https://example.org/f1.png">')
+        assert "![Figure 1](https://example.org/f1.png)" in extract_html(snapshot).text
+
 
 class TestExtractTextFile:
     def test_reads_content_verbatim(self, tmp_path):

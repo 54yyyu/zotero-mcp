@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Web page snapshots no longer carry their images as base64** (#670). The Zotero Connector saves a page with every image inlined as a `data:` URI, and HTML extraction copied each one into the Markdown, so `zotero_get_item_fulltext` on an 8 MB snapshot returned 6.1 million characters (about 1.5M tokens) around 33K characters of text and failed over HTTP with "Server-sent event exceeded the 1048576 byte limit"; semantic search embedded the same base64. Images, video posters and sources, and links whose URL is a `data:` URI are now dropped: an image leaves `[image: <alt text>]` (or `[image]`), a link leaves its text. Remote images and links are unchanged.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security
