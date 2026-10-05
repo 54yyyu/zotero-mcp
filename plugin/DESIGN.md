@@ -94,6 +94,20 @@ copied verbatim, URL-encoded) makes a click also flash that passage for 2 s: `zo
 (letters and digits only, so spacing, hyphenation, ligatures and quote styles never decide; then its first or last 8 words;
 then the pages either side) and the reader draws it; not found is a plain page jump. Zotero's own handler ignores the param.
 
+The brief also sets reading economy: outline and abstract first, `zotero-cli read KEY --find "phrase"` to locate a passage
+(matching pages with short snippets, never whole pages), then only the pages needed, never a page already read in this chat.
+
+**The paper is never pasted.** Each message carries only a short `<zotero-context>` block; the agent reads pages itself, and
+its own conversation (a persistent ACP session, prompt-cached by the provider) keeps what it read. The block is a **delta**
+(`ui/economy.ts`): per agent session the chat remembers each chip it sent (id + fingerprint of page, text and image bytes).
+A chip goes in full the first time and whenever it changes; unchanged, it becomes one reminder line ("Still in focus,
+unchanged since you saw it earlier in this chat: reading Bell 2017 p.3; selected text p.3 "first eight words…"; selected
+area p.3 (annotation K)"), so "this selection" still resolves after a long gap and the agent never thinks the user
+deselected it. An unchanged image is never sent again. The reader line carries the page, so a page turn re-sends it (37
+tokens) and "this page" stays right. Everything goes in full again when the session is new or resumed (a resume may not
+have the history, so it is treated as unsent) and after the agent compacts (claude and codex report `compaction_update`
+because `initialize` asks for it; pi says so in a notice), since the summary may have dropped what was sent.
+
 The workspace (`<profile>/zotero-chat/workspace`) gets the skill via `zotero-mcp install-skill --target claude --target agents --root <workspace>`.
 
 ## UI (ui/)
@@ -185,6 +199,36 @@ Zotero waits for this plugin only while it reads `plugin.js` (6 KB) and runs `st
 (about 35 ms, capped at 150) and never at startup. Bundle size is not otherwise a concern, within reason (hundreds of KB are fine,
 tens of MB are not): `test/budget.test.ts` only catches a blow-up. Redundancy is the thing to avoid: no helper, setting or layer without a
 user or a failure it protects against. Every agent-written layer gets a simplify pass before it is called done.
+
+## Context budget (measured 2026-10-04)
+
+Tokens are chars/4 for text and width x height / 750 for images (long edge fitted to 1568 px), `ui/economy.ts estimateTokens`.
+
+| what | cost |
+|---|---|
+| brief + drawing guide, once per chat (system prompt; codex/pi: first prompt) | 317 words, ~528 tokens |
+| `<zotero-context>` reader line (title, keys, page) | ~37 tokens |
+| reader line + a 1500-char selection (describe.ts caps there) | ~418 tokens |
+| a selected area as Zotero renders it (1872x900 PNG, 143 KB base64) | ~1,577 tokens |
+| same focus, next turn: the reminder line only | ~62 tokens (turn 1 was ~2,012) |
+| 10 turns with a persistent area + selection (unit test, 900x600 area) | 1,715 tokens with delta vs 11,270 resending (15%) |
+| `zotero-cli read`, generated test PDF (4 pages) | ~68 tokens a page |
+| `zotero-cli read`, a real 39-page arXiv paper (2606.25234) | ~823 tokens a page on average (max 1,338); whole paper ~32k |
+| `zotero-cli read --find` on that paper (extract 0.14 s + search 0.01 s) | 78 tokens (1 hit) to 838 (16 hits on 10 pages) |
+
+So the per-turn overhead the panel adds is tens of tokens; what dominates is what the agent reads, which is why the brief
+asks it to locate before reading and not to re-read. Images dominate what the panel sends, hence never resending one.
+
+**Context meter.** All three bridges send ACP `usage_update { used, size }` (claude-agent-acp 0.85.1 on every result and
+after a compaction; codex-acp 2.1.1 from the last request's tokens; pi-acp 0.0.34 at turn end); the session puts the last
+one on `turn_end.usage` (`contextUsed`, `contextSize`). The composer shows a tiny ring with "NN%" only from 40% (ring only
+under 340 px), tooltip "Context: 62% full. Older parts are summarised automatically."; from 85% a dismissable line suggests a
+new chat, which carries nothing over. A backend that reports nothing shows nothing. A compaction becomes an info notice.
+
+**Next (not built):** a per-paper digest cached across chats (outline, abstract, section-to-page map, figure and table
+captions, maybe 1-2k tokens), written by the CLI the first time a paper is read and offered in the first turn of later
+chats on the same paper, so a new chat does not pay to re-read the opening pages. Worth building only after measuring how
+often users start several chats on one paper; the find + outline route may already be enough.
 
 ## Milestones
 
