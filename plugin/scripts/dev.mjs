@@ -13,7 +13,7 @@
 //   4. we only ever signal the pid we started, and the local server port is a checked-free one, never 23119.
 import { execFileSync, spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,7 @@ const flag = (n) => args.includes(`--${n}`);
 const opt = (n, d) => (args.includes(`--${n}`) ? args[args.indexOf(`--${n}`) + 1] : d);
 
 const ZOTERO = process.env.ZMC_ZOTERO_BIN || "/Applications/Zotero.app/Contents/MacOS/zotero";
-const dev = join(root, ".dev");
+const dev = join(root, process.env.ZMC_DEV_DIR || ".dev"); // ZMC_DEV_DIR: another folder name under plugin/ (tests that need a path with a space)
 
 // Every run shares one profile and one data dir, so two at once would wipe each other's. Take a lock and wait for the other
 // run to finish (a lock whose process is gone is stale and is taken over).
@@ -124,7 +124,12 @@ writeFileSync(join(profile, "user.js"), [
 
 // Load the unpacked build through a proxy file, and force the add-on scan on this launch. The plugin's own prefs (settings
 // a previous test saved) are dropped too: every run starts from the defaults.
-writeFileSync(join(profile, "extensions", addon.id), join(root, "dist", "addon"));
+// --xpi installs the zipped build instead (its files then live at jar: URLs, as in a real install; the unpacked proxy hides problems
+// that only a packaged plugin has, like a Settings pane or an icon that has to be fetched from inside the .xpi).
+rmSync(join(profile, "extensions", addon.id), { force: true });
+rmSync(join(profile, "extensions", `${addon.id}.xpi`), { force: true });
+if (flag("xpi")) copyFileSync(join(root, "dist", `${addon.slug}.xpi`), join(profile, "extensions", `${addon.id}.xpi`));
+else writeFileSync(join(profile, "extensions", addon.id), join(root, "dist", "addon"));
 const prefsJs = join(profile, "prefs.js");
 if (existsSync(prefsJs)) {
   const kept = readFileSync(prefsJs, "utf8").split("\n")

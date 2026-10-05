@@ -51,11 +51,22 @@ class ChatPlugin {
    */
   private registerPane(): void {
     Services.obs.addObserver(this.paneObserver, PANE_TOPIC);
-    Zotero.PreferencePanes.register({ pluginID: this.init.id, id: "zotero-chat-pane", label: "Zotero Chat", src: "prefpane.xhtml", scripts: ["prefpane.js"] })
+    Zotero.PreferencePanes.register({ pluginID: this.init.id, id: "zotero-chat-pane", label: "Zotero Chat", image: "assets/logo.svg", src: "prefpane.xhtml", scripts: ["prefpane.js"] })
       .catch((e: unknown) => Zotero.logError(e));
   }
 
-  private paneObserver = { observe: (subject: any) => { const { root, win } = subject.wrappedJSObject; this.mountPane(win, root); } };
+  private paneObserver = {
+    observe: (subject: any) => {
+      const { root, win } = subject.wrappedJSObject;
+      try { this.mountPane(win, root); } catch (e) {
+        // Never an empty pane: say what failed (and log it), so a report is one sentence.
+        Zotero.logError(e);
+        const p = root.ownerDocument.createElementNS("http://www.w3.org/1999/xhtml", "p");
+        p.textContent = `Zotero Chat's settings could not be shown: ${e instanceof Error ? e.message : String(e)}. The same settings are in the chat panel (the gear).`;
+        root.replaceChildren(p);
+      }
+    },
+  };
 
   /**
    * The pane gets a copy of panel.js of its own: the UI keeps the window and document it draws in as module state, and

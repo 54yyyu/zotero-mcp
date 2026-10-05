@@ -31,7 +31,7 @@ cpSync(join(root, "assets"), join(out, "assets"), { recursive: true });
 
 // Two scripts, IIFE (Gecko's subscript loader takes no module syntax): plugin.js is what Zotero loads at startup,
 // panel.js (host, agent runtime, UI) is read the first time the panel opens.
-const common = { bundle: true, format: "iife", target: "firefox140", platform: "neutral", mainFields: ["module", "main"], legalComments: "none", minify: !dev, define: { "process.env.NODE_ENV": '"production"', __TEST_HOOKS__: String(dev) } };
+const common = { bundle: true, format: "iife", target: "firefox140", platform: "neutral", mainFields: ["module", "main"], legalComments: "none", minify: !dev || !!process.env.ZMC_MINIFY, define: { "process.env.NODE_ENV": '"production"', __TEST_HOOKS__: String(dev) } };
 await build({ ...common, entryPoints: [join(root, "src", "zotero", "plugin.ts")], outfile: join(out, "plugin.js"), globalName: "ZoteroChat" });
 await build({ ...common, entryPoints: [join(root, "src", "zotero", "panel.ts")], outfile: join(out, "panel.js"), globalName: "ZoteroChatPanel" });
 
