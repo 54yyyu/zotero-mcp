@@ -20,8 +20,10 @@ export interface Injected {
   remove(): void;
 }
 
+// Cropped tight to the box so it fills the button like Zotero's own 16px icons; the viewBox sits a little low so the box (not its tail)
+// is what is centred.
 const ICON = "data:image/svg+xml;utf8," + encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 128 128" fill="none" stroke="context-stroke" stroke-linecap="round" stroke-linejoin="round"><g transform="translate(4 9) scale(.94)"><path stroke-width="10" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z"/><path stroke-width="12" d="M47 39H81L47 77H81"/></g></svg>');
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="9 -1 110 125" fill="none" stroke="context-stroke" stroke-linecap="round" stroke-linejoin="round"><path stroke-width="11" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z"/><path stroke-width="13" d="M47 39H81L47 77H81"/></svg>');
 
 export function injectPanel(win: any, load: (shadow: ShadowRoot) => Panel, prefs: { get(k: string): any; set(k: string, v: any): void; json<T>(k: string, fallback: T): T }): Injected | null {
   const doc = win.document;
