@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Plain-text notes keep `<`, `>` and `&`** (#664). `zotero_create_note` wrapped plain text in `<p>` without escaping it, so `x<y and y>z` was stored as markup, Zotero read `<y and y>` as a tag, and the text inside it was lost (reading the note back gave `xz`). Plain text is now HTML-escaped. Text is treated as HTML when it contains a tag such as `<h2>`, `<ul>` or `<p class=...>`, not only the exact `<p>` or `<div>`.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security

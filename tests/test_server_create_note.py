@@ -106,3 +106,38 @@ def test_looks_like_markdown_cases():
     assert not _looks_like_markdown("Line one\n\nLine two")
     assert not _looks_like_markdown("2*3=6 and file_name here")
     assert not _looks_like_markdown("a-b and 10.1007/s11142-021-09582-z")
+
+
+def _created_note(monkeypatch, note_text):
+    fake_zot = FakeZotero()
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
+    result = server.create_note(
+        item_key="ITEM0001", note_title="", note_text=note_text, tags=None, ctx=DummyContext()
+    )
+    assert "Successfully created note" in result
+    return fake_zot.created[0]["note"]
+
+
+def test_create_note_plain_text_escapes_angle_brackets_and_ampersands(monkeypatch):
+    # Unescaped, Zotero reads "<y and y>" as a tag and the text between is lost.
+    note_html = _created_note(
+        monkeypatch, "Holds when x<y and y>z (p<0.05).\n\nR&D <3"
+    )
+    assert note_html == (
+        "<p>Holds when x&lt;y and y&gt;z (p&lt;0.05).</p>"
+        "<p>R&amp;D &lt;3</p>"
+    )
+
+
+def test_create_note_plain_text_keeps_line_breaks(monkeypatch):
+    assert _created_note(monkeypatch, "a<b\nc") == "<p>a&lt;b<br/>c</p>"
+
+
+def test_create_note_html_without_paragraphs_is_not_escaped(monkeypatch):
+    html = "<h2>Results</h2><ul><li>first</li><li>a &amp; b</li></ul>"
+    assert _created_note(monkeypatch, html) == html
+
+
+def test_create_note_paragraph_with_attributes_is_html(monkeypatch):
+    html = '<p style="color: red">x</p>'
+    assert _created_note(monkeypatch, html) == html
