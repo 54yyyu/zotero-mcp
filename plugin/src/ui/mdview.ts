@@ -2,14 +2,17 @@
 // textContent/setAttribute: never innerHTML, never a parsed string. The allow-lists from markdown.ts are
 // enforced again here, so a bug in the tree builder still cannot create a <script> or an onerror.
 import type { Token } from "marked";
+import type { NoteRequest, SavedNote } from "../types.ts";
 import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc } from "./markdown.ts";
 import type { MdNode } from "./markdown.ts";
 import { copyText, env, flashCheck, h, icon } from "./dom.ts";
 
-/** `open` gets a link or citation chip that was clicked (http(s) or zotero: only ever reaches it); `saveFile` is the host's file picker (diagram export). */
+/** `open` gets a link or citation chip that was clicked (http(s) or zotero: only ever reaches it); `saveFile` is the host's file picker
+ *  (diagram export), `saveNote` the host's note writer (a diagram's "Add to a note"). */
 interface MdHooks {
   open(href: string): void;
   saveFile?(name: string, data: Uint8Array | string, mime: string): Promise<string | null>;
+  saveNote?(note: NoteRequest): Promise<SavedNote>;
 }
 /** What a block's rendering needs besides its tree: is it the block still streaming in, and the hooks. */
 interface RenderCtx { live: boolean; hooks: MdHooks }
@@ -67,7 +70,8 @@ function diagram(src: string, closed: boolean, rc: RenderCtx): HTMLElement {
   const draw = (m: DiagramMod | null) => {
     if (!m) return asCode();
     if (!closed) return rc.live ? m.pending(card) : asCode(); // cut off mid-drawing: show what came, as code
-    if (!m.fill(card, src, { codeBlock, ...(rc.hooks.saveFile ? { saveFile: rc.hooks.saveFile } : {}) })) asCode();
+    const { saveFile, saveNote, open } = rc.hooks;
+    if (!m.fill(card, src, { codeBlock, open, ...(saveFile ? { saveFile } : {}), ...(saveNote ? { saveNote } : {}) })) asCode();
   };
   if (diagramMod) draw(diagramMod);
   else { card.className = "dg dg--pending"; void loadDiagram().then(draw); }

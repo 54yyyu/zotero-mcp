@@ -8,6 +8,7 @@ import { dropChips } from "./drop.ts";
 import { createImages } from "./image.ts";
 import { createDoctor, findCli } from "./doctor.ts";
 import * as keychain from "./keychain.ts";
+import { saveNote } from "./note.ts";
 import { openTarget } from "./open.ts";
 import { chipForHit, search } from "./search.ts";
 import { createGeckoSpawner } from "./spawn-gecko.ts";
@@ -127,6 +128,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       else await IOUtils.write(path, data);
       return path;
     },
+    saveNote: (note) => saveNote(win, context, note),
     chooseImage: () => images.choose(),
     loadImage: () => images.load(),
     removeImage: () => images.remove(),

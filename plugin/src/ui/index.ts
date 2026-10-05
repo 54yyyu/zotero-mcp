@@ -12,11 +12,16 @@ import { Chat } from "./chat.ts";
 import { ChipState } from "./context.ts";
 import { BLOCKING, Health } from "./health.ts";
 import { Feed } from "./messages.ts";
+import { answerNote } from "./notes.ts";
+import { answerText, promptFor } from "./transcript.ts";
 import { settingsView } from "./settings.ts";
 import { BACKEND_LABEL, emptyState, historyView, setupCard, statusView } from "./views.ts";
 import { welcomeView } from "./welcome.ts";
 
 type View = "chat" | "history" | "settings" | "status" | "welcome";
+
+/** The footer's "Explain better": the last answer again, the way a good teacher would start. */
+const EXPLAIN_BETTER = "Explain that again from the intuition first, with a tiny example, then the details.";
 
 export const mountPanel: MountPanel = (root, host) => {
   initEnv(root);
@@ -71,6 +76,13 @@ class Panel {
       answer: (turn, pid, oid) => this.chat.answerPermission(turn, pid, oid),
       checkSetup: () => this.show("status"),
       saveFile: (n, d, m) => host.saveFile(n, d, m),
+      saveNote: (n) => host.saveNote(n),
+      saveAnswer: async (id) => {
+        const m = this.chat.tr.messages.find((x) => x.id === id);
+        if (m?.role !== "assistant") throw new Error("that answer is no longer here");
+        return host.saveNote(await answerNote(answerText(m), promptFor(this.chat.tr, id)?.text));
+      },
+      explain: () => this.send(EXPLAIN_BETTER, false),
     });
     this.composer = new Composer({
       search: (q) => host.search(q),

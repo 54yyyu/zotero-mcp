@@ -1,15 +1,20 @@
 // Diagrams, the DOM half: a ```svg block as a themed figure card with a quiet toolbar (Source, Copy as PNG,
-// Save as PNG, Save as SVG). mdview.ts imports this module dynamically on the first ```svg block, so a chat
+// Save as PNG, Save as SVG, Add to a note). mdview.ts imports this module dynamically on the first ```svg block, so a chat
 // without diagrams never runs it; its stylesheet is added to the panel's shadow root on first use too.
 // Nodes come from diagram-svg.ts's sanitized tree, built with createElementNS: no markup is ever parsed.
+import type { NoteImage, NoteRequest, SavedNote } from "../types.ts";
 import type { SvgEl } from "./diagram-svg.ts";
 import { HUES, HUE_DARK, HUE_LIGHT, SOFT_DARK, SOFT_LIGHT, exportPalette, prepareSvg, serializeSvg } from "./diagram-svg.ts";
 import { copyText, env, h, icon } from "./dom.ts";
 import type { IconName } from "./dom.ts";
+import { noteLine, trySave } from "./notes.ts";
 
 export interface DiagramOpts {
   /** The host's file picker (PanelHost.saveFile); absent, the Save buttons are not shown. */
   saveFile?: (name: string, data: Uint8Array | string, mime: string) => Promise<string | null>;
+  /** PanelHost.saveNote, and what opens the saved note; absent, "Add to a note" is not shown. */
+  saveNote?: (note: NoteRequest) => Promise<SavedNote>;
+  open?: (uri: string) => void;
   /** The panel's code block, for Source. */
   codeBlock(code: string, lang: string): HTMLElement;
 }
@@ -148,9 +153,20 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
     })());
     return b;
   };
-  // "Add to a note" (host.saveNote) goes after the Save buttons when the host has it.
+  // A note under the item the user is on: the title, then the drawing as an embedded PNG; the line under the card says where it went.
+  let noteEl: HTMLElement | null = null;
+  const noteBtn = (save: NonNullable<DiagramOpts["saveNote"]>) => btn("Add to a note", "note", async (b) => {
+    b.setAttribute("disabled", "");
+    const st = await trySave(async () => save({ ...(title ? { title } : {}), markdown: fence(src), images: [await pngOf(src, accent())] }));
+    b.removeAttribute("disabled");
+    if ("ok" in st) done(b, true);
+    noteEl?.remove();
+    noteEl = noteLine(st, (uri) => opts.open?.(uri));
+    card.insertBefore(noteEl, srcEl);
+  });
   const bar = h("div.dg__bar", { role: "toolbar", "aria-label": "Diagram" }, sourceBtn, copyBtn,
-    opts.saveFile ? [h("span.dg__sep"), saveBtn("PNG"), saveBtn("SVG")] : null);
+    opts.saveFile ? [h("span.dg__sep"), saveBtn("PNG"), saveBtn("SVG")] : null,
+    opts.saveNote ? [h("span.dg__sep"), noteBtn(opts.saveNote)] : null);
   card.className = "dg";
   card.replaceChildren(h("div.dg__head", null, h("span.dg__cap", { "aria-hidden": "true" }, title), bar), figWrap);
   ensureStyles(card);
@@ -165,6 +181,21 @@ export function pending(card: HTMLElement): void {
   card.replaceChildren("Drawing…");
   ensureStyles(card);
   env.win.queueMicrotask?.(() => ensureStyles(card));
+}
+
+/** The source back in a fence longer than any run of backticks inside it. */
+const fence = (src: string) => {
+  const t = "`".repeat(Math.max(3, ...[...src.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+  return `${t}svg\n${src}\n${t}`;
+};
+
+/** The drawing as a PNG for a note (light palette, on white), shown at its own width up to 640 px. Null when it is no drawing. */
+export async function pngOf(src: string, accent?: string): Promise<NoteImage | null> {
+  const p = prepared(src);
+  if (!p) return null;
+  const [, , w, hh] = p.fit.box;
+  const width = Math.min(640, Math.round(w));
+  return { data: await toPng(serializeSvg(p.svg, p.fit, exportPalette(accent)), w, hh), width, height: Math.round((hh * width) / w) };
 }
 
 const fileName = (title: string) => title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "diagram";

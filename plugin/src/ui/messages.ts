@@ -9,6 +9,8 @@ import type { CitedSource } from "./markdown.ts";
 import { permSeg, planSeg, stepsSeg, textSeg, thoughtSeg, toSegs } from "./parts.ts";
 import type { Ctx, MsgActions, SegView } from "./parts.ts";
 import { CHIP_ICON, clear, env, flashCheck, fmtTokens, h, icon, setKids } from "./dom.ts";
+import { noteLine, trySave } from "./notes.ts";
+import type { NoteState } from "./notes.ts";
 
 export type { MsgActions };
 
@@ -31,6 +33,8 @@ class AssistantView {
   private sourcesOpen = false;
   private sourcesFor: AssistantMessage | null = null;
   private sources: CitedSource[] = [];
+  private note: NoteState | null = null;
+  private saving = false;
   private msg!: AssistantMessage;
   private flags: PatchFlags = { live: false, canRetry: false, showThinking: true, expandTools: false, showUsage: false };
 
@@ -95,6 +99,11 @@ class AssistantView {
     const text = answerText(msg);
     const copyBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Copy answer", title: "Copy", disabled: text ? null : true }, icon("copy"));
     copyBtn.addEventListener("click", () => { this.actions.copy(text); flashCheck(copyBtn); });
+    const noteBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Save as a Zotero note", title: "Save as note", disabled: text && !this.saving ? null : true, onclick: () => void this.saveNote() }, icon("note"));
+    // The last answer only: asking again is about what was just said.
+    const explainBtn = f.canRetry && text
+      ? h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Explain it better", title: "Explain better: intuition first, a tiny example, then the details", onclick: () => this.actions.explain() }, icon("bulb"))
+      : null;
     const retryBtn = f.canRetry
       ? h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Try again", title: "Try again", onclick: () => this.actions.retry(msg.id) }, icon("retry"))
       : null;
@@ -118,8 +127,18 @@ class AssistantView {
     this.foot.className = `foot${this.sourcesOpen ? " foot--open" : ""}`;
     setKids(this.foot,
       note ? h(`div.stopnote.stopnote--${msg.stop}`, null, icon(msg.stop === "cancelled" ? "stop" : "warn"), note) : null,
-      h("div.foot__row", null, srcBtn, h("span.foot__fill"), usage ? h("span.foot__usage", null, usage) : null, h("span.foot__acts", null, copyBtn, retryBtn)),
+      h("div.foot__row", null, srcBtn, h("span.foot__fill"), usage ? h("span.foot__usage", null, usage) : null, h("span.foot__acts", null, copyBtn, noteBtn, explainBtn, retryBtn)),
+      this.note ? noteLine(this.note, (uri) => this.actions.open(uri)) : null,
       list);
+  }
+
+  private async saveNote(): Promise<void> {
+    this.saving = true;
+    this.paintFoot(this.msg, this.flags);
+    this.note = await trySave(() => this.actions.saveAnswer(this.msg.id));
+    this.saving = false;
+    this.paintFoot(this.msg, this.flags);
+    this.announce("ok" in this.note ? "Saved to note" : "Couldn't save the note");
   }
 }
 

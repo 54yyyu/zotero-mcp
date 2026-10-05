@@ -877,3 +877,64 @@ for (const [name, params, run] of [
 
 await browser.close();
 console.log(`${n} passed`);
+await test("save as note: the answer goes to the host with its question as the title and a PNG per drawing; the line confirms, Open selects it, a failure says why", async (p) => {
+  await send(p, "draw it");
+  await done(p);
+  const answer = await p.evaluate(() => [...window.__zmc.shadow.querySelectorAll(".msg--assistant .md")].map((m) => m.textContent).join(""));
+  assert.ok(answer.length > 0);
+  await p.locator('button[aria-label="Save as a Zotero note"]').click();
+  await p.waitForSelector(".foot .noteline");
+  const notes = await sim(p, () => window.__zmc.sim.notes);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].title, "draw it");
+  assert.match(notes[0].markdown, /^I'll look for related research[\s\S]*```svg\n<svg/);
+  assert.equal(notes[0].images.length, 3, "one image per drawing");
+  assert.ok(notes[0].images.every((i) => i && i.png && i.size > 2000 && i.width > 100 && i.width <= 640 && i.height > 20), JSON.stringify(notes[0].images));
+  assert.equal(await p.locator(".foot .noteline").getAttribute("role"), "status");
+  assert.match(await p.locator(".foot .noteline").innerText(), /Saved to note\s*Open/);
+  await p.locator(".foot .noteline .lnk").click();
+  assert.equal((await sim(p, () => window.__zmc.sim.opened)).at(-1), "zotero://select/library/items/NOTE0001");
+  await sim(p, () => { window.__zmc.sim.noteFails = "this library is read-only"; });
+  await p.locator('button[aria-label="Save as a Zotero note"]').click();
+  await p.waitForSelector(".foot .noteline--err");
+  assert.equal(await p.locator(".foot .noteline").count(), 1, "the error replaces the confirmation");
+  assert.equal(await p.locator(".foot .noteline--err").innerText(), "Couldn't save the note: this library is read-only");
+  // an answer without drawings: no images, and diagram.ts is not needed for it
+  await sim(p, () => { window.__zmc.sim.noteFails = null; window.__zmc.sim.nextAnswer = "Plain **answer** with $x^2$."; });
+  await send(p, "plain");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
+  await p.locator('button[aria-label="Save as a Zotero note"]').last().click();
+  await p.waitForFunction(() => window.__zmc.sim.notes.length === 2);
+  assert.deepEqual(await sim(p, () => window.__zmc.sim.notes[1]), { title: "plain", markdown: "Plain **answer** with $x^2$.", images: [] });
+});
+
+await test("a diagram's Add to a note saves that drawing alone, titled, with its PNG; the card says so", async (p) => {
+  await send(p, "draw it");
+  await done(p);
+  const card = p.locator(".dg").nth(1);
+  await card.hover();
+  await card.locator('button[aria-label="Add to a note"]').click();
+  await card.locator(".noteline").waitFor();
+  const n = (await sim(p, () => window.__zmc.sim.notes))[0];
+  assert.equal(n.title, "Designs by control and external validity");
+  assert.match(n.markdown, /^```svg\n<svg[\s\S]*<\/svg>\n```$/);
+  assert.equal(n.images.length, 1);
+  assert.ok(n.images[0].png && n.images[0].width === 360, JSON.stringify(n.images));
+  assert.equal(await p.locator(".dg .noteline").count(), 1, "only that card shows the line");
+  await card.locator(".noteline .lnk").click();
+  assert.equal((await sim(p, () => window.__zmc.sim.opened)).at(-1), "zotero://select/library/items/NOTE0001");
+});
+
+await test("explain better: only on the last finished answer; it asks again, intuition first, with the same context", async (p) => {
+  await send(p, "compare");
+  await done(p);
+  assert.equal(await p.locator('button[aria-label="Explain it better"]').count(), 1);
+  await p.locator('button[aria-label="Explain it better"]').click();
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
+  const last = (await sim(p, () => window.__zmc.sim.prompts)).at(-1).text;
+  assert.match(last, /<zotero-context>[\s\S]*<\/zotero-context>\n\nExplain that again from the intuition first, with a tiny example, then the details\.$/);
+  assert.equal(await p.locator(".ubub__text").last().innerText(), "Explain that again from the intuition first, with a tiny example, then the details.");
+  assert.equal(await p.locator('button[aria-label="Explain it better"]').count(), 1, "the earlier answer lost it");
+  assert.equal(await p.locator('.msg--assistant').last().locator('button[aria-label="Explain it better"]').count(), 1);
+});
+

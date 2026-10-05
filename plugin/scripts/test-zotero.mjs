@@ -16,6 +16,7 @@ const suites = [
   ["ui", ["--mock-agent", ...welcomed]],
   ["appearance", ["--mock-agent", ...welcomed]], // glass, accent, a preset and a picture through the real host; persists across a remount
   ["diagram", ["--mock-agent", ...welcomed]], // ```svg answers as themed figures; Copy and Save through the host
+  ["notes", ["--mock-agent", ...welcomed]], // Save as note: real child/standalone notes, math and links in the HTML, diagrams as embedded images the editor renders
   ["cite", ["--mock-agent"]], // a quote link flashes the sentence in the reader
   ["welcome", ["--mock-agent"]],
   ["agent", []], // the real bridge's handshake: no prompt, no tokens

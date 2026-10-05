@@ -43,6 +43,11 @@ export const CHAT_STYLES = `
 .zmc .stopnote { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-2); color: var(--ink-muted); }
 
 .zmc .stopnote--refusal { color: var(--danger); } .zmc .stopnote--max_tokens { color: var(--warn); }
+.zmc .noteline { display: flex; align-items: center; gap: var(--s1); min-height: var(--h-sm); font-size: var(--fs-2); color: var(--ink-muted); }
+.zmc .noteline > svg { flex: none; width: 12px; height: 12px; color: var(--ok); }
+.zmc .noteline .lnk { height: 22px; padding: 0 var(--s2); color: var(--ink); font-weight: 500; }
+.zmc .noteline--err, .zmc .noteline--err > svg { color: var(--danger); }
+.zmc .dg .noteline { margin-top: var(--s1); padding-left: var(--s1); }
 .zmc .notice { display: flex; gap: var(--s3); padding: var(--s3); border: 1px solid var(--rule-strong); border-radius: var(--r2); background: var(--paper-raised); line-height: 1.5; box-shadow: inset 2px 0 0 var(--info); }
 .zmc .notice--warn { box-shadow: inset 2px 0 0 var(--warn); } .zmc .notice--error { box-shadow: inset 2px 0 0 var(--danger); }
 .zmc .notice__i { color: var(--info); } .zmc .notice--warn .notice__i { color: var(--warn); } .zmc .notice--error .notice__i { color: var(--danger); }

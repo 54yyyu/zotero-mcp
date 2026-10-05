@@ -201,6 +201,13 @@ export interface Spawner {
 
 export interface ItemHit { ref: ZoteroRef; title: string; subtitle: string; kind: "item" | "collection" | "annotation" }
 
+/** What "Save as note" hands the host. The i-th closed ```svg block of `markdown` becomes `images[i]` (a PNG); without one it stays code. */
+export interface NoteRequest { title?: string; markdown: string; images?: (NoteImage | null)[] }
+/** A PNG and the size to show it at in the note (CSS px). */
+export interface NoteImage { data: Uint8Array; width: number; height: number }
+/** `uri` selects the note in Zotero (`zotero://select/...`); `itemKey` is the parent item, absent for a standalone note. */
+export interface SavedNote { noteKey: string; itemKey?: string; uri: string }
+
 export interface PromptEntry {
   id: string;
   title: string;
@@ -326,6 +333,8 @@ export interface PanelHost {
   chooseFolder(start?: string): Promise<string | null>;
   /** Zotero's Save dialog for `data` (a diagram's PNG or SVG); writes the file and returns its path, null when cancelled. */
   saveFile(suggestedName: string, data: Uint8Array | string, mime: string): Promise<string | null>;
+  /** A Zotero note from an answer or a diagram: a child note of the item the user is on (the open reader's parent, or the selected item), else a standalone note in the current collection. */
+  saveNote(note: NoteRequest): Promise<SavedNote>;
   /** An image picker for the background: the picture is downscaled, saved in the plugin's data dir and returned as a data: URL; null when cancelled. */
   chooseImage(): Promise<{ name: string; dataUrl: string } | null>;
   /** The saved background picture as a data: URL, null when there is none. */

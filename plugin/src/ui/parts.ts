@@ -1,6 +1,6 @@
 // The pieces inside one assistant message: text, thinking, tool steps, plan, permission. Each is a small view
 // with `update(seg, ctx)`, patched in place as events arrive.
-import type { PermissionOption, ToolKind, ZoteroRef } from "../types.ts";
+import type { NoteRequest, PermissionOption, SavedNote, ToolKind, ZoteroRef } from "../types.ts";
 import type { AssistantMessage, Block, PlanEntry } from "./transcript.ts";
 import { MdView, pretty } from "./mdview.ts";
 import { h, icon, setKids, unwrapTicks } from "./dom.ts";
@@ -15,6 +15,12 @@ export interface MsgActions {
   checkSetup(): void;
   /** The host's Save dialog (PanelHost.saveFile), for diagrams. */
   saveFile(name: string, data: Uint8Array | string, mime: string): Promise<string | null>;
+  /** A diagram as a Zotero note (PanelHost.saveNote). */
+  saveNote(note: NoteRequest): Promise<SavedNote>;
+  /** The answer `assistantId` as a Zotero note: its question is the title, each diagram an image. */
+  saveAnswer(assistantId: string): Promise<SavedNote>;
+  /** Ask the last answer again, intuition first. */
+  explain(): void;
 }
 
 // ───────────────────────────── segments ─────────────────────────────
@@ -59,7 +65,8 @@ const TOOL_ICON: Record<ToolKind, IconName> = {
 const streaming = (c: Ctx, b: Block) => c.live && c.msg.blocks[c.msg.blocks.length - 1] === b;
 
 export function textSeg(ctx: Ctx): SegView {
-  const md = new MdView({ open: (href) => ctx.actions.open(href), saveFile: (n, d, m) => ctx.actions.saveFile(n, d, m) });
+  const a = ctx.actions;
+  const md = new MdView({ open: (href) => a.open(href), saveFile: (n, d, m) => a.saveFile(n, d, m), saveNote: (n) => a.saveNote(n) });
   return { kind: "text", el: md.el, update(s, c) { if (s.kind === "text") md.set(s.block.text, streaming(c, s.block)); } };
 }
 
