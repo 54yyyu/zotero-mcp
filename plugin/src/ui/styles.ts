@@ -243,7 +243,7 @@ const BASE = `
 .zmc .mdd__acts { display: flex; gap: var(--s1); margin-left: auto; }
 .zmc .mdd__body > .menu__note { padding: var(--s3); }
 .zmc .mdd__models { padding: var(--s1); }
-.zmc .mdd__more { align-items: center; color: var(--ink-muted); }
+.zmc .menu__item.mdd__more { align-items: center; color: var(--ink-muted); }
 .zmc .mdd__chev { flex: none; display: grid; width: 14px; color: var(--ink-faint); transition: transform var(--ease); } .zmc .mdd__chev svg { width: 14px; height: 14px; }
 .zmc .mdd__more[aria-expanded="true"] .mdd__chev { transform: rotate(180deg); }
 .zmc .mdd__more .menu__tx { flex: 1; }
