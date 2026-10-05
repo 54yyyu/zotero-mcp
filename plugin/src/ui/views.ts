@@ -12,7 +12,7 @@ export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi"];
  * carry classes so the welcome can animate them (styles-welcome.ts: the lines draw in, the Z breathes while the check runs and
  * bursts when it is done); the small dots only show in the burst.
  */
-export const mark = (hero = false): HTMLElement => h(`div.mark${hero ? ".mark--hero" : ""}`, null, svg("svg", { viewBox: "-16 -16 160 160", "aria-hidden": "true" },
+export const mark = (hero = false): HTMLElement => h(`div.mark${hero ? ".mark--hero" : ""}`, null, svg("svg", { viewBox: "-16 -22 160 160", "aria-hidden": "true" },
   svg("path", { class: "mk-b", d: "M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z", fill: "none", stroke: "var(--ink)", "stroke-width": "5.5", "stroke-linejoin": "round", "stroke-linecap": "round", pathLength: "1" }),
   ...[[67, 28], [28, 67], [-28, 67], [-67, 28], [-67, -28], [-28, -67], [28, -67], [67, -28]].map(([dx, dy]) => svg("circle", { class: "mk-p", cx: "64", cy: "58", r: "3", fill: "var(--agent)", style: `--dx:${dx}px;--dy:${dy}px` })),
   svg("g", { class: "mk-t" }, svg("path", { class: "mk-s", d: "M47 39H81L47 77H81", fill: "none", stroke: "var(--agent)", "stroke-width": "8", "stroke-linejoin": "round", "stroke-linecap": "round", pathLength: "1" }))));

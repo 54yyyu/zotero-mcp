@@ -22,7 +22,7 @@ writeFileSync(join(out, "manifest.json"), JSON.stringify({
   version: addon.version,
   description: addon.description,
   homepage_url: addon.homepage,
-  icons: { 48: "assets/icon-48.png", 96: "assets/icon-96.png" },
+  icons: { 48: "assets/logo.svg", 96: "assets/logo.svg" }, // one SVG that follows the light/dark scheme: the same mark as the panel
   applications: { zotero: { id: addon.id, update_url: addon.updateUrl, strict_min_version: addon.minZotero, strict_max_version: "*" } },
 }, null, 2));
 
