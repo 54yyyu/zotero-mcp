@@ -527,6 +527,89 @@ await test("theme follows the host; close is an event for the glue", async (p) =
 await test("hostile markdown in a real answer: no script, no handlers, no foreign links or images, nothing runs", async (p) => {
   await sim(p, () => { window.__zmc.sim.speed = 0; });
   for (const src of XSS_CORPUS) {
+const look = (p) => p.evaluate(() => { const z = window.__zmc.shadow.querySelector(".zmc"); const cs = getComputedStyle(z); return { ...z.dataset, accent: cs.getPropertyValue("--accent").trim(), veil: cs.getPropertyValue("--bg-veil").trim(), img: cs.getPropertyValue("--bg-img").trim().slice(0, 30), fs4: cs.getPropertyValue("--fs-4").trim(), before: getComputedStyle(z, "::before").backgroundImage.slice(0, 40) }; });
+const appearance = (p) => p.evaluate(() => JSON.parse(JSON.stringify(window.__zmc.host.getSettings().appearance)));
+
+await test("appearance: glass, accent, background, size and density apply live and are saved", async (p) => {
+  assert.deepEqual([(await look(p)).glass, (await look(p)).bg, (await look(p)).accent], ["on", "none", "#cc2936"], "glass on, no background, our red by default");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.querySelector(".zmc").hasAttribute("data-accent")), false);
+  await openSettings(p);
+  const card = p.locator('section.sec[aria-label="Appearance"]');
+  await card.getByRole("switch", { name: /Glass/ }).click();
+  assert.equal((await look(p)).glass, "off");
+  assert.equal((await appearance(p)).glass, false);
+  await card.getByRole("radio", { name: "Blue" }).click();
+  assert.equal((await look(p)).accent, "#2563c9", "the accent variable changes at once");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.querySelector(".zmc").getAttribute("data-accent")), "custom", "a chosen accent marks the root");
+  assert.equal((await appearance(p)).accent, "#2563c9");
+  // the custom colour: the native input, then the hex field it reveals
+  await card.locator('input[type="color"]').fill("#8a2be2");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().appearance.accent === "#8a2be2");
+  assert.equal((await look(p)).accent, "#8a2be2");
+  await card.getByRole("textbox", { name: "Accent colour as hex" }).fill("12a150");
+  await card.getByRole("textbox", { name: "Accent colour as hex" }).press("Enter");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().appearance.accent === "#12a150");
+  await card.getByRole("textbox", { name: "Accent colour as hex" }).fill("nope");
+  await card.getByRole("textbox", { name: "Accent colour as hex" }).press("Enter");
+  await card.getByRole("alert").waitFor();
+  assert.equal((await appearance(p)).accent, "#12a150", "a bad hex is refused, not saved");
+  // the send button wears the accent, in readable text
+  await card.getByRole("radio", { name: "Red" }).click();
+  assert.equal((await appearance(p)).accent, "", "our red is saved as the default");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.querySelector(".zmc").hasAttribute("data-accent")), false, "the default red: no data-accent");
+  await card.getByRole("radio", { name: "Dawn" }).click();
+  const l = await look(p);
+  assert.deepEqual([l.bg, /gradient/.test(l.before)], ["dawn", true], "a preset paints the backdrop");
+  await card.getByRole("radio", { name: "Large" }).click();
+  assert.equal((await look(p)).fs4, "15.5px");
+  await card.getByRole("radio", { name: "Compact" }).click();
+  assert.equal((await look(p)).density, "compact");
+  await p.getByRole("button", { name: "Back to the chat" }).click();
+  await p.locator(".cin").fill("x");
+  const send = await p.evaluate(() => getComputedStyle(window.__zmc.shadow.querySelector(".send")).backgroundColor);
+  assert.equal(send, "rgb(204, 41, 54)", "Send is the accent (flat, so no gem)");
+  assert.deepEqual(await appearance(p), { glass: false, accent: "", background: "dawn", image: "", imageVisibility: 50, imageBlur: 0, textSize: "large", density: "compact" });
+});
+
+await test("appearance: a picture is chosen, the sliders preview while dragged and save on release, Remove clears it; cancel does nothing", async (p) => {
+  await openSettings(p);
+  const card = p.locator('section.sec[aria-label="Appearance"]');
+  await sim(p, () => { window.__zmc.sim.pickImage = null; });
+  await card.getByRole("button", { name: "Choose an image…" }).click();
+  await p.waitForTimeout(100);
+  assert.deepEqual([(await appearance(p)).image, (await look(p)).bg], ["", "none"], "cancelled: nothing changes");
+  await sim(p, () => { window.__zmc.sim.pickImage = { name: "kyoto.jpg", dataUrl: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" }; });
+  await card.getByRole("button", { name: "Choose an image…" }).click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().appearance.background === "image");
+  let l = await look(p);
+  assert.deepEqual([l.bg, l.img.startsWith('url("data:image/svg'), l.veil], ["image", true, "65%"]);
+  assert.equal((await appearance(p)).image, "kyoto.jpg");
+  assert.ok(await card.getByRole("radio", { name: /Your picture \(kyoto\.jpg\)/ }).isVisible(), "the picture is a tile");
+  // a drag: input events preview, nothing is saved until the change event
+  await card.getByRole("slider", { name: "Picture visibility" }).evaluate((el) => { el.value = "100"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  assert.equal((await look(p)).veil, "30%", "live while dragging");
+  assert.equal((await appearance(p)).imageVisibility, 50, "not saved mid-drag");
+  await card.getByRole("slider", { name: "Picture visibility" }).evaluate((el) => el.dispatchEvent(new Event("change", { bubbles: true })));
+  await p.waitForFunction(() => window.__zmc.host.getSettings().appearance.imageVisibility === 100);
+  await card.getByRole("slider", { name: "Picture blur" }).fill("8");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().appearance.imageBlur === 8);
+  // a preset, then back to the picture without choosing it again
+  await card.getByRole("radio", { name: "Mist" }).click();
+  assert.equal((await look(p)).bg, "mist");
+  await card.getByRole("radio", { name: /Your picture/ }).click();
+  assert.equal((await look(p)).bg, "image");
+  await card.getByRole("button", { name: "Remove the background picture" }).click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().appearance.image === "");
+  l = await look(p);
+  assert.deepEqual([l.bg, l.img, await sim(p, () => window.__zmc.sim.image)], ["none", "", null]);
+  assert.equal(await card.getByRole("slider").count(), 0, "the picture's sliders go with it");
+});
+
+await test("appearance: a saved picture is read back when the panel opens", async (p) => {
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".zmc").dataset.bg === "image");
+  assert.match((await look(p)).img, /^url\("data:image\/svg/);
+}, { params: { look: JSON.stringify({ background: "image", image: "kyoto.jpg" }), image: "1" } });
+
     await sim(p, (s) => { window.__zmc.sim.nextAnswer = s; }, src);
     await send(p, "x");
     await p.waitForFunction((k) => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === k, XSS_CORPUS.indexOf(src) + 1);
@@ -782,3 +865,4 @@ for (const [name, params, run] of [
 
 await browser.close();
 console.log(`${n} passed`);
+  ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],

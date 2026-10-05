@@ -59,6 +59,10 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
   `curl`, which is also what zotero-cli is: it catches the server that has gone quiet.
 - zotero-cli (pyzotero) only talks to port 23119; the doctor flags any other port.
 - Subscription mode must strip `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` from the login env, or a key exported for other tools silently bills the API.
+- An element with a `backdrop-filter` is the backdrop root of everything inside it: a menu inside the frosted composer only blurred
+  the composer. The composer's frost is therefore a `::before` layer under it, not the composer itself.
+- Zotero loads a `data:` image into the panel's stylesheet (through a custom property), not a `file:` one. `browser.theme.toolbar-theme`
+  (0 dark, 1 light) flips the window's `prefers-color-scheme`, so a test can take light and dark snapshots for real.
 - `claude-agent-acp` 0.85.1: `session/set_model` is -32601; set the model with `session/set_config_option {configId:"model"}`.
   codex-acp speaks `set_model`. Codex and pi ignore `_meta.systemPrompt`, so the brief rides on the first prompt.
 
@@ -173,6 +177,15 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
 - Doctor: Zotero local API reachable (a long-running Zotero stops serving on 23119; the fix is "restart Zotero"), write access
   authorized, `zotero-cli` present (fix: `uv tool install zotero-mcp-server`, falling back to `pipx`/`pip --user`), node present,
   a backend available and signed in.
+- Appearance (`ui/appearance.ts` validates and applies it, `ui/styles-look.ts` draws it): glass (default on), accent, background,
+  text size, density. `Look` writes data attributes and CSS variables on `.zmc`, so a change shows at once and nothing re-renders.
+  Glass is faux glass inside our root (Gecko gives a plugin no OS vibrancy): `.zmc::before` is the gradient or picture, `::after` the
+  veil and three faint glows; cards are translucent with a bright edge; only the composer, menus and jump pill blur
+  (`backdrop-filter`), so a long chat scrolls as cheaply as without it. The accent's fill, its text-safe `--accent-ink` (4.5:1 on
+  the paper and on a dark glass card) and the text on it are computed by WCAG contrast, so any colour stays readable; `--agent`,
+  `--link` and `--focus` follow it, the logo keeps `--brand`. `.zmc[data-accent="custom"]` is set only when the user chose an accent other than our red (the
+  diagrams keep their own blue otherwise). A picture is downscaled to 1600 px JPEG in `zotero/image.ts` and kept
+  as `<dataDir>/background.jpg` (prefs hold its name only), read back when the panel mounts.
 
 ## Test and dev harness (the rules that matter)
 
