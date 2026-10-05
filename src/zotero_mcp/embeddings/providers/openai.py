@@ -1,6 +1,8 @@
 """OpenAI (and OpenAI-compatible) embedding function."""
 
+import base64
 import os
+import struct
 from typing import Any
 
 from chromadb.utils.embedding_functions import register_embedding_function
@@ -202,7 +204,22 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             response = embeddings_api.create(**request)
             headers = None
 
-        return [data.embedding for data in response.data], headers
+        embeddings = [data.embedding for data in response.data]
+        if voyage:
+            # The OpenAI SDK (through at least 1.9x) does not decode base64
+            # embeddings: Voyage's data.embedding arrives as a base64 str even
+            # though the response model types it as list[float]. Voyage requires
+            # encoding_format="base64" (it 400s on "float"), so decode here:
+            # float32 little-endian, 4 bytes each, "="-padded standard alphabet.
+            def _decode(value):
+                if isinstance(value, str):
+                    raw_bytes = base64.b64decode(value, validate=True)
+                    n = len(raw_bytes) // 4
+                    return list(struct.unpack("<%df" % n, raw_bytes[: n * 4]))
+                return value
+
+            embeddings = [_decode(e) for e in embeddings]
+        return embeddings, headers
 
     def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
         """Retry rate limits and server-side failures; fail fast on the rest."""
