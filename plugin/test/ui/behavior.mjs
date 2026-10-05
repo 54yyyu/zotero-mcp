@@ -1088,6 +1088,25 @@ Done.`;
       clone.querySelectorAll(".math:not(.math--raw), .code").forEach((e) => e.remove());
       for (const bad of ["$$", "\\frac", "\\[", "\\(", "\\Delta", "\\int", "| Study", "|---"]) if (clone.textContent.includes(bad)) window.__seen.add(bad);
       if (md.querySelector(".math--error")) window.__seen.add("a formula error");
+await test("the formatting subset renders (underline, strike, sub/sup, Zotero's colours) and goes to a note as written; anything else stays inert", async (p) => {
+  const ans = 'Water is H<sub>2</sub>O and E = mc<sup>2</sup>; <u>underlined</u>, <s>struck</s>, <mark>marked</mark>, <span style="color: red">red text</span>, <span style="background-color: green">green highlight</span>, <span style="color: url(https://evil.example/x)" onclick="window.__pwned=1">plain</span>, <font color="red">font</font>.';
+  await sim(p, (t) => { window.__zmc.sim.nextAnswer = t; }, ans);
+  await send(p, "x");
+  await done(p);
+  const g = await p.evaluate(() => {
+    const md = window.__zmc.shadow.querySelector(".msg--assistant .md");
+    const cs = (sel) => { const e = md.querySelector(sel); return e ? getComputedStyle(e) : null; };
+    const spans = [...md.querySelectorAll("span[style]")].map((e) => e.getAttribute("style"));
+    return { sub: !!md.querySelector("sub"), sup: !!md.querySelector("sup"), u: cs("u")?.textDecorationLine, del: !!md.querySelector("del"), spans, handlers: md.querySelectorAll("[onclick]").length, text: md.textContent };
+  });
+  assert.deepEqual([g.sub, g.sup, g.u, g.del, g.handlers], [true, true, "underline", true, 0]);
+  assert.deepEqual(g.spans, ["background-color: rgba(255, 212, 0, 0.5);", "color: rgb(255, 32, 32);", "background-color: rgba(95, 178, 54, 0.5);"].map((x) => x), JSON.stringify(g.spans));
+  assert.match(g.text, /plain, <font color="red">font<\/font>\.$/, "an unknown tag stays text; a disallowed colour leaves just the words");
+  await p.locator('button[aria-label="Save as a Zotero note"]').click();
+  await p.waitForFunction(() => window.__zmc.sim.notes.length === 1);
+  assert.equal((await sim(p, () => window.__zmc.sim.notes[0])).markdown, ans, "the note gets the answer as written; the host converts it");
+});
+
     };
     new MutationObserver(tick).observe(window.__zmc.shadow.querySelector(".feed__inner"), { subtree: true, childList: true, characterData: true });
   });

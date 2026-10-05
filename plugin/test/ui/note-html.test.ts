@@ -4,9 +4,10 @@ import { noteDiagrams, noteHtml } from "../../src/ui/note-html.ts";
 import { XSS_CORPUS } from "./corpus.ts";
 
 /** Every tag and attribute the note may contain; anything else in the output is a leak. */
-const TAGS = new Set(["div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "em", "strong", "del", "code", "pre", "span", "a", "br", "hr", "img", "table", "thead", "tbody", "tr", "th", "td"]);
+const TAGS = new Set(["div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "em", "strong", "del", "u", "sub", "sup", "code", "pre", "span", "a", "br", "hr", "img", "table", "thead", "tbody", "tr", "th", "td"]);
 const ATTRS: Record<string, RegExp> = {
   "div data-schema-version": /^(8|9)$/, "a href": /^(https?|zotero):\/\/[^\s"]+$/, "span class": /^math$/, "pre class": /^math$/,
+  "span style": /^(color|background-color): #[0-9a-f]{3,8}$/,
   "ol start": /^\d+$/, "img data-attachment-key": /^[A-Z0-9]{8}$/, "img width": /^\d+$/, "img height": /^\d+$/,
 };
 
@@ -94,4 +95,37 @@ test("hostile markdown: only allowed tags and attributes, no script, no foreign 
   // control characters vanish; a huge reply is still one well-formed note
   assert.equal(body(noteHtml("a\u0000b\u0007c")), "<p>abc</p>");
   assert.equal(leak(noteHtml("*a ".repeat(30000))), null);
+});
+
+test("the formatting markdown lacks: underline, strike, sub/sup, text and highlight colours, as the editor's own marks", () => {
+  const html = noteHtml('H<sub>2</sub>O, x<sup>2</sup>, <u>under</u>, <s>old</s>, <mark>key</mark>, <span style="color: red">red</span>, <span style="background-color: blue; color: #123456">both</span>, <span style="color: grey">grey</span>.');
+  assert.equal(leak(html), null, html);
+  assert.equal(body(html), '<p>H<sub>2</sub>O, x<sup>2</sup>, <u>under</u>, <del>old</del>, <span style="background-color: #ffd40080">key</span>, <span style="color: #ff2020">red</span>, <span style="color: #123456"><span style="background-color: #2ea8e580">both</span></span>, <span style="color: #7e8386">grey</span>.</p>');
+});
+
+test("the formatting subset is strict: other styles, attributes and tags never reach the note", () => {
+  for (const src of [
+    '<span style="color: url(javascript:alert(1))">a</span>', '<span style="color: expression(alert(1))">a</span>',
+    '<span style="position: fixed; color: red" onclick="alert(1)" class="x">a</span>', "<span style='background: var(--x)'>a</span>",
+    '<u onmouseover="alert(1)">a</u>', '<sup style="color: red">a</sup>', '<font color="red">a</font>', '<span style="color: red">unclosed',
+  ]) {
+    const html = noteHtml(src);
+    assert.equal(leak(html), null, `${src}\n=> ${html}`);
+    assert.ok(!/url\(|expression|onclick|onmouseover|position|var\(|<font/.test(html.replace(/&lt;[^]*?&gt;/g, "")), `${src}\n=> ${html}`);
+  }
+  assert.equal(body(noteHtml('<span style="position: fixed; color: red" onclick="x">a</span>')), '<p><span style="color: #ff2020">a</span></p>', "only the colour survives");
+  assert.equal(body(noteHtml('<span style="color: url(x)">a</span>')), "<p>a</p>", "no colour we allow: just the text");
+});
+
+test("the agent's formatting guide names exactly what the panel and the note accept", async () => {
+  const { FORMAT_GUIDE } = await import("../../src/agent/brief.ts");
+  const { TEXT_COLORS, mdToTree, walk } = await import("../../src/ui/markdown.ts");
+  assert.ok(FORMAT_GUIDE.split(/\s+/).length <= 60, `${FORMAT_GUIDE.split(/\s+/).length} words`);
+  for (const name of Object.keys(TEXT_COLORS)) assert.match(FORMAT_GUIDE, new RegExp(`\\b${name}\\b`), name);
+  for (const tag of FORMAT_GUIDE.match(/<(u|s|sub|sup|mark)>/g) ?? []) {
+    const t = tag.slice(1, -1);
+    const tree = mdToTree(`a <${t}>b</${t}> c`);
+    assert.ok([...walk(tree)].some((n) => n.tag !== "p"), `${tag} renders as formatting, not text`);
+  }
+  assert.ok([...walk(mdToTree('<span style="color: red">x</span>'))].some((n) => n.attrs?.color === "#ff2020"));
 });

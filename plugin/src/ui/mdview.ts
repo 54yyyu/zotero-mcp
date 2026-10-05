@@ -3,7 +3,7 @@
 // enforced again here, so a bug in the tree builder still cannot create a <script> or an onerror.
 import type { Token } from "marked";
 import type { NoteRequest, SavedNote } from "../types.ts";
-import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc, settledBlock } from "./markdown.ts";
+import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, HEX_COLOR, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc, settledBlock } from "./markdown.ts";
 import type { MdNode } from "./markdown.ts";
 import { copyText, env, flashCheck, h, icon } from "./dom.ts";
 
@@ -160,6 +160,7 @@ function toDom(node: MdNode, rc: RenderCtx): Node {
       if (ok.length) out.className = ok.join(" ");
     } else if (k === "start" || k === "colspan") { if (/^\d{1,6}$/.test(v)) out.setAttribute(k, v); }
     else if (k === "align") { if (v === "left" || v === "center" || v === "right") out.setAttribute("align", v); }
+    else if (k === "color" || k === "bg") { if (tag === "span" && HEX_COLOR.test(v)) out.style.setProperty(k === "bg" ? "background-color" : "color", v); }
     else out.setAttribute(k, v);
   }
   for (const kid of kids) out.appendChild(sub(kid));

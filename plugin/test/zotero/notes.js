@@ -107,7 +107,7 @@ async function main(ctx) {
   await ctx.waitFor(() => win.ZoteroPane.getSelectedCollections()[0]?.id === col.id, "collection selected");
   win.ZoteroPane.itemsView.selection.clearSelection();
   await ctx.sleep(300);
-  const r5 = await host.saveNote({ title: "Standalone", markdown: "$$\\int_0^1 x\\,dx = \\tfrac12$$\n\n<img src=x onerror=\"window.__pwned=1\"> [x](javascript:alert(1))" });
+  const r5 = await host.saveNote({ title: "Standalone", markdown: "$$\\int_0^1 x\\,dx = \\tfrac12$$\n\n<img src=x onerror=\"window.__pwned=1\"> [x](javascript:alert(1))\n\nH<sub>2</sub>O, x<sup>2</sup>, <u>u</u>, <s>s</s>, <mark>m</mark>, <span style=\"color: red\">r</span>, <span style=\"background-color: blue\">b</span>" });
   const note5 = Zotero.Items.getByLibraryAndKey(1, r5.noteKey);
   const html5 = note5.getNote();
   out.standalone = { uri: r5.uri, html: html5 };
@@ -116,5 +116,13 @@ async function main(ctx) {
   check(html5.includes('<pre class="math">$$\\int_0^1 x\\,dx = \\tfrac12$$</pre>'), "a display formula is a math block");
   check(html5.includes("&lt;img src=x onerror=") && !/<img|<a /.test(html5), "hostile text stays text: " + html5);
   check(win.__pwned === undefined, "nothing ran");
+  check(html5.includes('<p>H<sub>2</sub>O, x<sup>2</sup>, <u>u</u>, <del>s</del>, <span style="background-color: #ffd40080">m</span>, <span style="color: #ff2020">r</span>, <span style="background-color: #2ea8e580">b</span></p>'), "the formatting subset as the editor's marks: " + html5);
+  // and the editor keeps those marks when it loads the note
+  win.ZoteroPane.selectItem(note5.id);
+  const marks = await ctx.waitFor(() => { const d = editorDoc(); const pm = d?.querySelector(".ProseMirror"); return pm?.querySelector("sub") && pm.querySelector("u") && [...pm.querySelectorAll("span[style]")].map((e) => e.getAttribute("style")).join("|"); }, "the editor shows the marks");
+  out.editorMarks = marks;
+  // (the editor's DOM writes them as rgb()/rgba(): #ff2020, #ffd40080, #2ea8e580)
+  check(/(^|[|; ])color: rgb\(255, 32, 32\)/.test(marks) && marks.includes("background-color: rgba(255, 212, 0, 0.5)") && marks.includes("background-color: rgba(46, 168, 229, 0.5)") && marks.includes("text-decoration: line-through"), "colours and strike kept by the editor: " + marks);
+  await ctx.snapshot("notes-3-formatting-in-editor");
   return out;
 }

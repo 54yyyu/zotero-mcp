@@ -33,4 +33,7 @@ test("settledBlock: the streaming block stops before an open formula, a math fen
   assert.equal(shown("| Study | Ratio |"), "", "a header row waits for its table");
   assert.equal(shown("| Study | Ratio |\n|---|---|\n| A | 1 |"), "| Study | Ratio |\n|---|---|\n| A | 1 |");
   assert.equal(shown("Costs $5 and"), "Costs $5 and");
+  assert.equal(shown("Water is H<sub>2"), "Water is H", "a formatting tag waits for its closing tag");
+  assert.equal(shown("<span style=\"color: red\">a <u>b</u>"), "");
+  assert.equal(shown("H<sub>2</sub>O"), "H<sub>2</sub>O");
 });

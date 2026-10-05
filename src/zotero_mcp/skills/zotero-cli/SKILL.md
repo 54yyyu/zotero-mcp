@@ -122,6 +122,15 @@ zotero-cli notes create --item-key ABCD1234 --text "Key finding: ..."
 zotero-cli batch --item-keys A1B2C3D4,E5F6G7H8 --add-tags screened
 ```
 
+Note text is Markdown, converted to Zotero's note format: headings, lists,
+tables, code, links (`zotero://` ones stay clickable), `$math$` and `$$display$$`,
+plus `<u>`, `<s>`, `<sub>`, `<sup>`, `<mark>` and `<span style="color: red">` or
+`background-color` (red, orange, yellow, green, purple, magenta, blue, gray, or
+`#hex`). Pipe long text with `--text -`. HTML starting with `<p>`/`<div>` is
+kept to the note editor's tags, so a note read with `notes list --raw-html`,
+edited and written back with `notes update` keeps its citations and images;
+`notes update --append` adds to the end.
+
 `add` is idempotent by default: re-running files the existing item into the
 named collection rather than creating a duplicate. Use `--if-exists skip` to
 never touch an existing item.

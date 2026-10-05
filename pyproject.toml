@@ -40,6 +40,9 @@ dependencies = [
     "pdf-inspector==0.2.6",
     # HTML snapshots only.
     "markdownify>=1.2",
+    # Markdown note text to Zotero note HTML (note_html.py). Already installed
+    # with fastmcp (through rich); declared because we import it.
+    "markdown-it-py>=2.2",
     "pydantic>=2.0.0",
     "requests>=2.28.0",
     # <4 until the FastMCP 4 migration: FastMCP 4 targets the stateless

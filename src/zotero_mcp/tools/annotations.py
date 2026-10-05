@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import tempfile
 import uuid
 from typing import Literal
@@ -11,6 +10,7 @@ import requests
 
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
+from zotero_mcp import note_html as _note_html
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
@@ -24,33 +24,6 @@ _WEB_API_ENV_VARS = (
     "- ZOTERO_LIBRARY_TYPE: 'user' or 'group'"
 )
 
-
-#: Markdown constructs that Zotero notes do NOT render. Plain-text input
-#: matching any of these is stored verbatim (see ``create_note``), so the
-#: match only triggers a warning, never a rejection or conversion.
-_MARKDOWN_PATTERNS = (
-    re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S"),  # ATX heading
-    re.compile(r"(?m)^\s{0,3}>\s+\S"),  # blockquote
-    re.compile(r"(?m)^\s{0,3}(?:[-*+]\s+\S|\d{1,3}[.)]\s+\S)"),  # list item
-    re.compile(r"\*\*.+?\*\*|__.+?__"),  # bold
-    re.compile(r"(?<!\w)\*[^*\n]+\*(?!\w)|(?<!\w)_[^_\n]+_(?!\w)"),  # italic
-    re.compile(r"`[^`\n]+`"),  # inline code (fences included)
-    re.compile(r"!\[[^\]]*\]\([^)]*\)|\[[^\]]+\]\([^)]*\)"),  # image / link
-    re.compile(r"~~.+?~~"),  # strikethrough
-)
-
-#: Appended to a note-create success message when the input looked like
-#: Markdown. Zotero notes render a fixed HTML subset, so without this the
-#: caller cannot tell stored-verbatim from rendered.
-_MARKDOWN_WARNING = (
-    "\n\nWarning: the note text looks like Markdown, which Zotero notes do "
-    "NOT render — it was stored as literal text. Use simple HTML "
-    "(p, strong, em, ul/li, a, code) for formatting."
-)
-
-
-def _looks_like_markdown(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _MARKDOWN_PATTERNS)
 
 
 def _page_index(data: dict) -> int | None:
@@ -172,9 +145,7 @@ def _download_attachment_for_processing(
     )
 
 
-def _create_note_via_connector(
-    item_key, parent_title, html_content, tags, markdown_suffix=""
-):
+def _create_note_via_connector(item_key, parent_title, html_content, tags):
     """Last-resort note creation through Zotero's connector endpoint.
 
     Only reachable in local mode with no writable API backend: a Zotero older
@@ -218,7 +189,6 @@ def _create_note_via_connector(
         "`zotero-mcp authorize-local` (Zotero 10 or newer), or add these "
         "environment variables alongside ZOTERO_LOCAL=true:\n"
         + _WEB_API_ENV_VARS
-        + markdown_suffix
     )
 
 
@@ -1166,13 +1136,13 @@ def get_notes_tool(
         "Create, update, or trash a Zotero note. "
         "item_key: the PARENT item's key for action='create', the NOTE's "
         "own key for 'update' and 'delete' (zotero_get_notes finds it). "
-        "create: needs note_text — plain text, or simple HTML (p, strong, "
-        "em, ul/li, a, code), which is preserved; Markdown is NOT "
-        "supported — Markdown syntax is stored as literal text, and the "
-        "create response carries a warning when it is detected; "
+        "create: needs note_text — Markdown with $math$, plus <u> <s> <sub> "
+        "<sup> <mark> <span style=\"color:red\"> (or background-color), "
+        "converted to note HTML; HTML input is sanitized. "
         "note_title becomes a heading; tags optional. "
-        "update: needs note_text. append=False (default) REPLACES the "
-        "whole body, append=True concatenates. To keep formatting, fetch "
+        "update: needs note_text (Markdown or HTML, as for create). "
+        "append=False (default) REPLACES the whole body, append=True adds "
+        "to the end. To keep existing formatting, fetch "
         "with zotero_get_notes(raw_html=True), edit that HTML, and pass it "
         "back whole. "
         "delete: moves the note to the Trash — recoverable; emptying the "
@@ -1249,7 +1219,7 @@ def create_note(
     Args:
         item_key: Zotero item key/ID to attach the note to
         note_title: Title for the note
-        note_text: Content of the note (can include simple HTML formatting)
+        note_text: Markdown (with $math$ and the colour/underline/sub/sup tag subset) or note HTML
         tags: List of tags to apply to the note
         ctx: MCP context
 
@@ -1269,24 +1239,8 @@ def create_note(
         except Exception:
             return f"Error: No item found with key: {item_key}"
 
-        # Format the note content with proper HTML
-        # If the note_text already has HTML, use it directly
-        if "<p>" in note_text or "<div>" in note_text:
-            html_content = note_text
-            markdown_suffix = ""
-        else:
-            # Convert plain text to HTML paragraphs - avoiding f-strings with replacements
-            paragraphs = note_text.split("\n\n")
-            html_parts = []
-            for p in paragraphs:
-                # Replace newlines with <br/> tags
-                p_with_br = p.replace("\n", "<br/>")
-                html_parts.append("<p>" + p_with_br + "</p>")
-            html_content = "".join(html_parts)
-            # Warn (don't fail): Markdown-looking input is stored verbatim.
-            markdown_suffix = (
-                _MARKDOWN_WARNING if _looks_like_markdown(note_text) else ""
-            )
+        # Markdown (or HTML) to the note editor's own HTML, sanitized either way.
+        html_content = _note_html.to_note_html(note_text)
 
         # Use note_title as a visible heading so the argument is not ignored.
         clean_title = (note_title or "").strip()
@@ -1296,7 +1250,7 @@ def create_note(
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
             )
-            html_content = f"<h1>{safe_title}</h1>{html_content}"
+            html_content = _note_html.append_note_html(f"<h1>{safe_title}</h1>", html_content, at_start=True)
 
         # Prepare the note data
         note_data = {
@@ -1313,7 +1267,7 @@ def create_note(
             # is the only thing left — but it ignores parentItem, so the note
             # arrives standalone. Say so rather than pretending it worked.
             return _create_note_via_connector(
-                item_key, parent_title, html_content, tags, markdown_suffix
+                item_key, parent_title, html_content, tags
             ) or err
 
         result = write_zot.create_items([note_data])
@@ -1321,7 +1275,7 @@ def create_note(
             successful = result["success"]
             if len(successful) > 0:
                 note_key = next(iter(successful.values()))
-                return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}{markdown_suffix}"
+                return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
             return f"Note creation response was successful but no key was returned: {result}"
         return f"Failed to create note: {result.get('failed', 'Unknown error')}"
 
@@ -1342,8 +1296,8 @@ def update_note(
 
     Args:
         item_key: Zotero item key/ID of the note to update
-        note_text: New HTML content of the note
-        append: If True, concatenate note_text to existing note content;
+        note_text: New content: Markdown or note HTML, as for create_note
+        append: If True, add note_text at the end of the existing note;
             if False (default), replace existing content.
         ctx: MCP context
 
@@ -1366,10 +1320,8 @@ def update_note(
         if data.get("itemType") != "note":
             return f"Error: Item {item_key} is not a note (itemType={data.get('itemType')})"
 
-        if append:
-            data["note"] = (data.get("note", "") or "") + note_text
-        else:
-            data["note"] = note_text
+        html = _note_html.to_note_html(note_text)
+        data["note"] = _note_html.append_note_html(data.get("note", ""), html) if append else html
 
         resp = zot.update_item(item)
         if _helpers._handle_write_response(resp, ctx):

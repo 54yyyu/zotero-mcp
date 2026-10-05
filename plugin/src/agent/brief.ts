@@ -42,6 +42,12 @@ export function buildBrief(): string {
  */
 export const DRAWING_GUIDE = "Diagrams: when a picture explains better than words (a pipeline, a 2x2, a causal graph), draw raw SVG in a ```svg block. One idea per drawing; viewBox about 360 wide, no width/height, no background rect, no style, script or images. Colour only with these names as fill/stroke values: ink (text, main lines), muted, line (borders), surface (box fill), accent, teal, violet, orange, red, green, and NAME-soft for area fills (accent-soft). Stroke 1.5, rx 8 boxes, labels 12px (11 small), text-anchor middle, arrowheads as a <marker>.";
 
+/**
+ * The formatting Zotero notes have and Markdown lacks, sent once beside the drawing guide. The panel renders exactly
+ * this subset (ui/markdown.ts), Save as note maps it to the note editor's marks, and `zotero-cli notes` takes it too.
+ */
+export const FORMAT_GUIDE = "Formatting: Markdown with $math$, plus only these tags when they help: <u>, <s>, <sub>, <sup>, <mark>, and <span style=\"color: red\"> or background-color, in red, orange, yellow, green, purple, magenta, blue, gray or #hex. The panel shows them, and so does a Zotero note: `zotero-cli notes create/update` take the same Markdown.";
+
 /** The first prompt of a bridge that cannot take the brief as a system prompt. */
 export function withBrief(brief: string, text: string): string {
   return `<${BRIEF_TAG}>\n${brief}\n</${BRIEF_TAG}>\n\n${text}`;

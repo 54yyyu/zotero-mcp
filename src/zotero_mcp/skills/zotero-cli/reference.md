@@ -138,13 +138,14 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
  - `--item-key` -- **required**
  - `--title`
- - `--text` -- Note text (use - to read from stdin)
+ - `--text` -- Markdown ($math$, tables, zotero:// links, plus <u> <s> <sub> <sup> <mark> <span style="color:red">) or note HTML; - reads stdin
  - `--tags`
 
 ### `notes update`
 
  - `--item-key` -- **required**
- - `--text` -- New text (use - for stdin)
+ - `--text` -- Markdown ($math$, tables, zotero:// links, plus <u> <s> <sub> <sup> <mark> <span style="color:red">) or note HTML; - reads stdin
+ - `--append` -- Add the text at the end instead of replacing the note
 
 ### `notes delete`
 

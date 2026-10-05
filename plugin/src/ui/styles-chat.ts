@@ -144,6 +144,7 @@ export const CHAT_STYLES = `
 .zmc .math--display[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
 .zmc .math--display[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 .zmc .mathblock { position: relative; }
+.zmc .md span[style*="background"] { padding: 0 2px; border-radius: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; } /* a highlight from the formatting subset */
 .zmc .math__copy { position: absolute; top: 0; right: 0; background: var(--paper); opacity: 0; transition: opacity var(--ease); }
 .zmc :is(.mathblock:hover, .mathblock:focus-within) .math__copy { opacity: 1; }
 @media (hover: none) { .zmc .math__copy { opacity: 1; } }

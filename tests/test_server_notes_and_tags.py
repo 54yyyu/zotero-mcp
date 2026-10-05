@@ -285,6 +285,23 @@ def test_update_note_appends_content(monkeypatch):
     assert fake.updated[0]["data"]["note"] == "<p>old</p><p>more</p>"
 
 
+def test_update_note_converts_markdown_and_appends_inside_the_wrapper(monkeypatch):
+    fake = FakeZoteroForNoteUpdate({"NOTE0001": _note_item("NOTE0001", '<div data-schema-version="8"><p>old</p></div>')})
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+
+    result = server.update_note(
+        item_key="NOTE0001", note_text='**new** <span style="background: yellow">$x$</span><script>x</script>',
+        append=True, ctx=DummyContext(),
+    )
+
+    assert "Successfully updated" in result
+    assert fake.updated[0]["data"]["note"] == (
+        '<div data-schema-version="9"><p>old</p><p><strong>new</strong> '
+        '<span style="background-color: #ffd40080"><span class="math">$x$</span></span></p></div>'
+    )
+
+
 def test_update_note_rejects_non_note(monkeypatch):
     parent = {
         "key": "ITEM0001",

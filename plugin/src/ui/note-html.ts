@@ -5,7 +5,7 @@
 // <pre class="math">$$…$$</pre> (schema version 9; Zotero writes 8 when a note has no math). Citation links stay
 // ordinary zotero:// links, which the note keeps clickable. A diagram becomes an embedded image when the host
 // imported its PNG (`image(i)`), else its SVG source as code.
-import { mdToTree } from "./markdown.ts";
+import { HEX_COLOR, mdToTree } from "./markdown.ts";
 import type { MdEl, MdNode } from "./markdown.ts";
 
 export interface NoteHtmlOpts {
@@ -16,7 +16,7 @@ export interface NoteHtmlOpts {
 }
 
 /** Tags written as they are (their attributes are not). */
-const PLAIN = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "li", "blockquote", "em", "strong", "del", "code", "table", "thead", "tbody", "tr", "th", "td"]);
+const PLAIN = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "li", "blockquote", "em", "strong", "del", "u", "sub", "sup", "code", "table", "thead", "tbody", "tr", "th", "td"]);
 
 // eslint-disable-next-line no-control-regex
 const esc = (s: string): string => s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -82,6 +82,12 @@ export function noteHtml(markdown: string, o: NoteHtmlOpts = {}): string {
         return /^(?:https?|zotero):\/\//i.test(href) ? `<a href="${esc(href)}">${inner}</a>` : inner;
       }
       case "ol": return `<ol${a.start && /^\d{1,6}$/.test(a.start) ? ` start="${a.start}"` : ""}>${kids(n)}</ol>`;
+      case "span": { // a colour from the formatting subset: the editor's own textColor / backgroundColor marks
+        let html = kids(n);
+        if (a.bg && HEX_COLOR.test(a.bg)) html = `<span style="background-color: ${a.bg}">${html}</span>`;
+        if (a.color && HEX_COLOR.test(a.color)) html = `<span style="color: ${a.color}">${html}</span>`;
+        return html;
+      }
       case "br": return "<br>";
       case "hr": return "<hr>";
       case "img": return esc(a.alt ?? ""); // a data: image inside the answer: its words, not a second attachment path

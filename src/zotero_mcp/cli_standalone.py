@@ -658,7 +658,8 @@ def cmd_notes(args):
         ))
     elif args.subcommand == "update":
         note_text = sys.stdin.read() if args.text == "-" else args.text
-        _out(args, "notes update", text=annotations.update_note(item_key=args.item_key, note_text=note_text, ctx=ctx))
+        _out(args, "notes update", text=annotations.update_note(item_key=args.item_key, note_text=note_text,
+                                                                append=getattr(args, "append", False), ctx=ctx))
     elif args.subcommand == "delete":
         _out(args, "notes delete", text=annotations.delete_note(item_key=args.item_key, ctx=ctx))
     else:
@@ -1541,14 +1542,17 @@ def build_parser() -> argparse.ArgumentParser:
     nl.add_argument("--limit", type=int, default=20)
     nl.add_argument("--full", action="store_true")
     nl.add_argument("--raw-html", action="store_true")
-    nc = n_sub.add_parser("create", help="Create a note")
+    _note_text_help = ("Markdown ($math$, tables, zotero:// links, plus <u> <s> <sub> <sup> <mark> "
+                       "<span style=\"color:red\">) or note HTML; - reads stdin")
+    nc = n_sub.add_parser("create", help="Create a note (Markdown or HTML, converted to Zotero's note format)")
     nc.add_argument("--item-key", required=True)
     nc.add_argument("--title")
-    nc.add_argument("--text", help="Note text (use - to read from stdin)")
+    nc.add_argument("--text", help=_note_text_help)
     nc.add_argument("--tags")
-    nu = n_sub.add_parser("update", help="Update a note")
+    nu = n_sub.add_parser("update", help="Replace (or --append to) a note's text")
     nu.add_argument("--item-key", required=True)
-    nu.add_argument("--text", help="New text (use - for stdin)")
+    nu.add_argument("--text", help=_note_text_help)
+    nu.add_argument("--append", action="store_true", help="Add the text at the end instead of replacing the note")
     nd = n_sub.add_parser("delete", help="Delete a note")
     nd.add_argument("--item-key", required=True)
 

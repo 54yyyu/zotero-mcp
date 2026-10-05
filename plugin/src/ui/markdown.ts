@@ -5,7 +5,9 @@
 // Policy (the panel runs in a privileged window and the agent reads the web):
 //   links    http(s): and zotero: only; anything else renders as its plain text
 //   images   data:image/png|jpeg;base64 only; anything else renders as its alt text
-//   raw HTML renders as escaped text (it is a text node, so there is nothing to escape)
+//   raw HTML renders as escaped text (it is a text node, so there is nothing to escape), except the formatting
+//            subset Zotero notes have and markdown lacks: <u> <s> <del> <sub> <sup> <mark> and <span style="color: …;
+//            background-color: …"> with a palette name or a hex colour (FORMAT_TAGS); any other attribute is dropped
 //   tags and attributes come from the allow-lists below, enforced again by the DOM builder
 import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
@@ -17,9 +19,10 @@ export interface MdEl { tag: string; attrs?: Record<string, string>; kids?: MdNo
 export const ALLOWED_TAGS: ReadonlySet<string> = new Set([
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "code", "em", "strong", "del",
   "a", "br", "hr", "table", "thead", "tbody", "tr", "th", "td", "img", "span",
-  "codeblock", "math", "cite", "tablewrap", "diagram",
+  "codeblock", "math", "cite", "tablewrap", "diagram", "u", "sub", "sup",
 ]);
-export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(["href", "src", "alt", "title", "start", "align", "lang", "display", "class", "colspan", "open"]);
+/** `color` and `bg` (on span only) hold a validated hex colour, nothing else. */
+export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(["href", "src", "alt", "title", "start", "align", "lang", "display", "class", "colspan", "open", "color", "bg"]);
 /** The only class names a tree may carry (set by this file, never from agent text). */
 export const ALLOWED_CLASSES: ReadonlySet<string> = new Set(["md-raw", "md-task", "md-task--on", "md-nobr"]);
 
@@ -104,6 +107,41 @@ export function decodeEntities(s: string): string {
   });
 }
 
+// ───────────────────────────── colours and the formatting subset ─────────────────────────────
+
+/** Zotero's note editor palette (its text colours, and its highlight colours at 50%): the names the agent may use. */
+export const TEXT_COLORS: Readonly<Record<string, string>> = {
+  red: "#ff2020", orange: "#ff7700", yellow: "#ffcb00", green: "#4eb31c", purple: "#7953e3", magenta: "#eb52f7", blue: "#05a2ef", gray: "#7e8386",
+};
+export const HIGHLIGHT_COLORS: Readonly<Record<string, string>> = {
+  red: "#ff666680", orange: "#f1983780", yellow: "#ffd40080", green: "#5fb23680", purple: "#a28ae580", magenta: "#e56eee80", blue: "#2ea8e580", gray: "#aaaaaa80",
+};
+export const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+/** A palette name or a hex colour as hex; anything else (url(), expressions, var()) is null. */
+export function safeColor(v: string | undefined, palette: Readonly<Record<string, string>>): string | null {
+  const c = (v ?? "").trim().toLowerCase().replace(/^grey$/, "gray");
+  return palette[c] ?? (HEX_COLOR.test(c) ? c : null);
+}
+
+const FORMAT_TAGS = "u|s|del|strike|sub|sup|mark|span";
+
+/** The colours of `<span style="…">`: only color and background(-color), only palette names or hex. */
+function spanColors(attrs: string): { color?: string; bg?: string } {
+  const style = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attrs);
+  const out: { color?: string; bg?: string } = {};
+  for (const decl of (style?.[1] ?? style?.[2] ?? "").split(";")) {
+    const m = /^\s*(color|background-color|background)\s*:\s*([^;]+?)\s*$/i.exec(decl);
+    if (!m) continue;
+    const prop = (m[1] as string).toLowerCase();
+    const c = safeColor(m[2], prop === "color" ? TEXT_COLORS : HIGHLIGHT_COLORS);
+    if (c) out[prop === "color" ? "color" : "bg"] = c;
+  }
+  return out;
+}
+
+interface FormatToken { type: "fmt"; raw: string; tag: string; color?: string; bg?: string; tokens: Token[] }
+
 // ───────────────────────────── marked with math ─────────────────────────────
 // `$x$` must hug its content and not be followed by a digit, so "costs $5 and $10" stays text.
 
@@ -122,6 +160,27 @@ const marked = new Marked({
   gfm: true,
   breaks: false,
   extensions: [
+    {
+      // <u>…</u>, <sub>…</sub>, <span style="color: red">…</span>: one element with its closing tag, markdown inside.
+      // Unclosed, or any other tag, stays text.
+      name: "fmt",
+      level: "inline",
+      start: (src: string) => src.match(new RegExp(`<(?:${FORMAT_TAGS})[\\s>]`, "i"))?.index,
+      tokenizer(src: string) {
+        const m = new RegExp(`^<(${FORMAT_TAGS})((?:\\s+[a-z-]+\\s*=\\s*(?:"[^"]*"|'[^']*'))*)\\s*>`, "i").exec(src);
+        if (!m) return undefined;
+        const tag = (m[1] as string).toLowerCase();
+        const re = new RegExp(`<(/?)${tag}(?:\\s[^>]*)?>`, "gi");
+        re.lastIndex = m[0].length;
+        let depth = 1, x: RegExpExecArray | null = null;
+        while (depth && (x = re.exec(src))) depth += x[1] ? -1 : 1;
+        if (depth || !x) return undefined;
+        const end = re.lastIndex;
+        const inner = src.slice(m[0].length, x.index);
+        const colors = tag === "span" ? spanColors(m[2] ?? "") : tag === "mark" ? { bg: HIGHLIGHT_COLORS.yellow as string } : {};
+        return { type: "fmt", raw: src.slice(0, end), tag, ...colors, tokens: this.lexer.inlineTokens(inner) } satisfies FormatToken;
+      },
+    },
     {
       name: "mathBlock",
       level: "block",
@@ -223,6 +282,17 @@ export function openMathAt(s: string): number {
   return open;
 }
 
+/** Where a formatting tag (<u>, <sup>, <span style=…>) opens without its closing tag yet, or -1. */
+function openTagAt(s: string): number {
+  const stack: { tag: string; at: number }[] = [];
+  for (const m of s.matchAll(new RegExp(`<(/?)(${FORMAT_TAGS})(?:\\s[^>]*)?>`, "gi"))) {
+    const tag = (m[2] as string).toLowerCase();
+    if (!m[1]) stack.push({ tag, at: m.index });
+    else { const i = stack.map((x) => x.tag).lastIndexOf(tag); if (i >= 0) stack.splice(i); }
+  }
+  return stack[0]?.at ?? -1;
+}
+
 const closedFence = (raw: string) => /\n {0,3}(?:`{3,}|~{3,})[ \t]*\s*$/.test(raw);
 const HAS_INLINE = new Set(["paragraph", "heading", "list", "blockquote", "table", "text"]);
 
@@ -235,8 +305,9 @@ export function settledBlock(t: Token): Token[] {
   if (t.type === "code") return (t as Tokens.Code).lang?.trim().toLowerCase() === "math" && !closedFence(t.raw) ? [] : [t];
   if (!HAS_INLINE.has(t.type)) return [t];
   if (t.type === "paragraph" && /^ {0,3}\|/.test(t.raw)) return [];
-  const cut = openMathAt(t.raw);
-  if (cut < 0) return [t];
+  const cuts = [openMathAt(t.raw), openTagAt(t.raw)].filter((c) => c >= 0);
+  if (!cuts.length) return [t];
+  const cut = Math.min(...cuts);
   const head = t.raw.slice(0, cut);
   return head.trim() ? lexBlocks(head).filter((x) => x.type !== "space") : [];
 }
@@ -291,6 +362,15 @@ function inlineRaw(tokens: Token[] | undefined, depth: number): MdNode[] {
       case "br": out.push(el("br")); break;
       case "checkbox": break; // handled by the list item
       case "html": out.push(t.raw); break; // raw HTML is text
+      case "fmt": {
+        const f = t as unknown as FormatToken;
+        const kids = inline(f.tokens, depth + 1);
+        const tag = f.tag === "s" || f.tag === "strike" ? "del" : f.tag;
+        if (tag === "u" || tag === "del" || tag === "sub" || tag === "sup") out.push(el(tag, kids));
+        else if (f.color || f.bg) out.push(el("span", kids, { ...(f.color ? { color: f.color } : {}), ...(f.bg ? { bg: f.bg } : {}) }));
+        else out.push(...kids); // a span without a colour we allow: its content
+        break;
+      }
       case "mathInline": {
         const m = t as unknown as MathToken;
         out.push(el("math", [m.tex.trim()], { display: m.display ? "1" : "0" }));
