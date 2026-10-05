@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Zotero chat plugin.** A chat panel inside Zotero for your own Claude Code, Codex or pi, with the open item, page and selection as context and `zotero-cli` for the library. The built `zotero-chat.xpi` ships in the wheel and is attached to each GitHub release; `zotero-cli plugin` prints where it is and how to install it (`--path` prints only the path). See [docs/chat-plugin.md](docs/chat-plugin.md).
+- **`zotero-cli read --find "phrase"`** locates a passage and returns the matching pages with short snippets, without reading whole pages. `--start-page` is optional with `--find`.
+- **`zotero-cli open`** shows a PDF page or an annotation in the Zotero reader (`open KEY --page N`, `open --annotation KEY`, `annotations create --open`).
+- **`zotero-cli plugin --reveal`** shows the plugin file in the file manager; the plugin docs have a prompt that lets any agent do the install.
+- **Notes take the note editor's full formatting.** `notes create` and `notes update` accept Markdown with `$math$` and a small safe tag subset (`<u> <s> <sub> <sup> <mark>`, colour and highlight colour spans) and convert it to Zotero's note HTML; `notes update --append` adds to an existing note. Existing citation, highlight and image markup survives an edit.
 
 ## [0.13.2] - 2026-10-04
 
