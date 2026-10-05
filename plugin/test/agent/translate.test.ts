@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
-import { TRANSLATE_CAP, TRANSLATOR_PROMPT, pickLowEffort, pickStrictMode, pickTranslateModel, translationRequest, translatorPrompt } from "../../src/agent/translate.ts";
+import { TRANSLATE_CAP, TRANSLATOR_PROMPT, pickLowEffort, pickTranslateModel, translationRequest, translatorPrompt } from "../../src/agent/translate.ts";
 import { createRuntime } from "../../src/agent/index.ts";
-import type { BackendId, PanelSettings } from "../../src/types.ts";
+import type { BackendId, Catalog, PanelSettings } from "../../src/types.ts";
 import { CATALOGS, defaultSettings } from "../../src/ui/fake-catalog.ts";
 import { LANGUAGES, languageForLocale, setFlag, setPerBackend } from "../../src/ui/settings-model.ts";
 import { withDefaults } from "../../src/zotero/defaults.ts";
@@ -40,13 +40,10 @@ test("'Fastest available' reads the catalog's own descriptions; no id is hardcod
   assert.equal(pickTranslateModel([{ id: "google/gemini-pro", name: "Gemini", description: "Gemini Pro for breakfast" }]), undefined, "whole words only");
 });
 
-test("the lightest effort and the most restrictive mode the backend offers", () => {
+test("the lightest effort the backend offers", () => {
   assert.equal(pickLowEffort(CATALOGS.pi.efforts), "off");
   assert.equal(pickLowEffort(CATALOGS.codex.efforts), "low");
   assert.equal(pickLowEffort([]), undefined);
-  assert.equal(pickStrictMode(CATALOGS.codex.modes), "read-only");
-  assert.equal(pickStrictMode(CATALOGS["claude-code"].modes), "default");
-  assert.equal(pickStrictMode([]), undefined);
 });
 
 test("the default target is Zotero's own language, English when it is not in the list", () => {
@@ -75,7 +72,7 @@ test("a locked session: Claude's prompt is replaced and it has no tools; Codex i
     const dump = `${dir}/dump.json`, newDump = `${dir}/new.json`;
     const pi = fakeBin({ pi: "exit 0" });
     const runtime = createRuntime({ spawner: hermeticSpawner({ MOCK_VARIANT: backend === "claude-code" ? "claude" : backend, MOCK_DUMP: dump, MOCK_NEW_DUMP: newDump }, [pi]), bridgeDir: fakeBridgeDir([backend]) });
-    const session = await runtime.start({ backend, cwd: dir, brief: "BRIEF", locked: true });
+    const session = await runtime.start({ backend, cwd: dir, brief: "BRIEF", locked: true, model: "haiku" });
     await session.close();
     const env = JSON.parse(readFileSync(dump, "utf8")).env;
     const meta = JSON.parse(readFileSync(newDump, "utf8"));
@@ -84,6 +81,8 @@ test("a locked session: Claude's prompt is replaced and it has no tools; Codex i
     } else {
       assert.equal(meta, null, "the brief rides on the first prompt");
     }
+    if (backend === "claude-code") assert.deepEqual([env.MAX_THINKING_TOKENS, env.ANTHROPIC_MODEL], ["0", "haiku"], "no thinking; the model from the start");
+    else assert.equal(env.MAX_THINKING_TOKENS, undefined);
     if (backend === "codex") assert.deepEqual(JSON.parse(env.CODEX_CONFIG), { sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled" });
     else assert.equal(env.CODEX_CONFIG, undefined);
     if (backend === "pi") {
@@ -93,11 +92,11 @@ test("a locked session: Claude's prompt is replaced and it has no tools; Codex i
   }
 });
 
-function translator(over: Partial<PanelSettings> = {}, env: Record<string, string> = {}) {
+function translator(over: Partial<PanelSettings> = {}, env: Record<string, string> = {}, known?: () => Catalog) {
   let s: PanelSettings = { ...defaultSettings(), translateTo: "fr", ...over };
   const runtime = createRuntime({ spawner: hermeticSpawner({ MOCK_VARIANT: "claude", ...env }), bridgeDir: fakeBridgeDir(["claude-code"]) });
   const cwd = tempDir("zmc-translate-");
-  const t = createTranslator({ runtime, settings: () => s, cwd: async () => cwd, env: async () => ({}) });
+  const t = createTranslator({ runtime, settings: () => s, cwd: async () => cwd, env: async () => ({}), ...(known ? { known } : {}) });
   const say = async (text: string, to?: string) => { let out = ""; await t.translate({ text, ...(to ? { to } : {}), onText: (d) => (out += d) }); return out; };
   return { t, say, set: (patch: Partial<PanelSettings>) => { s = { ...s, ...patch }; } };
 }
@@ -108,7 +107,6 @@ test("the engine: one warm locked session, the fast model, reused; a new languag
     assert.equal(await say("SCENARIO:translate Bonjour le monde"), "[French] Bonjour le monde");
     const first = t.stats().session!;
     assert.equal(first.currentModel(), "haiku", "the mock catalog's 'Fastest'");
-    assert.equal(first.currentMode(), "default");
     assert.equal(await say("SCENARIO:translate encore"), "[French] encore");
     assert.equal(t.stats().started, 1, "warm: the same session");
     assert.equal(await say("SCENARIO:translate hallo", "de"), "[German] hallo", "the popup's language chip: this request only");
@@ -155,4 +153,50 @@ test("a start that fails says so plainly", async () => {
   const { t, say } = translator({}, { MOCK_INIT: "badversion" });
   await assert.rejects(say("SCENARIO:translate x"), /^Error: The agent could not start: /);
   await t.dispose();
+});
+
+test("preload: a popup starts exactly one session, the press rides it; repeated popups start nothing more", async () => {
+  const { t, say, set } = translator();
+  try {
+    t.preload(); t.preload(); t.preload();
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(t.stats().started, 1);
+    assert.ok(t.stats().session, "ready before the press");
+    const t0 = Date.now();
+    let first = 0;
+    await t.translate({ text: "SCENARIO:translate vite", onText: () => { first ||= Date.now() - t0; } });
+    assert.ok(first < 300, `a warm press shows text at once: ${first} ms`);
+    t.preload();
+    assert.equal(t.stats().started, 1, "nothing new while one is ready");
+    set({ translate: false });
+    await t.dispose();
+    t.preload();
+    assert.equal(t.stats().started, 1, "off, or disposed: no preload");
+  } finally {
+    await t.dispose();
+  }
+});
+
+test("a press while the preload is still starting shares that start", async () => {
+  const { t, say } = translator();
+  try {
+    t.preload();
+    assert.equal(await say("SCENARIO:translate ensemble"), "[French] ensemble");
+    assert.equal(t.stats().started, 1);
+  } finally {
+    await t.dispose();
+  }
+});
+
+test("a model known up front starts the session on it (no switch after session/new); a bridge notice never joins the text", async () => {
+  const known = () => ({ models: [{ id: "sonnet", name: "Sonnet", description: "Balanced" }, { id: "haiku", name: "Haiku", description: "Fastest" }], modes: [], efforts: [] });
+  const dir = tempDir();
+  const { t, say } = translator({}, { MOCK_NEW_DUMP: `${dir}/new.json`, MOCK_DUMP: `${dir}/dump.json` }, known);
+  try {
+    assert.equal(await say("SCENARIO:notice SCENARIO:translate salut"), "[French] salut");
+    assert.equal(JSON.parse(readFileSync(`${dir}/dump.json`, "utf8")).env.ANTHROPIC_MODEL, "haiku");
+    assert.equal(t.stats().session!.currentModel(), "haiku");
+  } finally {
+    await t.dispose();
+  }
 });

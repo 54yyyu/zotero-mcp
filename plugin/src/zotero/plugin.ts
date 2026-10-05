@@ -82,8 +82,7 @@ class ChatPlugin {
     const t0 = Date.now();
     const scope: any = { Zotero, Services, ChromeUtils, IOUtils, PathUtils, Components, Cc, Ci };
     Services.scriptloader.loadSubScript(this.init.rootURI + "panel.js", scope);
-    const known = (b: string) => { for (const w of this.windows.values()) { const c = w.loaded()?.bundle.knownCatalog(b as never); if (c) return c; } return undefined; };
-    const pane = scope.ZoteroChatPanel.createSettingsPane({ version: this.init.version, win, dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat"), root, known });
+    const pane = scope.ZoteroChatPanel.createSettingsPane({ version: this.init.version, win, dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat"), root, known: (b: string) => this.knownCatalog(b) });
     this.timing.paneLoadMs = Date.now() - t0;
     // Zotero sends "unload" to the pane's elements when the Settings window closes.
     root.addEventListener("unload", () => pane.dispose(), { once: true });
@@ -102,14 +101,25 @@ class ChatPlugin {
     b.setAttribute("data-tabstop", "1");
     b.setAttribute("aria-expanded", "false");
     b.textContent = "Translate";
-    b.addEventListener("click", () => {
-      this.translate ??= this.module().createTranslate({ dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat") });
-      this.translate!.toggle(event, box, b);
-    });
+    b.addEventListener("click", () => this.translator().toggle(event, box, b));
     box.append(b);
     event.append(box);
     this.translate?.revive(event, box, b); // the reader re-rendered this popup: a translation already showing stays
+    // The press is likely a second away: start the session meanwhile, once the popup has painted (reading panel.js the
+    // first time takes ~35 ms, which must not hold the popup up).
+    Zotero.getMainWindow()?.requestIdleCallback(() => this.translator().translator.preload(), { timeout: 300 });
   };
+
+  /** The reader's Translate (panel.js), made on first use; it starts the translator's session only when asked. */
+  private translator(): NonNullable<ChatPlugin["translate"]> {
+    return (this.translate ??= this.module().createTranslate({ dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat"), known: (b: string) => this.knownCatalog(b) }));
+  }
+
+  /** A catalog an open panel has read (never read just for this: that would start the agent). */
+  private knownCatalog(b: string) {
+    for (const w of this.windows.values()) { const c = w.loaded()?.bundle.knownCatalog(b as never); if (c) return c; }
+    return undefined;
+  }
 
   /** The loaded panel of a window (loading it if need be). */
   panel(win: any = Zotero.getMainWindow()): Panel {

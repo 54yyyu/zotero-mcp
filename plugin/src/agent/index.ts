@@ -5,4 +5,4 @@ export { buildBrief, CONTEXT_TAG, DRAWING_GUIDE, FORMAT_GUIDE } from "./brief.ts
 export { prepareWorkspace } from "./workspace.ts";
 export { resumeCommand } from "./backends.ts";
 export { findBinary } from "./env.ts";
-export { TRANSLATOR_PROMPT, pickLowEffort, pickStrictMode, pickTranslateModel, translationRequest, translatorPrompt } from "./translate.ts";
+export { TRANSLATOR_PROMPT, pickLowEffort, pickTranslateModel, translationRequest, translatorPrompt } from "./translate.ts";

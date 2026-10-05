@@ -44,10 +44,11 @@ export function createSettingsPane(opts: { version: string; win: any; dataDir: s
  * never the chat folder), and the result in the selection popup. The settings are read from the pref on each press; a
  * change there closes a session started for other ones.
  */
-export function createTranslate(opts: { dataDir: string }): { toggle(event: any, box: Element, button: HTMLElement): void; revive(event: any, box: Element, button: HTMLElement): void; translator: Translator; dispose(): void } {
+export function createTranslate(opts: { dataDir: string; known(b: BackendId): Catalog | undefined }): { toggle(event: any, box: Element, button: HTMLElement): void; revive(event: any, box: Element, button: HTMLElement): void; translator: Translator; dispose(): void } {
   const settings = () => withDefaults(prefs.json("settings", {}), Zotero.locale);
   const dir = PathUtils.join(opts.dataDir, "translate");
   const translator = createTranslator({
+    known: opts.known,
     runtime: createRuntime({ spawner: createGeckoSpawner(), bridgeDir: PathUtils.join(opts.dataDir, "bridges") }),
     settings,
     async cwd() { await IOUtils.makeDirectory(dir, { createAncestors: true, ignoreExisting: true }); return dir; },

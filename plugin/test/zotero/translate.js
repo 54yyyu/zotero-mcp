@@ -47,7 +47,13 @@ async function main(ctx) {
   const waitFor = ctx.waitFor;
   ctx.waitFor = (fn, what, ms) => waitFor(fn, what, ms).catch((e) => { throw new Error(`${e.message}; popup: ${popup() ? popup().textContent.slice(0, 300) : "none"}`); });
 
-  // 1. the button, in the reader's own style, and nothing loaded by showing it; none for a blank selection
+  // 1. the handler is cheap and synchronous: it builds the button and loads nothing (the preload waits for idle)
+  const h0 = win.performance.now();
+  const parts = [];
+  ctx.plugin.onSelectionPopup({ reader, doc, params: { annotation: { text: "probe" } }, append: (...els) => parts.push(...els) });
+  out.handlerMs = win.performance.now() - h0;
+  check(parts.length === 1 && ctx.plugin.timing.panelLoadMs === null, "the handler returns having loaded nothing");
+  // the button, in the reader's own style; none for a blank selection
   select("   ");
   await ctx.sleep(300);
   check(!button(), "no button for a blank selection");
@@ -57,7 +63,10 @@ async function main(ctx) {
   const btn = await ctx.waitFor(button, "the Translate button");
   out.renderMs = Date.now() - t0;
   check(btn.classList.contains("toolbar-button") && btn.classList.contains("wide-button"), "styled like the reader's own: " + btn.className);
-  check(injected.loaded() === null && ctx.plugin.timing.panelLoadMs === null, "showing the button loads nothing");
+  // Once the popup has painted (idle), the translator's session is started: exactly one, however many popups follow.
+  await ctx.waitFor(() => ctx.plugin.translate?.translator.stats().started === 1 && ctx.plugin.translate.translator.stats().session, "the preload started one session", 15000);
+  out.preloadPanelJsMs = ctx.plugin.timing.panelLoadMs;
+  check(injected.loaded() === null, "the panel itself is not loaded by it");
 
   // 2. the switch, read live as the popup renders
   setPref({ translate: false });
@@ -68,6 +77,8 @@ async function main(ctx) {
   setPref({ translate: true });
   await fresh("Some text");
   await ctx.waitFor(button, "the button is back when the setting is on");
+  await ctx.sleep(500);
+  check(ctx.plugin.translate.translator.stats().started === 1, "more popups start no second session");
 
   // 3. a chat exists before any translation: it must be untouched afterwards
   injected.show();
@@ -93,10 +104,13 @@ async function main(ctx) {
   let renders = 0;
   const countRenders = () => renders++;
   Zotero.Reader.registerEventListener("renderTextSelectionPopup", countRenders, "translate-test@zotero-chat");
+  const tPress = Date.now();
   (await ctx.waitFor(button, "button")).click();
   check(button().getAttribute("aria-expanded") === "true", "the button says it is open");
   await ctx.waitFor(() => result()?.querySelector(".zmc-tr__sk") || result()?.querySelector(".zmc-tr__text span"), "the shimmer, or the first words");
   const streamed = await ctx.waitFor(() => result()?.querySelector(".zmc-tr__text span"), "streamed pieces arrive", 20000);
+  out.warmPressToFirstTextMs = Date.now() - tPress;
+  check(out.warmPressToFirstTextMs < 500, `a preloaded press shows text at once (mock agent): ${out.warmPressToFirstTextMs} ms`);
   check(!!streamed, "streamed as it arrives");
   await ctx.waitFor(() => result() && !result().hasAttribute("aria-busy"), "the translation finished", 20000);
   const text = result().querySelector(".zmc-tr__text").textContent;

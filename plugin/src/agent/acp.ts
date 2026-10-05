@@ -84,11 +84,15 @@ export class AcpClient {
     this.#onRequest = handler;
   }
 
-  /** initialize: protocolVersion 1, no fs, no terminal; compaction as `compaction_update` (claude and codex otherwise show it as a tool call). */
+  /**
+   * initialize: protocolVersion 1, no fs, no terminal; compaction as `compaction_update` (claude and codex otherwise show it as
+   * a tool call); bridge notices as `notice` updates (claude otherwise writes them into the answer as bold text, e.g. "Auto mode
+   * unavailable" ahead of a translation).
+   */
   async initialize(): Promise<InitializeResult> {
     const init = await this.request<InitializeResult>("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, session: { compaction: {} } },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, session: { compaction: {}, notices: {} } },
     });
     if (init?.protocolVersion !== ACP_PROTOCOL_VERSION) {
       throw new Error(`agent negotiated ACP protocolVersion ${init?.protocolVersion}; we speak ${ACP_PROTOCOL_VERSION}`);

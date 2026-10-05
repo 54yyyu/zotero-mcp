@@ -637,6 +637,11 @@ export class AcpAgentSession implements AgentSession {
       case "tool_call_update":
         this.#onTool(turn, update, kind);
         return;
+      case "notice": { // claude-agent-acp's own warnings (initialize asks for them): ours to show, never part of the answer
+        const text = [str(update["title"]), str(update["description"])].filter(Boolean).join(": ");
+        if (text) this.#emit({ t: "notice", level: update["severity"] === "error" ? "error" : update["severity"] === "warning" ? "warn" : "info", message: text });
+        return;
+      }
       case "compaction_update": // claude and codex, because initialize says we take them (acp.ts)
         if (update["status"] !== "completed" || this.#compactions.has(String(update["compactionId"]))) return; // claude repeats the terminal frame with token counts
         this.#compactions.add(String(update["compactionId"]));

@@ -36,9 +36,3 @@ export function pickLowEffort(efforts: ModeOption[]): string | undefined {
   for (const id of ["none", "off", "minimal", "low"]) if (efforts.some((e) => e.id === id)) return id;
   return undefined;
 }
-
-/** The most restrictive permission mode a backend offers (Codex read-only, else Claude's ask-first default). */
-export function pickStrictMode(modes: ModeOption[]): string | undefined {
-  for (const id of ["read-only", "default"]) if (modes.some((m) => m.id === id)) return id;
-  return undefined;
-}

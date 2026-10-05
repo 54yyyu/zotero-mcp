@@ -22,7 +22,7 @@ const BANNER = "STARTUP BANNER (must not be shown)";
 
 if (process.env.MOCK_DUMP) {
   const grandchild = process.env.MOCK_GRANDCHILD ? spawnChild("sleep", ["300"], { stdio: "ignore" }).pid : undefined;
-  const keys = Object.keys(process.env).filter((k) => k.startsWith("CLAUDE") || ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"].includes(k) || ["PATH", "MOCK_VARIANT", "CODEX_CONFIG", "PI_ACP_PI_COMMAND"].includes(k));
+  const keys = Object.keys(process.env).filter((k) => k.startsWith("CLAUDE") || ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"].includes(k) || ["PATH", "MOCK_VARIANT", "CODEX_CONFIG", "PI_ACP_PI_COMMAND", "MAX_THINKING_TOKENS", "ANTHROPIC_MODEL"].includes(k));
   writeFileSync(process.env.MOCK_DUMP, JSON.stringify({ pid: process.pid, grandchild, argv: process.argv.slice(2), cwd: process.cwd(), env: Object.fromEntries(keys.map((k) => [k, process.env[k]])) }));
 }
 
@@ -55,6 +55,7 @@ const EFFORT_OPTS = ["default", "low", "medium", "high", "xhigh", "max"].map((v)
 const sessions = new Map();
 let nextSession = 1;
 let nextRequestId = 1000;
+let initParams = null;
 const waiting = new Map(); // our request id -> resolve
 const cancelled = new Set();
 
@@ -96,7 +97,7 @@ function sessionResult(id, s) {
   return result;
 }
 
-const initialModel = () => (variant === "codex" ? "gpt-6-sol[medium]" : "opus");
+const initialModel = () => (variant === "codex" ? "gpt-6-sol[medium]" : (variant === "claude" && process.env.ANTHROPIC_MODEL) || "opus"); // claude-agent-acp starts on ANTHROPIC_MODEL
 const initialEffort = () => (variant === "pi" ? "high" : "medium");
 const initialMode = () => (variant === "codex" ? "agent" : "auto");
 
@@ -107,6 +108,7 @@ async function handle(msg) {
 
   switch (method) {
     case "initialize":
+      initParams = params;
       if (process.env.MOCK_INIT === "hang") return;
       return reply({
         protocolVersion: process.env.MOCK_INIT === "badversion" ? 99 : 1,
@@ -280,6 +282,10 @@ async function prompt(id, params) {
     chunk(`brief=${s?.brief ?? "none"}|prompt=${text}`);
     return end();
   }
+  if (text.includes("SCENARIO:notice")) { // a bridge warning (claude's "Auto mode unavailable"), sent as a notice because initialize asked for them
+    if (initParams?.clientCapabilities?.session?.notices) update(sid, { sessionUpdate: "notice", severity: "warning", title: "Auto mode unavailable", description: "Using Accept edits instead." });
+    else chunk("**Auto mode unavailable:** using Accept edits instead.");
+  }
   if (text.includes("SCENARIO:translate")) { // a fake translation, streamed: [<target named in the system prompt>] the text, less the marker
     const to = /into ([^.]+)\./.exec(s?.brief ?? "")?.[1] ?? "?";
     if (text.includes("SCENARIO:translate-permit")) { // a translator that still asks for a tool: the answer must be a refusal
@@ -291,7 +297,7 @@ async function prompt(id, params) {
     }
     const body = !s?.locked ? `[UNLOCKED] ${text}` // a real translation's shape, for snapshots; else the text, marked with the target
       : text.includes("SCENARIO:translate-sample") ? "Workers assigned to a professional destination earned 8% more in the following year, and the gap was still there three years later. The effect was largest for women and for workers who had already changed firms at least once."
-      : `[${to}] ${text.replace(/SCENARIO:translate(-permit|-wait)?\s*/, "")}`;
+      : `[${to}] ${text.replace(/(SCENARIO:notice )?SCENARIO:translate(-permit|-wait)?\s*/, "")}`;
     if (text.includes("SCENARIO:translate-wait")) await sleep(4000); // a slow start: the popup's loading state
     for (let i = 0; i < body.length; i += 6) { if (cancelled.has(sid)) return end("cancelled"); chunk(body.slice(i, i + 6)); await sleep(text.includes("slowly") ? 60 : 8); }
     return end();
