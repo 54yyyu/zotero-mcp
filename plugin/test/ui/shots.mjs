@@ -43,6 +43,7 @@ const STATES = {
   "answer-sources": { run: async (p) => { await send(p, "How does this compare?"); await done(p); await settle(p, 400); await p.locator(".foot__src").click(); await settle(p, 150); } },
   "answer-step-open": { run: async (p) => { await send(p, "How does this compare?"); await done(p); await settle(p, 300); await toTop(p); await p.locator(".step__row").first().click(); await settle(p, 150); } },
   "math": { run: async (p) => { await send(p, "show math"); await done(p); await settle(p, 700); } },
+  "diagram": { run: async (p) => { await send(p, "draw it"); await done(p); await settle(p, 300); await p.locator(".dg").first().hover(); } },
   "plan": { params: { speed: 25 }, run: async (p) => { await send(p, "plan the comparison"); await p.waitForSelector(".plan__i--in_progress", { timeout: 6000 }); await settle(p, 120); } },
   "permission": { params: { speed: 20 }, run: async (p) => { await send(p, "add a note to this paper"); await p.waitForSelector(".perm .perm__opts"); await settle(p, 300); } },
   "permission-allowed": { params: { speed: 5 }, run: async (p) => { await send(p, "add a note to this paper"); await p.waitForSelector(".perm .perm__opts"); await p.getByRole("button", { name: "Allow once" }).click(); await done(p); await settle(p, 400); } },

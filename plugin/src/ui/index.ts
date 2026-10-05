@@ -67,6 +67,7 @@ class Panel {
       retry: (id) => this.chat.retry(id),
       answer: (turn, pid, oid) => this.chat.answerPermission(turn, pid, oid),
       checkSetup: () => this.show("status"),
+      saveFile: (n, d, m) => host.saveFile(n, d, m),
     });
     this.composer = new Composer({
       search: (q) => host.search(q),

@@ -13,6 +13,8 @@ export interface MsgActions {
   retry(assistantId: string): void;
   answer(turn: string, permissionId: string, optionId: string): void;
   checkSetup(): void;
+  /** The host's Save dialog (PanelHost.saveFile), for diagrams. */
+  saveFile(name: string, data: Uint8Array | string, mime: string): Promise<string | null>;
 }
 
 // ───────────────────────────── segments ─────────────────────────────
@@ -57,7 +59,7 @@ const TOOL_ICON: Record<ToolKind, IconName> = {
 const streaming = (c: Ctx, b: Block) => c.live && c.msg.blocks[c.msg.blocks.length - 1] === b;
 
 export function textSeg(ctx: Ctx): SegView {
-  const md = new MdView({ open: (href) => ctx.actions.open(href) });
+  const md = new MdView({ open: (href) => ctx.actions.open(href), saveFile: (n, d, m) => ctx.actions.saveFile(n, d, m) });
   return { kind: "text", el: md.el, update(s, c) { if (s.kind === "text") md.set(s.block.text, streaming(c, s.block)); } };
 }
 

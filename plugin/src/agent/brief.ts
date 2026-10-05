@@ -33,6 +33,13 @@ export function buildBrief(): string {
   ].join("\n");
 }
 
+/**
+ * How to draw, sent once with the brief (system prompt, or the first prompt), never per turn. Separate from the brief
+ * so the brief's cap stays about the core; capped at 90 words itself (test/ui/diagram.test.ts checks it names exactly
+ * the palette ui/diagram-svg.ts themes).
+ */
+export const DRAWING_GUIDE = "Diagrams: when a picture explains better than words (a pipeline, a 2x2, a causal graph), draw raw SVG in a ```svg block. One idea per drawing; viewBox about 360 wide, no width/height, no background rect, no style, script or images. Colour only with these names as fill/stroke values: ink (text, main lines), muted, line (borders), surface (box fill), accent, teal, violet, orange, red, green, and NAME-soft for area fills (accent-soft). Stroke 1.5, rx 8 boxes, labels 12px (11 small), text-anchor middle, arrowheads as a <marker>.";
+
 /** The first prompt of a bridge that cannot take the brief as a system prompt. */
 export function withBrief(brief: string, text: string): string {
   return `<${BRIEF_TAG}>\n${brief}\n</${BRIEF_TAG}>\n\n${text}`;

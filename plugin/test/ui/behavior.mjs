@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { launch, openPanel } from "./lib.mjs";
 import { XSS_CORPUS } from "./corpus.ts";
+import { HOSTILE } from "../../src/ui/fake-diagrams.ts";
 
 const browserName = process.argv.includes("--browser") ? process.argv[process.argv.indexOf("--browser") + 1] : "chromium";
 const browser = await launch(browserName);
@@ -568,6 +569,103 @@ await test("a 400-turn chat opens fast and a streamed token stays cheap; the jum
   await p.waitForFunction(() => { const f = window.__zmc.shadow.querySelector(".feed"); return f.scrollHeight - f.scrollTop - f.clientHeight < 60; });
 }, { params: { stress: 1, speed: 0 }, height: 760 });
 
+// ───────────── diagrams (```svg blocks) ─────────────
+
+const dgFill = (sel, prop) => (p) => p.evaluate(([s, pr]) => getComputedStyle(window.__zmc.shadow.querySelector(s))[pr], [sel, prop]);
+const barOpacity = (p, i = 0) => p.evaluate((k) => getComputedStyle(window.__zmc.shadow.querySelectorAll(".dg__bar")[k]).opacity, i);
+
+await test("diagrams render as themed figures; the toolbar shows on hover and focus; Source toggles; Save calls the host", async (p) => {
+  await send(p, "draw it");
+  await done(p);
+  assert.equal(await p.locator(".dg .dg__fig svg").count(), 3);
+  assert.equal(await p.locator(".dg--pending").count(), 0);
+  assert.deepEqual(await p.locator(".dg__fig svg").evaluateAll((a) => a.map((s) => [s.getAttribute("role"), s.getAttribute("aria-label")])), [
+    ["img", "From question to cited answer"], ["img", "Designs by control and external validity"], ["img", "Instrument, treatment, outcome"]]);
+  // palette names became the panel's colours: the accent box is drawn in the accent, nothing fell back to black
+  const accent = await p.evaluate(() => getComputedStyle(window.__zmc.shadow.querySelector(".dg")).getPropertyValue("--dg-accent").trim());
+  const rect = await p.evaluate(() => { const r = window.__zmc.shadow.querySelectorAll(".dg__fig svg")[0].querySelectorAll("rect")[1]; const c = getComputedStyle(r); return [c.stroke, c.fill]; });
+  const asRgb = await p.evaluate((c) => { const d = document.createElement("i"); d.style.color = c; document.body.append(d); const v = getComputedStyle(d).color; d.remove(); return v; }, accent);
+  assert.equal(rect[0], asRgb);
+  assert.notEqual(rect[1], "rgb(0, 0, 0)");
+  // the toolbar: hidden at rest, shown on hover, and on keyboard focus
+  await p.mouse.move(5, 5);
+  await p.waitForTimeout(250);
+  assert.equal(await barOpacity(p), "0");
+  await p.locator(".dg").first().hover();
+  await p.waitForTimeout(250);
+  assert.equal(await barOpacity(p), "1");
+  await p.mouse.move(5, 5);
+  await p.locator(".dg").nth(1).locator("button").first().focus();
+  await p.waitForTimeout(250);
+  assert.equal(await barOpacity(p, 1), "1");
+  // Source shows the raw SVG as a code block, and hides it again
+  const src = p.locator(".dg").first().locator('button[aria-label="Show the SVG source"]');
+  await p.locator(".dg").first().hover();
+  await src.click();
+  assert.match(await p.locator(".dg").first().locator(".dg__src .code").innerText(), /<svg viewBox="0 0 360 132"/);
+  assert.equal(await src.getAttribute("aria-pressed"), "true");
+  await src.click();
+  assert.equal(await p.locator(".dg__src").count(), 0);
+  // Save as PNG / SVG hand the host a real file
+  await p.locator(".dg").first().locator('button[aria-label="Save as PNG"]').click();
+  await p.locator(".dg").first().locator('button[aria-label="Save as SVG"]').click();
+  await p.waitForFunction(() => window.__zmc.sim.saved.length === 2);
+  const saved = await sim(p, () => window.__zmc.sim.saved);
+  assert.deepEqual(saved.map((x) => [x.name, x.mime]), [["from-question-to-cited-answer.png", "image/png"], ["from-question-to-cited-answer.svg", "image/svg+xml"]]);
+  assert.equal(saved[0].head, "89504e470d0a1a0a", "a PNG signature");
+  assert.ok(saved[0].size > 20000, `a large PNG (${saved[0].size} bytes)`);
+  assert.match(saved[1].head, /^<\?xml[^]*<svg [^>]*xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+  assert.ok(!saved[1].head.includes("var("));
+  await p.locator(".dg").first().locator('button[aria-label="Copy as an image"]').click(); // must not throw, whatever the clipboard allows
+  await p.waitForTimeout(300);
+});
+
+await test("a diagram streams as a quiet placeholder, never half drawn", async (p) => {
+  await sim(p, () => { window.__zmc.sim.speed = 4; });
+  await send(p, "draw it");
+  await p.waitForSelector(".dg--pending", { timeout: 8000 });
+  assert.match(await p.locator(".dg--pending").first().innerText(), /Drawing/);
+  // whatever is drawn while streaming is a whole diagram (its title is there)
+  for (const label of await p.locator(".dg__fig svg").evaluateAll((a) => a.map((s) => s.getAttribute("aria-label")))) assert.ok(label && label !== "Diagram", label);
+  await done(p);
+  assert.equal(await p.locator(".dg--pending").count(), 0);
+  assert.equal(await p.locator(".dg__fig svg").count(), 3);
+});
+
+await test("a hostile diagram is neutralised: no script runs, nothing external, only the drawing", async (p) => {
+  await sim(p, (t) => { window.__zmc.sim.nextAnswer = "```svg\n" + t + "\n```"; }, HOSTILE);
+  await send(p, "anything");
+  await done(p);
+  await p.locator(".dg__fig svg circle").click({ force: true });
+  await p.waitForTimeout(200);
+  assert.equal(await p.evaluate(() => window.__pwned), undefined);
+  const r = await p.evaluate(() => {
+    const svg = window.__zmc.shadow.querySelector(".dg__fig svg");
+    const els = [svg, ...svg.querySelectorAll("*")];
+    return { tags: [...new Set(els.map((e) => e.localName))].sort(), attrs: els.flatMap((e) => [...e.attributes].map((a) => `${a.name}=${a.value}`)) };
+  });
+  assert.deepEqual(r.tags, ["circle", "rect", "svg", "text"]);
+  for (const a of r.attrs) assert.ok(!/^on|^class=|javascript:|https?:|evil/i.test(a), a);
+});
+
+await test("an invalid diagram is shown as its code; dark theme recolours a drawing", async (p) => {
+  await sim(p, () => { window.__zmc.sim.nextAnswer = "```svg\n<div>not a drawing</div>\n```"; });
+  await send(p, "one");
+  await done(p);
+  assert.equal(await p.locator(".dg").count(), 0);
+  assert.equal(await p.locator(".code .code__lang").innerText(), "svg");
+  await send(p, "draw it");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".dg__fig svg").length === 3, null, { timeout: 8000 });
+  const stroke = dgFill(".dg__fig svg rect:nth-of-type(2)", "stroke");
+  const light = await stroke(p);
+  await sim(p, () => window.__zmc.sim.setTheme("dark"));
+  await p.waitForTimeout(100);
+  const dark = await stroke(p);
+  assert.notEqual(light, dark);
+  const want = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".dg"); const d = document.createElement("i"); d.style.color = getComputedStyle(e).getPropertyValue("--dg-accent"); e.append(d); const c = getComputedStyle(d).color; d.remove(); return c; });
+  assert.equal(dark, want, "the dark theme's accent");
+});
+
 // no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
 const OVERFLOW = () => {
   const root = window.__zmc.shadow;
@@ -596,6 +694,7 @@ for (const [name, params, run] of [
     const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".menu--effort"), b = r(".pick--effort"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
     assert.ok(g.off < 3 && g.inside, "the effort menu opens under its own button, inside the composer");
   }],
+  ["diagram", {}, async (p) => { await send(p, "draw it"); await done(p); await p.locator(".dg").first().hover(); await p.locator(".dg").first().locator('button[aria-label="Show the SVG source"]').click(); }],
   ["popup", {}, async (p) => { await p.locator('button[aria-label="Add a source"]').click(); await p.waitForSelector(".pop__i"); }],
   ["permission", { speed: 5 }, async (p) => { await send(p, "add a note"); await p.waitForSelector(".perm__opts"); }],
   ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],

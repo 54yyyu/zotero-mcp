@@ -6,8 +6,13 @@ import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, blockNodes, citeT
 import type { MdNode } from "./markdown.ts";
 import { copyText, env, flashCheck, h, icon } from "./dom.ts";
 
-/** `open` gets a link or citation chip that was clicked (http(s) or zotero: only ever reaches it). */
-interface MdHooks { open(href: string): void }
+/** `open` gets a link or citation chip that was clicked (http(s) or zotero: only ever reaches it); `saveFile` is the host's file picker (diagram export). */
+interface MdHooks {
+  open(href: string): void;
+  saveFile?(name: string, data: Uint8Array | string, mime: string): Promise<string | null>;
+}
+/** What a block's rendering needs besides its tree: is it the block still streaming in, and the hooks. */
+interface RenderCtx { live: boolean; hooks: MdHooks }
 
 // ───────────────────────────── math (lazy) ─────────────────────────────
 
@@ -47,17 +52,41 @@ async function renderMath(host: HTMLElement, tex: string, display: boolean): Pro
   }
 }
 
+// ───────────────────────────── diagrams (lazy) ─────────────────────────────
+// diagram.ts runs only once a ```svg block shows up (esbuild bundles the import as a lazily initialised module).
+
+type DiagramMod = typeof import("./diagram.ts");
+let diagramMod: DiagramMod | null = null;
+let diagramP: Promise<DiagramMod | null> | null = null;
+const loadDiagram = (): Promise<DiagramMod | null> => (diagramP ??= import("./diagram.ts").then((m) => (diagramMod = m)).catch(() => null));
+
+/** A ```svg block: "Drawing…" while it streams, the figure once its fence closes, the code if it is no drawing. */
+function diagram(src: string, closed: boolean, rc: RenderCtx): HTMLElement {
+  const card = h("div");
+  const asCode = () => { card.className = ""; card.removeAttribute("role"); card.replaceChildren(codeBlock(src, "svg")); };
+  const draw = (m: DiagramMod | null) => {
+    if (!m) return asCode();
+    if (!closed) return rc.live ? m.pending(card) : asCode(); // cut off mid-drawing: show what came, as code
+    if (!m.fill(card, src, { codeBlock, ...(rc.hooks.saveFile ? { saveFile: rc.hooks.saveFile } : {}) })) asCode();
+  };
+  if (diagramMod) draw(diagramMod);
+  else { card.className = "dg dg--pending"; void loadDiagram().then(draw); }
+  return card;
+}
+
 // ───────────────────────────── tree to DOM ─────────────────────────────
 
 function textOf(n: MdNode): string {
   return typeof n === "string" ? n : (n.kids ?? []).map(textOf).join("");
 }
 
-function toDom(node: MdNode): Node {
+function toDom(node: MdNode, rc: RenderCtx): Node {
   if (typeof node === "string") return env.doc.createTextNode(node);
   const { tag, attrs = {}, kids = [] } = node;
+  const sub = (n: MdNode) => toDom(n, rc);
   switch (tag) {
     case "codeblock": return codeBlock(textOf(node), attrs.lang);
+    case "diagram": return diagram(textOf(node), attrs.open !== "1", rc);
     case "math": {
       const display = attrs.display === "1";
       const tex = textOf(node);
@@ -70,18 +99,18 @@ function toDom(node: MdNode): Node {
       if (!href) return env.doc.createTextNode(textOf(node));
       return h("button.cite", { type: "button", dataset: { href }, title: citeTitle(href) }, h("span.cite__t", null, icon("item"), textOf(node)));
     }
-    case "tablewrap": return h("div.md-table", null, ...kids.map(toDom));
+    case "tablewrap": return h("div.md-table", null, ...kids.map(sub));
     case "img": {
       const src = safeImageSrc(attrs.src);
       return src ? h("img", { src, alt: attrs.alt ?? "" }) : env.doc.createTextNode(attrs.alt ?? "");
     }
     case "a": {
       const href = safeHref(attrs.href);
-      if (!href) return h("span", null, ...kids.map(toDom));
-      return h("a", { href, ...(attrs.title ? { title: attrs.title } : {}), rel: "noopener noreferrer" }, ...kids.map(toDom));
+      if (!href) return h("span", null, ...kids.map(sub));
+      return h("a", { href, ...(attrs.title ? { title: attrs.title } : {}), rel: "noopener noreferrer" }, ...kids.map(sub));
     }
   }
-  if (!ALLOWED_TAGS.has(tag)) return h("span", null, ...kids.map(toDom));
+  if (!ALLOWED_TAGS.has(tag)) return h("span", null, ...kids.map(sub));
   const out = h(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (!ALLOWED_ATTRS.has(k) || k === "href" || k === "src") continue;
@@ -92,7 +121,7 @@ function toDom(node: MdNode): Node {
     else if (k === "align") { if (v === "left" || v === "center" || v === "right") out.setAttribute("align", v); }
     else out.setAttribute(k, v);
   }
-  for (const kid of kids) out.appendChild(toDom(kid));
+  for (const kid of kids) out.appendChild(sub(kid));
   return out;
 }
 
@@ -174,9 +203,10 @@ export class MdView {
     // Insert new blocks before the tail (the capped remainder), after the kept ones.
     for (; i < n; i++) {
       const f = fresh[i] as { tok: Token; start: number; key: string };
-      const nodes = blockNodes(f.tok).map(toDom);
+      const live = streaming && i === n - 1;
+      const nodes = blockNodes(f.tok).map((nd) => toDom(nd, { live, hooks: this.hooks }));
       for (const nd of nodes) this.el.insertBefore(nd, this.tailEl);
-      old.push({ start: f.start, key: f.key, nodes, live: streaming && i === n - 1 });
+      old.push({ start: f.start, key: f.key, nodes, live });
     }
     this.blocks.push(...old);
     this.setTail(tail);

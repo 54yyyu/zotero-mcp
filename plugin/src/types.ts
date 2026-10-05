@@ -300,6 +300,8 @@ export interface PanelHost {
   prepareSession(cwd?: string): Promise<{ cwd: string; brief: string; env: Record<string, string> }>;
   /** A folder picker; null when cancelled. */
   chooseFolder(start?: string): Promise<string | null>;
+  /** Zotero's Save dialog for `data` (a diagram's PNG or SVG); writes the file and returns its path, null when cancelled. */
+  saveFile(suggestedName: string, data: Uint8Array | string, mime: string): Promise<string | null>;
   /** The shell command that continues a saved chat in a terminal, e.g. `cd "…" && claude --resume ID`; null when the backend has none. */
   resumeCommand(session: SavedSession): string | null;
   /** "light" | "dark", and a callback for when Zotero's theme changes. */

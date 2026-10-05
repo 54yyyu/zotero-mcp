@@ -107,6 +107,8 @@ const ICONS = {
   dot: [c(8, 8, 2, true)],
   external: ["M9 2.6h4.4V7M13.4 2.6 7.4 8.6", "M12 9.6v2.8a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h2.8"],
   shield: ["M8 1.8 13 3.6v4.1c0 3-2.1 5.2-5 6.5-2.9-1.3-5-3.5-5-6.5V3.6Z"],
+  code: ["M5.6 4.4 2 8l3.6 3.6M10.4 4.4 14 8l-3.6 3.6"],
+  download: ["M8 2.6v7.6M4.8 7.2 8 10.4l3.2-3.2", "M2.8 13.2h10.4"],
   list: ["M5.6 4h8M5.6 8h8M5.6 12h8", c(2.6, 4, 0.7, true), c(2.6, 8, 0.7, true), c(2.6, 12, 0.7, true)],
 } satisfies Record<string, Shape[]>;
 export type IconName = keyof typeof ICONS;

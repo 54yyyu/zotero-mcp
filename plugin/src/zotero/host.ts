@@ -1,6 +1,6 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
 import type { AgentRuntime, BackendId, ContextChip, PanelHost, PanelSettings, Spawner } from "../types.ts";
-import { buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
+import { DRAWING_GUIDE, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker } from "./context.ts";
 import { withDefaults } from "./defaults.ts";
 import { describeContext } from "./describe.ts";
@@ -108,6 +108,20 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       const result: number = await new Promise((r) => fp.open(r));
       return result === Ci.nsIFilePicker.returnOK ? fp.file.path : null;
     },
+    async saveFile(name, data, mime) {
+      const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
+      const ext = /\.([a-z0-9]{1,5})$/i.exec(name)?.[1]?.toLowerCase() ?? "";
+      fp.init(win.browsingContext, "Save", Ci.nsIFilePicker.modeSave);
+      fp.defaultString = name;
+      if (ext) { fp.appendFilter(`${ext.toUpperCase()} (${mime})`, `*.${ext}`); fp.defaultExtension = ext; }
+      const result: number = await new Promise((r) => fp.open(r));
+      if (result !== Ci.nsIFilePicker.returnOK && result !== Ci.nsIFilePicker.returnReplace) return null;
+      let path: string = fp.file.path;
+      if (ext && !path.toLowerCase().endsWith(`.${ext}`)) path += `.${ext}`;
+      if (typeof data === "string") await IOUtils.writeUTF8(path, data);
+      else await IOUtils.write(path, data);
+      return path;
+    },
     resumeCommand: (s) => resumeCommand(s.backend, s.cwd, s.agentSessionId),
 
     doctor,
@@ -120,7 +134,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       const s = settings();
       const key = s.auth[s.backend] === "api-key" ? await keychain.getApiKey(s.backend) : null;
       const varName = keychain.API_KEY_ENV[s.backend];
-      return { cwd, brief: buildBrief(), env: key && varName ? { [varName]: key } : {} };
+      return { cwd, brief: `${buildBrief()}\n\n${DRAWING_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
 
     theme: () => (dark.matches ? "dark" : "light"),

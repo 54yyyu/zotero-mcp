@@ -13,13 +13,13 @@ import type { Token, Tokens } from "marked";
 export type MdNode = string | MdEl;
 export interface MdEl { tag: string; attrs?: Record<string, string>; kids?: MdNode[] }
 
-/** Element tags the tree may contain. `codeblock`, `math`, `cite`, `tablewrap` are ours; the DOM builder knows them. */
+/** Element tags the tree may contain. `codeblock`, `math`, `cite`, `tablewrap`, `diagram` are ours; the DOM builder knows them. */
 export const ALLOWED_TAGS: ReadonlySet<string> = new Set([
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "code", "em", "strong", "del",
   "a", "br", "hr", "table", "thead", "tbody", "tr", "th", "td", "img", "span",
-  "codeblock", "math", "cite", "tablewrap",
+  "codeblock", "math", "cite", "tablewrap", "diagram",
 ]);
-export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(["href", "src", "alt", "title", "start", "align", "lang", "display", "class", "colspan"]);
+export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(["href", "src", "alt", "title", "start", "align", "lang", "display", "class", "colspan", "open"]);
 /** The only class names a tree may carry (set by this file, never from agent text). */
 export const ALLOWED_CLASSES: ReadonlySet<string> = new Set(["md-raw", "md-task", "md-task--on", "md-nobr"]);
 
@@ -303,6 +303,8 @@ export function blockNodes(t: Token, depth = 0): MdNode[] {
       const c = t as Tokens.Code;
       const lang = (c.lang ?? "").trim().split(/\s+/)[0] ?? "";
       if (lang.toLowerCase() === "math") return [el("math", [c.text.trim()], { display: "1" })];
+      // A ```svg block is a diagram (diagram.ts). `open`: its closing fence has not arrived yet (still streaming).
+      if (lang.toLowerCase() === "svg") return [el("diagram", [c.text], /\n {0,3}(?:`{3,}|~{3,})[ \t]*\s*$/.test(c.raw) ? undefined : { open: "1" })];
       return [el("codeblock", [c.text], /^[\w+#.-]{1,24}$/.test(lang) ? { lang } : {})];
     }
     case "mathBlock": return [el("math", [(t as unknown as MathToken).tex.trim()], { display: "1" })];
