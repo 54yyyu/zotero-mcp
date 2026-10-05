@@ -84,11 +84,11 @@ export class AcpClient {
     this.#onRequest = handler;
   }
 
-  /** initialize: protocolVersion 1, no fs, no terminal. */
+  /** initialize: protocolVersion 1, no fs, no terminal; compaction as `compaction_update` (claude and codex otherwise show it as a tool call). */
   async initialize(): Promise<InitializeResult> {
     const init = await this.request<InitializeResult>("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, session: { compaction: {} } },
     });
     if (init?.protocolVersion !== ACP_PROTOCOL_VERSION) {
       throw new Error(`agent negotiated ACP protocolVersion ${init?.protocolVersion}; we speak ${ACP_PROTOCOL_VERSION}`);

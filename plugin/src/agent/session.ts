@@ -265,6 +265,9 @@ export class AcpAgentSession implements AgentSession {
   #permCount = 0;
   #pending = new Map<string, PendingPermission>();
   #cost = 0;
+  /** The context window's fill from the last usage_update (claude-agent-acp, codex-acp and pi-acp all send used/size). */
+  #ctx: { used: number; size: number } | undefined;
+  #compactions = new Set<string>();
   #lastUpdateAt = Date.now();
   /** pi-acp's startup banner (from session/new `_meta.piAcp.startupInfo`): it may be echoed as a message chunk. */
   #banner: string | undefined;
@@ -504,7 +507,7 @@ export class AcpAgentSession implements AgentSession {
       throw e;
     }
     this.#cancelPending();
-    const usage = usageOf(result, this.#cost - turn.costBase);
+    const usage = usageOf(result, this.#cost - turn.costBase, this.#ctx);
     const stop = stopOf(result?.["stopReason"]);
     // pi, for one, reports a rejected request (a 400 for a reasoning level the model refuses) as a clean, empty end_turn.
     if (stop === "end_turn" && !turn.produced) {
@@ -598,6 +601,8 @@ export class AcpAgentSession implements AgentSession {
     if (kind === "usage_update") {
       const cost = asObj(update["cost"]);
       if (cost && typeof cost["amount"] === "number" && (cost["currency"] === undefined || cost["currency"] === "USD")) this.#cost = cost["amount"];
+      const used = update["used"], size = update["size"];
+      if (typeof used === "number" && typeof size === "number" && size > 0) this.#ctx = { used, size };
       return;
     }
 
@@ -610,7 +615,7 @@ export class AcpAgentSession implements AgentSession {
         if (!text) return;
         if (this.#banner !== undefined && text === this.#banner) return; // pi-acp's startup banner, late
         // pi-acp speaks for itself in message chunks (retries, compaction): a notice, not the model.
-        if (notify !== undefined) this.#emit({ t: "notice", level: "info", message: text.trim() });
+        if (notify !== undefined) this.#emit({ t: "notice", level: "info", message: text.trim(), ...(/compaction finished/i.test(text) ? { compacted: true } : {}) });
         else this.#emit({ t: "text", turn: turn.id, delta: text });
         return;
       }
@@ -630,6 +635,11 @@ export class AcpAgentSession implements AgentSession {
       case "tool_call":
       case "tool_call_update":
         this.#onTool(turn, update, kind);
+        return;
+      case "compaction_update": // claude and codex, because initialize says we take them (acp.ts)
+        if (update["status"] !== "completed" || this.#compactions.has(String(update["compactionId"]))) return; // claude repeats the terminal frame with token counts
+        this.#compactions.add(String(update["compactionId"]));
+        this.#emit({ t: "notice", level: "info", message: "Older parts of this chat were summarised to make room.", compacted: true });
         return;
       default:
         return; // user_message_chunk, available_commands_update, session_info_update, ...
@@ -657,12 +667,13 @@ export class AcpAgentSession implements AgentSession {
   }
 }
 
-function usageOf(result: Obj | undefined, cost: number): Usage | undefined {
+function usageOf(result: Obj | undefined, cost: number, ctx?: { used: number; size: number }): Usage | undefined {
   const u = asObj(result?.["usage"]);
   const usage: Usage = {};
   if (typeof u?.["inputTokens"] === "number") usage.inputTokens = u["inputTokens"];
   if (typeof u?.["outputTokens"] === "number") usage.outputTokens = u["outputTokens"];
   if (cost > 0) usage.costUsd = cost;
+  if (ctx) { usage.contextUsed = ctx.used; usage.contextSize = ctx.size; }
   return Object.keys(usage).length ? usage : undefined;
 }
 

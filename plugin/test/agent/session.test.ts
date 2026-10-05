@@ -65,9 +65,21 @@ describe("session basics", () => {
     const end = events.at(-1) as Extract<ChatEvent, { t: "turn_end" }>;
     assert.equal(end.t, "turn_end");
     assert.equal(end.stop, "end_turn");
-    assert.deepEqual(end.usage, { inputTokens: 10, outputTokens: 5 });
+    assert.deepEqual(end.usage, { inputTokens: 10, outputTokens: 5, contextUsed: 1001, contextSize: 200000 }, "usage_update's used/size ride on turn_end");
     const turn = (events[0] as Extract<ChatEvent, { t: "turn_start" }>).turn;
     assert.ok(events.every((e) => !("turn" in e) || e.turn === turn), "every event of a turn carries its id");
+  });
+
+  it("a compaction is one info notice marked compacted, and the context fill drops", async () => {
+    const { session } = await start();
+    const { events } = collect(session);
+    await session.prompt({ text: "SCENARIO:compact" });
+    const notices = ofType(events, "notice");
+    assert.equal(notices.length, 1, "the repeated terminal frame is not a second notice");
+    assert.equal(notices[0]!.compacted, true);
+    assert.equal(notices[0]!.level, "info");
+    const end = events.at(-1) as Extract<ChatEvent, { t: "turn_end" }>;
+    assert.ok(end.usage!.contextUsed! < 2000, `fill restarts after compaction: ${end.usage!.contextUsed}`);
   });
 
   it("does not emit what arrives outside a turn (startup banner)", async () => {

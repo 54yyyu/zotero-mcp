@@ -5,6 +5,7 @@ import type { BackendId, Catalog, MountPanel, PanelHost, PromptEntry, ZoteroRef 
 import { STYLES } from "./styles.ts";
 import { clear, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
 import { Composer } from "./composer.ts";
+import { contextFill } from "./economy.ts";
 import type { Choices } from "./composer.ts";
 import { Chat } from "./chat.ts";
 import { ChipState } from "./context.ts";
@@ -89,6 +90,7 @@ class Panel {
       loadChoices: async () => { await this.loadCatalog(true); return this.choices(); },
       onFirstFocus: () => { if (!this.chat.session && !this.chat.starting && !this.health.blockReason()) void this.chat.ensureSession().catch(() => {}); },
       checkSetup: () => this.show("status"),
+      onNewChat: () => void this.newChat(),
     });
 
     const btn = (label: string, ic: Parameters<typeof icon>[0], onclick: () => void) =>
@@ -321,6 +323,7 @@ class Panel {
     if (this.emptyShown !== empty) { this.emptyShown = empty; this.paintEmpty(); }
     this.feed.update(c.tr, !c.busy);
     this.composer.setBusy(c.busy);
+    this.composer.setContextFill(contextFill(c.tr));
     this.feed.setPending(c.sending && c.tr.running === null ? (c.starting ? `Starting ${BACKEND_LABEL[this.host.getSettings().backend]}` : "Sending") : null);
   }
 

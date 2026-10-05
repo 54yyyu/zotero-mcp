@@ -1,7 +1,7 @@
 // The composer: context chips, the textarea, `@` and `+` search, the pickers, Send / Stop.
 // It owns the draft and the popups; the controller (index.ts) owns what a send does.
 import type { ContextChip, ItemHit, ZoteroRef } from "../types.ts";
-import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids } from "./dom.ts";
+import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids, svg } from "./dom.ts";
 import { SearchPopup } from "./search.ts";
 import { Pickers } from "./pickers.ts";
 import type { Choices, PickKind } from "./pickers.ts";
@@ -25,7 +25,13 @@ export interface ComposerOpts {
   /** The composer got focus for the first time: a good moment to warm the agent up. */
   onFirstFocus(): void;
   checkSetup(): void;
+  /** The long-chat suggestion's button: a new chat that carries nothing over. */
+  onNewChat(): void;
 }
+
+/** The meter shows from this fill on; the suggestion to start over from FULL_AT. */
+const SHOW_AT = 40;
+const FULL_AT = 85;
 
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
@@ -44,6 +50,11 @@ export class Composer {
   private blocked: string | null = null;
   private atStart = -1;
   private warmed = false;
+  private meter = h("span.cmeter", { hidden: true, role: "img" });
+  private meterArc = svg("circle", { cx: "8", cy: "8", r: "6", pathLength: "100", class: "cmeter__arc" });
+  private meterPct = h("span.cmeter__pct");
+  private longNote: HTMLElement;
+  private noteDismissed = false;
 
   private opts: ComposerOpts;
 
@@ -63,9 +74,15 @@ export class Composer {
     this.pickers = new Pickers(this.el, { load: () => opts.loadChoices(), pick: (k, id) => opts.onPick(k, id), checkSetup: () => opts.checkSetup() });
     this.sendBtn = h("button.send", { type: "button", "aria-label": "Send", title: "Send (Enter)", onclick: () => this.send() }, icon("send")) as HTMLButtonElement;
 
+    append(this.meter, [svg("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, svg("circle", { cx: "8", cy: "8", r: "6", class: "cmeter__track" }), this.meterArc), this.meterPct]);
+    this.longNote = h("div.cnote", { hidden: true, role: "status" },
+      h("span.cnote__t", null, "This chat is getting long. A new chat starts fresh and carries nothing over."),
+      h("button.lnk", { type: "button", onclick: () => opts.onNewChat() }, icon("plus"), "New chat"),
+      h("button.chip__btn", { type: "button", "aria-label": "Dismiss", title: "Dismiss", onclick: () => { this.noteDismissed = true; this.longNote.hidden = true; } }, icon("close")));
+
     const b = this.pickers.buttons;
-    append(this.el, [this.pop.el, this.chipsEl, this.ta,
-      h("div.ctools", null, this.plusBtn, b.model, b.effort, h("span.ctools__fill"), b.mode, this.sendBtn)]);
+    append(this.el, [this.pop.el, this.longNote, this.chipsEl, this.ta,
+      h("div.ctools", null, this.plusBtn, b.model, b.effort, h("span.ctools__fill"), this.meter, b.mode, this.sendBtn)]);
     this.wireDrop();
     env.doc.addEventListener("pointerdown", this.outside, true);
     this.syncSend();
@@ -104,6 +121,21 @@ export class Composer {
   focus(): void { this.ta.focus(); }
   setText(t: string): void { this.ta.value = t; this.autosize(); this.syncSend(); }
   clearDraft(): void { this.setText(""); }
+
+  /** How full the agent's context is (null: the backend does not say). Quiet below SHOW_AT, a suggestion from FULL_AT. */
+  setContextFill(fill: { pct: number } | null): void {
+    const pct = fill?.pct ?? 0;
+    this.meter.hidden = pct < SHOW_AT;
+    if (pct < FULL_AT) this.noteDismissed = false;
+    this.longNote.hidden = pct < FULL_AT || this.noteDismissed;
+    if (this.meter.hidden) return;
+    const tip = `Context: ${pct}% full. Older parts are summarised automatically.`;
+    this.meter.title = tip;
+    this.meter.setAttribute("aria-label", tip);
+    this.meter.classList.toggle("cmeter--full", pct >= FULL_AT);
+    this.meterArc.setAttribute("stroke-dasharray", `${pct} 100`);
+    this.meterPct.textContent = `${pct}%`;
+  }
 
   setChips(chips: ContextChip[]): void {
     this.chipsEl.hidden = chips.length === 0;

@@ -4,6 +4,7 @@
 // control heights (24 28 32 36), icons (14 16). px, not rem: the host window's root font size must not
 // scale it. Container queries, not media queries: the panel's width is not the window's.
 import { CHAT_STYLES } from "./styles-chat.ts";
+import { CONTEXT_STYLES } from "./styles-context.ts";
 import { WELCOME_STYLES } from "./styles-welcome.ts";
 
 const BASE = `
@@ -341,4 +342,4 @@ const BASE = `
 .zmc .set__saved span:empty { display: none; }
 `;
 
-export const STYLES = BASE + CHAT_STYLES + WELCOME_STYLES;
+export const STYLES = BASE + CHAT_STYLES + WELCOME_STYLES + CONTEXT_STYLES;

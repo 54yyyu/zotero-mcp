@@ -122,6 +122,39 @@ await test("selected area card: thumbnail, go to annotation, remove", async (p) 
   assert.equal(await p.locator(".area").count(), 0);
 });
 
+await test("an unchanged area and selection go once; later turns only name them", async (p) => {
+  await sim(p, () => window.__zmc.sim.setContext("area"));
+  for (const q of ["first", "second"]) { await send(p, q); await done(p); await p.waitForFunction((k) => window.__zmc.sim.prompts.length === k, q === "first" ? 1 : 2); }
+  const [a, b] = await sim(p, () => window.__zmc.sim.prompts.map((x) => ({ text: x.text, images: x.images?.length ?? 0 })));
+  assert.equal(a.images, 1);
+  assert.equal(b.images, 0, "the same picture is not sent twice");
+  assert.match(b.text, /Still in focus, unchanged[^\n]*selected area p\.19 \(annotation ANNAREA1\)/);
+});
+
+await test("context meter: silent without numbers, quiet NN% from 40%, a new-chat nudge from 85%", async (p) => {
+  await send(p, "hello");
+  await done(p);
+  assert.equal(await p.locator(".cmeter").isVisible(), false, "the backend reported nothing: no meter");
+  await sim(p, () => { window.__zmc.sim.contextUsage = { used: 30000, size: 200000 }; });
+  await send(p, "again"); await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
+  assert.equal(await p.locator(".cmeter").isVisible(), false, "15% stays quiet");
+  await sim(p, () => { window.__zmc.sim.contextUsage = { used: 124000, size: 200000 }; });
+  await send(p, "more"); await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 3);
+  assert.equal(await p.locator(".cmeter__pct").innerText(), "62%");
+  assert.equal(await p.locator(".cmeter").getAttribute("title"), "Context: 62% full. Older parts are summarised automatically.");
+  assert.equal(await p.locator(".cnote").isVisible(), false);
+  await sim(p, () => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; });
+  await send(p, "even more"); await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 4);
+  assert.ok(await p.locator(".cnote").isVisible(), "88%: the suggestion shows");
+  await p.locator(".cnote").getByRole("button", { name: "Dismiss" }).click();
+  assert.equal(await p.locator(".cnote").isVisible(), false, "dismissed");
+  await p.locator(".cnote").evaluate((e) => { e.hidden = false; }); // bring it back to test its button
+  await p.locator(".cnote").getByRole("button", { name: "New chat" }).click();
+  await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".msg--assistant"));
+  assert.equal(await p.locator(".cmeter").isVisible(), false, "a new chat starts empty");
+  assert.equal(await p.locator(".cnote").isVisible(), false);
+});
+
 await test("permission: answering resolves the card and the saved log replays the same", async (p) => {
   await sim(p, () => { window.__zmc.sim.speed = 5; });
   await send(p, "add a note");
@@ -695,6 +728,7 @@ for (const [name, params, run] of [
     assert.ok(g.off < 3 && g.inside, "the effort menu opens under its own button, inside the composer");
   }],
   ["diagram", {}, async (p) => { await send(p, "draw it"); await done(p); await p.locator(".dg").first().hover(); await p.locator(".dg").first().locator('button[aria-label="Show the SVG source"]').click(); }],
+  ["meter", {}, async (p) => { await p.evaluate(() => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; }); await send(p, "hello"); await done(p); await p.waitForSelector(".cnote:not([hidden])"); }],
   ["popup", {}, async (p) => { await p.locator('button[aria-label="Add a source"]').click(); await p.waitForSelector(".pop__i"); }],
   ["permission", { speed: 5 }, async (p) => { await send(p, "add a note"); await p.waitForSelector(".perm__opts"); }],
   ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],

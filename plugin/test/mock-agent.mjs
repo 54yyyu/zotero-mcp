@@ -192,7 +192,11 @@ async function prompt(id, params) {
   const text = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n");
   const images = blocks.filter((b) => b.type === "image").length;
   const chunk = (t) => update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: t } });
-  const end = (stopReason = "end_turn") => send({ id, result: { stopReason, usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } });
+  // Context fill, as all three real bridges report it before the prompt resolves: a usage_update with used/size.
+  const end = (stopReason = "end_turn") => {
+    if (s) { s.used = (s.used ?? 0) + 1000 + Math.ceil(text.length / 4); update(sid, { sessionUpdate: "usage_update", used: s.used, size: 200000 }); }
+    send({ id, result: { stopReason, usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } });
+  };
   cancelled.delete(sid);
   // MOCK_BANNER_IN_TURN=1 (pi): the startup banner shows up again inside the first turn, as a straggler.
   if (process.env.MOCK_BANNER_IN_TURN && s && !s.bannered) {
@@ -258,12 +262,33 @@ async function prompt(id, params) {
     return end();
   }
   if (text.includes("SCENARIO:refuse")) return end("refusal");
+  if (text.includes("SCENARIO:compact")) {
+    // claude-agent-acp 0.85.1 with the compaction capability: in_progress, completed, then completed again with token counts.
+    update(sid, { sessionUpdate: "compaction_update", compactionId: "c1", status: "in_progress" });
+    update(sid, { sessionUpdate: "compaction_update", compactionId: "c1", status: "completed" });
+    update(sid, { sessionUpdate: "compaction_update", compactionId: "c1", status: "completed" });
+    if (s) s.used = 0;
+    chunk("compacted");
+    return end();
+  }
   if (text.includes("SCENARIO:maxtok")) {
     chunk("cut off");
     return end("max_tokens");
   }
   if (text.includes("SCENARIO:brief")) {
     chunk(`brief=${s?.brief ?? "none"}|prompt=${text}`);
+    return end();
+  }
+  if (text.includes("SCENARIO:maxtok")) {
+    chunk("cut off");
+    return end("max_tokens");
+  }
+  if (text.includes("SCENARIO:brief")) {
+    chunk(`brief=${s?.brief ?? "none"}|prompt=${text}`);
+    return end();
+  }
+  if (text.includes("SCENARIO:echo")) { // what arrived, for the context-economy checks
+    chunk(JSON.stringify({ prompt: text, images, brief: s?.brief ?? null }));
     return end();
   }
   if (text.includes("SCENARIO:whoami")) {

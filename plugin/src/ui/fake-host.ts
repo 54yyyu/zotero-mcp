@@ -46,6 +46,8 @@ interface Sim {
   data: { cleared: number; revealed: number; resets: number };
   /** Say exactly this as the next answer (no tools): for the XSS corpus and layout tests. */
   nextAnswer: string | null;
+  /** What the next turns report as context-window fill (ACP usage_update used/size); null = the backend reports nothing. */
+  contextUsage: { used: number; size: number } | null;
   /** What saveFile() was handed (diagram export), and what it answers next (null = the user cancelled). */
   saved: { name: string; mime: string; size: number; head: string }[];
   saveTo: string | null;
@@ -184,7 +186,8 @@ class FakeSession implements AgentSession {
       const text = this.sim.nextAnswer;
       this.sim.nextAnswer = null;
       await this.stream(turn, "text", text);
-      this.emit({ t: "turn_end", turn, stop: this.cancelled ? "cancelled" : "end_turn" });
+      const u = this.sim.contextUsage;
+      this.emit({ t: "turn_end", turn, stop: this.cancelled ? "cancelled" : "end_turn", ...(u ? { usage: { contextUsed: u.used, contextSize: u.size } } : {}) });
       return;
     }
     const long = q.includes("long");
@@ -230,7 +233,7 @@ class FakeSession implements AgentSession {
     const body = long ? `${SAMPLE_ANSWER}\n\n${LONG_PARAS}` : /\b(draw|diagram)/.test(q) ? DIAGRAM_ANSWER : q.includes("math") ? "The estimator is\n\n$$\\hat{\\tau} = \\frac{1}{n}\\sum_{i=1}^{n}\\left(\\frac{T_i Y_i}{e(X_i)} - \\frac{(1-T_i)Y_i}{1-e(X_i)}\\right)$$\n\nwith propensity $e(X_i) = P(T_i = 1 \\mid X_i)$. An unclosed $$ stays text while it streams, and \\$5 is just five dollars." : SAMPLE_ANSWER;
     await this.stream(turn, "text", (this.cancelled ? "" : body));
     if (this.cancelled) return this.end(turn, "cancelled");
-    this.emit({ t: "turn_end", turn, stop: "end_turn", usage: { inputTokens: 12840, outputTokens: 912, costUsd: 0.031 } });
+    this.emit({ t: "turn_end", turn, stop: "end_turn", usage: { inputTokens: 12840, outputTokens: 912, costUsd: 0.031, ...(this.sim.contextUsage ? { contextUsed: this.sim.contextUsage.used, contextSize: this.sim.contextUsage.size } : {}) } });
   }
 
   private end(turn: string, stop: "cancelled" | "error") { this.emit({ t: "turn_end", turn, stop }); }
@@ -253,7 +256,7 @@ export class FakeHost implements PanelHost {
     this._theme = o.theme ?? "light";
     this.settings.welcomed = !o.welcome;
     const sim: Sim = {
-      opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, saved: [], saveTo: "/Users/you/Downloads", speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
+      opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, contextUsage: null, saved: [], saveTo: "/Users/you/Downloads", speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
       statuses: [
         { id: "claude-code", label: "Claude Code", available: true, account: "Claude Max" },
         { id: "codex", label: "Codex", available: false, reason: "codex is not installed" },

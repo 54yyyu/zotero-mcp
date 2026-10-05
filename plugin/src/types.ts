@@ -61,6 +61,9 @@ export interface Usage {
   outputTokens?: number;
   /** USD, when the backend can price it. */
   costUsd?: number;
+  /** How full the agent's context window is (ACP `usage_update` used / size), when the backend says. */
+  contextUsed?: number;
+  contextSize?: number;
 }
 
 /**
@@ -77,7 +80,7 @@ export type ChatEvent =
   | { t: "plan"; turn: string; entries: { content: string; status: "pending" | "in_progress" | "completed" }[] }
   | { t: "permission"; turn: string; id: string; title: string; kind: ToolKind; input?: unknown; options: PermissionOption[]; resolved?: string; name?: string }
   | { t: "turn_end"; turn: string; stop: "end_turn" | "cancelled" | "max_tokens" | "refusal" | "error"; usage?: Usage }
-  | { t: "notice"; level: "info" | "warn" | "error"; message: string; hint?: string };
+  | { t: "notice"; level: "info" | "warn" | "error"; message: string; hint?: string; /** The agent summarised older turns: what was sent before may be gone. */ compacted?: boolean };
 
 // ───────────────────────────── agent/ ─────────────────────────────
 
