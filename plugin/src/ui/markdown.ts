@@ -85,9 +85,9 @@ export function parseZoteroUri(uri: string): ZoteroLink | null {
 }
 
 /** A citation chip's tooltip: the quoted words when the link carries them, else where it points. */
-export function citeTitle(href: string): string {
+export function citeTitle(href: string, label = ""): string {
   const q = parseZoteroUri(href)?.quote;
-  return q ? `“${q}”` : href.replace(/^zotero:\/\//, "");
+  return q ? `“${q}”` : label.length > LONG_CITE ? label : href.replace(/^zotero:\/\//, "");
 }
 
 /** The link without its `quote`: the sources fold opens the page, it lists several. */
@@ -323,6 +323,26 @@ const el = (tag: string, kids?: MdNode[], attrs?: Record<string, string>): MdEl 
 
 const plain = (nodes: MdNode[]): string => nodes.map((n) => (typeof n === "string" ? n : plain(n.kids ?? []))).join("");
 
+/** A chip label that is a sentence, not a name and a page: it is shown shortened, and its quotation marks (the model's habit) go. */
+const LONG_CITE = 28;
+const longCite = (n: MdNode | undefined): boolean => typeof n !== "string" && n?.tag === "cite" && plain(n.kids ?? []).length > LONG_CITE;
+
+/** `"[a whole quoted sentence](zotero://…)"`: the quotation marks around such a chip are noise, the chip is the quotation. */
+function unquoteCites(nodes: MdNode[]): MdNode[] {
+  const out = [...nodes];
+  for (let i = 1; i < out.length - 1; i++) {
+    const prev = out[i - 1];
+    const next = out[i + 1];
+    if (!longCite(out[i]) || typeof prev !== "string" || typeof next !== "string") continue;
+    const open = /["“「]\s*$/.exec(prev);
+    const close = /^\s*["”」]/.exec(next);
+    if (!open || !close) continue;
+    out[i - 1] = prev.slice(0, open.index);
+    out[i + 1] = next.slice(close[0].length);
+  }
+  return out;
+}
+
 /** Punctuation right after a citation chip stays glued to it, so a lone "." never starts a line. */
 function glueCites(nodes: MdNode[]): MdNode[] {
   const out: MdNode[] = [];
@@ -340,7 +360,7 @@ function glueCites(nodes: MdNode[]): MdNode[] {
 }
 
 function inline(tokens: Token[] | undefined, depth: number): MdNode[] {
-  return glueCites(inlineRaw(tokens, depth));
+  return glueCites(unquoteCites(inlineRaw(tokens, depth)));
 }
 
 function inlineRaw(tokens: Token[] | undefined, depth: number): MdNode[] {

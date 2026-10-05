@@ -132,7 +132,8 @@ function toDom(node: MdNode, rc: RenderCtx): Node {
     case "cite": {
       const href = safeHref(attrs.href);
       if (!href) return env.doc.createTextNode(textOf(node));
-      return h("button.cite", { type: "button", dataset: { href }, title: citeTitle(href) }, h("span.cite__t", null, icon("item"), textOf(node)));
+      const label = textOf(node);
+      return h("button.cite", { type: "button", dataset: { href }, title: citeTitle(href, label) }, h("span.cite__t", null, icon("item"), h("span.cite__l", null, label)));
     }
     case "tablewrap": return h("div.md-table", null, ...kids.map(sub));
     case "img": {

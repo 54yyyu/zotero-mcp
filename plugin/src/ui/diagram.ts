@@ -31,9 +31,9 @@ const CSS = `
   --dg-ink: var(--ink); --dg-muted: var(--ink-muted); --dg-line: color-mix(in srgb, var(--ink) 30%, transparent);
   --dg-surface: color-mix(in srgb, var(--ink) 5%, transparent);
   ${hues(HUE_LIGHT)} ${soft(SOFT_LIGHT)}
-  position: relative; min-width: 0; padding: var(--s1) var(--s2) var(--s3); border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper-raised);
+  position: relative; min-width: 0; padding: var(--s1) var(--s2) var(--s3); border: 1px solid var(--rule); border-radius: var(--r2); background: transparent;
 }
-.zmc[data-theme="dark"] .dg { ${hues(HUE_DARK)} ${soft(SOFT_DARK)} --dg-surface: color-mix(in srgb, var(--ink) 7%, transparent); background: color-mix(in srgb, var(--ink) 3%, var(--paper)); }
+.zmc[data-theme="dark"] .dg { ${hues(HUE_DARK)} ${soft(SOFT_DARK)} --dg-surface: color-mix(in srgb, var(--ink) 7%, transparent); }
 /* the user's own accent only when they chose one (appearance sets data-accent="custom"); else the calm blue above */
 .zmc[data-accent="custom"] .dg, .zmc[data-accent="custom"][data-theme="dark"] .dg { --dg-accent: var(--accent); }
 .zmc .dg__head { display: flex; align-items: center; gap: var(--s2); height: 28px; margin-bottom: var(--s1); }

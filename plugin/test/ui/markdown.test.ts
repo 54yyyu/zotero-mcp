@@ -172,3 +172,19 @@ test("sources: one row per item, pages once, the fold's link without the quote",
   assert.equal(collectSources(["[a](zotero://open-pdf/library/items/ABCD1234?quote=x%20y&page=9)"])[0]?.href, "zotero://open-pdf/library/items/ABCD1234?page=9");
   assert.equal(collectSources(["[a](zotero://open-pdf/library/items/ABCD1234?quote=x%20y)"])[0]?.href, "zotero://open-pdf/library/items/ABCD1234");
 });
+
+const sentenceLink = (label: string, q = "") => `[${label}](zotero://open-pdf/library/items/ABCD1234?page=4${q})`;
+
+test("a sentence-like citation chip loses the quotation marks the model puts around it; a short label keeps its own", () => {
+  const long = JSON.stringify(mdToTree(`In other words, "${sentenceLink("IDH-A tumors are associated with more microglia")}". Next.`));
+  assert.ok(!long.includes('\\"'), long);
+  assert.match(long, /In other words, /);
+  const short = JSON.stringify(mdToTree(`He said "${sentenceLink("p.4")}" once.`));
+  assert.ok(short.includes('\\"'), short);
+});
+
+test("the tooltip of a long chip label is the label; with a quote it is the quote", () => {
+  const long = "IDH-A tumors are associated with more microglia/macrophages";
+  assert.equal(citeTitle("zotero://open-pdf/library/items/ABCD1234?page=4", long), long);
+  assert.equal(citeTitle("zotero://open-pdf/library/items/ABCD1234?page=4&quote=white%20names", long), "“white names”");
+});

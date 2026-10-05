@@ -155,8 +155,9 @@ export const CHAT_STYLES = `
 .zmc .md-nobr { white-space: nowrap; }
 .zmc .md-nobr .cite { white-space: normal; }
 .zmc .cite { display: inline; margin: 0 1px; padding: 0; border: 0; background: none; font-size: var(--fs-2); line-height: 1; max-width: 100%; }
-.zmc .cite__t { display: inline-flex; align-items: center; gap: var(--s1); padding: 2px var(--s2) 2px var(--s1); border-radius: var(--pill); background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink-muted); vertical-align: 0.1em; transition: background var(--ease), color var(--ease); }
-.zmc .cite__t svg { width: 12px; height: 12px; color: var(--ink-faint); }
+.zmc .cite__t { max-width: 100%; display: inline-flex; align-items: center; gap: var(--s1); padding: 2px var(--s2) 2px var(--s1); border-radius: var(--pill); background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink-muted); vertical-align: 0.1em; transition: background var(--ease), color var(--ease); }
+.zmc .cite__t svg { flex: none; width: 12px; height: 12px; color: var(--ink-faint); }
+.zmc .cite__l { min-width: 0; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zmc .cite:hover .cite__t { background: color-mix(in srgb, var(--link) 14%, transparent); color: var(--link); }
 .zmc .cite:focus-visible { outline-offset: 1px; border-radius: var(--pill); }
 `;
