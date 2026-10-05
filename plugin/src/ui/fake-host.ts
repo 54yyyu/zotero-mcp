@@ -1,6 +1,7 @@
 // A PanelHost with a scripted agent, so every state of the panel can be screenshotted and tested without
 // Zotero. The preview page and the Playwright scripts drive it through `host.sim`.
 import { CATALOGS, defaultSettings } from "./fake-catalog.ts";
+import { repeatLine } from "./economy.ts";
 import { DIAGRAM_ANSWER } from "./fake-diagrams.ts";
 import type {
   AgentRuntime, AgentSession, BackendId, BackendStatus, ChatEvent, ContextChip, DoctorCheck, ItemHit, PanelHost,
@@ -305,10 +306,11 @@ export class FakeHost implements PanelHost {
   }
   async open(target: string | ZoteroRef) { this.sim.opened.push(target); }
   describeContext(chips: ContextChip[]) {
-    const lines = chips.map((c) => `- ${c.kind}: ${c.label}${c.ref.itemKey ? ` (key ${c.ref.itemKey})` : ""}${c.text ? `\n  text: ${c.text}` : ""}`);
+    const again = repeatLine(chips);
+    const lines = chips.filter((c) => !c.repeat).map((c) => `- ${c.kind}: ${c.label}${c.ref.itemKey ? ` (key ${c.ref.itemKey})` : ""}${c.text ? `\n  text: ${c.text}` : ""}`);
     return {
-      text: chips.length ? `<zotero-context>\n${lines.join("\n")}\n</zotero-context>` : "",
-      images: chips.flatMap((c) => (c.image ? [{ mime: c.image.mime, data: c.image.data }] : [])),
+      text: chips.length ? `<zotero-context>\n${[...lines, ...(again ? [again] : [])].join("\n")}\n</zotero-context>` : "",
+      images: chips.flatMap((c) => (c.image && !c.repeat ? [{ mime: c.image.mime, data: c.image.data }] : [])),
     };
   }
 

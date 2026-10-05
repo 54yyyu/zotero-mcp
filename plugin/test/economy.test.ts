@@ -1,0 +1,98 @@
+// Context economy: a chip goes to the agent in full once per session and again only when it changes.
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import type { ContextChip } from "../src/types.ts";
+import { chipHash, estimateTokens, imageTokens, planContext, repeatLine } from "../src/ui/economy.ts";
+import { Chat } from "../src/ui/chat.ts";
+import { FakeHost } from "../src/ui/fake-host.ts";
+import { env } from "../src/ui/dom.ts";
+
+env.win = globalThis as typeof env.win; // the transcript saver's timers
+
+/** A PNG header of the given size (enough for imageTokens), padded to a realistic payload. */
+function png(w: number, h: number, bytes = 60_000): string {
+  const b = Buffer.alloc(bytes);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(b, 0);
+  b.write("IHDR", 12, "latin1");
+  b.writeUInt32BE(w, 16);
+  b.writeUInt32BE(h, 20);
+  return b.toString("base64");
+}
+
+const reader = (pageIndex: number): ContextChip => ({ id: "reader:ATT1", kind: "reader", label: "Bell 2017", auto: true, pinned: false, ref: { libraryID: 1, itemKey: "ITEM1", attachmentKey: "ATT1", pageIndex, pageLabel: String(pageIndex + 1) } });
+const SELECTION: ContextChip = { id: "selection:ATT1", kind: "selection", label: "Text Selection", auto: true, pinned: false, ref: { libraryID: 1, attachmentKey: "ATT1", pageIndex: 2, pageLabel: "3" }, text: "Assigning a professional destination would increase pay. ".repeat(26).slice(0, 1500) };
+const AREA: ContextChip = { id: "area:ANN1", kind: "area", label: "Selected Area · p.3", auto: true, pinned: false, ref: { libraryID: 1, attachmentKey: "ATT1", annotationKey: "ANN1", pageIndex: 2, pageLabel: "3" }, image: { mime: "image/png", data: png(900, 600) } };
+
+describe("planContext", () => {
+  it("sends a chip in full once, then marks it repeat until it changes", () => {
+    const sent = new Map<string, string>();
+    assert.deepEqual(planContext([reader(2), SELECTION], sent).map((c) => !!c.repeat), [false, false]);
+    assert.deepEqual(planContext([reader(2), SELECTION], sent).map((c) => !!c.repeat), [true, true]);
+    assert.deepEqual(planContext([reader(3), SELECTION], sent).map((c) => !!c.repeat), [false, true], "a page turn refreshes the where-am-I line");
+    const edited = { ...SELECTION, text: "another passage" };
+    assert.equal(planContext([edited], sent)[0]!.repeat, undefined, "a different selection goes in full");
+  });
+
+  it("the fingerprint covers what the agent reads: page, text, image", () => {
+    assert.equal(chipHash(reader(1)), chipHash(reader(1)));
+    assert.notEqual(chipHash(reader(1)), chipHash(reader(2)));
+    assert.notEqual(chipHash(AREA), chipHash({ ...AREA, image: { mime: "image/png", data: png(900, 601) } }));
+    assert.notEqual(chipHash(AREA), chipHash({ ...AREA, image: undefined }), "an area whose PNG arrives later is sent again with it");
+  });
+
+  it("the reminder names each repeated chip briefly, so 'this selection' still resolves", () => {
+    const line = repeatLine(planContext([reader(2), SELECTION, AREA], new Map()).map((c) => ({ ...c, repeat: true })));
+    assert.match(line, /reading Bell 2017 p\.3/);
+    assert.match(line, /selected text p\.3 "Assigning a professional destination would increase pay\. Assigning…"/);
+    assert.match(line, /selected area p\.3 \(annotation ANN1\)/);
+    assert.ok(line.length < 260, `short: ${line.length} chars`);
+    assert.equal(repeatLine([reader(2)]), "", "nothing repeated, no line");
+  });
+});
+
+describe("token estimate", () => {
+  it("text at 4 characters a token, images by their pixel size", () => {
+    assert.equal(imageTokens(png(900, 600)), 720);
+    assert.equal(imageTokens(png(3136, 1568)), Math.ceil((1568 * 784) / 750), "fitted to a 1568 px long edge");
+    assert.equal(imageTokens("not a png"), 1600, "unknown: the cap");
+    assert.equal(estimateTokens({ text: "x".repeat(400), images: [{ mime: "image/png", data: png(900, 600) }] }), 820);
+  });
+});
+
+describe("a chat sends unchanged context once", () => {
+  const deps = (host: FakeHost) => ({ host, onChange() {}, blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {} });
+
+  it("10 turns with a persistent area image and selection: the image goes once, the saving is measured", async (t) => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const chat = new Chat(deps(host));
+    const chips = (turn: number) => [reader(turn < 5 ? 2 : 3), SELECTION, AREA]; // the user turns the page once, at turn 5
+    let full = 0;
+    for (let i = 0; i < 10; i++) {
+      await chat.send(`question ${i}`, chips(i));
+      const d = host.describeContext(chips(i));
+      full += estimateTokens({ text: `${d.text}\n\nquestion ${i}`, images: d.images });
+    }
+    const prompts = host.sim.prompts;
+    assert.equal(prompts.length, 10);
+    assert.equal(prompts.filter((p) => p.images?.length).length, 1, "the unchanged image is never sent again");
+    assert.equal(prompts.filter((p) => p.text.includes(SELECTION.text!)).length, 1, "the selection text goes once");
+    assert.ok(prompts.slice(1).every((p) => /Still in focus, unchanged/.test(p.text)), "later turns carry the reminder");
+    assert.match(prompts[5]!.text, /- reader: Bell 2017/, "the page turn re-sends the reader line");
+    const delta = prompts.reduce((n, p) => n + estimateTokens(p), 0);
+    t.diagnostic(`10 turns: ${full} tokens resending everything, ${delta} with delta context (${Math.round((100 * delta) / full)}%)`);
+    assert.ok(delta < full * 0.3, `delta ${delta} vs full ${full}`);
+  });
+
+  it("a new session, a resumed chat or a compaction sends everything in full again", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const chat = new Chat(deps(host));
+    const used = [reader(2), SELECTION, AREA];
+    await chat.send("one", used);
+    await chat.send("two", used);
+    chat.dispatch({ t: "notice", level: "info", message: "Older parts of this chat were summarised to make room.", compacted: true });
+    await chat.send("three", used);
+    await chat.closeSession(); // the bridge died: the next send starts (or resumes) a session
+    await chat.send("four", used);
+    assert.deepEqual(host.sim.prompts.map((p) => p.images?.length ?? 0), [1, 0, 1, 1]);
+  });
+});

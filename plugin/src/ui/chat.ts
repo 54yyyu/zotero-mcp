@@ -3,6 +3,7 @@
 import type { AgentSession, ChatEvent, ContextChip, PanelHost, PanelSettings, SavedSession } from "../types.ts";
 import { clip, errMessage, nextId } from "./dom.ts";
 import { summary } from "./context.ts";
+import { planContext } from "./economy.ts";
 import { Persister } from "./persist.ts";
 import { applyEvent, emptyTranscript, promptFor, replay } from "./transcript.ts";
 import type { TranscriptState } from "./transcript.ts";
@@ -31,6 +32,8 @@ export class Chat {
   private unsub: (() => void) | null = null;
   private gen = 0;
   private cwd = "";
+  /** Chips this agent session has already read (id -> fingerprint): unchanged ones are not sent again. */
+  private sent = new Map<string, string>();
   private persister: Persister;
   private d: ChatDeps;
 
@@ -43,6 +46,7 @@ export class Chat {
 
   /** Fold an event into the transcript, ask for a render, and save it. */
   dispatch(ev: ChatEvent, persist = true): void {
+    if (ev.t === "notice" && ev.compacted) this.sent.clear(); // the summary may have dropped what was sent
     this.tr = applyEvent(this.tr, ev);
     this.d.onChange();
     if (persist && (this.saved || ev.t === "user")) this.persister.push(ev);
@@ -73,6 +77,7 @@ export class Chat {
       });
       if (gen !== this.gen) { void sess.close().catch(() => {}); throw new Error("cancelled"); }
       this.session = sess;
+      this.sent.clear(); // a new or resumed session: everything goes in full once (DESIGN.md "Context budget")
       this.resume = null;
       this.unsub = sess.on((ev) => {
         this.dispatch(ev);
@@ -99,8 +104,6 @@ export class Chat {
   async send(text: string, used: ContextChip[]): Promise<void> {
     if (this.busy || this.d.blockReason()) return;
     const host = this.d.host;
-    let ctx = { text: "", images: [] as { mime: string; data: string }[] };
-    try { ctx = host.describeContext(used); } catch { /* the question still goes */ }
     if (!this.saved) {
       this.saved = { id: nextId("s") + Date.now().toString(36), title: clip(text, 60), backend: host.getSettings().backend, cwd: this.resume?.cwd ?? "", agentSessionId: this.resume?.agentSessionId ?? "", updatedAt: Date.now() };
     }
@@ -109,6 +112,12 @@ export class Chat {
     try {
       const sess = await this.ensureSession();
       this.saved = { ...this.saved, agentSessionId: sess.sessionId, cwd: this.cwd || this.saved.cwd };
+      let ctx = { text: "", images: [] as { mime: string; data: string }[] };
+      try {
+        const next = new Map(this.sent);
+        ctx = host.describeContext(planContext(used, next));
+        this.sent = next;
+      } catch { /* the question still goes */ }
       await sess.prompt({
         text: [ctx.text, text].filter(Boolean).join("\n\n"),
         ...(sess.supportsImages && ctx.images.length ? { images: ctx.images } : {}),

@@ -37,6 +37,8 @@ export interface ContextChip {
   text?: string;
   /** Selected area as a PNG (base64, no data: prefix). */
   image?: { mime: "image/png"; data: string };
+  /** Sent unchanged earlier in this chat (ui/economy.ts): the agent gets one short reminder, never the text or image again. */
+  repeat?: boolean;
 }
 
 /** What a transcript keeps of a chip (no image bytes). */

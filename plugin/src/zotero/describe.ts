@@ -1,6 +1,7 @@
 // The text the agent reads about the user's focus: a <zotero-context> block (brief.ts tells it what that is) plus images.
 import type { ContextChip, ZoteroRef } from "../types.ts";
 import { CONTEXT_TAG } from "../agent/index.ts";
+import { repeatLine } from "../ui/economy.ts";
 
 const libLabel = (ref: ZoteroRef) => (ref.libraryID === Zotero.Libraries.userLibraryID ? "" : ` · group library ${Zotero.Libraries.get(ref.libraryID).groupID}`);
 const page = (ref: ZoteroRef) => (ref.pageLabel ? `p.${ref.pageLabel}` : ref.pageIndex != null ? `p.${ref.pageIndex + 1}` : "");
@@ -20,6 +21,7 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
   const lines: string[] = [];
   const images: { mime: string; data: string }[] = [];
   for (const c of chips) {
+    if (c.repeat) continue; // sent unchanged before: one reminder line below, no text or image again
     switch (c.kind) {
       case "reader": {
         const att = c.ref.attachmentKey ? Zotero.Items.getByLibraryAndKey(c.ref.libraryID, c.ref.attachmentKey) : null;
@@ -49,6 +51,8 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
       }
     }
   }
+  const again = repeatLine(chips);
+  if (again) lines.push(again);
   const text = lines.length ? `<${CONTEXT_TAG}>\n${lines.join("\n")}\n</${CONTEXT_TAG}>` : "";
   return { text, images };
 }
