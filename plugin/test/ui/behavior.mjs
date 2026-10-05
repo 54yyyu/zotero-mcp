@@ -1012,6 +1012,129 @@ await test("save as note: the answer goes to the host with its question as the t
   await send(p, "plain");
   await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
   await p.locator('button[aria-label="Save as a Zotero note"]').last().click();
+const WIDE_MATH = String.raw`$$\hat{\tau} = \frac{1}{n}\sum_{i=1}^{n}\left(\frac{T_i Y_i}{e(X_i)} - \frac{(1-T_i)Y_i}{1-e(X_i)}\right)$$
+
+$$\mathcal{L}(\theta) = \sum_{i=1}^{n} \log p_\theta(y_i \mid x_i) + \lambda_1 \lVert \theta \rVert_1 + \lambda_2 \lVert \theta \rVert_2^2 + \sum_{j=1}^{m} \mu_j \, g_j(\theta) + \sum_{k=1}^{K} \nu_k h_k(\theta) + \gamma \, \mathrm{KL}\left(q_\phi(z \mid x) \,\Vert\, p(z)\right)$$
+
+$$E = mc^2$$`;
+
+await test("display math: Copy TeX copies the source; a wide formula shrinks to 72% at most, then scrolls with a soft edge, never clipped", async (p) => {
+  await p.evaluate(() => { window.__copied = []; Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t) => { window.__copied.push(t); } }, configurable: true }); });
+  await sim(p, (t) => { window.__zmc.sim.nextAnswer = t; }, WIDE_MATH);
+  await send(p, "x");
+  await done(p);
+  await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".math--raw"));
+  await p.waitForTimeout(150);
+  const g = await p.evaluate(() => [...window.__zmc.shadow.querySelectorAll(".math--display")].map((m) => ({ fs: m.style.fontSize, over: m.scrollWidth > m.clientWidth + 1, fade: m.dataset.fade ?? "", left: Math.round(m.firstElementChild.getBoundingClientRect().left - m.getBoundingClientRect().left) })));
+  assert.deepEqual(g.map((x) => [x.over, x.fade, x.left]), [[false, "", 0], [true, "r", 0], [false, "", 0]], JSON.stringify(g));
+  assert.equal(g[1].fs, "72%", "shrunk to the floor before scrolling");
+  assert.ok(g[0].fs === "" || parseInt(g[0].fs) >= 72, "a formula that nearly fits is only made a little smaller");
+  assert.equal(g[2].fs, "", "a short formula keeps its size");
+  await p.evaluate(() => { const m = window.__zmc.shadow.querySelectorAll(".math--display")[1]; m.scrollLeft = m.scrollWidth; });
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".math--display")[1].dataset.fade === "l");
+  // Copy TeX: hidden until hover, then the original source
+  const btn = p.locator('.mathblock button[aria-label="Copy TeX"]').nth(2);
+  assert.equal(await btn.evaluate((b) => getComputedStyle(b).opacity), "0");
+  await p.locator(".mathblock").nth(2).hover();
+  await p.waitForFunction(() => getComputedStyle(window.__zmc.shadow.querySelectorAll(".math__copy")[2]).opacity === "1");
+  await btn.click();
+  assert.deepEqual(await p.evaluate(() => window.__copied), ["E = mc^2"]);
+  // wider panel: the same formula needs less shrinking, and is re-fitted on resize
+  await p.setViewportSize({ width: 700, height: 760 });
+  await p.waitForFunction(() => { const m = window.__zmc.shadow.querySelectorAll(".math--display")[1]; return m.style.fontSize !== "72%" || m.scrollWidth <= m.clientWidth + 1; });
+}, { width: 320 });
+
+await test("streaming: never a half-written formula, math fence or table header as raw text; finished blocks are never rebuilt", async (p) => {
+  const fence = "```";
+  const ans = String.raw`Intro paragraph that stays put.
+
+$$\hat{\tau} = \frac{1}{n}\sum_{i=1}^{n}\left(\frac{T_i Y_i}{e(X_i)}\right)$$
+
+The gap is $\Delta = \ln(1.5)$ and the cost is $5 or $10 today.
+
+| Study | Ratio |
+|---|---:|
+| Pager | 1.44 |
+
+Inline display \[x^2 + y^2\] here and \(a+b\) there.
+
+${fence}math
+\int_0^1 x\,dx
+${fence}
+
+Done.`;
+  await p.evaluate(() => {
+    window.__seen = new Set(); window.__first = null; window.__stop = false;
+    const tick = () => {
+      const md = window.__zmc.shadow.querySelector(".msg--assistant .md");
+      if (!md) return;
+      if (md.children.length > 2) window.__first ??= md.querySelector("p");
+      const raws = [...md.querySelectorAll(".math--raw")];
+      const clone = md.cloneNode(true);
+      [...clone.querySelectorAll(".math--raw")].forEach((e, k) => { if (getComputedStyle(raws[k]).opacity === "0") e.remove(); });
+      clone.querySelectorAll(".math:not(.math--raw), .code").forEach((e) => e.remove());
+      for (const bad of ["$$", "\\frac", "\\[", "\\(", "\\Delta", "\\int", "| Study", "|---"]) if (clone.textContent.includes(bad)) window.__seen.add(bad);
+      if (md.querySelector(".math--error")) window.__seen.add("a formula error");
+    };
+    new MutationObserver(tick).observe(window.__zmc.shadow.querySelector(".feed__inner"), { subtree: true, childList: true, characterData: true });
+  });
+  await sim(p, (t) => { window.__zmc.sim.nextAnswer = t; window.__zmc.sim.speed = 4; }, ans);
+  await send(p, "x");
+  await done(p);
+  const r = await p.evaluate(() => ({ seen: [...window.__seen], kept: !!window.__first && window.__first === window.__zmc.shadow.querySelector(".msg--assistant .md p") }));
+  assert.deepEqual(r, { seen: [], kept: true });
+  assert.equal(await p.locator(".msg--assistant .math--display").count(), 3, "$$, \\[ \\] and the math fence");
+  assert.equal(await p.locator(".msg--assistant table").count(), 1);
+  assert.match(await p.locator(".msg--assistant .md").innerText(), /cost is \$5 or \$10 today/, "money stays text");
+});
+
+// no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
+const OVERFLOW = () => {
+  const root = window.__zmc.shadow;
+  const app = root.querySelector(".zmc").getBoundingClientRect();
+  const out = [];
+  for (const el of root.querySelectorAll(".zmc *")) {
+    if (el.closest(".md-table, .code pre, .math--display, .sd__pre, .fixlog, .thought__body, svg, [hidden]") || el.tagName === "svg") continue;
+    const r = el.getBoundingClientRect();
+    if (r.width && r.right > app.right + 1) out.push(`${el.tagName.toLowerCase()}.${el.className}`);
+    if (r.width && r.left < app.left - 1) out.push(`left:${el.tagName.toLowerCase()}.${el.className}`);
+  }
+  for (const s of root.querySelectorAll(".feed, .vw__body, .composer, .hd, .dock")) if (s.scrollWidth > s.clientWidth + 1) out.push(`scrollX:${s.className}`);
+  return [...new Set(out)];
+};
+for (const [name, params, run] of [
+  ["empty", {}, async () => {}],
+  ["answer", {}, async (p) => { await send(p, "compare"); await done(p); await p.locator(".foot__src").click(); await p.locator(".step__row").first().click(); }],
+  ["chips", { ctx: "area" }, async (p) => { await p.locator(".cin").click(); await p.keyboard.type("@Discrim"); await p.waitForSelector(".pop__i"); await p.keyboard.press("Enter"); await p.waitForTimeout(200); }],
+  ["long model name", {}, async (p) => {
+    await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent) && window.__zmc.shadow.querySelector(".pick--model .pick__e"));
+    await p.evaluate(() => { window.__zmc.shadow.querySelector(".pick--model .pick__t").textContent = "Claude Opus 5.5 with a very long name and a million tokens of context"; });
+    const t = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".pick--model .pick__e"); return [e.scrollWidth, e.clientWidth, e.textContent]; });
+    assert.deepEqual([t[0] <= t[1], t[2]], [true, "Medium"], "the effort level is never the thing that truncates");
+    await p.locator(".pick--model").click();
+    await p.waitForSelector(".mdd .eff__track");
+    const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".mdd"), b = r(".pick--model"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
+    assert.ok(g.off < 3 && g.inside, "the dropdown opens above its own button, inside the composer");
+  }],
+  ["diagram", {}, async (p) => { await send(p, "draw it"); await done(p); await p.locator(".dg").first().hover(); await p.locator(".dg").first().locator('button[aria-label="Show the SVG source"]').click(); }],
+  ["meter", {}, async (p) => { await p.evaluate(() => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; }); await send(p, "hello"); await done(p); await p.waitForSelector(".cnote:not([hidden])"); }],
+  ["popup", {}, async (p) => { await p.locator('button[aria-label="Add a source"]').click(); await p.waitForSelector(".pop__i"); }],
+  ["permission", { speed: 5 }, async (p) => { await send(p, "add a note"); await p.waitForSelector(".perm__opts"); }],
+  ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],
+  ["history", {}, async (p) => { await p.locator('button[aria-label="History"]').click(); await p.waitForSelector(".hrow__main"); }],
+  ["settings", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForTimeout(300); }],
+  ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],
+  ["status", { doctor: "many" }, async (p) => { await p.locator(".stat").click(); await p.waitForSelector(".check"); }],
+  ["setup", { doctor: "many" }, async (p) => { await p.locator(".setup").waitFor(); }],
+  ["welcome", { welcome: "1", doctor: "many" }, async (p) => { await p.waitForSelector(".wrow--bad"); await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".wrow--pending")); await p.locator(".wrow--bad .btn").first().click(); await p.waitForTimeout(500); }],
+]) {
+  for (const width of [300, 320]) for (const dark of [false, true]) {
+    await test(`no overflow at ${width}px ${dark ? "dark" : "light"}: ${name}`, async (p) => { await run(p); await p.waitForTimeout(150); assert.deepEqual(await p.evaluate(OVERFLOW), []); }, { width, dark, params });
+  }
+}
+
+await browser.close();
+console.log(`${n} passed`);
   await p.waitForFunction(() => window.__zmc.sim.notes.length === 2);
   assert.deepEqual(await sim(p, () => window.__zmc.sim.notes[1]), { title: "plain", markdown: "Plain **answer** with $x^2$.", images: [] });
 });

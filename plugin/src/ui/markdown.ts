@@ -194,6 +194,53 @@ export function lexBlocks(src: string): Token[] {
   return out;
 }
 
+// ───────────────────────────── the block still streaming ─────────────────────────────
+
+/**
+ * Where an unclosed formula starts in a block's markdown (`$$`, `\[`, `\(`, or a `$` that hugs a non-digit), or -1.
+ * Code spans and escapes are skipped; a `$` before a digit is money, not math, and a blank line ends an inline `$`.
+ */
+export function openMathAt(s: string): number {
+  let open = -1, close = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i], nx = s[i + 1] ?? "";
+    if (open < 0 && c === "`") { // a code span: its text is code, whatever it holds
+      const run = /^`+/.exec(s.slice(i))?.[0] ?? "`";
+      const end = s.indexOf(run, i + run.length);
+      if (end < 0) return -1;
+      i = end + run.length - 1;
+    } else if (c === "\\") {
+      if (open < 0 && (nx === "[" || nx === "(")) { open = i; close = nx === "[" ? "]" : ")"; }
+      else if (open >= 0 && close === nx) open = -1;
+      i++;
+    } else if (c === "$") {
+      const dbl = nx === "$";
+      if (open < 0) { if (dbl || !/[\s\d]/.test(nx || " ")) { open = i; close = dbl ? "$$" : "$"; } }
+      else if (close === "$$" ? dbl : close === "$" && !dbl && !/\s/.test(s[i - 1] ?? " ") && !/\d/.test(nx)) open = -1;
+      if (dbl) i++;
+    } else if (close === "$" && open >= 0 && c === "\n" && /^\n[ \t]*\n/.test(s.slice(i, i + 40))) open = -1;
+  }
+  return open;
+}
+
+const closedFence = (raw: string) => /\n {0,3}(?:`{3,}|~{3,})[ \t]*\s*$/.test(raw);
+const HAS_INLINE = new Set(["paragraph", "heading", "list", "blockquote", "table", "text"]);
+
+/**
+ * The block still streaming in, as it may be shown now: never a half-written formula (the block stops before it
+ * until it closes), never a ```math fence before its end, never a table's header row as a line of pipes before
+ * its delimiter row arrives. [] means nothing to show yet.
+ */
+export function settledBlock(t: Token): Token[] {
+  if (t.type === "code") return (t as Tokens.Code).lang?.trim().toLowerCase() === "math" && !closedFence(t.raw) ? [] : [t];
+  if (!HAS_INLINE.has(t.type)) return [t];
+  if (t.type === "paragraph" && /^ {0,3}\|/.test(t.raw)) return [];
+  const cut = openMathAt(t.raw);
+  if (cut < 0) return [t];
+  const head = t.raw.slice(0, cut);
+  return head.trim() ? lexBlocks(head).filter((x) => x.type !== "space") : [];
+}
+
 // ───────────────────────────── tokens to nodes ─────────────────────────────
 
 const el = (tag: string, kids?: MdNode[], attrs?: Record<string, string>): MdEl => {

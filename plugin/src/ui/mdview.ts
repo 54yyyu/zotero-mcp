@@ -3,7 +3,7 @@
 // enforced again here, so a bug in the tree builder still cannot create a <script> or an onerror.
 import type { Token } from "marked";
 import type { NoteRequest, SavedNote } from "../types.ts";
-import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc } from "./markdown.ts";
+import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc, settledBlock } from "./markdown.ts";
 import type { MdNode } from "./markdown.ts";
 import { copyText, env, flashCheck, h, icon } from "./dom.ts";
 
@@ -36,7 +36,7 @@ const mathKey = (tex: string, display: boolean) => (display ? "D" : "I") + tex;
 async function renderMath(host: HTMLElement, tex: string, display: boolean): Promise<void> {
   const key = mathKey(tex, display);
   const hit = mathCache.get(key);
-  if (hit) { host.replaceChildren(hit.cloneNode(true)); host.classList.remove("math--raw"); return; }
+  if (hit) { host.replaceChildren(hit.cloneNode(true)); host.classList.remove("math--raw"); if (display) fitMath(host); return; }
   const katex = await loadKatex();
   if (!katex || (!host.isConnected && !host.parentNode)) return;
   // katex builds its nodes with the free variable `document`; a plugin scope may not have one.
@@ -45,6 +45,7 @@ async function renderMath(host: HTMLElement, tex: string, display: boolean): Pro
   try {
     katex.render(tex, host, { displayMode: display, throwOnError: true, strict: "ignore", trust: false, output: "mathml", maxSize: 50, maxExpand: 500 });
     host.classList.remove("math--raw");
+    if (display) fitMath(host);
     if (mathCache.size >= MATH_CACHE_MAX) mathCache.delete(mathCache.keys().next().value as string);
     mathCache.set(key, host.cloneNode(true).firstChild as Node);
   } catch (e) {
@@ -53,6 +54,38 @@ async function renderMath(host: HTMLElement, tex: string, display: boolean): Pro
     host.classList.add("math--error");
     host.title = String((e as Error)?.message ?? e).replace(/^KaTeX parse error: /, "");
   }
+}
+
+/** Below this a wide formula stops shrinking and scrolls sideways instead (a soft fade on the side that has more). */
+const MIN_MATH_SCALE = 0.72;
+let mathRO: ResizeObserver | null = null;
+
+/** A display formula wider than the panel: smaller first, down to 72%, then scrolling; never clipped. Again on resize. */
+function fitMath(host: HTMLElement): void {
+  if (!host.isConnected) { env.win.requestAnimationFrame?.(() => { if (host.isConnected) fitMath(host); }); return; }
+  const RO = env.win.ResizeObserver;
+  if (RO && !host.dataset.fit) {
+    host.dataset.fit = "1";
+    mathRO ??= new RO((entries) => { for (const e of entries) fitMath(e.target as HTMLElement); });
+    mathRO.observe(host);
+    host.addEventListener("scroll", () => fade(host), { passive: true });
+  }
+  const cw = host.clientWidth;
+  if (!cw) return;
+  host.style.fontSize = "";
+  let scale = 1;
+  // Glyph spacing does not scale exactly with the size: measure again after each step (twice is enough).
+  for (let i = 0; i < 2 && host.scrollWidth > cw + 1 && scale > MIN_MATH_SCALE; i++) {
+    scale = Math.max(MIN_MATH_SCALE, Math.floor((scale * cw * 100) / host.scrollWidth) / 100);
+    host.style.fontSize = `${Math.round(scale * 100)}%`;
+  }
+  fade(host);
+}
+
+function fade(el: HTMLElement): void {
+  const { scrollLeft: l, scrollWidth: sw, clientWidth: cw } = el;
+  const f = (l > 1 ? "l" : "") + (l + cw < sw - 1 ? "r" : "");
+  if (f) el.dataset.fade = f; else delete el.dataset.fade;
 }
 
 // ───────────────────────────── diagrams (lazy) ─────────────────────────────
@@ -96,7 +129,11 @@ function toDom(node: MdNode, rc: RenderCtx): Node {
       const tex = textOf(node);
       const host = h(display ? "div.math.math--display.math--raw" : "span.math.math--raw", null, tex);
       void renderMath(host, tex, display);
-      return host;
+      if (!display) return host;
+      // Copy TeX: the formula's source, from a quiet button that shows on hover or focus.
+      const copy = h("button.iconbtn.iconbtn--sm.math__copy", { type: "button", "aria-label": "Copy TeX", title: "Copy TeX" }, icon("copy"));
+      copy.addEventListener("click", () => void copyText(tex).then((ok) => ok && flashCheck(copy)));
+      return h("div.mathblock", null, host, copy);
     }
     case "cite": {
       const href = safeHref(attrs.href);
@@ -208,7 +245,8 @@ export class MdView {
     for (; i < n; i++) {
       const f = fresh[i] as { tok: Token; start: number; key: string };
       const live = streaming && i === n - 1;
-      const nodes = blockNodes(f.tok).map((nd) => toDom(nd, { live, hooks: this.hooks }));
+      // The block still arriving shows only what is settled: never a half-written formula or table as raw text.
+      const nodes = (live ? settledBlock(f.tok) : [f.tok]).flatMap((t) => blockNodes(t)).map((nd) => toDom(nd, { live, hooks: this.hooks }));
       for (const nd of nodes) this.el.insertBefore(nd, this.tailEl);
       old.push({ start: f.start, key: f.key, nodes, live });
     }

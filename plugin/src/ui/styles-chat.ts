@@ -136,8 +136,17 @@ export const CHAT_STYLES = `
 .zmc .code__head { display: flex; align-items: center; justify-content: space-between; height: var(--h-sm); padding: 0 var(--s1) 0 var(--s3); border-bottom: 1px solid var(--rule); background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .zmc .code__lang { font: var(--fs-1) var(--mono); color: var(--ink-muted); }
 .zmc .code pre { margin: 0; padding: var(--s2) var(--s3); overflow: auto; max-height: 360px; font: var(--fs-2)/1.5 var(--mono); white-space: pre; tab-size: 2; }
-.zmc .math--raw { font: 0.9em var(--mono); color: var(--ink-muted); white-space: pre-wrap; }
+.zmc .math--raw { font: 0.9em var(--mono); color: var(--ink-muted); white-space: pre-wrap; animation: zmc-late 0s 0.3s backwards; } /* the TeX shows only if katex has not typeset it within 0.3 s */
+@keyframes zmc-late { from { opacity: 0; } }
 .zmc .math--display { display: block; margin: var(--s2) 0; padding: var(--s1) 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+.zmc .math--display { scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
+.zmc .math--display[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.zmc .math--display[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+.zmc .math--display[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+.zmc .mathblock { position: relative; }
+.zmc .math__copy { position: absolute; top: 0; right: 0; background: var(--paper); opacity: 0; transition: opacity var(--ease); }
+.zmc :is(.mathblock:hover, .mathblock:focus-within) .math__copy { opacity: 1; }
+@media (hover: none) { .zmc .math__copy { opacity: 1; } }
 .zmc .math math { font-size: 1.1em; font-family: "STIX Two Math", "Latin Modern Math", "Cambria Math", "Times New Roman", serif; }
 .zmc .math--error { font: 0.9em var(--mono); padding: 1px var(--s1); border-radius: var(--r0); background: color-mix(in srgb, var(--danger) 9%, var(--paper-sunk)); cursor: help; white-space: pre-wrap; }
 .zmc div.math--error { padding: var(--s2) var(--s3); text-align: left; }
