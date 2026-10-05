@@ -527,17 +527,6 @@ await test("welcome: if the chosen agent is unusable and another works, it start
   assert.match(await p.locator(".wcard--on").innerText(), /pi/);
 }, { params: { welcome: "1", doctor: "backend" } });
 
-await test("theme follows the host; close is an event for the glue", async (p) => {
-  assert.equal(await p.locator(".zmc").getAttribute("data-theme"), "light");
-  await sim(p, () => window.__zmc.sim.setTheme("dark"));
-  assert.equal(await p.locator(".zmc").getAttribute("data-theme"), "dark");
-  await p.locator('button[aria-label="Close the panel"]').click();
-  assert.equal(await sim(p, () => document.getElementById("host").dataset.closed), "1");
-});
-
-await test("hostile markdown in a real answer: no script, no handlers, no foreign links or images, nothing runs", async (p) => {
-  await sim(p, () => { window.__zmc.sim.speed = 0; });
-  for (const src of XSS_CORPUS) {
 const look = (p) => p.evaluate(() => { const z = window.__zmc.shadow.querySelector(".zmc"); const cs = getComputedStyle(z); return { ...z.dataset, accent: cs.getPropertyValue("--accent").trim(), veil: cs.getPropertyValue("--bg-veil").trim(), img: cs.getPropertyValue("--bg-img").trim().slice(0, 30), fs4: cs.getPropertyValue("--fs-4").trim(), before: getComputedStyle(z, "::before").backgroundImage.slice(0, 40) }; });
 const appearance = (p) => p.evaluate(() => JSON.parse(JSON.stringify(window.__zmc.host.getSettings().appearance)));
 
@@ -621,6 +610,17 @@ await test("appearance: a saved picture is read back when the panel opens", asyn
   assert.match((await look(p)).img, /^url\("data:image\/svg/);
 }, { params: { look: JSON.stringify({ background: "image", image: "kyoto.jpg" }), image: "1" } });
 
+await test("theme follows the host; close is an event for the glue", async (p) => {
+  assert.equal(await p.locator(".zmc").getAttribute("data-theme"), "light");
+  await sim(p, () => window.__zmc.sim.setTheme("dark"));
+  assert.equal(await p.locator(".zmc").getAttribute("data-theme"), "dark");
+  await p.locator('button[aria-label="Close the panel"]').click();
+  assert.equal(await sim(p, () => document.getElementById("host").dataset.closed), "1");
+});
+
+await test("hostile markdown in a real answer: no script, no handlers, no foreign links or images, nothing runs", async (p) => {
+  await sim(p, () => { window.__zmc.sim.speed = 0; });
+  for (const src of XSS_CORPUS) {
     await sim(p, (s) => { window.__zmc.sim.nextAnswer = s; }, src);
     await send(p, "x");
     await p.waitForFunction((k) => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === k, XSS_CORPUS.indexOf(src) + 1);
@@ -865,6 +865,7 @@ for (const [name, params, run] of [
   ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],
   ["history", {}, async (p) => { await p.locator('button[aria-label="History"]').click(); await p.waitForSelector(".hrow__main"); }],
   ["settings", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForTimeout(300); }],
+  ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],
   ["status", { doctor: "many" }, async (p) => { await p.locator(".stat").click(); await p.waitForSelector(".check"); }],
   ["setup", { doctor: "many" }, async (p) => { await p.locator(".setup").waitFor(); }],
   ["welcome", { welcome: "1", doctor: "many" }, async (p) => { await p.waitForSelector(".wrow--bad"); await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".wrow--pending")); await p.locator(".wrow--bad .btn").first().click(); await p.waitForTimeout(500); }],
@@ -876,4 +877,3 @@ for (const [name, params, run] of [
 
 await browser.close();
 console.log(`${n} passed`);
-  ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],

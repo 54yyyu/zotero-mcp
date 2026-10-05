@@ -174,6 +174,15 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
 - **Lazy**: `mdview.ts` imports `diagram.ts` dynamically on the first svg block; esbuild bundles it as a lazily initialised
   module, so a chat without diagrams never runs it, and its stylesheet is added to the shadow root on first use.
 - Light and dark; follows Zotero's theme (`host.theme()`); keyboard accessible; works from 300 px to 700 px wide.
+- Appearance (`ui/appearance.ts` validates and applies it, `ui/styles-look.ts` draws it): glass (default on), accent, background,
+  text size, density. `Look` writes data attributes and CSS variables on `.zmc`, so a change shows at once and nothing re-renders.
+  Glass is faux glass inside our root (Gecko gives a plugin no OS vibrancy): `.zmc::before` is the gradient or picture, `::after` the
+  veil and three faint glows; cards are translucent with a bright edge; only the composer, menus and jump pill blur
+  (`backdrop-filter`), so a long chat scrolls as cheaply as without it. The accent's fill, its text-safe `--accent-ink` (4.5:1 on
+  the paper and on a dark glass card) and the text on it are computed by WCAG contrast, so any colour stays readable; `--agent`,
+  `--link` and `--focus` follow it, the logo keeps `--brand`. `.zmc[data-accent="custom"]` is set only when the user chose an accent other than our red (the
+  diagrams keep their own blue otherwise). A picture is downscaled to 1600 px JPEG in `zotero/image.ts` and kept
+  as `<dataDir>/background.jpg` (prefs hold its name only), read back when the panel mounts.
 - Unavailable states are designed too: no backend, not logged in, zotero-cli missing, Zotero's local API off (23119 silent: "restart Zotero").
 
 ## Zotero glue (zotero/)
@@ -187,15 +196,6 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
 - Doctor: Zotero local API reachable (a long-running Zotero stops serving on 23119; the fix is "restart Zotero"), write access
   authorized, `zotero-cli` present (fix: `uv tool install zotero-mcp-server`, falling back to `pipx`/`pip --user`), node present,
   a backend available and signed in.
-- Appearance (`ui/appearance.ts` validates and applies it, `ui/styles-look.ts` draws it): glass (default on), accent, background,
-  text size, density. `Look` writes data attributes and CSS variables on `.zmc`, so a change shows at once and nothing re-renders.
-  Glass is faux glass inside our root (Gecko gives a plugin no OS vibrancy): `.zmc::before` is the gradient or picture, `::after` the
-  veil and three faint glows; cards are translucent with a bright edge; only the composer, menus and jump pill blur
-  (`backdrop-filter`), so a long chat scrolls as cheaply as without it. The accent's fill, its text-safe `--accent-ink` (4.5:1 on
-  the paper and on a dark glass card) and the text on it are computed by WCAG contrast, so any colour stays readable; `--agent`,
-  `--link` and `--focus` follow it, the logo keeps `--brand`. `.zmc[data-accent="custom"]` is set only when the user chose an accent other than our red (the
-  diagrams keep their own blue otherwise). A picture is downscaled to 1600 px JPEG in `zotero/image.ts` and kept
-  as `<dataDir>/background.jpg` (prefs hold its name only), read back when the panel mounts.
 
 ## Test and dev harness (the rules that matter)
 
