@@ -5,7 +5,7 @@ import type { Token } from "marked";
 import type { NoteRequest, SavedNote } from "../types.ts";
 import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, HEX_COLOR, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc, settledBlock } from "./markdown.ts";
 import type { MdNode } from "./markdown.ts";
-import { copyText, env, flashCheck, h, icon } from "./dom.ts";
+import { copyText, edgeFade, env, flashCheck, h, icon } from "./dom.ts";
 
 /** `open` gets a link or citation chip that was clicked (http(s) or zotero: only ever reaches it); `saveFile` is the host's file picker
  *  (diagram export), `saveNote` the host's note writer (a diagram's "Add to a note"). */
@@ -68,7 +68,7 @@ function fitMath(host: HTMLElement): void {
     host.dataset.fit = "1";
     mathRO ??= new RO((entries) => { for (const e of entries) fitMath(e.target as HTMLElement); });
     mathRO.observe(host);
-    host.addEventListener("scroll", () => fade(host), { passive: true });
+    host.addEventListener("scroll", () => edgeFade(host), { passive: true });
   }
   const cw = host.clientWidth;
   if (!cw) return;
@@ -79,13 +79,7 @@ function fitMath(host: HTMLElement): void {
     scale = Math.max(MIN_MATH_SCALE, Math.floor((scale * cw * 100) / host.scrollWidth) / 100);
     host.style.fontSize = `${Math.round(scale * 100)}%`;
   }
-  fade(host);
-}
-
-function fade(el: HTMLElement): void {
-  const { scrollLeft: l, scrollWidth: sw, clientWidth: cw } = el;
-  const f = (l > 1 ? "l" : "") + (l + cw < sw - 1 ? "r" : "");
-  if (f) el.dataset.fade = f; else delete el.dataset.fade;
+  edgeFade(host);
 }
 
 // ───────────────────────────── diagrams (lazy) ─────────────────────────────

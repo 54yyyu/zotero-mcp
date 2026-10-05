@@ -88,7 +88,7 @@ async function main(ctx) {
   check(keys.length === 3 && keys.every((k) => embedded(note3).some((a) => a.key === k)), "three images, each referenced: " + keys);
 
   // the editor shows the embedded image (it resolves data-attachment-key itself)
-  dg.querySelector(".foot .noteline .lnk").click();
+  (await ctx.waitFor(() => dg.querySelector(".foot .noteline .lnk"), "the footer confirms")).click(); // the HTML is stored a moment before the line paints
   await ctx.waitFor(() => win.ZoteroPane.getSelectedItems()[0]?.id === note3.id, "Open selects the diagram note");
   const shown = await ctx.waitFor(() => { const im = editorDoc()?.querySelector(".ProseMirror img"); return im?.complete && im.naturalWidth > 0 ? im.naturalWidth : 0; }, "the note editor renders the image", 20000);
   out.editorImageWidth = shown;

@@ -140,9 +140,10 @@ export const CHAT_STYLES = `
 @keyframes zmc-late { from { opacity: 0; } }
 .zmc .math--display { display: block; margin: var(--s2) 0; padding: var(--s1) 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .zmc .math--display { scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
-.zmc .math--display[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
-.zmc .math--display[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
-.zmc .math--display[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+/* a sideways scroller (a wide formula, a drawing: dom.ts edgeFade) fades on the side that has more */
+.zmc [data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.zmc [data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+.zmc [data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 .zmc .mathblock { position: relative; }
 .zmc .md span[style*="background"] { padding: 0 2px; border-radius: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; } /* a highlight from the formatting subset */
 .zmc .math__copy { position: absolute; top: 0; right: 0; background: var(--paper); opacity: 0; transition: opacity var(--ease); }

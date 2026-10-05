@@ -5,7 +5,7 @@
 import type { NoteImage, NoteRequest, SavedNote } from "../types.ts";
 import type { SvgEl } from "./diagram-svg.ts";
 import { HUES, HUE_DARK, HUE_LIGHT, SOFT_DARK, SOFT_LIGHT, exportPalette, prepareSvg, serializeSvg } from "./diagram-svg.ts";
-import { copyText, env, h, icon } from "./dom.ts";
+import { copyText, edgeFade, env, h, icon } from "./dom.ts";
 import type { IconName } from "./dom.ts";
 import { noteLine, trySave } from "./notes.ts";
 
@@ -39,9 +39,6 @@ const CSS = `
 .zmc .dg__head { display: flex; align-items: center; gap: var(--s2); height: 28px; margin-bottom: var(--s1); }
 .zmc .dg__cap { flex: 1; min-width: 0; padding-left: var(--s1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-faint); font-size: var(--fs-1); }
 .zmc .dg__fig { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
-.zmc .dg__fig[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
-.zmc .dg__fig[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
-.zmc .dg__fig[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 .zmc .dg__fig svg { display: block; width: 100%; height: auto; max-height: 560px; margin: 0 auto; overflow: visible; fill: var(--dg-ink); font-family: var(--font); }
 .zmc .dg__fig :is(text, tspan) { font-family: var(--font); }
 .zmc .dg__bar { flex: none; display: flex; align-items: center; gap: 1px; opacity: 0; transition: opacity var(--ease); }
@@ -108,11 +105,7 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
   fig.style.maxWidth = `${Math.round(fit.box[2] * 1.3)}px`;
   fig.style.minWidth = `${Math.round(fit.box[2] * MIN_SCALE)}px`;
   const figWrap = h("div.dg__fig", null, fig);
-  const edges = () => {
-    const { scrollLeft: l, scrollWidth: sw, clientWidth: cw } = figWrap;
-    const fade = (l > 1 ? "l" : "") + (l + cw < sw - 1 ? "r" : "");
-    if (fade) figWrap.dataset.fade = fade; else delete figWrap.dataset.fade;
-  };
+  const edges = () => edgeFade(figWrap);
   figWrap.addEventListener("scroll", edges, { passive: true });
   const RO = env.win.ResizeObserver;
   if (RO) new RO(edges).observe(figWrap);

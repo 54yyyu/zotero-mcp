@@ -196,6 +196,13 @@ export function flashCheck(btn: HTMLElement): void {
   env.win.setTimeout(() => btn.replaceChildren(icon("copy")), 1200);
 }
 
+/** A sideways scroller's `data-fade` (l, r, lr): the side that has more content fades (styles-chat.ts draws it). */
+export function edgeFade(el: HTMLElement): void {
+  const { scrollLeft: l, scrollWidth: sw, clientWidth: cw } = el;
+  const f = (l > 1 ? "l" : "") + (l + cw < sw - 1 ? "r" : "");
+  if (f) el.dataset.fade = f; else delete el.dataset.fade;
+}
+
 /** Truncate for a one-line label; the full text belongs in a tooltip. */
 export function clip(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();

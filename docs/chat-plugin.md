@@ -77,7 +77,17 @@ The panel opens and closes from the toolbar button, or with Cmd+Option+L (Ctrl+A
 
 ## Diagrams
 
-Ask the agent to draw something (a pipeline, a 2x2, a causal graph) and it answers with a figure in the chat. The agent writes plain SVG; the panel draws it in your theme's colours, so it follows light and dark mode and your accent colour. Hover a figure for its toolbar: show the SVG source, copy it as an image, or save it as PNG (on white, 1400 px wide) or SVG. Anything in a drawing that is not a shape or text, such as scripts, links or external images, is removed before it is shown.
+Ask the agent to draw something (a pipeline, a 2x2, a causal graph) and it answers with a figure in the chat. The agent writes plain SVG; the panel draws it in your theme's colours, so it follows light and dark mode and your accent colour. Hover a figure for its toolbar: show the SVG source, copy it as an image, or save it as PNG (on white, 1400 px wide) or SVG. Anything in a drawing that is not a shape or text, such as scripts, links or external images, is removed before it is shown. **Add to a note** saves the figure as a Zotero note on the item you are looking at, the drawing embedded as an image.
+
+## Notes, math and formatting
+
+Under each answer, **Save as note** turns it into a Zotero note on the paper you are reading (or the selected item; with nothing selected, a standalone note in the current collection). The note keeps headings, lists, tables, code, links (citation links still open the page), math (Zotero's note editor typesets it) and drawings as images; **Open** selects it. On the last answer, the bulb asks the agent to explain again, intuition first.
+
+Answers and notes share a little formatting beyond Markdown: underline, strikethrough, sub- and superscript, and Zotero's text and highlight colours. The agent knows it, and `zotero-cli notes create/update` take the same text, so it can also write formatted notes directly.
+
+Hover a display formula for **Copy TeX**. A formula too wide for the panel shrinks a little, then scrolls sideways. While an answer streams, half-written formulas and tables wait until they are complete.
+
+In the reader, select text and press **Ask in chat** to put it in the composer; in the composer's **+** menu, **This page** attaches the page you are on as an image.
 
 ## The chat folder, and continuing a chat in a terminal
 

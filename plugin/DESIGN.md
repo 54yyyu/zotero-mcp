@@ -128,7 +128,11 @@ The workspace (`<profile>/zotero-chat/workspace`) gets the skill via `zotero-mcp
 
 Shadow DOM, vanilla TypeScript, no framework (small `h()` helper), `marked` for the Markdown lexer. **Never `innerHTML` with
 agent text**: the panel runs in a privileged window and the agent reads the web. Build DOM from tokens; links may be
-`http(s):` or `zotero:` only; images only `data:`; no raw HTML.
+`http(s):` or `zotero:` only; images only `data:`; no raw HTML, except the formatting Zotero notes have and Markdown
+lacks: `<u> <s> <sub> <sup> <mark>` and `<span style="color: …; background-color: …">` with the note editor's own colour
+names (red orange yellow green purple magenta blue gray: its text palette, and its highlight palette at 50%) or a hex value.
+Each is one element with its closing tag and Markdown inside; any other tag stays text and any other attribute or style
+value is dropped (`markdown.ts`). The agent learns it from `FORMAT_GUIDE` (50 words, sent once beside the drawing guide).
 
 Features (Beaver's, measured from its demo video, rebuilt in our visual language, which is meeting-buddy's):
 
@@ -148,8 +152,14 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
 - Transcript: user bubble with chips; "Thinking" row; assistant Markdown streamed; tool steps as one collapsed line each
   (`Searched library · "…"`, expandable to input/output); permission cards (Allow once / Always / Deny); plan list; errors as
   notices with a fix button; citation chips for `zotero:` links; "N sources" fold listing every cited item once;
-  copy / retry per answer; auto-scroll that stops when the user scrolls up (with a jump-to-bottom pill).
-- Math: `$...$`, `$$...$$` rendered with KaTeX (lazy, M6).
+  copy / save as note / retry per answer, and "Explain better" (asks again, intuition first) on the last one; auto-scroll
+  that stops when the user scrolls up (with a jump-to-bottom pill).
+- Math: `$...$`, `$$...$$` rendered with KaTeX (lazy, M6). A display formula has a quiet Copy TeX button; one wider than the
+  panel shrinks to 72% at most, then scrolls with a soft edge fade (one shared ResizeObserver re-fits). Raw TeX shows only if
+  KaTeX has not typeset it within 0.3 s.
+- Streaming: the block still arriving shows only what is settled (`markdown.ts settledBlock`): it stops before an unclosed
+  `$$`, `\[`, `\(`, `$` or formatting tag, hides a ```` ```math ```` fence until it closes and a table's header row until its
+  delimiter row arrives. Finished blocks keep their DOM nodes (a test checks it).
 - Diagrams: a ```` ```svg ```` block is a figure (below).
 
 ### Diagrams (ui/diagram-svg.ts pure, ui/diagram.ts DOM)
@@ -176,7 +186,7 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
   fades in on hover or keyboard focus in reserved space (always shown on touch and in panels under 380px): Source (the code block),
   Copy (PNG via `ClipboardItem`; the SVG text if images cannot be copied), Save as PNG (on white, at least 1400 px wide or 2x)
   and Save as SVG (palette baked in as hex from a light export palette, so the file reads anywhere) through
-  `PanelHost.saveFile` (Zotero's Save dialog). "Add to a note" (`host.saveNote`) slots in after Save when it exists.
+  `PanelHost.saveFile` (Zotero's Save dialog), and Add to a note (`host.saveNote`: the title, then the PNG embedded).
 - **Streaming**: an unclosed fence is a dashed "Drawing…" placeholder, never a half-drawn figure; a fence cut off when the turn
   ends, or SVG with nothing drawable left, shows as a code block.
 - **Lazy**: `mdview.ts` imports `diagram.ts` dynamically on the first svg block; esbuild bundles it as a lazily initialised
@@ -196,11 +206,39 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
   as `<dataDir>/background.jpg` (prefs hold its name only), read back when the panel mounts.
 - Unavailable states are designed too: no backend, not logged in, zotero-cli missing, Zotero's local API off (23119 silent: "restart Zotero").
 
+### Save as note (ui/note-html.ts pure, zotero/note.ts)
+
+`PanelHost.saveNote({title?, markdown, images?})` writes a child note of the item the user is on (the open reader's parent,
+the selected item, or a selected child's parent), else a standalone note in the selected collection; a read-only library is
+an error line, never a half note (an empty note is erased if an image import fails). The answer's question is the title.
+`note-html.ts` walks the same Markdown tree the panel renders and escapes everything: headings, lists, tables, code,
+`zotero://` citation links (clickable in the note), the formatting subset as the editor's marks (`<u>`, `<del>`, `<sub>`,
+`<sup>`, `span style="color/background-color"`), math as the editor's own nodes. Measured on Zotero 10.0.5 (its note-editor
+bundle and the in-Zotero test):
+
+- Math is `<span class="math">$…$</span>` / `<pre class="math">$$…$$</pre>`; the editor strips only the outer delimiters and
+  typesets with its KaTeX (`math-inline.math-node .katex`). It writes `data-schema-version` 9 when a note has math, else 8.
+- An embedded image is an attachment of the saved note: `Zotero.Attachments.importEmbeddedImage({ blob, parentItemID })`
+  (link mode 4, `image/png`), referenced as `<img data-attachment-key="KEY" width height>`, which the editor resolves itself.
+  So the note is saved first, the images imported, the HTML written last. Each diagram's PNG comes from `diagram.ts pngOf`
+  (the light export palette, on white), shown at its own width up to 640 px.
+- The editor's DOM serialises colours as `rgb()`/`rgba()`; the stored HTML keeps the hex.
+- Not produced: Zotero citation nodes (`span.citation` with item data; we write `zotero://` links instead), annotation
+  highlights (`span.highlight` with `data-annotation`), alignment, indent and text direction. `zotero-cli notes` keeps them
+  when a note is edited and written back.
+
+`zotero-cli notes create/update` take the same Markdown, converted server-side (`zotero_mcp/note_html.py`, markdown-it-py)
+through one allow-list sanitizer that also keeps Zotero's own citation, annotation, image, alignment and indent markup.
+
 ## Zotero glue (zotero/)
 
 - Injection: described above; toolbar button in `#zotero-tabs-toolbar`; `Cmd+Shift+L`-style toggle; remembers open/closed and width.
 - Context: library selection (`ZoteroPane.getSelectedItems`), open reader (`Zotero.Reader._readers`, current page, selection via
   `registerEventListener("renderTextSelectionPopup")`), area capture (image annotations in the reader), annotation drag.
+- Reader extras: "Ask in chat" in the text selection popup (a listener registered at startup that only builds the button;
+  pressing it loads the panel and puts the selection in as a chip with the composer focused), and "This page (p. N)" first in
+  the `+` popup while a PDF is open (`zotero/page.ts`: pdf.js's drawn canvas, on white, at most 1568 px; in Zotero's dark mode
+  it is the page as the reader draws it).
 - Open: `ZoteroPane.loadURI("zotero://open-pdf/...")`.
 - Storage: sessions under `<profile>/zotero-chat/sessions/` (jsonl of ChatEvents + index). Settings in prefs `extensions.zotero-chat.*`.
   API keys in the login manager (`Services.logins`), never in prefs.
@@ -254,7 +292,7 @@ Tokens are chars/4 for text and width x height / 750 for images (long edge fitte
 
 | what | cost |
 |---|---|
-| brief + drawing guide, once per chat (system prompt; codex/pi: first prompt) | 332 words, ~549 tokens |
+| brief + drawing guide + formatting guide, once per chat (system prompt; codex/pi: first prompt) | 382 words, ~632 tokens |
 | `<zotero-context>` reader line (title, keys, page) | ~37 tokens |
 | reader line + a 1500-char selection (describe.ts caps there) | ~424 tokens |
 | the "In this PDF" annotation index line | ~30-45 tokens, only when its counts or the page change |
