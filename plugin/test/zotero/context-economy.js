@@ -83,10 +83,23 @@ async function main(ctx) {
   setSelection();
   await ctx.waitFor(() => host.currentContext().some((c) => c.kind === "selection"), "selection after page turn");
   await say("SCENARIO:echo third", 3);
-  const [a, b, c] = await echoes(3);
+  // A new highlight changes the PDF's annotation counts: the index line goes again (the notifier rebuilds it).
+  await Zotero.Annotations.saveFromJSON(att, {
+    key: Zotero.DataObjectUtilities.generateKey(), type: "highlight", pageLabel: "3", color: "#ffd400", text: "the gap is almost unchanged",
+    sortIndex: "00002|000500|00100", position: { pageIndex: 2, rects: [[72, 600, 300, 612]] }, comment: "", tags: [],
+  });
+  await ctx.waitFor(() => /2 annotations/.test(host.currentContext()[0]?.text ?? ""), "index counts the new highlight");
+  setSelection();
+  await say("SCENARIO:echo fourth", 4);
+  const [a, b, c, d] = await echoes(4);
   check(a.prompt.includes(selection.slice(0, 200)) && a.images === 1, "turn 1 carries the selection and the image: " + a.prompt.slice(0, 300) + " images=" + a.images);
   check(!b.prompt.includes(selection.slice(0, 200)) && b.images === 0, "turn 2 does not resend them: " + b.prompt.slice(0, 400) + " images=" + b.images);
-  check(/Still in focus, unchanged[^\n]*selected text p\.1 "Assigning a professional destination/.test(b.prompt), "turn 2 names them: " + b.prompt);
+  check(/Still pointing at, unchanged[^\n]*selected text p\.1 "Assigning a professional destination/.test(b.prompt), "turn 2 names them: " + b.prompt);
+  check(/You are pointing at:\n- selected text \(p\.1\)/.test(a.prompt), "turn 1 labels the focus: " + a.prompt.slice(0, 600));
+  check(/In this PDF: 1 annotation \(1 area\); on this page: 1 area\. Read them with `zotero-cli annotations list --item-key \w+`/.test(a.prompt), "turn 1 has the annotation index: " + a.prompt.slice(0, 600));
+  check(!b.prompt.includes("In this PDF"), "turn 2 does not repeat the index");
+  check(/In this PDF: 1 annotation \(1 area\)\. Read/.test(c.prompt), "page 3 has none of them: the index without a page part: " + c.prompt);
+  check(/In this PDF: 2 annotations \(1 area, 1 highlight\); on this page: 1 highlight\./.test(d.prompt), "new counts go again: " + d.prompt);
   check(/Reading in the Zotero reader: "Test paper for the chat plugin"[^\n]*on p\.3/.test(c.prompt) && c.images === 0, "a page turn re-sends the reader line, still no image: " + c.prompt);
   const firstBlock = a.prompt.slice(0, a.prompt.indexOf("SCENARIO:echo"));
   const secondBlock = b.prompt.slice(0, b.prompt.indexOf("SCENARIO:echo"));

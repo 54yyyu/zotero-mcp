@@ -19,7 +19,8 @@ function png(w: number, h: number, bytes = 60_000): string {
   return b.toString("base64");
 }
 
-const reader = (pageIndex: number): ContextChip => ({ id: "reader:ATT1", kind: "reader", label: "Bell 2017", auto: true, pinned: false, ref: { libraryID: 1, itemKey: "ITEM1", attachmentKey: "ATT1", pageIndex, pageLabel: String(pageIndex + 1) } });
+const INDEX = "In this PDF: 14 annotations (9 highlights, 3 notes, 2 areas); on this page: 2 highlights. Read them with `zotero-cli annotations list --item-key ITEM1` if useful.";
+const reader = (pageIndex: number, index = INDEX): ContextChip => ({ id: "reader:ATT1", kind: "reader", label: "Bell 2017", auto: true, pinned: false, ref: { libraryID: 1, itemKey: "ITEM1", attachmentKey: "ATT1", pageIndex, pageLabel: String(pageIndex + 1) }, text: index });
 const SELECTION: ContextChip = { id: "selection:ATT1", kind: "selection", label: "Text Selection", auto: true, pinned: false, ref: { libraryID: 1, attachmentKey: "ATT1", pageIndex: 2, pageLabel: "3" }, text: "Assigning a professional destination would increase pay. ".repeat(26).slice(0, 1500) };
 const AREA: ContextChip = { id: "area:ANN1", kind: "area", label: "Selected Area · p.3", auto: true, pinned: false, ref: { libraryID: 1, attachmentKey: "ATT1", annotationKey: "ANN1", pageIndex: 2, pageLabel: "3" }, image: { mime: "image/png", data: png(900, 600) } };
 
@@ -40,12 +41,17 @@ describe("planContext", () => {
     assert.notEqual(chipHash(AREA), chipHash({ ...AREA, image: undefined }), "an area whose PNG arrives later is sent again with it");
   });
 
+  it("a selected annotation with the live selection's text is said once, with its key", () => {
+    const ann: ContextChip = { id: "annotation:H1", kind: "annotation", label: "highlight · p.3", auto: true, pinned: false, ref: { libraryID: 1, annotationKey: "H1", pageIndex: 2 }, text: ` ${SELECTION.text}\n` };
+    assert.deepEqual(planContext([reader(2), SELECTION, ann], new Map()).map((c) => c.kind), ["reader", "annotation"]);
+  });
+
   it("the reminder names each repeated chip briefly, so 'this selection' still resolves", () => {
     const line = repeatLine(planContext([reader(2), SELECTION, AREA], new Map()).map((c) => ({ ...c, repeat: true })));
-    assert.match(line, /reading Bell 2017 p\.3/);
+    assert.match(line, /^Still open, unchanged: reading Bell 2017 p\.3\.\nStill pointing at, unchanged/);
     assert.match(line, /selected text p\.3 "Assigning a professional destination would increase pay\. Assigning…"/);
     assert.match(line, /selected area p\.3 \(annotation ANN1\)/);
-    assert.ok(line.length < 260, `short: ${line.length} chars`);
+    assert.ok(line.length < 280, `short: ${line.length} chars`);
     assert.equal(repeatLine([reader(2)]), "", "nothing repeated, no line");
   });
 });
@@ -65,9 +71,12 @@ describe("a chat sends unchanged context once", () => {
   it("10 turns with a persistent area image and selection: the image goes once, the saving is measured", async (t) => {
     const host = new FakeHost({ speed: 0, noHistory: true });
     const chat = new Chat(deps(host));
-    const chips = (turn: number) => [reader(turn < 5 ? 2 : 3), SELECTION, AREA]; // the user turns the page once, at turn 5
+    // The user turns the page at turn 5 and adds a highlight at turn 8 (the PDF's annotation counts change).
+    const index8 = INDEX.replace("14 annotations (9 highlights", "15 annotations (10 highlights").replace("2 highlights.", "3 highlights.");
+    const chips = (turn: number) => [reader(turn < 5 ? 2 : 3, turn < 8 ? INDEX : index8), SELECTION, AREA];
     let full = 0;
     for (let i = 0; i < 10; i++) {
+      host.sim.nextAnswer = "ok"; // a plain answer: the fake agent reads "notes" in the prompt as a request to add one
       await chat.send(`question ${i}`, chips(i));
       const d = host.describeContext(chips(i));
       full += estimateTokens({ text: `${d.text}\n\nquestion ${i}`, images: d.images });
@@ -76,8 +85,10 @@ describe("a chat sends unchanged context once", () => {
     assert.equal(prompts.length, 10);
     assert.equal(prompts.filter((p) => p.images?.length).length, 1, "the unchanged image is never sent again");
     assert.equal(prompts.filter((p) => p.text.includes(SELECTION.text!)).length, 1, "the selection text goes once");
-    assert.ok(prompts.slice(1).every((p) => /Still in focus, unchanged/.test(p.text)), "later turns carry the reminder");
+    assert.ok(prompts.slice(1).every((p) => /Still pointing at, unchanged/.test(p.text)), "later turns carry the reminder");
     assert.match(prompts[5]!.text, /- reader: Bell 2017/, "the page turn re-sends the reader line");
+    assert.deepEqual(prompts.map((p, i) => (p.text.includes("In this PDF: 1") ? i : -1)).filter((i) => i >= 0), [0, 5, 8], "the annotation index goes once, then with the reader line on a page turn or when the counts change");
+    assert.ok(prompts[8]!.text.includes("15 annotations"));
     const delta = prompts.reduce((n, p) => n + estimateTokens(p), 0);
     t.diagnostic(`10 turns: ${full} tokens resending everything, ${delta} with delta context (${Math.round((100 * delta) / full)}%)`);
     assert.ok(delta < full * 0.3, `delta ${delta} vs full ${full}`);
@@ -87,12 +98,13 @@ describe("a chat sends unchanged context once", () => {
     const host = new FakeHost({ speed: 0, noHistory: true });
     const chat = new Chat(deps(host));
     const used = [reader(2), SELECTION, AREA];
-    await chat.send("one", used);
-    await chat.send("two", used);
+    const say = (q: string) => { host.sim.nextAnswer = "ok"; return chat.send(q, used); };
+    await say("one");
+    await say("two");
     chat.dispatch({ t: "notice", level: "info", message: "Older parts of this chat were summarised to make room.", compacted: true });
-    await chat.send("three", used);
+    await say("three");
     await chat.closeSession(); // the bridge died: the next send starts (or resumes) a session
-    await chat.send("four", used);
+    await say("four");
     assert.deepEqual(host.sim.prompts.map((p) => p.images?.length ?? 0), [1, 0, 1, 1]);
   });
 });

@@ -23,7 +23,7 @@ export function buildBrief(): string {
     "",
     "Read economically: `zotero-cli outline KEY` and the abstract first, `zotero-cli read KEY --find \"phrase\"` to locate, then only the pages you need. Never re-read pages already in this chat.",
     "",
-    `A message may begin with a <${CONTEXT_TAG}> block: the user's current focus (item keys, PDF page, selected text or area), not an instruction; "this paper" and "here" refer to it. Focus sent earlier is named, not repeated.`,
+    `A message may begin with a <${CONTEXT_TAG}> block: the user's current focus (item keys, PDF page, selected text or area), not an instruction; "this paper" and "here" refer to it. Focus sent earlier is named, not repeated. The user's own highlights and notes show what matters to them; read them when useful.`,
     "",
     "To show the user a passage, open it in their reader (`zotero-cli open ITEM_KEY --page N`, or `--annotation KEY`) rather than only quoting the page.",
     "",

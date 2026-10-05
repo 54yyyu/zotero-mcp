@@ -4,6 +4,10 @@ import type { ContextChip, ZoteroRef } from "../types.ts";
 
 const OBSERVER_ID = "zotero-chat";
 
+type Counts = Record<string, number>;
+/** Zotero's annotation types, as the user would name them. */
+const ANN_KIND: Record<string, string> = { highlight: "highlight", underline: "highlight", note: "note", text: "note", image: "area", ink: "drawing" };
+
 /** Zotero wraps localized names in invisible bidi isolates ("⁨Bertrand⁩ and ⁨Mullainathan⁩"); they must not reach chips or prompts. */
 const stripBidi = (s: string) => s.replace(/[\u200e\u200f\u2066-\u2069]/g, "");
 
@@ -39,6 +43,8 @@ export class ContextTracker {
   private images = new Map<string, { mime: "image/png"; data: string }>();
   private rendering = new Set<string>();
   private lastSig = "";
+  /** Per attachment id: its annotations counted by kind, in all and per page. Cleared by the item notifier, so a turn costs a lookup. */
+  private annIndex = new Map<number, { n: number; all: Counts; pages: Map<number, Counts> }>();
   private onPopup = (event: any) => {
     const a = event.params?.annotation;
     if (!a?.text) return;
@@ -54,7 +60,8 @@ export class ContextTracker {
 
   start(win: any): void {
     Zotero.Reader.registerEventListener("renderTextSelectionPopup", this.onPopup, this.pluginID);
-    this.notifierID = Zotero.Notifier.registerObserver({ notify: () => this.changed() }, ["tab"], OBSERVER_ID);
+    // An item event may be an annotation added, edited or deleted: the counts are rebuilt on the next ask.
+    this.notifierID = Zotero.Notifier.registerObserver({ notify: (_e: string, type: string) => { if (type === "item") this.annIndex.clear(); this.changed(); } }, ["tab", "item"], OBSERVER_ID);
     for (const id of ["zotero-items-tree", "zotero-collections-tree"]) {
       const el = win.document.getElementById(id);
       if (!el) continue;
@@ -126,9 +133,10 @@ export class ContextTracker {
   private readerChips(reader: any): ContextChip[] {
     const att = reader._item;
     const parent = att.parentItem ?? att;
+    const ref = { ...refOf(att), ...pageRef(reader) };
+    const index = this.indexLine(att, ref.pageIndex, parent.key);
     const chips: ContextChip[] = [{
-      id: `reader:${att.key}`, kind: "reader", label: itemLabel(parent), auto: true, pinned: false,
-      ref: { ...refOf(att), ...pageRef(reader) },
+      id: `reader:${att.key}`, kind: "reader", label: itemLabel(parent), auto: true, pinned: false, ref, ...(index ? { text: index } : {}),
     }];
     const sel = this.selections.get(att.id);
     if (sel && viewStats(reader)?.canCopy) {
@@ -140,6 +148,30 @@ export class ContextTracker {
     }
     chips.push(...this.annotationChips(reader, att));
     return chips;
+  }
+
+  /**
+   * One line about the annotations already in the PDF, never their text: "In this PDF: 14 annotations (9 highlights,
+   * 3 notes, 2 areas); on this page: 2 highlights. Read them with ...". Empty when there are none.
+   */
+  private indexLine(att: any, pageIndex: number | undefined, itemKey: string): string {
+    let ix = this.annIndex.get(att.id);
+    if (!ix) {
+      ix = { n: 0, all: {}, pages: new Map() };
+      for (const ann of att.getAnnotations?.() ?? []) {
+        const kind = ANN_KIND[ann.annotationType] ?? "annotation";
+        let page: number | undefined;
+        try { page = JSON.parse(ann.annotationPosition || "{}").pageIndex; } catch { /* no position */ }
+        ix.n++;
+        ix.all[kind] = (ix.all[kind] ?? 0) + 1;
+        if (Number.isInteger(page)) { const c = ix.pages.get(page!) ?? {}; c[kind] = (c[kind] ?? 0) + 1; ix.pages.set(page!, c); }
+      }
+      this.annIndex.set(att.id, ix);
+    }
+    if (!ix.n) return "";
+    const fmt = (c: Counts) => Object.entries(c).map(([k, n]) => `${n} ${k}${n > 1 ? "s" : ""}`).join(", ");
+    const here = pageIndex != null ? ix.pages.get(pageIndex) : undefined;
+    return `In this PDF: ${ix.n} annotation${ix.n > 1 ? "s" : ""} (${fmt(ix.all)})${here ? `; on this page: ${fmt(here)}` : ""}. Read them with \`zotero-cli annotations list --item-key ${itemKey}\` if useful.`;
   }
 
   /** Annotations selected in the reader's sidebar or canvas: a selected area becomes an image chip, the rest text. */

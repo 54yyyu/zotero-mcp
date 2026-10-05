@@ -104,13 +104,23 @@ The brief also sets reading economy: outline and abstract first, `zotero-cli rea
 **The paper is never pasted.** Each message carries only a short `<zotero-context>` block; the agent reads pages itself, and
 its own conversation (a persistent ACP session, prompt-cached by the provider) keeps what it read. The block is a **delta**
 (`ui/economy.ts`): per agent session the chat remembers each chip it sent (id + fingerprint of page, text and image bytes).
-A chip goes in full the first time and whenever it changes; unchanged, it becomes one reminder line ("Still in focus,
-unchanged since you saw it earlier in this chat: reading Bell 2017 p.3; selected text p.3 "first eight words…"; selected
-area p.3 (annotation K)"), so "this selection" still resolves after a long gap and the agent never thinks the user
-deselected it. An unchanged image is never sent again. The reader line carries the page, so a page turn re-sends it (37
+A chip goes in full the first time and whenever it changes; unchanged, it becomes a short reminder ("Still open,
+unchanged: reading Bell 2017 p.3." and "Still pointing at, unchanged since you saw it earlier in this chat: selected text
+p.3 "first eight words…"; selected area p.3 (annotation K)."), so "this selection" still resolves after a long gap and the
+agent never thinks the user deselected it. An unchanged image is never sent again. The reader line carries the page, so a page turn re-sends it (37
 tokens) and "this page" stays right. Everything goes in full again when the session is new or resumed (a resume may not
 have the history, so it is treated as unsent) and after the agent compacts (claude and codex report `compaction_update`
 because `initialize` asks for it; pi says so in a notice), since the summary may have dropped what was sent.
+
+The block keeps two things apart. **What the user is pointing at now** (the live text selection and up to 3 selected
+annotations: areas, highlights, notes) comes under "You are pointing at:", each with its key (an area's image once; the key
+lets the agent re-fetch it with zotero-cli). A selected annotation whose text is the live selection is said once.
+**What the PDF already contains** is never pasted: one line after the reader line counts it, "In this PDF: 14 annotations
+(9 highlights, 3 notes, 2 areas); on this page: 2 highlights. Read them with `zotero-cli annotations list --item-key K` if
+useful." (`zotero/context.ts indexLine`, counted once per attachment and rebuilt only after a Zotero item event, so a turn
+costs a map lookup; no line when there are none). It is part of the reader chip, so it goes again only when the counts or
+the page change. The brief says the user's own highlights and notes show what matters to them; the agent decides whether
+to read them.
 
 The workspace (`<profile>/zotero-chat/workspace`) gets the skill via `zotero-mcp install-skill --target claude --target agents --root <workspace>`.
 
@@ -222,12 +232,13 @@ Tokens are chars/4 for text and width x height / 750 for images (long edge fitte
 
 | what | cost |
 |---|---|
-| brief + drawing guide, once per chat (system prompt; codex/pi: first prompt) | 317 words, ~528 tokens |
+| brief + drawing guide, once per chat (system prompt; codex/pi: first prompt) | 332 words, ~549 tokens |
 | `<zotero-context>` reader line (title, keys, page) | ~37 tokens |
-| reader line + a 1500-char selection (describe.ts caps there) | ~418 tokens |
+| reader line + a 1500-char selection (describe.ts caps there) | ~424 tokens |
+| the "In this PDF" annotation index line | ~30-45 tokens, only when its counts or the page change |
 | a selected area as Zotero renders it (1872x900 PNG, 143 KB base64) | ~1,577 tokens |
-| same focus, next turn: the reminder line only | ~62 tokens (turn 1 was ~2,012) |
-| 10 turns with a persistent area + selection (unit test, 900x600 area) | 1,715 tokens with delta vs 11,270 resending (15%) |
+| same focus, next turn: the reminder lines only | ~69 tokens (turn 1 was ~2,052) |
+| 10 turns with a persistent area + selection + index line, one page turn, one new highlight (unit test, 900x600 area) | 1,895 tokens with delta vs 11,692 resending (16%) |
 | `zotero-cli read`, generated test PDF (4 pages) | ~68 tokens a page |
 | `zotero-cli read`, a real 39-page arXiv paper (2606.25234) | ~823 tokens a page on average (max 1,338); whole paper ~32k |
 | `zotero-cli read --find` on that paper (extract 0.14 s + search 0.01 s) | 78 tokens (1 hit) to 838 (16 hits on 10 pages) |
@@ -237,9 +248,11 @@ asks it to locate before reading and not to re-read. Images dominate what the pa
 
 **Context meter.** All three bridges send ACP `usage_update { used, size }` (claude-agent-acp 0.85.1 on every result and
 after a compaction; codex-acp 2.1.1 from the last request's tokens; pi-acp 0.0.34 at turn end); the session puts the last
-one on `turn_end.usage` (`contextUsed`, `contextSize`). The composer shows a tiny ring with "NN%" only from 40% (ring only
-under 340 px), tooltip "Context: 62% full. Older parts are summarised automatically."; from 85% a dismissable line suggests a
-new chat, which carries nothing over. A backend that reports nothing shows nothing. A compaction becomes an info notice.
+one on `turn_end.usage` (`contextUsed`, `contextSize`). The composer shows a small ring (SVG circle, filling clockwise)
+beside the mode picker whenever the backend reported a fill: muted ink, amber from 70%, the danger tone from 85%, tooltip and
+aria-label "Context: 62% full (124k of 200k tokens). Older parts are summarised automatically."; from 85% a dismissable line
+also suggests a new chat, which carries nothing over. No numbers, no ring (before the first turn ends, or a backend that says
+nothing). The fill updates at turn end. A compaction becomes an info notice.
 
 **Next (not built):** a per-paper digest cached across chats (outline, abstract, section-to-page map, figure and table
 captions, maybe 1-2k tokens), written by the CLI the first time a paper is read and offered in the first turn of later

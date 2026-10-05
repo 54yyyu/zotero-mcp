@@ -20,6 +20,7 @@ function itemLine(ref: ZoteroRef): string {
 export function describeContext(chips: ContextChip[]): { text: string; images: { mime: string; data: string }[] } {
   const lines: string[] = [];
   const images: { mime: string; data: string }[] = [];
+  const focus: string[] = []; // what the user is pointing at now: the live selection and the selected annotations
   for (const c of chips) {
     if (c.repeat) continue; // sent unchanged before: one reminder line below, no text or image again
     switch (c.kind) {
@@ -28,17 +29,18 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
         const parent = att?.parentItem;
         const title = (parent ?? att)?.getDisplayTitle() ?? c.label;
         lines.push(`Reading in the Zotero reader: "${title}" · ${parent ? `item ${parent.key} · ` : ""}PDF attachment ${c.ref.attachmentKey}${c.ref.pageIndex != null ? ` · on ${page(c.ref)}` : ""}${libLabel(c.ref)}`);
+        if (c.text) lines.push(c.text); // the PDF's annotation counts (context.ts indexLine), never their text
         break;
       }
       case "selection":
-        lines.push(`Selected text${page(c.ref) ? ` (${page(c.ref)})` : ""}: ${quote(c.text ?? "")}`);
+        focus.push(`- selected text${page(c.ref) ? ` (${page(c.ref)})` : ""}: ${quote(c.text ?? "")}`);
         break;
       case "area":
-        lines.push(`Selected area${page(c.ref) ? ` on ${page(c.ref)}` : ""} (annotation ${c.ref.annotationKey})${c.image ? ": the image is attached" : ""}`);
+        focus.push(`- selected area${page(c.ref) ? ` on ${page(c.ref)}` : ""} (annotation ${c.ref.annotationKey})${c.image ? ": the image is attached" : ""}`);
         if (c.image) images.push(c.image);
         break;
       case "annotation":
-        lines.push(`Annotation ${c.ref.annotationKey}${page(c.ref) ? ` (${page(c.ref)})` : ""}: ${quote(c.text ?? "")}`);
+        focus.push(`- ${c.label.split(" · ")[0]} annotation ${c.ref.annotationKey}${page(c.ref) ? ` (${page(c.ref)})` : ""}: ${quote(c.text ?? "")}`);
         break;
       case "collection": {
         const col = c.ref.collectionKey ? Zotero.Collections.getByLibraryAndKey(c.ref.libraryID, c.ref.collectionKey) : null;
@@ -51,6 +53,7 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
       }
     }
   }
+  if (focus.length) lines.push("You are pointing at:", ...focus);
   const again = repeatLine(chips);
   if (again) lines.push(again);
   const text = lines.length ? `<${CONTEXT_TAG}>\n${lines.join("\n")}\n</${CONTEXT_TAG}>` : "";

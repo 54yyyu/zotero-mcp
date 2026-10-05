@@ -22,7 +22,10 @@ export function chipHash(c: ContextChip): string {
  * `sent` belongs to one agent session: a new or resumed session, or a compaction, starts it empty.
  */
 export function planContext(chips: ContextChip[], sent: Map<string, string>): ContextChip[] {
-  return chips.map((c) => {
+  // A selected annotation whose text is the live selection says it once, with its key.
+  const norm = (t = "") => t.replace(/\s+/g, " ").trim();
+  const annotated = new Set(chips.filter((c) => c.kind === "annotation" && c.text).map((c) => norm(c.text)));
+  return chips.filter((c) => !(c.kind === "selection" && annotated.has(norm(c.text)))).map((c) => {
     const h = chipHash(c);
     if (sent.get(c.id) === h) return { ...c, repeat: true };
     sent.set(c.id, h);
@@ -36,9 +39,11 @@ const opening = (s = "") => {
   return `"${words.slice(0, 8).join(" ")}${words.length > 8 ? "…" : ""}"`;
 };
 
-/** One line naming the chips sent before, so "this selection" still resolves without resending it. */
+const FOCUS = new Set<ContextChip["kind"]>(["selection", "area", "annotation"]);
+
+/** Short lines naming the chips sent before, so "this selection" still resolves without resending it. */
 export function repeatLine(chips: ContextChip[]): string {
-  const parts = chips.filter((c) => c.repeat).map((c) => {
+  const name = (c: ContextChip) => {
     switch (c.kind) {
       case "reader": return `reading ${c.label}${pageOf(c)}`;
       case "selection": return `selected text${pageOf(c)} ${opening(c.text)}`;
@@ -47,8 +52,14 @@ export function repeatLine(chips: ContextChip[]): string {
       case "collection": return `collection ${c.ref.collectionKey} (${c.label})`;
       default: return `item ${c.ref.itemKey} (${c.label})`;
     }
-  });
-  return parts.length ? `Still in focus, unchanged since you saw it earlier in this chat: ${parts.join("; ")}.` : "";
+  };
+  const rep = chips.filter((c) => c.repeat);
+  const open = rep.filter((c) => !FOCUS.has(c.kind)).map(name);
+  const focus = rep.filter((c) => FOCUS.has(c.kind)).map(name);
+  return [
+    ...(open.length ? [`Still open, unchanged: ${open.join("; ")}.`] : []),
+    ...(focus.length ? [`Still pointing at, unchanged since you saw it earlier in this chat: ${focus.join("; ")}.`] : []),
+  ].join("\n");
 }
 
 /** Tokens an image costs a Claude-class model: width x height / 750 after fitting the long edge to 1568 px. */

@@ -128,7 +128,7 @@ await test("an unchanged area and selection go once; later turns only name them"
   const [a, b] = await sim(p, () => window.__zmc.sim.prompts.map((x) => ({ text: x.text, images: x.images?.length ?? 0 })));
   assert.equal(a.images, 1);
   assert.equal(b.images, 0, "the same picture is not sent twice");
-  assert.match(b.text, /Still in focus, unchanged[^\n]*selected area p\.19 \(annotation ANNAREA1\)/);
+  assert.match(b.text, /Still pointing at, unchanged[^\n]*selected area p\.19 \(annotation ANNAREA1\)/);
 });
 
 await test("context meter: hidden without numbers, a ring whenever the backend says, amber at 70%, red and a new-chat nudge at 85%", async (p) => {
