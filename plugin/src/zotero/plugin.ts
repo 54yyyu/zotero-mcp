@@ -26,6 +26,7 @@ class ChatPlugin {
     const t1 = Components.utils.now();
     this.registerPane();
     this.timing.paneRegisterMs = Components.utils.now() - t1;
+    Zotero.Reader.registerEventListener("renderTextSelectionPopup", this.onSelectionPopup, this.init.id); // Zotero drops it at shutdown
     this.timing.startupMs = Date.now() - t0;
     const first = Zotero.getMainWindow();
     // The harness hook (loads the script named by ZMC_TEST_SCRIPT) exists in dev builds only: the released plugin has no such door.
@@ -70,6 +71,22 @@ class ChatPlugin {
     // Zotero sends "unload" to the pane's elements when the Settings window closes.
     root.addEventListener("unload", () => pane.dispose(), { once: true });
   }
+
+  /** "Ask in chat" in the reader's text selection popup, styled like its own buttons. Nothing loads until it is pressed. */
+  private onSelectionPopup = (event: any): void => {
+    if (!event.params?.annotation?.text?.trim()) return;
+    const b = event.doc.createElement("button");
+    b.className = "toolbar-button wide-button";
+    b.setAttribute("data-tabstop", "1");
+    b.textContent = "Ask in chat";
+    b.addEventListener("click", () => {
+      const injected = this.windows.get(Zotero.getMainWindow());
+      if (!injected) return;
+      injected.show();
+      injected.ensure().askAbout(event);
+    });
+    event.append(b);
+  };
 
   /** The loaded panel of a window (loading it if need be). */
   panel(win: any = Zotero.getMainWindow()): Panel {

@@ -12,13 +12,19 @@ export interface Panel {
   bundle: HostBundle;
   host: PanelHost;
   api: ReturnType<typeof mountPanel>;
+  /** The reader's "Ask in chat": the selection as a chip, the composer focused. */
+  askAbout(event: any): void;
   dispose(): void;
 }
 
 export function createPanel(opts: { id: string; version: string; win: any; dataDir: string; shadow: ShadowRoot }): Panel {
   const bundle = createHost(opts);
   const api = mountPanel(opts.shadow, bundle.host);
-  return { bundle, host: bundle.host, api, dispose() { api.dispose(); bundle.dispose(); } };
+  const askAbout = (event: any) => {
+    const chip = bundle.context.takeSelection(event); // the tracker may not have seen it: the panel was not loaded yet
+    if (chip) api.addChip(chip);
+  };
+  return { bundle, host: bundle.host, api, askAbout, dispose() { api.dispose(); bundle.dispose(); } };
 }
 
 /**

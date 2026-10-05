@@ -45,12 +45,17 @@ export class ContextTracker {
   private lastSig = "";
   /** Per attachment id: its annotations counted by kind, in all and per page. Cleared by the item notifier, so a turn costs a lookup. */
   private annIndex = new Map<number, { n: number; all: Counts; pages: Map<number, Counts> }>();
-  private onPopup = (event: any) => {
+  private onPopup = (event: any) => { this.takeSelection(event); };
+
+  /** A renderTextSelectionPopup event's selection, kept for its reader; returns its chip (null when it has no text). */
+  takeSelection(event: any): ContextChip | null {
     const a = event.params?.annotation;
-    if (!a?.text) return;
+    const att = event.reader?._item;
+    if (!a?.text || !att) return null;
     this.selections.set(event.reader.itemID, { text: a.text, pageIndex: a.position?.pageIndex ?? null, pageLabel: a.pageLabel ?? null, at: Date.now() });
     this.changed();
-  };
+    return this.selectionChip(att);
+  }
 
   private pluginID: string;
 
@@ -138,16 +143,21 @@ export class ContextTracker {
     const chips: ContextChip[] = [{
       id: `reader:${att.key}`, kind: "reader", label: itemLabel(parent), auto: true, pinned: false, ref, ...(index ? { text: index } : {}),
     }];
-    const sel = this.selections.get(att.id);
-    if (sel && viewStats(reader)?.canCopy) {
-      chips.push({
-        id: `selection:${att.key}`, kind: "selection", label: "Text Selection", auto: true, pinned: false,
-        ref: { ...refOf(att), ...(sel.pageIndex != null ? { pageIndex: sel.pageIndex } : {}), ...(sel.pageLabel ? { pageLabel: sel.pageLabel } : {}) },
-        text: sel.text,
-      });
-    }
+    const sel = viewStats(reader)?.canCopy ? this.selectionChip(att) : null;
+    if (sel) chips.push(sel);
     chips.push(...this.annotationChips(reader, att));
     return chips;
+  }
+
+  /** The last text selected in this attachment's reader, as a chip. */
+  private selectionChip(att: any): ContextChip | null {
+    const sel = this.selections.get(att.id);
+    if (!sel) return null;
+    return {
+      id: `selection:${att.key}`, kind: "selection", label: "Text Selection", auto: true, pinned: false,
+      ref: { ...refOf(att), ...(sel.pageIndex != null ? { pageIndex: sel.pageIndex } : {}), ...(sel.pageLabel ? { pageLabel: sel.pageLabel } : {}) },
+      text: sel.text,
+    };
   }
 
   /**

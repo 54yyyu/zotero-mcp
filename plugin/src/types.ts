@@ -354,4 +354,8 @@ export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "rese
   | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "theme" | "onThemeChange" | "onSettingsChange"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
 
 /** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. */
-export type MountPanel = (root: ShadowRoot, host: PanelHost) => { dispose(): void; focusComposer(): void; runPrompt(slot: number): void };
+export type MountPanel = (root: ShadowRoot, host: PanelHost) => {
+  dispose(): void; focusComposer(): void; runPrompt(slot: number): void;
+  /** A chip added by hand (the reader's "Ask in chat"), then the composer focused. */
+  addChip(chip: ContextChip): void;
+};
