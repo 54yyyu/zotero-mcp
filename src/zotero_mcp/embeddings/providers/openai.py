@@ -167,6 +167,11 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         float makes every OpenAI-compatible backend, native OpenAI included,
         respond deterministically.
 
+        Exception: Voyage AI (``api.voyageai.com``), reachable through this
+        provider via ``base_url``, only accepts ``encoding_format="base64"``
+        and rejects ``"float"`` with a 400. Send base64 there; the OpenAI SDK
+        transparently decodes base64 responses, so downstream code is unchanged.
+
         Headers come back via ``with_raw_response`` where the SDK offers it, so
         the limiter can read whatever rate-limit headroom the provider reports.
         OpenAI-compatible backends and test doubles that do not expose it fall
@@ -174,10 +179,11 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         """
         embeddings_api = self.client.embeddings
         raw_api = getattr(embeddings_api, "with_raw_response", None)
+        voyage = bool(self.base_url and "voyageai" in self.base_url)
         request = {
             "model": self.model_name,
             "input": texts,
-            "encoding_format": "float",
+            "encoding_format": "base64" if voyage else "float",
         }
         # Pass dimensions only when explicitly set; some OpenAI-compatible
         # backends (e.g. certain OpenRouter models) reject the parameter, so we

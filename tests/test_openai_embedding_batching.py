@@ -82,3 +82,19 @@ def test_get_config_roundtrips_new_fields():
     assert cfg["request_batch_size"] == 128
     assert cfg["rate_limit_rps"] == 5.0
     assert cfg["model_name"] == "text-embedding-3-small"
+
+
+def test_voyage_base_url_gets_base64_encoding_format():
+    # Voyage AI (api.voyageai.com via base_url) rejects encoding_format="float"
+    # with a 400; it only accepts "base64". Everything else keeps "float" (#348).
+    ef, calls = _make(batch_size=2)
+    ef.base_url = "https://api.voyageai.com/v1"
+    ef([0, 1])
+    assert calls and all(c["encoding_format"] == "base64" for c in calls)
+
+
+def test_non_voyage_base_url_keeps_float_encoding_format():
+    ef, calls = _make(batch_size=2)
+    ef.base_url = "https://openrouter.ai/api/v1"
+    ef([0, 1])
+    assert calls and all(c["encoding_format"] == "float" for c in calls)
