@@ -25,6 +25,28 @@ const opt = (n, d) => (args.includes(`--${n}`) ? args[args.indexOf(`--${n}`) + 1
 
 const ZOTERO = process.env.ZMC_ZOTERO_BIN || "/Applications/Zotero.app/Contents/MacOS/zotero";
 const dev = join(root, ".dev");
+
+// Every run shares one profile and one data dir, so two at once would wipe each other's. Take a lock and wait for the other
+// run to finish (a lock whose process is gone is stale and is taken over).
+mkdirSync(dev, { recursive: true });
+{
+  const lock = join(dev, ".lock");
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  let told = false;
+  for (;;) {
+    try { mkdirSync(lock); writeFileSync(join(lock, "pid"), String(process.pid)); break; } catch {
+      let owner = 0;
+      try { owner = Number(readFileSync(join(lock, "pid"), "utf8")); } catch { /* being written */ }
+      if (owner && !alive(owner)) { rmSync(lock, { recursive: true, force: true }); continue; }
+      if (!told) { console.log(`dev: another run (pid ${owner || "?"}) is using .dev, waiting for it`); told = true; }
+      nap(2000);
+    }
+  }
+  const release = () => rmSync(lock, { recursive: true, force: true });
+  process.on("exit", release);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => process.exit(130));
+}
 const profile = join(dev, "profile");
 const data = join(dev, "data");
 const realData = join(homedir(), "Zotero");
