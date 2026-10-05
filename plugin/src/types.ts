@@ -199,7 +199,8 @@ export interface Spawner {
 
 // ───────────────────────────── ui/ ─────────────────────────────
 
-export interface ItemHit { ref: ZoteroRef; title: string; subtitle: string; kind: "item" | "collection" | "annotation" }
+/** `page`: the open reader's current page, which chipFor() turns into an image chip. */
+export interface ItemHit { ref: ZoteroRef; title: string; subtitle: string; kind: "item" | "collection" | "annotation" | "page" }
 
 /** What "Save as note" hands the host. The i-th closed ```svg block of `markdown` becomes `images[i]` (a PNG); without one it stays code. */
 export interface NoteRequest { title?: string; markdown: string; images?: (NoteImage | null)[] }

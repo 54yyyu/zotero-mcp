@@ -117,7 +117,7 @@ export type IconName = keyof typeof ICONS;
 
 /** The icon for a context chip's kind and a search hit's kind. */
 export const CHIP_ICON: Record<string, IconName> = {
-  item: "item", reader: "item", selection: "selection", area: "area", annotation: "highlight", collection: "folder", note: "file",
+  item: "item", reader: "item", selection: "selection", area: "area", page: "file", annotation: "highlight", collection: "folder", note: "file",
 };
 
 /** An SVG element with attributes (and children). */

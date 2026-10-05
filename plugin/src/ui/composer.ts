@@ -163,7 +163,7 @@ export class Composer {
       h("div.area__head", null, icon("area"), h("span", null, c.label || "Selected Area")),
       src ? h("img.area__img", { src, alt: "The selected area of the page" }) : h("div.area__none", null, "No preview"),
       h("div.area__acts", null,
-        h("button.lnk", { type: "button", onclick: () => this.opts.open(c.ref) }, icon("external"), "Go to Annotation"),
+        h("button.lnk", { type: "button", onclick: () => this.opts.open(c.ref) }, icon("external"), c.ref.annotationKey ? "Go to Annotation" : "Go to Page"),
         h("button.lnk", { type: "button", onclick: () => this.opts.onRemoveChip(c) }, icon("close"), "Remove")));
   }
 

@@ -47,7 +47,7 @@ export function repeatLine(chips: ContextChip[]): string {
     switch (c.kind) {
       case "reader": return `reading ${c.label}${pageOf(c)}`;
       case "selection": return `selected text${pageOf(c)} ${opening(c.text)}`;
-      case "area": return `selected area${pageOf(c)} (annotation ${c.ref.annotationKey})`;
+      case "area": return c.ref.annotationKey ? `selected area${pageOf(c)} (annotation ${c.ref.annotationKey})` : `the whole page${pageOf(c)}, as an image`;
       case "annotation": return `annotation ${c.ref.annotationKey}${pageOf(c)} ${opening(c.text)}`;
       case "collection": return `collection ${c.ref.collectionKey} (${c.label})`;
       default: return `item ${c.ref.itemKey} (${c.label})`;

@@ -36,7 +36,8 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
         focus.push(`- selected text${page(c.ref) ? ` (${page(c.ref)})` : ""}: ${quote(c.text ?? "")}`);
         break;
       case "area":
-        focus.push(`- selected area${page(c.ref) ? ` on ${page(c.ref)}` : ""} (annotation ${c.ref.annotationKey})${c.image ? ": the image is attached" : ""}`);
+        // an area annotation, or the whole page ("This page" in the + popup, no annotation)
+        focus.push(`${c.ref.annotationKey ? `- selected area${page(c.ref) ? ` on ${page(c.ref)}` : ""} (annotation ${c.ref.annotationKey})` : `- the whole page ${page(c.ref)}`}${c.image ? ": the image is attached" : ""}`);
         if (c.image) images.push(c.image);
         break;
       case "annotation":

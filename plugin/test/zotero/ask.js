@@ -53,5 +53,26 @@ async function main(ctx) {
   popup("A second selection about callbacks").querySelector("button").click();
   await ctx.waitFor(() => selChips()[0]?.getAttribute("title") === "Text Selection: A second selection about callbacks", "second selection");
   check(selChips().length === 1, "still one selection chip");
+
+  // 4. "This page" in the + popup: first while a PDF is open, the page as an image chip, described as the whole page
+  const host = ctx.plugin.panel().host;
+  const first = (await host.search(""))[0];
+  check(first?.kind === "page" && first.title === "This page (p. 1)", "the page hit comes first: " + JSON.stringify(first));
+  check(!(await host.search("Ask")).some((x) => x.kind === "page") && (await host.search("page"))[0]?.kind === "page", "only for an empty query or 'page'");
+  root.querySelector('button[aria-label="Add a source"]').click();
+  const row = await ctx.waitFor(() => [...root.querySelectorAll(".pop__i")].find((li) => li.textContent.startsWith("This page (p. 1)")), "the page row");
+  row.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  const card = await ctx.waitFor(() => [...root.querySelectorAll(".area")].find((c) => /Page 1/.test(c.textContent) && c.querySelector("img.area__img")), "the page chip");
+  check(/Go to Page/.test(card.textContent), "its action says Page");
+  const img = card.querySelector("img.area__img");
+  await ctx.waitFor(() => img.complete && img.naturalWidth > 0, "the page image decodes");
+  out.pageImage = [img.naturalWidth, img.naturalHeight];
+  check(Math.max(img.naturalWidth, img.naturalHeight) <= 1568 && img.naturalWidth > 200, "a real page image, at most 1568 px: " + out.pageImage);
+  const chipObj = await host.chipFor(first);
+  const d = host.describeContext([chipObj]);
+  out.pageLine = d.text.split("\n").find((l) => l.includes("whole page"));
+  check(/the whole page p\.1: the image is attached/.test(d.text) && d.images.length === 1 && d.images[0].mime === "image/png", "described as the whole page: " + d.text);
+  await ctx.sleep(300);
+  await ctx.snapshot("ask-2-page-chip");
   return out;
 }

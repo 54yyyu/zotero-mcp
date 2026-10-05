@@ -7,6 +7,7 @@ import { dropChips } from "./drop.ts";
 import { createDoctor, findCli } from "./doctor.ts";
 import * as keychain from "./keychain.ts";
 import { saveNote } from "./note.ts";
+import { pageChip, pageHit } from "./page.ts";
 import { openTarget } from "./open.ts";
 import { chipForHit, search } from "./search.ts";
 import { createGeckoSpawner } from "./spawn-gecko.ts";
@@ -56,8 +57,14 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
         .map((c) => (c.kind === "area" && !s.attachAreas ? { ...c, image: undefined } : c));
     },
     onContextChange: (cb) => context.on(cb),
-    search: (q) => search(win, q, context.activeReader(win)?._item ?? null),
+    async search(q) {
+      const reader = context.activeReader(win);
+      const page = reader ? pageHit(reader, q) : null;
+      const hits = await search(win, q, reader?._item ?? null);
+      return page ? [page, ...hits] : hits;
+    },
     async chipFor(hit) {
+      if (hit.kind === "page") return pageChip(win, context.activeReader(win), hit);
       let text: string | undefined;
       if (hit.kind === "annotation" && hit.ref.annotationKey) {
         const a = Zotero.Items.getByLibraryAndKey(hit.ref.libraryID, hit.ref.annotationKey);
