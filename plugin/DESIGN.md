@@ -136,7 +136,15 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
 - Empty state: custom prompts with `Cmd+Ctrl+1..4` (mac) / `Ctrl+Alt+1..4`, editable.
 - Composer: auto context chip for the current item (bookmark = pin), `Text Selection` chip when text is selected in the reader,
   `Selected Area` chip with thumbnail + Go to Annotation / Remove, `+` and `@` to attach items/collections/annotations,
-  model picker, mode picker, Send / Stop (Esc), Enter sends, Shift+Enter newline, drop an annotation on it.
+  one model button, mode picker, Send / Stop (Esc), Enter sends, Shift+Enter newline, drop an annotation on it.
+  The model button (`ui/pickers.ts`) shows the model and, softly, the effort level; its one dropdown opens right above it: the agents
+  as a segmented row (status dot from `detect()`; one that is not ready says why and is not chosen), the chosen agent's models in its
+  catalog's order (the first four, the rest under an inline More models, the current one always listed; no model id is hardcoded),
+  and an Effort row with the stepped slider (drag, click a stop, Left/Right; applied on release or 250 ms after the last key;
+  Recommended marks the catalog's default level; hidden when the agent has no levels). Another agent applies at once on an empty
+  chat and asks inline ("Switching starts a new chat with Codex." Start new chat / Cancel) when the chat has messages. Up/Down move
+  through the dropdown, Left/Right between agents (without choosing) or along the slider, Esc gives the focus back. At 300 px the
+  model name is what truncates; the effort word, the context ring and the mode button stay whole.
 - Transcript: user bubble with chips; "Thinking" row; assistant Markdown streamed; tool steps as one collapsed line each
   (`Searched library · "…"`, expandable to input/output); permission cards (Allow once / Always / Deny); plan list; errors as
   notices with a fix button; citation chips for `zotero:` links; "N sources" fold listing every cited item once;
@@ -196,6 +204,17 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
 - Open: `ZoteroPane.loadURI("zotero://open-pdf/...")`.
 - Storage: sessions under `<profile>/zotero-chat/sessions/` (jsonl of ChatEvents + index). Settings in prefs `extensions.zotero-chat.*`.
   API keys in the login manager (`Services.logins`), never in prefs.
+- Settings pane: Zotero's Settings window lists a "Zotero Chat" pane (`Zotero.PreferencePanes.register`, not awaited, in
+  `startup()`: 0.04 ms). Zotero inserts the pane's markup (`prefpane.xhtml`, one div) into the Settings window's own document and
+  runs `prefpane.js` in a sandbox; that script hands the div to the plugin over `Services.obs`, and the plugin mounts the panel's
+  own settings screen in a shadow root there (`ui/pane.ts`, the same `settingsView`, no copy). The pane loads its own copy of
+  panel.js (31 ms, on open only): the UI keeps the window and document it draws in as module state, so it cannot share the main
+  window's. It runs on `zotero/settings-host.ts`, the settings half of the host that `host.ts` also builds on, and starts no agent:
+  `detect()` only looks for the CLIs, and a catalog shows at once only when an open panel has read it (`HostBundle.knownCatalog`),
+  otherwise the Agent card offers a button. Each host caches the settings pref parsed and observes it (`Zotero.Prefs.registerObserver`):
+  a write from elsewhere drops the cache and calls `onSettingsChange`, so the panel (look, behaviour, pickers, an open settings screen)
+  and the pane follow each other live; a host's own writes are not echoed back to it. The shadow root keeps Zotero's pane CSS out
+  and ours in; the pane drops our backdrop (Zotero's window is the background) and follows Zotero's light and dark.
 - Doctor: Zotero local API reachable (a long-running Zotero stops serving on 23119; the fix is "restart Zotero"), write access
   authorized, `zotero-cli` present (fix: `uv tool install zotero-mcp-server`, falling back to `pipx`/`pip --user`), node present,
   a backend available and signed in.
@@ -225,7 +244,7 @@ test with real Claude Code (`ZMC_LIVE=1`), one tiny prompt, no library writes.
 What matters is that the plugin never slows Zotero's own startup, so that is the number under test: with the panel closed,
 Zotero waits for this plugin only while it reads `plugin.js` (6 KB) and runs `startup()`, measured at 0 to 1 ms and capped at 50
 (`test/zotero/budget.js`). `panel.js` (UI, agent runtime, katex, marked: about 490 KB minified) is read the first time the panel opens
-(about 35 ms, capped at 150) and never at startup. Bundle size is not otherwise a concern, within reason (hundreds of KB are fine,
+(about 35 ms, capped at 150) and never at startup; Zotero's Settings pane reads its own copy only when it is opened (`test/zotero/prefpane.js`). Bundle size is not otherwise a concern, within reason (hundreds of KB are fine,
 tens of MB are not): `test/budget.test.ts` only catches a blow-up. Redundancy is the thing to avoid: no helper, setting or layer without a
 user or a failure it protects against. Every agent-written layer gets a simplify pass before it is called done.
 
