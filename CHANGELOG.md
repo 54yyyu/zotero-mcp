@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **SQLite free-text search ignores case and accents, like Zotero's own search** (#663). With `ZOTERO_BACKEND=sqlite`, `zotero_search_items` compared raw values with SQLite's `LIKE`, which folds ASCII case only, so `índice` and `indice` missed a title with `Índice`, and `SUCESIÓN` missed `sucesión`, while the API path found them. Title, creator, abstract, tag and note matches now go through `zsearch_norm` on both sides, as `zotero_advanced_search` already does since #417.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security
