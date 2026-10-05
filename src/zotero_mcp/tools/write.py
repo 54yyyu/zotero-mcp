@@ -903,7 +903,8 @@ def batch_update(
     description=(
         "Create a new collection (project/folder) in your Zotero library. "
         "To create a subcollection, pass parent_collection (not parent_key) as either "
-        "a collection key (8-character string like 'KMMQDFQ4') or a collection name. "
+        "a collection key (8-character string like 'KMMQDFQ4'), a collection name, "
+        "or a 'Parent/Child' path when the name is shared. "
         "Use zotero_search_collections to find collection keys."
     )
 )
@@ -922,11 +923,12 @@ def create_collection(
     try:
         ctx.info(f"Creating collection '{name}'")
 
-        # Resolve parent_collection name if it doesn't look like a key
-        parent_key = parent_collection
-        if parent_collection and not re.match(r'^[A-Z0-9]{8}$', parent_collection):
+        # A key, name or 'parent/child' path. A name shared by several
+        # collections is an error listing them, not the first match.
+        parent_key = None
+        if parent_collection:
             try:
-                keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
+                keys = _helpers.resolve_collection_specs(read_zot, [parent_collection], ctx=ctx)
                 parent_key = keys[0] if keys else None
             except ValueError as e:
                 return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
@@ -1001,7 +1003,7 @@ def delete_collection(
         "Rename a collection or move it under a different parent, keeping its "
         "key, subcollections and item membership (#517). collection_key: the "
         "8-character key of the collection to change. name: the new name, or "
-        "omit to keep it. parent_collection: key or name of the new parent; "
+        "omit to keep it. parent_collection: key, name or 'Parent/Child' path of the new parent; "
         "a collection cannot be moved under itself or one of its own "
         "subcollections. to_top_level=True moves it out of any parent. Pass "
         "at least one change. Use zotero_search_collections to find keys. "
@@ -1048,15 +1050,15 @@ def update_collection(
             changes.append(f"renamed to \"{name}\"")
 
         if parent_collection:
-            parent_key = parent_collection
-            if not re.match(r"^[A-Z0-9]{8}$", parent_collection):
-                try:
-                    keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
-                except ValueError as e:
-                    return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
-                parent_key = keys[0] if keys else None
-                if not parent_key:
-                    return f"Error: parent collection not found: {parent_collection}"
+            # A key, name or 'parent/child' path; an ambiguous name is an
+            # error listing the candidates, not the first match.
+            try:
+                keys = _helpers.resolve_collection_specs(read_zot, [parent_collection], ctx=ctx)
+            except ValueError as e:
+                return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
+            parent_key = keys[0] if keys else None
+            if not parent_key:
+                return f"Error: parent collection not found: {parent_collection}"
             # Zotero accepts a parent that is the collection itself or one of
             # its descendants and the tree then disappears from the desktop
             # client, so refuse the cycle here.

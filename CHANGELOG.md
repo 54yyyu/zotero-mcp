@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A parent collection named ambiguously is an error, not a guess** (#665). `zotero_create_collection` and `zotero_update_collection` resolved a `parent_collection` name to the first collection with that name, so with a `Readings` subcollection under two courses the new or moved collection could land under the wrong one, and the tool reported success. Parent names now go through the same resolver as `zotero_set_item_collections` (#233): an ambiguous name returns an error listing the candidates, a `Parent/Child` path picks one, and an eight-capital name such as `PROJECTS` is read as a name unless a collection has that key.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security
