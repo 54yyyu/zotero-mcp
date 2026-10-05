@@ -2,7 +2,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ContextChip } from "../src/types.ts";
-import { chipHash, estimateTokens, imageTokens, planContext, repeatLine } from "../src/ui/economy.ts";
+import { chatStats, chipHash, contextFill, estimateTokens, imageTokens, planContext, repeatLine, sentLine } from "../src/ui/economy.ts";
+import { replay } from "../src/ui/transcript.ts";
 import { Chat } from "../src/ui/chat.ts";
 import { FakeHost } from "../src/ui/fake-host.ts";
 import { env } from "../src/ui/dom.ts";
@@ -106,5 +107,25 @@ describe("a chat sends unchanged context once", () => {
     await chat.closeSession(); // the bridge died: the next send starts (or resumes) a session
     await say("four");
     assert.deepEqual(host.sim.prompts.map((p) => p.images?.length ?? 0), [1, 0, 1, 1]);
+  });
+});
+
+describe("the context popover's numbers", () => {
+  it("come from the transcript: the last fill (a compaction's too), messages, the last turn, compactions", () => {
+    const tr = replay([
+      { t: "user", id: "u1", text: "q", chips: [] }, { t: "turn_start", turn: "t1" },
+      { t: "turn_end", turn: "t1", stop: "end_turn", usage: { inputTokens: 24000, outputTokens: 47, contextUsed: 150000, contextSize: 200000 } },
+      { t: "notice", level: "info", message: "summarised", compacted: true, context: { used: 6000, size: 200000 } },
+    ]);
+    assert.deepEqual(contextFill(tr), { used: 6000, size: 200000, pct: 3 });
+    assert.deepEqual(chatStats(tr), { messages: 2, compactions: 1, last: { inputTokens: 24000, outputTokens: 47, contextUsed: 150000, contextSize: 200000 } });
+    assert.equal(contextFill(replay([{ t: "notice", level: "info", message: "x", compacted: true }])), null, "an automatic compaction says no fill of its own");
+  });
+
+  it("sentLine names what went in full and what was only named", () => {
+    const sent = new Map<string, string>();
+    planContext([reader(2), SELECTION], sent);
+    assert.equal(sentLine(planContext([reader(3), SELECTION], sent)), "Reader p.4 in full; selection p.3 named only (unchanged)");
+    assert.equal(sentLine([]), "");
   });
 });

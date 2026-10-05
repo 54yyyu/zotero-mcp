@@ -16,7 +16,7 @@ export type Stop = "end_turn" | "cancelled" | "max_tokens" | "refusal" | "error"
 
 export interface UserMessage { role: "user"; id: string; text: string; chips: ChipSummary[] }
 export interface AssistantMessage { role: "assistant"; id: string; blocks: Block[]; done: boolean; stop?: Stop; usage?: Usage }
-export interface NoticeMessage { role: "notice"; id: string; level: "info" | "warn" | "error"; message: string; hint?: string }
+export interface NoticeMessage { role: "notice"; id: string; level: "info" | "warn" | "error"; message: string; hint?: string; compacted?: boolean; context?: { used: number; size: number } }
 export type Message = UserMessage | AssistantMessage | NoticeMessage;
 
 export interface TranscriptState {
@@ -106,7 +106,7 @@ export function applyEvent(state: TranscriptState, ev: ChatEvent): TranscriptSta
     }
     case "notice": {
       const n = state.notices + 1;
-      const msg: NoticeMessage = { role: "notice", id: `notice-${n}`, level: ev.level, message: ev.message, ...(ev.hint ? { hint: ev.hint } : {}) };
+      const msg: NoticeMessage = { role: "notice", id: `notice-${n}`, level: ev.level, message: ev.message, ...(ev.hint ? { hint: ev.hint } : {}), ...(ev.compacted ? { compacted: true } : {}), ...(ev.context ? { context: ev.context } : {}) };
       return { ...state, messages: [...state.messages, msg], notices: n };
     }
   }

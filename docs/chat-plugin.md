@@ -95,6 +95,10 @@ Select a word, a sentence or a paragraph in a PDF and press **Translate** in Zot
 
 It uses the agent you chat with, in a session of its own: it is told only to translate (and never to follow instructions found in the text), it gets no tools, none of your chats, and none of your agent's settings or skills; Codex runs read-only, and any request to use a tool is refused. The session starts when the selection popup appears (it costs no tokens until you press Translate) and stays ready for about five minutes, so with Claude a translation usually starts appearing within a second.
 
+## How full the chat is
+
+Once the agent reports it, a small ring beside the permission mode shows how much of the agent's context window this chat uses (amber from 70%, red from 85%). Hover it for the number; click it for details: tokens used, messages, the last turn's tokens (and cost, if "Show tokens and cost" is on), how often the agent summarised older parts, and what context your last message sent. From there, New chat starts fresh, and with Claude, Summarise now asks the agent to summarise the conversation so far and keep going.
+
 ## The chat folder, and continuing a chat in a terminal
 
 Every chat is a normal agent session that runs in a folder, by default `~/Documents/Zotero-Chat`. The panel installs the `zotero-cli` skill there (under `.claude/skills` and `.agents/skills`, plus a marked block in `AGENTS.md`; it only changes what it marked, so if you pick a folder you already use, the rest of your files are left alone). Change the folder in the settings; it applies to new chats. Each chat remembers the folder it started in, so changing the setting never breaks an old one.

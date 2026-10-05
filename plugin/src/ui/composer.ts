@@ -1,10 +1,13 @@
 // The composer: context chips, the textarea, `@` and `+` search, the pickers, Send / Stop.
 // It owns the draft and the popups; the controller (index.ts) owns what a send does.
 import type { BackendId, ContextChip, ItemHit, ZoteroRef } from "../types.ts";
-import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids, svg } from "./dom.ts";
+import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids } from "./dom.ts";
+import type { Fill } from "./economy.ts";
 import { SearchPopup } from "./search.ts";
 import { Pickers } from "./pickers.ts";
 import type { Choices, PickKind } from "./pickers.ts";
+import { ContextRing, FULL_AT } from "./ring.ts";
+import type { RingInfo } from "./ring.ts";
 
 export type { Choices };
 
@@ -28,14 +31,13 @@ export interface ComposerOpts {
   /** The composer got focus for the first time: a good moment to warm the agent up. */
   onFirstFocus(): void;
   checkSetup(): void;
-  /** The long-chat suggestion's button: a new chat that carries nothing over. */
+  /** The long-chat suggestion's and the context popover's button: a new chat that carries nothing over. */
   onNewChat(): void;
+  /** What the context popover lists about this chat. */
+  contextInfo(): RingInfo;
+  /** The context popover's Summarise now. */
+  onCompact(): void;
 }
-
-/** The meter turns amber from WARM_AT; from FULL_AT it turns red and a new chat is suggested. */
-const WARM_AT = 70;
-const FULL_AT = 85;
-const kTokens = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
 
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
@@ -54,8 +56,7 @@ export class Composer {
   private blocked: string | null = null;
   private atStart = -1;
   private warmed = false;
-  private meter = h("span.cmeter", { hidden: true, role: "img" });
-  private meterArc = svg("circle", { cx: "8", cy: "8", r: "6", pathLength: "100", class: "cmeter__arc" });
+  private ring: ContextRing;
   private longNote: HTMLElement;
   private noteDismissed = false;
 
@@ -77,7 +78,7 @@ export class Composer {
     this.pickers = new Pickers(this.el, { load: () => opts.loadChoices(), pick: (k, id) => opts.onPick(k, id), switchAgent: (id) => opts.switchAgent(id), hasMessages: () => opts.hasMessages(), checkSetup: () => opts.checkSetup() });
     this.sendBtn = h("button.send", { type: "button", "aria-label": "Send", title: "Send (Enter)", onclick: () => this.send() }, icon("send")) as HTMLButtonElement;
 
-    this.meter.appendChild(svg("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, svg("circle", { cx: "8", cy: "8", r: "6", class: "cmeter__track" }), this.meterArc));
+    this.ring = new ContextRing(this.el, { info: () => opts.contextInfo(), newChat: () => opts.onNewChat(), compact: () => opts.onCompact(), opening: () => { this.pickers.close(); this.pop.close(); } });
     this.longNote = h("div.cnote", { hidden: true, role: "status" },
       h("span.cnote__t", null, "This chat is getting long. A new chat starts fresh and carries nothing over."),
       h("button.lnk", { type: "button", onclick: () => opts.onNewChat() }, icon("plus"), "New chat"),
@@ -85,7 +86,7 @@ export class Composer {
 
     const b = this.pickers.buttons;
     append(this.el, [this.pop.el, this.longNote, this.chipsEl, this.ta,
-      h("div.ctools", null, this.plusBtn, b.model, h("span.ctools__fill"), this.meter, b.mode, this.sendBtn)]);
+      h("div.ctools", null, this.plusBtn, b.model, h("span.ctools__fill"), this.ring.el, b.mode, this.sendBtn)]);
     this.wireDrop();
     env.doc.addEventListener("pointerdown", this.outside, true);
     this.syncSend();
@@ -111,6 +112,7 @@ export class Composer {
   private outside = (e: Event): void => {
     const path = e.composedPath();
     if (this.pickers.isOpen && !this.pickers.inside(path)) this.pickers.close();
+    if (this.ring.isOpen && !this.ring.inside(path)) this.ring.close();
     if (this.pop.isOpen && !path.includes(this.pop.el) && !path.includes(this.plusBtn) && !path.includes(this.ta)) this.pop.close();
   };
 
@@ -125,18 +127,12 @@ export class Composer {
   setText(t: string): void { this.ta.value = t; this.autosize(); this.syncSend(); }
   clearDraft(): void { this.setText(""); }
 
-  /** How full the agent's context is: a ring whenever the backend says (hidden when it does not), a new-chat suggestion from FULL_AT. */
-  setContextFill(fill: { pct: number; used: number; size: number } | null): void {
+  /** How full the agent's context is: the ring whenever the backend says (hidden when it does not), a new-chat suggestion from FULL_AT. */
+  setContextFill(fill: Fill | null): void {
     const pct = fill?.pct ?? 0;
-    this.meter.hidden = !fill;
+    this.ring.set(fill, this.busy);
     if (pct < FULL_AT) this.noteDismissed = false;
     this.longNote.hidden = pct < FULL_AT || this.noteDismissed;
-    if (!fill) return;
-    const tip = `Context: ${pct}% full (${kTokens(fill.used)} of ${kTokens(fill.size)} tokens). Older parts are summarised automatically.`;
-    this.meter.title = tip;
-    this.meter.setAttribute("aria-label", tip);
-    this.meter.dataset["level"] = pct >= FULL_AT ? "full" : pct >= WARM_AT ? "warm" : "";
-    this.meterArc.setAttribute("stroke-dasharray", `${pct} 100`);
   }
 
   setChips(chips: ContextChip[]): void {

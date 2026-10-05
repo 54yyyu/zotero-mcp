@@ -31,6 +31,14 @@ describe("real Claude Code, one tiny prompt", { skip: on ? false : "set ZMC_LIVE
       assert.match(text, /pong/i);
       assert.equal(events[0]!.t, "turn_start");
       assert.equal((events.at(-1) as { stop: string }).stop, "end_turn");
+      // Summarise now: the bridge's /compact, silently; one notice with a smaller fill (measured 24k -> 2.7k on 2026-10-05)
+      const before = (events.at(-1) as { usage?: { contextUsed?: number } }).usage?.contextUsed ?? Infinity;
+      assert.equal(first.canCompact, true, "claude-agent-acp advertises /compact");
+      events.length = 0;
+      await first.compact();
+      assert.deepEqual(events.map((e) => e.t), ["notice"], JSON.stringify(events));
+      const n = events[0] as Extract<ChatEvent, { t: "notice" }>;
+      assert.ok(n.compacted && n.context && n.context.used < before, `compacted, smaller: ${JSON.stringify(n)} before ${before}`);
     } finally {
       await first.close();
     }

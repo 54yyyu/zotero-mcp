@@ -6,7 +6,7 @@ import { STYLES } from "./styles.ts";
 import { Look } from "./appearance.ts";
 import { clear, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
 import { Composer } from "./composer.ts";
-import { contextFill } from "./economy.ts";
+import { chatStats, contextFill, sentLine } from "./economy.ts";
 import type { Choices } from "./composer.ts";
 import { Chat } from "./chat.ts";
 import { ChipState } from "./context.ts";
@@ -109,6 +109,8 @@ class Panel {
       onFirstFocus: () => { if (!this.chat.session && !this.chat.starting && !this.health.blockReason()) void this.chat.ensureSession().catch(() => {}); },
       checkSetup: () => this.show("status"),
       onNewChat: () => void this.newChat(),
+      contextInfo: () => ({ stats: chatStats(this.chat.tr), showCost: host.getSettings().showUsage, sent: sentLine(this.chat.lastContext), canCompact: !!this.chat.session?.canCompact }),
+      onCompact: () => void this.chat.compact(),
     });
 
     const btn = (label: string, ic: Parameters<typeof icon>[0], onclick: () => void) =>
@@ -368,7 +370,7 @@ class Panel {
     this.feed.update(c.tr, !c.busy);
     this.composer.setBusy(c.busy);
     this.composer.setContextFill(contextFill(c.tr));
-    this.feed.setPending(c.sending && c.tr.running === null ? (c.starting ? `Starting ${BACKEND_LABEL[this.host.getSettings().backend]}` : "Sending") : null);
+    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? "Summarising" : c.starting ? `Starting ${BACKEND_LABEL[this.host.getSettings().backend]}` : "Sending") : null);
   }
 
   private dispose(): void {

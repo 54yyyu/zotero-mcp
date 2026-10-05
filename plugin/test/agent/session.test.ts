@@ -70,6 +70,26 @@ describe("session basics", () => {
     assert.ok(events.every((e) => !("turn" in e) || e.turn === turn), "every event of a turn carries its id");
   });
 
+  it("compact() sends the bridge's /compact as a silent turn: one notice with the new fill, no turn, no warning", async () => {
+    const { session } = await start();
+    assert.equal(session.canCompact, true, "claude-agent-acp advertises compact and its /compact was verified live");
+    await session.prompt({ text: "hi" });
+    const { events } = collect(session);
+    await session.compact();
+    assert.deepEqual(events.map((e) => e.t), ["notice"], "no turn_start, text or turn_end: " + JSON.stringify(events));
+    const n = events[0] as Extract<ChatEvent, { t: "notice" }>;
+    assert.equal(n.compacted, true);
+    assert.equal(n.level, "info");
+    assert.ok(n.context && n.context.size === 200000 && n.context.used < 1100, "the fill after it: " + JSON.stringify(n.context));
+    await session.prompt({ text: "after" });
+    assert.ok(ofType(events, "turn_end").length === 1, "the chat goes on");
+  });
+
+  it("canCompact is false for a bridge whose /compact is not verified (codex lists one)", async () => {
+    const { session } = await start({ backend: "codex", variant: "codex" });
+    assert.equal(session.canCompact, false);
+  });
+
   it("a compaction is one info notice marked compacted, and the context fill drops", async () => {
     const { session } = await start();
     const { events } = collect(session);

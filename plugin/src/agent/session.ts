@@ -260,7 +260,8 @@ export class AcpAgentSession implements AgentSession {
   #firstPromptBrief: string | undefined;
   #catalog: Offers;
   #listeners = new Set<(ev: ChatEvent) => void>();
-  #turn: { id: string; tools: Map<string, ToolState>; costBase: number; produced: boolean } | undefined;
+  /** `silent`: a `/compact` the user asked for. Nothing of it is shown; it ends in one notice (compact()). */
+  #turn: { id: string; tools: Map<string, ToolState>; costBase: number; produced: boolean; silent?: { compacted: boolean; said: string } } | undefined;
   #turnCount = 0;
   #permCount = 0;
   #pending = new Map<string, PendingPermission>();
@@ -268,6 +269,8 @@ export class AcpAgentSession implements AgentSession {
   /** The context window's fill from the last usage_update (claude-agent-acp, codex-acp and pi-acp all send used/size). */
   #ctx: { used: number; size: number } | undefined;
   #compactions = new Set<string>();
+  /** The slash commands the bridge offers (available_commands_update), without the slash. */
+  #commands = new Set<string>();
   #lastUpdateAt = Date.now();
   /** pi-acp's startup banner (from session/new `_meta.piAcp.startupInfo`): it may be echoed as a message chunk. */
   #banner: string | undefined;
@@ -461,7 +464,14 @@ export class AcpAgentSession implements AgentSession {
   }
 
   #emit(ev: ChatEvent): void {
-    if (this.#turn && (ev.t === "text" || ev.t === "thought" || ev.t === "tool" || ev.t === "plan" || ev.t === "permission")) this.#turn.produced = true;
+    const turn = this.#turn;
+    if (turn?.silent) {
+      if (ev.t === "text") turn.silent.said += ev.delta;
+      if (ev.t === "notice" && ev.compacted) turn.silent.compacted = true;
+      return;
+    }
+    // A compaction is the whole of a `/compact` turn's answer.
+    if (turn && (ev.t === "text" || ev.t === "thought" || ev.t === "tool" || ev.t === "plan" || ev.t === "permission" || (ev.t === "notice" && ev.compacted))) turn.produced = true;
     for (const l of [...this.#listeners]) {
       try {
         l(ev);
@@ -522,6 +532,33 @@ export class AcpAgentSession implements AgentSession {
     this.#emit({ t: "turn_end", turn: turnId, stop, ...(usage ? { usage } : {}) });
   }
 
+  get canCompact(): boolean {
+    return this.#spec.compacts && this.#commands.has("compact") && this.#firstPromptBrief === undefined;
+  }
+
+  /**
+   * The bridge's own `/compact` (claude-agent-acp 0.85.1, measured live 2026-10-05: the fill went from 24k to 2.7k tokens
+   * and the next turn still knew the conversation). It runs as a prompt, but nothing of it is emitted except one notice.
+   */
+  async compact(): Promise<void> {
+    if (this.#closed) throw new Error("session is closed");
+    if (this.#turn) throw new Error("a turn is already running");
+    const silent = { compacted: false, said: "" };
+    this.#turn = { id: `c${++this.#turnCount}-${Date.now().toString(36)}`, tools: new Map(), costBase: this.#cost, produced: false, silent };
+    this.#cancelled = false;
+    try {
+      await this.#client.requestUnbounded("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: "/compact" }] });
+    } catch (e) {
+      if (!(e instanceof JsonRpcError)) throw e;
+      silent.said = e.rpc.message || e.message;
+    } finally {
+      this.#cancelPending();
+      this.#turn = undefined;
+    }
+    if (silent.compacted) this.#emit({ t: "notice", level: "info", message: COMPACTED, compacted: true, ...(this.#ctx ? { context: { ...this.#ctx } } : {}) });
+    else if (!this.#cancelled) this.#emit({ t: "notice", level: "warn", message: "The agent did not summarise this chat.", ...(silent.said.trim() ? { hint: silent.said.trim() } : {}) });
+  }
+
   async cancel(): Promise<void> {
     if (!this.#turn || this.#closed) return;
     this.#cancelled = true;
@@ -557,8 +594,8 @@ export class AcpAgentSession implements AgentSession {
     if (method !== "session/request_permission") throw new MethodNotFound(`${method} is not served by this client`);
     const p = asObj(params) ?? {};
     const turn = this.#turn;
-    // Outside a turn nobody can answer: refuse, never invent an allow.
-    if (!turn) return { outcome: { outcome: "cancelled" } };
+    // Outside a turn (or in a /compact) nobody can answer: refuse, never invent an allow.
+    if (!turn || turn.silent) return { outcome: { outcome: "cancelled" } };
     const toolCall = asObj(p["toolCall"]) ?? {};
     const callId = str(toolCall["toolCallId"]);
     const joined = callId ? turn.tools.get(callId) : undefined;
@@ -597,6 +634,10 @@ export class AcpAgentSession implements AgentSession {
     if (kind === "current_mode_update") {
       const id = str(update["currentModeId"]);
       if (id && this.#spec.permissionModes) this.#catalog.currentMode = id;
+      return;
+    }
+    if (kind === "available_commands_update") {
+      this.#commands = new Set(objs(update["availableCommands"]).map((c) => String(c["name"] ?? "")));
       return;
     }
     if (kind === "usage_update") {
@@ -645,10 +686,10 @@ export class AcpAgentSession implements AgentSession {
       case "compaction_update": // claude and codex, because initialize says we take them (acp.ts)
         if (update["status"] !== "completed" || this.#compactions.has(String(update["compactionId"]))) return; // claude repeats the terminal frame with token counts
         this.#compactions.add(String(update["compactionId"]));
-        this.#emit({ t: "notice", level: "info", message: "Older parts of this chat were summarised to make room.", compacted: true });
+        this.#emit({ t: "notice", level: "info", message: COMPACTED, compacted: true });
         return;
       default:
-        return; // user_message_chunk, available_commands_update, session_info_update, ...
+        return; // user_message_chunk, session_info_update, ...
     }
   }
 
@@ -673,10 +714,15 @@ export class AcpAgentSession implements AgentSession {
   }
 }
 
+const COMPACTED = "Older parts of this chat were summarised to make room.";
+
 function usageOf(result: Obj | undefined, cost: number, ctx?: { used: number; size: number }): Usage | undefined {
   const u = asObj(result?.["usage"]);
   const usage: Usage = {};
-  if (typeof u?.["inputTokens"] === "number") usage.inputTokens = u["inputTokens"];
+  // Claude's inputTokens leaves out the cached input (most of a turn); totalTokens counts it. Input is total - output.
+  const total = u?.["totalTokens"], out = u?.["outputTokens"];
+  if (typeof total === "number" && typeof out === "number" && total >= out) usage.inputTokens = total - out;
+  else if (typeof u?.["inputTokens"] === "number") usage.inputTokens = u["inputTokens"];
   if (typeof u?.["outputTokens"] === "number") usage.outputTokens = u["outputTokens"];
   if (cost > 0) usage.costUsd = cost;
   if (ctx) { usage.contextUsed = ctx.used; usage.contextSize = ctx.size; }

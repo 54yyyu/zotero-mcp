@@ -361,11 +361,20 @@ asks it to locate before reading and not to re-read. Images dominate what the pa
 
 **Context meter.** All three bridges send ACP `usage_update { used, size }` (claude-agent-acp 0.85.1 on every result and
 after a compaction; codex-acp 2.1.1 from the last request's tokens; pi-acp 0.0.34 at turn end); the session puts the last
-one on `turn_end.usage` (`contextUsed`, `contextSize`). The composer shows a small ring (SVG circle, filling clockwise)
-beside the mode picker whenever the backend reported a fill: muted ink, amber from 70%, the danger tone from 85%, tooltip and
-aria-label "Context: 62% full (124k of 200k tokens). Older parts are summarised automatically."; from 85% a dismissable line
-also suggests a new chat, which carries nothing over. No numbers, no ring (before the first turn ends, or a backend that says
-nothing). The fill updates at turn end. A compaction becomes an info notice.
+one on `turn_end.usage` (`contextUsed`, `contextSize`). The composer shows a small ring (`ui/ring.ts`, an SVG circle filling
+clockwise, a button) beside the mode picker whenever the backend reported a fill: muted ink, amber from 70%, the danger tone
+from 85%; hover thickens it. Hover or keyboard focus shows our own tooltip at once ("62% of context used", "124k of 200k
+tokens"; a native `title` is slow or absent in Zotero's shadow DOM); a click, Enter or Space opens a popover (a `.menu`, so
+the menus' look and glass): the bar and tokens, one line on what the context is, and only numbers we really have, all read
+from the transcript (`economy.ts chatStats`, so a reopened chat says the same): messages, the last turn's input / output
+(input is the bridge's `totalTokens - outputTokens`: Claude's `inputTokens` leaves out the cached part), its cost only with
+"Show tokens and cost" on, how many compactions, and what the last message's context sent in full or only named
+(`sentLine`). Actions: New chat (the main one from 70%) and Summarise now. Summarise now exists only where `/compact` was
+verified live (`BackendSpec.compacts`, Claude: 24k to 2.7k tokens, the next turn still knew the chat; codex-acp lists a
+`/compact` too, unverified) and the bridge advertised it (`available_commands_update`); `session.compact()` sends it as a
+silent turn and emits one notice carrying the new fill. From 85% a dismissable line also suggests a new chat, which carries
+nothing over. No numbers, no ring (before the first turn ends, or a backend that says nothing). A compaction becomes an info
+notice.
 
 **Next (not built):** a per-paper digest cached across chats (outline, abstract, section-to-page map, figure and table
 captions, maybe 1-2k tokens), written by the CLI the first time a paper is read and offered in the first turn of later

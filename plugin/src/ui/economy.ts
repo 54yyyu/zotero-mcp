@@ -1,7 +1,7 @@
 // Context economy (DESIGN.md "Context budget"). A chat is one persistent agent session, so what a message's
 // <zotero-context> carried once is still in the agent's conversation: a chip goes in full the first time and
 // whenever it changes; unchanged, it becomes one short reminder line, and its image is never sent again.
-import type { ContextChip, PromptInput } from "../types.ts";
+import type { ContextChip, PromptInput, Usage } from "../types.ts";
 import type { TranscriptState } from "./transcript.ts";
 
 /** FNV-1a, 32 bit: a fingerprint, not security. */
@@ -80,13 +80,39 @@ export function estimateTokens(p: PromptInput): number {
   return Math.ceil(p.text.length / 4) + (p.images ?? []).reduce((n, i) => n + imageTokens(i.data), 0);
 }
 
-/** How full the agent's context window was at the end of the last turn that said; null when the backend never did. */
-export function contextFill(tr: TranscriptState): { used: number; size: number; pct: number } | null {
+export interface Fill { used: number; size: number; pct: number }
+
+/**
+ * How full the agent's context window is: the last turn that said, or a compaction the user asked for since (it
+ * carries the new fill). Null when the backend never said.
+ */
+export function contextFill(tr: TranscriptState): Fill | null {
   for (let i = tr.messages.length - 1; i >= 0; i--) {
     const m = tr.messages[i]!;
-    if (m.role !== "assistant" || !m.usage?.contextSize || m.usage.contextUsed == null) continue;
-    const { contextUsed: used, contextSize: size } = m.usage;
-    return { used, size, pct: Math.min(100, Math.round((used / size) * 100)) };
+    const c = m.role === "notice" ? m.context
+      : m.role === "assistant" && m.usage?.contextSize && m.usage.contextUsed != null ? { used: m.usage.contextUsed, size: m.usage.contextSize } : undefined;
+    if (c) return { ...c, pct: Math.min(100, Math.round((c.used / c.size) * 100)) };
   }
   return null;
+}
+
+/** What the context popover says about this chat, all read from the transcript (so a reopened chat says the same). */
+export function chatStats(tr: TranscriptState): { messages: number; compactions: number; last?: Usage } {
+  let messages = 0, compactions = 0, last: Usage | undefined;
+  for (const m of tr.messages) {
+    if (m.role === "notice") { if (m.compacted) compactions++; continue; }
+    messages++;
+    if (m.role === "assistant" && (m.usage?.inputTokens || m.usage?.outputTokens)) last = m.usage;
+  }
+  return { messages, compactions, ...(last ? { last } : {}) };
+}
+
+/** What the last message's <zotero-context> carried: "Reader p.8 and selection p.3 in full; item Bell 2017 named only". */
+export function sentLine(chips: ContextChip[]): string {
+  const name = (c: ContextChip) => c.kind === "reader" ? `reader${pageOf(c)}` : c.kind === "selection" ? `selection${pageOf(c)}`
+    : c.kind === "area" ? `area${pageOf(c)}` : c.kind === "annotation" ? `annotation${pageOf(c)}` : `${c.kind} ${c.label.length > 28 ? `${c.label.slice(0, 27)}…` : c.label}`;
+  const list = (cs: ContextChip[]) => cs.map(name).join(", ").replace(/, ([^,]*)$/, " and $1");
+  const full = list(chips.filter((c) => !c.repeat)), rep = list(chips.filter((c) => c.repeat));
+  const s = [full && `${full} in full`, rep && `${rep} named only (unchanged)`].filter(Boolean).join("; ");
+  return s && s[0]!.toUpperCase() + s.slice(1);
 }

@@ -210,7 +210,7 @@ export function clip(s: string, n: number): string {
 }
 
 export function fmtTokens(n: number): string {
-  return n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  return n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${+(n / 1000).toFixed(1)}k` : String(n);
 }
 
 /** Claude's bridge titles a Bash call "`zotero-cli search x`": show it without the wrapping backticks. */

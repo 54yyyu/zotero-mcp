@@ -105,18 +105,18 @@ export const LOOK_STYLES = `
 .zmc[data-glass="on"] .mdd__eff { border-top-color: var(--glass-line); }
 .zmc[data-glass="on"] .steps { background: color-mix(in srgb, var(--ink) 4%, transparent); }
 /* floating surfaces: frosted (the only backdrop blur in the panel) */
-.zmc[data-glass="on"] :is(.composer, .menu, .pop, .jump) { border-color: var(--glass-edge); box-shadow: var(--glass-sheen), var(--glass-shadow); }
+.zmc[data-glass="on"] :is(.composer, .menu, .pop, .jump, .ctip) { border-color: var(--glass-edge); box-shadow: var(--glass-sheen), var(--glass-shadow); }
 /* the composer's frost is a layer under it, not the composer itself: an element with a backdrop filter is the backdrop
    root of everything inside it, so the menus and the @ popup (its children) would only blur the composer */
 .zmc[data-glass="on"] .composer { background: transparent; isolation: isolate; transition: border-color var(--ease), box-shadow var(--ease); }
 .zmc[data-glass="on"] .composer::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--glass); backdrop-filter: blur(18px) saturate(170%); pointer-events: none; }
 .zmc[data-glass="on"] .composer:focus-within { border-color: color-mix(in srgb, var(--ink) 22%, var(--glass-edge)); }
 .zmc[data-glass="on"][data-theme="light"] .composer { border-color: color-mix(in srgb, #ffffff 70%, var(--glass-line)); }
-.zmc[data-glass="on"] :is(.menu, .pop, .jump) { background: var(--glass-strong); backdrop-filter: blur(27px) saturate(180%); }
+.zmc[data-glass="on"] :is(.menu, .pop, .jump, .ctip) { background: var(--glass-strong); backdrop-filter: blur(27px) saturate(180%); }
 .zmc[data-glass="on"] :is(.menu__item:hover, .menu__item:focus-visible, .pop__i--on) { background: color-mix(in srgb, var(--accent) 11%, transparent); }
 @supports not (backdrop-filter: blur(1px)) {
   .zmc[data-glass="on"] .composer::before { background: var(--glass-strong); }
-  .zmc[data-glass="on"] :is(.menu, .pop, .jump) { background: var(--paper-raised); }
+  .zmc[data-glass="on"] :is(.menu, .pop, .jump, .ctip) { background: var(--paper-raised); }
 }
 /* the send button: a small gem of the accent */
 .zmc[data-glass="on"] .send:not(:disabled):not(.send--stop) {

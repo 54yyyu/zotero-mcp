@@ -80,7 +80,8 @@ export type ChatEvent =
   | { t: "plan"; turn: string; entries: { content: string; status: "pending" | "in_progress" | "completed" }[] }
   | { t: "permission"; turn: string; id: string; title: string; kind: ToolKind; input?: unknown; options: PermissionOption[]; resolved?: string; name?: string }
   | { t: "turn_end"; turn: string; stop: "end_turn" | "cancelled" | "max_tokens" | "refusal" | "error"; usage?: Usage }
-  | { t: "notice"; level: "info" | "warn" | "error"; message: string; hint?: string; /** The agent summarised older turns: what was sent before may be gone. */ compacted?: boolean };
+  | { t: "notice"; level: "info" | "warn" | "error"; message: string; hint?: string; /** The agent summarised older turns: what was sent before may be gone. */ compacted?: boolean;
+      /** The context window's fill right after a compaction the user asked for (no turn_end carries it). */ context?: { used: number; size: number } };
 
 // ───────────────────────────── agent/ ─────────────────────────────
 
@@ -159,6 +160,10 @@ export interface AgentSession {
   /** Runs one turn; resolves when it ends (its `turn_end` has been emitted). Rejects only if the bridge died. */
   prompt(input: PromptInput): Promise<void>;
   cancel(): Promise<void>;
+  /** The bridge offers `/compact` (claude-agent-acp does) and the conversation has begun: `compact()` can run. */
+  readonly canCompact: boolean;
+  /** Summarise the conversation now. Emits one notice (compacted, with the new fill, or why not); no turn. Rejects only if the bridge died. */
+  compact(): Promise<void>;
   /** Answer a `permission` event. */
   respondPermission(id: string, optionId: string | null): void;
   close(): Promise<void>;

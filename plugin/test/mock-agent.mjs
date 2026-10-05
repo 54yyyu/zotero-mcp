@@ -127,7 +127,7 @@ async function handle(msg) {
       send({ method: "_auth/status_update", params: { authStatus: { kind: "account", label: "Mock Max" } } });
       // The real bridges announce commands (and pi a banner) right after session/new: no turn is running.
       reply(sessionResult(sid, s));
-      update(sid, { sessionUpdate: "available_commands_update", availableCommands: [] });
+      update(sid, { sessionUpdate: "available_commands_update", availableCommands: [{ name: "compact", description: "Clear conversation history but keep a summary in context", input: null }] });
       update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: BANNER } });
       return;
     }
@@ -265,7 +265,7 @@ async function prompt(id, params) {
     return end();
   }
   if (text.includes("SCENARIO:refuse")) return end("refusal");
-  if (text.includes("SCENARIO:compact")) {
+  if (text.includes("SCENARIO:compact") || text === "/compact") {
     // claude-agent-acp 0.85.1 with the compaction capability: in_progress, completed, then completed again with token counts.
     update(sid, { sessionUpdate: "compaction_update", compactionId: "c1", status: "in_progress" });
     update(sid, { sessionUpdate: "compaction_update", compactionId: "c1", status: "completed" });

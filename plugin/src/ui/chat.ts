@@ -28,6 +28,10 @@ export class Chat {
   starting: Promise<AgentSession> | null = null;
   saved: SavedSession | null = null;
   sending = false;
+  /** A `/compact` the user asked for is running (sending is set too). */
+  compacting = false;
+  /** The chips the last message carried, marked `repeat` when only named (the context popover lists them). */
+  lastContext: ContextChip[] = [];
   private resume: SavedSession | null = null;
   private unsub: (() => void) | null = null;
   private gen = 0;
@@ -115,28 +119,51 @@ export class Chat {
       let ctx = { text: "", images: [] as { mime: string; data: string }[] };
       try {
         const next = new Map(this.sent);
-        ctx = host.describeContext(planContext(used, next));
+        const plan = planContext(used, next);
+        ctx = host.describeContext(plan);
         this.sent = next;
+        this.lastContext = plan;
       } catch { /* the question still goes */ }
       await sess.prompt({
         text: [ctx.text, text].filter(Boolean).join("\n\n"),
         ...(sess.supportsImages && ctx.images.length ? { images: ctx.images } : {}),
       });
     } catch (e) {
-      const msg = errMessage(e);
-      if (msg === "cancelled") return;
-      const running = this.tr.running;
-      if (running) this.dispatch({ t: "turn_end", turn: running, stop: "error" });
-      this.dispatch({ t: "notice", level: "error", message: this.session ? `The agent stopped: ${msg}` : `Couldn't start the agent: ${msg}`, hint: "Check Status for what is missing, then send again." });
-      // A rejected prompt means the bridge is gone: the next send starts a fresh one and resumes this chat.
-      if (this.session) this.resume = this.saved;
-      await this.closeSession();
-      this.d.setupFailed();
+      await this.fail(e);
     } finally {
       this.sending = false;
       this.persister.flush();
       this.d.onChange();
     }
+  }
+
+  /** Summarise the conversation now (the bridge's own /compact, when it has a verified one); a notice tells the result. */
+  async compact(): Promise<void> {
+    const s = this.session;
+    if (!s?.canCompact || this.busy) return;
+    this.sending = this.compacting = true;
+    this.d.onChange();
+    try {
+      await s.compact();
+    } catch (e) {
+      await this.fail(e);
+    } finally {
+      this.sending = this.compacting = false;
+      this.persister.flush();
+      this.d.onChange();
+    }
+  }
+
+  private async fail(e: unknown): Promise<void> {
+    const msg = errMessage(e);
+    if (msg === "cancelled") return;
+    const running = this.tr.running;
+    if (running) this.dispatch({ t: "turn_end", turn: running, stop: "error" });
+    this.dispatch({ t: "notice", level: "error", message: this.session ? `The agent stopped: ${msg}` : `Couldn't start the agent: ${msg}`, hint: "Check Status for what is missing, then send again." });
+    // A rejected prompt means the bridge is gone: the next send starts a fresh one and resumes this chat.
+    if (this.session) this.resume = this.saved;
+    await this.closeSession();
+    this.d.setupFailed();
   }
 
   async stop(): Promise<void> {
@@ -181,6 +208,7 @@ export class Chat {
     this.saved = null;
     this.resume = null;
     this.sending = false;
+    this.lastContext = [];
     this.d.onChange();
   }
 

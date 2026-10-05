@@ -142,8 +142,8 @@ await test("context meter: hidden without numbers, a ring whenever the backend s
   assert.equal(await level(), "");
   await sim(p, () => { window.__zmc.sim.contextUsage = { used: 124000, size: 200000 }; });
   await turn("more", 3);
-  assert.equal(await p.locator(".cmeter").getAttribute("title"), "Context: 62% full (124k of 200k tokens). Older parts are summarised automatically.");
-  assert.equal(await p.locator(".cmeter").getAttribute("aria-label"), await p.locator(".cmeter").getAttribute("title"));
+  assert.equal(await p.locator(".cmeter").getAttribute("title"), null, "no native tooltip: ours shows at once (the next test)");
+  assert.equal(await p.locator(".cmeter").getAttribute("aria-label"), "Context: 62% full (124k of 200k tokens). Show details");
   assert.equal(await p.locator(".cmeter__arc").getAttribute("stroke-dasharray"), "62 100");
   assert.equal(await level(), "");
   await sim(p, () => { window.__zmc.sim.contextUsage = { used: 150000, size: 200000 }; });
@@ -152,7 +152,7 @@ await test("context meter: hidden without numbers, a ring whenever the backend s
   assert.equal(await p.locator(".cnote").isVisible(), false);
   await sim(p, () => { window.__zmc.sim.contextUsage = { used: 176000, size: 1000000 }; });
   await turn("a bigger window", 5);
-  assert.match(await p.locator(".cmeter").getAttribute("title"), /^Context: 18% full \(176k of 1M tokens\)/);
+  assert.match(await p.locator(".cmeter").getAttribute("aria-label"), /^Context: 18% full \(176k of 1M tokens\)/);
   await sim(p, () => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; });
   await turn("even more", 6);
   assert.equal(await level(), "full");
@@ -165,6 +165,121 @@ await test("context meter: hidden without numbers, a ring whenever the backend s
   assert.equal(await p.locator(".cmeter").isVisible(), false, "a new chat starts empty");
   assert.equal(await p.locator(".cnote").isVisible(), false);
 });
+
+const ringAt = async (p, used, size = 200000, q = "hello") => {
+  await sim(p, (u) => { window.__zmc.sim.contextUsage = u; }, { used, size });
+  const k = await p.locator('.msg--assistant[data-state="end_turn"]').count();
+  await send(p, q);
+  await p.waitForFunction((n) => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === n, k + 1);
+};
+const tipText = (p) => p.locator(".ctip").evaluate((e) => [...e.children].map((c) => c.textContent).join(" | "));
+
+await test("context ring: hover or keyboard focus shows the number at once; leaving, blur and Esc hide it", async (p) => {
+  await ringAt(p, 124000);
+  const ring = p.locator(".cmeter"), tip = p.locator(".ctip");
+  assert.equal(await tip.isVisible(), false);
+  await ring.hover();
+  assert.ok(await tip.isVisible(), "shown on hover, no delay");
+  assert.equal(await tipText(p), "62% of context used | 124k of 200k tokens");
+  const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const t = r(".ctip"), m = r(".cmeter"), c = r(".composer"); return { above: t.bottom <= m.top, inside: t.left >= c.left && t.right <= c.right, centred: Math.abs((t.left + t.right) / 2 - (m.left + m.right) / 2) < 2 || t.right >= c.right - 6 }; });
+  assert.deepEqual(g, { above: true, inside: true, centred: true });
+  assert.equal(await p.evaluate(() => getComputedStyle(window.__zmc.shadow.querySelector(".cmeter")).cursor), "pointer");
+  await p.mouse.move(2, 2);
+  assert.equal(await tip.isVisible(), false, "leaving hides it");
+  // Keyboard focus (WebKit on macOS does not Tab to buttons, so the focus moves from the message box as Tab would).
+  const focus = (sel) => p.evaluate((sel) => { const s = window.__zmc.shadow; s.querySelector(".cin").focus(); s.querySelector(sel).focus(); }, sel);
+  await focus(".cmeter");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.className), "cmeter");
+  assert.ok(await tip.isVisible(), "keyboard focus shows it");
+  await p.keyboard.press("Escape");
+  assert.equal(await tip.isVisible(), false, "Esc hides it");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.className), "cmeter", "and keeps the focus");
+  await focus(".cmeter");
+  assert.ok(await tip.isVisible());
+  await focus(".cin");
+  assert.equal(await tip.isVisible(), false, "blur hides it");
+});
+
+await test("context ring: a click opens the popover with this chat's real numbers; Esc and an outside press close it", async (p) => {
+  await ringAt(p, 124000);
+  const ring = p.locator(".cmeter"), pop = p.locator(".cpop");
+  await ring.hover();
+  await ring.click();
+  await pop.waitFor();
+  assert.equal(await p.locator(".ctip").isVisible(), false, "the tooltip gives way to the popover");
+  assert.equal(await ring.getAttribute("aria-expanded"), "true");
+  assert.equal(await pop.getAttribute("role"), "dialog");
+  assert.equal(await p.locator(".cpop__title").innerText(), "Context window");
+  assert.equal(await p.locator(".cpop__pct").innerText(), "62%");
+  assert.equal(await p.locator(".cpop__fill").evaluate((e) => e.style.width), "62%");
+  assert.equal(await p.locator(".cpop__tok").innerText(), "124k of 200k tokens");
+  assert.match(await p.locator(".cpop__why").innerText(), /^Everything the agent holds in mind in this chat/);
+  const facts = () => p.locator(".cpop__facts").evaluate((e) => [...e.children].map((c) => c.textContent));
+  const f = await facts();
+  assert.deepEqual(f.slice(0, 4), ["Messages", "2", "Last turn", "13k in · 912 out"]);
+  assert.ok(!f.includes("Cost"), "cost only with Show tokens and cost on");
+  assert.ok(!f.includes("Summarised"), "no compaction yet: no row");
+  assert.equal(f[4], "Sent with your last message");
+  assert.match(f[5], /^Reader p\.997.* in full$/);
+  const acts = await pop.locator("button").evaluateAll((bs) => bs.map((b) => [b.textContent, b.classList.contains("btn--solid")]));
+  assert.deepEqual(acts, [["Summarise now", false], ["New chat", false]], "under 70%: New chat is not the main action");
+  await p.keyboard.press("Escape");
+  assert.equal(await pop.count(), 0, "Esc closes");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.className), "cmeter", "the focus goes back to the ring");
+  await p.keyboard.press("Enter");
+  await pop.waitFor();
+  assert.ok(await p.evaluate(() => window.__zmc.shadow.querySelector(".cpop").contains(window.__zmc.shadow.activeElement)), "Enter opens it, focus inside");
+  await p.locator(".feed").click({ position: { x: 8, y: 8 } });
+  assert.equal(await pop.count(), 0, "an outside press closes");
+  await ring.click();
+  await p.locator(".pick--mode").click();
+  assert.equal(await pop.count(), 0, "another menu replaces it");
+  await p.keyboard.press("Escape");
+  await sim(p, () => window.__zmc.host.setSettings({ showUsage: true }));
+  await ringAt(p, 150000, 200000, "more");
+  await ring.click();
+  assert.equal(await pop.getAttribute("data-level"), "warm");
+  assert.deepEqual((await facts()).slice(0, 6), ["Messages", "4", "Last turn", "13k in · 912 out", "Cost", "$0.031 last turn"]);
+  assert.equal(await pop.locator('[data-act="new"]').evaluate((b) => b.classList.contains("btn--solid")), true, "from 70%: New chat is the main action");
+  await pop.locator('[data-act="new"]').click();
+  await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".msg--assistant"));
+  assert.equal(await pop.count(), 0);
+  assert.equal(await ring.isVisible(), false, "a new chat has no fill to show");
+});
+
+await test("context ring: Summarise now runs the agent's /compact; no turn appears, the ring drops and the popover counts it", async (p) => {
+  await ringAt(p, 176000);
+  assert.equal(await p.locator(".cmeter").getAttribute("data-level"), "full");
+  await p.locator(".cmeter").click();
+  await p.locator('.cpop [data-act="compact"]').click();
+  assert.equal(await p.locator(".cpop").count(), 0);
+  await p.waitForSelector(".notice", { timeout: 4000 });
+  assert.match(await p.locator(".notice").innerText(), /summarised to make room/);
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".cmeter").dataset.level === "");
+  assert.equal(await p.locator(".cmeter").getAttribute("aria-label"), "Context: 3% full (6k of 200k tokens). Show details");
+  assert.equal(await p.locator(".msg--assistant").count(), 1, "the compaction is not an answer");
+  assert.equal(await p.locator(".cnote").isVisible(), false, "the long-chat nudge goes with the fill");
+  await p.locator(".cmeter").click();
+  const f = await p.locator(".cpop__facts").evaluate((e) => [...e.children].map((c) => c.textContent));
+  assert.deepEqual(f.slice(0, 2), ["Messages", "2"]);
+  assert.equal(f[f.indexOf("Summarised") + 1], "once");
+});
+
+await test("context ring at 300px: the tooltip and the popover fit inside the composer, nothing scrolls sideways", async (p) => {
+  await sim(p, () => window.__zmc.host.setSettings({ showUsage: true }));
+  await ringAt(p, 176000);
+  await p.locator(".cmeter").hover();
+  const r = (s) => p.evaluate((s) => { const b = window.__zmc.shadow.querySelector(s).getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom }; }, s);
+  const c = await r(".composer"), t = await r(".ctip"), m = await r(".cmeter");
+  assert.ok(t.l >= c.l && t.r <= c.r && t.b <= m.t, JSON.stringify({ c, t, m }));
+  await p.locator(".cmeter").click();
+  await p.locator(".cpop").waitFor();
+  const q = await r(".cpop");
+  assert.ok(q.l >= c.l - 1 && q.r <= c.r + 1 && q.b <= m.t && q.t >= 0, JSON.stringify({ c, q }));
+  const over = await p.evaluate(() => [...window.__zmc.shadow.querySelectorAll(".cpop, .cpop *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX !== "visible").map((e) => e.className));
+  assert.deepEqual(over, []);
+  assert.equal(await p.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth), true);
+}, { width: 300 });
 
 await test("permission: answering resolves the card and the saved log replays the same", async (p) => {
   await sim(p, () => { window.__zmc.sim.speed = 5; });

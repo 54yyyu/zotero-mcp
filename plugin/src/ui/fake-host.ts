@@ -164,6 +164,16 @@ class FakeSession implements AgentSession {
   async cancel() { this.cancelled = true; for (const [, r] of this.waiting) r(null); }
   respondPermission(id: string, optionId: string | null) { this.waiting.get(id)?.(optionId); this.waiting.delete(id); }
   async close() { this.sim.closed++; this.listeners.clear(); }
+  /** As claude-agent-acp's /compact: a short wait, then one notice with the fill after it (and later turns report that). */
+  get canCompact() { return this.backend === "claude-code"; }
+  async compact() {
+    this.cancelled = false;
+    await sleep(this.sim.speed ? 600 : 0);
+    if (this.cancelled) return;
+    const u = this.sim.contextUsage;
+    if (u) this.sim.contextUsage = { used: Math.round(u.size * 0.03), size: u.size };
+    this.emit({ t: "notice", level: "info", message: "Older parts of this chat were summarised to make room.", compacted: true, ...(this.sim.contextUsage ? { context: { ...this.sim.contextUsage } } : {}) });
+  }
 
   private async stream(turn: string, kind: "text" | "thought", text: string): Promise<void> {
     const parts = text.match(/[\s\S]{1,9}/g) ?? [];
