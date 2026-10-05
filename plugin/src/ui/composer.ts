@@ -1,6 +1,6 @@
 // The composer: context chips, the textarea, `@` and `+` search, the pickers, Send / Stop.
 // It owns the draft and the popups; the controller (index.ts) owns what a send does.
-import type { ContextChip, ItemHit, ZoteroRef } from "../types.ts";
+import type { BackendId, ContextChip, ItemHit, ZoteroRef } from "../types.ts";
 import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids, svg } from "./dom.ts";
 import { SearchPopup } from "./search.ts";
 import { Pickers } from "./pickers.ts";
@@ -22,6 +22,9 @@ export interface ComposerOpts {
   onPick(kind: PickKind, id: string): void;
   /** The agent's models and modes. May start the agent, so it is asked only when a picker opens. */
   loadChoices(): Promise<Choices>;
+  /** New chats use another agent; a chat with messages is replaced by a new one (the picker asked first). */
+  switchAgent(id: BackendId): Promise<void>;
+  hasMessages(): boolean;
   /** The composer got focus for the first time: a good moment to warm the agent up. */
   onFirstFocus(): void;
   checkSetup(): void;
@@ -71,7 +74,7 @@ export class Composer {
 
     this.plusBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Add a source", title: "Add a source (@)", "aria-haspopup": "listbox", onclick: () => this.togglePlus() }, icon("plus")) as HTMLButtonElement;
     this.el = h("div.composer");
-    this.pickers = new Pickers(this.el, { load: () => opts.loadChoices(), pick: (k, id) => opts.onPick(k, id), checkSetup: () => opts.checkSetup() });
+    this.pickers = new Pickers(this.el, { load: () => opts.loadChoices(), pick: (k, id) => opts.onPick(k, id), switchAgent: (id) => opts.switchAgent(id), hasMessages: () => opts.hasMessages(), checkSetup: () => opts.checkSetup() });
     this.sendBtn = h("button.send", { type: "button", "aria-label": "Send", title: "Send (Enter)", onclick: () => this.send() }, icon("send")) as HTMLButtonElement;
 
     this.meter.appendChild(svg("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, svg("circle", { cx: "8", cy: "8", r: "6", class: "cmeter__track" }), this.meterArc));
@@ -82,7 +85,7 @@ export class Composer {
 
     const b = this.pickers.buttons;
     append(this.el, [this.pop.el, this.longNote, this.chipsEl, this.ta,
-      h("div.ctools", null, this.plusBtn, b.model, b.effort, h("span.ctools__fill"), this.meter, b.mode, this.sendBtn)]);
+      h("div.ctools", null, this.plusBtn, b.model, h("span.ctools__fill"), this.meter, b.mode, this.sendBtn)]);
     this.wireDrop();
     env.doc.addEventListener("pointerdown", this.outside, true);
     this.syncSend();

@@ -10,6 +10,9 @@ export const CATALOGS: Record<BackendId, Catalog> = {
       level("opus", "Claude Opus", "Most capable, slower"),
       level("sonnet", "Claude Sonnet", "Balanced for everyday work"),
       level("haiku", "Claude Haiku", "Fastest for light tasks"),
+      level("opus-4-1", "Claude Opus 4.1", "Previous generation"),
+      level("sonnet-4", "Claude Sonnet 4", "Previous generation"),
+      level("haiku-3-5", "Claude Haiku 3.5", "Oldest, cheapest"),
     ],
     modes: [
       level("default", "Ask first"),

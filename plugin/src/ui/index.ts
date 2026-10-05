@@ -15,7 +15,7 @@ import { Feed } from "./messages.ts";
 import { answerNote } from "./notes.ts";
 import { answerText, promptFor } from "./transcript.ts";
 import { settingsView } from "./settings.ts";
-import { BACKEND_LABEL, emptyState, historyView, setupCard, statusView } from "./views.ts";
+import { BACKEND_LABEL, BACKENDS, emptyState, historyView, setupCard, statusView } from "./views.ts";
 import { welcomeView } from "./welcome.ts";
 
 type View = "chat" | "history" | "settings" | "status" | "welcome";
@@ -102,6 +102,8 @@ class Panel {
       onTogglePin: (c) => { this.chips.togglePin(c); this.refreshChips(); },
       onPick: (kind, id) => void this.pick(kind, id),
       loadChoices: async () => { await this.loadCatalog(true); return this.choices(); },
+      switchAgent: (id) => this.switchAgent(id),
+      hasMessages: () => this.chat.tr.messages.length > 0,
       onFirstFocus: () => { if (!this.chat.session && !this.chat.starting && !this.health.blockReason()) void this.chat.ensureSession().catch(() => {}); },
       checkSetup: () => this.show("status"),
       onNewChat: () => void this.newChat(),
@@ -222,6 +224,7 @@ class Panel {
     this.statusBtn.title = `${tip}. Open status`;
     this.statusBtn.setAttribute("aria-label", `${label}. Status: ${tip}`);
     this.composer.setBlocked(this.health.blockReason());
+    this.syncPickers(); // the agents' status dots
     this.paintEmpty();
     if (this.view === "welcome") {
       this.autoPick();
@@ -257,6 +260,12 @@ class Panel {
     const cat = this.catalogs.get(b);
     const saved = (k: "model" | "mode" | "effort") => s[k][b] || cat?.[k];
     return {
+      backend: sess?.backend ?? b,
+      agents: BACKENDS.map((id) => {
+        const st = this.health.statuses?.find((x) => x.id === id);
+        return { id, label: BACKEND_LABEL[id], available: st?.available, reason: st?.reason };
+      }),
+      defaultEffort: this.catalogs.get(sess?.backend ?? b)?.effort,
       models: sess?.models() ?? cat?.models ?? [], model: sess ? sess.currentModel() : saved("model"),
       efforts: sess?.efforts() ?? cat?.efforts ?? [], effort: sess ? sess.currentEffort() : saved("effort"),
       modes: sess?.modes() ?? cat?.modes ?? [], mode: sess ? sess.currentMode() : saved("mode"),
@@ -275,6 +284,14 @@ class Panel {
       if (strict) throw e;
     }
     this.syncPickers();
+  }
+
+  /** The composer's agent switch: new chats use `id`, and a chat with messages is replaced by a new one. */
+  private async switchAgent(id: BackendId): Promise<void> {
+    if (id === this.host.getSettings().backend) return;
+    await this.host.setSettings({ backend: id });
+    if (this.chat.tr.messages.length) await this.newChat();
+    this.onSettings();
   }
 
   private async pick(kind: "model" | "effort" | "mode", id: string): Promise<void> {

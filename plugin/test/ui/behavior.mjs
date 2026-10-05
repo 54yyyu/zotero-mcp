@@ -316,11 +316,12 @@ await test("settings: hiding the thinking and expanding tool steps apply to what
 await test("pickers: effort, model and mode act on the live session and save into that backend only", async (p) => {
   await p.locator(".cin").click();
   await p.waitForFunction(() => window.__zmc.sim.closed === 0 && /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent));
-  await p.locator(".pick--effort").click();
-  await p.locator('.eff__stop[title="High"]').click();
+  await p.locator(".pick--model").click();
+  await p.locator('.mdd .eff__stop[title="High"]').click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().effort["claude-code"] === "high");
-  assert.match(await p.locator(".pick--effort").innerText(), /High/);
+  assert.match(await p.locator(".pick--model .pick__e").innerText(), /High/);
   assert.equal(await p.locator(".eff__cur").innerText(), "High");
+  assert.equal(await p.locator(".eff__rec").count(), 0, "Recommended marks only the agent's default level");
   // dragging along the track moves through the levels and applies the one it is released on
   const t = await p.locator(".eff__track").boundingBox();
   await p.mouse.move(t.x + t.width - 14, t.y + t.height / 2); await p.mouse.down();
@@ -331,7 +332,7 @@ await test("pickers: effort, model and mode act on the live session and save int
   await p.keyboard.press("ArrowRight"); await p.keyboard.press("ArrowRight");
   await p.keyboard.press("Enter");
   await p.waitForFunction(() => window.__zmc.host.getSettings().effort["claude-code"] === "high");
-  assert.equal(await p.locator(".menu--effort").count(), 0);
+  assert.equal(await p.locator(".mdd").count(), 0, "Enter on the slider applies and closes");
   await p.locator(".pick--mode").click();
   await p.getByRole("menuitemradio", { name: /Plan/ }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().mode["claude-code"] === "plan");
@@ -342,8 +343,107 @@ await test("pickers: effort, model and mode act on the live session and save int
   await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".radio").length === 0 && window.__zmc.shadow.querySelectorAll(".field").length === 2);
   await p.keyboard.press("Escape");
   assert.equal(await p.locator(".pick--mode").isVisible(), false, "pi has no permission modes");
-  assert.match(await p.locator(".pick--effort").innerText(), /Off/, "pi's own effort default");
+  assert.match(await p.locator(".pick--model .pick__e").innerText(), /Off/, "pi's own effort default");
 });
+
+const agentTab = (p, name) => p.locator(".mdd__agent", { hasText: name });
+await test("agent switch: an empty chat switches at once; a chat with messages asks first and is never cut silently", async (p) => {
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .menu__item");
+  assert.deepEqual(await p.locator(".mdd__agent").evaluateAll((els) => els.map((e) => [e.textContent, e.dataset.state, e.getAttribute("aria-checked")])),
+    [["Claude Code", "ok", "true"], ["Codex", "bad", "false"], ["pi", "ok", "false"]], "every agent, with the status detect() gave");
+  // an agent that is not ready says why and stays unchosen
+  await agentTab(p, "Codex").click();
+  assert.match(await p.locator(".mdd__note").innerText(), /Codex isn't ready: codex is not installed/);
+  assert.equal(await sim(p, () => window.__zmc.host.getSettings().backend), "claude-code");
+  // empty chat: at once, and the dropdown now lists pi's models
+  await agentTab(p, "pi").click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().backend === "pi");
+  await p.waitForSelector('.mdd [role="menuitemradio"]:has-text("Small and fast")');
+  assert.equal(await p.locator(".mdd__note").isVisible(), false);
+  assert.match(await p.locator(".pick--model").innerText(), /Provider default/);
+  await p.keyboard.press("Escape");
+  // with messages: an inline question; Cancel keeps everything
+  await send(p, "hello");
+  await done(p);
+  await p.locator(".pick--model").click();
+  await agentTab(p, "Claude Code").click();
+  assert.equal(await p.locator(".mdd__note").innerText().then((t) => t.replace(/\s+/g, " ").trim()), "Switching starts a new chat with Claude Code. Start new chat Cancel");
+  await p.getByRole("button", { name: "Cancel" }).click();
+  assert.equal(await p.locator(".mdd__note").isVisible(), false);
+  assert.deepEqual([await sim(p, () => window.__zmc.host.getSettings().backend), await p.locator(".msg").count() > 0], ["pi", true]);
+  // Start new chat: the new agent, an empty chat, the dropdown stays open on the new agent's models
+  await agentTab(p, "Claude Code").click();
+  await p.getByRole("button", { name: "Start new chat" }).click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().backend === "claude-code");
+  await p.waitForSelector('.mdd [role="menuitemradio"]:has-text("Claude Sonnet")');
+  assert.equal(await p.locator(".msg").count(), 0, "a new chat");
+  assert.equal(await agentTab(p, "Claude Code").getAttribute("aria-checked"), "true");
+});
+
+await test("models: the first four in the catalog's order, the rest under More models; the current one always shows", async (p) => {
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .menu__item");
+  const names = () => p.locator('.mdd [role="menuitemradio"]').evaluateAll((els) => els.filter((e) => e.getClientRects().length).map((e) => e.querySelector(".menu__t").textContent));
+  assert.deepEqual(await names(), ["Claude Opus", "Claude Sonnet", "Claude Haiku", "Claude Opus 4.1"]);
+  assert.equal(await p.locator(".mdd__more").innerText().then((t) => t.replace(/\s+/g, " ").trim()), "More models 2");
+  await p.locator(".mdd__more").click();
+  assert.deepEqual((await names()).slice(4), ["Claude Sonnet 4", "Claude Haiku 3.5"], "expanded inline, in the same dropdown");
+  await p.getByRole("menuitemradio", { name: /Haiku 3\.5/ }).click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().model["claude-code"] === "haiku-3-5");
+  assert.match(await p.locator(".pick--model .pick__t").innerText(), /Haiku 3\.5/);
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .menu__item");
+  assert.deepEqual(await names(), ["Claude Opus", "Claude Sonnet", "Claude Haiku", "Claude Opus 4.1", "Claude Haiku 3.5"], "the current model is shown without expanding");
+  assert.equal(await p.locator('.mdd [aria-checked="true"] .menu__t').innerText(), "Claude Haiku 3.5");
+  assert.match(await p.locator(".mdd__more").innerText(), /1/);
+});
+
+await test("model dropdown: the keyboard opens it, moves through agents, models and effort, and Esc gives the focus back", async (p) => {
+  const focused = () => p.evaluate(() => { const a = window.__zmc.shadow.activeElement; return a ? (a.querySelector?.(".menu__t")?.textContent ?? a.dataset.id ?? a.getAttribute("role") ?? a.className) : null; });
+  await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent));
+  await p.locator(".pick--model").focus();
+  await p.keyboard.press("Enter");
+  await p.waitForSelector(".mdd .menu__item");
+  await p.waitForFunction(() => window.__zmc.shadow.activeElement?.getAttribute("aria-checked") === "true");
+  assert.equal(await focused(), "Claude Sonnet", "the current model has the focus");
+  await p.keyboard.press("ArrowDown");
+  assert.equal(await focused(), "Claude Haiku");
+  await p.keyboard.press("ArrowUp"); await p.keyboard.press("ArrowUp"); await p.keyboard.press("ArrowUp");
+  assert.equal(await focused(), "claude-code", "up from the first model is the agent row");
+  await p.keyboard.press("ArrowRight");
+  assert.equal(await focused(), "codex", "left and right move between agents without choosing one");
+  assert.equal(await sim(p, () => window.__zmc.host.getSettings().backend), "claude-code");
+  await p.keyboard.press("ArrowUp");
+  assert.equal(await focused(), "slider", "up from the top wraps to the effort slider");
+  await p.keyboard.press("ArrowRight");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().effort["claude-code"] === "high");
+  assert.equal(await focused(), "slider", "left and right move the slider, the focus stays");
+  await p.keyboard.press("Escape");
+  assert.equal(await p.locator(".mdd").count(), 0);
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.classList.contains("pick--model")), true, "Esc returns the focus to the button");
+  await p.keyboard.press(" ");
+  await p.waitForSelector(".mdd");
+});
+
+await test("model dropdown at 300px: one button beside the ring and the mode; the model name truncates first", async (p) => {
+  await sim(p, () => { window.__zmc.sim.contextUsage = { used: 62000, size: 200000 }; });
+  await send(p, "hello");
+  await done(p);
+  await p.waitForSelector(".cmeter:not([hidden])");
+  const g = await p.evaluate(() => {
+    const q = (s) => window.__zmc.shadow.querySelector(s), r = (s) => q(s).getBoundingClientRect();
+    const parts = [".pick--model", ".cmeter", ".pick--mode", ".send"].map((s) => [s, r(s)]);
+    const overlap = parts.some(([, a], i) => parts.slice(i + 1).some(([, b]) => a.right > b.left + 0.5));
+    const t = q(".pick--model .pick__t"), e = q(".pick--model .pick__e");
+    return { overlap, inside: parts.every(([, x]) => x.right <= r(".composer").right && x.width > 0), modelCut: t.scrollWidth > t.clientWidth, effortWhole: e.scrollWidth <= e.clientWidth, effort: e.textContent };
+  });
+  assert.deepEqual(g, { overlap: false, inside: true, modelCut: true, effortWhole: true, effort: "Medium" });
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .eff__track");
+  const m = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const d = r(".mdd"), c = r(".composer"), b = r(".pick--model"); return { inside: d.left >= c.left - 1 && d.right <= c.right + 1, above: d.bottom <= b.top + 1 }; });
+  assert.deepEqual(m, { inside: true, above: true }, "the dropdown sits above its button, inside the composer");
+}, { width: 300 });
 
 await test("settings: the agent section shows loading, then the catalog; a failing backend shows an error with Try again", async (p) => {
   await p.locator('button[aria-label="Settings"]').click();
@@ -849,14 +949,14 @@ for (const [name, params, run] of [
   ["answer", {}, async (p) => { await send(p, "compare"); await done(p); await p.locator(".foot__src").click(); await p.locator(".step__row").first().click(); }],
   ["chips", { ctx: "area" }, async (p) => { await p.locator(".cin").click(); await p.keyboard.type("@Discrim"); await p.waitForSelector(".pop__i"); await p.keyboard.press("Enter"); await p.waitForTimeout(200); }],
   ["long model name", {}, async (p) => {
-    await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent) && !window.__zmc.shadow.querySelector(".pick--effort").hidden);
+    await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent) && window.__zmc.shadow.querySelector(".pick--model .pick__e"));
     await p.evaluate(() => { window.__zmc.shadow.querySelector(".pick--model .pick__t").textContent = "Claude Opus 5.5 with a very long name and a million tokens of context"; });
-    const t = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".pick--effort .pick__t"); return [e.scrollWidth, e.clientWidth, e.textContent]; });
+    const t = await p.evaluate(() => { const e = window.__zmc.shadow.querySelector(".pick--model .pick__e"); return [e.scrollWidth, e.clientWidth, e.textContent]; });
     assert.deepEqual([t[0] <= t[1], t[2]], [true, "Medium"], "the effort level is never the thing that truncates");
-    await p.locator(".pick--effort").click();
-    await p.waitForSelector(".menu--effort .eff");
-    const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".menu--effort"), b = r(".pick--effort"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
-    assert.ok(g.off < 3 && g.inside, "the effort menu opens under its own button, inside the composer");
+    await p.locator(".pick--model").click();
+    await p.waitForSelector(".mdd .eff__track");
+    const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".mdd"), b = r(".pick--model"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
+    assert.ok(g.off < 3 && g.inside, "the dropdown opens above its own button, inside the composer");
   }],
   ["diagram", {}, async (p) => { await send(p, "draw it"); await done(p); await p.locator(".dg").first().hover(); await p.locator(".dg").first().locator('button[aria-label="Show the SVG source"]').click(); }],
   ["meter", {}, async (p) => { await p.evaluate(() => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; }); await send(p, "hello"); await done(p); await p.waitForSelector(".cnote:not([hidden])"); }],

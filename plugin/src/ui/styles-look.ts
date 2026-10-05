@@ -95,6 +95,10 @@ export const LOOK_STYLES = `
 .zmc[data-glass="on"] .seg { background: color-mix(in srgb, var(--ink) 5%, transparent); border-color: var(--glass-line); }
 .zmc[data-glass="on"] .seg__opt--on { background: var(--glass-strong); box-shadow: var(--glass-sheen), 0 1px 3px rgb(0 0 0 / 0.12); }
 .zmc[data-glass="on"][data-theme="dark"] .seg__opt--on { background: rgb(255 255 255 / 0.12); }
+.zmc[data-glass="on"] .mdd__agents { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.zmc[data-glass="on"] .mdd__agent--on { background: var(--paper-raised); box-shadow: var(--glass-sheen), 0 1px 3px rgb(0 0 0 / 0.12); }
+.zmc[data-glass="on"][data-theme="dark"] .mdd__agent--on { background: rgb(255 255 255 / 0.13); }
+.zmc[data-glass="on"] .mdd__eff { border-top-color: var(--glass-line); }
 .zmc[data-glass="on"] .steps { background: color-mix(in srgb, var(--ink) 4%, transparent); }
 /* floating surfaces: frosted (the only backdrop blur in the panel) */
 .zmc[data-glass="on"] :is(.composer, .menu, .pop, .jump) { border-color: var(--glass-edge); box-shadow: var(--glass-sheen), var(--glass-shadow); }

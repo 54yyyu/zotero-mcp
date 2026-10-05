@@ -48,20 +48,38 @@ async function main(ctx) {
   out.links = "ok";
   await ctx.snapshot("ui-1-answer");
 
-  // 2b. the effort slider opens (it needs nothing the sandbox lacks), steps with the keys, applies and closes
-  const effBtn = $(".pick--effort");
-  check(effBtn && !effBtn.hidden, "the effort picker is showing");
-  effBtn.click();
-  await ctx.waitFor(() => $(".menu--effort .eff__track"), "the effort slider rendered (not stuck on Loading)");
+  // 2b. the model dropdown opens above its button (it needs nothing the sandbox lacks): the agents with their status,
+  // the models, and the effort slider, which steps with the keys, applies and closes
+  const modelBtn = $(".pick--model");
+  check(modelBtn && !$(".pick--effort"), "one button for the model and effort");
+  modelBtn.click();
+  await ctx.waitFor(() => $(".mdd .eff__track"), "the dropdown rendered its effort slider (not stuck on Loading)");
+  check($$(".mdd__agent").length === 3 && $(".mdd__agent--on")?.dataset.id === "claude-code", "the three agents, Claude Code chosen");
+  check($$('.mdd [role="menuitemradio"]').length >= 1, "the models are listed");
+  const md = $(".mdd").getBoundingClientRect(), mb = modelBtn.getBoundingClientRect();
+  check(md.bottom <= mb.top + 1 && md.left >= $(".composer").getBoundingClientRect().left - 1, "the dropdown sits above its button");
+  modelBtn.click(); // a second press closes it
+  check(!$(".mdd"), "the button toggles the dropdown");
+  for (const [theme, shot] of [[1, "ui-1b-model-dropdown-light"], [0, "ui-1c-model-dropdown-dark"]]) {
+    Services.prefs.setIntPref("browser.theme.toolbar-theme", theme);
+    await ctx.sleep(500);
+    modelBtn.click();
+    await ctx.waitFor(() => $(".mdd .eff__track"), "the dropdown in " + shot);
+    await ctx.snapshot(shot);
+    modelBtn.click();
+  }
+  Services.prefs.clearUserPref("browser.theme.toolbar-theme");
+  await ctx.sleep(300);
+  modelBtn.click();
+  await ctx.waitFor(() => $(".mdd .eff__track"), "the dropdown again");
   const stops = $$(".eff__stop").length;
   check(stops >= 2, "one stop per level: " + stops);
   const level0 = $(".eff__cur").textContent;
   const key = (k) => $(".eff__track").dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
-  key(level0 === $$(".eff__stop")[0]?.title ? "ArrowRight" : "ArrowLeft");
+  key(level0 === $$(".eff__stop")[0]?.title.replace(/ \(recommended\)$/, "") ? "ArrowRight" : "ArrowLeft");
   check($(".eff__cur").textContent !== level0, "an arrow key moves the level");
   key("Enter");
-  await ctx.waitFor(() => !$(".menu--effort"), "Enter applies and closes");
-  check(new RegExp($(".eff__cur")?.textContent ?? ".").test("") || true, "no crash after close");
+  await ctx.waitFor(() => !$(".mdd"), "Enter applies and closes");
   out.effortSlider = "ok";
 
   // 3. settings: every section, the catalog-driven pickers, and a save that reaches the host
