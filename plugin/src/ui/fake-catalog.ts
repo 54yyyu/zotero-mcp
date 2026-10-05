@@ -1,5 +1,6 @@
 // What each fake backend offers (names and ids as the real bridges report them) and the default settings.
 import type { BackendId, Catalog, PanelSettings } from "../types.ts";
+import { DEFAULT_APPEARANCE } from "./appearance.ts";
 
 const level = (id: string, name: string, description?: string) => ({ id, name, ...(description ? { description } : {}) });
 
@@ -54,5 +55,6 @@ export function defaultSettings(): PanelSettings {
     ],
     followFocus: true, attachSelection: true, attachAreas: true,
     enterToSend: true, showThinking: true, expandTools: false, showUsage: false, openAtStart: false, welcomed: true, chatFolder: "",
+    appearance: { ...DEFAULT_APPEARANCE },
   };
 }

@@ -3,6 +3,7 @@
 // in chat.ts, setup health in health.ts, and the DOM of each part in messages / composer / views.
 import type { BackendId, Catalog, MountPanel, PanelHost, PromptEntry, ZoteroRef } from "../types.ts";
 import { STYLES } from "./styles.ts";
+import { Look } from "./appearance.ts";
 import { clear, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
 import { Composer } from "./composer.ts";
 import { contextFill } from "./economy.ts";
@@ -39,6 +40,7 @@ class Panel {
   private statusBtn: HTMLButtonElement;
   private accountEl = h("span.stat__t");
   private historyBtn: HTMLButtonElement;
+  private look: Look;
 
   private view: View = "chat";
   private activeView: { render?: () => void; refresh?: () => void } | null = null;
@@ -105,6 +107,8 @@ class Panel {
     this.chatEl = h("div.chat", null, this.feed.el, h("div.dock", null, this.setupSlot, this.composer.el));
     this.viewEl = h("div.viewhost", { hidden: true });
     this.app = h("div.zmc", { dataset: { theme: host.theme(), view: "chat" }, onkeydown: (e: KeyboardEvent) => this.onKey(e) }, hd, h("div.body", null, this.chatEl, this.viewEl));
+    this.look = new Look(this.app, host);
+    this.look.apply();
     root.append(h("style", { text: STYLES }), this.app);
 
     this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }));
@@ -143,7 +147,7 @@ class Panel {
       v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); } })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
-      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), focusPrompts: this.focusPrompts });
+      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look, focusPrompts: this.focusPrompts });
     this.focusPrompts = false;
     this.activeView = screen;
     this.viewEl.append(screen.el);

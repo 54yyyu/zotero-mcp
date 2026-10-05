@@ -5,6 +5,7 @@ import { ContextTracker } from "./context.ts";
 import { withDefaults } from "./defaults.ts";
 import { describeContext } from "./describe.ts";
 import { dropChips } from "./drop.ts";
+import { createImages } from "./image.ts";
 import { createDoctor, findCli } from "./doctor.ts";
 import * as keychain from "./keychain.ts";
 import { openTarget } from "./open.ts";
@@ -17,6 +18,8 @@ export interface HostBundle {
   host: PanelHost;
   spawner: Spawner;
   context: ContextTracker;
+  /** chooseImage without the picker: the in-Zotero test imports a file through it. */
+  importImage(path: string): Promise<{ name: string; dataUrl: string }>;
   dispose(): void;
 }
 
@@ -46,6 +49,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     },
   };
   const store = createStore(PathUtils.join(dataDir, "sessions"));
+  const images = createImages(win, dataDir);
 
   // Read on every context change, so parsed once and dropped when something saves.
   let cached: PanelSettings | null = null;
@@ -84,6 +88,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     },
     async resetSettings() {
       prefs.set("settings", "");
+      await images.remove();
       cached = null;
       context.refresh();
     },
@@ -122,6 +127,9 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       else await IOUtils.write(path, data);
       return path;
     },
+    chooseImage: () => images.choose(),
+    loadImage: () => images.load(),
+    removeImage: () => images.remove(),
     resumeCommand: (s) => resumeCommand(s.backend, s.cwd, s.agentSessionId),
 
     doctor,
@@ -143,5 +151,5 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       return () => dark.removeEventListener("change", cb);
     },
   };
-  return { host, spawner, context, dispose: () => context.stop() };
+  return { host, spawner, context, importImage: images.importImage, dispose: () => context.stop() };
 }

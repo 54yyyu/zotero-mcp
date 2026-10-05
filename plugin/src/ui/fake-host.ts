@@ -42,6 +42,9 @@ interface Sim {
   pickFolder: string | null;
   preparedCwd: (string | undefined)[];
   catalogDelay: number;
+  /** What chooseImage() answers next (null = the user cancelled), and the picture the host keeps. */
+  pickImage: { name: string; dataUrl: string } | null;
+  image: string | null;
   /** What the Data section did. */
   data: { cleared: number; revealed: number; resets: number };
   /** Say exactly this as the next answer (no tools): for the XSS corpus and layout tests. */
@@ -61,6 +64,8 @@ interface Sim {
 }
 
 const DEFAULT_FOLDER = "/Users/you/Documents/Zotero-Chat";
+// A stand-in photo for the background picker: an evening sky over hills, as an SVG (the real host gives a downscaled JPEG).
+const SAMPLE_IMAGE = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000"><defs><linearGradient id="s" x2="0" y2="1"><stop offset="0" stop-color="#2b3a67"/><stop offset=".55" stop-color="#e07a5f"/><stop offset="1" stop-color="#f2cc8f"/></linearGradient></defs><rect width="800" height="1000" fill="url(#s)"/><circle cx="560" cy="520" r="70" fill="#fbe7c6"/><path d="M0 700 Q200 560 400 680 T800 640 V1000 H0Z" fill="#3d405b"/><path d="M0 820 Q260 700 520 800 T800 780 V1000 H0Z" fill="#22223b"/></svg>')}`;
 const CITE = (k: string, p: number) => `zotero://open-pdf/library/items/${k}?page=${p}`;
 
 const SAMPLE_ANSWER = `Based on **Bertrand and Mullainathan (2004)** and the follow-ups in your library, the callback gap largely persists.
@@ -256,7 +261,7 @@ export class FakeHost implements PanelHost {
     this._theme = o.theme ?? "light";
     this.settings.welcomed = !o.welcome;
     const sim: Sim = {
-      opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, contextUsage: null, saved: [], saveTo: "/Users/you/Downloads", speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
+      opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", pickImage: { name: "kyoto-evening.jpg", dataUrl: SAMPLE_IMAGE }, image: null, preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, saved: [], saveTo: "/Users/you/Downloads", contextUsage: null, speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
       statuses: [
         { id: "claude-code", label: "Claude Code", available: true, account: "Claude Max" },
         { id: "codex", label: "Codex", available: false, reason: "codex is not installed" },
@@ -322,7 +327,7 @@ export class FakeHost implements PanelHost {
   async setSettings(patch: Partial<PanelSettings>) { this.settings = { ...this.settings, ...patch }; }
   async clearHistory() { this.store.clear(); this.sim.data.cleared++; }
   async revealWorkspace() { this.sim.data.revealed++; }
-  async resetSettings() { this.settings = defaultSettings(); this.sim.data.resets++; }
+  async resetSettings() { this.settings = defaultSettings(); this.sim.image = null; this.sim.data.resets++; }
   private folder() { return this.settings.chatFolder || DEFAULT_FOLDER; }
   about() { return { version: "0.1.0", workspace: this.folder() }; }
   async setApiKey(b: BackendId, key: string | null) { if (key) this.sim.keys[b] = key; else delete this.sim.keys[b]; }
@@ -395,6 +400,9 @@ export class FakeHost implements PanelHost {
     this.sim.saved.push({ name, mime, size: data.length, head });
     return this.sim.saveTo ? `${this.sim.saveTo}/${name}` : null;
   }
+  async chooseImage() { const p = this.sim.pickImage; if (p) this.sim.image = p.dataUrl; return p; }
+  async loadImage() { return this.sim.image; }
+  async removeImage() { this.sim.image = null; }
   /** What each backend's own CLI takes to continue a session; the folder is quoted for the shell. */
   resumeCommand(s: SavedSession) {
     const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}` }[s.backend];

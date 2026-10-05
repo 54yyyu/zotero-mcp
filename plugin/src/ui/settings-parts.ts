@@ -1,5 +1,5 @@
-// The settings screen's controls, shared by its sections: segmented choice, radio list, switch, select,
-// a labelled field, a section, and a two-step confirm.
+// The settings screen's controls, shared by its cards: segmented choice, radio list, switch, select, a labelled
+// field, a card and its rows, swatches, a slider, and a two-step confirm.
 import { append, env, h } from "./dom.ts";
 import type { Kid } from "./dom.ts";
 
@@ -44,11 +44,48 @@ export function selectField(label: string, options: { id: string; label: string 
   return h("div.field", null, h("span.field__l", null, label), h("div.select", null, sel));
 }
 
-export function section(title: string, ...kids: Kid[]): HTMLElement {
-  return h("section.sec", { "aria-label": title }, h("h3.sec__t", null, title), ...kids);
+/** A card: a title, one line on what it is for, then its rows. */
+export function section(title: string, desc: string, ...kids: Kid[]): HTMLElement {
+  return h("section.sec", { "aria-label": title },
+    h("header.sec__head", null, h("h3.sec__t", null, title), h("p.sec__d", null, desc)),
+    h("div.sec__body", null, ...kids));
 }
 
+/** A titled group inside a card (sign-in inside Agent, the shortcuts inside About). */
+export const sub = (title: string, ...kids: Kid[]): HTMLElement => h("div.sec__sub", { role: "group", "aria-label": title }, h("span.sec__subt", null, title), ...kids);
+
 export const hint = (text: string): HTMLElement => h("p.sec__hint", null, text);
+
+/** A row: the label on the left, its control on the right (below it when the card is narrow), a hint under both. */
+export function row(label: string, control: Kid, help?: string): HTMLElement {
+  return h("div.row", null, h("div.row__main", null, h("span.row__l", null, label), h("div.row__ctl", null, control)), help ? h("p.row__hint", null, help) : null);
+}
+
+/** Round colour swatches (or any small tiles) as one radio group; `extra` is appended inside it (the custom colour). */
+export function swatches(name: string, cls: string, items: { id: string; label: string; style?: string; mod?: string }[], value: string, onPick: (id: string) => void, extra?: Kid): HTMLElement {
+  const pick = (dir: number) => {
+    const i = items.findIndex((x) => x.id === value);
+    const n = items[(i + dir + items.length) % items.length];
+    if (n) onPick(n.id);
+  };
+  const none = !items.some((x) => x.id === value);
+  return h("div.sws", { role: "radiogroup", "aria-label": name }, items.map((o, i) => h(`button.${cls}${o.mod ? `.${cls}--${o.mod}` : ""}`, {
+    type: "button", role: "radio", "aria-checked": String(o.id === value), "aria-label": o.label, title: o.label, style: o.style,
+    tabindex: o.id === value || (none && i === 0) ? "0" : "-1", dataset: { fid: `${name}:${o.id}` }, onclick: () => onPick(o.id),
+    onkeydown: (e: KeyboardEvent) => { if (e.key === "ArrowRight" || e.key === "ArrowLeft") { e.preventDefault(); pick(e.key === "ArrowRight" ? 1 : -1); } },
+  })), extra);
+}
+
+/** A labelled range with its value shown: `onInput` runs while dragging (a live preview), `onChange` on release (the save). */
+export function slider(label: string, o: { value: number; min: number; max: number; unit: string; help?: string; onInput(v: number): void; onChange(v: number): void }): HTMLElement {
+  const out = h("span.row__v", null, `${o.value}${o.unit}`);
+  const input = h("input", {
+    type: "range", min: String(o.min), max: String(o.max), step: "1", value: String(o.value), "aria-label": label, dataset: { fid: `range:${label}` },
+    oninput: () => { const v = Number((input as HTMLInputElement).value); out.textContent = `${v}${o.unit}`; o.onInput(v); },
+    onchange: () => o.onChange(Number((input as HTMLInputElement).value)),
+  });
+  return h("div.row", null, h("div.row__main", null, h("span.row__l", null, label), out), input, o.help ? h("p.row__hint", null, o.help) : null);
+}
 
 /** A button that asks "sure?" before it runs. */
 export function confirmAction(o: { label: string; ask: string; yes: string; danger?: boolean; run: () => Promise<string | void> }): HTMLElement {

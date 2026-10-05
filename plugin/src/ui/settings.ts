@@ -1,11 +1,13 @@
-// The settings screen: agent (backend, model, effort, permissions from the backend's catalog), sign-in,
-// context, chat, startup, prompts, data, shortcuts. Every change saves at once through `save(patch)`; the
-// patches are built in settings-model.ts.
-import type { BackendId, BackendStatus, Catalog, PanelHost, PanelSettings } from "../types.ts";
+// The settings screen, as stacked cards: agent (backend, sign-in, model, effort, permissions from the backend's
+// catalog), appearance (settings-look.ts), context, chat, prompts, chat folder, data, about. Every change saves at once
+// through `save(patch)`; the patches are built in settings-model.ts.
+import type { Appearance, BackendId, BackendStatus, Catalog, PanelHost, PanelSettings } from "../types.ts";
+import type { Look } from "./appearance.ts";
 import { clear, env, errMessage, h, icon, isMac, nextId } from "./dom.ts";
 import { addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, setSlot, shortPath, shortcuts } from "./settings-model.ts";
 import type { FlagKey } from "./settings-model.ts";
-import { confirmAction, hint, radios, section, seg, selectField, switchRow } from "./settings-parts.ts";
+import { confirmAction, hint, radios, section, seg, selectField, sub, switchRow } from "./settings-parts.ts";
+import { appearanceCard } from "./settings-look.ts";
 import { slotLabel } from "./dom.ts";
 import { BACKEND_LABEL, BACKENDS, frame } from "./views.ts";
 
@@ -17,6 +19,8 @@ export interface SettingsDeps {
   refreshStatuses(): void;
   /** Something that other parts of the panel show has changed. */
   changed(): void;
+  /** Applies the appearance (saved, or a draft while a slider is dragged). */
+  look: Look;
   focusPrompts: boolean;
 }
 
@@ -41,6 +45,12 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
     try { await host.setSettings(patch); o.changed(); flash(); } catch (e) { keyMsg = `Couldn't save: ${errMessage(e)}`; }
     render();
   };
+  // The look needs no health check or catalog reload, only the restyle.
+  const saveLook = async (patch: Partial<Appearance>) => {
+    try { await host.setSettings({ appearance: { ...host.getSettings().appearance, ...patch } }); o.look.apply(); flash(); } catch (e) { keyMsg = `Couldn't save: ${errMessage(e)}`; }
+    render();
+  };
+  const appearance = appearanceCard(host, o.look, saveLook, () => render());
   const flag = (key: FlagKey, label: string, help: string) => switchRow(label, help, host.getSettings()[key], (on) => void save(setFlag(key, on)));
 
   /** Read the backend's catalog once; the runtime caches it, this remembers the answer for the screen. */
@@ -80,16 +90,17 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
           radios("Permission mode", c.modes.map((m) => ({ id: m.id, label: m.name, help: modeHelp(m) })), effective(s, c, "mode", b), (id) => void save(setPerBackend(s, "mode", b, id)))));
       }
     }
-    return section("Agent",
+    return section("Agent", "Who you chat with, how it signs in, and what it may do.",
       seg("Agent", BACKENDS.map((id) => ({ id, label: BACKEND_LABEL[id], title: sts?.find((x) => x.id === id && !x.available)?.reason })), b, (id) => void save({ backend: id as BackendId })),
       hint(sts ? (cur?.available ? `${cur.label} is ready.` : `${cur?.label ?? BACKEND_LABEL[b]} isn't ready: ${cur?.reason ?? "not found"}.`) : "Looking for agents…"),
-      h("div.fields", null, ...parts),
+      signIn(s),
+      parts.length ? h("div.fields", null, ...parts) : null,
       hint("Backend, model, effort and permissions apply to your next new chat; the pickers under the message box change the current one."));
   }
 
   function signIn(s: PanelSettings): HTMLElement {
     const b = s.backend;
-    if (b === "pi") return section("Sign-in", hint("pi has no subscription to sign in to. It runs on the provider keys already in your shell or in pi's own settings, so there is nothing to set up here."));
+    if (b === "pi") return sub("Sign-in", hint("pi has no subscription to sign in to. It runs on the provider keys already in your shell or in pi's own settings, so there is nothing to set up here."));
     const mode = s.auth[b] ?? "subscription";
     const st = o.statuses()?.find((x) => x.id === b);
     const input = h("input.input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: keys[b] ? "A key is saved. Paste a new one to replace it." : "Paste your API key", "aria-label": `${BACKEND_LABEL[b]} API key`, value: keyDraft, oninput: () => { keyDraft = input.value; } }) as HTMLInputElement;
@@ -101,7 +112,7 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
       keyBusy = false; o.changed(); render();
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); void saveKey(); } });
-    return section("Sign-in",
+    return sub("Sign-in",
       seg("Sign in with", [{ id: "subscription", label: "Subscription" }, { id: "api-key", label: "API key" }], mode, (id) => void save(setAuth(s, b, id as "subscription" | "api-key"))),
       mode === "subscription"
         ? [hint(st?.account ? `Signed in as ${st.account}.` : st?.available === false ? `Not signed in: ${st.reason ?? "unknown"}.` : "Uses the account you are signed in to in the agent's own app."),
@@ -127,7 +138,7 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
           h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": `Delete prompt ${p.title || i + 1}`, title: "Delete", onclick: () => void save({ prompts: removePrompt(list, i) }) }, icon("trash"))),
         ta);
     });
-    const sec = section("Custom prompts", hint("Shown on a new chat. A prompt with a shortcut runs from anywhere in Zotero."), ...rows,
+    const sec = section("Custom prompts", "Shown on a new chat. A prompt with a shortcut runs from anywhere in Zotero.", ...rows,
       h("button.btn.btn--sm", { type: "button", onclick: () => void save({ prompts: addPrompt(list, nextId("p") + Date.now().toString(36)) }) }, icon("plus"), "Add a prompt"));
     sec.id = "prompts";
     return sec;
@@ -138,28 +149,28 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
     const choose = async () => {
       try { const p = await host.chooseFolder(s.chatFolder || path); if (p) await save(setFolder(p)); } catch (e) { keyMsg = errMessage(e); render(); }
     };
-    return section("Chat folder",
+    return section("Chat folder", "Where new chats run, and where the zotero-cli skill is installed.",
       h("div.folder", { title: path }, icon("folder"), h("span.folder__p", null, shortPath(path))),
       h("div.folder__acts", null,
         h("button.btn.btn--sm", { type: "button", onclick: () => void choose() }, "Choose\u2026"),
         h("button.btn.btn--sm", { type: "button", disabled: s.chatFolder ? null : true, onclick: () => void save(setFolder("")) }, "Use default"),
         h("button.btn.btn--sm", { type: "button", onclick: () => void host.revealWorkspace().catch((e) => { keyMsg = errMessage(e); render(); }) }, "Open")),
-      hint("New chats run in this folder, and the zotero-cli skill is installed in it. Every chat remembers its own folder, so changing this never breaks an old chat. If you pick an existing project, the skill is added under .claude/skills and AGENTS.md (only the block we mark is changed)."),
+      hint("Every chat remembers its own folder, so changing this never breaks an old chat. If you pick an existing project, the skill is added under .claude/skills and AGENTS.md (only the block we mark is changed)."),
       keyMsg ? h("p.sec__hint", { role: "status" }, keyMsg) : null);
   }
 
   function data(): HTMLElement {
-    const a = host.about();
-    return section("Data",
+    return section("Data", "Your saved chats and settings.",
       h("div.datarow", null,
         confirmAction({ label: "Clear all history", ask: "Delete every saved chat?", yes: "Delete all", danger: true, run: async () => { await host.clearHistory(); o.changed(); return "History cleared."; } }),
-        confirmAction({ label: "Reset settings", ask: "Reset every setting?", yes: "Reset", danger: true, run: async () => { await host.resetSettings(); cats.clear(); o.changed(); render(); return "Settings reset."; } })),
-      hint("Reset keeps your API keys and your chats."),
-      h("p.about", null, h("span", null, `Zotero chat ${a.version}`)));
+        confirmAction({ label: "Reset settings", ask: "Reset every setting?", yes: "Reset", danger: true, run: async () => { await host.resetSettings(); cats.clear(); o.look.setImage(null); o.changed(); render(); return "Settings reset."; } })),
+      hint("Reset keeps your API keys and your chats."));
   }
 
-  function keysRef(s: PanelSettings): HTMLElement {
-    return section("Shortcuts", h("dl.keys", null, shortcuts(isMac(), s.enterToSend).flatMap(([what, k]) => [h("dt", null, what), h("dd", null, h("kbd", null, k))])));
+  function about(s: PanelSettings): HTMLElement {
+    return section("About", "The version, and the keys that work everywhere.",
+      h("p.about", null, `Zotero chat ${host.about().version}`),
+      sub("Shortcuts", h("dl.keys", null, shortcuts(isMac(), s.enterToSend).flatMap(([what, k]) => [h("dt", null, what), h("dd", null, h("kbd", null, k))]))));
   }
 
   function render() {
@@ -170,20 +181,20 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
     const fid = focused && body.contains(focused) ? focused.dataset.fid : undefined;
     clear(body);
     body.append(
-      agent(s), signIn(s),
-      section("Context",
+      agent(s), appearance(),
+      section("Context", "What goes with each message.",
         flag("followFocus", "Follow what I'm reading", "Attach the open paper, or the item selected in your library, to each message."),
         flag("attachSelection", "Attach selected text", "Text you select in the reader goes with the next message."),
         flag("attachAreas", "Attach selected areas as images", "Sends the picture of the area to the agent's provider."),
       ),
-      section("Chat",
+      section("Chat", "How you send, and what each answer shows.",
         flag("enterToSend", "Press Enter to send", s.enterToSend ? "Shift+Enter adds a line." : "Enter adds a line; Cmd/Ctrl+Enter sends."),
         flag("showThinking", "Show the agent's thinking", "A collapsed Thinking row above each answer."),
         flag("expandTools", "Expand tool steps", "Show each step's input and output without a click."),
         flag("showUsage", "Show tokens and cost", "A small line under each answer. Off by default."),
+        flag("openAtStart", "Open the panel when Zotero starts", ""),
       ),
-      section("Startup", flag("openAtStart", "Open the panel when Zotero starts", "")),
-      prompts(s), folder(s), data(), keysRef(s),
+      prompts(s), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));
     if (fid) (body.querySelector(`[data-fid="${CSS.escape(fid)}"]`) as HTMLElement | null)?.focus({ preventScroll: true });
     if (o.focusPrompts) { o.focusPrompts = false; env.win.setTimeout(() => body.querySelector("#prompts")?.scrollIntoView({ block: "start" }), 0); }

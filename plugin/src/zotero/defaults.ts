@@ -1,4 +1,5 @@
 import type { BackendId, PanelSettings, PromptEntry } from "../types.ts";
+import { DEFAULT_APPEARANCE, readAppearance } from "../ui/appearance.ts";
 
 export const DEFAULT_PROMPTS: PromptEntry[] = [
   { id: "summary-detailed", slot: 1, title: "Detailed summary", text: "Give a detailed summary of this paper: the question, the data and method, the main results, and the limitations. Cite the pages." },
@@ -27,14 +28,16 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   openAtStart: false,
   welcomed: false,
   chatFolder: "",
+  appearance: DEFAULT_APPEARANCE,
 };
 
-/** Saved settings laid over the defaults; the per-backend maps merge key by key so a new backend never has holes. */
+/** Saved settings laid over the defaults; the per-backend maps merge key by key so a new backend never has holes, and the appearance is validated field by field. */
 export function withDefaults(saved: Partial<PanelSettings>): PanelSettings {
   const d = DEFAULT_SETTINGS;
   return {
     ...d, ...saved,
     model: { ...d.model, ...saved.model }, mode: { ...d.mode, ...saved.mode },
     effort: { ...d.effort, ...saved.effort }, auth: { ...d.auth, ...saved.auth },
+    appearance: readAppearance(saved.appearance),
   };
 }

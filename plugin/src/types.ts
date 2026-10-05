@@ -241,6 +241,25 @@ export interface PanelSettings {
   welcomed: boolean;
   /** Where new chats run: the agent's working directory, and where the zotero-cli skill is installed. "" = the default folder. */
   chatFolder: string;
+  appearance: Appearance;
+}
+
+/** How the panel looks (ui/appearance.ts validates it and applies it). */
+export interface Appearance {
+  /** Translucent surfaces over a soft backdrop; off is the flat look. */
+  glass: boolean;
+  /** "" = our red; otherwise "#rrggbb". */
+  accent: string;
+  /** "none", a preset gradient's id (ui/appearance.ts BACKGROUNDS), or "image" (the picture saved by chooseImage). */
+  background: string;
+  /** The saved picture's original file name, "" when there is none (the picture itself is a file in the data dir, not a pref). */
+  image: string;
+  /** 0-100: how much of the picture shows through the veil. */
+  imageVisibility: number;
+  /** 0-20 px. */
+  imageBlur: number;
+  textSize: "small" | "default" | "large";
+  density: "compact" | "comfortable";
 }
 
 export interface SavedSession {
@@ -307,6 +326,11 @@ export interface PanelHost {
   chooseFolder(start?: string): Promise<string | null>;
   /** Zotero's Save dialog for `data` (a diagram's PNG or SVG); writes the file and returns its path, null when cancelled. */
   saveFile(suggestedName: string, data: Uint8Array | string, mime: string): Promise<string | null>;
+  /** An image picker for the background: the picture is downscaled, saved in the plugin's data dir and returned as a data: URL; null when cancelled. */
+  chooseImage(): Promise<{ name: string; dataUrl: string } | null>;
+  /** The saved background picture as a data: URL, null when there is none. */
+  loadImage(): Promise<string | null>;
+  removeImage(): Promise<void>;
   /** The shell command that continues a saved chat in a terminal, e.g. `cd "…" && claude --resume ID`; null when the backend has none. */
   resumeCommand(session: SavedSession): string | null;
   /** "light" | "dark", and a callback for when Zotero's theme changes. */
