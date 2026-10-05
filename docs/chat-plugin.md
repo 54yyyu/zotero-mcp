@@ -75,6 +75,10 @@ Open them from the gear in the panel. Everything is per agent where it can diffe
 
 The panel opens and closes from the toolbar button, or with Cmd+Option+L (Ctrl+Alt+L elsewhere). You can drag items from the library list, or annotations from the reader's sidebar, onto the composer to attach them.
 
+## Diagrams
+
+Ask the agent to draw something (a pipeline, a 2x2, a causal graph) and it answers with a figure in the chat. The agent writes plain SVG; the panel draws it in your theme's colours, so it follows light and dark mode and your accent colour. Hover a figure for its toolbar: show the SVG source, copy it as an image, or save it as PNG (on white, 1400 px wide) or SVG. Anything in a drawing that is not a shape or text, such as scripts, links or external images, is removed before it is shown.
+
 ## The chat folder, and continuing a chat in a terminal
 
 Every chat is a normal agent session that runs in a folder, by default `~/Documents/Zotero-Chat`. The panel installs the `zotero-cli` skill there (under `.claude/skills` and `.agents/skills`, plus a marked block in `AGENTS.md`; it only changes what it marked, so if you pick a folder you already use, the rest of your files are left alone). Change the folder in the settings; it applies to new chats. Each chat remembers the folder it started in, so changing the setting never breaks an old one.

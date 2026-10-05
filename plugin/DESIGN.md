@@ -114,6 +114,34 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
   notices with a fix button; citation chips for `zotero:` links; "N sources" fold listing every cited item once;
   copy / retry per answer; auto-scroll that stops when the user scrolls up (with a jump-to-bottom pill).
 - Math: `$...$`, `$$...$$` rendered with KaTeX (lazy, M6).
+- Diagrams: a ```` ```svg ```` block is a figure (below).
+
+### Diagrams (ui/diagram-svg.ts pure, ui/diagram.ts DOM)
+
+No diagram library: the agent writes raw SVG in a ```` ```svg ```` fence (it is told how in `DRAWING_GUIDE`, about 85 words,
+sent once with the brief, never per turn; the brief's own cap stays about the core). The panel never parses it as markup:
+- **Parse**: our own lenient tokenizer (a bare `&`, an unclosed tag or a stray close tag still give the drawing); comments,
+  PIs and DOCTYPEs are skipped, so no DTD entity is ever expanded; 300 KB, 6000 elements, depth 40 at most.
+- **Sanitize**: an element and attribute allow-list (shapes, text, markers, gradients, clip/mask/pattern; geometry and
+  presentation). Gone with their content: script, style, image, foreignObject, a, animate/set, anything unknown. No `on*`,
+  `class`, `style` (its safe declarations become attributes), `font-family`, `filter`; `href` and `url()` only to `#id`; ids
+  namespaced per diagram (`dg<hash>-id`) so a drawing can never point at the panel's own nodes. Nodes are built with
+  `createElementNS`.
+- **Theme**: the agent colours only by palette name: `ink muted line surface accent teal violet orange red green` and
+  `<hue>-soft` fills. A name becomes `style: fill: var(--dg-<name>)`; `--dg-ink/muted/line/surface` come from the panel's own
+  tokens, the hues have a light and a dark set, `accent` is the user's accent (`--accent`), soft fills are `color-mix` tints. A
+  literal colour the model slips in is mapped to the nearest name by lightness and hue (greys to ink/muted/line/surface, light
+  tints to `-soft`). So a drawing follows the theme and the accent live.
+- **Fit**: the viewBox (or width/height, or 360x240), width/height dropped, a leading full-size background rect dropped (the
+  card is the background), displayed at most 1.3x its own size so 12px labels never become billboard text.
+- **Card**: soft surface, 1px rule, 10px radius; a toolbar that fades in on hover or keyboard focus: Source (the code block),
+  Copy (PNG via `ClipboardItem`; the SVG text if images cannot be copied), Save as PNG (on white, at least 1400 px wide or 2x)
+  and Save as SVG (palette baked in as hex from a light export palette, so the file reads anywhere) through
+  `PanelHost.saveFile` (Zotero's Save dialog). "Add to a note" (`host.saveNote`) slots in after Save when it exists.
+- **Streaming**: an unclosed fence is a dashed "Drawing…" placeholder, never a half-drawn figure; a fence cut off when the turn
+  ends, or SVG with nothing drawable left, shows as a code block.
+- **Lazy**: `mdview.ts` imports `diagram.ts` dynamically on the first svg block; esbuild bundles it as a lazily initialised
+  module, so a chat without diagrams never runs it, and its stylesheet is added to the shadow root on first use.
 - Light and dark; follows Zotero's theme (`host.theme()`); keyboard accessible; works from 300 px to 700 px wide.
 - Unavailable states are designed too: no backend, not logged in, zotero-cli missing, Zotero's local API off (23119 silent: "restart Zotero").
 
