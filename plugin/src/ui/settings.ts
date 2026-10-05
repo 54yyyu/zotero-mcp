@@ -133,8 +133,8 @@ export function settingsView(host: PanelHost, o: SettingsDeps): { el: HTMLElemen
       return h("div.pe", null,
         h("div.pe__row", null,
           h("input.input.input--sm", { type: "text", value: p.title, placeholder: "Title", "aria-label": `Prompt ${i + 1} title`, onchange: (e: Event) => void save({ prompts: editPrompt(list, i, { title: (e.target as HTMLInputElement).value }) }) }),
-          h("select.input.input--sm.pe__slot", { "aria-label": `Prompt ${i + 1} shortcut`, onchange: (e: Event) => void save({ prompts: setSlot(list, i, Number((e.target as HTMLSelectElement).value)) }) },
-            h("option", { value: "0" }, "No shortcut"), [1, 2, 3, 4].map((n) => h("option", { value: String(n), selected: p.slot === n ? true : null }, slotLabel(n)))),
+          h("div.select.pe__slot", null, h("select.input.input--sm", { "aria-label": `Prompt ${i + 1} shortcut`, onchange: (e: Event) => void save({ prompts: setSlot(list, i, Number((e.target as HTMLSelectElement).value)) }) },
+            h("option", { value: "0" }, "No shortcut"), [1, 2, 3, 4].map((n) => h("option", { value: String(n), selected: p.slot === n ? true : null }, slotLabel(n))))),
           h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": `Delete prompt ${p.title || i + 1}`, title: "Delete", onclick: () => void save({ prompts: removePrompt(list, i) }) }, icon("trash"))),
         ta);
     });

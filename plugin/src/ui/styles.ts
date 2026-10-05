@@ -301,7 +301,9 @@ const BASE = `
 .zmc .radio__tx { display: flex; flex-direction: column; min-width: 0; } .zmc .radio__d { font-size: var(--fs-2); color: var(--ink-muted); line-height: 1.4; }
 .zmc .pe { display: grid; gap: var(--s2); padding: var(--s3); margin-bottom: var(--s2); border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper-raised); }
 .zmc .pe__row { display: flex; gap: var(--s2); align-items: center; } .zmc .pe__row .input:first-child { flex: 1; min-width: 0; }
-.zmc .pe__slot { flex: none; width: auto; max-width: 9.5rem; }
+.zmc .pe__slot { flex: none; width: 8.25rem; }
+.zmc .pe__slot select { height: var(--h-sm); }
+.zmc .pe__slot::after { margin-top: -4px; right: var(--s2); }
 .zmc .fields { display: grid; gap: var(--s4); margin-top: var(--s3); }
 .zmc .field { display: grid; gap: var(--s2); }
 .zmc .field__l { font-weight: 500; }
