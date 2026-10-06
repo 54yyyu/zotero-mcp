@@ -83,8 +83,8 @@ export const LOOK_STYLES = `
 }
 .zmc[data-glass="on"] .hd { border-bottom-color: var(--glass-line); }
 /* cards: translucent, a bright top edge, a soft shadow */
-.zmc[data-glass="on"] :is(.sec, .plan, .wcard, .pe, .check--ok, .prompts__list, .code, .md-table, .area, .stat, .chip:not(.chip--sm), kbd) { background: var(--glass); border-color: var(--glass-line); }
-.zmc[data-glass="on"] :is(.sec, .plan, .wcard, .pe, .check--ok, .prompts__list) { box-shadow: var(--glass-sheen), var(--glass-lift); }
+.zmc[data-glass="on"] :is(.sec, .plan, .wcard, .pe, .check--ok, .code, .md-table, .area, .stat, .chip:not(.chip--sm), kbd) { background: var(--glass); border-color: var(--glass-line); }
+.zmc[data-glass="on"] :is(.sec, .plan, .wcard, .pe, .check--ok) { box-shadow: var(--glass-sheen), var(--glass-lift); }
 .zmc[data-glass="on"] :is(.code, .md-table) { box-shadow: var(--glass-sheen); }
 .zmc[data-glass="on"] .md-table th { background: color-mix(in srgb, var(--ink) 4%, transparent); }
 .zmc[data-glass="on"] .code__head { background: color-mix(in srgb, var(--ink) 3%, transparent); border-bottom-color: var(--glass-line); }
@@ -129,12 +129,11 @@ export const LOOK_STYLES = `
 .zmc[data-glass="on"] .send:hover:not(:disabled):not(.send--stop) { transform: translateY(-1px); }
 .zmc[data-glass="on"] .send:disabled { background: color-mix(in srgb, var(--ink) 7%, transparent); }
 /* pills that lift a pixel */
-.zmc[data-glass="on"] .prompts__list { padding: var(--s1); border: 1px solid var(--glass-line); border-radius: var(--r2); }
-.zmc[data-glass="on"] .prompt { transition: background var(--ease), transform var(--ease); }
-.zmc[data-glass="on"] .prompt:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.zmc[data-glass="on"] .prompt__k { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.zmc[data-glass="on"] .bubble { background: var(--glass-strong); border-color: var(--glass-edge); box-shadow: var(--glass-sheen), var(--glass-lift); backdrop-filter: blur(18px) saturate(170%); transition: background var(--ease), color var(--ease), transform var(--ease); }
+.zmc[data-glass="on"] .bubble:hover { transform: translateY(-1px); background: color-mix(in srgb, var(--accent) 7%, var(--glass-strong)); }
+.zmc[data-glass="on"] .sp__pin--on { background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--glass-line); }
 .zmc[data-glass="on"] .wcard:hover:not(.wcard--on) { transform: translateY(-1px); box-shadow: var(--glass-sheen), var(--glass-shadow); }
-@media (prefers-reduced-motion: reduce) { .zmc[data-glass="on"] :is(.wcard, .send):hover { transform: none !important; } }
+@media (prefers-reduced-motion: reduce) { .zmc[data-glass="on"] :is(.wcard, .send, .bubble):hover { transform: none !important; } }
 
 /* ---------- the settings screen: stacked cards, each a title, a line on what it is for, then its rows ---------- */
 .zmc .set { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); padding-top: var(--s2); }

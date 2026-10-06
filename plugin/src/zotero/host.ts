@@ -27,7 +27,7 @@ export interface HostBundle {
 export function createHost(opts: { id: string; version: string; win: any; dataDir: string }): HostBundle {
   const { win, dataDir } = opts;
   const sh = createSettingsHost(opts);
-  const { settings, store, images, chatFolder, defaultFolder } = sh;
+  const { settings, store, images, skills, chatFolder, defaultFolder } = sh;
   const spawner = createGeckoSpawner();
   const context = new ContextTracker(opts.id);
   context.start(win);
@@ -108,6 +108,8 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       const dir = resumeIn || chatFolder();
       const cwd = await prepareWorkspace(spawner, dir, { ...(zoteroCli ? { zoteroCli } : {}), refresh: dir === defaultFolder() });
       const s = settings();
+      // The skills that are on go into the agent's folder (Claude and Codex also find them there by themselves).
+      await skills.sync(cwd, (await skills.host.list()).filter((k) => !s.skills?.[k.name]?.off).map((k) => k.name)).catch((e) => Zotero.logError(e));
       const key = s.auth[s.backend] === "api-key" ? await keychain.getApiKey(s.backend) : null;
       const varName = keychain.API_KEY_ENV[s.backend];
       return { cwd, brief: `${buildBrief()}\n\n${DRAWING_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };

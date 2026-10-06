@@ -68,12 +68,37 @@ Open them from the gear in the panel, or in Zotero's own Settings window under *
 - **Appearance.** Glass (frosted, translucent cards and menus; on by default, off is the flat look), the accent colour (Mono, black and white, by default; red and five more swatches, or any colour from the picker or as a hex code; text on it stays readable), a background (Plain by default, a soft Glow, five gradients, or a picture of your own, with its visibility and blur), text size, and density. Changes show as you make them. A picture is shrunk to 1600 px and kept in your Zotero profile as `zotero-chat/background.jpg`; it is never synced, and Remove deletes it.
 - **Context.** Whether the panel follows what you are reading, whether selected text is attached automatically, and whether a selected area is attached as an image. An image is sent to the agent's provider and costs tokens.
 - **Chat.** Whether Enter sends (otherwise Cmd/Ctrl+Enter does), whether the agent's thinking is shown, whether tool steps start expanded, and whether the panel is open when Zotero starts (off by default, so Zotero starts exactly as before).
-- **Custom prompts.** Up to four get a shortcut (Cmd+Ctrl+1 to 4 on a Mac, Ctrl+Alt+1 to 4 elsewhere).
+- **Skills and prompts.** Your skills and saved prompts in one list: pin, turn off, edit, delete, add. See below.
 - **Chat folder.** Where new chats run, with Choose, Use default and Open. See below.
 - **Data.** Clear all history, and reset settings (which keeps your API keys and chats).
 - **About.** The version and the keyboard shortcuts.
 
 The panel opens and closes from the toolbar button, or with Cmd+Option+L (Ctrl+Alt+L elsewhere). You can drag items from the library list, or annotations from the reader's sidebar, onto the composer to attach them.
+
+## Skills and prompts
+
+A **prompt** is a message you send often ("Summarize this paper in five sentences"). A **skill** is a longer set of
+instructions your agent follows step by step, for example how you like a paper annotated: a folder with a `SKILL.md` of
+plain Markdown (a name, a one-line description, then the steps), see [skills/](skills/README.md) for an example.
+
+- Type `/` at the start of the message box for a menu of your skills and prompts (type to filter, arrows, Enter or Tab).
+  A skill goes in as `/name `: add a sentence if you like ("/annotate-paper only the figures"), then send. A prompt puts
+  its text in the box to send or edit. Once a chat is under way, **Summarise now** is listed too where the agent offers it.
+- Pin up to four (a skill or a prompt): they are buttons above the message box on a new chat, and run from anywhere in
+  Zotero with Cmd+Ctrl+1 to 4 (Ctrl+Alt+1 to 4 elsewhere).
+- Every agent gets a skill the same way: the panel copies it into the chat folder (`.agents/skills` and `.claude/skills`)
+  and tells the agent in plain words to read that file and follow it, with what you have open attached as usual.
+- Settings > **Skills and prompts** lists them all. **Add skill…** takes a skill's `SKILL.md` (its folder comes along) or
+  any `.md` file (it becomes a new skill; you give it a name and a line). Before anything is copied you see the full
+  text and every file that is copied or left out: scripts, programs, links and hidden files are left out, and scripts
+  are copied only if you tick that you have read them. **Create with the agent** starts a chat in which your agent asks a
+  few questions and writes the skill for you (or tells you it is better as a prompt).
+- Your skills live in your Zotero profile, `zotero-chat/skills/<name>/SKILL.md` (**Reveal** opens the folder). They
+  work in every chat folder. Copies the panel puts in a folder you chose are marked, and a skill of the same name that
+  you put there yourself is never replaced.
+
+Skills tell your agent what to do, and it acts with your permissions: only add skills you trust or wrote. The panel never
+downloads one.
 
 ## Diagrams
 

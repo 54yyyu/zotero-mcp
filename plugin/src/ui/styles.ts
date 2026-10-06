@@ -7,6 +7,7 @@ import { CHAT_STYLES } from "./styles-chat.ts";
 import { CONTEXT_STYLES } from "./styles-context.ts";
 import { WELCOME_STYLES } from "./styles-welcome.ts";
 import { LOOK_STYLES } from "./styles-look.ts";
+import { SKILL_STYLES } from "./styles-skills.ts";
 
 const BASE = `
 :host { display: block; height: 100%; min-width: 0; }
@@ -55,7 +56,7 @@ const BASE = `
 .zmc :is(.hrow__f svg, .stopnote svg) { width: 12px; height: 12px; }
 .zmc :is(.btn svg, .lnk svg, .chip__i svg, .chip__btn svg, .area__head svg, .pick svg, .pop__search svg, .pop__ic svg, .menu__check svg, .keyrow__ok svg, .folder svg, .step__icon svg, .step__st svg, .plan__head svg, .perm--done svg) { width: 14px; height: 14px; }
 .zmc :is(.iconbtn svg, .send svg, .dropveil svg, .jump svg) { width: 16px; height: 16px; }
-.zmc :is(.stat__t, .prompt__t, .chip__t, .hrow__f span, .hrow__t, .folder__p, .source__t, .step__title, .perm--done .perm__what) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zmc :is(.stat__t, .chip__t, .hrow__f span, .hrow__t, .folder__p, .source__t, .step__title, .perm--done .perm__what) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zmc h1, .zmc h2, .zmc h3 { margin: 0; font-weight: 600; }
 .zmc .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .zmc :is(.feed, .vw__body, .pop__list, .menu, pre, .md-table, .cin) { scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
@@ -150,16 +151,6 @@ const BASE = `
 .zmc .mark { width: 40px; height: 40px; margin: 0 auto var(--s3); } .zmc .mark svg { width: 100%; height: 100%; overflow: visible; }
 .zmc .empty h2 { font-size: var(--fs-6); line-height: 1.25; letter-spacing: -0.01em; color: var(--ink); margin-bottom: var(--s2); }
 .zmc .empty__lead { margin: 0 auto; max-width: 24rem; line-height: 1.5; }
-.zmc .prompts { margin: var(--s5) auto 0; max-width: 28rem; text-align: left; }
-.zmc .prompts__head { display: flex; align-items: center; justify-content: space-between; padding-left: var(--s3); }
-.zmc .prompts__list { list-style: none; margin: var(--s1) 0 0; padding: 0; display: grid; gap: 2px; }
-.zmc .prompts__none { margin: var(--s2) var(--s3); font-size: var(--fs-2); color: var(--ink-muted); }
-.zmc .prompt { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); width: 100%; height: var(--h-row); padding: 0 var(--s3); border: 0; border-radius: var(--r1); background: none; color: var(--ink); text-align: left; transition: background var(--ease); }
-.zmc .prompt:hover:not(:disabled) { background: var(--tint-hover); }
-.zmc .prompt:disabled { color: var(--ink-faint); }
-.zmc .prompt__t { min-width: 0; }
-.zmc .prompt__k { flex: none; border-color: transparent; background: var(--paper-sunk); }
-@container zmc (max-width: 340px) { .zmc .prompt__k { display: none; } }
 
 /* ---------- composer ---------- */
 .zmc .composer { position: relative; display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3) var(--s2) var(--s2) var(--s3); background: var(--paper-raised); border: 1px solid var(--rule); border-radius: var(--r3); box-shadow: 0 1px 2px rgb(0 0 0 / 0.05); transition: border-color var(--ease); }
@@ -340,10 +331,6 @@ const BASE = `
 .zmc .radio--on .radio__dot { border-color: var(--ink); background: var(--ink); box-shadow: inset 0 0 0 3px var(--paper); }
 .zmc .radio__tx { display: flex; flex-direction: column; min-width: 0; } .zmc .radio__d { font-size: var(--fs-2); color: var(--ink-muted); line-height: 1.4; }
 .zmc .pe { display: grid; gap: var(--s2); padding: var(--s3); margin-bottom: var(--s2); border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper-raised); }
-.zmc .pe__row { display: flex; gap: var(--s2); align-items: center; } .zmc .pe__row .input:first-child { flex: 1; min-width: 0; }
-.zmc .pe__slot { flex: none; width: 8.25rem; }
-.zmc .pe__slot select { height: var(--h-sm); }
-.zmc .pe__slot::after { margin-top: -4px; right: var(--s2); }
 .zmc .fields { display: grid; gap: var(--s4); margin-top: var(--s3); }
 .zmc .field { display: grid; gap: var(--s2); }
 .zmc .field__l { font-weight: 500; }
@@ -382,4 +369,4 @@ const BASE = `
 .zmc .set__saved span:empty { display: none; }
 `;
 
-export const STYLES = BASE + CHAT_STYLES + WELCOME_STYLES + CONTEXT_STYLES + LOOK_STYLES;
+export const STYLES = BASE + CHAT_STYLES + WELCOME_STYLES + CONTEXT_STYLES + SKILL_STYLES + LOOK_STYLES;

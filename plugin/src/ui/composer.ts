@@ -1,15 +1,21 @@
-// The composer: context chips, the textarea, `@` and `+` search, the pickers, Send / Stop.
+// The composer: context chips, the textarea, `@` and `+` search, the `/` menu, the pickers, Send / Stop, and the pinned
+// skills and prompts as buttons above it on a new chat.
 // It owns the draft and the popups; the controller (index.ts) owns what a send does.
 import type { BackendId, ContextChip, ItemHit, ZoteroRef } from "../types.ts";
-import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids } from "./dom.ts";
+import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids, slotLabel } from "./dom.ts";
 import type { Fill } from "./economy.ts";
 import { SearchPopup } from "./search.ts";
 import { Pickers } from "./pickers.ts";
 import type { Choices, PickKind } from "./pickers.ts";
 import { ContextRing, FULL_AT } from "./ring.ts";
 import type { RingInfo } from "./ring.ts";
+import { SlashMenu } from "./slash.ts";
+import type { SlashItem } from "./slash.ts";
 
-export type { Choices };
+export type { Choices, SlashItem };
+
+/** A pinned skill or prompt: a button above the composer on a new, empty chat, and its shortcut. */
+export interface Bubble { label: string; title: string; skill: boolean; slot: number; run(): void }
 
 export interface ComposerOpts {
   search(query: string): Promise<ItemHit[]>;
@@ -37,6 +43,8 @@ export interface ComposerOpts {
   contextInfo(): RingInfo;
   /** The context popover's Summarise now. */
   onCompact(): void;
+  /** What the `/` menu lists, read each time it opens. */
+  slashItems(): Promise<SlashItem[]>;
 }
 
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -59,6 +67,10 @@ export class Composer {
   private ring: ContextRing;
   private longNote: HTMLElement;
   private noteDismissed = false;
+  private slash: SlashMenu;
+  /** Above the composer card (the panel puts it there): shown while the chat is new and the draft empty. */
+  readonly bubbles = h("div.bubbles", { hidden: true, role: "group", "aria-label": "Pinned skills and prompts" });
+  private bubbleCount = 0;
 
   private opts: ComposerOpts;
 
@@ -71,10 +83,13 @@ export class Composer {
       onfocus: () => { if (!this.warmed) { this.warmed = true; this.opts.onFirstFocus(); } },
     }) as HTMLTextAreaElement;
     this.pop = new SearchPopup(opts, (hit) => this.pickHit(hit), () => this.afterPopClose());
-    this.pop.onActive = (id) => { if (id) this.ta.setAttribute("aria-activedescendant", id); else this.ta.removeAttribute("aria-activedescendant"); };
+    const active = (id: string | null) => { if (id) this.ta.setAttribute("aria-activedescendant", id); else this.ta.removeAttribute("aria-activedescendant"); };
+    this.pop.onActive = active;
 
     this.plusBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Add a source", title: "Add a source (@)", "aria-haspopup": "listbox", onclick: () => this.togglePlus() }, icon("plus")) as HTMLButtonElement;
     this.el = h("div.composer");
+    this.slash = new SlashMenu(this.el, () => opts.slashItems(), (it) => this.pickSlash(it));
+    this.slash.onActive = active;
     this.pickers = new Pickers(this.el, { load: () => opts.loadChoices(), pick: (k, id) => opts.onPick(k, id), switchAgent: (id) => opts.switchAgent(id), hasMessages: () => opts.hasMessages(), checkSetup: () => opts.checkSetup() });
     this.sendBtn = h("button.send", { type: "button", "aria-label": "Send", title: "Send (Enter)", onclick: () => this.send() }, icon("send")) as HTMLButtonElement;
 
@@ -114,6 +129,7 @@ export class Composer {
     if (this.pickers.isOpen && !this.pickers.inside(path)) this.pickers.close();
     if (this.ring.isOpen && !this.ring.inside(path)) this.ring.close();
     if (this.pop.isOpen && !path.includes(this.pop.el) && !path.includes(this.plusBtn) && !path.includes(this.ta)) this.pop.close();
+    if (this.slash.isOpen && !path.includes(this.slash.el) && !path.includes(this.ta)) this.slash.close();
   };
 
   // --- state from the controller
@@ -124,7 +140,15 @@ export class Composer {
   setChoices(c: Choices): void { this.pickers.set(c); }
   setEnterToSend(on: boolean): void { this.enterToSend = on; this.syncSend(); }
   focus(): void { this.ta.focus(); }
-  setText(t: string): void { this.ta.value = t; this.autosize(); this.syncSend(); }
+  setText(t: string): void { this.ta.value = t; this.autosize(); this.syncSend(); if (!t.startsWith("/")) this.slash.close(); }
+
+  /** The pinned skills and prompts, or none (a chat with messages). */
+  setBubbles(items: Bubble[]): void {
+    this.bubbleCount = items.length;
+    setKids(this.bubbles, items.map((b) => h(`button.bubble${b.skill ? ".bubble--skill" : ""}`, { type: "button", title: `${b.title}\n${slotLabel(b.slot)}`, "aria-keyshortcuts": isMac() ? `Meta+Control+${b.slot}` : `Control+Alt+${b.slot}`, onclick: () => b.run() },
+      b.skill ? icon("sparkle") : null, h("span.bubble__t", null, b.label))));
+    this.syncSend();
+  }
   clearDraft(): void { this.setText(""); }
 
   /** How full the agent's context is: the ring whenever the backend says (hidden when it does not), a new-chat suggestion from FULL_AT. */
@@ -174,9 +198,13 @@ export class Composer {
   private onInput(): void {
     this.autosize();
     this.syncSend();
-    // `@query` right before the caret opens the search.
     const caret = this.ta.selectionStart ?? this.ta.value.length;
     const before = this.ta.value.slice(0, caret);
+    // `/query` as the whole message so far opens the `/` menu.
+    const sl = /^\/([^\s/]{0,40})$/.exec(before);
+    if (sl) { this.pop.close(); this.pickers.close(); this.slash.show(sl[1] as string); return; }
+    this.slash.close();
+    // `@query` right before the caret opens the search.
     const m = /(^|\s)@([^\s@]{0,40})$/.exec(before);
     if (m) {
       this.atStart = (m.index ?? 0) + (m[1] as string).length;
@@ -189,6 +217,7 @@ export class Composer {
 
   private onKey(e: KeyboardEvent): void {
     if (e.isComposing || e.keyCode === 229) return; // an IME is picking a character
+    if (this.slash.handleKey(e)) { e.preventDefault(); return; }
     if (this.pop.isOpen && this.atStart >= 0 && this.pop.handleKey(e)) { e.preventDefault(); return; }
     const mod = e.metaKey || e.ctrlKey;
     if (e.key === "Enter" && (this.enterToSend ? !e.shiftKey && !e.altKey && !mod : mod)) {
@@ -202,6 +231,7 @@ export class Composer {
 
   private syncSend(): void {
     const has = this.ta.value.trim().length > 0;
+    this.bubbles.hidden = has || this.bubbleCount === 0;
     const stop = this.busy;
     this.sendBtn.className = stop ? "send send--stop" : "send";
     this.sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
@@ -217,7 +247,23 @@ export class Composer {
     const t = this.ta.value.trim();
     if (!t || this.blocked) return;
     this.pop.close();
+    this.slash.close();
     this.opts.onSend(t);
+  }
+
+  // --- the `/` menu
+
+  /** A skill or prompt fills the message box (Enter again sends, or add a sentence first); a command runs at once. */
+  private pickSlash(it: SlashItem): void {
+    this.slash.close();
+    if (it.insert !== undefined) {
+      this.setText(it.insert);
+      this.ta.setSelectionRange(it.insert.length, it.insert.length);
+      this.ta.focus();
+    } else {
+      this.setText("");
+      it.run?.();
+    }
   }
 
   // --- search

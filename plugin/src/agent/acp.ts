@@ -42,6 +42,8 @@ export class AcpClient {
   #stderr: string[] = [];
   #initTimeoutMs: number;
   #updateListeners = new Set<UpdateListener>();
+  /** Updates that came before anyone listened: a bridge announces its commands in the same write as the session/new reply. */
+  #early: [Record<string, unknown>, string | undefined][] = [];
   #onRequest: IncomingHandler = async (method) => {
     throw new MethodNotFound(`${method} is not served by this client`);
   };
@@ -77,6 +79,7 @@ export class AcpClient {
 
   onUpdate(listener: UpdateListener): () => void {
     this.#updateListeners.add(listener);
+    for (const [u, sid] of this.#early.splice(0)) { try { listener(u, sid); } catch { /* as below */ } }
     return () => this.#updateListeners.delete(listener);
   }
 
@@ -146,6 +149,7 @@ export class AcpClient {
     const p = params as { sessionId?: unknown; update?: Record<string, unknown> } | undefined;
     if (!p?.update) return;
     const sid = typeof p.sessionId === "string" ? p.sessionId : undefined;
+    if (!this.#updateListeners.size) { if (this.#early.length < 100) this.#early.push([p.update, sid]); return; }
     for (const l of [...this.#updateListeners]) {
       try {
         l(p.update, sid);

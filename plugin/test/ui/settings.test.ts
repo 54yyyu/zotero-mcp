@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "../../src/ui/fake-host.ts";
 import { CATALOGS, defaultSettings } from "../../src/ui/fake-catalog.ts";
-import { addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, setSlot, shortPath, shortcuts } from "../../src/ui/settings-model.ts";
+import { addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, shortPath, shortcuts } from "../../src/ui/settings-model.ts";
 
 const host = () => new FakeHost({ speed: 0, noHistory: true });
 
@@ -58,24 +58,17 @@ test("flags and sign-in mode patch only what they name", async () => {
   assert.deepEqual(s.auth, { "claude-code": "subscription", codex: "api-key", pi: "subscription" });
 });
 
-test("prompt edits: a shortcut belongs to one prompt; add, edit and delete return new lists", async () => {
-  const h = host();
-  const p0 = h.getSettings().prompts;
-  const moved = setSlot(p0, 1, 1); // prompt 2 takes slot 1 from prompt 1
-  assert.equal(moved[0]?.slot, undefined);
-  assert.equal(moved[1]?.slot, 1);
-  assert.equal(moved[2]?.slot, 3);
-  assert.equal(setSlot(p0, 0, 0)[0]?.slot, undefined, "No shortcut clears it");
-  assert.equal(p0[0]?.slot, 1, "the input list is untouched");
+test("prompt edits: add, edit and delete return new lists and keep the pins", () => {
+  const p0 = defaultSettings().prompts;
   const edited = editPrompt(p0, 2, { title: "Hypotheses" });
   assert.equal(edited[2]?.title, "Hypotheses");
   assert.equal(edited[2]?.text, p0[2]?.text);
+  assert.equal(edited[2]?.slot, 3, "an edit keeps the pin");
+  assert.equal(p0[2]?.title, "Propose testable hypotheses", "the input list is untouched");
   const added = addPrompt(p0, "pX");
   assert.equal(added.length, 5);
   assert.deepEqual(added[4], { id: "pX", title: "", text: "" });
   assert.deepEqual(removePrompt(added, 0).map((p) => p.id), ["p2", "p3", "p4", "pX"]);
-  await h.setSettings({ prompts: moved });
-  assert.equal(h.getSettings().prompts[1]?.slot, 1);
 });
 
 test("data actions reach the host: clear history, reveal the workspace, reset settings (keeps keys and chats gone)", async () => {

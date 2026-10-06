@@ -228,8 +228,48 @@ export interface PromptEntry {
   id: string;
   title: string;
   text: string;
-  /** 1–4: bound to Cmd+Ctrl+N (mac) / Ctrl+Alt+N. */
+  /** 1–4: pinned (a button on a new chat) and bound to Cmd+Ctrl+N (mac) / Ctrl+Alt+N. One slot per prompt or skill. */
   slot?: number;
+  /** Hidden from the `/` menu and the pins. */
+  off?: boolean;
+}
+
+/** A skill: plain Markdown instructions in `<skills dir>/<name>/SKILL.md` (frontmatter name + description, then the body). */
+export interface SkillEntry { name: string; description: string; /** create-skill, shipped with the plugin: not edited or deleted. */ builtin?: boolean }
+
+/** What "Add skill…" found in a SKILL.md (with its folder) or a loose .md file, shown in full before anything is copied. */
+export interface SkillImport {
+  /** The SKILL.md or .md file picked. */
+  source: string;
+  /** A loose .md file: it becomes the SKILL.md of a new folder. */
+  loose: boolean;
+  text: string;
+  /** Proposed from the frontmatter, else from the text or the file name. */
+  name: string;
+  description: string;
+  /** Files beside SKILL.md that are copied (relative paths). */
+  copy: string[];
+  /** Files left out and why; `keepable` ones are copied only if the user keeps them after a warning. */
+  skip: { path: string; reason: string; keepable: boolean }[];
+}
+
+/** The user's skills folder (`<profile>/zotero-chat/skills`). Nothing here runs until the panel or the settings ask. */
+export interface SkillHost {
+  /** The folder, shown in the settings. */
+  readonly dir: string;
+  /** The skills in it (cached; a changed SKILL.md is read again), then the built-in ones. */
+  list(): Promise<SkillEntry[]>;
+  read(name: string): Promise<string>;
+  write(name: string, text: string): Promise<void>;
+  remove(name: string): Promise<void>;
+  reveal(): Promise<void>;
+  /** A file picker (a skill's SKILL.md, or any .md file), then `inspect`; null when cancelled. */
+  pick(): Promise<SkillImport | null>;
+  inspect(path: string): Promise<SkillImport>;
+  /** Copies SKILL.md (with this name and description) and the plain files; the skipped keepable ones only with `keepSkipped`. */
+  add(plan: SkillImport, o: { name: string; description: string; keepSkipped: boolean }): Promise<void>;
+  /** Puts the skill into the agent's folder (`.agents/skills` and `.claude/skills`); returns its SKILL.md path relative to `cwd`. */
+  use(name: string, cwd: string): Promise<string>;
 }
 
 export interface PanelSettings {
@@ -241,6 +281,8 @@ export interface PanelSettings {
   /** Per backend: run on the user's subscription (bridge login) or on an API key kept in the OS keychain. */
   auth: Record<BackendId, "subscription" | "api-key">;
   prompts: PromptEntry[];
+  /** Per skill name: its pin slot (shared with the prompts' slots) and whether it is turned off. */
+  skills?: Record<string, { slot?: number; off?: boolean }>;
 
   // What the agent is told about the user's focus.
   /** The panel follows the reader / library selection and attaches it. Off: only what the user adds with + or @. */
@@ -316,6 +358,7 @@ export interface DoctorCheck {
 /** What `ui/` needs from the outside world. Implemented by zotero/host.ts; ui/ ships a fake for preview and tests. */
 export interface PanelHost {
   runtime: AgentRuntime;
+  skills: SkillHost;
 
   /** The chips for wherever the user's focus is now (open reader, library selection, text selection). */
   currentContext(): ContextChip[];
@@ -375,7 +418,7 @@ export interface PanelHost {
 
 /** What the settings screen needs, and all that Zotero's Settings pane provides (zotero/settings-host.ts). */
 export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "resetSettings" | "setApiKey" | "hasApiKey" | "clearHistory" | "revealWorkspace"
-  | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "theme" | "onThemeChange" | "onSettingsChange"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
+  | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "theme" | "onThemeChange" | "onSettingsChange" | "skills"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
 
-/** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. */
+/** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. `runPrompt` runs the prompt or skill pinned to that slot. */
 export type MountPanel = (root: ShadowRoot, host: PanelHost) => { dispose(): void; focusComposer(): void; runPrompt(slot: number): void };

@@ -1,7 +1,7 @@
 // The panel's other screens: the empty state, history, settings, and the doctor/status view.
 // Each is a plain function returning an element and a `refresh` where it has data to reload.
-import type { BackendId, DoctorCheck, PanelHost, PromptEntry, SavedSession } from "../types.ts";
-import { copyText, dayGroup, env, errMessage, h, icon, relTime, setKids, slotLabel, svg } from "./dom.ts";
+import type { BackendId, DoctorCheck, PanelHost, SavedSession } from "../types.ts";
+import { copyText, dayGroup, env, errMessage, h, icon, relTime, setKids, svg } from "./dom.ts";
 import { shortPath } from "./settings-model.ts";
 
 export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
@@ -84,20 +84,12 @@ export function setupCard(check: DoctorCheck, more: number, handlers: { recheck(
 
 // ───────────────────────────── empty state ─────────────────────────────
 
-export function emptyState(opts: { prompts: PromptEntry[]; run(p: PromptEntry): void; edit(): void; ready: boolean }): HTMLElement {
-  const prompts = [...opts.prompts].sort((a, b) => (a.slot ?? 9) - (b.slot ?? 9));
+/** The pinned skills and prompts are buttons above the composer (composer.ts), not part of this. */
+export function emptyState(): HTMLElement {
   return h("div.empty", null,
     mark(),
     h("h2", null, "Ask your library"),
-    h("p.empty__lead", null, "Your agent sees what you have open in Zotero and works through zotero-cli. Select text or a figure to ask about it, or type @ to add a source."),
-    h("section.prompts", { "aria-label": "Custom prompts" },
-      h("div.prompts__head", null, h("h3.eyebrow", null, "Custom prompts"), h("button.lnk", { type: "button", onclick: opts.edit }, icon("pencil"), "Edit")),
-      prompts.length
-        ? h("ul.prompts__list", null, prompts.map((p) => h("li", null,
-          h("button.prompt", { type: "button", disabled: opts.ready ? null : true, title: p.text, onclick: () => opts.run(p) },
-            h("span.prompt__t", null, p.title || p.text),
-            p.slot ? h("kbd.prompt__k", { title: "Keyboard shortcut" }, slotLabel(p.slot)) : null))))
-        : h("p.prompts__none", null, "No prompts yet. Add the questions you ask most, and give four of them a shortcut.")));
+    h("p.empty__lead", null, "Your agent sees what you have open in Zotero and works through zotero-cli. Select text or a figure to ask about it, type @ to add a source, or / for your skills and prompts."));
 }
 
 // ───────────────────────────── a view's frame ─────────────────────────────

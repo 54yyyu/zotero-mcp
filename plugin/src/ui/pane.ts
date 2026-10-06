@@ -26,7 +26,7 @@ export function mountSettings(root: ShadowRoot, host: SettingsHost, catalogReady
     statuses: () => statuses,
     refreshStatuses: () => void host.runtime.detect().then((s) => { statuses = s; view.render(); }, () => {}),
     changed: () => {},
-    look, focusPrompts: false, catalogReady,
+    look, catalogReady,
   });
   app.append(view.el);
   root.append(h("style", { text: STYLES + PANE_STYLES }), app);

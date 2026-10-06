@@ -53,7 +53,7 @@ async function main(ctx) {
   click(byLabel("Settings"), "settings button");
   const card = await ctx.waitFor(() => root.querySelector('section.sec[aria-label="Appearance"]'), "the Appearance card");
   out.cards = $$("section.sec").map((s) => s.getAttribute("aria-label"));
-  check(out.cards.join() === "Agent,Appearance,Context,Chat,Translate,Custom prompts,Chat folder,Data,About", "the cards, in order: " + out.cards);
+  check(out.cards.join() === "Agent,Appearance,Context,Chat,Translate,Skills and prompts,Chat folder,Data,About", "the cards, in order: " + out.cards);
   click(byLabel("Blue"), "Blue swatch");
   await ctx.waitFor(() => host.getSettings().appearance.accent === "#2563c9", "Blue is saved");
   check(cssVar("--accent") === "#2563c9", "the accent variable changed at once: " + cssVar("--accent"));

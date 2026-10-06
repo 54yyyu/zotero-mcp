@@ -19,7 +19,8 @@ const suites = [
   ["prefpane", ["--mock-agent", ...welcomed]], // the Zotero Chat pane in Zotero's Settings: lazy, no agent started, live both ways // glass, accent, a preset and a picture through the real host; persists across a remount
   ["diagram", ["--mock-agent", ...welcomed]], // ```svg answers as themed figures; Copy and Save through the host
   ["notes", ["--mock-agent", ...welcomed]], // Save as note: real child/standalone notes, math and links in the HTML, diagrams as embedded images the editor renders
-  ["translate", ["--mock-agent", ...welcomed]], // the reader's Translate: nothing loads until pressed, the answer streams into Zotero's own popup, the chat is untouched
+  ["translate", ["--mock-agent", ...welcomed]],
+  ["skills", ["--mock-agent", ...welcomed]], // skills and prompts: lazy scan, import through the real host, sync into the chat folder, /name as a plain message // the reader's Translate: nothing loads until pressed, the answer streams into Zotero's own popup, the chat is untouched
   ["cite", ["--mock-agent"]], // a quote link flashes the sentence in the reader
   ["welcome", ["--mock-agent"]],
   ["agent", []], // the real bridge's handshake: no prompt, no tokens

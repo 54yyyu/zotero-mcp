@@ -20,6 +20,8 @@ export interface ChatDeps {
   setupFailed(): void;
   /** The session or its choices changed (the pickers show them). */
   sessionChanged(): void;
+  /** What the agent reads for what the user typed (`/skill rest` becomes a plain instruction), in the agent's folder `cwd`. */
+  expand(text: string, cwd: string): Promise<string>;
 }
 
 export class Chat {
@@ -124,8 +126,9 @@ export class Chat {
         this.sent = next;
         this.lastContext = plan;
       } catch { /* the question still goes */ }
+      const said = await this.d.expand(text, this.cwd);
       await sess.prompt({
-        text: [ctx.text, text].filter(Boolean).join("\n\n"),
+        text: [ctx.text, said].filter(Boolean).join("\n\n"),
         ...(sess.supportsImages && ctx.images.length ? { images: ctx.images } : {}),
       });
     } catch (e) {

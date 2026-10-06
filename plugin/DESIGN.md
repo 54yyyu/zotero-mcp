@@ -65,6 +65,9 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
   (0 dark, 1 light) flips the window's `prefers-color-scheme`, so a test can take light and dark snapshots for real.
 - `claude-agent-acp` 0.85.1: `session/set_model` is -32601; set the model with `session/set_config_option {configId:"model"}`.
   codex-acp speaks `set_model`. Codex and pi ignore `_meta.systemPrompt`, so the brief rides on the first prompt.
+- A bridge may write its `available_commands_update` in the same chunk as the `session/new` reply, so it can be read before
+  the session listens; `AcpClient` holds updates that arrive with no listener and hands them to the first one (without it
+  `/compact` went unseen under load and Summarise now never showed).
 
 ## ACP client (agent/)
 
@@ -137,7 +140,7 @@ value is dropped (`markdown.ts`). The agent learns it from `FORMAT_GUIDE` (50 wo
 Features (Beaver's, measured from its demo video, rebuilt in our visual language, which is meeting-buddy's):
 
 - Header: close, new chat, history, doctor/status dot, account label.
-- Empty state: custom prompts with `Cmd+Ctrl+1..4` (mac) / `Ctrl+Alt+1..4`, editable.
+- Empty state: the logo and one line; the pinned skills and prompts are buttons above the composer (below).
 - Composer: auto context chip for the current item (bookmark = pin), `Text Selection` chip when text is selected in the reader,
   `Selected Area` chip with thumbnail + Go to Annotation / Remove, `+` and `@` to attach items/collections/annotations,
   one model button, mode picker, Send / Stop (Esc), Enter sends, Shift+Enter newline, drop an annotation on it.
@@ -246,6 +249,49 @@ bundle and the in-Zotero test):
 
 `zotero-cli notes create/update` take the same Markdown, converted server-side (`zotero_mcp/note_html.py`, markdown-it-py)
 through one allow-list sanitizer that also keeps Zotero's own citation, annotation, image, alignment and indent markup.
+
+## Skills and prompts (ui/skills-model.ts pure, zotero/skills.ts disk, ui/slash.ts, ui/settings-skills.ts)
+
+A **prompt** is a saved message (`PanelSettings.prompts`, unchanged from before). A **skill** is a folder with a
+`SKILL.md` (frontmatter `name` + one-line `description`, then plain Markdown steps) and optional reference files; no
+scripts, `zotero-cli` and the agent's shell are the tools.
+
+- **Where.** `<profile>/zotero-chat/skills/<name>/` is the source of truth: it survives a change of chat folder, serves
+  every chat folder (old chats resume elsewhere), is never synced with the library, and both the panel and Zotero's
+  Settings pane reach it. The card shows it with Reveal. When a session is prepared the skills that are on (and the
+  built-in `create-skill`, written from `ui/create-skill.ts` with the folder's path filled in) are copied into the chat
+  folder's `.agents/skills/<name>` and `.claude/skills/<name>`, each copy with a `.zotero-chat` marker file. The panel
+  replaces or removes only marked copies, plus anything in its own default folder; a same-named skill someone put in their
+  project is never touched. `use(name, cwd)` does the same for one skill right before a `/name` is sent, so an edit made
+  mid-chat arrives. Claude and Codex also find these copies by themselves (measured: claude-agent-acp lists
+  `.claude/skills` as `/name (project)`, codex-acp lists `.agents/skills` as `/$name`; pi-acp lists neither).
+- **Invocation, the same on every agent.** `/name rest` stays as typed in the transcript; the agent gets the context block
+  and then `Use my "name" skill. Before you answer, read .agents/skills/name/SKILL.md in your working folder, then do what
+  it says for this request: rest` (`invocationText`). No bridge skill command is relied on. Live
+  (`test/live/skills.live.ts`, a skill whose token is only in the file): Claude Haiku, Codex 6 Luna and pi Qwen all answered
+  `PINEAPPLE-7 KIWI MANGO`; Claude loads it through its own Skill tool, Codex and pi read the file. An earlier wording
+  ("read ... first and follow it", the rest on its own paragraph) made Haiku ignore the file and ask what the rest meant.
+- **The `/` menu.** `/` as the whole message so far opens a `.pop` above the composer (in the DOM only while open; glass
+  like the other menus): Skills, Prompts, Agent, each ranked by `rankItems` (prefix > word start > substring > letters in
+  order starting a word; a description match counts less). Enter or Tab picks, arrows move, Esc closes. A skill inserts
+  `/name ` (add a sentence, then Send); a prompt inserts its text; an agent command runs. Agent commands are curated from
+  what the bridges advertise (probed 2026-10-05: Claude 73, Codex 30, pi 32 commands, mostly coding or the user's own
+  skills): only **Summarise now** (`/compact`), shown once the chat has messages and `canCompact` holds. Left out:
+  `/context`, `/usage`, `/status`, `/session` (the context ring shows this), `/rename`, `/name` (renames the agent's
+  session, not the panel's chat), `/plan` (the mode picker), `/goal`, `/loop`, `/review*`, `/init`, `/security-review`,
+  `/export`, `/mcp`, `/model`, `/effort` (the pickers) and the agents' own skills.
+- **Pins.** Four slots shared by prompts (`slot`) and skills (`skills[name].slot`); turning an item off unpins it. On a new
+  chat with an empty draft the pinned items are pill buttons above the composer; `Cmd+Ctrl+1..4` runs the same. A pinned
+  skill needs no scan to show (its label is its name); a click on one that is gone says so.
+- **Add skill.** One file picker: a `SKILL.md` brings its folder, any other `.md` becomes a new skill (name and line
+  proposed from the text). The preview shows the full text, a safety line, and every file copied or left out
+  (`planImport`): plain reference files copy; scripts, executables (exec bit or `#!`) and unknown types are left out but
+  can be kept after a warning; links, hidden files, anything outside the folder and files over 2 MB never. The copy step
+  checks each path again (no link anywhere on it) and writes the text the user read, not the file as it is then. The
+  panel never downloads a skill.
+- **Startup.** Nothing at Zotero's startup (budget.js unchanged). The folder is scanned when the `/` menu opens or the
+  settings card renders: one directory listing and a stat per `SKILL.md`, re-read only when its mtime changed (6 ms
+  first scan, 0 ms after, in the harness).
 
 ## Zotero glue (zotero/)
 
@@ -387,8 +433,8 @@ from the transcript (`economy.ts chatStats`, so a reopened chat says the same): 
 (input is the bridge's `totalTokens - outputTokens`: Claude's `inputTokens` leaves out the cached part), its cost only with
 "Show tokens and cost" on, how many compactions, and what the last message's context sent in full or only named
 (`sentLine`). Actions: New chat (the main one from 70%) and Summarise now. Summarise now exists only where `/compact` was
-verified live (`BackendSpec.compacts`, Claude: 24k to 2.7k tokens, the next turn still knew the chat; codex-acp lists a
-`/compact` too, unverified) and the bridge advertised it (`available_commands_update`); `session.compact()` sends it as a
+verified live (`BackendSpec.compacts`, Claude: 24k to 2.7k tokens, the next turn still knew the chat; Codex: a
+`compaction_update`, 2026-10-05; pi-acp lists one but reported no summary, so not pi) and the bridge advertised it (`available_commands_update`); `session.compact()` sends it as a
 silent turn and emits one notice carrying the new fill. From 85% a dismissable line also suggests a new chat, which carries
 nothing over. No numbers, no ring (before the first turn ends, or a backend that says nothing). A compaction becomes an info
 notice.

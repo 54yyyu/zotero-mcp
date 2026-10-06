@@ -85,9 +85,14 @@ describe("session basics", () => {
     assert.ok(ofType(events, "turn_end").length === 1, "the chat goes on");
   });
 
-  it("canCompact is false for a bridge whose /compact is not verified (codex lists one)", async () => {
+  it("canCompact: Codex once its first prompt (which carries the brief) has gone; never pi, whose /compact is not verified", async () => {
     const { session } = await start({ backend: "codex", variant: "codex" });
-    assert.equal(session.canCompact, false);
+    assert.equal(session.canCompact, false, "the brief has not been sent yet");
+    await session.prompt({ text: "hi" });
+    assert.equal(session.canCompact, true, "codex-acp's /compact was verified live");
+    const { session: pi } = await start({ backend: "pi", variant: "pi" });
+    await pi.prompt({ text: "hi" });
+    assert.equal(pi.canCompact, false);
   });
 
   it("a compaction is one info notice marked compacted, and the context fill drops", async () => {

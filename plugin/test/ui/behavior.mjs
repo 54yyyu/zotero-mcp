@@ -328,9 +328,11 @@ await test("settings: api key saved, removed; prompts edited and shortcut runs i
   assert.match(await p.locator(".stat__t").innerText(), /API key/);
   await p.getByRole("button", { name: "Remove" }).click();
   await p.waitForFunction(() => !window.__zmc.sim.keys["claude-code"]);
-  await p.locator('input[aria-label="Prompt 1 title"]').fill("Brief summary");
-  await p.locator('input[aria-label="Prompt 1 title"]').press("Tab");
+  await p.locator('button[aria-label="Edit Detailed summary"]').click();
+  await p.locator('input[aria-label="Prompt title"]').fill("Brief summary");
+  await p.locator('input[aria-label="Prompt title"]').press("Tab");
   await p.waitForFunction(() => window.__zmc.host.getSettings().prompts[0].title === "Brief summary");
+  assert.equal(await sim(p, () => window.__zmc.host.getSettings().prompts[0].slot), 1, "editing keeps the pin");
   await p.keyboard.press("Escape");
   await sim(p, () => window.__zmc.panel.runPrompt(2));
   await done(p);
@@ -830,7 +832,7 @@ await test("settings: chat folder choose, cancel and use default; the section ex
   await p.getByRole("button", { name: "Choose…" }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().chatFolder.endsWith("paper-notes"));
   assert.match(await folder(), /^\/Users\/you\/…\/paper-notes$/);
-  assert.equal(await p.locator(".folder").getAttribute("title"), "/Users/you/Documents/Projects/hiring-audits/paper-notes");
+  assert.equal(await p.locator('section[aria-label="Chat folder"] .folder').getAttribute("title"), "/Users/you/Documents/Projects/hiring-audits/paper-notes");
   await sim(p, () => { window.__zmc.sim.pickFolder = null; });
   await p.getByRole("button", { name: "Choose…" }).click();
   await p.waitForTimeout(150);
@@ -1384,6 +1386,193 @@ await test("the formatting subset renders (underline, strike, sub/sup, Zotero's 
   assert.equal((await sim(p, () => window.__zmc.sim.notes[0])).markdown, ans, "the note gets the answer as written; the host converts it");
 });
 
+
+// ───────────── skills and prompts ─────────────
+/** Pin the annotate-paper skill in slot 4 (the fourth prompt gives it up), as the settings card would. */
+const pinSkill = (p) => sim(p, async () => {
+  const h = window.__zmc.host; const s = h.getSettings();
+  window.__zmc.sim.setSettingsElsewhere({ prompts: s.prompts.map((x) => (x.id === "p4" ? { ...x, slot: undefined } : x)), skills: { "annotate-paper": { slot: 4 } } });
+});
+const lastPrompt = (p) => sim(p, () => window.__zmc.sim.prompts.at(-1)?.text ?? "");
+const INVOKE = (name) => new RegExp(`Use my "${name}" skill\\. Before you answer, read \\.agents/skills/${name}/SKILL\\.md in your working folder, then do what it says for this request: `);
+
+await test("bubbles: four pinned items on a new chat with an empty draft; a prompt sends its text, a skill its plain instruction", async (p) => {
+  await pinSkill(p);
+  await p.waitForSelector(".bubble--skill");
+  assert.deepEqual(await p.locator(".bubble").allInnerTexts(), ["Detailed summary", "Short summary", "Propose testable hypotheses", "Annotate paper"]);
+  await p.locator(".cin").fill("x");
+  assert.equal(await p.locator(".bubbles").isVisible(), false, "a draft hides them");
+  await p.locator(".cin").fill("");
+  assert.equal(await p.locator(".bubbles").isVisible(), true, "an empty draft shows them again");
+  await p.locator(".bubble", { hasText: "Short summary" }).click();
+  await done(p);
+  assert.match(await lastPrompt(p), /<zotero-context>[\s\S]*<\/zotero-context>\n\nSummarize this paper in five sentences\.$/);
+  assert.equal(await p.locator(".bubbles").isVisible(), false, "not in a chat with messages");
+  await p.locator('button[aria-label="New chat"]').click();
+  await p.locator(".bubble", { hasText: "Annotate paper" }).click();
+  await done(p);
+  assert.equal(await p.locator(".ubub__text").first().innerText(), "/annotate-paper", "the transcript shows what was asked");
+  const text = await lastPrompt(p);
+  assert.match(text, INVOKE("annotate-paper"));
+  assert.match(text, /^<zotero-context>[\s\S]*Bertrand and Mullainathan 2004[\s\S]*<\/zotero-context>\n\nUse my/, "the context chips go first, as usual");
+  assert.match(text, /for this request: what I have open\.$/);
+  assert.deepEqual(await sim(p, () => window.__zmc.host.skills.used.map((u) => u.name)), ["annotate-paper"], "the skill was put in the agent's folder first");
+  // the shortcut runs the same thing
+  await p.locator('button[aria-label="New chat"]').click();
+  await sim(p, () => window.__zmc.panel.runPrompt(4));
+  await done(p);
+  assert.match(await lastPrompt(p), INVOKE("annotate-paper"));
+});
+
+await test("bubbles: a pinned skill that is gone says so instead of sending; off items are not pinned", async (p) => {
+  await pinSkill(p);
+  await sim(p, () => window.__zmc.host.skills.files.delete("annotate-paper"));
+  await p.locator(".bubble", { hasText: "Annotate paper" }).click();
+  await p.waitForSelector(".notice--warn");
+  assert.match(await p.locator(".notice--warn").innerText(), /no longer in your skills folder/);
+  assert.equal(await sim(p, () => window.__zmc.sim.prompts.length), 0);
+});
+
+await test("/ menu: opens on / at the start, filters as you type, arrows and Enter pick; a skill fills /name and its extra words go along", async (p) => {
+  await p.locator(".cin").click();
+  await p.keyboard.type("/");
+  await p.waitForSelector(".pop--slash .pop__i");
+  assert.deepEqual(await p.locator(".pop--slash .pop__h").allInnerTexts(), ["Skills", "Prompts"], "no Agent group before the agent offers anything");
+  assert.equal(await p.locator('.pop--slash .pop__i[data-group="Skills"]').count(), 3, "two of mine and create-skill");
+  await p.keyboard.type("rea");
+  assert.equal(await p.locator(".pop--slash .pop__i--on .pop__t").innerText(), "/reading-note");
+  await p.keyboard.press("ArrowDown");
+  await p.keyboard.press("ArrowUp");
+  assert.equal(await p.locator(".cin").getAttribute("aria-activedescendant"), "zmc-slash-0");
+  await p.keyboard.press("Enter");
+  assert.equal(await p.locator(".pop--slash").isVisible(), false);
+  assert.equal(await p.locator(".cin").inputValue(), "/reading-note ");
+  await p.keyboard.type("focus on the methods");
+  await p.keyboard.press("Enter");
+  await p.waitForFunction(() => window.__zmc.sim.prompts.length === 1); // (the fake's scripted answer to a "note" asks a permission)
+  const text = await lastPrompt(p);
+  assert.match(text, INVOKE("reading-note"));
+  assert.match(text, /for this request: focus on the methods$/);
+  assert.equal(await p.locator(".ubub__text").first().innerText(), "/reading-note focus on the methods");
+});
+
+await test("/ menu: Esc closes and keeps the text; Tab picks a prompt (its text, to edit); not mid-sentence; off skills are not listed", async (p) => {
+  await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ skills: { "reading-note": { off: true } } }));
+  await p.locator(".cin").click();
+  await p.keyboard.type("/");
+  await p.waitForSelector(".pop--slash .pop__i");
+  assert.equal(await p.locator('.pop--slash .pop__i[data-id="reading-note"]').count(), 0, "an off skill is not offered");
+  await p.keyboard.press("Escape");
+  assert.equal(await p.locator(".pop--slash").isVisible(), false);
+  assert.equal(await p.locator(".cin").inputValue(), "/");
+  await p.keyboard.type("sho");
+  await p.waitForSelector(".pop--slash .pop__i--on");
+  await p.keyboard.press("Tab");
+  assert.equal(await p.locator(".cin").inputValue(), "Summarize this paper in five sentences.");
+  assert.equal(await sim(p, () => window.__zmc.sim.prompts.length), 0, "a prompt waits for Send");
+  await p.locator(".cin").fill("");
+  await p.keyboard.type("hello /ann");
+  assert.equal(await p.locator(".pop--slash").isVisible(), false, "only at the start of the message");
+  await p.locator(".cin").fill("");
+  await p.keyboard.type("/zzz");
+  await p.waitForFunction(() => /Nothing called/.test(window.__zmc.shadow.querySelector(".pop--slash .pop__status").textContent));
+});
+
+await test("/ menu: Summarise now joins (Agent) once the agent offers /compact, and runs it", async (p) => {
+  await send(p, "hello");
+  await done(p);
+  await p.locator(".cin").click();
+  await p.keyboard.type("/sum");
+  await p.waitForSelector('.pop--slash .pop__i[data-group="Agent"]');
+  assert.deepEqual(await p.locator(".pop--slash .pop__h").allInnerTexts(), ["Skills", "Prompts", "Agent"], "a skill whose description says summary, and the summary prompts, match too");
+  await p.keyboard.type("marise");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".pop--slash .pop__i").length === 1);
+  assert.equal(await p.locator(".pop--slash .pop__i--on .pop__t").innerText(), "Summarise now");
+  await p.keyboard.press("Enter");
+  assert.equal(await p.locator(".cin").inputValue(), "");
+  await p.waitForSelector(".notice", { timeout: 8000 });
+  assert.match(await p.locator(".notice").last().innerText(), /summarised/);
+});
+
+await test("settings card: pins (four at most, the shortcut shown), off unpins, delete asks first; Create with the agent", async (p) => {
+  await p.locator('button[aria-label="Settings"]').click();
+  await p.waitForSelector(".sp");
+  assert.match(await p.locator('button[aria-label^="Unpin Detailed summary"]').innerText(), /1/);
+  await p.locator('button[aria-label="Pin /annotate-paper"]').click();
+  await p.waitForSelector(".sp__msg");
+  assert.match(await p.locator(".sp__msg").innerText(), /Four are pinned/);
+  await p.locator('button[aria-label^="Unpin Short summary"]').click();
+  await p.locator('button[aria-label="Pin /annotate-paper"]').click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().skills?.["annotate-paper"]?.slot === 2);
+  await p.locator('input[aria-label="Use /annotate-paper"]').uncheck();
+  await p.waitForFunction(() => { const v = window.__zmc.host.getSettings().skills?.["annotate-paper"]; return v?.off && !v.slot; });
+  assert.equal(await p.locator('button[aria-label="Pin /annotate-paper"]').isDisabled(), true, "an off item can't be pinned");
+  // delete: from the editor, with a confirm in the row's place
+  await p.locator('button[aria-label="Edit /reading-note"]').click();
+  await p.waitForSelector(".sp__src");
+  assert.match(await p.locator(".sp__src").inputValue(), /^---\nname: reading-note/);
+  await p.getByRole("button", { name: "Delete /reading-note" }).click();
+  assert.match(await p.locator(".sp--confirm").innerText(), /Delete the skill reading-note and its folder\?/);
+  await p.locator(".sp--confirm").getByRole("button", { name: "Cancel" }).click();
+  assert.equal(await sim(p, () => window.__zmc.host.skills.files.has("reading-note")), true);
+  await p.locator('button[aria-label="Edit /reading-note"]').click();
+  await p.getByRole("button", { name: "Delete /reading-note" }).click();
+  await p.locator(".sp--confirm").getByRole("button", { name: "Delete", exact: true }).click();
+  await p.waitForFunction(() => !window.__zmc.host.skills.files.has("reading-note"));
+  await p.waitForFunction(() => !window.__zmc.shadow.querySelector('button[aria-label="Edit /reading-note"]'));
+  assert.equal(await p.locator('button[aria-label="Edit /create-skill"]').count(), 0, "the built-in one has no edit or delete");
+  // edit a skill and save
+  await p.locator('button[aria-label="Edit /annotate-paper"]').click();
+  await p.locator(".sp__src").fill("---\nname: annotate-paper\ndescription: Changed.\n---\nBody\n");
+  await p.getByRole("button", { name: "Save", exact: true }).click();
+  await p.waitForFunction(() => /Changed\./.test(window.__zmc.shadow.querySelector("#skills").textContent));
+  await p.getByRole("button", { name: "Reveal in Finder" }).or(p.getByRole("button", { name: "Reveal in file manager" })).click();
+  assert.equal(await sim(p, () => window.__zmc.host.skills.revealed), 1);
+  await p.getByRole("button", { name: "Create with the agent" }).click();
+  await p.waitForSelector(".composer");
+  assert.equal(await p.locator(".cin").inputValue(), "/create-skill ");
+});
+
+await test("Add skill: the full text, what is copied and what is left out, the safety line; keep scripts only when ticked; a bad name is refused", async (p) => {
+  await p.locator('button[aria-label="Settings"]').click();
+  await p.waitForSelector(".sp");
+  await p.getByRole("button", { name: "Add skill…" }).click();
+  await p.waitForSelector(".imp");
+  assert.match(await p.locator(".imp__warn").innerText(), /acts with your permissions\. Only add skills you trust or wrote\./);
+  assert.match(await p.locator(".imp__pre").innerText(), /# Explain the figures[\s\S]*palette\.csv for any drawing\./, "the whole SKILL.md");
+  assert.deepEqual(await p.locator(".imp__list:not(.imp__list--skip) .imp__f").allInnerTexts(), ["SKILL.md", "examples.md", "palette.csv"]);
+  assert.deepEqual(await p.locator(".imp__list--skip .imp__f").allInnerTexts(), [".DS_Store", "helpers/render.py", "install.sh", "refs"]);
+  assert.deepEqual(await p.locator(".imp__list--skip .imp__why").allInnerTexts(), ["hidden", "a script or program", "a script or program", "a link (only real files are copied)"]);
+  assert.match(await p.locator(".imp__keep").innerText(), /Also copy the 2 files .* your agent may run them/);
+  await p.locator('.imp input[data-fid="imp:name"]').fill("Bad Name");
+  await p.getByRole("button", { name: "Add skill", exact: true }).click();
+  assert.match(await p.locator(".imp__err").innerText(), /lowercase/);
+  await p.locator('.imp input[data-fid="imp:name"]').fill("figure-explainer");
+  await p.getByRole("button", { name: "Add skill", exact: true }).click();
+  await p.waitForSelector(".imp", { state: "detached" });
+  assert.deepEqual(await sim(p, () => window.__zmc.host.skills.added), [{ name: "figure-explainer", keepSkipped: false }], "scripts left out unless ticked");
+  assert.match(await p.locator(".sp__msg").innerText(), /Added figure-explainer/);
+  assert.ok(await p.locator('button[aria-label="Edit /figure-explainer"]').isVisible());
+  // again, keeping the scripts; a taken name is refused; Cancel adds nothing
+  await p.getByRole("button", { name: "Add skill…" }).click();
+  await p.getByRole("button", { name: "Add skill", exact: true }).click();
+  assert.match(await p.locator(".imp__err").innerText(), /already have a skill called/);
+  await p.locator('.imp input[data-fid="imp:name"]').fill("figure-explainer-2");
+  await p.locator(".imp__keep input").check();
+  await p.getByRole("button", { name: "Add skill", exact: true }).click();
+  await p.waitForSelector(".imp", { state: "detached" });
+  assert.deepEqual((await sim(p, () => window.__zmc.host.skills.added)).at(-1), { name: "figure-explainer-2", keepSkipped: true });
+  await p.getByRole("button", { name: "Add skill…" }).click();
+  await p.locator(".imp").getByRole("button", { name: "Cancel" }).click();
+  assert.equal(await sim(p, () => window.__zmc.host.skills.added.length), 2);
+  // a cancelled picker shows nothing
+  await sim(p, () => { window.__zmc.host.skills.nextPick = null; });
+  await p.getByRole("button", { name: "Add skill…" }).click();
+  await p.waitForTimeout(100);
+  assert.equal(await p.locator(".imp").count(), 0);
+});
+
+
 // no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
 const OVERFLOW = () => {
   const root = window.__zmc.shadow;
@@ -1419,6 +1608,10 @@ for (const [name, params, run] of [
   ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],
   ["history", {}, async (p) => { await p.locator('button[aria-label="History"]').click(); await p.waitForSelector(".hrow__main"); }],
   ["settings", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForTimeout(300); }],
+  ["skills card", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".sp"); await p.locator('button[aria-label="Edit /annotate-paper"]').click(); await p.waitForSelector(".sp__src"); await p.locator('button[aria-label="Edit Short summary"]').click(); }],
+  ["add skill", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".sp"); await p.getByRole("button", { name: "Add skill…" }).click(); await p.waitForSelector(".imp"); }],
+  ["slash menu", {}, async (p) => { await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ skills: { "annotate-paper": { slot: 4 } }, prompts: window.__zmc.host.getSettings().prompts.map((x) => (x.id === "p4" ? { ...x, slot: undefined } : x)) })); await p.locator(".cin").click(); await p.keyboard.type("/"); await p.waitForSelector(".pop--slash .pop__i"); }],
+  ["bubbles", {}, async (p) => { await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ prompts: window.__zmc.host.getSettings().prompts.map((x) => ({ ...x, title: x.title + " with a much longer title that must truncate" })) })); await p.waitForSelector(".bubble"); }],
   ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],
   ["status", { doctor: "many" }, async (p) => { await p.locator(".stat").click(); await p.waitForSelector(".check"); }],
   ["setup", { doctor: "many" }, async (p) => { await p.locator(".setup").waitFor(); }],

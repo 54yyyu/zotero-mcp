@@ -73,20 +73,16 @@ export function shortPath(p: string, max = 34): string {
 export const setAuth = (s: PanelSettings, backend: BackendId, mode: "subscription" | "api-key"): Partial<PanelSettings> => ({ auth: { ...s.auth, [backend]: mode } });
 export const setFlag = (key: FlagKey, on: boolean): Partial<PanelSettings> => ({ [key]: on }) as Partial<PanelSettings>;
 
-// prompts: every edit returns a new list; a slot belongs to one prompt at a time
+// prompts: every edit returns a new list (pins and on/off are in skills-model.ts, shared with the skills)
 export const editPrompt = (list: PromptEntry[], i: number, patch: Partial<Pick<PromptEntry, "title" | "text">>): PromptEntry[] => list.map((p, k) => (k === i ? { ...p, ...patch } : p));
-export const setSlot = (list: PromptEntry[], i: number, slot: number): PromptEntry[] =>
-  list.map((p, k) => {
-    const { slot: _old, ...rest } = p;
-    return k === i ? (slot ? { ...rest, slot } : rest) : slot && p.slot === slot ? rest : p;
-  });
 export const addPrompt = (list: PromptEntry[], id: string): PromptEntry[] => [...list, { id, title: "", text: "" }];
 export const removePrompt = (list: PromptEntry[], i: number): PromptEntry[] => list.filter((_, k) => k !== i);
 
 /** The shortcut reference: [what, keys] for this platform. */
 export const shortcuts = (mac: boolean, enterToSend: boolean): [string, string][] => [
   ["Show or hide the panel", mac ? "⌘⌥L" : "Ctrl+Alt+L"],
-  ["Run custom prompt 1 to 4", mac ? "⌘⌃ 1–4" : "Ctrl+Alt+1–4"],
+  ["Run a pinned skill or prompt", mac ? "⌘⌃ 1–4" : "Ctrl+Alt+1–4"],
+  ["Skills and prompts", "/"],
   ["Send", enterToSend ? "Enter" : mac ? "⌘Enter" : "Ctrl+Enter"],
   ["New line", enterToSend ? "Shift+Enter" : "Enter"],
   ["Stop the answer", "Esc"],

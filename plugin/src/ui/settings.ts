@@ -1,14 +1,14 @@
 // The settings screen, as stacked cards: agent (backend, sign-in, model, effort, permissions from the backend's
-// catalog), appearance (settings-look.ts), context, chat, prompts, chat folder, data, about. Every change saves at once
+// catalog), appearance (settings-look.ts), context, chat, translate, skills and prompts (settings-skills.ts), chat folder, data, about. Every change saves at once
 // through `save(patch)`; the patches are built in settings-model.ts.
 import type { Appearance, BackendId, BackendStatus, Catalog, PanelSettings, SettingsHost } from "../types.ts";
 import type { Look } from "./appearance.ts";
-import { clear, env, errMessage, h, icon, isMac, nextId } from "./dom.ts";
-import { LANGUAGES, addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, setSlot, shortPath, shortcuts } from "./settings-model.ts";
+import { clear, env, errMessage, h, icon, isMac } from "./dom.ts";
+import { LANGUAGES, effective, modeHelp, setAuth, setFlag, setFolder, setPerBackend, shortPath, shortcuts } from "./settings-model.ts";
 import type { FlagKey } from "./settings-model.ts";
 import { confirmAction, hint, radios, section, seg, selectField, sub, switchRow } from "./settings-parts.ts";
 import { appearanceCard } from "./settings-look.ts";
-import { slotLabel } from "./dom.ts";
+import { skillsCard } from "./settings-skills.ts";
 import { BACKEND_LABEL, BACKENDS, frame } from "./views.ts";
 
 type CatState = { state: "loading" } | { state: "ok"; catalog: Catalog } | { state: "error"; error: string };
@@ -22,7 +22,8 @@ export interface SettingsDeps {
   changed(): void;
   /** Applies the appearance (saved, or a draft while a slider is dragged). */
   look: Look;
-  focusPrompts: boolean;
+  /** "Create with the agent": a new chat starting with /create-skill (the panel only; Zotero's Settings pane has no chat). */
+  createSkill?: () => void;
   /**
    * Whether reading this backend's catalog costs nothing now (the open panel already read it). Reading one starts the agent
    * for a moment, so where this says no (Zotero's Settings pane) it waits for a button. Omitted: always read.
@@ -57,6 +58,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
     render();
   };
   const appearance = appearanceCard(host, o.look, saveLook, () => render());
+  const skills = skillsCard(host, { save, rerender: () => render(), ...(o.createSkill ? { createSkill: o.createSkill } : {}) });
   const flag = (key: FlagKey, label: string, help: string) => switchRow(label, help, host.getSettings()[key], (on) => void save(setFlag(key, on)));
 
   /** Read the backend's catalog once; the runtime caches it, this remembers the answer for the screen. */
@@ -152,25 +154,6 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
       hint(`Runs on ${BACKEND_LABEL[b]} in a session of its own: no tools, nothing from your chats.`));
   }
 
-  function prompts(s: PanelSettings): HTMLElement {
-    const list = s.prompts;
-    const rows = list.map((p, i) => {
-      const ta = h("textarea.input.pe__text", { rows: "2", placeholder: "What to ask", "aria-label": `Prompt ${i + 1} text`, onchange: () => void save({ prompts: editPrompt(list, i, { text: (ta as HTMLTextAreaElement).value }) }) }) as HTMLTextAreaElement;
-      ta.value = p.text;
-      return h("div.pe", null,
-        h("div.pe__row", null,
-          h("input.input.input--sm", { type: "text", value: p.title, placeholder: "Title", "aria-label": `Prompt ${i + 1} title`, onchange: (e: Event) => void save({ prompts: editPrompt(list, i, { title: (e.target as HTMLInputElement).value }) }) }),
-          h("div.select.pe__slot", null, h("select.input.input--sm", { "aria-label": `Prompt ${i + 1} shortcut`, onchange: (e: Event) => void save({ prompts: setSlot(list, i, Number((e.target as HTMLSelectElement).value)) }) },
-            h("option", { value: "0" }, "No shortcut"), [1, 2, 3, 4].map((n) => h("option", { value: String(n), selected: p.slot === n ? true : null }, slotLabel(n))))),
-          h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": `Delete prompt ${p.title || i + 1}`, title: "Delete", onclick: () => void save({ prompts: removePrompt(list, i) }) }, icon("trash"))),
-        ta);
-    });
-    const sec = section("Custom prompts", "Shown on a new chat. A prompt with a shortcut runs from anywhere in Zotero.", ...rows,
-      h("button.btn.btn--sm", { type: "button", onclick: () => void save({ prompts: addPrompt(list, nextId("p") + Date.now().toString(36)) }) }, icon("plus"), "Add a prompt"));
-    sec.id = "prompts";
-    return sec;
-  }
-
   function folder(s: PanelSettings): HTMLElement {
     const path = host.about().workspace;
     const choose = async () => {
@@ -221,10 +204,9 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
         flag("showUsage", "Show tokens and cost", "A small line under each answer. Off by default."),
         flag("openAtStart", "Open the panel when Zotero starts", ""),
       ),
-      translate(s), prompts(s), folder(s), data(), about(s),
+      translate(s), skills(), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));
     if (fid) (body.querySelector(`[data-fid="${CSS.escape(fid)}"]`) as HTMLElement | null)?.focus({ preventScroll: true });
-    if (o.focusPrompts) { o.focusPrompts = false; env.win.setTimeout(() => body.querySelector("#prompts")?.scrollIntoView({ block: "start" }), 0); }
   }
 
   const el = o.back ? frame("Settings", o.back, body) : body;

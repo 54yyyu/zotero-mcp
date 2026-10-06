@@ -4,10 +4,10 @@
 import type { BackendId, Catalog, MountPanel, PanelHost, PromptEntry, ZoteroRef } from "../types.ts";
 import { STYLES } from "./styles.ts";
 import { Look } from "./appearance.ts";
-import { clear, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
+import { clear, clip, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
 import { Composer } from "./composer.ts";
 import { chatStats, contextFill, sentLine } from "./economy.ts";
-import type { Choices } from "./composer.ts";
+import type { Bubble, Choices, SlashItem } from "./composer.ts";
 import { Chat } from "./chat.ts";
 import { ChipState } from "./context.ts";
 import { BLOCKING, Health } from "./health.ts";
@@ -17,6 +17,7 @@ import { answerText, promptFor } from "./transcript.ts";
 import { settingsView } from "./settings.ts";
 import { BACKEND_LABEL, BACKENDS, emptyState, historyView, setupCard, statusView } from "./views.ts";
 import { welcomeView } from "./welcome.ts";
+import { enabledSkills, invocationText, parseInvocation, pinned, skillLabel, skillPath } from "./skills-model.ts";
 
 type View = "chat" | "history" | "settings" | "status" | "welcome";
 
@@ -49,7 +50,6 @@ class Panel {
 
   private view: View = "chat";
   private activeView: { render?: () => void; refresh?: () => void } | null = null;
-  private focusPrompts = false;
   private pendingRender = false;
   private emptyShown: boolean | null = null;
   private autoPicked = false;
@@ -70,6 +70,7 @@ class Panel {
       turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? "Answer finished" : "Turn ended"),
       setupFailed: () => void this.health.refresh(),
       sessionChanged: () => this.syncPickers(),
+      expand: (text, cwd) => this.expand(text, cwd),
     });
     this.feed = new Feed({
       open: (t) => void this.open(t),
@@ -111,6 +112,7 @@ class Panel {
       onNewChat: () => void this.newChat(),
       contextInfo: () => ({ stats: chatStats(this.chat.tr), showCost: host.getSettings().showUsage, sent: sentLine(this.chat.lastContext), canCompact: !!this.chat.session?.canCompact }),
       onCompact: () => void this.chat.compact(),
+      slashItems: () => this.slashItems(),
     });
 
     const btn = (label: string, ic: Parameters<typeof icon>[0], onclick: () => void) =>
@@ -122,7 +124,7 @@ class Panel {
       btn("New chat", "plus", () => void this.newChat()), this.historyBtn,
       h("span.hd__fill"), this.statusBtn,
       btn("Settings", "gear", () => this.show(this.view === "settings" ? "chat" : "settings")));
-    this.chatEl = h("div.chat", null, this.feed.el, h("div.dock", null, this.setupSlot, this.composer.el));
+    this.chatEl = h("div.chat", null, this.feed.el, h("div.dock", null, this.setupSlot, this.composer.bubbles, this.composer.el));
     this.viewEl = h("div.viewhost", { hidden: true });
     this.app = h("div.zmc", { dataset: { theme: host.theme(), view: "chat" }, onkeydown: (e: KeyboardEvent) => this.onKey(e) }, hd, h("div.body", null, this.chatEl, this.viewEl));
     this.look = new Look(this.app, host);
@@ -142,7 +144,7 @@ class Panel {
     this.handle = {
       dispose: () => this.dispose(),
       focusComposer: () => { this.show("chat"); this.composer.focus(); },
-      runPrompt: (slot) => { const p = host.getSettings().prompts.find((x) => x.slot === slot); if (p) this.runPrompt(p); },
+      runPrompt: (slot) => { const p = pinned(host.getSettings()).find((x) => x.slot === slot); if (p) void (p.kind === "prompt" ? this.runPrompt(p.prompt) : this.runSkill(p.name)); },
     };
   }
 
@@ -166,8 +168,8 @@ class Panel {
       v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); } })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
-      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look, focusPrompts: this.focusPrompts });
-    this.focusPrompts = false;
+      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look,
+        createSkill: () => void this.newChat().then(() => { this.composer.setText("/create-skill "); this.composer.focus(); }) });
     this.activeView = screen;
     this.viewEl.append(screen.el);
     this.activeView.refresh?.();
@@ -331,8 +333,11 @@ class Panel {
     const first = this.health.first();
     const handlers = { recheck: () => void this.health.refresh(), openStatus: () => this.show("status"), openSettings: () => this.show("settings") };
     const card = () => (first ? setupCard(first, Math.max(0, this.health.failing.length - 1), handlers) : null);
-    this.feed.setEmpty(h("div.emptywrap", null, card(),
-      emptyState({ prompts: s.prompts, ready: !this.health.blockReason(), run: (p) => this.runPrompt(p), edit: () => { this.focusPrompts = true; this.show("settings"); } })));
+    this.feed.setEmpty(h("div.emptywrap", null, card(), emptyState()));
+    // The pinned skills and prompts: buttons on a new chat only.
+    this.composer.setBubbles(this.chat.tr.messages.length ? [] : pinned(s).map((p): Bubble => p.kind === "prompt"
+      ? { label: p.prompt.title || clip(p.prompt.text, 40), title: p.prompt.text, skill: false, slot: p.slot, run: () => this.runPrompt(p.prompt) }
+      : { label: skillLabel(p.name), title: `The ${p.name} skill`, skill: true, slot: p.slot, run: () => void this.runSkill(p.name) }));
     // Mid-conversation only a problem that stops chatting gets a card, above the composer.
     const mid = this.chat.tr.messages.length > 0 && first && (BLOCKING.has(first.id) || first.id === "backend");
     setKids(this.setupSlot, mid ? card() : null);
@@ -350,11 +355,37 @@ class Panel {
     this.feed.toBottom(false);
   }
 
-  private runPrompt(p: PromptEntry): void {
+  private runPrompt(p: PromptEntry): void { this.runText(p.text); }
+
+  private runText(text: string): void {
     this.show("chat");
     if (this.view === "welcome") return;
-    if (this.chat.busy || this.health.blockReason()) { this.composer.setText(p.text); this.composer.focus(); return; }
-    this.send(p.text, false);
+    if (this.chat.busy || this.health.blockReason()) { this.composer.setText(text); this.composer.focus(); return; }
+    this.send(text, false);
+  }
+
+  /** A pinned skill runs on what is open, as `/name` would. */
+  private async runSkill(name: string): Promise<void> {
+    if (!(await this.host.skills.list().catch(() => [])).some((k) => k.name === name)) { this.show("chat"); this.warn(`The “${name}” skill is no longer in your skills folder. Unpin it in Settings.`); return; }
+    this.runText(`/${name}`);
+  }
+
+  /** What the `/` menu lists: skills and prompts that are on, and Summarise now where the agent has a verified /compact. */
+  private async slashItems(): Promise<SlashItem[]> {
+    const s = this.host.getSettings();
+    const items: SlashItem[] = enabledSkills(s, await this.host.skills.list()).map((k) => ({ group: "Skills", id: k.name, label: `/${k.name}`, detail: k.description, insert: `/${k.name} ` }));
+    for (const p of s.prompts) if (!p.off && (p.title || p.text)) items.push({ group: "Prompts", id: p.id, label: p.title || clip(p.text, 60), detail: p.title ? p.text : "", insert: p.text });
+    if (this.chat.tr.messages.length && this.chat.session?.canCompact && !this.chat.busy) items.push({ group: "Agent", id: "compact", label: "Summarise now", detail: "Summarise the chat so far to free up context", run: () => void this.chat.compact() });
+    return items;
+  }
+
+  /** `/name rest` for a skill that is on: the skill is put in the agent's folder and the agent is told to read and follow it. */
+  private async expand(text: string, cwd: string): Promise<string> {
+    const inv = parseInvocation(text);
+    if (!inv || this.host.getSettings().skills?.[inv.name]?.off) return text;
+    if (!(await this.host.skills.list().catch(() => [])).some((k) => k.name === inv.name)) return text;
+    const path = await this.host.skills.use(inv.name, cwd).catch(() => skillPath(inv.name));
+    return invocationText(inv.name, inv.rest, path);
   }
 
   /** Batch renders: one per frame (a timer too, since a hidden window never gets a frame). */

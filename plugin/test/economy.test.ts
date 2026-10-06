@@ -67,7 +67,7 @@ describe("token estimate", () => {
 });
 
 describe("a chat sends unchanged context once", () => {
-  const deps = (host: FakeHost) => ({ host, onChange() {}, blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {} });
+  const deps = (host: FakeHost) => ({ host, onChange() {}, blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {}, expand: async (t: string) => t });
 
   it("10 turns with a persistent area image and selection: the image goes once, the saving is measured", async (t) => {
     const host = new FakeHost({ speed: 0, noHistory: true });

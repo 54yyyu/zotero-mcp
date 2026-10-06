@@ -4,6 +4,7 @@
 import type { BackendId, PanelSettings, SettingsHost } from "../types.ts";
 import { withDefaults } from "./defaults.ts";
 import { createImages } from "./image.ts";
+import { createSkills } from "./skills.ts";
 import * as keychain from "./keychain.ts";
 import { PREFIX, prefs } from "./settings.ts";
 import { createStore } from "./store.ts";
@@ -23,6 +24,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
   const chatFolder = () => settings().chatFolder || defaultFolder();
   const store = createStore(PathUtils.join(dataDir, "sessions"));
   const images = createImages(win, dataDir);
+  const skills = createSkills({ dataDir, win, defaultFolder });
 
   // Read on every context change, so parsed once; dropped whenever the pref changes, from here or elsewhere.
   let cached: PanelSettings | null = null;
@@ -63,6 +65,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
     chooseImage: () => images.choose(),
     loadImage: () => images.load(),
     removeImage: () => images.remove(),
+    skills: skills.host,
     theme: () => (dark.matches ? "dark" : "light"),
     onThemeChange(cb) {
       dark.addEventListener("change", cb);
@@ -74,7 +77,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
     },
   };
   return {
-    host, settings, store, images, chatFolder, defaultFolder,
+    host, settings, store, images, skills, chatFolder, defaultFolder,
     dispose() { Zotero.Prefs.unregisterObserver(observer); listeners.clear(); },
   };
 }

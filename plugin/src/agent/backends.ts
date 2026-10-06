@@ -39,7 +39,7 @@ export interface BackendSpec {
   briefVia: "system-prompt" | "first-prompt";
   /** Tool names in `_meta.claudeCode.toolName` (Claude only). */
   claudeMeta: boolean;
-  /** Its advertised `/compact` was verified live (summarises on demand, the chat goes on). codex-acp lists one too, unverified. */
+  /** Its advertised `/compact` was verified live (summarises on demand, the chat goes on): Claude, and Codex (2026-10-05, test/live/skills.live.ts). pi-acp lists one too, but reported no summary. */
   compacts: boolean;
   /** The terminal command that continues a session by its id, run from the folder the session ran in. */
   resume: (sessionId: string) => string;
@@ -73,7 +73,7 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     permissionModes: true,
     briefVia: "first-prompt",
     claudeMeta: false,
-    compacts: false,
+    compacts: true,
     resume: (id) => `codex resume ${id}`,
   },
   pi: {

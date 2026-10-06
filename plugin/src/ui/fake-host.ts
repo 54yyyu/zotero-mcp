@@ -3,6 +3,7 @@
 import { CATALOGS, bigPiCatalog, defaultSettings } from "./fake-catalog.ts";
 import { repeatLine } from "./economy.ts";
 import { DIAGRAM_ANSWER } from "./fake-diagrams.ts";
+import { FakeSkills } from "./fake-skills.ts";
 import type {
   AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, ChatEvent, ContextChip, DoctorCheck, ItemHit, NoteRequest, PanelHost,
   PanelSettings, PermissionOption, PromptInput, SavedSession, StartOpts, ZoteroRef,
@@ -271,6 +272,7 @@ class FakeSession implements AgentSession {
 export class FakeHost implements PanelHost {
   readonly sim: Sim;
   readonly runtime: AgentRuntime;
+  readonly skills = new FakeSkills();
   private settings: PanelSettings = defaultSettings();
   private ctx: ContextChip[] = [];
   private ctxCbs = new Set<() => void>();

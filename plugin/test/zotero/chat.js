@@ -35,7 +35,7 @@ async function main(ctx) {
   await ctx.sleep(600);
   await ctx.snapshot("chat-1-empty-library");
   out.emptyHasPrompts = ["Detailed summary", "Short summary", "hypotheses"].every((t) => text().includes(t));
-  check(out.emptyHasPrompts, "empty state lists the custom prompts: " + text().slice(0, 300));
+  check(out.emptyHasPrompts, "the pinned prompts are buttons on the empty chat: " + text().slice(0, 300));
 
   // 2. a turn with tool rows
   await say("SCENARIO:tool find papers");
