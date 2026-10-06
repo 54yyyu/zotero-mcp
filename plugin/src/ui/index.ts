@@ -1,13 +1,13 @@
 // The panel: `mountPanel(root, host)` renders into a shadow root and returns its handle. This file wires
 // the parts together: header, the feed and composer (the chat), and the other screens. The conversation is
 // in chat.ts, setup health in health.ts, and the DOM of each part in messages / composer / views.
-import type { BackendId, Catalog, MountPanel, PanelHost, PromptEntry, ZoteroRef } from "../types.ts";
+import type { BackendId, Catalog, MountPanel, PanelHost, ZoteroRef } from "../types.ts";
 import { STYLES } from "./styles.ts";
 import { Look } from "./appearance.ts";
 import { clear, clip, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
 import { Composer } from "./composer.ts";
 import { chatStats, contextFill, sentLine } from "./economy.ts";
-import type { Bubble, Choices, SlashItem } from "./composer.ts";
+import type { Choices, SlashItem } from "./composer.ts";
 import { Chat } from "./chat.ts";
 import { ChipState } from "./context.ts";
 import { BLOCKING, Health } from "./health.ts";
@@ -17,7 +17,7 @@ import { answerText, promptFor } from "./transcript.ts";
 import { settingsView } from "./settings.ts";
 import { BACKEND_LABEL, BACKENDS, emptyState, historyView, setupCard, statusView } from "./views.ts";
 import { welcomeView } from "./welcome.ts";
-import { enabledSkills, invocationText, parseInvocation, pinned, skillLabel, skillPath } from "./skills-model.ts";
+import { enabledSkills, invocationText, parseInvocation, pinned, skillPath } from "./skills-model.ts";
 
 type View = "chat" | "history" | "settings" | "status" | "welcome";
 
@@ -124,7 +124,7 @@ class Panel {
       btn("New chat", "plus", () => void this.newChat()), this.historyBtn,
       h("span.hd__fill"), this.statusBtn,
       btn("Settings", "gear", () => this.show(this.view === "settings" ? "chat" : "settings")));
-    this.chatEl = h("div.chat", null, this.feed.el, h("div.dock", null, this.setupSlot, this.composer.bubbles, this.composer.el));
+    this.chatEl = h("div.chat", null, this.feed.el, h("div.dock", null, this.setupSlot, this.composer.el));
     this.viewEl = h("div.viewhost", { hidden: true });
     this.app = h("div.zmc", { dataset: { theme: host.theme(), view: "chat" }, onkeydown: (e: KeyboardEvent) => this.onKey(e) }, hd, h("div.body", null, this.chatEl, this.viewEl));
     this.look = new Look(this.app, host);
@@ -144,13 +144,14 @@ class Panel {
     this.handle = {
       dispose: () => this.dispose(),
       focusComposer: () => { this.show("chat"); this.composer.focus(); },
-      runPrompt: (slot) => { const p = pinned(host.getSettings()).find((x) => x.slot === slot); if (p) void (p.kind === "prompt" ? this.runPrompt(p.prompt) : this.runSkill(p.name)); },
+      runPrompt: (slot) => this.runPinned(slot),
     };
   }
 
   // ───────────────────────────── screens ─────────────────────────────
 
-  private show(v: View): void {
+  /** `at`: a card to scroll to (the empty state's Edit opens Settings at Skills and prompts). */
+  private show(v: View, at?: string): void {
     // Until the welcome is finished or skipped it stands in for the chat.
     if (v === "chat" && !this.host.getSettings().welcomed) v = "welcome";
     this.view = v;
@@ -174,6 +175,7 @@ class Panel {
     this.viewEl.append(screen.el);
     this.activeView.refresh?.();
     (this.viewEl.querySelector(".vw__head button, .wcard--on") as HTMLElement | null)?.focus();
+    if (at) this.viewEl.querySelector(at)?.scrollIntoView({ block: "start" });
   }
 
   private onKey(e: KeyboardEvent): void {
@@ -333,11 +335,11 @@ class Panel {
     const first = this.health.first();
     const handlers = { recheck: () => void this.health.refresh(), openStatus: () => this.show("status"), openSettings: () => this.show("settings") };
     const card = () => (first ? setupCard(first, Math.max(0, this.health.failing.length - 1), handlers) : null);
-    this.feed.setEmpty(h("div.emptywrap", null, card(), emptyState()));
-    // The pinned skills and prompts: buttons on a new chat only.
-    this.composer.setBubbles(this.chat.tr.messages.length ? [] : pinned(s).map((p): Bubble => p.kind === "prompt"
-      ? { label: p.prompt.title || clip(p.prompt.text, 40), title: p.prompt.text, skill: false, slot: p.slot, run: () => this.runPrompt(p.prompt) }
-      : { label: skillLabel(p.name), title: `The ${p.name} skill`, skill: true, slot: p.slot, run: () => void this.runSkill(p.name) }));
+    // A repaint (health, settings) keeps a keyboard user on the pinned row they were on.
+    const slot = (this.root.activeElement as HTMLElement | null)?.closest?.(".pin")?.getAttribute("data-slot");
+    this.feed.setEmpty(h("div.emptywrap", null, card(),
+      emptyState({ pins: pinned(s), ready: !this.health.blockReason(), run: (n) => this.runPinned(n), edit: () => this.show("settings", "#skills") })));
+    if (slot) (this.root.querySelector(`.pin[data-slot="${slot}"]`) as HTMLElement | null)?.focus();
     // Mid-conversation only a problem that stops chatting gets a card, above the composer.
     const mid = this.chat.tr.messages.length > 0 && first && (BLOCKING.has(first.id) || first.id === "backend");
     setKids(this.setupSlot, mid ? card() : null);
@@ -355,7 +357,11 @@ class Panel {
     this.feed.toBottom(false);
   }
 
-  private runPrompt(p: PromptEntry): void { this.runText(p.text); }
+  /** A pinned item (the empty state's list, or its shortcut): a prompt sends its text, a skill runs on what is open. */
+  private runPinned(slot: number): void {
+    const p = pinned(this.host.getSettings()).find((x) => x.slot === slot);
+    if (p) void (p.kind === "prompt" ? this.runText(p.prompt.text) : this.runSkill(p.name));
+  }
 
   private runText(text: string): void {
     this.show("chat");

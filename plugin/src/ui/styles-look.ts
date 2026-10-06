@@ -128,12 +128,13 @@ export const LOOK_STYLES = `
 .zmc:not([data-accent]) { --gem-tint: var(--accent); } /* mono: a plain ink gem, no violet */
 .zmc[data-glass="on"] .send:hover:not(:disabled):not(.send--stop) { transform: translateY(-1px); }
 .zmc[data-glass="on"] .send:disabled { background: color-mix(in srgb, var(--ink) 7%, transparent); }
-/* pills that lift a pixel */
-.zmc[data-glass="on"] .bubble { background: var(--glass-strong); border-color: var(--glass-edge); box-shadow: var(--glass-sheen), var(--glass-lift); backdrop-filter: blur(18px) saturate(170%); transition: background var(--ease), color var(--ease), transform var(--ease); }
-.zmc[data-glass="on"] .bubble:hover { transform: translateY(-1px); background: color-mix(in srgb, var(--accent) 7%, var(--glass-strong)); }
+/* the empty state's pinned list: a glass card, rows tinted by the accent on hover */
+.zmc[data-glass="on"] .pins__list { background: var(--glass); border-color: var(--glass-line); box-shadow: var(--glass-sheen), var(--glass-lift); }
+.zmc[data-glass="on"] .pin:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.zmc[data-glass="on"] .pins .pin__k { border-color: transparent; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .zmc[data-glass="on"] .sp__pin--on { background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--glass-line); }
 .zmc[data-glass="on"] .wcard:hover:not(.wcard--on) { transform: translateY(-1px); box-shadow: var(--glass-sheen), var(--glass-shadow); }
-@media (prefers-reduced-motion: reduce) { .zmc[data-glass="on"] :is(.wcard, .send, .bubble):hover { transform: none !important; } }
+@media (prefers-reduced-motion: reduce) { .zmc[data-glass="on"] :is(.wcard, .send):hover { transform: none !important; } }
 
 /* ---------- the settings screen: stacked cards, each a title, a line on what it is for, then its rows ---------- */
 .zmc .set { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); padding-top: var(--s2); }

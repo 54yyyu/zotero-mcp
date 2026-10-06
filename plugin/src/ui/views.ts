@@ -1,8 +1,10 @@
 // The panel's other screens: the empty state, history, settings, and the doctor/status view.
 // Each is a plain function returning an element and a `refresh` where it has data to reload.
 import type { BackendId, DoctorCheck, PanelHost, SavedSession } from "../types.ts";
-import { copyText, dayGroup, env, errMessage, h, icon, relTime, setKids, svg } from "./dom.ts";
+import { copyText, dayGroup, env, errMessage, h, icon, isMac, relTime, setKids, slotLabel, svg } from "./dom.ts";
 import { shortPath } from "./settings-model.ts";
+import { skillLabel } from "./skills-model.ts";
+import type { Pinned } from "./skills-model.ts";
 
 export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
 export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi"];
@@ -84,12 +86,26 @@ export function setupCard(check: DoctorCheck, more: number, handlers: { recheck(
 
 // ───────────────────────────── empty state ─────────────────────────────
 
-/** The pinned skills and prompts are buttons above the composer (composer.ts), not part of this. */
-export function emptyState(): HTMLElement {
+/** The intro, then the pinned skills and prompts (slot order) as one list; it goes with the empty state when the chat has messages. */
+export function emptyState(o: { pins: Pinned[]; ready: boolean; run(slot: number): void; edit(): void }): HTMLElement {
+  const row = (p: Pinned) => {
+    const label = p.kind === "prompt" ? p.prompt.title || p.prompt.text : skillLabel(p.name);
+    return h("li", null, h("button.pin", {
+      type: "button", disabled: o.ready ? null : true, dataset: { slot: String(p.slot) },
+      title: p.kind === "prompt" ? (p.prompt.title ? `${p.prompt.title}\n${p.prompt.text}` : p.prompt.text) : `${label}: the ${p.name} skill`,
+      "aria-keyshortcuts": isMac() ? `Meta+Control+${p.slot}` : `Control+Alt+${p.slot}`,
+      onclick: () => o.run(p.slot),
+    }, h("span.pin__t", null, label), p.kind === "skill" ? h("span.pin__skill", null, icon("sparkle"), h("span.sr", null, "skill")) : null, h("kbd.pin__k", null, slotLabel(p.slot))));
+  };
   return h("div.empty", null,
     mark(),
     h("h2", null, "Ask your library"),
-    h("p.empty__lead", null, "Your agent sees what you have open in Zotero and works through zotero-cli. Select text or a figure to ask about it, type @ to add a source, or / for your skills and prompts."));
+    h("p.empty__lead", null, "Your agent sees what you have open in Zotero and works through zotero-cli. Select text or a figure to ask about it, type @ to add a source, or / for your skills and prompts."),
+    h("section.pins", { "aria-label": "Start with" },
+      h("div.pins__head", null, h("h3.eyebrow", null, "Start with"), h("button.lnk", { type: "button", onclick: o.edit }, icon("pencil"), "Edit")),
+      o.pins.length
+        ? h("ul.pins__list", null, o.pins.map(row))
+        : h("p.pins__none", null, "Pin up to four skills or prompts in Settings to start with them here, or type / to browse them all.")));
 }
 
 // ───────────────────────────── a view's frame ─────────────────────────────

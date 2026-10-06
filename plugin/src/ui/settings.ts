@@ -189,6 +189,9 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
     // Rebuilding the page must not drop the keyboard user's place: refocus the control that had focus.
     const focused = (body.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     const fid = focused && body.contains(focused) ? focused.dataset.fid : undefined;
+    // ...and its scroll position (WebKit drops it when the page is emptied and refilled).
+    const scroller = body.parentElement;
+    const top = scroller?.scrollTop ?? 0;
     clear(body);
     body.append(
       agent(s), appearance(),
@@ -206,6 +209,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
       ),
       translate(s), skills(), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));
+    if (scroller) scroller.scrollTop = top;
     if (fid) (body.querySelector(`[data-fid="${CSS.escape(fid)}"]`) as HTMLElement | null)?.focus({ preventScroll: true });
   }
 

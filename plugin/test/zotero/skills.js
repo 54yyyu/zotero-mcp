@@ -1,7 +1,7 @@
 // Skills and prompts in a real Zotero (run with --mock-agent): nothing of it at startup; the skills folder scanned when
 // asked and a changed SKILL.md read again; an import through the real host (scripts, links, hidden files left out, the
 // text the user saw is what is written); the skills synced into the chat folder (ours refreshed, someone else's never
-// touched, an off one removed); `/name` reaching the mock agent as a plain message; snapshots of the bubbles, the `/`
+// touched, an off one removed); `/name` reaching the mock agent as a plain message; snapshots of the pinned list, the `/`
 // menu, the settings card and the add-skill preview, light and dark, glass on.
 async function main(ctx) {
   const { Zotero, win, plugin } = ctx;
@@ -166,13 +166,19 @@ async function main(ctx) {
   out.agentGot = echo.prompt;
   check(/^Use my "fruit-check" skill\. Before you answer, read \.agents\/skills\/fruit-check\/SKILL\.md in your working folder, then do what it says for this request: SCENARIO:echo$/m.test(echo.prompt) && !echo.prompt.startsWith("/"), "a plain message, not a slash command: " + echo.prompt);
 
-  // 7. the bubbles on a new chat, a pinned skill among them
+  // 7. the pinned list on a new chat, a pinned skill among them: one line per row, and a click runs the skill
   await host.setSettings({ prompts: host.getSettings().prompts.map((p) => (p.slot === 4 ? { ...p, slot: undefined } : p)), skills: { "fruit-check": { slot: 4 } } });
   root.querySelector('button[aria-label="New chat"]').click();
-  await ctx.waitFor(() => $$(".bubble").length === 4, "four bubbles on a new chat");
-  out.bubbles = $$(".bubble").map((b) => b.textContent);
-  check(out.bubbles[3] === "Fruit check" && $(".bubble--skill"), "the pinned skill is the fourth: " + out.bubbles);
-  for (const t of ["light", "dark"]) { await theme(t); await ctx.snapshot(`skills-3-bubbles-${t}`); }
+  await ctx.waitFor(() => $$(".pin").length === 4, "four pinned rows on a new chat");
+  out.pins = $$(".pin__t").map((b) => b.textContent);
+  check(out.pins[3] === "Fruit check" && $$(".pin")[3].querySelector(".pin__skill") && $$(".pin__skill").length === 1, "the pinned skill is the fourth, with the mark: " + out.pins);
+  out.pinHeights = $$(".pin").map((b) => Math.round(b.getBoundingClientRect().height));
+  check(out.pinHeights.every((x) => x === 36) && $(".pins__list").scrollWidth <= $(".pins__list").clientWidth, "one line each, nothing sticks out: " + out.pinHeights);
+  for (const t of ["light", "dark"]) { await theme(t); await ctx.snapshot(`skills-3-pins-${t}`); }
+  $$(".pin")[3].click();
+  await ctx.waitFor(() => $(".ubub__text")?.textContent === "/fruit-check", "the pinned skill ran as /fruit-check");
+  check(!$(".pins"), "the list goes with the empty state");
+  await ctx.waitFor(() => $$("button.send").length && !$(".send--stop"), "turn finished", 30000);
 
   // 8. the settings card and the add-skill preview, through the real host (the picker answered by inspect)
   host.skills.pick = () => host.skills.inspect(J(src, "SKILL.md"));

@@ -1,13 +1,17 @@
-// Skills and prompts: the pinned buttons above the composer, the `/` menu's groups (the menu itself is the `.pop` surface),
+// Skills and prompts: the pinned list in the empty state, the `/` menu's groups (the menu itself is the `.pop` surface),
 // and the settings card with its add-skill preview. The glass versions are in styles-look.ts.
 export const SKILL_STYLES = `
-/* pinned skills and prompts: small pills above the composer on a new chat */
-.zmc .bubbles { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--s1) var(--s2); animation: zmc-rise 160ms ease; }
-.zmc .bubble { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: var(--h-sm); padding: 0 var(--s3); border: 1px solid var(--rule); border-radius: var(--pill); background: var(--paper-raised); color: var(--ink-muted); font-size: var(--fs-2); box-shadow: 0 1px 2px rgb(0 0 0 / 0.04); transition: background var(--ease), color var(--ease), border-color var(--ease); }
-.zmc .bubble:hover { color: var(--ink); border-color: var(--rule-strong); }
-.zmc .bubble svg { width: 12px; height: 12px; color: var(--ink-faint); }
-.zmc .bubble:hover svg { color: var(--ink-muted); }
-.zmc .bubble__t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the empty state's "Start with": the pinned skills and prompts, one row each, in a quiet card */
+.zmc .pins { margin: var(--s5) auto 0; max-width: 28rem; text-align: left; }
+.zmc .pins__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s1); padding-left: calc(var(--s1) + var(--s3)); }
+.zmc .pins__list { list-style: none; margin: 0; padding: var(--s1); display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper-raised); }
+.zmc .pins__none { margin: 0; padding: 0 var(--s3) 0 calc(var(--s1) + var(--s3)); font-size: var(--fs-2); line-height: 1.5; color: var(--ink-muted); }
+.zmc .pin { display: flex; align-items: center; gap: var(--s2); width: 100%; height: var(--h-row); padding: 0 var(--s2) 0 var(--s3); border: 0; border-radius: var(--r1); background: none; color: var(--ink); text-align: left; transition: background var(--ease); }
+.zmc .pin:hover:not(:disabled) { background: var(--tint-hover); }
+.zmc .pin:disabled { color: var(--ink-faint); }
+.zmc .pin__t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zmc .pin__skill { flex: none; display: inline-flex; color: var(--ink-faint); } .zmc .pin__skill svg { width: 12px; height: 12px; }
+.zmc .pin__k { flex: none; margin-left: auto; border-color: transparent; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 
 /* the / menu: quiet group headings; a skill reads as the command it is */
 .zmc .pop__h { padding: var(--s2) var(--s2) 2px calc(var(--s2) + 14px + var(--s3)); font-size: var(--fs-1); color: var(--ink-faint); line-height: 1.3; }

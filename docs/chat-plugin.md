@@ -84,8 +84,8 @@ plain Markdown (a name, a one-line description, then the steps), see [skills/](s
 - Type `/` at the start of the message box for a menu of your skills and prompts (type to filter, arrows, Enter or Tab).
   A skill goes in as `/name `: add a sentence if you like ("/annotate-paper only the figures"), then send. A prompt puts
   its text in the box to send or edit. Once a chat is under way, **Summarise now** is listed too where the agent offers it.
-- Pin up to four (a skill or a prompt): they are buttons above the message box on a new chat, and run from anywhere in
-  Zotero with Cmd+Ctrl+1 to 4 (Ctrl+Alt+1 to 4 elsewhere).
+- Pin up to four (a skill or a prompt): a new chat lists them under "Start with" (click one to run it), and they run from
+  anywhere in Zotero with Cmd+Ctrl+1 to 4 (Ctrl+Alt+1 to 4 elsewhere).
 - Every agent gets a skill the same way: the panel copies it into the chat folder (`.agents/skills` and `.claude/skills`)
   and tells the agent in plain words to read that file and follow it, with what you have open attached as usual.
 - Settings > **Skills and prompts** lists them all. **Add skill…** takes a skill's `SKILL.md` (its folder comes along) or

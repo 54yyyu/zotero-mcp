@@ -78,7 +78,7 @@ export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSet
     const pinBtn = h(`button.sp__pin${slot ? ".sp__pin--on" : ""}`, {
       type: "button", "aria-pressed": String(!!slot), dataset: { fid: `pin:${key}` }, disabled: on ? null : true,
       "aria-label": slot ? `Unpin ${title} (shortcut ${slotLabel(slot)})` : `Pin ${title}`,
-      title: slot ? `Pinned: a button on a new chat, and ${slotLabel(slot)}. Click to unpin.` : "Pin: a button on a new chat, with a shortcut",
+      title: slot ? `Pinned: listed on a new chat, and ${slotLabel(slot)}. Click to unpin.` : "Pin: list it on a new chat, with a shortcut",
       onclick: () => { const p = togglePin(s, r); if (p) void o.save(p); else say("Four are pinned. Unpin one first."); },
     }, slot ? h("span.sp__slot", null, slotLabel(slot)) : icon("bookmark"));
     const sw = h("input", { type: "checkbox", role: "switch", checked: on, "aria-label": `Use ${title}`, dataset: { fid: `on:${key}` }, onchange: (e: Event) => void o.save(setOn(s, r, (e.target as HTMLInputElement).checked)) });
@@ -163,7 +163,7 @@ export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSet
     }
     for (const p of s.prompts) rows.push(row({ kind: "prompt", id: p.id }, p.title || (p.text ? p.text.slice(0, 60) : "Untitled prompt"), p.title ? p.text : "", "prompt"));
     const dir = host.skills.dir;
-    const sec = section("Skills and prompts", "Type / in the message box to use them. Pinned ones are buttons on a new chat and run from anywhere in Zotero with their shortcut.",
+    const sec = section("Skills and prompts", "Type / in the message box to use them. Pinned ones are listed on a new chat and run from anywhere in Zotero with their shortcut.",
       h("div.sp__list", null, ...rows),
       adding ? preview(adding) : h("div.sp__btns", null,
         h("button.btn.btn--sm", { type: "button", dataset: { fid: "sp:add" }, onclick: () => void pick() }, icon("plus"), "Add skill…"),

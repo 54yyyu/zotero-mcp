@@ -140,7 +140,7 @@ value is dropped (`markdown.ts`). The agent learns it from `FORMAT_GUIDE` (50 wo
 Features (Beaver's, measured from its demo video, rebuilt in our visual language, which is meeting-buddy's):
 
 - Header: close, new chat, history, doctor/status dot, account label.
-- Empty state: the logo and one line; the pinned skills and prompts are buttons above the composer (below).
+- Empty state: the logo, one line, and "Start with": the pinned skills and prompts as a list (below).
 - Composer: auto context chip for the current item (bookmark = pin), `Text Selection` chip when text is selected in the reader,
   `Selected Area` chip with thumbnail + Go to Annotation / Remove, `+` and `@` to attach items/collections/annotations,
   one model button, mode picker, Send / Stop (Esc), Enter sends, Shift+Enter newline, drop an annotation on it.
@@ -297,9 +297,14 @@ scripts, `zotero-cli` and the agent's shell are the tools.
   `/context`, `/usage`, `/status`, `/session` (the context ring shows this), `/rename`, `/name` (renames the agent's
   session, not the panel's chat), `/plan` (the mode picker), `/goal`, `/loop`, `/review*`, `/init`, `/security-review`,
   `/export`, `/mcp`, `/model`, `/effort` (the pickers) and the agents' own skills.
-- **Pins.** Four slots shared by prompts (`slot`) and skills (`skills[name].slot`); turning an item off unpins it. On a new
-  chat with an empty draft the pinned items are pill buttons above the composer; `Cmd+Ctrl+1..4` runs the same. A pinned
-  skill needs no scan to show (its label is its name); a click on one that is gone says so.
+- **Pins.** Four slots shared by prompts (`slot`) and skills (`skills[name].slot`); turning an item off unpins it. The empty
+  state lists them under "Start with" (an eyebrow and a quiet Edit that opens Settings at this card), in slot order, in one
+  card (glass, or plain on Plain): a 36 px row each, the title on one line with an ellipsis (the whole title and the
+  prompt's text are the tooltip), a small sparkle after a skill's name, the shortcut at the right. The rows are disabled
+  while the agent is not ready, and go with the empty state once the chat has messages. Nothing pinned: a quiet line points
+  at Settings and `/`. `Cmd+Ctrl+1..4` runs the same (`runPinned`). A pinned skill needs no scan to show (its label is its
+  name); a click on one that is gone says so. (Pill buttons above the composer were tried and dropped: four real titles
+  wrapped into a ragged three-line pile.)
 - **Add skill.** One file picker: a `SKILL.md` brings its folder, any other `.md` becomes a new skill (name and line
   proposed from the text). The preview shows the full text, a safety line, and every file copied or left out
   (`planImport`): plain reference files copy; scripts, executables (exec bit or `#!`) and unknown types are left out but

@@ -18,6 +18,20 @@ const test = async (name, fn, opts) => {
 const send = async (p, text) => { await p.locator(".cin").fill(text); await p.locator(".cin").press("Enter"); };
 const done = (p, state = "end_turn") => p.waitForSelector(`.msg--assistant[data-state="${state}"]`, { timeout: 8000 });
 const sim = (p, fn, arg) => p.evaluate(fn, arg);
+/** What sticks out of the panel or scrolls sideways (wide blocks that scroll by design are left out). */
+const OVERFLOW = () => {
+  const root = window.__zmc.shadow;
+  const app = root.querySelector(".zmc").getBoundingClientRect();
+  const out = [];
+  for (const el of root.querySelectorAll(".zmc *")) {
+    if (el.closest(".md-table, .code pre, .math--display, .sd__pre, .fixlog, .thought__body, svg, [hidden]") || el.tagName === "svg") continue;
+    const r = el.getBoundingClientRect();
+    if (r.width && r.right > app.right + 1) out.push(`${el.tagName.toLowerCase()}.${el.className}`);
+    if (r.width && r.left < app.left - 1) out.push(`left:${el.tagName.toLowerCase()}.${el.className}`);
+  }
+  for (const s of root.querySelectorAll(".feed, .vw__body, .composer, .hd, .dock")) if (s.scrollWidth > s.clientWidth + 1) out.push(`scrollX:${s.className}`);
+  return [...new Set(out)];
+};
 
 await test("enter sends, shift+enter adds a line, the draft clears", async (p) => {
   await p.locator(".cin").fill("line one");
@@ -1396,20 +1410,25 @@ const pinSkill = (p) => sim(p, async () => {
 const lastPrompt = (p) => sim(p, () => window.__zmc.sim.prompts.at(-1)?.text ?? "");
 const INVOKE = (name) => new RegExp(`Use my "${name}" skill\\. Before you answer, read \\.agents/skills/${name}/SKILL\\.md in your working folder, then do what it says for this request: `);
 
-await test("bubbles: four pinned items on a new chat with an empty draft; a prompt sends its text, a skill its plain instruction", async (p) => {
+const LONG = (p) => sim(p, () => window.__zmc.sim.setSettingsElsewhere({ prompts: window.__zmc.host.getSettings().prompts.map((x) => ({ ...x, title: x.title + " with a much longer title that must truncate" })) }));
+
+await test("start with: the pinned items in slot order, only in an empty chat; a prompt sends its text, a skill its plain instruction", async (p) => {
   await pinSkill(p);
-  await p.waitForSelector(".bubble--skill");
-  assert.deepEqual(await p.locator(".bubble").allInnerTexts(), ["Detailed summary", "Short summary", "Propose testable hypotheses", "Annotate paper"]);
+  await p.waitForSelector(".pin .pin__skill");
+  assert.equal(await p.locator(".pins .eyebrow").innerText(), "START WITH");
+  assert.deepEqual(await p.locator(".pin__t").allInnerTexts(), ["Detailed summary", "Short summary", "Propose testable hypotheses", "Annotate paper"]);
+  assert.deepEqual(await p.locator(".pin").evaluateAll((els) => els.map((e) => e.dataset.slot)), ["1", "2", "3", "4"]);
+  assert.equal(await p.locator(".pin__skill").count(), 1, "only the skill has the mark");
   await p.locator(".cin").fill("x");
-  assert.equal(await p.locator(".bubbles").isVisible(), false, "a draft hides them");
+  assert.equal(await p.locator(".pins").isVisible(), true, "a draft does not hide the list (it goes with the empty state)");
   await p.locator(".cin").fill("");
-  assert.equal(await p.locator(".bubbles").isVisible(), true, "an empty draft shows them again");
-  await p.locator(".bubble", { hasText: "Short summary" }).click();
+  await p.locator(".pin", { hasText: "Short summary" }).click();
   await done(p);
   assert.match(await lastPrompt(p), /<zotero-context>[\s\S]*<\/zotero-context>\n\nSummarize this paper in five sentences\.$/);
-  assert.equal(await p.locator(".bubbles").isVisible(), false, "not in a chat with messages");
+  assert.equal(await p.locator(".pins").count(), 0, "not in a chat with messages");
   await p.locator('button[aria-label="New chat"]').click();
-  await p.locator(".bubble", { hasText: "Annotate paper" }).click();
+  await p.locator(".pin", { hasText: "Annotate paper" }).focus();
+  await p.keyboard.press("Enter");
   await done(p);
   assert.equal(await p.locator(".ubub__text").first().innerText(), "/annotate-paper", "the transcript shows what was asked");
   const text = await lastPrompt(p);
@@ -1424,10 +1443,38 @@ await test("bubbles: four pinned items on a new chat with an empty draft; a prom
   assert.match(await lastPrompt(p), INVOKE("annotate-paper"));
 });
 
-await test("bubbles: a pinned skill that is gone says so instead of sending; off items are not pinned", async (p) => {
+for (const width of [420, 300]) {
+  await test(`start with: long titles stay on one line with an ellipsis at ${width}px; the full text is the tooltip; nothing overflows`, async (p) => {
+    await LONG(p);
+    await p.waitForFunction(() => /must truncate/.test(window.__zmc.shadow.querySelector(".pin__t").textContent));
+    const rows = await p.locator(".pin").evaluateAll((els) => els.map((e) => { const t = e.querySelector(".pin__t"), k = e.querySelector(".pin__k").getBoundingClientRect(), r = e.getBoundingClientRect(); return { h: Math.round(r.height), cut: t.scrollWidth > t.clientWidth, kIn: k.right <= r.right + 0.5 && k.width > 0, title: e.title }; }));
+    assert.equal(rows.length, 4);
+    for (const r of rows) assert.deepEqual([r.h, r.cut, r.kIn], [36, true, true], JSON.stringify(r));
+    assert.match(rows[0].title, /^Detailed summary with a much longer title that must truncate\n/, "the tooltip has the whole title, then the prompt");
+    assert.deepEqual(await p.evaluate(OVERFLOW), []);
+  }, { width });
+}
+
+await test("start with: disabled while the agent is not ready", async (p) => {
+  await p.waitForSelector(".pin");
+  assert.deepEqual(await p.locator(".pin").evaluateAll((els) => els.map((e) => e.disabled)), [true, true, true, true]);
+}, { params: { doctor: "backend" } });
+
+await test("start with: nothing pinned shows the hint; Edit opens Settings at Skills and prompts", async (p) => {
+  await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ prompts: window.__zmc.host.getSettings().prompts.map((x) => ({ ...x, slot: undefined })) }));
+  await p.waitForSelector(".pins__none");
+  assert.equal(await p.locator(".pin").count(), 0);
+  assert.match(await p.locator(".pins__none").innerText(), /^Pin up to four skills or prompts in Settings to start with them here, or type \/ to browse them all\.$/);
+  await p.locator(".pins").getByRole("button", { name: "Edit" }).click();
+  await p.waitForSelector("#skills");
+  const top = await p.evaluate(() => { const r = window.__zmc.shadow; return Math.round(r.querySelector("#skills").getBoundingClientRect().top - r.querySelector(".vw__body").getBoundingClientRect().top); });
+  assert.ok(top >= -1 && top < 40, "scrolled to the card: " + top);
+});
+
+await test("start with: a pinned skill that is gone says so instead of sending; off items are not pinned", async (p) => {
   await pinSkill(p);
   await sim(p, () => window.__zmc.host.skills.files.delete("annotate-paper"));
-  await p.locator(".bubble", { hasText: "Annotate paper" }).click();
+  await p.locator(".pin", { hasText: "Annotate paper" }).click();
   await p.waitForSelector(".notice--warn");
   assert.match(await p.locator(".notice--warn").innerText(), /no longer in your skills folder/);
   assert.equal(await sim(p, () => window.__zmc.sim.prompts.length), 0);
@@ -1574,19 +1621,6 @@ await test("Add skill: the full text, what is copied and what is left out, the s
 
 
 // no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
-const OVERFLOW = () => {
-  const root = window.__zmc.shadow;
-  const app = root.querySelector(".zmc").getBoundingClientRect();
-  const out = [];
-  for (const el of root.querySelectorAll(".zmc *")) {
-    if (el.closest(".md-table, .code pre, .math--display, .sd__pre, .fixlog, .thought__body, svg, [hidden]") || el.tagName === "svg") continue;
-    const r = el.getBoundingClientRect();
-    if (r.width && r.right > app.right + 1) out.push(`${el.tagName.toLowerCase()}.${el.className}`);
-    if (r.width && r.left < app.left - 1) out.push(`left:${el.tagName.toLowerCase()}.${el.className}`);
-  }
-  for (const s of root.querySelectorAll(".feed, .vw__body, .composer, .hd, .dock")) if (s.scrollWidth > s.clientWidth + 1) out.push(`scrollX:${s.className}`);
-  return [...new Set(out)];
-};
 for (const [name, params, run] of [
   ["empty", {}, async () => {}],
   ["answer", {}, async (p) => { await send(p, "compare"); await done(p); await p.locator(".foot__src").click(); await p.locator(".step__row").first().click(); }],
@@ -1611,7 +1645,7 @@ for (const [name, params, run] of [
   ["skills card", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".sp"); await p.locator('button[aria-label="Edit /annotate-paper"]').click(); await p.waitForSelector(".sp__src"); await p.locator('button[aria-label="Edit Short summary"]').click(); }],
   ["add skill", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".sp"); await p.getByRole("button", { name: "Add skill…" }).click(); await p.waitForSelector(".imp"); }],
   ["slash menu", {}, async (p) => { await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ skills: { "annotate-paper": { slot: 4 } }, prompts: window.__zmc.host.getSettings().prompts.map((x) => (x.id === "p4" ? { ...x, slot: undefined } : x)) })); await p.locator(".cin").click(); await p.keyboard.type("/"); await p.waitForSelector(".pop--slash .pop__i"); }],
-  ["bubbles", {}, async (p) => { await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ prompts: window.__zmc.host.getSettings().prompts.map((x) => ({ ...x, title: x.title + " with a much longer title that must truncate" })) })); await p.waitForSelector(".bubble"); }],
+  ["start with", {}, async (p) => { await pinSkill(p); await LONG(p); await p.waitForFunction(() => /must truncate/.test(window.__zmc.shadow.querySelector(".pin__t").textContent)); }],
   ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],
   ["status", { doctor: "many" }, async (p) => { await p.locator(".stat").click(); await p.waitForSelector(".check"); }],
   ["setup", { doctor: "many" }, async (p) => { await p.locator(".setup").waitFor(); }],

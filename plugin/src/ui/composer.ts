@@ -1,8 +1,7 @@
-// The composer: context chips, the textarea, `@` and `+` search, the `/` menu, the pickers, Send / Stop, and the pinned
-// skills and prompts as buttons above it on a new chat.
+// The composer: context chips, the textarea, `@` and `+` search, the `/` menu, the pickers, Send / Stop.
 // It owns the draft and the popups; the controller (index.ts) owns what a send does.
 import type { BackendId, ContextChip, ItemHit, ZoteroRef } from "../types.ts";
-import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids, slotLabel } from "./dom.ts";
+import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids } from "./dom.ts";
 import type { Fill } from "./economy.ts";
 import { SearchPopup } from "./search.ts";
 import { Pickers } from "./pickers.ts";
@@ -13,9 +12,6 @@ import { SlashMenu } from "./slash.ts";
 import type { SlashItem } from "./slash.ts";
 
 export type { Choices, SlashItem };
-
-/** A pinned skill or prompt: a button above the composer on a new, empty chat, and its shortcut. */
-export interface Bubble { label: string; title: string; skill: boolean; slot: number; run(): void }
 
 export interface ComposerOpts {
   search(query: string): Promise<ItemHit[]>;
@@ -68,9 +64,6 @@ export class Composer {
   private longNote: HTMLElement;
   private noteDismissed = false;
   private slash: SlashMenu;
-  /** Above the composer card (the panel puts it there): shown while the chat is new and the draft empty. */
-  readonly bubbles = h("div.bubbles", { hidden: true, role: "group", "aria-label": "Pinned skills and prompts" });
-  private bubbleCount = 0;
 
   private opts: ComposerOpts;
 
@@ -142,13 +135,6 @@ export class Composer {
   focus(): void { this.ta.focus(); }
   setText(t: string): void { this.ta.value = t; this.autosize(); this.syncSend(); if (!t.startsWith("/")) this.slash.close(); }
 
-  /** The pinned skills and prompts, or none (a chat with messages). */
-  setBubbles(items: Bubble[]): void {
-    this.bubbleCount = items.length;
-    setKids(this.bubbles, items.map((b) => h(`button.bubble${b.skill ? ".bubble--skill" : ""}`, { type: "button", title: `${b.title}\n${slotLabel(b.slot)}`, "aria-keyshortcuts": isMac() ? `Meta+Control+${b.slot}` : `Control+Alt+${b.slot}`, onclick: () => b.run() },
-      b.skill ? icon("sparkle") : null, h("span.bubble__t", null, b.label))));
-    this.syncSend();
-  }
   clearDraft(): void { this.setText(""); }
 
   /** How full the agent's context is: the ring whenever the backend says (hidden when it does not), a new-chat suggestion from FULL_AT. */
@@ -231,7 +217,6 @@ export class Composer {
 
   private syncSend(): void {
     const has = this.ta.value.trim().length > 0;
-    this.bubbles.hidden = has || this.bubbleCount === 0;
     const stop = this.busy;
     this.sendBtn.className = stop ? "send send--stop" : "send";
     this.sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
