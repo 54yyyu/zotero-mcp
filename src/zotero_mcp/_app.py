@@ -64,9 +64,7 @@ def _sync_semantic_update() -> None:
 
     sys.stderr.write("Auto-updating semantic search database...\n")
     stats = search.update_database(extract_fulltext=is_local_mode())
-    sys.stderr.write(
-        f"Database update completed: {stats.get('processed_items', 0)} items processed\n"
-    )
+    sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
 
 
 @asynccontextmanager
@@ -86,6 +84,20 @@ async def server_lifespan(server: FastMCP):
     """
     sys.stderr.write("Starting Zotero MCP server...\n")
 
+    async def _check_local_connection():
+        from zotero_mcp.client import is_local_zotero_available
+
+        if not await asyncio.to_thread(is_local_zotero_available):
+            sys.stderr.write(
+                "Warning: ZOTERO_LOCAL=true but Zotero is not reachable on "
+                "localhost:23119. Start Zotero and enable Settings → Advanced → "
+                "'Allow other applications on this computer to communicate "
+                "with Zotero'.\n"
+            )
+
+    if is_local_mode():
+        asyncio.create_task(_check_local_connection())
+
     async def _background_update():
         try:
             await asyncio.to_thread(_sync_semantic_update)
@@ -96,11 +108,9 @@ async def server_lifespan(server: FastMCP):
         # TTL-gated conditional GET; degrades to the vendored floor on failure.
         try:
             from zotero_mcp import schema
+
             if await asyncio.to_thread(schema.refresh) == "offline":
-                sys.stderr.write(
-                    "Warning: could not refresh the Zotero schema; using the "
-                    "cached or vendored copy.\n"
-                )
+                sys.stderr.write("Warning: could not refresh the Zotero schema; using the cached or vendored copy.\n")
         except Exception as e:
             sys.stderr.write(f"Warning: Zotero schema refresh task failed: {e}\n")
 
