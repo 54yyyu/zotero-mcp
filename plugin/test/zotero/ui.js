@@ -142,6 +142,55 @@ async function main(ctx) {
   await ctx.waitFor(() => $$("[class*=chip]").some((c) => /Bertrand and Mullainathan 2004/.test(c.textContent)), "dropped item became a chip");
   out.drop = "ok";
 
+  // 6b. a long catalog in Gecko: pi as it reports itself with OpenRouter configured (416 + the user's own 2), its default in
+  // the middle. The dropdown has a search field, pi's default first and marked Default, the user's providers next; typing in
+  // the list searches. (The catalog is stubbed on the host's runtime; the mock bridge speaks Claude for every backend.)
+  const big = [];
+  for (let i = 0; i < 415; i++) big.push({ id: `openrouter/vendor-${i % 26}/model-${String(i).padStart(3, "0")}`, name: `openrouter/Vendor ${i % 26}: Model ${i}` });
+  big.push({ id: "openrouter/moonshotai/kimi-k2.6", name: "openrouter/MoonshotAI: Kimi K2.6" });
+  for (const n of ["4", "4.1", "4.5"]) big.push({ id: `openrouter/anthropic/claude-opus-${n}`, name: `openrouter/Anthropic: Claude Opus ${n}` });
+  big.sort((a, b) => (a.id < b.id ? -1 : 1));
+  big.push({ id: "my-cluster/deepseek-v4-flash", name: "my-cluster/DeepSeek V4 Flash (4xH100)" }, { id: "ollama/qwen3-8b", name: "ollama/Qwen3 8B" });
+  const realCatalog = host.runtime.catalog;
+  const before = host.getSettings();
+  host.runtime.catalog = async (b) => (b === "pi" ? { models: big, modes: [], efforts: [{ id: "low", name: "Low" }, { id: "medium", name: "Medium" }, { id: "high", name: "High" }], model: "openrouter/moonshotai/kimi-k2.6", effort: "medium" } : realCatalog(b));
+  click(byLabel("New chat"), "new chat");
+  await host.setSettings({ backend: "pi", appearance: { ...before.appearance, glass: true } });
+  await ctx.sleep(300);
+  for (const [theme, shot] of [[1, "ui-6b-pi-models-light"], [0, "ui-6c-pi-models-dark"]]) {
+    Services.prefs.setIntPref("browser.theme.toolbar-theme", theme);
+    await ctx.sleep(500);
+    $(".pick--model").click();
+    await ctx.waitFor(() => $(".mdd .mdd__qi") && $(".mdd .eff__track"), "the long list's search field " + shot);
+    const first = $$('.mdd [role="menuitemradio"]').slice(0, 2).map((r) => r.querySelector(".menu__t").textContent + (r.querySelector(".mdd__tag") ? " [Default]" : ""));
+    check(first[0] === "MoonshotAI: Kimi K2.6 [Default]" && first[1] === "DeepSeek V4 Flash (4xH100)", "pi's default first, then the user's providers: " + first);
+    check($$('.mdd [role="menuitemradio"]').length === 80 && $$(".mdd__h").length === 3, "80 rows drawn under three provider headings");
+    await ctx.snapshot(shot);
+    const key = (k) => root.activeElement.dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+    key("c"); // on the current model: the search field takes it
+    check(root.activeElement === $(".mdd__qi") && $(".mdd__qi").value === "c", "typing in the list goes to the search field");
+    const times = [];
+    for (const q of ["cl", "cla", "claude", "claude o", "claude opus"]) {
+      const t0 = win.performance.now();
+      $(".mdd__qi").value = q;
+      $(".mdd__qi").dispatchEvent(new win.Event("input", { bubbles: true }));
+      $(".mdd__models").getBoundingClientRect();
+      times.push(win.performance.now() - t0);
+    }
+    check($$('.mdd [role="menuitemradio"]').length === 3 && $(".mdd__qn").textContent === "3 models", "every word matches: " + $(".mdd__qn").textContent);
+    out.piKeystrokeMs = times.map((t) => Math.round(t * 10) / 10);
+    await ctx.snapshot(shot + "-search");
+    key("Escape");
+    check($(".mdd") && $(".mdd__qi").value === "", "Esc clears the search first");
+    key("Escape");
+    await ctx.waitFor(() => !$(".mdd"), "a second Esc closes the dropdown");
+  }
+  Services.prefs.clearUserPref("browser.theme.toolbar-theme");
+  host.runtime.catalog = realCatalog;
+  await host.setSettings({ backend: before.backend, appearance: before.appearance });
+  await ctx.sleep(300);
+  out.longModelList = "ok";
+
   // 7. the close button
   click(byLabel("Close the panel"), "close button");
   await ctx.waitFor(() => !injected.isOpen(), "close button closes the panel");

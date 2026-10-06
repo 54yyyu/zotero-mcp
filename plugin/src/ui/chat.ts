@@ -190,12 +190,13 @@ export class Chat {
     this.dispatch({ t: "permission", turn, id: b.id, title: b.title, kind: b.kind, ...(b.input !== undefined ? { input: b.input } : {}), options: b.options, resolved: optionId, ...(b.name ? { name: b.name } : {}) });
   }
 
-  /** Change the model, effort or permission mode: on the live session, and as that backend's saved choice. */
-  async pick(kind: "model" | "effort" | "mode", id: string): Promise<void> {
+  /** Change the model, effort or permission mode: save `id` as that backend's choice ("" = the agent's default) and apply `apply` to the live session, unless it is already on it. */
+  async pick(kind: "model" | "effort" | "mode", id: string, apply: string | undefined = id): Promise<void> {
     const s = this.d.host.getSettings();
     const backend = this.session?.backend ?? s.backend;
     const live = this.session;
-    if (live) await (kind === "model" ? live.setModel(id) : kind === "effort" ? live.setEffort(id) : live.setMode(id));
+    const now = kind === "model" ? live?.currentModel() : kind === "effort" ? live?.currentEffort() : live?.currentMode();
+    if (live && apply && apply !== now) await (kind === "model" ? live.setModel(apply) : kind === "effort" ? live.setEffort(apply) : live.setMode(apply));
     await this.d.host.setSettings({ [kind]: { ...s[kind], [backend]: id } } as Partial<PanelSettings>);
   }
 

@@ -527,6 +527,121 @@ await test("models: the first four in the catalog's order, the rest under More m
   assert.match(await p.locator(".mdd__more").innerText(), /1/);
 });
 
+const BIG = { params: { pi: "big", backend: "pi" } };
+const rowsShown = (p) => p.locator('.mdd [role="menuitemradio"], .mdd .mdd__h').evaluateAll((els) => els.map((e) => (e.classList.contains("mdd__h") ? `# ${e.textContent}` : e.querySelector(".menu__t").textContent + (e.getAttribute("aria-checked") === "true" ? " ✓" : "") + (e.querySelector(".mdd__tag") ? " [Default]" : ""))));
+await test("models, a long catalog (pi, 418): pi's own default first and marked Default, the user's providers next, a search instead of More models", async (p) => {
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .mdd__qi");
+  assert.deepEqual((await rowsShown(p)).slice(0, 7), ["MoonshotAI: Kimi K2.6 ✓ [Default]", "# my-cluster", "DeepSeek V4 Flash (4xH100)", "# ollama", "Qwen3 8B", "# openrouter", "Anthropic: Claude 3 Haiku"]);
+  assert.equal(await p.locator('.mdd [role="menuitemradio"]').first().getAttribute("title"), "openrouter/moonshotai/kimi-k2.6", "the full id in the tooltip");
+  assert.equal(await p.locator(".mdd__more").innerText().then((t) => t.replace(/\s+/g, " ").trim()), "Show all 338", "80 rows drawn, the rest behind Show all");
+  assert.equal(await p.locator('.mdd [role="menuitemradio"]').count(), 80);
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.getAttribute("aria-checked")), "true", "it opens on the current model");
+  assert.match(await p.locator(".pick--model .pick__t").innerText(), /^MoonshotAI: Kimi K2\.6$/, "the button drops the provider prefix too");
+  // typing in the list searches; every word must match; the count shows; the field never moves
+  const field = await p.locator(".mdd__search").boundingBox();
+  await p.keyboard.type("claude opus 4");
+  assert.equal(await p.locator(".mdd__qi").inputValue(), "claude opus 4");
+  assert.deepEqual(await rowsShown(p), ["# openrouter", "Anthropic: Claude Opus 4", "Anthropic: Claude Opus 4.1", "Anthropic: Claude Opus 4.5", "Anthropic: Claude Opus 4.6", "Anthropic: Claude Opus 4.8"]);
+  assert.equal(await p.locator(".mdd__qn").innerText(), "5 models");
+  assert.equal(await p.locator(".mdd__more").count(), 0);
+  assert.deepEqual(await p.locator(".mdd__search").boundingBox(), field, "the search field stays where it was");
+  await p.keyboard.type("zz");
+  assert.equal(await p.locator(".mdd__models .menu__note").innerText(), "No model matches");
+  assert.equal(await p.locator(".mdd__qn").innerText(), "");
+  // the clear button, then Esc clears first and closes second
+  await p.locator(".mdd__qx").click();
+  assert.equal(await p.locator(".mdd__qi").inputValue(), "");
+  assert.equal(await p.locator('.mdd [role="menuitemradio"]').count(), 80);
+  await p.keyboard.type("qwen3 8b");
+  await p.keyboard.press("Escape");
+  assert.equal(await p.locator(".mdd__qi").inputValue(), "", "Esc clears the query");
+  assert.equal(await p.locator(".mdd").count(), 1, "and keeps the dropdown open");
+  await p.keyboard.press("Escape");
+  assert.equal(await p.locator(".mdd").count(), 0, "a second Esc closes it");
+  // Show all draws the rest
+  await p.locator(".pick--model").click();
+  await p.locator(".mdd__more").click();
+  assert.equal(await p.locator('.mdd [role="menuitemradio"]').count(), 418);
+}, BIG);
+
+await test("models, long catalog: Down moves into the results, Enter picks; choosing the default again saves no choice", async (p) => {
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .mdd__qi");
+  await p.keyboard.press("/");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.classList.contains("mdd__qi")), true, "/ goes to the search field");
+  await p.keyboard.type("deepseek v4");
+  await p.keyboard.press("ArrowDown");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.querySelector(".menu__t")?.textContent), "DeepSeek V4 Flash (4xH100)", "Down moves into the results, the user's own provider first");
+  await p.keyboard.press("ArrowUp");
+  assert.equal(await p.evaluate(() => window.__zmc.shadow.activeElement?.classList.contains("mdd__qi")), true, "Up from the first result is the field");
+  await p.keyboard.press("Enter");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().model.pi === "my-cluster/deepseek-v4-flash");
+  assert.equal(await p.locator(".mdd").count(), 0, "Enter picks the first match and closes");
+  assert.match(await p.locator(".pick--model .pick__t").innerText(), /^DeepSeek V4 Flash/);
+  // the choice is pinned first, the agent's default second with its label; choosing it clears the choice
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .mdd__qi");
+  assert.deepEqual((await rowsShown(p)).slice(0, 3), ["DeepSeek V4 Flash (4xH100) ✓", "MoonshotAI: Kimi K2.6 [Default]", "# ollama"]);
+  assert.equal(await p.locator('.mdd [role="menuitemradio"]').nth(1).locator(".menu__d").innerText(), "openrouter", "a pinned row says its provider");
+  await p.locator('.mdd [role="menuitemradio"]').nth(1).click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().model.pi === "");
+  assert.match(await p.locator(".pick--model .pick__t").innerText(), /^MoonshotAI: Kimi K2\.6$/);
+  // the settings screen says the same: Default (pi's own), not listed twice
+  await openSettings(p);
+  const opts = await p.locator('section[aria-label="Agent"] select[aria-label="Model"] option').evaluateAll((os) => os.map((o) => [o.value, o.textContent, o.selected]));
+  assert.deepEqual(opts[0], ["", "Default (openrouter/MoonshotAI: Kimi K2.6)", true]);
+  assert.equal(opts.filter(([v]) => v === "openrouter/moonshotai/kimi-k2.6").length, 0, "the default is the Default option only");
+  assert.equal(opts.length, 418);
+}, BIG);
+
+await test("models, long catalog in a live chat: a pick switches the session; Default switches it back to the agent's own model", async (p) => {
+  await send(p, "hello");
+  await done(p);
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .mdd__qi");
+  await p.keyboard.type("qwen");
+  await p.keyboard.press("Enter");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().model.pi === "ollama/qwen3-8b");
+  assert.equal(await p.evaluate(() => window.__zmc.panel && window.__zmc.shadow.querySelector(".pick--model .pick__t").textContent), "Qwen3 8B");
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .mdd__qi");
+  await p.locator('.mdd [role="menuitemradio"]', { hasText: "Kimi K2.6" }).first().click();
+  await p.waitForFunction(() => window.__zmc.host.getSettings().model.pi === "" && /Kimi K2\.6/.test(window.__zmc.shadow.querySelector(".pick--model").textContent));
+}, BIG);
+
+await test("models, long catalog: a keystroke over 418 models repaints within budget", async (p) => {
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .mdd__qi");
+  const ms = await p.evaluate(() => {
+    const input = window.__zmc.shadow.querySelector(".mdd__qi");
+    const times = [];
+    for (const q of ["a", "an", "ant", "anth", "o", "op", "ope", "open", "", "g", "gl", "glm", "glm 5", ""]) {
+      const t = performance.now();
+      input.value = q;
+      input.dispatchEvent(new Event("input"));
+      window.__zmc.shadow.querySelector(".mdd__models").getBoundingClientRect(); // force layout
+      times.push(performance.now() - t);
+    }
+    return times;
+  });
+  const worst = Math.max(...ms);
+  console.log(`  keystroke to laid-out list over 418 models: median ${ms.sort((a, b) => a - b)[ms.length >> 1].toFixed(1)} ms, worst ${worst.toFixed(1)} ms`);
+  assert.ok(worst < 32, `a keystroke took ${worst.toFixed(1)} ms`);
+}, BIG);
+
+await test("models, long catalog at 300px: the dropdown stays inside the composer, nothing overflows sideways", async (p) => {
+  await p.locator(".pick--model").click();
+  await p.waitForSelector(".mdd .mdd__qi");
+  await p.keyboard.type("claude");
+  const g = await p.evaluate(() => {
+    const q = (s) => window.__zmc.shadow.querySelector(s), r = (s) => q(s).getBoundingClientRect();
+    const d = r(".mdd"), c = r(".composer"), list = q(".mdd__models");
+    return { inside: d.left >= c.left - 1 && d.right <= c.right + 1, noSideScroll: list.scrollWidth <= list.clientWidth, field: r(".mdd__qi").width > 120, scrolls: list.scrollHeight > list.clientHeight };
+  });
+  assert.deepEqual(g, { inside: true, noSideScroll: true, field: true, scrolls: true });
+}, { width: 300, ...BIG });
+
 await test("model dropdown: the keyboard opens it, moves through agents, models and effort, and Esc gives the focus back", async (p) => {
   const focused = () => p.evaluate(() => { const a = window.__zmc.shadow.activeElement; return a ? (a.querySelector?.(".menu__t")?.textContent ?? a.dataset.id ?? a.getAttribute("role") ?? a.className) : null; });
   await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent));

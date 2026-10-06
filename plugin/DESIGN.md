@@ -142,13 +142,30 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
   `Selected Area` chip with thumbnail + Go to Annotation / Remove, `+` and `@` to attach items/collections/annotations,
   one model button, mode picker, Send / Stop (Esc), Enter sends, Shift+Enter newline, drop an annotation on it.
   The model button (`ui/pickers.ts`) shows the model and, softly, the effort level; its one dropdown opens right above it: the agents
-  as a segmented row (status dot from `detect()`; one that is not ready says why and is not chosen), the chosen agent's models in its
-  catalog's order (the first four, the rest under an inline More models, the current one always listed; no model id is hardcoded),
+  as a segmented row (status dot from `detect()`; one that is not ready says why and is not chosen), the chosen agent's models
+  (`ui/model-list.ts`, pure, below), 
   and an Effort row with the stepped slider (drag, click a stop, Left/Right; applied on release or 250 ms after the last key;
   Recommended marks the catalog's default level; hidden when the agent has no levels). Another agent applies at once on an empty
   chat and asks inline ("Switching starts a new chat with Codex." Start new chat / Cancel) when the chat has messages. Up/Down move
   through the dropdown, Left/Right between agents (without choosing) or along the slider, Esc gives the focus back. At 300 px the
   model name is what truncates; the effort word, the context ring and the mode button stay whole.
+- Models (`ui/model-list.ts`; no model id or provider is hardcoded). **Default** marks the model the agent starts on by itself:
+  the model the live session's own session/new reported before our explicit choice (`AgentSession.defaultModel()`, unknown after a
+  resume), else the catalog probe's (a session started with no model). Choosing it saves `""` (the agent's default), so the panel
+  keeps following the agent; the settings' Model select shows it only as "Default (name)", never twice. A catalog of up to 12
+  keeps the bridge's order: the first four, then an inline More models; the current model and the default are listed without
+  expanding. A longer one (pi with OpenRouter: 418, measured 2026-10-05) gets a search field instead and takes the dropdown's full
+  height, so the field never moves while the matches change; only the list scrolls (agents, field and effort stay put). Order:
+  the current model, the default, then each provider (the id before the first `/`) smaller first (a provider the user configured
+  lists a handful, a cloud aggregator hundreds), each in the bridge's order, under quiet provider headings when there is more than
+  one provider; grouped rows drop the `provider/` prefix (the full id is the tooltip, the button drops it too). Search: every
+  typed word must be in the name, id or description, any case; the count shows ("5 models"); "No model matches"; at most 80 rows
+  are drawn, then "Show all n". Keys: typing anywhere in the dropdown goes to the field (`/` just focuses it; Space still presses a
+  button), Down moves into the results, Enter in the field picks the first match, Esc clears the query first and closes second.
+  Measured: a keystroke over 418 models repaints and lays out in 1.6 ms median, 3 ms worst (Chromium), 3-4 ms (WebKit).
+  Why the panel once showed pi on "Kimi K2.6": that is what pi itself runs. Its settings name `defaultModel` `z-ai/glm-5.2:free`,
+  which pi 0.86.1's OpenRouter registry does not have (only `z-ai/glm-5.2` and `:batch`), so pi's `findInitialModel` falls back to
+  its built-in per-provider default (`openrouter: moonshotai/kimi-k2.6`) and pi-acp reports that from pi's `get_state`.
 - Transcript: user bubble with chips; "Thinking" row; assistant Markdown streamed; tool steps as one collapsed line each
   (`Searched library · "…"`, expandable to input/output); permission cards (Allow once / Always / Deny); plan list; errors as
   notices with a fix button; citation chips for `zotero:` links; "N sources" fold listing every cited item once;

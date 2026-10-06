@@ -274,6 +274,7 @@ export class AcpAgentSession implements AgentSession {
   #lastUpdateAt = Date.now();
   /** pi-acp's startup banner (from session/new `_meta.piAcp.startupInfo`): it may be echoed as a message chunk. */
   #banner: string | undefined;
+  #defaultModel: string | undefined;
   #closed = false;
   #cancelled = false;
 
@@ -318,6 +319,8 @@ export class AcpAgentSession implements AgentSession {
       }
       const session = new AcpAgentSession(client, spec, sessionId, init, readCatalog(res, spec), spec.briefVia === "first-prompt" && !opts.resumeSessionId ? opts.brief : undefined);
       session.#banner = str(asObj(asObj(res["_meta"])?.["piAcp"])?.["startupInfo"]);
+      // A resumed session reports the model it had, not the agent's default.
+      if (!opts.resumeSessionId) session.#defaultModel = session.currentModel();
       if (opts.model && opts.model !== session.currentModel()) {
         // A model this bridge does not know must not make the chat unusable: keep its default.
         await session.setModel(opts.model).catch(() => undefined);
@@ -355,6 +358,9 @@ export class AcpAgentSession implements AgentSession {
   }
   currentModel(): string | undefined {
     return this.#catalog.currentModel;
+  }
+  defaultModel(): string | undefined {
+    return this.#defaultModel;
   }
   modes(): ModeOption[] {
     return this.#catalog.modes;

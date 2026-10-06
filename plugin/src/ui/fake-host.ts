@@ -1,10 +1,10 @@
 // A PanelHost with a scripted agent, so every state of the panel can be screenshotted and tested without
 // Zotero. The preview page and the Playwright scripts drive it through `host.sim`.
-import { CATALOGS, defaultSettings } from "./fake-catalog.ts";
+import { CATALOGS, bigPiCatalog, defaultSettings } from "./fake-catalog.ts";
 import { repeatLine } from "./economy.ts";
 import { DIAGRAM_ANSWER } from "./fake-diagrams.ts";
 import type {
-  AgentRuntime, AgentSession, BackendId, BackendStatus, ChatEvent, ContextChip, DoctorCheck, ItemHit, NoteRequest, PanelHost,
+  AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, ChatEvent, ContextChip, DoctorCheck, ItemHit, NoteRequest, PanelHost,
   PanelSettings, PermissionOption, PromptInput, SavedSession, StartOpts, ZoteroRef,
 } from "../types.ts";
 
@@ -26,6 +26,8 @@ interface FakeOptions {
   /** Start with no saved chats (the History empty state). */
   noHistory?: boolean;
   catalogDelay?: number;
+  /** pi reports a real-sized catalog (418 models over three providers) instead of two models. */
+  bigPi?: boolean;
   /** Start as a first-run user: the welcome screen shows before the chat. */
   welcome?: boolean;
 }
@@ -63,6 +65,8 @@ interface Sim {
   /** Settings saved somewhere else (Zotero's Settings pane): the panel hears of it as it would from the pref observer. */
   setSettingsElsewhere(patch: Partial<PanelSettings>): void;
   statuses: BackendStatus[];
+  /** What each backend's catalog() and sessions offer. */
+  catalogs: Record<BackendId, Catalog>;
   writes: { session: string; ev: ChatEvent }[];
   keys: Partial<Record<BackendId, string>>;
   closed: number;
@@ -131,6 +135,7 @@ class FakeSession implements AgentSession {
   readonly supportsImages = true;
   private listeners = new Set<(ev: ChatEvent) => void>();
   private model: string;
+  private readonly def: string | undefined;
   private mode: string;
   private effort: string;
   private cancelled = false;
@@ -144,17 +149,19 @@ class FakeSession implements AgentSession {
     this.sim = sim;
     this.backend = opts.backend;
     this.account = account;
-    const cat = CATALOGS[opts.backend];
+    const cat = sim.catalogs[opts.backend];
+    this.def = opts.resumeSessionId ? undefined : cat.model;
     this.model = opts.model || cat.model || "";
     this.mode = opts.mode || cat.mode || "";
     this.effort = opts.effort || cat.effort || "";
     this.sessionId = opts.resumeSessionId ?? `agent-${Math.random().toString(36).slice(2, 8)}`;
   }
-  models() { return CATALOGS[this.backend].models; }
+  models() { return this.sim.catalogs[this.backend].models; }
   currentModel() { return this.model; }
-  modes() { return CATALOGS[this.backend].modes; }
+  defaultModel() { return this.def; }
+  modes() { return this.sim.catalogs[this.backend].modes; }
   currentMode() { return this.mode || undefined; }
-  efforts() { return CATALOGS[this.backend].efforts; }
+  efforts() { return this.sim.catalogs[this.backend].efforts; }
   currentEffort() { return this.effort || undefined; }
   async setModel(id: string) { await sleep(20); this.model = id; }
   async setMode(id: string) { await sleep(20); this.mode = id; }
@@ -278,6 +285,7 @@ export class FakeHost implements PanelHost {
     this.settings.welcomed = !o.welcome;
     const sim: Sim = {
       opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", pickImage: { name: "kyoto-evening.jpg", dataUrl: SAMPLE_IMAGE }, image: null, preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, saved: [], saveTo: "/Users/you/Downloads", notes: [], noteFails: null, contextUsage: null, speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
+      catalogs: { ...CATALOGS, ...(o.bigPi ? { pi: bigPiCatalog() } : {}) },
       statuses: [
         { id: "claude-code", label: "Claude Code", available: true, account: "Claude Max" },
         { id: "codex", label: "Codex", available: false, reason: "codex is not installed" },
@@ -298,7 +306,7 @@ export class FakeHost implements PanelHost {
         const st = this.statuses().find((x) => x.id === b);
         if (st && !st.available) throw new Error(st.reason ?? `${st.label} is not available`);
         if (sim.catalogFails.includes(b)) throw new Error("the bridge did not answer within 20 s");
-        return CATALOGS[b];
+        return sim.catalogs[b];
       },
       start: async (opts) => {
         await sleep(sim.speed ? 250 : 0);

@@ -1,6 +1,7 @@
 // The preview page: the panel over a FakeHost. URL parameters pick the scenario:
 //   ?theme=dark  &doctor=ok|zotero-api|write-access|cli|node|backend|many
 //   &ctx=item|selection|area|none  &speed=0  &stress=1  &nohistory=1  &welcome=1
+//   &pi=big (pi lists 418 models)  &backend=pi
 //   &look={"glass":false,"background":"dawn",...}  (an appearance laid over the default)  &image=1 (a saved background picture)
 // `window.__zmc` exposes the host's `sim` and the panel handle to Playwright.
 import { mountPanel } from "../src/ui/index.ts";
@@ -17,7 +18,9 @@ const host = new FakeHost({
   stress: q.has("stress"),
   noHistory: q.has("nohistory"),
   welcome: q.has("welcome"),
+  bigPi: q.get("pi") === "big",
 });
+if (q.has("backend")) void host.setSettings({ backend: q.get("backend") as "pi" });
 if (q.has("image")) host.sim.image = host.sim.pickImage?.dataUrl ?? null; // a picture saved by an earlier session
 if (q.has("look")) void host.setSettings({ appearance: { ...host.getSettings().appearance, ...JSON.parse(q.get("look")!) } });
 const mount = document.getElementById("host") as HTMLElement;

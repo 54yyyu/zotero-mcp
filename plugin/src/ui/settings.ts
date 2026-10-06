@@ -88,9 +88,12 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
         h("button.btn.btn--sm", { type: "button", onclick: () => { loadCatalog(b, true); render(); } }, "Try again")));
     } else {
       const c = cat.catalog;
+      // The agent's own default is the Default option (as in the composer's dropdown), not listed twice; a choice saved
+      // before that still shows.
       const pick = (key: "model" | "effort", label: string, list: { id: string; name: string }[]) => {
-        const def = list.find((x) => x.id === c[key])?.name ?? "";
-        return selectField(label, [{ id: "", label: def ? `Default (${def})` : "Default" }, ...list.map((x) => ({ id: x.id, label: x.name }))], s[key][b], (id) => void save(setPerBackend(s, key, b, id)));
+        const def = list.find((x) => x.id === c[key]);
+        const rest = list.filter((x) => x !== def || s[key][b] === x.id);
+        return selectField(label, [{ id: "", label: def ? `Default (${def.name})` : "Default" }, ...rest.map((x) => ({ id: x.id, label: x.name }))], s[key][b], (id) => void save(setPerBackend(s, key, b, id)));
       };
       if (c.models.length) parts.push(pick("model", "Model", c.models));
       if (c.efforts.length) parts.push(pick("effort", "Effort", c.efforts));

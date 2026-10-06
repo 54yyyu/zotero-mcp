@@ -43,6 +43,34 @@ export const CATALOGS: Record<BackendId, Catalog> = {
   },
 };
 
+/**
+ * pi as it really reports itself when OpenRouter is configured: every OpenRouter model ("openrouter/Vendor: Model"), sorted
+ * by id, then the user's own providers from ~/.pi/agent/models.json last; its default (pi's built-in one for OpenRouter)
+ * sits in the middle. 418 models, like the real list measured on 2026-10-05 (preview: ?pi=big).
+ */
+export function bigPiCatalog(): Catalog {
+  const vendors: [string, string, string[]][] = [
+    ["anthropic", "Anthropic", ["Claude 3 Haiku", "Claude Haiku 4.5", "Claude Opus 4", "Claude Opus 4.1", "Claude Opus 4.5", "Claude Opus 4.6", "Claude Opus 4.8", "Claude Opus 5", "Claude Sonnet 4", "Claude Sonnet 4.5", "Claude Sonnet 5", "Claude Fable 5"]],
+    ["deepseek", "DeepSeek", ["DeepSeek V3", "DeepSeek V3.1", "DeepSeek V3.2", "DeepSeek V4", "DeepSeek V4 Flash", "DeepSeek V4 Pro", "DeepSeek R1"]],
+    ["google", "Google", ["Gemini 2.5 Flash", "Gemini 2.5 Pro", "Gemini 3 Flash", "Gemini 3 Pro", "Gemini 3.1 Pro", "Gemma 3 27B"]],
+    ["meta-llama", "Meta", ["Llama 3.3 70B Instruct", "Llama 4 Maverick", "Llama 4 Scout"]],
+    ["mistralai", "Mistral", ["Mistral Large", "Mistral Medium 3", "Devstral Medium", "Codestral"]],
+    ["moonshotai", "MoonshotAI", ["Kimi K2", "Kimi K2 Thinking", "Kimi K2.5", "Kimi K2.6", "Kimi K3"]],
+    ["openai", "OpenAI", ["GPT-4.1", "GPT-4.1 Mini", "GPT-4o", "GPT-5", "GPT-5 Mini", "GPT-5.4", "GPT-5.5", "o3", "o4 Mini", "gpt-oss-120b"]],
+    ["qwen", "Qwen", ["Qwen3 235B A22B", "Qwen3 Coder", "Qwen3.5 Plus", "Qwen3.6 Max"]],
+    ["x-ai", "xAI", ["Grok 4", "Grok 4.6", "Grok Code Fast"]],
+    ["z-ai", "Z.ai", ["GLM 4.5", "GLM 4.6", "GLM 4.7", "GLM 5", "GLM 5.1", "GLM 5.2", "GLM 5.3"]],
+  ];
+  const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9.]+/g, "-");
+  const models: Catalog["models"] = [];
+  for (const [vid, vname, names] of vendors) for (const n of names) models.push(level(`openrouter/${vid}/${slug(n)}`, `openrouter/${vname}: ${n}`));
+  // fill to OpenRouter's size with plausible smaller vendors
+  for (let i = 0; models.length < 416; i++) models.push(level(`openrouter/vendor-${String.fromCharCode(97 + (i % 26))}/model-${i}`, `openrouter/Vendor ${String.fromCharCode(65 + (i % 26))}: Model ${i}`));
+  models.sort((a, b) => (a.id < b.id ? -1 : 1));
+  models.push(level("my-cluster/deepseek-v4-flash", "my-cluster/DeepSeek V4 Flash (4xH100)"), level("ollama/qwen3-8b", "ollama/Qwen3 8B"));
+  return { models, modes: [], efforts: CATALOGS.pi.efforts, model: "openrouter/moonshotai/kimi-k2.6", effort: "medium" };
+}
+
 export function defaultSettings(): PanelSettings {
   return {
     backend: "claude-code",

@@ -147,6 +147,8 @@ export interface AgentSession {
   readonly supportsImages: boolean;
   models(): ModelOption[];
   currentModel(): string | undefined;
+  /** The model the agent started this session on by itself, before any explicit choice (unknown after a resume). */
+  defaultModel(): string | undefined;
   modes(): ModeOption[];
   currentMode(): string | undefined;
   /** Reasoning effort levels the backend offers (Claude's effort, pi's thinking level, Codex's low..max); empty when it has none. */
@@ -174,6 +176,7 @@ export interface Catalog {
   models: ModelOption[];
   modes: ModeOption[];
   efforts: ModeOption[];
+  /** The agent's own defaults: what a session with no explicit choice starts on. */
   model?: string;
   mode?: string;
   effort?: string;

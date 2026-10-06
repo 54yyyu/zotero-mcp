@@ -1,15 +1,18 @@
 // The composer's two pickers. The model button shows the model and, softly, the effort level; it opens one dropdown
-// right above itself: the agent (Claude Code, Codex, pi, each with its status dot), that agent's models in its own
-// catalog's order (the first few, the rest under "More models"), and an effort slider. The mode button opens the
-// permission modes. An empty list hides its part (pi has no modes, some backends no effort).
+// right above itself: the agent (Claude Code, Codex, pi, each with its status dot), that agent's models (model-list.ts:
+// a short catalog folds under "More models", a long one has a search field), and an effort slider. The mode button opens
+// the permission modes. An empty list hides its part (pi has no modes, some backends no effort).
 import type { BackendId, ModeOption, ModelOption } from "../types.ts";
 import { env, errMessage, h, icon, setKids } from "./dom.ts";
+import { LIMIT, arrange, countLabel, search, shortName, withHeadings, type Row } from "./model-list.ts";
 
 export interface AgentChoice { id: BackendId; label: string; available?: boolean | undefined; reason?: string | undefined }
 export interface Choices {
   backend: BackendId;
   agents: AgentChoice[];
   models: ModelOption[]; model?: string | undefined;
+  /** The model the agent uses with no choice saved, marked Default; choosing it clears the choice. */
+  defaultModel?: string | undefined;
   efforts: ModeOption[]; effort?: string | undefined;
   /** The agent's own default level (its catalog's), marked Recommended. */
   defaultEffort?: string | undefined;
@@ -28,8 +31,6 @@ interface PickerOpts {
   checkSetup(): void;
 }
 
-/** Models listed before "More models". The current one is listed too, wherever it sits in the catalog. */
-const TOP = 4;
 const MODE_TITLE = "Permission mode: how much the agent asks before acting";
 const nameOf = (list: { id: string; name: string }[], id: string | undefined, fallback: string) => list.find((x) => x.id === id)?.name ?? (id || fallback);
 
@@ -44,6 +45,8 @@ export class Pickers {
   private agentsEl: HTMLElement | null = null;
   private noteEl: HTMLElement | null = null;
   private bodyEl: HTMLElement | null = null;
+  /** A long model list's search field, and how to set its query (the list repaints). */
+  private query: { input: HTMLInputElement; set(q: string): void } | null = null;
   /** Lands an effort chosen with the keys when the dropdown closes before the pause. */
   private flush: (() => void) | null = null;
   private gen = 0;
@@ -61,7 +64,8 @@ export class Pickers {
   /** Show these values (and the agents' status in an open dropdown). */
   set(c: Choices): void {
     this.choices = c;
-    const model = nameOf(c.models, c.model, "Default model");
+    const cur = c.models.find((m) => m.id === c.model);
+    const model = cur ? shortName(cur) : c.model || "Default model";
     const effort = c.efforts.length && c.effort ? nameOf(c.efforts, c.effort, "") : "";
     const mode = nameOf(c.modes, c.mode, "Mode");
     setKids(this.buttons.model, h("span.pick__t", null, model), effort ? h("span.pick__e", null, effort) : null, icon("chevDown", "pick__chev"));
@@ -84,7 +88,7 @@ export class Pickers {
     this.flush?.();
     this.flush = null;
     this.menu?.remove();
-    this.menu = this.anchor = this.agentsEl = this.noteEl = this.bodyEl = null;
+    this.menu = this.anchor = this.agentsEl = this.noteEl = this.bodyEl = this.query = null;
     this.gen++;
     for (const b of Object.values(this.buttons)) b.setAttribute("aria-expanded", "false");
   }
@@ -105,7 +109,10 @@ export class Pickers {
     const { menu, anchor } = this;
     if (!menu || !anchor) return;
     menu.style.bottom = `${this.host.offsetHeight - anchor.offsetTop + 4}px`;
-    menu.style.maxHeight = `${Math.max(120, Math.min(440, anchor.getBoundingClientRect().top - 12))}px`;
+    const max = `${Math.max(120, Math.min(440, anchor.getBoundingClientRect().top - 12))}px`;
+    menu.style.maxHeight = max;
+    // A searchable list takes the full height, so the field never moves while the matches change under it.
+    menu.style.height = this.query ? max : "";
     if (anchor === this.buttons.model) menu.style.left = `${Math.max(0, Math.min(anchor.offsetLeft, this.host.clientWidth - menu.offsetWidth))}px`;
   }
 
@@ -193,6 +200,7 @@ export class Pickers {
     const gen = ++this.gen;
     this.flush?.();
     this.flush = null;
+    this.query = null;
     setKids(body, h("div.menu__note", null, "Loading…"));
     this.place();
     if (focusCurrent) this.focusAgent(this.choices.backend);
@@ -214,32 +222,65 @@ export class Pickers {
     if (focusCurrent) (body.querySelector('[aria-checked="true"]') as HTMLElement | null)?.focus();
   }
 
+  /** The models. Choosing the agent's default saves no choice (""), so the panel keeps following the agent. */
   private models(c: Choices): HTMLElement | null {
     if (!c.models.length) return null;
-    const at = c.models.findIndex((m) => m.id === c.model);
-    const shown = (i: number) => i < TOP || i === at;
-    const item = (o: ModelOption) => h("button.menu__item", {
-      type: "button", role: "menuitemradio", "aria-checked": String(o.id === c.model), dataset: { stop: "" },
-      onclick: () => { this.close(); this.buttons.model.focus(); this.opts.pick("model", o.id); },
+    const list = arrange(c.models, c.model, c.defaultModel);
+    const choose = (m: ModelOption) => { this.close(); this.buttons.model.focus(); this.opts.pick("model", m.id === c.defaultModel ? "" : m.id); };
+    const item = (r: Row) => h("button.menu__item", {
+      type: "button", role: "menuitemradio", "aria-checked": String(r.m.id === c.model), dataset: { stop: "" }, ...(r.provider ? { title: r.m.id } : {}),
+      onclick: () => choose(r.m),
     },
-      h("span.menu__check", null, o.id === c.model ? icon("check") : null),
-      h("span.menu__tx", null, h("span.menu__t", null, o.name), o.description ? h("span.menu__d", null, o.description) : null));
-    const list = h("div.mdd__models", { role: "menu", "aria-label": "Models" }, c.models.filter((_, i) => shown(i)).map(item));
-    const rest = c.models.filter((_, i) => !shown(i));
-    if (rest.length) {
-      const extra = h("div.mdd__extra", { hidden: true }, rest.map(item));
-      const more = h("button.menu__item.mdd__more", {
-        type: "button", role: "menuitem", "aria-expanded": "false", dataset: { stop: "" },
-        onclick: () => {
+      h("span.menu__check", null, r.m.id === c.model ? icon("check") : null),
+      h("span.menu__tx", null, h("span.menu__t", null, r.label), r.note ? h("span.menu__d", null, r.note) : null),
+      r.m.id === c.defaultModel ? h("span.mdd__tag", null, "Default") : null);
+    const menu = h("div.mdd__models", { role: "menu", "aria-label": "Models" });
+    const more = (label: string, n: number, run: () => void, attrs: Record<string, string> = {}) => h("button.menu__item.mdd__more", { type: "button", role: "menuitem", dataset: { stop: "" }, onclick: run, ...attrs },
+      attrs["aria-expanded"] ? h("span.mdd__chev", null, icon("chevDown")) : null, h("span.menu__tx", null, h("span.menu__t", null, label)), h("span.mdd__n", null, String(n)));
+    if (!list.long) {
+      setKids(menu, list.rows.filter((r) => r.top).map(item));
+      const rest = list.rows.filter((r) => !r.top);
+      if (rest.length) {
+        const extra = h("div.mdd__extra", { hidden: true }, rest.map(item));
+        const btn: HTMLElement = more("More models", rest.length, () => {
           extra.hidden = !extra.hidden;
-          more.setAttribute("aria-expanded", String(!extra.hidden));
+          btn.setAttribute("aria-expanded", String(!extra.hidden));
           this.place();
           if (!extra.hidden) extra.scrollIntoView?.({ block: "nearest" });
-        },
-      }, h("span.mdd__chev", null, icon("chevDown")), h("span.menu__tx", null, h("span.menu__t", null, "More models")), h("span.mdd__n", null, String(rest.length)));
-      list.append(more, extra);
+        }, { "aria-expanded": "false" });
+        menu.append(btn, extra);
+      }
+      return h("div.mdd__mods", null, menu);
     }
-    return list;
+    // A long list: a search field over one scrolling list, at most LIMIT rows drawn until "Show all".
+    const input = h("input.mdd__qi", { type: "text", placeholder: "Search models", "aria-label": "Search models", autocomplete: "off", spellcheck: "false", dataset: { stop: "" } }) as HTMLInputElement;
+    const count = h("span.mdd__qn", { "aria-live": "polite" });
+    const clear = h("button.mdd__qx", { type: "button", title: "Clear the search", "aria-label": "Clear the search", hidden: true, onclick: () => { set(""); input.focus(); } }, icon("close"));
+    let all = false;
+    let found: Row[] = [];
+    const paint = () => {
+      const q = input.value.trim();
+      found = search(list, q);
+      const shown = all ? found : found.slice(0, LIMIT);
+      setKids(menu, withHeadings(shown, list.grouped).map((x) => ("heading" in x ? h("div.mdd__h", { role: "presentation" }, x.heading) : item(x))),
+        found.length > shown.length ? more("Show all", found.length - shown.length, () => {
+          all = true;
+          paint();
+          (menu.querySelectorAll('[role="menuitemradio"]')[shown.length] as HTMLElement | undefined)?.focus();
+        }) : null,
+        found.length ? null : h("div.menu__note", null, "No model matches"));
+      count.textContent = q && found.length ? countLabel(found.length) : "";
+      clear.hidden = !input.value;
+      menu.scrollTop = 0;
+    };
+    const set = (q: string) => { input.value = q; all = false; paint(); };
+    input.addEventListener("input", () => { all = false; paint(); });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && input.value.trim() && found[0]) { e.preventDefault(); choose(found[0].m); }
+    });
+    this.query = { input, set };
+    paint();
+    return h("div.mdd__mods.mdd__mods--long", null, h("label.mdd__search", null, icon("search"), input, count, clear), menu);
   }
 
   /**
@@ -317,8 +358,24 @@ export class Pickers {
   }
 
   private keyModel(e: KeyboardEvent): void {
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); this.close(); this.buttons.model.focus(); return; }
     const active = this.focused();
+    const q = this.query;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      // Esc clears a search first, then closes.
+      if (q?.input.value) { q.set(""); q.input.focus(); return; }
+      this.close();
+      this.buttons.model.focus();
+      return;
+    }
+    // Typing anywhere in a searchable dropdown searches ("/" just goes to the field); Space still presses a button.
+    if (q && active !== q.input && e.key.length === 1 && e.key !== " " && !e.ctrlKey && !e.metaKey && !e.altKey && !active?.classList.contains("eff__track")) {
+      e.preventDefault();
+      q.input.focus();
+      if (e.key !== "/") q.set(q.input.value + e.key);
+      return;
+    }
     if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && active?.classList.contains("mdd__agent")) {
       // The agents are one stop: Left and Right move between them, Enter or Space chooses.
       e.preventDefault();

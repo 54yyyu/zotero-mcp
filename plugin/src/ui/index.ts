@@ -272,6 +272,8 @@ class Panel {
     const sess = this.chat.session;
     const cat = this.catalogs.get(b);
     const saved = (k: "model" | "mode" | "effort") => s[k][b] || cat?.[k];
+    // The agent's own default: what this session started on by itself, else what a probe session started on.
+    const defaultModel = (sess?.backend === b ? sess.defaultModel() : undefined) ?? cat?.model;
     return {
       backend: sess?.backend ?? b,
       agents: BACKENDS.map((id) => {
@@ -279,7 +281,7 @@ class Panel {
         return { id, label: BACKEND_LABEL[id], available: st?.available, reason: st?.reason };
       }),
       defaultEffort: this.catalogs.get(sess?.backend ?? b)?.effort,
-      models: sess?.models() ?? cat?.models ?? [], model: sess ? sess.currentModel() : saved("model"),
+      models: sess?.models() ?? cat?.models ?? [], model: sess ? sess.currentModel() : saved("model"), defaultModel,
       efforts: sess?.efforts() ?? cat?.efforts ?? [], effort: sess ? sess.currentEffort() : saved("effort"),
       modes: sess?.modes() ?? cat?.modes ?? [], mode: sess ? sess.currentMode() : saved("mode"),
     };
@@ -307,8 +309,9 @@ class Panel {
     this.onSettings();
   }
 
+  /** A choice from the pickers; the model "" is the agent's own default (the saved choice is cleared). */
   private async pick(kind: "model" | "effort" | "mode", id: string): Promise<void> {
-    try { await this.chat.pick(kind, id); } catch (e) { this.warn(`Couldn't switch the ${kind}: ${errMessage(e)}`); }
+    try { await this.chat.pick(kind, id, kind === "model" && !id ? this.choices().defaultModel : id); } catch (e) { this.warn(`Couldn't switch the ${kind}: ${errMessage(e)}`); }
     this.syncPickers();
   }
 
