@@ -14,6 +14,7 @@ const suites = [
   ["chat", ["--mock-agent", ...welcomed]],
   ["context-economy", ["--mock-agent", ...welcomed]], // the same selection twice is sent once; real block sizes
   ["ui", ["--mock-agent", ...welcomed]],
+  ["thinking", ["--mock-agent", ...welcomed]], // the working line: each state from real events, nothing animating after the turn, its cost in Gecko
   ["ring", ["--mock-agent", ...welcomed]], // the context ring's tooltip and popover in real Gecko: shown, inside the window, light and dark
   ["appearance", ["--mock-agent", ...welcomed]],
   ["prefpane", ["--mock-agent", ...welcomed]], // the Zotero Chat pane in Zotero's Settings: lazy, no agent started, live both ways // glass, accent, a preset and a picture through the real host; persists across a remount

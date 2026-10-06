@@ -258,6 +258,31 @@ async function prompt(id, params) {
     chunk("planned");
     return end();
   }
+  if (text.includes("SCENARIO:states")) { // the working line's states, each held 1.5 s; the permission card waits for the test
+    const hold = () => sleep(1500);
+    const meta = { claudeCode: { toolName: "Bash" } };
+    update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Which audit studies are in the library?" } });
+    await hold();
+    for (const [tc, cmd] of [["s1", 'zotero-cli --json search "hiring audit" --limit 5'], ["s2", "zotero-cli --json read BM2004AB --start-page 7"], ["s3", "python3 tally.py"]]) {
+      update(sid, { sessionUpdate: "tool_call", toolCallId: tc, title: `\`${cmd}\``, kind: "execute", status: "in_progress", rawInput: { command: cmd }, _meta: meta });
+      await hold();
+      update(sid, { sessionUpdate: "tool_call_update", toolCallId: tc, status: "completed", content: [{ type: "content", content: { type: "text", text: "ok" } }] });
+    }
+    const rid = nextRequestId++;
+    const answer = new Promise((resolve) => waiting.set(rid, resolve));
+    send({ id: rid, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "s4", title: "Create a note", kind: "edit", rawInput: { command: "zotero-cli notes create BM2004AB --text hi" } },
+      options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "reject", name: "Reject", kind: "reject_once" }] } });
+    await answer;
+    for (const w of "Callbacks for White-sounding names were about 50% higher. ".split(" ")) { if (cancelled.has(sid)) return end("cancelled"); chunk(w + " "); await sleep(150); }
+    await hold();
+    chunk("Done.");
+    return end();
+  }
+  if (text.includes("SCENARIO:hold")) { // thinking until Stop (at most a minute): the working line's cost is measured meanwhile
+    update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Thinking it over." } });
+    for (let i = 0; i < 600 && !cancelled.has(sid); i++) await sleep(100);
+    return end("cancelled");
+  }
   if (text.includes("SCENARIO:think")) {
     update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm " } });
     update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "ok" } });

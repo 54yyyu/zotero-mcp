@@ -8,6 +8,7 @@ import { CONTEXT_STYLES } from "./styles-context.ts";
 import { WELCOME_STYLES } from "./styles-welcome.ts";
 import { LOOK_STYLES } from "./styles-look.ts";
 import { SKILL_STYLES } from "./styles-skills.ts";
+import { THINK_STYLES } from "./styles-think.ts";
 
 const BASE = `
 :host { display: block; height: 100%; min-width: 0; }
@@ -66,7 +67,6 @@ const BASE = `
 @keyframes zmc-caret { 0%, 55% { opacity: 0.9; } 56%, 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   .zmc *, .zmc *::before, .zmc *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
-  .zmc .pulse, .zmc .thought--active .thought__dot { opacity: 1 !important; box-shadow: 0 0 0 2px color-mix(in srgb, var(--agent) 30%, transparent); }
   .zmc .md--streaming > p:last-child::after { opacity: 0.9 !important; }
 }
 
@@ -108,7 +108,6 @@ const BASE = `
 .zmc .input:hover:not(:disabled) { border-color: var(--ink-faint); }
 .zmc .input:focus { border-color: var(--ink-muted); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 8%, transparent); }
 .zmc textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; line-height: 1.5; }
-.zmc .pulse { display: block; width: 6px; height: 6px; border-radius: 50%; background: var(--agent); animation: zmc-pulse 900ms ease-in-out infinite; }
 .zmc .sk { height: 44px; margin: var(--s2) 0; border-radius: var(--r1); background: var(--paper-sunk); }
 .zmc .seg { display: inline-flex; flex-wrap: wrap; padding: 2px; background: var(--paper-sunk); border: 1px solid var(--rule); border-radius: var(--pill); max-width: 100%; }
 .zmc .seg__opt { height: var(--h-sm); padding: 0 var(--s3); background: transparent; border: 0; border-radius: var(--pill); font-size: var(--fs-2); color: var(--ink-muted); transition: background var(--ease), color var(--ease); }
@@ -369,4 +368,4 @@ const BASE = `
 .zmc .set__saved span:empty { display: none; }
 `;
 
-export const STYLES = BASE + CHAT_STYLES + WELCOME_STYLES + CONTEXT_STYLES + SKILL_STYLES + LOOK_STYLES;
+export const STYLES = BASE + CHAT_STYLES + THINK_STYLES + WELCOME_STYLES + CONTEXT_STYLES + SKILL_STYLES + LOOK_STYLES;

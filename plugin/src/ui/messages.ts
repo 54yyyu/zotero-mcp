@@ -6,15 +6,30 @@ import type { AssistantMessage, Message, NoticeMessage, TranscriptState, UserMes
 import { answerText, textsOf } from "./transcript.ts";
 import { collectSources } from "./markdown.ts";
 import type { CitedSource } from "./markdown.ts";
-import { permSeg, planSeg, stepsSeg, textSeg, thoughtSeg, toSegs } from "./parts.ts";
+import { dots, glint, permSeg, planSeg, stepsSeg, textSeg, thoughtSeg, toSegs } from "./parts.ts";
 import type { Ctx, MsgActions, SegView } from "./parts.ts";
 import { CHIP_ICON, clear, env, flashCheck, fmtTokens, h, icon, setKids } from "./dom.ts";
 import { noteLine, trySave } from "./notes.ts";
 import type { NoteState } from "./notes.ts";
+import { Pacer, thinkOf } from "./think.ts";
+import type { Think } from "./think.ts";
 
 export type { MsgActions };
 
 interface PatchFlags { live: boolean; canRetry: boolean; showThinking: boolean; expandTools: boolean; showUsage: boolean }
+
+// ───────────────────────────── the working line ─────────────────────────────
+
+/** The one working line (the Feed has one): the dot matrix, whose pattern is `data-s`, and the glinting label
+ * (styles-think.ts). It sits under the running answer, or under the last message while the agent starts. */
+class WorkLine {
+  readonly el: HTMLElement;
+  private t = h("span.working__t.glint");
+  constructor() { this.el = h("div.working", { role: "status" }, dots(), this.t); }
+  show(t: Think): void { this.el.dataset.s = t.state; glint(this.t, t.label); }
+}
+
+const CLOCK = { now: () => Date.now(), set: (fn: () => void, ms: number) => env.win.setTimeout(fn, ms), clear: (t: unknown) => env.win.clearTimeout(t as number) };
 
 // ───────────────────────────── assistant message ─────────────────────────────
 
@@ -27,7 +42,6 @@ const STOP_NOTE: Record<string, string> = {
 class AssistantView {
   readonly el: HTMLElement;
   private parts = h("div.parts");
-  private working = h("div.working", { hidden: true, role: "status" }, h("span.pulse"), h("span.working__t", null, "Thinking"));
   private foot = h("div.foot", { hidden: true });
   private segs: SegView[] = [];
   private sourcesOpen = false;
@@ -38,13 +52,16 @@ class AssistantView {
   private msg!: AssistantMessage;
   private flags: PatchFlags = { live: false, canRetry: false, showThinking: true, expandTools: false, showUsage: false };
 
+  /** A thought is streaming and shown: its row carries the indicator (parts.ts thoughtSeg), so the working line hides. */
+  get thinkingInRow(): boolean { return this.flags.live && this.flags.showThinking && this.msg.blocks.at(-1)?.type === "thought"; }
+
   private actions: MsgActions;
   private announce: (s: string) => void;
 
   constructor(actions: MsgActions, announce: (s: string) => void) {
     this.actions = actions;
     this.announce = announce;
-    this.el = h("div.msg.msg--assistant", { role: "article" }, this.parts, this.working, this.foot);
+    this.el = h("div.msg.msg--assistant", { role: "article" }, this.parts, this.foot);
   }
 
   patch(msg: AssistantMessage, flags: PatchFlags): void {
@@ -54,9 +71,8 @@ class AssistantView {
     if (sameMsg && sameOpts && f.live === flags.live && f.canRetry === flags.canRetry) return;
     this.msg = msg; this.flags = flags;
     this.el.dataset.state = msg.done ? msg.stop ?? "end_turn" : "running";
-    const ctx: Ctx = { msg, live: !msg.done, expandTools: flags.expandTools, actions: this.actions, announce: this.announce };
+    const ctx: Ctx = { msg, live: flags.live && !msg.done, expandTools: flags.expandTools, actions: this.actions, announce: this.announce };
     if (!sameMsg || !sameOpts) this.patchParts(msg, ctx);
-    this.paintWorking(msg);
     this.paintFoot(msg, flags);
   }
 
@@ -78,16 +94,8 @@ class AssistantView {
     for (const old of this.segs.splice(segs.length)) old.el.remove();
   }
 
-  private paintWorking(msg: AssistantMessage): void {
-    const last = msg.blocks[msg.blocks.length - 1];
-    const waiting = msg.blocks.some((b) => b.type === "permission" && b.resolved === undefined);
-    const between = !last || (last.type === "tool" && last.status !== "running" && last.status !== "pending") || last.type === "plan"
-      || (last.type === "permission" && last.resolved !== undefined) || (last.type === "thought" && !this.flags.showThinking);
-    const show = !msg.done && !waiting && between;
-    this.working.hidden = !show;
-    const t = this.working.querySelector(".working__t");
-    if (t && show) t.textContent = last ? "Working" : "Thinking";
-  }
+  /** The Feed's working line goes under this answer, above its foot. */
+  host(line: HTMLElement): void { if (line.parentNode !== this.el) this.el.insertBefore(line, this.foot); }
 
   private paintFoot(msg: AssistantMessage, f: PatchFlags): void {
     if (!msg.done) { this.foot.hidden = true; return; }
@@ -171,7 +179,9 @@ export class Feed {
   readonly el: HTMLElement;
   private scroller: HTMLElement;
   private inner: HTMLElement;
-  private pendingEl = h("div.working.working--pending", { hidden: true, role: "status" }, h("span.pulse"), h("span.working__t"));
+  private line = new WorkLine();
+  private pace = new Pacer((t) => this.line.show(t), CLOCK);
+  private pending: string | null = null;
   private jump: HTMLElement;
   private live: HTMLElement;
   private views = new Map<string, { msg: Message; el: HTMLElement; asst?: AssistantView }>();
@@ -186,7 +196,7 @@ export class Feed {
 
   constructor(actions: MsgActions) {
     this.actions = actions;
-    this.inner = h("div.feed__inner", null, this.pendingEl);
+    this.inner = h("div.feed__inner");
     this.scroller = h("div.feed", { tabindex: "0", role: "log", "aria-label": "Conversation", "aria-live": "off" }, this.inner);
     this.jump = h("button.jump", { type: "button", hidden: true, "aria-label": "Jump to the latest message", title: "Jump to the latest", onclick: () => this.toBottom(true) }, icon("down"));
     this.live = h("div.sr", { role: "status", "aria-live": "polite" });
@@ -225,12 +235,33 @@ export class Feed {
 
   announce(s: string): void { this.live.textContent = s; }
 
-  /** A line under the last message while the agent is starting ("Starting Claude Code"); null hides it. */
+  /** What the working line says before the turn runs ("Starting Claude Code", "Sending"); null: nothing is starting. */
   setPending(label: string | null): void {
-    this.pendingEl.hidden = label === null;
-    const t = this.pendingEl.querySelector(".working__t");
-    if (t && label !== null) t.textContent = label;
+    this.pending = label;
+    this.syncLine();
     if (label !== null && this.stick) this.toBottom(false);
+  }
+
+  /** The one indicator: under the running answer (hidden while that answer's thought row carries it), else under the last
+   * message while something starts, else nowhere (no timer, no animation). */
+  private syncLine(): void {
+    const el = this.line.el;
+    const run = this.lastState?.running ? this.views.get(this.lastState.running) : undefined;
+    if (run?.asst && run.msg.role === "assistant" && !run.msg.done) {
+      const started = el.classList.contains("working--pending");
+      run.asst.host(el);
+      el.classList.remove("working--pending");
+      el.hidden = run.asst.thinkingInRow;
+      if (started) this.pace.jump(thinkOf(run.msg.blocks)); else this.pace.push(thinkOf(run.msg.blocks));
+    } else if (this.pending !== null) {
+      if (el.parentNode !== this.inner || el.nextSibling) this.inner.appendChild(el);
+      el.classList.add("working--pending");
+      el.hidden = false;
+      this.pace.push({ state: "thinking", label: this.pending });
+    } else {
+      el.remove();
+      this.pace.drop();
+    }
   }
 
   toBottom(smooth: boolean): void {
@@ -257,7 +288,7 @@ export class Feed {
       if (!v) {
         v = this.create(m);
         this.views.set(m.id, v);
-        this.inner.insertBefore(v.el, this.pendingEl);
+        this.inner.insertBefore(v.el, this.line.el.parentNode === this.inner ? this.line.el : null);
       }
       if (v.asst && m.role === "assistant") v.asst.patch(m, { live: state.running === m.id, canRetry: canRetry && i === lastAsst && m.done, ...this.opts });
       else if (v.msg !== m) {
@@ -267,6 +298,7 @@ export class Feed {
       }
       v.msg = m;
     });
+    this.syncLine();
     this.syncEmpty();
     if (this.stick) this.toBottom(false);
   }
@@ -281,7 +313,9 @@ export class Feed {
 
   private reset(): void {
     this.views.clear();
-    for (const k of [...this.inner.children]) if (k !== this.empty && k !== this.pendingEl) k.remove();
+    for (const k of [...this.inner.children]) if (k !== this.empty) k.remove();
+    this.line.el.remove();
+    this.pace.drop();
     this.stick = true;
   }
 

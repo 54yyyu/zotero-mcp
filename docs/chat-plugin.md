@@ -100,6 +100,10 @@ plain Markdown (a name, a one-line description, then the steps), see [skills/](s
 Skills tell your agent what to do, and it acts with your permissions: only add skills you trust or wrote. The panel never
 downloads one.
 
+## While the agent works
+
+One small indicator says what the agent is doing: Thinking (in the thinking row, which you can open to read along), Searching your library (or the web), Reading page 7, Working, Writing the answer, or Waiting for your OK when a permission card needs you. A grid of dots in your accent colour moves in a different pattern for each. The line changes at most every 0.4 s, so it never flickers, and it is gone when the turn ends. With your system's "reduce motion" setting the dots stand still.
+
 ## Diagrams
 
 Ask the agent to draw something (a pipeline, a 2x2, a causal graph) and it answers with a figure in the chat. The agent writes plain SVG; the panel draws it in your theme's colours, so it follows light and dark mode and your accent colour. Hover a figure for its toolbar: show the SVG source, copy it as an image, or save it as PNG (on white, 1400 px wide) or SVG. Anything in a drawing that is not a shape or text, such as scripts, links or external images, is removed before it is shown. **Add to a note** saves the figure as a Zotero note on the item you are looking at, the drawing embedded as an image.

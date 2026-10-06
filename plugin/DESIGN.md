@@ -169,7 +169,7 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
   Why the panel once showed pi on "Kimi K2.6": that is what pi itself runs. Its settings name `defaultModel` `z-ai/glm-5.2:free`,
   which pi 0.86.1's OpenRouter registry does not have (only `z-ai/glm-5.2` and `:batch`), so pi's `findInitialModel` falls back to
   its built-in per-provider default (`openrouter: moonshotai/kimi-k2.6`) and pi-acp reports that from pi's `get_state`.
-- Transcript: user bubble with chips; "Thinking" row; assistant Markdown streamed; tool steps as one collapsed line each
+- Transcript: user bubble with chips; the working line (below); assistant Markdown streamed; tool steps as one collapsed line each
   (`Searched library · "…"`, expandable to input/output); permission cards (Allow once / Always / Deny); plan list; errors as
   notices with a fix button; citation chips for `zotero:` links; "N sources" fold listing every cited item once;
   copy / save as note / retry per answer, and "Explain better" (asks again, intuition first) on the last one; auto-scroll
@@ -181,6 +181,23 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
   `$$`, `\[`, `\(`, `$` or formatting tag, hides a ```` ```math ```` fence until it closes and a table's header row until its
   delimiter row arrives. Finished blocks keep their DOM nodes (a test checks it).
 - Diagrams: a ```` ```svg ```` block is a figure (below).
+- The indicator (`ui/think.ts` pure, `parts.ts dots/glint`, `messages.ts WorkLine`, `styles-think.ts`): **one** per turn, a
+  3x3 dot matrix in `--agent` (mono, or the accent) and a label with a glint running across it. While a shown thought streams
+  it sits in that thought row (in place of the old pulse dot; the row stays expandable and settles to a quiet "Thought");
+  otherwise the Feed's one working line carries it, under the running answer, or under the last message as "Starting
+  Claude Code" / "Sending" (the same element). `thinkOf(blocks)`: an open permission card, waiting ("Waiting for your OK":
+  dots blink together, no glint); else the newest block: none or a thought, thinking (diagonal wave); text, writing (ripple
+  from the centre); tool steps, the most recent running one by stepTitle's summary, never the raw command: a zotero-cli
+  search, kind `search`, `fetch` or a web tool, searching ("Searching your library", "Searching the web", "Searching files";
+  one light round the ring), a read ("Reading page 7", "Reading pages 7–8", "Reading the outline", "Reading SKILL.md"; columns
+  left to right), anything else working ("Working", "Editing summary.md"; spiral); all steps done, thinking. `Pacer`: the
+  label changes at most every 400 ms, only to the newest state (one timer). Nothing exists outside a live turn, so finished
+  messages and history have no indicator, and running step rows and the "Drawing…" placeholder keep a still mark. Only
+  opacity and transform are animated (`test/ui/think.test.ts` lints the keyframes); the glint is each letter's opacity,
+  staggered. Measured: in Zotero any animation costs a floor of about 15 ms of main-thread time a second (the refresh driver
+  ticks at the display's 120 Hz) plus WebRender recompositing the window; a background-position shimmer, or a sliding
+  window with a mask, cost 130-300 ms a second, so neither shipped. Chromium (CDP, no script on the page): 0.01-0.02 ms of
+  main-thread work a frame, idle or running. Reduced motion: still dots at 60%, a plain muted label. No setting: one look.
 
 ### Diagrams (ui/diagram-svg.ts pure, ui/diagram.ts DOM)
 
@@ -218,7 +235,7 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
   cards with a bright edge over the backdrop, and a blur (`backdrop-filter`) only on the composer, menus and jump pill, so a long
   chat scrolls as cheaply as without it. The backdrop is `.zmc::before`: nothing for Plain (`background: "none"`, the paper), the
   three faint glows for Glow, a gradient preset, or the picture (with its veil on `::after`). Mono (accent `""`) is our ink,
-  #16181d / #e6e8eb: the send button, working dot, switches and selections are black and white, and links keep the calm link
+  #16181d / #e6e8eb: the send button, working dots, switches and selections are black and white, and links keep the calm link
   blue. A chosen accent (Red is a swatch like the others) sets `.zmc[data-accent="custom"]`; only then do links and the glow
   follow it (the diagrams keep their own blue otherwise). Its text-safe `--accent-ink` (4.5:1 on the paper and on a dark glass
   card) and the text on the fill are computed by WCAG contrast. `--agent` and `--focus` follow the accent; the logo's Z keeps

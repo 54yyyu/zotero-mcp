@@ -70,15 +70,32 @@ export function textSeg(ctx: Ctx): SegView {
   return { kind: "text", el: md.el, update(s, c) { if (s.kind === "text") md.set(s.block.text, streaming(c, s.block)); } };
 }
 
+// ───────────────────────────── the indicator ─────────────────────────────
+// One per running turn (styles-think.ts): the dot matrix and the glinting label, on the working line (messages.ts), or
+// in the thought row while a thought streams, never both.
+
+/** The 3x3 dot matrix; its pattern is the `data-s` of the nearest `.working` (the thought row's is the default wave). */
+export const dots = (): HTMLElement => h("span.dm", { "aria-hidden": "true" }, Array.from({ length: 9 }, () => h("i")));
+
+/** `el` says `text`, one span per letter, so a glint can run across it by opacity alone (the whole label within 1.6 s). */
+export function glint(el: HTMLElement, text: string): void {
+  if (el.dataset.t === text) return;
+  el.dataset.t = text;
+  const chars = [...text];
+  setKids(el, chars.map((c, i) => h("span", { style: `--i:${i}` }, c)));
+  el.style.setProperty("--st", `${Math.min(45, Math.round(1600 / Math.max(1, chars.length)))}ms`);
+}
+
 // ───────────────────────────── thinking ─────────────────────────────
 
 export function thoughtSeg(): SegView {
   let open = false;
   let block: Of<"thought"> | null = null;
-  const label = h("span.thought__t");
+  const mark = h("span.thought__mark");
+  const label = h("span.thought__t.glint");
   const body = h("div.thought__body", { hidden: true });
   const head = h("button.thought__head", { type: "button", "aria-expanded": "false", onclick: () => { open = !open; sync(); } },
-    h("span.thought__dot"), label, icon("chevDown", "thought__chev"));
+    mark, label, icon("chevDown", "thought__chev"));
   const el = h("div.thought", null, head, body);
   let active = false;
   function sync() {
@@ -86,7 +103,9 @@ export function thoughtSeg(): SegView {
     body.hidden = !open;
     el.classList.toggle("thought--open", open);
     if (open && block) body.textContent = block.text;
-    label.textContent = active ? "Thinking" : "Thought";
+    glint(label, active ? "Thinking" : "Thought");
+    if (active && !mark.firstChild) mark.appendChild(dots());
+    if (!active) mark.replaceChildren();
     el.classList.toggle("thought--active", active);
   }
   return {
@@ -108,7 +127,8 @@ function statusMark(status: string, stopped: boolean): HTMLElement {
   if (stopped && status === "failed") return mark("", "Stopped", icon("stop"));
   if (status === "done") return mark("", "Done", icon("check"));
   if (status === "failed") return mark(".step__st--failed", "Failed", icon("close"));
-  return mark("", status === "pending" ? "Waiting" : "Running", h("span.pulse"));
+  // still: the turn has one moving indicator (dots/glint above)
+  return mark("", status === "pending" ? "Waiting" : "Running", h("span.step__run"));
 }
 
 function detailBox(label: string, value: unknown): HTMLElement {

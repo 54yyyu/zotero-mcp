@@ -20,9 +20,6 @@ export const CHAT_STYLES = `
 .zmc .chip--sm { gap: var(--s1); padding: 0 var(--s2); background: var(--paper); transition: color var(--ease), border-color var(--ease); }
 .zmc .chip--sm:hover { color: var(--ink); border-color: var(--rule-strong); }
 .zmc .parts { display: flex; flex-direction: column; gap: var(--s3); } .zmc .parts:empty { display: none; }
-.zmc .working { display: flex; align-items: center; gap: var(--s2); height: var(--h-sm); color: var(--ink-muted); }
-.zmc .parts:not(:empty) + .working { margin-top: var(--s2); }
-.zmc .working--pending { margin-top: calc(-1 * var(--s2)); }
 .zmc .foot { margin-top: var(--s1); }
 .zmc .foot__row { display: flex; align-items: center; gap: var(--s2); min-height: var(--h-sm); }
 .zmc .foot__fill { flex: 1; }
@@ -60,8 +57,6 @@ export const CHAT_STYLES = `
 /* ---------- thinking, steps, plan, permission ---------- */
 .zmc .thought__head { display: inline-flex; align-items: center; gap: var(--s2); height: var(--h-sm); padding: 0 var(--s2) 0 0; border: 0; border-radius: var(--pill); background: none; color: var(--ink-muted); transition: color var(--ease); }
 .zmc .thought__head:hover { color: var(--ink); }
-.zmc .thought__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-faint); }
-.zmc .thought--active .thought__dot { background: var(--agent); animation: zmc-pulse 900ms ease-in-out infinite; }
 .zmc .thought__chev { width: 12px; height: 12px; transition: transform 160ms ease; } .zmc .thought--open .thought__chev { transform: rotate(180deg); }
 .zmc .thought__body { margin: var(--s1) 0 var(--s1) 2px; padding-left: var(--s3); border-left: 2px solid var(--rule); color: var(--ink-muted); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 256px; overflow: auto; }
 .zmc .steps { border-radius: var(--r2); background: color-mix(in srgb, var(--ink) 4.5%, transparent); overflow: hidden; }
@@ -81,6 +76,7 @@ export const CHAT_STYLES = `
 .zmc .step--open .step__title { white-space: normal; overflow-wrap: anywhere; padding: var(--s2) 0; }
 .zmc .step__st { flex: none; display: grid; place-items: center; width: 16px; height: 16px; color: var(--ink-faint); }
 .zmc .step__st--failed { color: var(--danger); }
+.zmc .step__run { width: 7px; height: 7px; border: 1.5px solid currentColor; border-radius: 50%; }
 .zmc .step__chev { width: 12px; height: 12px; color: var(--ink-faint); transition: transform 160ms ease; } .zmc .step--open .step__chev { transform: rotate(180deg); }
 .zmc .step__detail { display: grid; gap: var(--s2); padding: 0 var(--s3) var(--s3) 34px; }
 .zmc .sd__head { display: flex; gap: var(--s2); margin-bottom: var(--s1); } .zmc .sd__trim { font-size: var(--fs-1); color: var(--ink-faint); }

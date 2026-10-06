@@ -53,7 +53,7 @@ export function appearanceCard(host: SettingsHost, look: Look, save: (patch: Par
       row("Accent colour",
         swatches("Accent colour", "sw", ACCENTS.map((c) => ({ id: c.id, label: c.name, style: `--cl:${c.light};--cd:${c.dark}`, mod: c.id ? undefined : "mono" })), custom ? "custom" : a.accent, (id) => void save({ accent: id }),
           h(`label.sw.sw--custom${custom ? ".sw--on" : ""}`, null, color)),
-        "The send button, selections, the working dot and, once you pick a colour, links. Mono is black and white."),
+        "The send button, selections, the working dots and, once you pick a colour, links. Mono is black and white."),
       custom ? row("Hex", hex) : null,
       row("Background",
         [swatches("Background", "bgsw", tiles, a.background, (id) => void save({ background: id })),

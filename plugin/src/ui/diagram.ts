@@ -53,7 +53,7 @@ const CSS = `
 .zmc .dg__sep { width: 1px; height: 14px; margin: 0 2px; background: var(--rule); }
 .zmc .dg__src { margin-top: var(--s3); }
 .zmc .dg--pending { display: flex; align-items: center; justify-content: center; gap: var(--s2); min-height: 96px; border-style: dashed; background: none; color: var(--ink-faint); font-size: var(--fs-2); }
-.zmc .dg--pending::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: zmc-pulse 1.4s ease-in-out infinite; }
+.zmc .dg--pending::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; } /* still: the working line is the turn's one moving indicator */
 `;
 
 const styled = new WeakSet<Node>();
