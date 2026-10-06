@@ -1,5 +1,9 @@
 <!-- mcp-name: io.github.54yyyu/zotero-mcp -->
 
+> **This is a fork of [54yyyu/zotero-mcp](https://github.com/54yyyu/zotero-mcp)**, extended to better support academic research workflows — including faster startup diagnostics, broader embedding provider support, and upcoming features for working with group libraries and collections in collaborative research settings. The original README follows below.
+
+---
+
 # Zotero MCP: Chat with your Research Library—Local or Web—in Claude, ChatGPT, and more.
 
 <p align="center">
