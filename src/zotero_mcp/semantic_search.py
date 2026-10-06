@@ -621,6 +621,39 @@ def _drop_missing_documents(results: dict) -> int:
     return dropped
 
 
+def _passage_body(document: str, meta: dict[str, Any] | None) -> str:
+    """The passage itself, without the study-context header it was embedded with.
+
+    Passages after the first are stored as ``"<header>\n\n<passage>"`` so the
+    embedding (and a re-ranker) knows which study they come from. Shown to a
+    reader, that header is noise -- and worse, the snippet picker gravitates
+    to it because it repeats the title. The passage keeps its own length in
+    ``char_end - char_start``, which locates the boundary without storing the
+    header twice. Anything that does not match that shape is returned as is.
+    """
+    if not document or not isinstance(meta, dict):
+        return document
+    if not meta.get("chunk_index"):
+        return document
+    try:
+        span = int(meta["char_end"]) - int(meta["char_start"])
+    except (KeyError, TypeError, ValueError):
+        return document
+    if span <= 0 or span >= len(document):
+        return document
+    title = str(meta.get("title") or "").strip()
+    pos = document.find("\n\n")
+    while pos != -1:
+        body = document[pos + 2:]
+        if len(body) <= span:
+            head = document[:pos]
+            if not title or head.startswith(title[:40]):
+                return body
+            return document
+        pos = document.find("\n\n", pos + 2)
+    return document
+
+
 class CrossEncoderReranker:
     """Optional cross-encoder re-ranker for semantic search results."""
 
@@ -1351,6 +1384,36 @@ class ZoteroSemanticSearch:
                 stats["migrated"] += len(update_ids)
 
         return stats
+
+    #: Characters of abstract carried into every passage header. Enough to
+    #: identify the study and its design; short enough that the header cannot
+    #: crowd out the passage it is meant to contextualise.
+    CHUNK_CONTEXT_ABSTRACT_CHARS = 500
+
+    def _chunk_context_header(self, item: dict[str, Any]) -> str:
+        """A compact "which study is this" header for passages after the first.
+
+        Returns title, year, creators and the opening of the abstract — the
+        minimum needed for a cross-encoder or embedding to place a mid-document
+        passage in its paper. Empty string when the item has no title (e.g.
+        annotations), so callers can skip prepending entirely.
+        """
+        data = item.get("data", {})
+        if data.get("itemType") == "annotation":
+            return ""
+        title = (data.get("title") or "").strip()
+        if not title:
+            return ""
+
+        parts = [title]
+        if year := (data.get("date") or "")[:4]:
+            if year.isdigit():
+                parts[0] = f"{title} ({year})"
+        if creators := format_creators(data.get("creators", [])):
+            parts.append(creators)
+        if abstract := (data.get("abstractNote") or "").strip():
+            parts.append(abstract[: self.CHUNK_CONTEXT_ABSTRACT_CHARS])
+        return "\n".join(parts)
 
     def _create_document_text(self, item: dict[str, Any]) -> str:
         """
@@ -3247,6 +3310,19 @@ class ZoteroSemanticSearch:
                         stats["skipped"] += 1
                         continue
                     n_chunks = len(passages)
+                    # Passage 0 already opens with the item's structured text;
+                    # every later passage is a bare window of the PDF with no
+                    # indication of which study it belongs to. Prepending a
+                    # compact header restores that context for the embedding,
+                    # so a sentence from page 14 is scored as part of *this*
+                    # paper rather than as an anonymous fragment. Opt-in:
+                    # it changes what every passage embeds, so turning it on
+                    # (or off) only applies fully after a rebuild.
+                    ctx_header = (
+                        self._chunk_context_header(item)
+                        if self._chunking_config.get("context_header", False)
+                        else ""
+                    )
                     for ci, (chunk_text, c0, c1) in enumerate(passages):
                         cmeta = dict(metadata)
                         cmeta["parent_item_key"] = item_key
@@ -3257,7 +3333,11 @@ class ZoteroSemanticSearch:
                         page = _page_for_offset(doc_text, c0)
                         if page is not None:
                             cmeta["page"] = page
-                        documents.append(self.chroma_client.truncate_text(chunk_text))
+                        embed_text = (
+                            f"{ctx_header}\n\n{chunk_text}"
+                            if ci and ctx_header else chunk_text
+                        )
+                        documents.append(self.chroma_client.truncate_text(embed_text))
                         metadatas.append(cmeta)
                         ids.append(f"{item_key}#{ci}")
                 else:
@@ -4168,6 +4248,7 @@ class ZoteroSemanticSearch:
             distance = distances[i] if i < len(distances) else None
             document = documents[i] if i < len(documents) else ""
             meta = metadatas[i] if i < len(metadatas) else {}
+            document = _passage_body(document, meta)
 
             passage, passage_offset = best_snippet(query, document)
 
