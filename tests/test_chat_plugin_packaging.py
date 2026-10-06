@@ -133,3 +133,30 @@ class TestUpdateManifest:
             assert u["update_link"].endswith(f"/{self.addon['slug']}.xpi")
             assert u["update_hash"].startswith("sha256:")
             assert u["applications"]["zotero"]["strict_min_version"] == self.addon["minZotero"]
+
+
+class TestToolSheet:
+    """The chat plugin's TOOL_SHEET (plugin/src/agent/brief.ts) names commands the agent runs without reading the
+    skill first: each one must parse with the CLI's own parser, so a renamed command or flag fails here, not in a chat."""
+
+    def _commands(self) -> list[str]:
+        import re
+
+        src = (REPO / "plugin" / "src" / "agent" / "brief.ts").read_text()
+        sheet = src[src.index("export const TOOL_SHEET = ["):]
+        sheet = sheet[: sheet.index('].join("\\n")')]
+        return [c.replace('\\"', '"').replace("\\\\", "\\") for c in re.findall(r"`(zotero-cli [^`]+)`", sheet)]
+
+    def test_every_command_parses(self):
+        import shlex
+
+        commands = self._commands()
+        assert len(commands) >= 15, commands
+        parser = build_parser()
+        for command in commands:
+            argv = shlex.split(command)[1:]
+            try:
+                args = parser.parse_args(argv)
+            except SystemExit as exc:  # argparse reports a bad command by exiting
+                pytest.fail(f"{command!r} does not parse ({exc})")
+            assert args.command in _CMD_MAP, command

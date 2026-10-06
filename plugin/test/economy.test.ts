@@ -66,8 +66,9 @@ describe("token estimate", () => {
   });
 });
 
+const deps = (host: FakeHost) => ({ host, onChange() {}, blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {}, expand: async (t: string) => t });
+
 describe("a chat sends unchanged context once", () => {
-  const deps = (host: FakeHost) => ({ host, onChange() {}, blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {}, expand: async (t: string) => t });
 
   it("10 turns with a persistent area image and selection: the image goes once, the saving is measured", async (t) => {
     const host = new FakeHost({ speed: 0, noHistory: true });
@@ -107,6 +108,39 @@ describe("a chat sends unchanged context once", () => {
     await chat.closeSession(); // the bridge died: the next send starts (or resumes) a session
     await say("four");
     assert.deepEqual(host.sim.prompts.map((p) => p.images?.length ?? 0), [1, 0, 1, 1]);
+  });
+});
+
+describe("the open paper's chips (zotero/paper.ts)", () => {
+  const meta = (abstract: string): ContextChip => ({ id: "paper:ITEM1", kind: "paper", label: "Bell 2017 metadata", auto: true, pinned: false, ref: { libraryID: 1, itemKey: "ITEM1" }, text: `About item ITEM1: Bell · 2017\nAbstract: ${abstract}` });
+  const file: ContextChip = { id: "fulltext:ATT1", kind: "paper", label: "Bell 2017 full text", auto: true, pinned: false, ref: { libraryID: 1, itemKey: "ITEM1", attachmentKey: "ATT1" }, text: "Full text is at /p/ATT1-bell-2017.txt (4 pages, page markers like [p.7]); read it with grep/sed or zotero-cli read for specific pages." };
+
+  it("go once per session, a file that was late goes with the next turn, changed metadata goes again, and none is ever a reminder line", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const chat = new Chat(deps(host));
+    const answers: ContextChip[][] = [[meta("A.")], [meta("A."), file], [meta("A."), file], [meta("B."), file]];
+    let started = 0;
+    host.paperContext = async (_chips, ready) => { await ready; started++; return answers[started - 1]!; };
+    for (let i = 0; i < 4; i++) { host.sim.nextAnswer = "ok"; await chat.send(`q${i}`, [reader(2)]); }
+    const p = host.sim.prompts.map((x) => x.text);
+    assert.deepEqual(p.map((t) => [t.includes("About item ITEM1"), t.includes("Full text is at")]), [[true, false], [false, true], [false, false], [true, false]]);
+    assert.ok(p.every((t) => !/Still open, unchanged: [^\n]*(metadata|full text)/.test(t)), "a paper chip sent before is not named again: " + p[2]);
+    assert.match(sentLine(chat.lastContext), /^Bell 2017 metadata in full; reader p\.3 and Bell 2017 full text named only/);
+  });
+
+  it("are asked for with the session's start, and a failure there costs nothing but them", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const chat = new Chat(deps(host));
+    let sessionUp = false;
+    host.paperContext = async (_chips, ready) => { assert.equal(sessionUp, false, "asked before the session is up"); await ready; sessionUp = true; return []; };
+    host.sim.nextAnswer = "ok";
+    await chat.send("q", [reader(2)]);
+    assert.ok(sessionUp && host.sim.prompts.length === 1);
+    host.paperContext = async () => { throw new Error("no paper"); };
+    host.sim.nextAnswer = "ok";
+    await chat.send("q2", [reader(3)]);
+    assert.equal(host.sim.prompts.length, 2, "the message still goes");
+    assert.match(host.sim.prompts[1]!.text, /- reader: Bell 2017/);
   });
 });
 

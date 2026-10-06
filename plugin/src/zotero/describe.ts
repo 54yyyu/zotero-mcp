@@ -43,6 +43,9 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
       case "annotation":
         focus.push(`- ${c.label.split(" · ")[0]} annotation ${c.ref.annotationKey}${page(c.ref) ? ` (${page(c.ref)})` : ""}: ${quote(c.text ?? "")}`);
         break;
+      case "paper": // metadata, or the full text's file: already worded (paper.ts)
+        if (c.text) lines.push(c.text);
+        break;
       case "collection": {
         const col = c.ref.collectionKey ? Zotero.Collections.getByLibraryAndKey(c.ref.libraryID, c.ref.collectionKey) : null;
         lines.push(`Collection "${col?.name ?? c.label}" · collection ${c.ref.collectionKey}${libLabel(c.ref)}`);

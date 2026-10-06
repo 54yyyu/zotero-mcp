@@ -25,7 +25,8 @@ export interface ZoteroRef {
 /** A small card of context attached to the next message. */
 export interface ContextChip {
   id: string;
-  kind: "item" | "reader" | "selection" | "area" | "annotation" | "collection" | "note";
+  /** `paper`: for the agent only, never shown (zotero/paper.ts): a paper's metadata, or where its full text's file is. */
+  kind: "item" | "reader" | "selection" | "area" | "annotation" | "collection" | "note" | "paper";
   /** What the chip says: "Bell 2017", "Text Selection", "Selected Area · p.19". */
   label: string;
   /** Added by the panel because the user's focus moved there; false = the user added it. */
@@ -370,6 +371,11 @@ export interface PanelHost {
   dropChips(data: DataTransfer): Promise<ContextChip[]>;
   /** Jump to a Zotero URI (`zotero://open-pdf/...`, `zotero://select/...`), or to a ref. */
   open(target: string | ZoteroRef): Promise<void>;
+  /**
+   * What the agent gets beside the user's chips, never shown: the focused paper's metadata at once, and its full text's
+   * file (extracted in the background) if that is ready within 1.5 s of `ready` (the session being up). Never rejects.
+   */
+  paperContext(chips: ContextChip[], ready: Promise<unknown>): Promise<ContextChip[]>;
   /** Turn the chips into the text the agent reads (item keys, page, selection) plus images. */
   describeContext(chips: ContextChip[]): { text: string; images: { mime: string; data: string }[] };
 

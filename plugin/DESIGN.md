@@ -92,7 +92,8 @@ Permission requests (`session/request_permission`) become `permission` events; t
 
 ## What the agent is told (agent/brief.ts, appended to the system prompt)
 
-Short. It states: you are in a Zotero side panel; use `zotero-cli` (the skill is in the workspace) for the library;
+Short. It states: you are in a Zotero side panel; use `zotero-cli` for the library (its common commands are in the tool sheet
+below; read the skill only for one not listed);
 the user's current focus arrives in each message as a `<zotero-context>` block; **cite with real Zotero links**
 `[Pager et al. 2009, p.8](zotero://open-pdf/library/items/ATTKEY?page=8)` (groups: `zotero://open-pdf/groups/<id>/items/KEY?page=8`;
 items without a PDF: `zotero://select/library/items/KEY`). The panel turns those links into citation chips and a click
@@ -101,8 +102,16 @@ copied verbatim, URL-encoded) makes a click also flash that passage for 2 s: `zo
 (letters and digits only, so spacing, hyphenation, ligatures and quote styles never decide; then its first or last 8 words;
 then the pages either side) and the reader draws it; not found is a plain page jump. Zotero's own handler ignores the param.
 
-The brief also sets reading economy: outline and abstract first, `zotero-cli read KEY --find "phrase"` to locate a passage
-(matching pages with short snippets, never whole pages), then only the pages needed, never a page already read in this chat.
+The brief also sets reading economy: the context already has the paper's metadata and abstract and, once extracted, a
+full-text file to grep (print only the pages needed, never the whole file); without one, `zotero-cli read KEY --find "phrase"`
+to locate a passage (matching pages with short snippets), then only the pages needed; never a page already read in this chat.
+
+`TOOL_SHEET` (~410 tokens, sent once beside the drawing and formatting guides) lists the commands an answer about a paper
+uses (search, metadata, outline, read pages and `--find`, page images, annotations list/create, notes create/update, open,
+collections and tags, add by DOI), how the full-text file marks pages and how to print a page range from it, and "run
+independent commands in the same step". It replaced "read its skill here first", which cost every first answer a round
+trip (`cat SKILL.md`). `tests/test_chat_plugin_packaging.py` parses every command in it with the CLI's own argparse tree,
+so a renamed command or flag fails a test, not a chat.
 
 **The paper is never pasted.** Each message carries only a short `<zotero-context>` block; the agent reads pages itself, and
 its own conversation (a persistent ACP session, prompt-cached by the provider) keeps what it read. The block is a **delta**
@@ -124,6 +133,41 @@ useful." (`zotero/context.ts indexLine`, counted once per attachment and rebuilt
 costs a map lookup; no line when there are none). It is part of the reader chip, so it goes again only when the counts or
 the page change. The brief says the user's own highlights and notes show what matters to them; the agent decides whether
 to read them.
+
+### The open paper, ahead of time (zotero/paper.ts)
+
+What the agent used to fetch step by step before its first answer about the open paper is ready when the message goes:
+
+- **Metadata in the block.** For the reader's paper, or up to 3 attached or selected items: "About item K: authors (8, then
+  "and N more") · year · venue · arXiv id · DOI · pages", tags (the user's first, 20 at most), collections, and the abstract
+  (1,500 characters at most), read in-process from Zotero, no CLI. It is a chip of kind `paper` added by `Chat.send`
+  (`host.paperContext`), never shown, so the delta rules apply: once per paper per session, again when the metadata
+  changes; a repeat is not even named (the reader or item line names the paper). The annotation index line rides on the
+  reader chip as before.
+- **Full text on disk, not in context.** Focus in the composer (`zotero/panel.ts`, a `focusin` on the shadow root; opening
+  the panel focuses it, so in practice when the panel opens on a PDF or the user clicks into the composer) or, at the
+  latest, the send starts `Zotero.PDFWorker.getFullText` for the open PDF (else the PDF of the one item in focus) in the
+  background. Pages come back separated by form feeds and are written with a `[p.N]` line at each page start, the 1-based
+  page positions `zotero-cli read`, the reader and `page=` citations use, under a first line that names the paper, the PDF
+  and its source (size and mtime: the cache key). The context then says once: `Full text is at <absolute path> (39 pages,
+  page markers like [p.7]); read it with grep/sed or zotero-cli read for specific pages.` The send waits for it at most
+  1.5 s after the session is up (`within`, started together with the session); a file that is later goes with the next turn.
+- **Extractor, measured on the real 39-page paper in the harness:** `PDFWorker.getFullText` 0.28 to 0.36 s, in Zotero's
+  worker; `zotero-cli read KEY --start-page 1 --end-page 50` 1.5 to 1.8 s (1 s of it Python start-up). The CLI's text has
+  Markdown headings and garbled-page flags, but it finds the PDF through Zotero's locked database, which it reads through a
+  copy of `zotero.sqlite` plus its WAL whenever the WAL is not empty (the whole file, every run: hundreds of MB for a big
+  library), and on a just-written library it fell back to the stale main file ("no such table: libraries"); it also needs
+  the CLI configured for local reads. Zotero's own extractor needs none of that, so it is the one used.
+- **Where.** The panel's default chat folder gets a visible `papers/` (`papers/3QW3D95Y-callaway-2021.txt`: attachment
+  key, first author, year); a chat folder the user chose is never written into, the file goes to `<profile>/zotero-chat/papers/`
+  (absolute paths either way, which every backend's file tools take). A file made from the same PDF is reused (its first
+  line read, 1 KB) and touched; after each new file the folder sheds older copies of the same attachment, files unused for
+  60 days, then the least recently used beyond 200 MB (only `KEY-slug.txt` names; anything else there is left alone).
+  A failed extraction is retried after a minute, not every turn.
+- **Privacy.** The file is the user's own PDF text, made locally from the PDF already on disk; it is not logged, and
+  nothing is sent by the panel: the agent reads from it with its own tools, like any file.
+- **Startup.** Nothing runs at Zotero's startup (`budget.js` unchanged); `test/zotero/preload.js` checks that no file
+  exists before the panel is used.
 
 The workspace (`<profile>/zotero-chat/workspace`) gets the skill via `zotero-mcp install-skill --target claude --target agents --root <workspace>`.
 
@@ -430,7 +474,9 @@ Tokens are chars/4 for text and width x height / 750 for images (long edge fitte
 
 | what | cost |
 |---|---|
-| brief + drawing guide + formatting guide, once per chat (system prompt; codex/pi: first prompt) | 382 words, ~632 tokens |
+| brief + tool sheet + drawing guide + formatting guide, once per chat (system prompt; codex/pi: first prompt) | 614 words, ~1,039 tokens (brief 249 words, ~413; sheet 230 words, ~410) |
+| the open paper's metadata (25 authors cut to 8, 1,370-char abstract), once per paper per session | ~390 tokens (the test paper with a 1,500-char abstract, tags and a collection: ~505 with the reader line) |
+| `Full text is at …` line, once per paper per session | ~45 tokens |
 | `<zotero-context>` reader line (title, keys, page) | ~37 tokens |
 | reader line + a 1500-char selection (describe.ts caps there) | ~424 tokens |
 | the "In this PDF" annotation index line | ~30-45 tokens, only when its counts or the page change |
@@ -460,6 +506,37 @@ verified live (`BackendSpec.compacts`, Claude: 24k to 2.7k tokens, the next turn
 silent turn and emits one notice carrying the new fill. From 85% a dismissable line also suggests a new chat, which carries
 nothing over. No numbers, no ring (before the first turn ends, or a backend that says nothing). A compaction becomes an info
 notice.
+
+**The open paper ahead of time, measured (2026-10-06).** The real 39-page arXiv paper (2606.25234, no robustness section, so
+the specific question asked about its minimum description length section) in the harness library, the real Claude bridge,
+Sonnet at low effort, the user's own Claude settings (auto mode), a new session per run, 3 runs each, timed from the prompt
+(`test/zotero/preload-live.js`). BEFORE is HEAD's brief ("read its skill here first") and no paper chips; AFTER the tool
+sheet, the metadata and the file line. Medians, then the runs:
+
+| | tool calls · steps | first answer text | whole turn | context after |
+|---|---|---|---|---|
+| "Tell me more about this paper." BEFORE | 2 · 2 (2, 3, 2) | 14.4 s (14.4, 11.7, 15.2) | 15.8 s (15.8, 11.8, 16.7) | 35.4k (35.5k, 30.3k, 35.4k) |
+| same, AFTER | 1 · 1 (1, 1, 1) | 12.4 s (13.5, 12.4, 10.5) | 16.4 s (16.6, 16.4, 14.4) | 38.6k (36.9k, 38.6k, 38.6k) |
+| "What does the minimum description length section say?" BEFORE | 2 · 2 (2, 2, 4) | 13.6 s (12.9, 13.6, 17.3) | 14.0 s (13.8, 14.0, 18.6) | 33.2k (33.5k, 32.4k, 33.2k) |
+| same, AFTER | 2 · 2 (2, 2, 2) | 11.8 s (16.3, 11.8, 11.6) | 12.1 s (16.6, 11.9, 12.1) | 34.4k (34.3k, 34.4k, 35.0k) |
+
+What changed: every BEFORE run began with `cat SKILL.md` or `--find` and two guessed a flag that does not exist
+(`read --pages`, then `read --help`); every AFTER run went straight to the file (one grep, or grep then sed) and never read
+the skill. The gain is real but small, about 2 s to the first answer and one step fewer for the overview, because Sonnet
+already chains commands in one shell call (BEFORE was 2 steps, not 4) and most of each turn is the model writing the
+answer (8 to 10 s). The overview's whole turn is no shorter: the answers came out longer. Context grows 1-3k tokens
+(the metadata, and grep output instead of a page range); a specific question costs the same steps as before (locate, then
+read), only cheaper ones.
+
+Per backend (one run each, 2026-10-06). **Claude** in `default` mode asks before every shell command, a `grep` of the file
+inside the chat folder as much as one of the profile's copy outside it, so the profile location costs no extra prompt (no
+copy or link into the user's folder is needed); both runs answered "8" (section 3.3's page) in 7 s. In auto mode (the user's
+setting, the table above) nothing asked. **Codex** (6 Luna, low, read-only, a chat folder of the user's own) read the file in
+the profile without a prompt (its read-only sandbox reads anywhere) with `rg` and `sed` page ranges, but first read SKILL.md
+and ran `outline` and `read 1-4`: 4 steps, first answer at 18 s. The cause is the AGENTS.md block `zotero-mcp install-skill`
+writes ("Read `.agents/skills/zotero-cli/SKILL.md` before using it"), which Codex loads as instructions; changing it is a CLI
+change for every install-skill user, not made here. **pi** (qwen38-27b) went to the file at once (grep for the markers, `sed`
+page ranges, two calls per step) and never read the skill.
 
 **Next (not built):** a per-paper digest cached across chats (outline, abstract, section-to-page map, figure and table
 captions, maybe 1-2k tokens), written by the CLI the first time a paper is read and offered in the first turn of later

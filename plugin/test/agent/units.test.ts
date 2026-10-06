@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it, test } from "node:test";
 import { BACKENDS } from "../../src/agent/backends.ts";
-import { buildBrief, withBrief } from "../../src/agent/brief.ts";
+import { TOOL_SHEET, buildBrief, withBrief } from "../../src/agent/brief.ts";
 import { ensureBridge, locateBridge } from "../../src/agent/bridges.ts";
 import { cleanEnv, stripApiKeys } from "../../src/agent/env.ts";
 import { CONTEXT_TAG, createRuntime, findBinary, prepareWorkspace } from "../../src/agent/index.ts";
@@ -76,6 +76,16 @@ describe("brief", () => {
     assert.ok(b.includes("zotero://open-pdf/library/items/ATTKEY?page=8"));
     assert.ok(b.includes("zotero://open-pdf/groups/"));
     assert.ok(b.includes("zotero://select/library/items/"));
+  });
+  it("lists the common commands itself, so reading the skill is not a first step (each one parses: tests/test_chat_plugin_packaging.py)", () => {
+    assert.doesNotMatch(buildBrief(), /skill here first/);
+    const tokens = Math.ceil(TOOL_SHEET.length / 4);
+    assert.ok(tokens >= 350 && tokens <= 600, `${tokens} tokens`);
+    for (const cmd of ["search", "get metadata", "read KEY --find", "--start-page", "outline", "annotations list", "annotations create", "notes create", "notes update", "open", "get collections", "--add-tags"]) {
+      assert.ok(TOOL_SHEET.includes(cmd), cmd);
+    }
+    assert.match(TOOL_SHEET, /\[p\.N\]/, "how the full-text file marks pages");
+    assert.match(TOOL_SHEET, /same step/, "independent commands together");
   });
   it("withBrief wraps the brief ahead of the text", () => {
     assert.equal(withBrief("B", "hi"), "<zotero-panel-brief>\nB\n</zotero-panel-brief>\n\nhi");

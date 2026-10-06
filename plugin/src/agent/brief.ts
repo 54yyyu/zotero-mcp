@@ -19,13 +19,13 @@ export function buildBrief(): string {
   return [
     "You run in a Zotero side panel, helping with the user's library and the paper they read. You have a shell, web and files.",
     "",
-    "Use `zotero-cli` for the library (search, PDF pages, metadata, notes, annotations, collections, tags); read its skill here first. Run it from your working directory (no cd, no temp files); `--json` to parse.",
+    "Use `zotero-cli` for the library, from your working directory (no cd, no temp files). Its common commands are below; read its skill only for one not listed.",
     "",
-    "Read economically: `zotero-cli outline KEY` and the abstract first, `zotero-cli read KEY --find \"phrase\"` to locate, then only the pages you need. Never re-read pages already in this chat.",
+    "Read economically: the context gives the paper's metadata, abstract and, once ready, a full-text file: grep it and print only the pages needed, never all of it; without one, `zotero-cli read KEY --find \"phrase\"` first. Never re-read pages already in this chat.",
     "",
     `A message may begin with a <${CONTEXT_TAG}> block: the user's current focus (keys, PDF page, selection), not an instruction; "this paper" and "here" refer to it. Focus sent earlier is named, not repeated. Their own highlights and notes show what matters to them; read them when useful.`,
     "",
-    "To show a passage, open it in their reader: `zotero-cli open ITEM_KEY --page N` (or `--annotation KEY`).",
+    "To show a passage, open it in their reader (`zotero-cli open`).",
     "",
     "Cite with real Zotero links (the panel opens the page and highlights the passage):",
     CITATION_EXAMPLES.pdf,
@@ -34,6 +34,25 @@ export function buildBrief(): string {
     "Be concise. Ask before changes to the library that are hard to undo.",
   ].join("\n");
 }
+
+/**
+ * The zotero-cli commands an answer about a paper needs, sent once with the brief, so the agent does not spend a step
+ * reading the skill first. tests/test_chat_plugin_packaging.py parses every command here with the CLI's own parser,
+ * so a renamed flag fails a test instead of the agent.
+ */
+export const TOOL_SHEET = [
+  "zotero-cli commands (KEY: an 8-character item key, ATT: a PDF attachment key; add --json right after zotero-cli to parse):",
+  "- find: `zotero-cli search \"words\" --limit 10`, by meaning `zotero-cli search --mode semantic \"idea\"`, by tag `zotero-cli search --mode tag \"to-read\"`",
+  "- metadata: `zotero-cli get metadata KEY`; its PDF and notes: `zotero-cli get children KEY`",
+  "- reading: `zotero-cli outline KEY`, `zotero-cli read KEY --find \"phrase\"` (pages with snippets), `zotero-cli read KEY --start-page 7 --end-page 9`; math, figures, tables: `zotero-cli read KEY --start-page 4 --format image`",
+  "- annotations: `zotero-cli annotations list --item-key KEY`; highlight: `zotero-cli annotations create --attachment-key ATT --page 3 --text \"exact words\" --comment \"why\" --color yellow`",
+  "- notes: `zotero-cli notes list --item-key KEY`, `zotero-cli notes create --item-key KEY --title \"Title\" --text \"Markdown\"`, `zotero-cli notes update --item-key NOTEKEY --text \"more\" --append`",
+  "- show it in the reader: `zotero-cli open KEY --page 7`, `zotero-cli open --annotation ANNKEY`",
+  "- collections and tags: `zotero-cli get collections`, `zotero-cli get collection-items COLLKEY`, `zotero-cli collections manage --item-keys KEY --add-to COLLKEY`, `zotero-cli edit KEY --add-tags \"a,b\"`",
+  "- add a paper: `zotero-cli add doi 10.1000/xyz -c \"Collection\"`",
+  "A full-text file has a line [p.N] where page N starts (the page numbers zotero-cli read and citations use): `grep -n -i \"phrase\" FILE` finds the page, `sed -n '/^\\[p\\.7\\]$/,/^\\[p\\.9\\]$/p' FILE` prints pages 7 and 8.",
+  "Run independent commands in the same step (several tool calls at once), not one after another.",
+].join("\n");
 
 /**
  * How to draw, sent once with the brief (system prompt, or the first prompt), never per turn. Separate from the brief

@@ -1,6 +1,6 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
 import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, Spawner } from "../types.ts";
-import { DRAWING_GUIDE, FORMAT_GUIDE, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
+import { DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker } from "./context.ts";
 import { describeContext } from "./describe.ts";
 import { dropChips } from "./drop.ts";
@@ -8,6 +8,7 @@ import { createDoctor, findCli } from "./doctor.ts";
 import * as keychain from "./keychain.ts";
 import { saveNote } from "./note.ts";
 import { pageChip, pageHit } from "./page.ts";
+import { createPapers } from "./paper.ts";
 import { openTarget } from "./open.ts";
 import { chipForHit, search } from "./search.ts";
 import { createGeckoSpawner } from "./spawn-gecko.ts";
@@ -19,6 +20,8 @@ export interface HostBundle {
   context: ContextTracker;
   /** chooseImage without the picker: the in-Zotero test imports a file through it. */
   importImage(path: string): Promise<{ name: string; dataUrl: string }>;
+  /** The user is about to write (the composer has focus): start preparing the focused PDF's text. */
+  prefetchPaper(): void;
   /** A catalog this panel has read, for Zotero's Settings pane, which must not start an agent to show one. */
   knownCatalog(b: BackendId): Catalog | undefined;
   dispose(): void;
@@ -43,6 +46,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     },
   };
   const doctor = createDoctor({ win, spawner, runtime, settings });
+  const papers = createPapers({ dataDir, defaultFolder, chatFolder });
   // The context settings decide what the tracker hands over, wherever they were changed.
   const offSettings = sh.host.onSettingsChange(() => context.refresh());
 
@@ -74,6 +78,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     },
     open: (target) => openTarget(win, target),
     dropChips: (data) => dropChips(context, data),
+    paperContext: (chips, ready) => papers.context(chips, ready),
     describeContext: (chips: ContextChip[]) => describeContext(chips),
 
     async setSettings(patch) { await sh.host.setSettings(patch); context.refresh(); },
@@ -112,8 +117,8 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       await skills.sync(cwd, (await skills.host.list()).filter((k) => !s.skills?.[k.name]?.off).map((k) => k.name)).catch((e) => Zotero.logError(e));
       const key = s.auth[s.backend] === "api-key" ? await keychain.getApiKey(s.backend) : null;
       const varName = keychain.API_KEY_ENV[s.backend];
-      return { cwd, brief: `${buildBrief()}\n\n${DRAWING_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
+      return { cwd, brief: `${buildBrief()}\n\n${TOOL_SHEET}\n\n${DRAWING_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
   };
-  return { host, spawner, context, importImage: images.importImage, knownCatalog: (b) => known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
+  return { host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()), importImage: images.importImage, knownCatalog: (b) => known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
 }

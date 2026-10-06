@@ -53,7 +53,7 @@ export function repeatLine(chips: ContextChip[]): string {
       default: return `item ${c.ref.itemKey} (${c.label})`;
     }
   };
-  const rep = chips.filter((c) => c.repeat);
+  const rep = chips.filter((c) => c.repeat && c.kind !== "paper"); // the reader or item line already names the paper
   const open = rep.filter((c) => !FOCUS.has(c.kind)).map(name);
   const focus = rep.filter((c) => FOCUS.has(c.kind)).map(name);
   return [
@@ -110,7 +110,7 @@ export function chatStats(tr: TranscriptState): { messages: number; compactions:
 /** What the last message's <zotero-context> carried: "Reader p.8 and selection p.3 in full; item Bell 2017 named only". */
 export function sentLine(chips: ContextChip[]): string {
   const name = (c: ContextChip) => c.kind === "reader" ? `reader${pageOf(c)}` : c.kind === "selection" ? `selection${pageOf(c)}`
-    : c.kind === "area" ? `area${pageOf(c)}` : c.kind === "annotation" ? `annotation${pageOf(c)}` : `${c.kind} ${c.label.length > 28 ? `${c.label.slice(0, 27)}…` : c.label}`;
+    : c.kind === "area" ? `area${pageOf(c)}` : c.kind === "annotation" ? `annotation${pageOf(c)}` : `${c.kind === "paper" ? "" : `${c.kind} `}${c.label.length > 28 ? `${c.label.slice(0, 27)}…` : c.label}`;
   const list = (cs: ContextChip[]) => cs.map(name).join(", ").replace(/, ([^,]*)$/, " and $1");
   const full = list(chips.filter((c) => !c.repeat)), rep = list(chips.filter((c) => c.repeat));
   const s = [full && `${full} in full`, rep && `${rep} named only (unchanged)`].filter(Boolean).join("; ");

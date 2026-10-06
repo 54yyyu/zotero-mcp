@@ -340,6 +340,7 @@ export class FakeHost implements PanelHost {
     return LIBRARY.filter((h) => h.kind !== "collection" && keys.includes(h.ref.itemKey ?? "")).map(chipFromHit);
   }
   async open(target: string | ZoteroRef) { this.sim.opened.push(target); }
+  async paperContext(_chips: ContextChip[], _ready: Promise<unknown>): Promise<ContextChip[]> { return []; }
   describeContext(chips: ContextChip[]) {
     const again = repeatLine(chips);
     const lines = chips.filter((c) => !c.repeat).map((c) => `- ${c.kind}: ${c.label}${c.ref.itemKey ? ` (key ${c.ref.itemKey})` : ""}${c.text ? `\n  text: ${c.text}` : ""}`);

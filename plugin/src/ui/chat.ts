@@ -116,12 +116,16 @@ export class Chat {
     this.sending = true;
     this.dispatch({ t: "user", id: nextId("u") + Date.now().toString(36), text, chips: used.map(summary) });
     try {
-      const sess = await this.ensureSession();
+      const starting = this.ensureSession();
+      // The focused paper's metadata and full-text file, prepared while the session starts (never longer than 1.5 s after).
+      const paper = host.paperContext(used, starting).catch(() => [] as ContextChip[]);
+      const sess = await starting;
       this.saved = { ...this.saved, agentSessionId: sess.sessionId, cwd: this.cwd || this.saved.cwd };
       let ctx = { text: "", images: [] as { mime: string; data: string }[] };
+      const extra = await paper;
       try {
         const next = new Map(this.sent);
-        const plan = planContext(used, next);
+        const plan = planContext([...used, ...extra], next);
         ctx = host.describeContext(plan);
         this.sent = next;
         this.lastContext = plan;

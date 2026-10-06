@@ -23,7 +23,10 @@ export interface Panel {
 export function createPanel(opts: { id: string; version: string; win: any; dataDir: string; shadow: ShadowRoot }): Panel {
   const bundle = createHost(opts);
   const api = mountPanel(opts.shadow, bundle.host);
-  return { bundle, host: bundle.host, api, dispose() { api.dispose(); bundle.dispose(); } };
+  // Focus in the composer: a message is coming, so the open paper's text is prepared now, not when it is sent.
+  const focus = (e: Event) => { if ((e.target as Element | null)?.matches?.("textarea.cin")) bundle.prefetchPaper(); };
+  opts.shadow.addEventListener("focusin", focus);
+  return { bundle, host: bundle.host, api, dispose() { opts.shadow.removeEventListener("focusin", focus); api.dispose(); bundle.dispose(); } };
 }
 
 /**
