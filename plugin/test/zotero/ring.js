@@ -49,8 +49,16 @@ async function main(ctx) {
     ring.dispatchEvent(new win.PointerEvent("pointerleave"));
     check(tip.hidden, "leaving hides the tooltip");
     // Click: the popover, glass on, inside the panel and the window
-    ring.click();
-    const pop = await ctx.waitFor(() => $(".cpop"), "the popover");
+    // The agent advertises /compact a moment after the session starts; open the popover until that has arrived (a slow machine is not a failure).
+    let pop;
+    for (let i = 0; i < 20; i++) {
+      ring.click();
+      pop = await ctx.waitFor(() => $(".cpop"), "the popover");
+      if ($('.cpop [data-act="compact"]')) break;
+      ring.click();
+      await ctx.waitFor(() => !$(".cpop"), "the popover closes");
+      await ctx.sleep(300);
+    }
     check(ring.getAttribute("aria-expanded") === "true" && $(".cpop__title").textContent === "Context window", "popover open");
     check(/^Messages2Last turn/.test($(".cpop__facts").textContent), "facts: " + $(".cpop__facts").textContent);
     check($('.cpop [data-act="new"]') && $('.cpop [data-act="compact"]'), "New chat, and Summarise now (the mock advertises /compact as claude-agent-acp does)");

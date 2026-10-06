@@ -37,7 +37,7 @@ describe("real Claude Code, one tiny prompt", { skip: on ? false : "set ZMC_LIVE
       events.length = 0;
       await first.compact();
       assert.deepEqual(events.map((e) => e.t), ["notice"], JSON.stringify(events));
-      const n = events[0] as Extract<ChatEvent, { t: "notice" }>;
+      const n = events[0] as unknown as Extract<ChatEvent, { t: "notice" }>;
       assert.ok(n.compacted && n.context && n.context.used < before, `compacted, smaller: ${JSON.stringify(n)} before ${before}`);
     } finally {
       await first.close();
