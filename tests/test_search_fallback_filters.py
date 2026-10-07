@@ -109,3 +109,10 @@ def test_fallback_note_follows_the_tag_header(semantic_only):
     note_line = next(i for i, l in enumerate(lines) if l.startswith("*Note:"))
     assert tag_line < note_line
     assert lines[0].startswith("# Search Results")
+
+
+def test_fallback_tag_match_folds_case_and_accents_like_the_text_search():
+    items = [_item("AAA00005", "Indice", tags=["Índice"])]
+    kept = search_module._filter_fallback_items(items, None, ["indice"])
+    assert [i["key"] for i in kept] == ["AAA00005"]
+    assert search_module._filter_fallback_items(items, None, ["-INDICE"]) == []

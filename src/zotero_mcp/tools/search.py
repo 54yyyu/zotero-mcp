@@ -158,7 +158,7 @@ def _filter_fallback_items(
     def _tags(item: dict) -> set[str]:
         data = item.get("data", item)
         return {
-            str(t.get("tag", "")).strip().lower()
+            _semantics.normalize(str(t.get("tag", "")).strip())
             for t in (data.get("tags") or [])
             if isinstance(t, dict)
         }
@@ -169,7 +169,7 @@ def _filter_fallback_items(
             hit = False
             for term in (t.strip() for t in _FALLBACK_TAG_OR.split(entry)):
                 excluded = term.startswith("-")
-                name = (term[1:] if excluded else term).strip().lower()
+                name = _semantics.normalize((term[1:] if excluded else term).strip())
                 if not name:
                     continue
                 if excluded != (name in have):
