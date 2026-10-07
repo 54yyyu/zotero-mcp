@@ -22,7 +22,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><img src="img/logo.svg" alt="" width="28" height="28">Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.2</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.3</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="installation.html">Install &amp; setup</a>
@@ -42,7 +42,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <a class="news reveal" href="#whats-new"><b>0.13.2</b>Fixes for merges, re-indexing, and duplicates</a>
+        <a class="news reveal" href="#whats-new"><b>0.13.3</b>A DNS rebinding guard for HTTP, and fixes for imports and merges</a>
         <h1 class="reveal">Chat with your <span class="hl c-yellow">research library</span> in Claude, ChatGPT, and more.</h1>
         <div class="reveal">
           <p class="lede">Zotero MCP connects your Zotero library to AI assistants. Search it, read it, annotate it, and add to it, from the desktop app or the web API.</p>
@@ -105,6 +105,16 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.13.3<small>Oct 2026</small></div>
+          <div>
+            <h3>A guard for HTTP, and imports that keep <span class="hl c-yellow">every author</span></h3>
+            <p>Served over <code>streamable-http</code> or <code>sse</code>, the server used to accept any <code>Host</code> and <code>Origin</code>, so a web page could rebind its hostname to 127.0.0.1 and call every tool from your browser. <code>serve</code> now checks both: on a loopback bind, requests must name localhost and come from no origin or a local one. Clients that connect to localhost, including through <code>mcp-remote</code>, are unaffected. A tunnel or reverse proxy that forwards its own hostname needs it in <code>FASTMCP_HTTP_ALLOWED_HOSTS</code>; the server says so on start-up.</p>
+            <p>BibTeX imports keep every author when the list wraps across lines, CSL JSON keeps &ldquo;van der&rdquo; and &ldquo;Jr.&rdquo;, and a book chapter added by DOI keeps its book title. Merging duplicates no longer trashes the highlights on a duplicate&rsquo;s PDF, index bookkeeping no longer wipes <code>config.json</code> after a hand edit, and PDF downloads stop at 500&nbsp;MB or 300&nbsp;s. Stopped servers no longer leave copies of the library in the temp directory, linked files resolve against the right Zotero profile, and embeddings work with Voyage AI through the <code>openai</code> provider.</p>
+            <p class="fine">With fixes from @falcon1-1-code (#649 to #659, #666), @feiiiiii5 (#594, #602) and @sghng (#667).</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.13.2<small>Oct 2026</small></div>
           <div>
             <h3>Fixes for merges, re-indexing, and <span class="hl c-yellow">duplicates</span></h3>
@@ -361,7 +371,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.13.2 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.13.3 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
