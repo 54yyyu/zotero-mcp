@@ -694,23 +694,21 @@ _UMLAUT_MAP = {
     'Ü': 'Ue', 'Ö': 'Oe', 'Ä': 'Ae',
 }
 
-# Dash-like Unicode characters to normalize to ASCII hyphen-minus
-_DASH_PATTERN = re.compile(r'[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]')
-
 MAX_SEARCH_VARIANTS = 15
 
 
 def _normalize_for_search(text: str) -> str:
-    """Normalize text for fuzzy matching: transliterate to ASCII, normalize dashes.
+    """Normalize text for fuzzy matching: transliterate to ASCII.
 
-    Uses ``unidecode`` for broad Unicode transliteration (handles CJK, Greek,
-    Cyrillic, diacritics, etc.) and a regex for dash-like characters.
+    ``unidecode`` handles CJK, Greek, Cyrillic and diacritics, and already
+    maps Unicode dashes to ASCII hyphens. A separate dash regex used to run
+    after it; it matched only non-ASCII characters in pure-ASCII output, so it
+    never changed anything, and it made this (called once per stored row by
+    ``zsearch_norm``) about seven times slower.
     """
     if not text:
         return text
-    result = unidecode(text)
-    result = _DASH_PATTERN.sub('-', result)
-    return result
+    return unidecode(text)
 
 
 def _generate_search_variants(query: str) -> list[str]:
