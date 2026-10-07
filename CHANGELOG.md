@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`update-db` no longer probes every item for fulltext.** For each item the indexer asked for the parent's `/fulltext` (always empty for a regular item) and then its `/children`, so a 552-item library cost 1041 requests to find text for 99 items. It now lists the PDF attachments in one paged pass (or asks for an item's children directly when only a few items changed) and requests fulltext only for those: 106 requests, same text. The docs now say plain `update-db` also indexes the text Zotero already extracted, in local mode too.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security

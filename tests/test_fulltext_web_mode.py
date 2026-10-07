@@ -109,6 +109,9 @@ class FakeZoteroClient:
 
     def items(self, start=0, limit=100, **kwargs):
         self.calls.append(("items", start, limit))
+        if kwargs.get("itemType") == "attachment":
+            every = [c for kids in self.children_by_parent.values() for c in kids]
+            return [c for c in every if c["data"].get("itemType") == "attachment"][start:start + limit]
         chunk = self.items_order[start:start + limit]
         return [self.items_by_key[k] for k in chunk]
 
@@ -156,6 +159,13 @@ def _paper(key, title="Paper", item_type="conferencePaper", version=1):
             "dateModified": "2024-01-01T00:00:00Z",
         },
     }
+
+
+def _pdf(key, parent=None):
+    data = {"key": key, "itemType": "attachment", "contentType": "application/pdf"}
+    if parent:
+        data["parentItem"] = parent
+    return {"key": key, "version": 1, "data": data}
 
 
 def _build_search(monkeypatch, zot: FakeZoteroClient, chroma: FakeChromaClient,
@@ -270,13 +280,14 @@ def test_get_items_from_api_with_fulltext_populates_data(monkeypatch):
     zot = FakeZoteroClient()
     zot.load_scenario(
         [_paper("A"), _paper("B")],
-        fulltext={"A": {"content": "Abody"}, "B": {"content": "Bbody"}},
+        fulltext={"PA": {"content": "Abody"}, "PB": {"content": "Bbody"}},
+        children={"A": [_pdf("PA")], "B": [_pdf("PB")]},
     )
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     items = search._get_items_from_api(include_fulltext=True)
     by_key = {it["key"]: it for it in items}
     assert by_key["A"]["data"]["fulltext"] == "Abody"
-    assert by_key["A"]["data"]["fulltextSource"] == "web-api:parent"
+    assert by_key["A"]["data"]["fulltextSource"] == "web-api:attachment:PA"
     assert by_key["B"]["data"]["fulltext"] == "Bbody"
 
 
@@ -492,3 +503,59 @@ def test_load_last_sync_version_reads_int(monkeypatch, tmp_path):
     search = _build_search(monkeypatch, FakeZoteroClient(), FakeChromaClient(),
                            config_path=config_path)
     assert search._load_last_sync_version() == 123
+
+
+# --------- Fulltext walk cost (update-db) ----------
+
+def _many_papers(zot, n, with_pdf):
+    papers = [_paper(f"P{i:03d}") for i in range(n)]
+    kids, texts = {}, {}
+    for i in with_pdf:
+        pk = f"P{i:03d}"
+        kids[pk] = [_pdf(f"A{i:03d}", parent=pk)]
+        texts[f"A{i:03d}"] = {"content": f"text {i}"}
+    zot.load_scenario(papers, fulltext=texts, children=kids)
+    return papers
+
+
+def test_attach_web_fulltext_skips_the_parent_probe(monkeypatch):
+    zot = FakeZoteroClient()
+    papers = _many_papers(zot, 3, with_pdf=[0])
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    search._attach_web_fulltext(papers)
+    probed = [c[1] for c in zot.calls if c[0] == "fulltext_item"]
+    assert all(k.startswith("A") for k in probed), probed
+    assert papers[0]["data"]["fulltext"] == "text 0"
+
+
+def test_attach_web_fulltext_bulk_walk_makes_no_per_item_requests(monkeypatch):
+    """With many items the PDF attachments come from one paged listing, and
+    fulltext_item is asked only for those, not for every item."""
+    zot = FakeZoteroClient()
+    papers = _many_papers(zot, 60, with_pdf=[3, 7, 11])
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    zot.calls.clear()
+    search._attach_web_fulltext(papers)
+    names = [c[0] for c in zot.calls]
+    assert names.count("children") == 0
+    assert names.count("fulltext_item") == 3
+    assert names.count("items") == 1
+    assert sum(1 for p in papers if p["data"].get("fulltext")) == 3
+    assert papers[3]["data"]["fulltextSource"] == "web-api:attachment:A003"
+    assert papers[0]["data"]["fulltext_attempted"] is True
+
+
+def test_attach_web_fulltext_falls_back_to_children_when_listing_fails(monkeypatch):
+    zot = FakeZoteroClient()
+    papers = _many_papers(zot, 30, with_pdf=[2])
+    orig = zot.items
+
+    def failing(start=0, limit=100, **kw):
+        if kw.get("itemType") == "attachment":
+            raise RuntimeError("boom")
+        return orig(start=start, limit=limit, **kw)
+
+    zot.items = failing
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    search._attach_web_fulltext(papers)
+    assert papers[2]["data"]["fulltext"] == "text 2"
