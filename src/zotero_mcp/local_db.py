@@ -2618,6 +2618,11 @@ class LocalZoteroReader:
         # only. The variants still add what normalize() does not do, such as
         # dash/space swaps and umlaut expansion (Müller -> Mueller).
         folded = list(dict.fromkeys(_semantics.normalize(v) for v in variants))
+        # A query unidecode drops entirely (an emoji) folds to "", and
+        # LIKE '%%' would match every item.
+        folded = [v for v in folded if v.strip()]
+        if variants and not folded:
+            return []
         norm = _semantics.SQLITE_NORM_FUNCTION
         for variant in folded:
             pattern = f"%{_semantics.escape_like(variant)}%"

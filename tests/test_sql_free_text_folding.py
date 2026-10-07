@@ -76,3 +76,9 @@ def test_everything_mode_folds_tags(reader, query):
 def test_like_metacharacters_stay_literal(reader):
     assert _keys(reader, "50%") == {"PCTSIGN1"}
     assert _keys(reader, "Underscore_Separated") == {"PCTSIGN2"}
+
+
+@pytest.mark.parametrize("query", ["\U0001F600", "   "])
+def test_query_that_folds_to_nothing_matches_nothing(reader, query):
+    # unidecode drops an emoji, and LIKE '%%' would have matched every item.
+    assert reader.search_items_sql(query, qmode="everything", group_id=0) == []
