@@ -203,3 +203,49 @@ class TestSemanticToolset:
             assert "search" in listed
         finally:
             apply_toolsets(mcp, raw="all", transport="streamable-http")
+
+
+class TestNoneSemanticNotice:
+    """#572: a `none` spec that relied on semantic search gets one warning."""
+
+    NOTICE = "no longer includes zotero_semantic_search"
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        monkeypatch.setattr("zotero_mcp.toolsets._none_notice_logged", False)
+
+    @pytest.fixture
+    def mcp(self):
+        from zotero_mcp.server import mcp
+
+        yield mcp
+        apply_toolsets(mcp, raw="all")
+
+    def _notices(self, caplog):
+        return [r for r in caplog.records if self.NOTICE in r.getMessage()]
+
+    @pytest.mark.parametrize("raw", ["none", "none,discovery", "NONE"])
+    def test_warns_when_none_says_nothing_about_semantic(self, mcp, caplog, raw):
+        apply_toolsets(mcp, raw=raw)
+        notices = self._notices(caplog)
+        assert len(notices) == 1
+        assert notices[0].levelname == "WARNING"
+        assert "none,semantic" in notices[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "raw", ["", "none,semantic", "none,-semantic", "all", "discovery"]
+    )
+    def test_silent_when_the_spec_decides(self, mcp, caplog, raw):
+        apply_toolsets(mcp, raw=raw)
+        assert not self._notices(caplog)
+
+    def test_silent_without_the_extra(self, mcp, caplog, monkeypatch):
+        monkeypatch.setattr("zotero_mcp.toolsets.semantic_extra_installed", lambda: False)
+        apply_toolsets(mcp, raw="none")
+        assert not self._notices(caplog)
+
+    def test_logged_once_across_repeated_applies(self, mcp, caplog):
+        # server.py applies at import, `serve` applies again with the transport.
+        apply_toolsets(mcp, raw="none")
+        apply_toolsets(mcp, raw="none", transport="streamable-http")
+        assert len(self._notices(caplog)) == 1

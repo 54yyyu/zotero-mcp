@@ -240,6 +240,22 @@ def resolve_enabled(
     return enabled
 
 
+_none_notice_logged = False
+
+
+def _none_drops_semantic(raw: str | None) -> bool:
+    """Whether a spec relies on ``none`` while saying nothing about ``semantic``.
+
+    Before #572, ``none`` still included ``zotero_semantic_search``; a spec like
+    that silently loses it on upgrade. Naming ``semantic`` either way
+    (``none,semantic`` or ``none,-semantic``) states the choice.
+    """
+    if raw is None:
+        raw = os.environ.get(TOOLSETS_ENV_VAR)
+    spec = _split(raw or "")
+    return "none" in spec and not {"semantic", "-semantic"} & set(spec)
+
+
 def apply_toolsets(
     mcp: FastMCP,
     *,
@@ -254,16 +270,33 @@ def apply_toolsets(
     server applies a transport-agnostic default at import time and the CLI
     re-applies once the real transport is known.
     """
+    global _none_notice_logged
+    import logging
+
+    logger = logging.getLogger(__name__)
     enabled = resolve_enabled(raw, transport=transport)
     with_extra = resolve_enabled(raw, transport=transport, semantic_installed=True)
     dropped = sorted(with_extra - enabled)
     if dropped:
-        import logging
-
-        logging.getLogger(__name__).info(
+        logger.info(
             "Semantic search extra not installed; leaving out toolset(s) %s. "
             "Install zotero-mcp-server[semantic] to enable them.",
             ", ".join(dropped),
+        )
+    # A warning, not info: the default log level is WARNING, and this exists
+    # for operators who will not read the changelog. Once per process, since
+    # the server applies the profile twice at startup.
+    if (
+        not _none_notice_logged
+        and _none_drops_semantic(raw)
+        and semantic_extra_installed()
+    ):
+        _none_notice_logged = True
+        logger.warning(
+            "%s uses 'none', which no longer includes zotero_semantic_search "
+            "(#572). Use 'none,semantic' to keep it, or 'none,-semantic' to "
+            "leave it out without this notice.",
+            TOOLSETS_ENV_VAR,
         )
 
     on: set[str] = set()

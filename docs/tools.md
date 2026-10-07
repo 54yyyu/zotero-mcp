@@ -28,12 +28,12 @@ group name is an error at startup rather than a silent no-op.
 |---|---|---|
 | `scite` | off | Scite citation tallies and retraction checks (calls scite.ai; pairs with the `[scite]` extra) |
 | `duplicates` | off | Find and merge duplicate items — library maintenance |
-| `semantic` | **on** | `zotero_semantic_search` — needs the `[semantic]` extra |
+| `semantic` | **on** | `zotero_semantic_search` (needs the `[semantic]` extra) |
 | `discovery` | off | `find_related_papers`, `library_coverage` — corpus-level exploration via OpenAlex |
 | `feeds` | off | Zotero RSS feed subscriptions |
 | `relations` | off | Explicit item-to-item "related items" links |
 | `libraries` | **on** | List and switch between personal/group libraries |
-| `search-admin` | **on** | Build and inspect the semantic search index — needs the `[semantic]` extra |
+| `search-admin` | **on** | Build and inspect the semantic search index (needs the `[semantic]` extra) |
 | `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
 | `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |
 
@@ -44,7 +44,9 @@ stays off for `stdio`. Name it explicitly to override either way.
 `semantic` and `search-admin` need the `[semantic]` extra. On an install
 without it they are left out automatically (logged at startup), unless you
 name them in `ZOTERO_MCP_TOOLSETS`, in which case they stay and answer with
-install instructions.
+install instructions. A `ZOTERO_MCP_TOOLSETS` that uses `none` without naming
+`semantic` logs one warning at startup, since `none` included semantic search
+before; `none,-semantic` leaves it out without the warning.
 
 Anything not listed above is **core** and always available.
 
