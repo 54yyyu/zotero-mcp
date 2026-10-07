@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-07
+
 ### Added
 
-- **`semantic_search.persist_directory` moves the ChromaDB index** (#617). The index was pinned to `~/.config/zotero-mcp/chroma_db`, and on Windows a user folder with non-ASCII characters (for example `C:\Users\王林澜`) makes ChromaDB write part of the index to the wrong place once it holds about 1,000 items, after which every search fails with `Error loading hnsw index`. Set the key in `config.json` to an ASCII path; the server, `db-status` and `zotero-mcp setup` all follow it, and the default location is unchanged. A non-ASCII path on Windows now logs a warning that names the setting. Thanks @lots-o.
+- **`semantic_search.persist_directory` moves the ChromaDB index** (#617). The index was pinned to `~/.config/zotero-mcp/chroma_db`, and on Windows a user folder with non-ASCII characters (for example `C:\Users\王林澜`) makes ChromaDB write part of the index to the wrong place once it holds about 1,000 items, after which every search fails with `Error loading hnsw index`. Set the key in `config.json` to an ASCII path; the server, `db-status` and `zotero-mcp setup` all follow it, and the default location is unchanged. A non-ASCII path on Windows now logs a warning that names the setting. Thanks @lots-o. The pre-update backup follows the configured directory.
 
 ### Fixed
 
