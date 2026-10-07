@@ -432,6 +432,8 @@ class _LooseItemKeyZotero(_AtomRejectingZotero):
         rows.append({"key": "ALSONOISE", include: "<div>More, M. (1998).</div>"})
         return rows
 
+    top = items
+
 
 def test_export_bibliography_item_keys_filters_out_api_extras(monkeypatch):
     """Only the requested keys are rendered, in the order asked for (#371)."""
@@ -447,6 +449,67 @@ def test_export_bibliography_item_keys_filters_out_api_extras(monkeypatch):
     assert "Wanted BBBB2222" in numbered[0]
     assert "Wanted AAAA1111" in numbered[1]
     assert "Noise" not in out and "More, M." not in out
+
+
+class _ChildrenFirstZotero(_AtomRejectingZotero):
+    """Zotero's itemKey behaviour, as measured against the local API.
+
+    ``/items`` answers with each requested item *and its children* (notes,
+    attachments), cut off at ``limit``, so the children use up the page.
+    ``/items/top`` answers with the requested top-level items only. Zotero's
+    web API accepts at most 50 keys per itemKey filter.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def _rows(self, kwargs, with_children):
+        keys = [k for k in (kwargs.get("itemKey") or "").split(",") if k]
+        if len(keys) > 50:
+            raise RuntimeError("itemKey takes at most 50 keys")
+        self.calls.append(len(keys))
+        rows = []
+        for k in keys:
+            if with_children:
+                rows += [{"key": f"{k}N{i}", "itemType": "note"} for i in range(2)]
+            rows.append({"key": k})
+        rows = rows[kwargs.get("start", 0):][: kwargs.get("limit", 25)]
+        if kwargs.get("format") == "bibtex":
+            return "".join(f"@article{{{r['key']},}}\n" for r in rows if "itemType" not in r).encode()
+        include = kwargs.get("include")
+        return [
+            r if "itemType" in r else {**r, include: f"<div>Entry {r['key']}</div>"}
+            for r in rows
+        ]
+
+    def items(self, **kwargs):
+        return self._rows(kwargs, with_children=True)
+
+    def top(self, **kwargs):
+        return self._rows(kwargs, with_children=False)
+
+
+@pytest.mark.parametrize("export_format", ["bib", "citation", "bibtex"])
+def test_export_bibliography_item_keys_all_rendered_despite_children(
+    monkeypatch, export_format
+):
+    """60 requested keys give 60 entries; children no longer crowd them out."""
+    fake = _ChildrenFirstZotero()
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
+    keys = [f"K{i:07d}" for i in range(60)]
+
+    out = synthesis.export_bibliography(
+        item_keys=keys, export_format=export_format, ctx=DummyContext()
+    )
+
+    for k in keys:
+        assert k in out, f"{k} missing from the export"
+    if export_format != "bibtex":
+        assert "60. " in out and "61. " not in out
+        # Entries keep the caller's order across batches.
+        assert out.index("K0000049") < out.index("K0000050")
+    assert max(fake.calls) <= 50
 
 
 def test_export_bibliography_library_wide_uses_top_level_items(monkeypatch):
