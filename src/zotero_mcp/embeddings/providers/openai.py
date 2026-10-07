@@ -171,8 +171,9 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
 
         Exception: Voyage AI (``api.voyageai.com``), reachable through this
         provider via ``base_url``, only accepts ``encoding_format="base64"``
-        and rejects ``"float"`` with a 400. Send base64 there; the OpenAI SDK
-        transparently decodes base64 responses, so downstream code is unchanged.
+        and rejects ``"float"`` with a 400. Send base64 there and decode it
+        below: the SDK decodes base64 only when it chose that format itself,
+        not when the caller passes ``encoding_format`` explicitly.
 
         Headers come back via ``with_raw_response`` where the SDK offers it, so
         the limiter can read whatever rate-limit headroom the provider reports.
