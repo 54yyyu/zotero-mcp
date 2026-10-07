@@ -33,7 +33,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.3</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.14.0</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
@@ -54,7 +54,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <a class="news reveal" href="#whats-new"><b>0.13.3</b>A DNS rebinding guard for HTTP, and fixes for imports and merges</a>
+        <a class="news reveal" href="agent/"><b>0.14.0</b>Zotero Agent: your own AI agent, inside Zotero</a>
         <h1 class="reveal">Chat with your <span class="hl c-yellow">research library</span> in Claude, ChatGPT, and more.</h1>
         <div class="reveal">
           <p class="lede">Zotero MCP connects your Zotero library to AI assistants. Search it, read it, annotate it, and add to it, from the desktop app or the web API.</p>
@@ -140,6 +140,16 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.14.0<small>Oct 2026</small></div>
+          <div>
+            <h3>Zotero Agent: <span class="hl c-yellow">your own agent</span>, inside Zotero</h3>
+            <p>A new Zotero plugin puts Claude Code, Codex or pi in a panel next to the PDF you are reading. It knows the item, the page and your selection, cites pages with links that flash the sentence, translates in the reader, and saves answers as notes, all on your own subscription. Install it with <code>zotero-cli plugin</code>; it updates itself. <a href="agent/">See Zotero Agent</a>.</p>
+            <p>Also new: <code>zotero-cli read --find</code> and <code>zotero-cli open</code>, notes written in Markdown, case- and accent-insensitive search in SQLite mode, <code>advanced_search</code> on any field from SQLite, whole collections in <code>export_bibliography</code>, PDFs parsed once for repeated page reads, and a faster <code>update-db</code>. The plugin is AGPL-3.0, like Zotero; everything else stays MIT.</p>
+            <p class="fine">With fixes from @falcon1-1-code (#671 to #682), @lipaopao000 (#669) and @feiiiiii5 (#596, #600).</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.13.3<small>Oct 2026</small></div>
           <div>
             <h3>A guard for HTTP, and imports that keep <span class="hl c-yellow">every author</span></h3>
@@ -414,7 +424,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.13.3 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.14.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
