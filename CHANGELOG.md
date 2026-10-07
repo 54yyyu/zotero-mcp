@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **On Windows, two servers no longer run the same semantic-index update at once** (#267). The update lock used `fcntl`, which Windows lacks, so there it quietly did nothing: a client that starts the server twice (Codex does) ran two full-text indexes of the same library side by side, each holding gigabytes. The lock now uses `msvcrt.locking` on Windows, on a byte past the stored pid so the process that loses can still read who holds it. Reported by @lwz20210407.
+
 ## [0.14.0] - 2026-10-07
 
 ### Added
