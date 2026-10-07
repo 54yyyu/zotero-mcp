@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -431,10 +432,39 @@ def _html_converter():
     return _SnapshotConverter(heading_style="ATX")
 
 
+#: A run of this many empty (or ``---``) table cells is layout scaffolding.
+_TABLE_RUN = 4
+_EMPTY_CELL_RUN = re.compile(r"\|(?:[ \t]*\|){%d,}" % _TABLE_RUN)
+_SEPARATOR_RUN = re.compile(r"\|(?: ?-{3,} ?\|){%d,}" % _TABLE_RUN)
+
+
+def _collapse_table_scaffolding(markdown: str) -> str:
+    """Shorten the runs of empty table cells markdownify emits for layout tables.
+
+    ``html.parser`` does not close an unterminated ``<td>``/``<tr>``, so a
+    snapshot whose table omits those end tags (legal HTML) nests every row
+    inside the previous one, and markdownify then prints, for each nested
+    row, a blank header line and a ``| --- |`` line as wide as the whole
+    table. On a 74-row statistics table that was 200K of ``|  |  |`` and
+    ``| --- | --- |`` around 17K of data, with a single line of 125K
+    characters. Runs of four or more empty cells (or separators) become one
+    and a repeated scaffolding line is dropped; every cell with text is kept.
+    """
+    out = []
+    for line in markdown.split("\n"):
+        if line.startswith("|"):
+            line = _SEPARATOR_RUN.sub("| --- |", _EMPTY_CELL_RUN.sub("|  |", line))
+            if line in ("|  |", "| --- |") and out and out[-1] == line:
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def extract_html(file_path: str | Path) -> ExtractedDoc:
     """Convert an HTML snapshot to Markdown, without embedded image data."""
+    markdown = _html_converter().convert(_read_text(file_path)).strip()
     return _doc_from_pages(
-        [_html_converter().convert(_read_text(file_path)).strip()],
+        [_collapse_table_scaffolding(markdown)],
         page_count=1,
         source="html",
     )

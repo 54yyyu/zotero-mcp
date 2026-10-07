@@ -229,6 +229,35 @@ class TestExtractHtml:
         assert "![Figure 1](https://example.org/f1.png)" in extract_html(snapshot).text
 
 
+    def test_unclosed_table_cells_do_not_flood_empty_cells(self, tmp_path):
+        # html.parser nests unterminated <tr>/<td>; markdownify then prints a
+        # header-width blank row and ``| --- |`` row for every nested row.
+        rows = "".join(
+            f"<tr><td>{year}<td>{year * 3}<td>x{year}" for year in range(2000, 2060)
+        )
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            "<table><thead><tr><th>Year<th>Triple<th>Tag<tbody>" + rows + "</table>"
+        )
+        text = extract_html(snapshot).text
+        assert len(text) < 3000
+        assert "|  |  |  |  |" not in text
+        assert "| --- | --- | --- | --- |" not in text
+        for year in range(2000, 2060):
+            assert str(year) in text and str(year * 3) in text and f"x{year}" in text
+
+    def test_small_tables_keep_their_shape(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            "<table><tr><th>A</th><th>B</th><th>C</th></tr>"
+            "<tr><td>1</td><td></td><td>3</td></tr></table>"
+        )
+        text = extract_html(snapshot).text
+        assert "| A | B | C |" in text
+        assert "| --- | --- | --- |" in text
+        assert "| 1 |  | 3 |" in text
+
+
 class TestExtractTextFile:
     def test_reads_content_verbatim(self, tmp_path):
         note = tmp_path / "notes.md"
