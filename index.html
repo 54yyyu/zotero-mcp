@@ -4,11 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zotero MCP: chat with your research library</title>
-  <meta name="description" content="Zotero MCP connects your Zotero library to Claude, ChatGPT and other AI assistants. Search, read, annotate, and add to your library, local or web.">
+  <meta name="description" content="Zotero MCP connects your Zotero library to Claude, ChatGPT and other AI assistants. Search, read, annotate, and add to your library, local or web, or chat inside Zotero with Zotero Agent.">
   <meta name="color-scheme" content="light dark">
   <meta property="og:title" content="Zotero MCP">
   <meta property="og:description" content="Search, read, annotate, and add to your Zotero research library, local or web, from Claude, ChatGPT and more.">
   <meta property="og:url" content="https://stevenyuyy.com/zotero-mcp/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Zotero MCP">
+  <meta property="og:image" content="https://stevenyuyy.com/zotero-mcp/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Zotero MCP: chat with your research library in Claude, ChatGPT, and more.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Zotero MCP: chat with your research library">
+  <meta name="twitter:description" content="Search, read, annotate, and add to your Zotero library from Claude, ChatGPT, coding agents, or a chat panel inside Zotero.">
+  <meta name="twitter:image" content="https://stevenyuyy.com/zotero-mcp/img/og.png">
+  <link rel="canonical" href="https://stevenyuyy.com/zotero-mcp/">
   <link rel="icon" href="img/logo.svg" type="image/svg+xml">
   <script>try{var t=localStorage.getItem("zmcp-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,10 +32,11 @@
 
 <header class="site-header">
   <div class="wrap nav">
-    <a class="brand" href="./"><img src="img/logo.svg" alt="" width="28" height="28">Zotero MCP</a>
+    <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
     <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.3</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
+      <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
       <a href="installation.html">Install &amp; setup</a>
       <a href="api.html">Reference</a>
       <a class="ext" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md">Changelog</a>
@@ -94,6 +106,29 @@
         </ol>
         <p class="pane-foot">Each request, and the tool that answers it.</p>
       </aside>
+    </div>
+  </section>
+
+  <section class="promo" id="agent" aria-labelledby="agent-h">
+    <div class="wrap">
+      <div class="promo-card">
+        <div>
+          <svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>
+          <span class="kicker">New &middot; Zotero Agent</span>
+          <h2 id="agent-h">Your own AI agent, inside Zotero</h2>
+          <p>A chat panel next to the PDF you are reading, on the Claude Code, Codex or pi you already use. It knows the page you are on, cites the sentence, translates in the reader and saves answers as notes. No extra API key.</p>
+          <div class="hero-actions">
+            <a class="btn btn-accent" href="agent/">Meet Zotero Agent</a>
+            <a class="btn btn-ghost" href="https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi">Download the plugin</a>
+          </div>
+        </div>
+        <a class="frame" data-video href="agent/" aria-label="Zotero Agent: see what it does">
+          <video muted loop playsinline preload="none" poster="agent/media/agent-demo-poster.jpg" width="1280" height="720" aria-hidden="true">
+            <source src="agent/media/agent-demo.mp4" type="video/mp4">
+            <source src="agent/media/agent-demo.webm" type="video/webm">
+          </video>
+        </a>
+      </div>
     </div>
   </section>
 
@@ -203,11 +238,11 @@
   <section class="section" id="routes">
     <div class="wrap">
       <div class="section-head">
-        <div><span class="kicker">Two ways in</span><h2>An MCP server, or a skill for agents with a shell</h2></div>
-        <p>Both use the same config. Use the MCP server when your client supports MCP but has no shell. Use the skill when your agent can run commands.</p>
+        <div><span class="kicker">Three ways in</span><h2>An MCP server, a skill for agents, or a panel in Zotero</h2></div>
+        <p>One package, <code>zotero-mcp-server</code>, ships all three, with the same config. Pick the one that fits where you work.</p>
       </div>
 
-      <div class="routes">
+      <div class="routes three">
         <div class="route">
           <h3>MCP server</h3>
           <div class="for">For chat apps</div>
@@ -221,6 +256,14 @@
           <ul class="chips"><li>Claude Code</li><li>Cursor</li><li>Codex</li><li>Windsurf</li><li>Gemini CLI</li><li>Amp</li><li>OpenCode</li></ul>
           <p>The agent runs <code>zotero-cli</code> commands with <code>--json</code>. Its instructions only load when the task involves Zotero.</p>
           <div class="code"><pre><span class="line"><span class="pr">$ </span>zotero-mcp install-skill</span></pre></div>
+        </div>
+        <div class="route agent">
+          <h3>Zotero Agent</h3>
+          <div class="for">For reading in Zotero</div>
+          <ul class="chips"><li>Claude Code</li><li>Codex</li><li>pi</li></ul>
+          <p>A chat panel next to the PDF. It knows the item, page and selection you have open, and answers link to the page.</p>
+          <a class="more" href="agent/">What it does &rarr;</a>
+          <div class="code"><pre><span class="line"><span class="pr">$ </span>zotero-cli plugin</span></pre></div>
         </div>
       </div>
 

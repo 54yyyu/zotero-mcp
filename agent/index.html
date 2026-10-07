@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zotero Agent: an AI chat panel inside Zotero, on your own Claude Code, Codex or pi</title>
+  <meta name="description" content="Zotero Agent is a free Zotero plugin that puts your own AI agent (Claude Code, Codex or pi) next to the PDF you are reading. It knows the page and selection, cites the sentence, translates in the reader and saves answers as notes. No extra API key.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="canonical" href="https://stevenyuyy.com/zotero-mcp/agent/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Zotero MCP">
+  <meta property="og:title" content="Zotero Agent: your own AI agent, inside Zotero">
+  <meta property="og:description" content="Chat with the paper you are reading. Runs on your Claude Code, Codex or pi subscription, cites the page and flashes the sentence, translates in the reader, saves answers as notes.">
+  <meta property="og:url" content="https://stevenyuyy.com/zotero-mcp/agent/">
+  <meta property="og:image" content="https://stevenyuyy.com/zotero-mcp/agent/media/og-agent.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Zotero Agent: a chat panel in Zotero answering a question about Attention Is All You Need, with page citations.">
+  <meta property="og:video" content="https://stevenyuyy.com/zotero-mcp/agent/media/agent-demo.mp4">
+  <meta property="og:video:type" content="video/mp4">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Zotero Agent: your own AI agent, inside Zotero">
+  <meta name="twitter:description" content="Your Claude Code, Codex or pi next to the PDF. Page citations that flash the sentence, translation in the reader, answers saved as notes. Free.">
+  <meta name="twitter:image" content="https://stevenyuyy.com/zotero-mcp/agent/media/og-agent.png">
+  <link rel="icon" href="../img/logo.svg" type="image/svg+xml">
+  <script>try{var t=localStorage.getItem("zmcp-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/styles.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Zotero Agent","applicationCategory":"UtilitiesApplication","operatingSystem":"Zotero 7 or newer","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT","url":"https://stevenyuyy.com/zotero-mcp/agent/","downloadUrl":"https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi","author":{"@type":"Person","name":"Steven Yu","url":"https://github.com/54yyyu"}}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap nav">
+    <a class="brand" href="../"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.13.3</a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="../">Overview</a>
+      <a href="./" aria-current="page">Zotero Agent</a>
+      <a href="../installation.html">Install &amp; setup</a>
+      <a href="../api.html">Reference</a>
+      <a class="ext" href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
+    </nav>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">
+      <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11z"/></svg>
+      <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="ahero hero">
+    <div class="wrap">
+      <div class="reveal">
+        <svg class="logo-svg" viewBox="0 0 128 128" role="img" aria-label="Zotero Agent logo"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>
+        <span class="kicker">Zotero Agent &middot; a free Zotero plugin</span>
+      </div>
+      <h1 class="reveal">Your own AI agent, <em>inside <span class="hl c-yellow">Zotero.</span></em></h1>
+      <div class="reveal">
+        <p class="lede">A chat panel next to the PDF you are reading. It runs the Claude Code, Codex or pi you already use, knows the page you are on, and cites every answer back to the sentence.</p>
+        <div class="hero-actions">
+          <a class="btn btn-accent" href="https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>Download zotero-agent.xpi</a>
+          <a class="btn btn-ghost" href="#install">How to install</a>
+        </div>
+        <div class="hero-meta"><span>Free and MIT licensed</span><span>No extra API key</span><span>Zotero 7 or newer</span><span>Updates itself</span></div>
+      </div>
+      <div class="frame reveal" data-video>
+        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>Zotero &middot; Attention Is All You Need</span></div>
+        <video autoplay muted loop playsinline preload="metadata" poster="media/agent-demo-poster.jpg" width="1280" height="720" aria-label="Zotero Agent in Zotero: a question about the open paper gets an answer with page citations; a citation click flashes the sentence in the PDF; a selection is translated in the reader's popup; a saved prompt runs from the / menu and its answer is saved as a note; the agent and model menu.">
+          <source src="media/agent-demo.mp4" type="video/mp4">
+          <source src="media/agent-demo.webm" type="video/webm">
+        </video>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <div><span class="kicker">What it does</span><h2>Reads what you read</h2></div>
+        <p>Every capture on this page is the real plugin in Zotero, answering questions about &ldquo;Attention Is All You Need&rdquo;.</p>
+      </div>
+
+      <div class="feat">
+        <div>
+          <span class="num">01</span>
+          <h3>Ask about the page you are on</h3>
+          <p>The panel sits to the right of the library and of every reader tab. Each message tells your agent what you have open: the item, the page, the text or area you selected, and the paper&rsquo;s metadata and abstract.</p>
+          <ul>
+            <li>Select text and it is attached on its own; an area goes along as an image if you want</li>
+            <li>Drag items from the library, or annotations from the reader&rsquo;s sidebar, onto the message box</li>
+            <li>The agent searches the paper&rsquo;s text on disk and reads only the pages it needs</li>
+          </ul>
+        </div>
+        <div class="frame portrait" data-video>
+          <video muted loop playsinline preload="none" poster="media/clip-ask.jpg" width="720" height="900" aria-label="A question about page 4 of the paper is typed and sent; the agent reads pages 4 and 5 and answers with citations.">
+            <source src="media/clip-ask.mp4" type="video/mp4">
+          </video>
+        </div>
+      </div>
+
+      <div class="feat flip">
+        <div>
+          <span class="num">02</span>
+          <h3>Citations that flash the sentence</h3>
+          <p>Answers cite papers with real <code>zotero://</code> links. A click opens the PDF at that page and highlights the quoted sentence for two seconds, so you can check a claim where it was made.</p>
+          <ul>
+            <li>The links stay valid when you paste them into a note</li>
+            <li>A list of sources under each answer names every item cited</li>
+          </ul>
+        </div>
+        <div class="frame portrait" data-video>
+          <video muted loop playsinline preload="none" poster="media/clip-cite.jpg" width="720" height="900" aria-label="A citation chip is clicked; the reader jumps to page 4 and the cited sentence is highlighted.">
+            <source src="media/clip-cite.mp4" type="video/mp4">
+          </video>
+        </div>
+      </div>
+
+      <div class="feat">
+        <div>
+          <span class="num">03</span>
+          <h3>Translate in the reader</h3>
+          <p>Select a word, a sentence or a paragraph and press <strong>Translate</strong> in Zotero&rsquo;s own selection popup. The translation streams in under the buttons, into any of 18 languages.</p>
+          <ul>
+            <li>It uses your agent in a separate session that is told only to translate, with no tools, none of your chats and none of your skills</li>
+            <li><strong>Fastest available</strong> picks your agent&rsquo;s fast model, such as Claude&rsquo;s Haiku</li>
+          </ul>
+        </div>
+        <div class="frame portrait" data-video>
+          <video muted loop playsinline preload="none" poster="media/clip-translate.jpg" width="720" height="900" aria-label="A sentence on page 4 is selected; Translate in the selection popup streams a Simplified Chinese translation.">
+            <source src="media/clip-translate.mp4" type="video/mp4">
+          </video>
+        </div>
+      </div>
+
+      <div class="feat flip">
+        <div>
+          <span class="num">04</span>
+          <h3>Skills, prompts, and notes</h3>
+          <p>Type <code>/</code> for your skills and saved prompts. Pin up to four: a new chat lists them under &ldquo;Start with&rdquo;, and <kbd>Cmd</kbd>+<kbd>Ctrl</kbd>+<kbd>1</kbd> to <kbd>4</kbd> runs them from anywhere in Zotero.</p>
+          <ul>
+            <li>A skill is a folder with a plain Markdown <code>SKILL.md</code>; your agent can write one with you</li>
+            <li><strong>Save as note</strong> turns an answer into a Zotero note on the paper, keeping headings, tables, math, links and drawings</li>
+          </ul>
+        </div>
+        <div class="frame portrait" data-video>
+          <video muted loop playsinline preload="none" poster="media/clip-notes.jpg" width="720" height="900" aria-label="The / menu lists the user's annotate-paper skill and four saved prompts; Short summary runs, and its answer is saved as a note.">
+            <source src="media/clip-notes.mp4" type="video/mp4">
+          </video>
+        </div>
+      </div>
+
+      <div class="feat" id="agents">
+        <div>
+          <span class="num">05</span>
+          <h3>Your agent, on your subscription</h3>
+          <p>Choose Claude Code, Codex or pi. Claude Code and Codex use the login you already have on this computer, so a Claude or ChatGPT plan covers it and there is no extra API key. pi runs local models or your own provider keys.</p>
+          <ul>
+            <li>One menu switches the agent and model, with an effort slider</li>
+            <li>Prefer an API key? It is kept in Zotero&rsquo;s login manager, never in preferences</li>
+          </ul>
+        </div>
+        <div class="shots">
+          <div class="frame theme-img">
+            <img class="on-light" src="media/agents-welcome-light.webp" width="640" height="736" alt="First run: choose Claude Code (uses your Claude subscription), Codex (uses your ChatGPT plan) or pi (local models or your own provider keys)." loading="lazy">
+            <img class="on-dark" src="media/agents-welcome-dark.webp" width="640" height="736" alt="" loading="lazy">
+          </div>
+          <div class="frame theme-img">
+            <img class="on-light" src="media/model-menu-light.webp" width="640" height="592" alt="The agent and model menu: Claude Code, Codex and pi, the models, and an effort slider." loading="lazy">
+            <img class="on-dark" src="media/model-menu-dark.webp" width="640" height="592" alt="" loading="lazy">
+          </div>
+        </div>
+      </div>
+
+      <div class="minis">
+        <div class="mini"><h4>Diagrams</h4><p>Ask for a pipeline or a 2x2 and the agent draws it in SVG, in your theme&rsquo;s colours. Save it as PNG or SVG, or add it to a note.</p></div>
+        <div class="mini"><h4>Math</h4><p>Formulas are typeset as they stream. Hover one to copy its TeX.</p></div>
+        <div class="mini"><h4>Continue in a terminal</h4><p>Every chat is a normal agent session. <strong>Copy terminal command</strong> gives you <code>claude --resume</code> and the like.</p></div>
+        <div class="mini"><h4>How full the chat is</h4><p>A small ring shows how much of the agent&rsquo;s context the chat uses, and offers a fresh chat when it fills.</p></div>
+        <div class="mini"><h4>Settings in one place</h4><p>Glass or flat, an accent colour, backgrounds, text size. The same cards appear in Zotero&rsquo;s own Settings window.</p></div>
+        <div class="mini"><h4>Light on Zotero</h4><p>Nothing heavy loads until you open the panel, with the toolbar button or <kbd>Cmd</kbd>+<kbd>Option</kbd>+<kbd>L</kbd>.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="different">
+    <div class="wrap">
+      <div class="section-head">
+        <div><span class="kicker">How it differs</span><h2>Your real agent, not a locked-down chatbot</h2></div>
+        <p>The panel adds context, a good chat view and one-click setup. Everything else is the agent you already use, with <code>zotero-cli</code> and its skill for the library.</p>
+      </div>
+      <div class="vs">
+        <div class="them">
+          <h3>A typical AI plugin</h3>
+          <ul>
+            <li>A hosted backend, credits or a licence key</li>
+            <li>Its own index of your PDFs, and answers from whatever it retrieved</li>
+            <li>Only the tools the plugin chose to build</li>
+            <li>Chats that live only inside the plugin</li>
+          </ul>
+        </div>
+        <div class="us">
+          <h3>Zotero Agent</h3>
+          <ul>
+            <li>Your Claude Code, Codex or pi, on the plan you already pay for</li>
+            <li>The agent works your library through <code>zotero-cli</code>: search, read pages, annotate, add by DOI, organise</li>
+            <li>Nothing is restricted: it can search the web and run commands, as in a terminal, and asks first if you want it to</li>
+            <li>Each chat is an agent session you can resume in a terminal</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="install">
+    <div class="wrap">
+      <div class="section-head">
+        <div><span class="kicker">Install</span><h2>Three steps, then it updates itself</h2></div>
+        <p>You need Zotero 7 or newer, Node.js, and Claude Code, Codex or pi signed in once in a terminal. The first run checks each of these and offers a fix where it can.</p>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Install zotero-mcp</h3>
+          <p>The plugin ships inside the <code>zotero-mcp-server</code> package, with <code>zotero-cli</code>.</p>
+          <div class="code"><pre><span class="line"><span class="pr">$ </span>uv tool install zotero-mcp-server</span></pre></div>
+        </li>
+        <li>
+          <h3>Find the plugin</h3>
+          <p>This prints where <code>zotero-agent.xpi</code> is. Or download it directly.</p>
+          <div class="code"><pre><span class="line"><span class="pr">$ </span>zotero-cli plugin --reveal</span></pre></div>
+        </li>
+        <li>
+          <h3>Install it in Zotero</h3>
+          <p><strong>Tools &gt; Plugins</strong>, the gear, <strong>Install Plugin From File</strong>, and choose the file. Then open the panel from the toolbar.</p>
+          <a class="btn btn-ghost" href="https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi">Download zotero-agent.xpi</a>
+        </li>
+      </ol>
+      <div class="prompt-box" style="margin-top:28px">
+        <h3 style="font-size:1.15rem;margin-bottom:8px">Or let your agent do it</h3>
+        <p class="fine" style="margin-top:0">Paste this to Claude Code, Codex, pi or any agent with a shell. It does everything except the last click, since Zotero cannot install a plugin from the command line.</p>
+        <div class="code"><pre><span class="line" data-copy="Install the Zotero Agent plugin for me. Make sure zotero-cli is installed (`uv tool install zotero-mcp-server`, or `pipx install zotero-mcp-server`), then run `zotero-cli plugin --reveal`: it prints the path of zotero-agent.xpi and shows it in my file manager. If it says the file is missing, download https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi instead. Zotero cannot install a plugin from the command line, so finish by telling me the one step I do myself: in Zotero, Tools > Plugins, the gear, Install Plugin From File, and choose that file.">Install the Zotero Agent plugin for me. Make sure zotero-cli is installed (`uv tool install zotero-mcp-server`, or `pipx install zotero-mcp-server`), then run `zotero-cli plugin --reveal`: it prints the path of zotero-agent.xpi and shows it in my file manager. If it says the file is missing, download https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi instead. Zotero cannot install a plugin from the command line, so finish by telling me the one step I do myself: in Zotero, Tools &gt; Plugins, the gear, Install Plugin From File, and choose that file.</span></pre></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="privacy">
+    <div class="wrap">
+      <div class="section-head">
+        <div><span class="kicker">Privacy</span><h2>No server. The plugin sends nothing itself.</h2></div>
+        <p>What leaves your computer is what the agent you chose sends to its own provider, as it would in a terminal.</p>
+      </div>
+      <div class="privacy">
+        <div class="c-green"><h3>What the agent sees</h3><p>Your messages, plus a short context block: the open item, page and selection, and the paper&rsquo;s metadata. Anything else, such as PDF text, it reads with its own tools while it works.</p></div>
+        <div class="c-blue"><h3>What stays local</h3><p>The panel&rsquo;s chat history is in your Zotero profile. A paper&rsquo;s text is extracted on your computer from the PDF already on disk, into a <code>papers/</code> folder the agent reads from.</p></div>
+        <div class="c-purple"><h3>Translate</h3><p>Sends the selected text, up to 6,000 characters, to the same provider. Claude and pi keep no record of those sessions; Codex keeps its usual one.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="faq">
+    <div class="wrap">
+      <div class="section-head">
+        <div><span class="kicker">FAQ</span><h2>Questions</h2></div>
+      </div>
+      <div class="faq">
+        <details><summary>Do I need an API key?</summary><div><p>No. Claude Code and Codex use the login they already have on your computer, so your Claude or ChatGPT plan covers the chats. If you would rather use an API key, paste it in the settings: it is stored in Zotero&rsquo;s login manager and handed to the agent as an environment variable.</p></div></details>
+        <details><summary>Which agents does it support?</summary><div><p>Claude Code, Codex and pi, each through its Agent Client Protocol bridge, which the panel installs once into its own data folder. pi can run local models or any provider you have set up for it. The models and effort levels in the menu are the ones your account offers.</p></div></details>
+        <details><summary>Can it change my library?</summary><div><p>Yes, through <code>zotero-cli</code>: notes, annotations, tags, collections, new items. On Zotero 10, run <code>zotero-mcp authorize-local</code> once to allow writes. Permission requests appear as cards in the chat, and a mode setting chooses between asking every time and allowing everything.</p></div></details>
+        <details><summary>Does it slow Zotero down?</summary><div><p>No. At startup it adds a toolbar button and a shortcut; the chat itself loads the first time you open the panel, and the panel is closed by default.</p></div></details>
+        <details><summary>Can I keep going in a terminal?</summary><div><p>Yes. Every chat is a normal agent session in a folder (by default <code>~/Documents/Zotero-Agent</code>). In the history list, <strong>Copy terminal command</strong> gives you the command to resume it, for example <code>claude --resume</code> with the session id.</p></div></details>
+        <details><summary>How does it update?</summary><div><p>Zotero checks for new versions of the plugin and installs them, like any other plugin.</p></div></details>
+        <details><summary>Is it free?</summary><div><p>Yes, and MIT licensed, like the rest of Zotero MCP. Your agent&rsquo;s usage counts against your own plan or key.</p></div></details>
+        <details><summary>Something is not working</summary><div><p>The dot at the top of the panel opens a status page that says what is missing. If Zotero has been running for days and the panel says its local API is not responding, restart Zotero. More in the <a href="https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md#troubleshooting">plugin guide</a>, or ask on <a href="https://discord.gg/BvgjbcBUqg">Discord</a>.</p></div></details>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="start">
+    <div class="wrap closing">
+      <div>
+        <span class="kicker">Get started</span>
+        <h2>Stop switching windows</h2>
+        <p>Install <code>zotero-mcp-server</code>, add the plugin, and ask the paper you are reading.</p>
+        <div class="hero-actions">
+          <a class="btn btn-accent" href="https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi">Download zotero-agent.xpi</a>
+          <a class="btn btn-ghost" href="https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md">Read the plugin guide</a>
+        </div>
+      </div>
+      <div class="support">
+        <h3>Part of Zotero MCP</h3>
+        <p>The same package gives Claude Desktop, ChatGPT and other MCP clients your library, and teaches coding agents to drive <code>zotero-cli</code>.</p>
+        <div class="hero-actions">
+          <a class="btn btn-ghost" href="../#routes">Three ways in</a>
+          <a class="btn btn-ghost" href="https://github.com/sponsors/54yyyu">Sponsor</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap foot">
+    <span>Zotero MCP v0.13.3 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
+      <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
+      <a href="https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md">Plugin guide</a>
+      <a href="https://github.com/54yyyu/zotero-mcp/issues">Issues</a>
+      <a href="https://discord.gg/BvgjbcBUqg">Discord</a>
+    </nav>
+  </div>
+</footer>
+<script src="../js/site.js"></script>
+</body>
+</html>

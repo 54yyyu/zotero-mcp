@@ -109,6 +109,34 @@
     });
   });
 
+  // Demo videos: muted loops that play only while on screen. With reduced motion they do not autoplay: the poster
+  // shows, and the button plays them. A video that cannot load leaves its poster in place.
+  var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var vids = document.querySelectorAll("[data-video] video");
+  var PLAY = '<svg class="i-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z"/></svg>';
+  var PAUSE = '<svg class="i-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4h4.5v16H6zM13.5 4H18v16h-4.5z"/></svg>';
+  vids.forEach(function (v) {
+    var box = v.closest("[data-video]");
+    var btn = document.createElement("button");
+    btn.type = "button"; btn.className = "vid-toggle"; btn.innerHTML = PLAY + PAUSE;
+    box.appendChild(btn);
+    var wanted = !still;
+    function sync() { box.classList.toggle("paused", v.paused); btn.setAttribute("aria-label", v.paused ? "Play video" : "Pause video"); }
+    function play() { var p = v.play(); if (p && p.catch) p.catch(function () { sync(); }); }
+    v.addEventListener("play", sync); v.addEventListener("pause", sync);
+    btn.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); wanted = v.paused; if (wanted) { v.preload = "auto"; play(); } else v.pause(); });
+    if (still) { v.removeAttribute("autoplay"); v.autoplay = false; v.pause(); }
+    sync();
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (es) {
+        es.forEach(function (e) {
+          if (e.isIntersecting && wanted) { v.preload = "auto"; play(); }
+          else if (!e.isIntersecting && !v.paused) v.pause();
+        });
+      }, { threshold: 0.25 }).observe(v);
+    }
+  });
+
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (reduce || !("IntersectionObserver" in window)) return;
   root.classList.add("motion");
