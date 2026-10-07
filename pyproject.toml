@@ -8,8 +8,8 @@ dynamic = ["version"]
 authors = [
   { name = "54yyyu", email = "54yyyu@github.com" },
 ]
-description = "A Model Context Protocol server for Zotero"
-keywords = ["zotero", "mcp", "model-context-protocol", "cli", "research", "citations", "bibliography"]
+description = "Zotero MCP server and CLI: chat with your Zotero research library in Claude, ChatGPT, Cursor, Codex and other AI agents"
+keywords = ["zotero", "mcp", "model-context-protocol", "cli", "research", "citations", "bibliography", "mcp-server", "claude", "chatgpt", "ai-agent", "semantic-search", "pdf", "zotero-plugin"]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
