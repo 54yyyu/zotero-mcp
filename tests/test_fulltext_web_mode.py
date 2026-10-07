@@ -180,17 +180,18 @@ def _build_search(monkeypatch, zot: FakeZoteroClient, chroma: FakeChromaClient,
 
 # --------- Unit tests: fulltext fetch helper ----------
 
-def test_fetch_fulltext_via_web_api_parent_hit(monkeypatch):
+def test_fetch_fulltext_via_web_api_ignores_text_under_the_parent_key(monkeypatch):
+    """Zotero keeps extracted text per attachment; the parent is never probed."""
     zot = FakeZoteroClient()
-    zot.load_scenario([_paper("AAA")], fulltext={"AAA": {"content": "Body text.", "indexedChars": 10, "totalChars": 10}})
+    zot.load_scenario([_paper("AAA")], fulltext={"AAA": {"content": "Body text."}})
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     text, source = search._fetch_fulltext_via_web_api("AAA")
-    assert text == "Body text."
-    assert source == "web-api:parent"
+    assert (text, source) == ("", "")
+    assert [c for c in zot.calls if c[0] == "fulltext_item"] == []
 
 
 def test_fetch_fulltext_via_web_api_attachment_fallback(monkeypatch):
-    """When parent has no fulltext (404), walk children and try PDF attachments."""
+    """Walk the item's children and take the first PDF attachment with text."""
     parent = _paper("PAR", title="Paper")
     child = {
         "key": "CHILD1",
@@ -200,7 +201,6 @@ def test_fetch_fulltext_via_web_api_attachment_fallback(monkeypatch):
     zot = FakeZoteroClient()
     zot.load_scenario(
         [parent],
-        # parent lookup will fail (key not in fulltext_by_key -> raise)
         fulltext={"CHILD1": {"content": "Attachment body."}},
         children={"PAR": [child]},
     )
@@ -208,7 +208,6 @@ def test_fetch_fulltext_via_web_api_attachment_fallback(monkeypatch):
     text, source = search._fetch_fulltext_via_web_api("PAR")
     assert text == "Attachment body."
     assert source == "web-api:attachment:CHILD1"
-    # Verify we actually tried the parent first, then walked children
     call_names = [c[0] for c in zot.calls]
     assert "fulltext_item" in call_names and "children" in call_names
 
@@ -535,7 +534,7 @@ def test_attach_web_fulltext_bulk_walk_makes_no_per_item_requests(monkeypatch):
     papers = _many_papers(zot, 60, with_pdf=[3, 7, 11])
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     zot.calls.clear()
-    search._attach_web_fulltext(papers)
+    search._attach_web_fulltext(papers, whole_library=True)
     names = [c[0] for c in zot.calls]
     assert names.count("children") == 0
     assert names.count("fulltext_item") == 3
@@ -557,5 +556,20 @@ def test_attach_web_fulltext_falls_back_to_children_when_listing_fails(monkeypat
 
     zot.items = failing
     search = _build_search(monkeypatch, zot, FakeChromaClient())
-    search._attach_web_fulltext(papers)
+    search._attach_web_fulltext(papers, whole_library=True)
     assert papers[2]["data"]["fulltext"] == "text 2"
+
+
+def test_attach_web_fulltext_does_not_walk_every_attachment_for_a_few_items(monkeypatch):
+    """Without whole_library (an incremental update of changed items), many
+    items still ask per item: paging a large library's attachments would cost
+    more than their children."""
+    zot = FakeZoteroClient()
+    papers = _many_papers(zot, 60, with_pdf=[3])
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    zot.calls.clear()
+    search._attach_web_fulltext(papers)
+    names = [c[0] for c in zot.calls]
+    assert names.count("items") == 0
+    assert names.count("children") == 60
+    assert papers[3]["data"]["fulltext"] == "text 3"
