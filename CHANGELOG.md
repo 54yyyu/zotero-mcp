@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`zotero_export_bibliography(item_keys=...)` renders every requested item** (#662). Keys were fetched from `/items`, which also returns each item's notes and attachments, so those filled the 100-row page: 60 keys gave 52 entries and 80 gave 53, with no warning, in every format. Keys now go to `/items/top` in batches of 50, Zotero's limit for one `itemKey` filter.
+- **`zotero_export_bibliography` exports a whole collection or library, not the first 100 rows.** A 191-reference collection came back with 51 entries and no notice, because the fetch included each item's child attachments, which render as empty entries, used up the 100-row cap and were then dropped; the library-wide export stopped at 68 of 470 the same way, and BibTeX took one 100-row page. It now reads the top-level item endpoints and pages until exhausted for bib, citation and bibtex (191 of 191 and 470 of 470 live).
 
 ## [0.13.3] - 2026-10-06
 
