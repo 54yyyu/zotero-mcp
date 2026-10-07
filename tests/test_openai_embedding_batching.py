@@ -121,7 +121,7 @@ def test_voyage_base64_response_is_decoded():
         return resp
 
     ef.client.embeddings.create = create
-    ef([0.5, 2.0])
+    assert ef([0.5, 2.0]) == [[0.5], [2.0]]
     assert [c["encoding_format"] for c in calls] == ["base64"]
 
 
