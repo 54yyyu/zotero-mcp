@@ -8,14 +8,14 @@ dynamic = ["version"]
 authors = [
   { name = "54yyyu", email = "54yyyu@github.com" },
 ]
-description = "A Model Context Protocol server for Zotero"
-keywords = ["zotero", "mcp", "model-context-protocol", "cli", "research", "citations", "bibliography"]
-license = {text = "MIT"}
+description = "Zotero MCP server and CLI: chat with your Zotero research library in Claude, ChatGPT, Cursor, Codex and other AI agents"
+keywords = ["zotero", "mcp", "model-context-protocol", "cli", "research", "citations", "bibliography", "mcp-server", "claude", "chatgpt", "ai-agent", "semantic-search", "pdf", "zotero-plugin"]
+license = "MIT AND AGPL-3.0-or-later"
+license-files = ["LICENSE", "plugin/LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -40,6 +40,9 @@ dependencies = [
     "pdf-inspector==0.2.6",
     # HTML snapshots only.
     "markdownify>=1.2",
+    # Markdown note text to Zotero note HTML (note_html.py). Already installed
+    # with fastmcp (through rich); declared because we import it.
+    "markdown-it-py>=2.2",
     "pydantic>=2.0.0",
     "requests>=2.28.0",
     # <4 until the FastMCP 4 migration: FastMCP 4 targets the stateless
@@ -106,6 +109,16 @@ zotero-mcp-server = "zotero_mcp.cli:main"
 
 [tool.hatch.version]
 path = "src/zotero_mcp/_version.py"
+
+# The Zotero Agent plugin is built from plugin/ at release time and not committed, so
+# it is gitignored; artifacts overrides that. At the top level so the sdist carries it
+# too, since `python -m build` makes the wheel from the sdist.
+[tool.hatch.build]
+artifacts = ["src/zotero_mcp/chat_plugin/zotero-agent.xpi"]
+
+# hatchling reads only the top-level .gitignore, so the ignores in plugin/ (and plugin/preview/) are repeated here.
+[tool.hatch.build.targets.sdist]
+exclude = ["plugin/node_modules", "plugin/dist", "plugin/.dev*", "plugin/preview/shots", "plugin/**/*.xpi"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zotero_mcp"]

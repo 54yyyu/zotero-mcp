@@ -19,7 +19,7 @@ import logging
 
 from zotero_mcp._context import Context
 from zotero_mcp import client as _client
-from zotero_mcp.client import with_zotero_api_lock
+from zotero_mcp.client import zotero_api_lock
 from zotero_mcp import scite_client as _scite
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@with_zotero_api_lock
 def _extract_doi(item: dict) -> str | None:
     """Extract and normalize DOI from a Zotero item."""
     doi = item.get("data", {}).get("DOI", "")
@@ -47,7 +46,6 @@ def _extract_doi(item: dict) -> str | None:
     return None
 
 
-@with_zotero_api_lock
 def _format_tally_line(tally: dict) -> str:
     """Format a tally dict as a compact inline string."""
     s = tally.get("supporting", 0)
@@ -57,7 +55,6 @@ def _format_tally_line(tally: dict) -> str:
     return f"Supporting: {s} | Contrasting: {c} | Mentioning: {m} (total citing: {total})"
 
 
-@with_zotero_api_lock
 def _format_editorial_notices(notices: list[dict]) -> list[str]:
     """Format editorial notices as warning lines."""
     lines = []
@@ -84,7 +81,6 @@ def _format_editorial_notices(notices: list[dict]) -> list[str]:
     return lines
 
 
-@with_zotero_api_lock
 def enrich_items(items: list[dict]) -> dict[str, dict[str, str]]:
     """Batch-enrich a list of Zotero items with Scite data.
 
@@ -158,7 +154,6 @@ def enrich_items(items: list[dict]) -> dict[str, dict[str, str]]:
         "scite_enrich_item(item_key='RTKZQI8E')."
     ),
 )
-@with_zotero_api_lock
 def enrich_item(
     doi: str | None = None,
     item_key: str | None = None,
@@ -173,8 +168,9 @@ def enrich_item(
         # Resolve DOI from Zotero item if needed
         if not doi and item_key:
             ctx.info(f"Looking up DOI for Zotero item {item_key}")
-            zot = _client.get_zotero_client()
-            item = zot.item(item_key)
+            with zotero_api_lock():
+                zot = _client.get_zotero_client()
+                item = zot.item(item_key)
             if not item:
                 return f"Error: Zotero item '{item_key}' not found"
             doi = _extract_doi(item)
@@ -270,7 +266,6 @@ def enrich_item(
         "Example: scite_enrich_search(query='Cladder-Micus', limit=5)."
     ),
 )
-@with_zotero_api_lock
 def enrich_search(
     query: str,
     limit: int | str = 10,
@@ -282,17 +277,19 @@ def enrich_search(
         if not query.strip():
             return "Error: search query cannot be empty"
 
-        zot = _client.get_zotero_client()
         limit_int = _helpers._normalize_limit(limit, default=10)
 
         ctx.info(f"Searching Zotero for '{query}' and enriching with Scite data")
-        zot.add_parameters(
-            q=query,
-            qmode="titleCreatorYear",
-            itemType="-attachment",
-            limit=limit_int,
-        )
-        results = zot.items()
+        # The Zotero API lock covers the Zotero read only, not the Scite call.
+        with zotero_api_lock():
+            zot = _client.get_zotero_client()
+            zot.add_parameters(
+                q=query,
+                qmode="titleCreatorYear",
+                itemType="-attachment",
+                limit=limit_int,
+            )
+            results = zot.items()
 
         if not results:
             return f"No items found matching query: '{query}'"
@@ -351,7 +348,6 @@ def enrich_search(
         "scite_check_retractions(collection='Orals', limit=500)."
     ),
 )
-@with_zotero_api_lock
 def check_retractions(
     collection: str | None = None,
     tag: str | None = None,
@@ -361,30 +357,32 @@ def check_retractions(
 ) -> str:
     """Check Zotero items for editorial notices (retractions, corrections)."""
     try:
-        zot = _client.get_zotero_client()
         limit_int = _helpers._normalize_limit(limit, default=50, max_val=500)
 
-        # Fetch items
-        if collection:
-            ctx.info(f"Checking collection '{collection}' for retractions")
-            keys = _helpers._resolve_collection_names(zot, [collection], ctx)
-            if not keys:
-                return f"Collection '{collection}' not found"
-            items = zot.collection_items(
-                keys[0], limit=limit_int, itemType="-attachment"
-            )
-        elif tag:
-            ctx.info(f"Checking items tagged '{tag}' for retractions")
-            zot.add_parameters(tag=tag, itemType="-attachment", limit=limit_int)
-            items = zot.items()
-        else:
-            ctx.info("Checking recent items for retractions")
-            items = zot.items(
-                sort="dateModified",
-                direction="desc",
-                limit=limit_int,
-                itemType="-attachment",
-            )
+        # The Zotero API lock covers the Zotero reads only, not the Scite call.
+        with zotero_api_lock():
+            zot = _client.get_zotero_client()
+            # Fetch items
+            if collection:
+                ctx.info(f"Checking collection '{collection}' for retractions")
+                keys = _helpers._resolve_collection_names(zot, [collection], ctx)
+                if not keys:
+                    return f"Collection '{collection}' not found"
+                items = zot.collection_items(
+                    keys[0], limit=limit_int, itemType="-attachment"
+                )
+            elif tag:
+                ctx.info(f"Checking items tagged '{tag}' for retractions")
+                zot.add_parameters(tag=tag, itemType="-attachment", limit=limit_int)
+                items = zot.items()
+            else:
+                ctx.info("Checking recent items for retractions")
+                items = zot.items(
+                    sort="dateModified",
+                    direction="desc",
+                    limit=limit_int,
+                    itemType="-attachment",
+                )
 
         if not items:
             return "No items found to check."

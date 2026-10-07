@@ -51,6 +51,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+      - name: Build the Zotero Agent plugin
+        run: |
+          npm ci
+          npm run build
+          mkdir -p ../src/zotero_mcp/chat_plugin
+          cp dist/zotero-agent.xpi ../src/zotero_mcp/chat_plugin/
+        working-directory: plugin
       - name: Build package
         run: |
           pip install build
@@ -60,6 +72,12 @@ jobs:
         with:
           name: dist
           path: dist/
+      # Not in dist/: the PyPI upload step takes everything there.
+      - name: Upload the plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpi
+          path: plugin/dist/zotero-agent.xpi
 
   publish:
     needs: [test, build]
@@ -77,6 +95,25 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: xpi
+      - name: Attach the plugin to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" zotero-agent.xpi --clobber
 
   publish-registry:
     needs: publish

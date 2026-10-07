@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <style>
+    :root { --ink: #1a1a1a; --z: #cc2936; }
+    @media (prefers-color-scheme: dark) { :root { --ink: #e6e8eb; --z: #ff7b86; } }
+  </style>
+  <g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke="var(--ink)" stroke-width="5.5"/>
+    <path d="M47 39H81L47 77H81" stroke="var(--z)" stroke-width="8"/>
+  </g>
+</svg>

@@ -146,6 +146,88 @@ class TestExtractHtml:
         snapshot.write_bytes(b"<p>caf\xe9</p>")
         assert "caf" in extract_html(snapshot).text
 
+    def test_embedded_data_images_are_dropped(self, tmp_path):
+        # Connector snapshots inline images as data: URIs; copying them into
+        # the Markdown turned a 33K-character article into 6.1M characters.
+        payload = "iVBORw0KGgo" + "A" * 200_000
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            f'<p>Before</p><img alt="Logo" src="data:image/png;base64,{payload}">'
+            '<p>After</p>'
+        )
+        text = extract_html(snapshot).text
+        assert "Before" in text and "After" in text
+        assert "base64" not in text
+        assert len(text) < 200
+
+    def test_svg_data_uri_with_parentheses_is_dropped(self, tmp_path):
+        # A utf8 SVG URI can contain ")", which would end a Markdown image
+        # early; dropping at the element level avoids parsing it at all.
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            "<p>Text</p><img src=\"data:image/svg+xml;utf8,<svg>"
+            "<path d='M0 0 (1)'/></svg>\">"
+        )
+        text = extract_html(snapshot).text
+        assert "Text" in text
+        assert "svg" not in text
+
+    def test_data_images_inside_links_leave_the_link_text(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<a href="https://example.org/">'
+            '<img alt="Home" src="data:image/png;base64,AAAA">Home page</a>'
+        )
+        text = extract_html(snapshot).text
+        assert "https://example.org/" in text
+        assert "Home page" in text
+        assert "AAAA" not in text
+
+    def test_data_images_leave_a_marker_with_alt_text(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<img alt="  Figure 2:\n adoption [2024] " src="data:image/png;base64,AAAA">'
+            '<img src="data:image/png;base64,BBBB">'
+            '<img alt="   " src="data:image/gif;base64,CCCC">'
+        )
+        text = extract_html(snapshot).text
+        assert "[image: Figure 2: adoption 2024]" in text
+        assert text.count("[image]") == 2
+
+    def test_data_video_posters_and_sources_are_dropped(self, tmp_path):
+        # markdownify renders <video> as an image of its poster, so a data:
+        # poster leaked base64 the same way an <img> did.
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<video poster="data:image/png;base64,PPPP">No video support.</video>'
+            '<video poster="data:image/png;base64,QQQQ" src="https://example.org/a.mp4">'
+            "Clip</video>"
+            '<video><source src="data:video/mp4;base64,SSSS">'
+            '<source src="https://example.org/b.mp4">Fallback</video>'
+        )
+        text = extract_html(snapshot).text
+        for payload in ("PPPP", "QQQQ", "SSSS", "data:"):
+            assert payload not in text
+        assert "No video support." in text
+        assert "https://example.org/a.mp4" in text
+        assert "https://example.org/b.mp4" in text
+
+    def test_data_links_keep_only_their_text(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            '<p><a href="data:application/pdf;base64,LLLL">Download</a> and '
+            '<a href="https://example.org/">site</a></p>'
+        )
+        text = extract_html(snapshot).text
+        assert "LLLL" not in text and "data:" not in text
+        assert "Download" in text
+        assert "[site](https://example.org/)" in text
+
+    def test_remote_images_are_kept(self, tmp_path):
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text('<img alt="Figure 1" src="https://example.org/f1.png">')
+        assert "![Figure 1](https://example.org/f1.png)" in extract_html(snapshot).text
+
 
 class TestExtractTextFile:
     def test_reads_content_verbatim(self, tmp_path):
@@ -377,3 +459,139 @@ class TestOcrLayerFallback:
         fake_inspector(markdown=["", ""], text="all of it")
         doc = extract_pdf("scan.pdf", pages=[0, 1])
         assert "all of it" in doc.text
+
+
+class _CountingInspector(_FakeInspector):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.markdown_calls = []
+
+    def extract_pages_markdown(self, path, pages=None):
+        self.markdown_calls.append(pages)
+        return super().extract_pages_markdown(path, pages=pages)
+
+
+@pytest.fixture
+def counting_inspector(monkeypatch):
+    from zotero_mcp import extract
+
+    extract._parse_memo.clear()
+    fake = _CountingInspector(markdown=["p0", "p1", "p2", "p3"])
+    monkeypatch.setattr("zotero_mcp.extract._pdf_inspector", lambda: fake)
+    yield fake
+    extract._parse_memo.clear()
+
+
+class TestParseReuse:
+    """pdf-inspector's markdown pass costs the same for one page as for the
+    whole file (3.7-6 s on some 28-page papers), so reading a paper in chunks
+    must not re-run it for every range."""
+
+    def test_page_ranges_of_one_file_parse_it_once(self, counting_inspector, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        first = extract_pdf(pdf, pages=[0, 1], reuse=True)
+        second = extract_pdf(pdf, pages=[2, 3], reuse=True)
+        head = extract_pdf(pdf, max_pages=3, reuse=True)
+        assert len(counting_inspector.markdown_calls) == 1
+        assert first.pages == ("p0", "p1") and first.page_numbers == (0, 1)
+        assert second.pages == ("p2", "p3") and second.page_numbers == (2, 3)
+        assert head.pages == ("p0", "p1", "p2") and head.truncated
+        assert head.page_count == 4
+
+    def test_without_reuse_every_call_parses(self, counting_inspector, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        extract_pdf(pdf, pages=[0])
+        extract_pdf(pdf, pages=[1])
+        assert counting_inspector.markdown_calls == [[0], [1]]
+
+    def test_a_changed_file_is_parsed_again(self, counting_inspector, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        pdf.write_bytes(b"%PDF-1.4 one, edited")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        assert len(counting_inspector.markdown_calls) == 2
+
+    def test_out_of_range_pages_are_dropped_like_the_uncached_path(
+        self, counting_inspector, tmp_path
+    ):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        doc = extract_pdf(pdf, pages=[3, 9], reuse=True)
+        assert doc.page_numbers == (3,)
+        assert not extract_pdf(pdf, pages=[9], reuse=True).pages
+
+    def test_memo_is_bounded(self, counting_inspector, tmp_path, monkeypatch):
+        from zotero_mcp import extract
+
+        monkeypatch.setattr(extract, "_MEMO_MAX_ENTRIES", 2)
+        for i in range(4):
+            pdf = tmp_path / f"p{i}.pdf"
+            pdf.write_bytes(b"%PDF-1.4 " + bytes([65 + i]))
+            extract_pdf(pdf, pages=[0], reuse=True)
+        assert len(extract._parse_memo) == 2
+
+    def test_memo_skips_documents_over_the_character_budget(
+        self, counting_inspector, tmp_path, monkeypatch
+    ):
+        from zotero_mcp import extract
+
+        monkeypatch.setattr(extract, "_MEMO_MAX_CHARS", 3)
+        pdf = tmp_path / "big.pdf"
+        pdf.write_bytes(b"%PDF-1.4 big")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        assert not extract._parse_memo
+
+    def test_ocr_flags_stay_absolute_in_a_reused_slice(self, monkeypatch, tmp_path):
+        from zotero_mcp import extract
+
+        extract._parse_memo.clear()
+        fake = _CountingInspector(markdown=["a", "", "c"])
+        monkeypatch.setattr("zotero_mcp.extract._pdf_inspector", lambda: fake)
+        pdf = tmp_path / "scan.pdf"
+        pdf.write_bytes(b"%PDF-1.4 s")
+        doc = extract_pdf(pdf, pages=[1, 2], reuse=True)
+        assert doc.page_numbers == (1, 2) and doc.needs_ocr == (1,)
+        extract._parse_memo.clear()
+
+    def test_page_count_reads_the_memo(self, counting_inspector, tmp_path, monkeypatch):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        monkeypatch.setattr(counting_inspector, "classify_pdf", lambda p: 1 / 0)
+        assert pdf_page_count(pdf) == 4
+
+    def test_scanner_text_layer_is_not_reparsed_whole_on_every_read(
+        self, monkeypatch, tmp_path
+    ):
+        """A PDF whose whole-document parse falls back to the text layer cannot
+        be sliced by page; later reads must not repeat that whole parse."""
+        from zotero_mcp import extract
+
+        extract._parse_memo.clear()
+        fake = _CountingInspector(markdown=["", "", ""], text="scanned text")
+        monkeypatch.setattr("zotero_mcp.extract._pdf_inspector", lambda: fake)
+        pdf = tmp_path / "scan.pdf"
+        pdf.write_bytes(b"%PDF-1.4 s")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        assert fake.markdown_calls == [None, [0]]  # whole parse, then the subset
+        extract_pdf(pdf, pages=[1], reuse=True)
+        assert fake.markdown_calls == [None, [0], [1]]
+        extract._parse_memo.clear()
+
+
+class TestReaderOptsIntoReuse:
+    def test_reader_passes_reuse_only_when_asked(self, monkeypatch):
+        from zotero_mcp import local_db
+
+        seen = []
+        monkeypatch.setattr(
+            local_db, "extract_file", lambda p, **kw: seen.append(kw) or None
+        )
+        indexer = local_db.LocalZoteroReader(db_path="x.sqlite")
+        interactive = local_db.LocalZoteroReader(db_path="x.sqlite", reuse_pdf_parse=True)
+        indexer._extract_doc_from_file(Path("a.pdf"))
+        interactive._extract_doc_from_file(Path("a.pdf"))
+        assert [kw["reuse"] for kw in seen] == [False, True]

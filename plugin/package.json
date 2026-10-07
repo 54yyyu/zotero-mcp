@@ -1,0 +1,27 @@
+{
+  "name": "zotero-mcp-chat-plugin",
+  "private": true,
+  "type": "module",
+  "description": "Chat side panel for Zotero, driven by any ACP agent",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'test/**/*.test.ts'",
+    "test:zotero": "node scripts/test-zotero.mjs",
+    "dev": "node scripts/dev.mjs"
+  },
+  "devDependencies": {
+    "@types/katex": "^0.16.8",
+    "@types/node": "^26.6.4",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "katex": "^0.19.0",
+    "marked": "^18.0.14"
+  }
+}

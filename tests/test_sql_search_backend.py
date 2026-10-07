@@ -828,3 +828,90 @@ def test_hydrated_tags_carry_the_automatic_type(tmp_path):
         {"tag": "MeSH heading", "type": 1},
         {"tag": "physics"},
     ]
+
+
+# ---------------------------------------------------------------------------
+# advanced_search_sql: any Zotero field, not only the whitelisted few
+# ---------------------------------------------------------------------------
+
+def _reader_with_extra_fields(tmp_path) -> LocalZoteroReader:
+    """The fixture plus `extra` and `publisher` values on two items."""
+    db_path = tmp_path / "zotero.sqlite"
+    _build_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.executemany(
+        "INSERT INTO fields (fieldID, fieldName) VALUES (?, ?)",
+        [(18, "extra"), (7, "publisher")],
+    )
+    for value_id, item_id, field_id, value in [
+        (9001, 1, 18, "Citation Key: doe2024"),
+        (9002, 1, 7, "Springer"),
+        (9003, 2, 7, "Oxford Press"),
+    ]:
+        conn.execute("INSERT INTO itemDataValues (valueID, value) VALUES (?, ?)", (value_id, value))
+        conn.execute(
+            "INSERT INTO itemData (itemID, fieldID, valueID) VALUES (?, ?, ?)",
+            (item_id, field_id, value_id),
+        )
+    conn.commit()
+    conn.close()
+    return LocalZoteroReader(db_path=str(db_path))
+
+
+def _adv(reader, *conditions, join_mode="all"):
+    return reader.advanced_search_sql(list(conditions), join_mode=join_mode, group_id=0)
+
+
+def test_advanced_search_sql_serves_non_whitelisted_field(tmp_path):
+    """`extra`/`publisher` used to make the translator return None, which sent
+    the tool on a full-library walk over the API (2 s, 11 requests, 2.5 MB
+    against a 2 ms query)."""
+    reader = _reader_with_extra_fields(tmp_path)
+    try:
+        by_extra = _adv(reader, {"field": "extra", "operation": "contains", "value": "doe2024"})
+        by_publisher = _adv(reader, {"field": "publisher", "operation": "is", "value": "oxford press"})
+        negated = _adv(reader, {"field": "publisher", "operation": "doesNotContain", "value": "Springer"})
+    finally:
+        reader.close()
+    assert by_extra is not None and {r["key"] for r in by_extra} == {"PERS0001"}
+    assert by_publisher is not None and {r["key"] for r in by_publisher} == {"PERS0002"}
+    # An item with no value for the field satisfies a negated operator.
+    assert negated is not None and "PERS0001" not in {r["key"] for r in negated}
+    assert "PERS0002" in {r["key"] for r in negated} and "PERS0005" in {r["key"] for r in negated}
+
+
+def test_advanced_search_sql_combines_non_whitelisted_field_with_others(tmp_path):
+    reader = _reader_with_extra_fields(tmp_path)
+    try:
+        result = _adv(
+            reader,
+            {"field": "title", "operation": "contains", "value": "Quantum"},
+            {"field": "publisher", "operation": "contains", "value": "Spring"},
+        )
+    finally:
+        reader.close()
+    assert {r["key"] for r in result} == {"PERS0001"}
+
+
+def test_advanced_search_sql_unknown_field_still_unsupported(tmp_path):
+    """A name that is not in the `fields` table is not translated (the caller
+    keeps its fallback), and a name carrying SQL is never interpolated."""
+    reader = _reader_with_extra_fields(tmp_path)
+    try:
+        assert _adv(reader, {"field": "titel", "operation": "contains", "value": "x"}) is None
+        evil = "extra') OR 1=1 --"
+        assert _adv(reader, {"field": evil, "operation": "contains", "value": "x"}) is None
+    finally:
+        reader.close()
+
+
+def test_advanced_search_sql_leaves_ordering_on_other_fields_to_the_fallback(tmp_path):
+    """`volume isGreaterThan 9` is numeric on the API path (12 > 9); SQL would
+    order the stored text, where "12" < "9". Decline rather than disagree."""
+    reader = _reader_with_extra_fields(tmp_path)
+    try:
+        for op in ("isGreaterThan", "isLessThan", "isBefore", "isAfter"):
+            assert _adv(reader, {"field": "publisher", "operation": op, "value": "9"}) is None
+        assert _adv(reader, {"field": "publisher", "operation": "is", "value": "springer"}) is not None
+    finally:
+        reader.close()

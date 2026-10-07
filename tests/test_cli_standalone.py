@@ -389,6 +389,19 @@ class TestCmdNotes:
         call_kwargs = mock_annotations.create_note.call_args.kwargs
         assert call_kwargs["tags"] == ["a", "b", "c"]
 
+    def test_update_passes_append(self):
+        args = MagicMock(subcommand="update", item_key="NOTE0001", text="more **text**", append=True, verbose=False)
+        mock_annotations = MagicMock()
+        mock_annotations.update_note.return_value = "ok"
+
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            with patch("zotero_mcp.cli_standalone._import_tools",
+                       return_value=(MagicMock(), MagicMock(), mock_annotations, MagicMock(), MagicMock())):
+                cmd_notes(args)
+
+        call_kwargs = mock_annotations.update_note.call_args.kwargs
+        assert (call_kwargs["note_text"], call_kwargs["append"]) == ("more **text**", True)
+
 
 # ---------------------------------------------------------------------------
 # cmd_edit

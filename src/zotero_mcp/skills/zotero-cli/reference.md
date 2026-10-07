@@ -112,6 +112,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--comment`
  - `--color` -- default `#ffd400` -- Hex, or a Zotero color name: yellow, red, green, blue, purple, magenta, orange, gray
  - `--tags` -- Comma-separated tags
+ - `--open` -- Then show the new annotation in the Zotero reader
 
 ### `annotations batch`
 
@@ -137,13 +138,14 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
  - `--item-key` -- **required**
  - `--title`
- - `--text` -- Note text (use - to read from stdin)
+ - `--text` -- Markdown ($math$, tables, zotero:// links, plus <u> <s> <sub> <sup> <mark> <span style="color:red">) or note HTML; - reads stdin
  - `--tags`
 
 ### `notes update`
 
  - `--item-key` -- **required**
- - `--text` -- New text (use - for stdin)
+ - `--text` -- Markdown ($math$, tables, zotero:// links, plus <u> <s> <sub> <sup> <mark> <span style="color:red">) or note HTML; - reads stdin
+ - `--append` -- Add the text at the end instead of replacing the note
 
 ### `notes delete`
 
@@ -333,8 +335,10 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ## `read`
 
  - `<item_key>`
- - `--start-page` -- **required**
- - `--end-page` -- Defaults to --start-page (a single page)
+ - `--start-page` -- First page (required unless --find is given)
+ - `--end-page` -- Defaults to --start-page (a single page); with --find, the last page
+ - `--find` -- Locate TEXT instead of reading: ranked pages with short snippets (ignores case, punctuation and hyphenation); --start-page/--end-page narrow the search
+ - `--context` -- default `12` -- With --find: words of context on each side of a match (1-60, default 12)
  - `--format` -- one of `text`, `image` -- default `text` -- image writes PNG page images (up to 10 pages) for math, figures and tables
  - `--rect` -- With --format image: crop the start page to x,y,width,height (normalized 0-1), e.g. from `zotero-cli layout`
  - `--out` -- With --format image: directory for the PNG files (default: a new temporary directory)
@@ -389,6 +393,12 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ## `path`
 
  - `<item_key>`
+
+## `open`
+
+ - `<item_key>` -- Item or attachment key (not needed with --annotation)
+ - `--page` -- 1-based page position, as `read` counts pages
+ - `--annotation` -- Annotation key to jump to and select
 
 ## `batch`
 

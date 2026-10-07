@@ -28,6 +28,9 @@ htmlcov/
 # content, real credentials, not portable to CI or other contributors).
 /private_tests/
 
+# Built from plugin/ by the release workflow, then shipped in the wheel and sdist
+src/zotero_mcp/chat_plugin/zotero-agent.xpi
+
 # IDE specific files
 .idea/
 .vscode/

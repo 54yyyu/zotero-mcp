@@ -1,7 +1,9 @@
 """Tool for reading specific page ranges from PDF attachments."""
 
 import os
+import re
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from typing import Literal
 
@@ -325,7 +327,9 @@ def read_pdf_text(
                                                                  actual_end, clamped_note):
             try:
                 # extract_pdf takes 0-indexed pages; the tool's API is 1-indexed.
-                doc = extract_pdf(pdf_path, pages=list(range(start_page - 1, actual_end)))
+                doc = extract_pdf(
+                    pdf_path, pages=list(range(start_page - 1, actual_end)), reuse=True,
+                )
             except Exception as exc:
                 raise PdfReadError(
                     f"Could not read PDF for item {item_key}: {exc}",
@@ -368,6 +372,208 @@ def read_pdf_text(
     except Exception as e:
         ctx.error(f"Error reading PDF pages: {str(e)}")
         raise PdfReadError(f"Error reading PDF pages: {str(e)}") from e
+
+# ---------------------------------------------------------------------------
+# Locate: which pages mention a phrase, without returning the pages
+# ---------------------------------------------------------------------------
+
+_FIND_MAX_PAGES = 10
+_FIND_MAX_SNIPPETS = 3
+_ALNUM_RUN = re.compile(r"[^\W_]+")
+_COMBINING = re.compile(r"[\u0300-\u036f]*")
+# A line-break hyphenation ("robust-\nness") or a soft hyphen: "ness" is mid-word.
+_HYPHEN_BREAK = re.compile(r"(?:[-\u2010\u2011]\s+|\u00ad\s*)$")
+_JOIN_HYPHEN = re.compile(r"(?:[-\u2010\u2011]\s*\n\s*|\u00ad\s*)")
+_MARKDOWN = re.compile(r"[*#|`]")
+
+
+def _alnum_key(text: str) -> tuple[str, list[int]]:
+    """Letters and digits of ``text``, lowercased, and where each came from.
+
+    Compatibility-decomposed (NFKD), so ligatures expand ("fi" for the fi
+    ligature) and accents drop; the same fold is applied to the query. The
+    list maps every key character back to its index in ``text``.
+    """
+    key: list[str] = []
+    idx: list[int] = []
+    for run in _ALNUM_RUN.finditer(text):
+        piece = run.group()
+        if not piece.isascii():
+            for offset, char in enumerate(piece):
+                for folded in unicodedata.normalize("NFKD", char):
+                    if folded.isalnum():
+                        key.append(folded.lower())
+                        idx.append(run.start() + offset)
+            continue
+        key.append(piece.lower())
+        idx.extend(range(run.start(), run.end()))
+    return "".join(key), idx
+
+
+def _word_start_hits(text: str, key: str, idx: list[int], needle: str) -> list[int]:
+    """Key positions where ``needle`` occurs starting at a word start."""
+    hits, pos = [], key.find(needle)
+    while pos != -1:
+        if pos == 0:
+            ok = True
+        else:
+            gap = text[idx[pos - 1] + 1:idx[pos]]
+            ok = bool(gap) and not _COMBINING.fullmatch(gap) and not _HYPHEN_BREAK.search(gap)
+        if ok:
+            hits.append(pos)
+        pos = key.find(needle, pos + 1)
+    return hits
+
+
+def _clean(text: str) -> str:
+    return _MARKDOWN.sub(" ", _JOIN_HYPHEN.sub("", text))
+
+
+def _snippet(text: str, start: int, end: int, context: int) -> str:
+    """``context`` words either side of ``text[start:end]``, cleaned for display."""
+    while end < len(text) and not text[end].isspace():
+        end += 1  # a prefix match ("check" in "checks") shows the whole word
+    span = context * 40
+    lo, hi = max(0, start - span), min(len(text), end + span)
+    before = _clean(text[lo:start]).split()
+    after = _clean(text[end:hi]).split()
+    cut_before = lo > 0 and not text[lo - 1].isspace()
+    cut_after = hi < len(text) and not text[hi].isspace()
+    if cut_before:
+        before = before[1:]
+    if cut_after:
+        after = after[:-1]
+    more_before = lo > 0 or len(before) > context
+    more_after = hi < len(text) or len(after) > context
+    words = before[-context:] + _clean(text[start:end]).split() + after[:context]
+    return ("…" if more_before else "") + " ".join(words) + ("…" if more_after else "")
+
+
+def find_in_pages(
+    page_numbers, pages, query: str, *, context: int = 12,
+) -> dict:
+    """Rank the pages that mention ``query``, with a few snippets each.
+
+    Matching ignores case, whitespace, punctuation, ligatures, accents and
+    line-break hyphenation, and a match must begin at a word start (prefix
+    matches count: "check" finds "checks", "art" does not find "start").
+    A phrase is tried first; if no page has it and the query has several
+    words, pages holding all the words are returned instead (``mode`` says
+    which). ``page_numbers`` are 0-based, as ``ExtractedDoc`` carries them.
+    """
+    words = [w for w in (_alnum_key(w)[0] for w in query.split()) if w]
+    if not words:
+        raise PdfReadError("Error: the search text has no letters or digits.", code="empty_query")
+    if not any(p.strip() for p in pages):
+        raise PdfReadError("This PDF has no text layer to search (it looks scanned).",
+                           code="no_text_layer")
+    context = max(1, min(60, context))
+    indexed = []
+    for number, text in zip(page_numbers, pages):
+        key, idx = _alnum_key(text)
+        indexed.append((number + 1, text, key, idx))
+
+    def spans(text, idx, positions, length):
+        return [(idx[p], idx[p + length - 1] + 1) for p in positions]
+
+    mode, found = "phrase", []
+    phrase = "".join(words)
+    for number, text, key, idx in indexed:
+        positions = _word_start_hits(text, key, idx, phrase)
+        if positions:
+            found.append((number, len(positions), text, spans(text, idx, positions, len(phrase))))
+    if not found and len(words) > 1:
+        mode = "words"
+        for number, text, key, idx in indexed:
+            per_word = [_word_start_hits(text, key, idx, w) for w in words]
+            if all(per_word):
+                rarest = min(range(len(words)), key=lambda i: len(per_word[i]))
+                found.append((number, sum(map(len, per_word)), text,
+                              spans(text, idx, per_word[rarest], len(words[rarest]))))
+
+    found.sort(key=lambda f: (-f[1], f[0]))
+    matches = [
+        {"page": number, "hits": hits,
+         "snippets": [_snippet(text, s, e, context) for s, e in occ[:_FIND_MAX_SNIPPETS]]}
+        for number, hits, text, occ in found[:_FIND_MAX_PAGES]
+    ]
+    return {
+        "query": query, "mode": mode, "pages_searched": len(indexed),
+        "hits": sum(f[1] for f in found), "matches": matches,
+        "more_pages": sorted(f[0] for f in found[_FIND_MAX_PAGES:]),
+    }
+
+
+def _hits(n: int) -> str:
+    return f"{n} hit" + ("" if n == 1 else "s")
+
+
+def format_find(result: dict) -> str:
+    """The compact Markdown answer for a ``find_in_pdf`` result."""
+    query, key, title = result["query"], result["item_key"], result["title"]
+    total, searched = result["total_pages"], result["pages_searched"]
+    scope = f"{total} pages" if searched == total else f"{searched} of {total} pages"
+    if not result["matches"]:
+        return f'No match for "{query}" in {title} ({scope}).'
+    shown = result["matches"]
+    pages_hit = len(shown) + len(result["more_pages"])
+    how = "" if result["mode"] == "phrase" else "no exact phrase; pages with all words: "
+    lines = [f'# "{query}" in {title} ({key}): {how}{_hits(result["hits"])} on {pages_hit} of {scope}']
+    for match in shown:
+        lines.append(f'p.{match["page"]} ({_hits(match["hits"])}): ' + " | ".join(match["snippets"]))
+    if result["more_pages"]:
+        lines.append("Also on pages " + ", ".join(map(str, result["more_pages"])))
+    lines.append(f"Read one: zotero-cli read {key} --start-page {shown[0]['page']}")
+    return "\n".join(lines)
+
+
+def find_in_pdf(
+    item_key: str,
+    query: str,
+    start_page: int | None = None,
+    end_page: int | None = None,
+    *,
+    context: int = 12,
+    ctx: Context,
+) -> dict:
+    """Locate ``query`` in an item's PDF (optionally within a page range).
+
+    One extraction of the requested pages, then ``find_in_pages``. The result
+    carries ``item_key``, ``title`` and ``total_pages`` for ``format_find``.
+    """
+    if not item_key or not item_key.strip():
+        raise PdfReadError("Error: item_key cannot be empty.", code="empty_item_key")
+    if start_page is not None and start_page < 1:
+        raise PdfReadError(f"Start page {start_page} is out of range.", code="page_out_of_range")
+    if start_page is not None and end_page is not None and end_page < start_page:
+        raise PdfReadError("Error: end_page must be greater than or equal to start_page.",
+                           code="invalid_page_range")
+    resolved = _get_pdf_path(item_key, ctx)
+    if resolved is None:
+        raise PdfReadError(f"No PDF attachment found for item: {item_key}", code="no_pdf_attachment")
+    pdf_path, title, is_temp = resolved
+    try:
+        try:
+            if start_page is None and end_page is None:
+                doc = extract_pdf(pdf_path)
+            else:
+                total = pdf_page_count(pdf_path)
+                first = start_page or 1
+                if first > total:
+                    raise PdfReadError(
+                        f"Start page {first} is out of range. PDF has {total} pages (1-{total}).",
+                        code="page_out_of_range")
+                doc = extract_pdf(pdf_path, pages=list(range(first - 1, min(end_page or total, total))))
+        except PdfReadError:
+            raise
+        except Exception as exc:
+            raise PdfReadError(f"Could not read PDF for item {item_key}: {exc}",
+                               code="pdf_unreadable") from exc
+    finally:
+        if is_temp:
+            _cleanup_path(pdf_path)
+    result = find_in_pages(doc.page_numbers, doc.pages, query, context=context)
+    return {"item_key": item_key, "title": title, "total_pages": doc.page_count, **result}
 
 
 def _garbled_content_flags(pdf_path: str, doc) -> dict[int, str]:
