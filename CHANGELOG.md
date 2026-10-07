@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.0] - 2026-10-04
+## [0.14.0] - 2026-10-07
 
 ### Added
 
@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **License: the Zotero Agent plugin (`plugin/`) is AGPL-3.0-or-later**, the license Zotero itself uses. The MCP server and `zotero-cli` stay MIT, so the package is now `MIT AND AGPL-3.0-or-later` and carries both license files.
+- **A new README and logo.** The red Z in a chat bubble is now the project's logo; the README shows the three ways in (MCP server, `zotero-cli` + skill, Zotero Agent) with screenshots, and the PyPI summary says what the package is for.
 - **Reading a PDF in page ranges no longer re-parses it every time.** `zotero_read_pdf_pages` and `zotero_get_item_fulltext` ran pdf-inspector's whole-document Markdown pass on every call, and it costs about the same for one page as for the whole file (3.7-6 s on some 28-page papers, with the GIL held so other tools stalled), so reading a paper in chunks paid it again for each chunk. The parse of an unchanged file is now kept in a small in-process memo (3 files, 8M characters in all), so repeat and different-range reads of the same PDF return in milliseconds. Indexing is unchanged.
 - **`update-db` no longer probes every item for fulltext.** For each item the indexer asked for the parent's `/fulltext` (always empty for a regular item) and then its `/children`, so a 552-item library cost 1041 requests to find text for 99 items. It now asks only for each item's PDF attachments' text, and a whole-library run lists those attachments in one paged pass first: 106 requests, same text. The docs now say plain `update-db` also indexes the text Zotero already extracted, in local mode too.
 
