@@ -648,3 +648,57 @@ class TestUpdateCollection:
         _patch_local_only(monkeypatch, fake_zot)
         result = server.update_collection(collection_key="ABC00003", name="x", ctx=ctx)
         assert "local-only" in result
+
+
+# ===========================================================================
+# A parent named by an ambiguous name must not be picked arbitrarily
+# ===========================================================================
+
+
+@pytest.fixture
+def twin_readings(fake_zot):
+    """Two courses, each with its own 'Readings' subcollection."""
+    fake_zot._collections += [
+        {"key": "COURSEA1", "version": 1, "data": {"key": "COURSEA1", "name": "Course A", "parentCollection": False}},
+        {"key": "COURSEB1", "version": 1, "data": {"key": "COURSEB1", "name": "Course B", "parentCollection": False}},
+        {"key": "READA001", "version": 1, "data": {"key": "READA001", "name": "Readings", "parentCollection": "COURSEA1"}},
+        {"key": "READB001", "version": 1, "data": {"key": "READB001", "name": "Readings", "parentCollection": "COURSEB1"}},
+    ]
+    return fake_zot
+
+
+class TestAmbiguousParentCollection:
+    def test_create_refuses_an_ambiguous_parent_name(self, monkeypatch, twin_readings, ctx):
+        _patch_web_only(monkeypatch, twin_readings)
+        result = server.create_collection(name="Week 3", parent_collection="Readings", ctx=ctx)
+        assert twin_readings.created_collections == []
+        assert "READA001" in result and "READB001" in result
+
+    def test_create_accepts_a_parent_path(self, monkeypatch, twin_readings, ctx):
+        _patch_web_only(monkeypatch, twin_readings)
+        server.create_collection(name="Week 3", parent_collection="Course B/Readings", ctx=ctx)
+        assert twin_readings.created_collections[0]["parentCollection"] == "READB001"
+
+    def test_create_reads_an_all_caps_name_as_a_name(self, monkeypatch, fake_zot, ctx):
+        # Eight capitals look like a key; it is only one if such a key exists.
+        fake_zot._collections.append(
+            {"key": "PRJ00001", "version": 1, "data": {"key": "PRJ00001", "name": "PROJECTS", "parentCollection": False}}
+        )
+        _patch_web_only(monkeypatch, fake_zot)
+        server.create_collection(name="Sub", parent_collection="PROJECTS", ctx=ctx)
+        assert fake_zot.created_collections[0]["parentCollection"] == "PRJ00001"
+
+    def test_update_refuses_an_ambiguous_parent_name(self, monkeypatch, twin_readings, ctx):
+        _patch_web_only(monkeypatch, twin_readings)
+        result = server.update_collection(
+            collection_key="ABC00003", parent_collection="Readings", ctx=ctx
+        )
+        assert twin_readings.updated_collections == []
+        assert "READA001" in result and "READB001" in result
+
+    def test_update_accepts_a_parent_path(self, monkeypatch, twin_readings, ctx):
+        _patch_web_only(monkeypatch, twin_readings)
+        server.update_collection(
+            collection_key="ABC00003", parent_collection="Course A/Readings", ctx=ctx
+        )
+        assert twin_readings.updated_collections[0]["parentCollection"] == "READA001"

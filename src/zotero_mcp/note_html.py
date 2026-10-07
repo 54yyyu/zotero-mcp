@@ -177,6 +177,10 @@ _MATH = re.compile(
 _PH = "ZQMATH{}Q"
 
 
+#: A "<" that opens no tag the sanitizer knows (kept or dropped) is text ("x<y and y>z"), not a tag to lose.
+_STRAY_LT = re.compile(r"<(?!/?(?:%s)\b)" % "|".join(sorted(_TAGS | _DROP, key=len, reverse=True)), re.I)
+
+
 def _protect_math(text: str) -> tuple[str, list[tuple[str, bool]]]:
     """Formulas out of the way of markdown (as placeholders), never inside code."""
     maths: list[tuple[str, bool]] = []
@@ -185,13 +189,17 @@ def _protect_math(text: str) -> tuple[str, list[tuple[str, bool]]]:
         maths.append((tex.strip(), display))
         return _PH.format(len(maths) - 1)
 
+    def prose(chunk: str) -> str:
+        held = _MATH.sub(lambda x: hold(next(v for v in x.groups() if v is not None), x.group("d") is not None or x.group("b") is not None), chunk)
+        return _STRAY_LT.sub("&lt;", held)
+
     def outside_code(chunk: str) -> str:
         parts, last = [], 0
         for m in _CODESPAN.finditer(chunk):
-            parts.append(_MATH.sub(lambda x: hold(next(v for v in x.groups() if v is not None), x.group("d") is not None or x.group("b") is not None), chunk[last:m.start()]))
+            parts.append(prose(chunk[last:m.start()]))
             parts.append(m.group(0))
             last = m.end()
-        parts.append(_MATH.sub(lambda x: hold(next(v for v in x.groups() if v is not None), x.group("d") is not None or x.group("b") is not None), chunk[last:]))
+        parts.append(prose(chunk[last:]))
         return "".join(parts)
 
     out, last = [], 0

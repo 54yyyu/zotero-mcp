@@ -21,6 +21,9 @@ assemble page-joined text anywhere else.
 from __future__ import annotations
 
 import logging
+import os
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,6 +117,98 @@ def _doc_from_pages(
     )
 
 
+# Parse memo for interactive reads. pdf-inspector's Markdown pass costs about
+# the same for one page as for the whole document (3.7-6 s on some 28-page
+# papers, and it holds the GIL), so a model reading a paper in chunks would
+# pay it on every call. Callers that opt in with ``reuse=True`` share one
+# whole-document parse per file, keyed on path, mtime and size so an edited
+# file is re-read. Bounded by entry count and by total characters, so a few
+# thousand-page books cannot pin memory.
+_MEMO_MAX_ENTRIES = 3
+_MEMO_MAX_CHARS = 8_000_000
+
+_ParseKey = tuple[str, int, int]
+_parse_memo: "OrderedDict[_ParseKey, ExtractedDoc]" = OrderedDict()
+_memo_lock = threading.Lock()
+_parse_lock = threading.Lock()
+
+
+def _parse_key(path: str) -> _ParseKey | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (path, st.st_mtime_ns, st.st_size)
+
+
+def _memo_get(key: _ParseKey | None) -> ExtractedDoc | None:
+    if key is None:
+        return None
+    with _memo_lock:
+        doc = _parse_memo.get(key)
+        if doc is not None:
+            _parse_memo.move_to_end(key)
+        return doc
+
+
+def _memo_put(key: _ParseKey, doc: ExtractedDoc) -> None:
+    if len(doc.text) > _MEMO_MAX_CHARS:
+        return
+    with _memo_lock:
+        _parse_memo[key] = doc
+        _parse_memo.move_to_end(key)
+        while len(_parse_memo) > _MEMO_MAX_ENTRIES or (
+            sum(len(d.text) for d in _parse_memo.values()) > _MEMO_MAX_CHARS
+            and len(_parse_memo) > 1
+        ):
+            _parse_memo.popitem(last=False)
+
+
+def _extract_pdf_reused(
+    path: str, pages: list[int] | None, max_pages: int | None,
+) -> ExtractedDoc | None:
+    """Serve a page subset from the memoized whole-document parse.
+
+    Returns ``None`` when the whole document cannot be parsed page by page
+    (a parse error, or the whole-document text-layer fallback), so the caller
+    runs its ordinary subset path and keeps its error and fallback behaviour.
+    """
+    key = _parse_key(path)
+    whole = _memo_get(key)
+    if whole is None and key is not None:
+        with _parse_lock:
+            whole = _memo_get(key)
+            if whole is None:
+                try:
+                    whole = extract_pdf(path)
+                except Exception:
+                    return None
+                # Kept even when it is not page by page (a scanner's text
+                # layer): the next read then skips straight to the subset
+                # path instead of parsing the whole file a second time.
+                _memo_put(key, whole)
+    if whole is None or whole.page_numbers != tuple(range(whole.page_count)):
+        return None
+
+    total = whole.page_count
+    truncated = False
+    if pages is not None:
+        wanted = [p for p in pages if 0 <= p < total]
+    elif max_pages is not None and max_pages > 0:
+        wanted = list(range(min(max_pages, total)))
+        truncated = len(wanted) < total
+    else:
+        return whole
+    return _doc_from_pages(
+        [whole.pages[p] for p in wanted],
+        page_count=total,
+        source="pdf",
+        page_numbers=tuple(wanted),
+        needs_ocr=tuple(p for p in wanted if p in whole.needs_ocr),
+        truncated=truncated,
+    )
+
+
 def pdf_page_count(file_path: str | Path) -> int:
     """Return the number of pages in a PDF.
 
@@ -125,6 +220,9 @@ def pdf_page_count(file_path: str | Path) -> int:
         ImportError: pdf-inspector is not installed.
         ValueError: the file is missing, empty, or not a PDF.
     """
+    memoized = _memo_get(_parse_key(str(file_path)))
+    if memoized is not None:
+        return memoized.page_count
     return _pdf_inspector().classify_pdf(str(file_path)).page_count
 
 
@@ -133,6 +231,7 @@ def extract_pdf(
     *,
     pages: list[int] | None = None,
     max_pages: int | None = None,
+    reuse: bool = False,
 ) -> ExtractedDoc:
     """Extract Markdown from a PDF.
 
@@ -143,6 +242,12 @@ def extract_pdf(
             pages. Mutually exclusive with ``max_pages``.
         max_pages: Extract only the first N pages. ``None`` or a
             non-positive value means the whole document.
+        reuse: Parse the whole document once and serve this and later
+            requests for the same unchanged file from a small in-process
+            memo. For interactive reads that revisit a file (page-range
+            reads, ``zotero_get_item_fulltext``); leave it off for bulk
+            indexing, which reads each file once and relies on the cap to
+            skip pages.
 
     Raises:
         ImportError: pdf-inspector is not installed.
@@ -150,6 +255,11 @@ def extract_pdf(
     """
     if pages is not None and max_pages is not None:
         raise TypeError("pass either pages or max_pages, not both")
+
+    if reuse and (pages is not None or max_pages is not None):
+        reused = _extract_pdf_reused(str(file_path), pages, max_pages)
+        if reused is not None:
+            return reused
 
     pdf_inspector = _pdf_inspector()
     path = str(file_path)
@@ -441,6 +551,7 @@ def extract_file(
     ctype: str | None = None,
     *,
     max_pages: int | None = None,
+    reuse: bool = False,
 ) -> ExtractedDoc | None:
     """Extract text from an attachment, dispatching on extension.
 
@@ -453,7 +564,7 @@ def extract_file(
     suffix = path.suffix.lower()
     try:
         if suffix == ".pdf":
-            return extract_pdf(path, max_pages=max_pages)
+            return extract_pdf(path, max_pages=max_pages, reuse=reuse)
         if suffix in _HTML_SUFFIXES:
             return extract_html(path)
         return extract_text_file(path)

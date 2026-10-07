@@ -104,3 +104,12 @@ def test_append_goes_inside_the_wrapper():
     assert append_note_html("<p>old</p>", to_note_html("<p>more</p>")) == "<p>old</p><p>more</p>"
     assert append_note_html("", to_note_html("hi")) == '<div data-schema-version="8"><p>hi</p></div>'
     assert append_note_html("<h1>T</h1>", to_note_html("hi"), at_start=True) == '<div data-schema-version="8"><h1>T</h1><p>hi</p></div>'
+
+
+def test_a_stray_less_than_is_text_not_a_tag():
+    # #664: an unescaped "<y and y>" read as a tag lost the text between.
+    assert to_note_html("Holds when x<y and y>z (p<0.05).") == (
+        '<div data-schema-version="8"><p>Holds when x&lt;y and y&gt;z (p&lt;0.05).</p></div>'
+    )
+    assert to_note_html("R&D <3") == '<div data-schema-version="8"><p>R&amp;D &lt;3</p></div>'
+    assert "<u>b</u>" in to_note_html("a <u>b</u>")

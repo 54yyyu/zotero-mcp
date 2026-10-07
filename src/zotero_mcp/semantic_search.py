@@ -805,8 +805,9 @@ class ZoteroSemanticSearch:
         Defaults to True so existing users auto-upgrade to fulltext indexing on
         their next sync. Users can opt out by setting
         `semantic_search.include_fulltext: false` in the config file.
-        Local mode (`ZOTERO_LOCAL=true`) keeps using `extract_fulltext` via
-        the local sqlite DB; this setting only governs web-API ingestion.
+        It governs the API-based path, which runs in web and local mode
+        alike; `extract_fulltext` (`update-db --fulltext`) replaces it with
+        extraction from the local sqlite DB.
         """
         if not self.config_path or not os.path.exists(self.config_path):
             return True
@@ -1442,7 +1443,7 @@ class ZoteroSemanticSearch:
         raises RuntimeError if local mode is not enabled. This path reads the
         local Zotero sqlite database and extracts PDF text on-disk.
 
-        When include_fulltext_via_api=True (web-API mode), fetches the
+        When include_fulltext_via_api=True (web or local API), fetches the
         server-side extracted fulltext that Zotero cloud has already built
         for each PDF — no local files required.
 
@@ -1967,53 +1968,39 @@ class ZoteroSemanticSearch:
         return creators
 
     def _fetch_fulltext_via_web_api(self, item_key: str) -> tuple[str, str]:
-        """Fetch fulltext for a top-level item via the Zotero web API.
+        """Fetch the fulltext Zotero already extracted for a top-level item.
 
-        Zotero's cloud keeps a server-side extracted text for every PDF that
-        the desktop client has ever indexed. Web-API mode can retrieve that
-        text without needing the PDF file to be present locally.
-
-        The fulltext usually lives on the PDF attachment child, not the
-        parent. We first try the parent's own key (covers the case where the
-        parent is itself an attachment), then cascade through PDF attachment
-        children.
+        Zotero keeps extracted text per PDF attachment, never under the parent
+        item's own key, so this walks the item's PDF attachment children and
+        returns the first that has any. It works against the web API and the
+        local API alike, without needing the PDF file.
 
         Returns:
-            (text, source) where source describes which endpoint supplied the
-            text (e.g. "web-api:parent", "web-api:attachment:<key>"). Empty
+            (text, source) where source is ``web-api:attachment:<key>``. Empty
             strings mean no fulltext is available for this item.
         """
-
-        def _extract_content(resp: Any) -> str:
-            if isinstance(resp, dict):
-                return str(resp.get("content", "") or "")
-            if isinstance(resp, str):
-                return resp
-            return ""
-
-        # 1. Try the item itself (works when item_key IS the attachment key).
-        try:
-            resp = self.zotero_client.fulltext_item(item_key)
-            text = _extract_content(resp)
-            if text.strip():
-                return text, "web-api:parent"
-        except Exception as e:
-            logger.debug(f"fulltext_item({item_key}) failed: {e}")
-
-        # 2. Walk PDF attachment children and try each in order.
         try:
             children = _paginate(self.zotero_client.children, item_key) or []
         except Exception as e:
             logger.debug(f"children({item_key}) failed: {e}")
             children = []
+        return self._fulltext_from_attachments(
+            [self._pdf_attachment_key(child) for child in children]
+        )
 
-        for child in children:
-            data = child.get("data", {}) if isinstance(child, dict) else {}
-            if data.get("itemType") != "attachment":
-                continue
-            if data.get("contentType") != "application/pdf":
-                continue
-            child_key = child.get("key") or data.get("key")
+    @staticmethod
+    def _pdf_attachment_key(child: Any) -> str | None:
+        """The key of ``child`` when it is a PDF attachment, else None."""
+        data = child.get("data", {}) if isinstance(child, dict) else {}
+        if data.get("itemType") != "attachment":
+            return None
+        if data.get("contentType") != "application/pdf":
+            return None
+        return child.get("key") or data.get("key") or None
+
+    def _fulltext_from_attachments(self, attachment_keys: list[str | None]) -> tuple[str, str]:
+        """Zotero's extracted text for the first of ``attachment_keys`` that has any."""
+        for child_key in attachment_keys:
             if not child_key:
                 continue
             try:
@@ -2021,14 +2008,49 @@ class ZoteroSemanticSearch:
             except Exception as e:
                 logger.debug(f"fulltext_item({child_key}) failed: {e}")
                 continue
-            text = _extract_content(resp)
+            text = str(resp.get("content", "") or "") if isinstance(resp, dict) else (
+                resp if isinstance(resp, str) else ""
+            )
             if text.strip():
                 return text, f"web-api:attachment:{child_key}"
-
         return "", ""
 
-    def _attach_web_fulltext(self, items: list[dict[str, Any]]) -> None:
-        """Populate `data.fulltext` on each item in place using the web API."""
+    # For a whole-library pass over at least this many items, one paged listing
+    # of the attachments is cheaper than asking for each item's children.
+    _BULK_ATTACHMENT_WALK_MIN_ITEMS = 25
+
+    def _pdf_attachment_keys_by_parent(self) -> dict[str, list[str]] | None:
+        """PDF attachment keys grouped by parent key, from one paged listing.
+
+        None when the listing fails, so the caller can fall back to asking
+        per item.
+        """
+        try:
+            rows = _paginate(self.zotero_client.items, itemType="attachment") or []
+        except Exception as e:
+            logger.debug(f"attachment listing failed, asking per item: {e}")
+            return None
+        by_parent: dict[str, list[str]] = {}
+        for row in rows:
+            key = self._pdf_attachment_key(row)
+            parent = (row.get("data") or {}).get("parentItem") if isinstance(row, dict) else None
+            if key and parent:
+                by_parent.setdefault(parent, []).append(key)
+        return by_parent
+
+    def _attach_web_fulltext(
+        self, items: list[dict[str, Any]], *, whole_library: bool = False
+    ) -> None:
+        """Populate `data.fulltext` on each item in place using Zotero's API.
+
+        Works against the web API and the local API alike: both serve the text
+        Zotero has already extracted for each PDF attachment.
+
+        ``whole_library`` says ``items`` is the entire library, which is when
+        listing every attachment once beats asking per item. For a handful of
+        changed items in a large library it would page through attachments
+        nobody needs, so the incremental path leaves it off.
+        """
         total = len(items)
         if not total:
             return
@@ -2038,6 +2060,11 @@ class ZoteroSemanticSearch:
         except Exception:
             pass
         fetched = 0
+        pdf_keys = (
+            self._pdf_attachment_keys_by_parent()
+            if whole_library and total >= self._BULK_ATTACHMENT_WALK_MIN_ITEMS
+            else None
+        )
         for idx, item in enumerate(items, 1):
             key = item.get("key", "")
             data = item.setdefault("data", {})
@@ -2047,7 +2074,14 @@ class ZoteroSemanticSearch:
                 continue
             if not key:
                 continue
-            text, source = self._fetch_fulltext_via_web_api(key)
+            # These are top-level items, never attachments themselves, so
+            # Zotero holds no text under their own key: ask for their PDF
+            # attachments only (the parent probe was a request per item that
+            # always came back empty).
+            if pdf_keys is not None:
+                text, source = self._fulltext_from_attachments(pdf_keys.get(key, []))
+            else:
+                text, source = self._fetch_fulltext_via_web_api(key)
             if text:
                 data["fulltext"] = text
                 data["fulltextSource"] = source
@@ -2135,7 +2169,7 @@ class ZoteroSemanticSearch:
             all_items = all_items[:limit]
 
         if include_fulltext:
-            self._attach_web_fulltext(all_items)
+            self._attach_web_fulltext(all_items, whole_library=not limit)
 
         self._tag_group_id(all_items)
 
@@ -2489,11 +2523,13 @@ class ZoteroSemanticSearch:
             limit: Limit number of items to process (for testing)
             extract_fulltext: Whether to extract fulltext content from the
                 local Zotero sqlite database (requires ZOTERO_LOCAL=true)
-            include_fulltext: Whether to fetch server-side extracted
-                fulltext via the Zotero web API. Defaults to the
+            include_fulltext: Whether to fetch the fulltext Zotero has
+                already extracted for each PDF, through the API (web or
+                local; no PDF files are read). Defaults to the
                 `semantic_search.include_fulltext` config setting (True
-                unless explicitly disabled). Ignored in local mode since
-                `extract_fulltext` provides richer local extraction.
+                unless explicitly disabled). Ignored only when
+                `extract_fulltext` is set, which extracts richer text from
+                the local database instead.
             use_openai_batch: Deprecated in favour of `use_batch` /
                 `batch_provider`. Override for OpenAI Batch API indexing.
                 None uses `semantic_search.openai_batch.enabled`. Ignored

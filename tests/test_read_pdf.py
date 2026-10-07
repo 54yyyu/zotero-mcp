@@ -27,7 +27,7 @@ def _patch_extract(monkeypatch, page_texts, total=None, needs_ocr=()):
     def _fake_page_count(_path):
         return total_pages
 
-    def _fake_extract_pdf(_path, *, pages=None, max_pages=None):
+    def _fake_extract_pdf(_path, *, pages=None, max_pages=None, reuse=False):
         wanted = [
             p for p in (range(total_pages) if pages is None else pages)
             if 0 <= p < total_pages
