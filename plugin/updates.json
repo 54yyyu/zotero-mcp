@@ -1,7 +1,18 @@
 {
   "addons": {
     "chat@zotero-mcp": {
-      "updates": []
+      "updates": [
+        {
+          "version": "0.14.0",
+          "update_link": "https://github.com/54yyyu/zotero-mcp/releases/download/v0.14.0/zotero-agent.xpi",
+          "update_hash": "sha256:ea44be6eaa705cadb1957a61e30caf0e60532772268d33a4bb883ebb89b3901d",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "7.0"
+            }
+          }
+        }
+      ]
     }
   }
 }
