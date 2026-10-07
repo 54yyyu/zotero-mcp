@@ -56,12 +56,12 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: plugin/package-lock.json
-      - name: Build the Zotero chat plugin
+      - name: Build the Zotero Agent plugin
         run: |
           npm ci
           npm run build
           mkdir -p ../src/zotero_mcp/chat_plugin
-          cp dist/zotero-chat.xpi ../src/zotero_mcp/chat_plugin/
+          cp dist/zotero-agent.xpi ../src/zotero_mcp/chat_plugin/
         working-directory: plugin
       - name: Build package
         run: |
@@ -77,7 +77,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xpi
-          path: plugin/dist/zotero-chat.xpi
+          path: plugin/dist/zotero-agent.xpi
 
   publish:
     needs: [test, build]
@@ -113,7 +113,7 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" zotero-chat.xpi --clobber
+          gh release upload "$GITHUB_REF_NAME" zotero-agent.xpi --clobber
 
   publish-registry:
     needs: publish

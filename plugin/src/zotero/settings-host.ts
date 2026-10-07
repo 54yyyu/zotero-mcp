@@ -11,7 +11,7 @@ import { createStore } from "./store.ts";
 
 export function createSettingsHost(opts: { version: string; win: any; dataDir: string }) {
   const { win, dataDir } = opts;
-  // Where chats run. Visible and predictable (~/Documents/Zotero-Chat) rather than buried in the profile, so a chat can
+  // Where chats run. Visible and predictable (~/Documents/Zotero-Agent) rather than buried in the profile, so a chat can
   // be continued from a terminal; the user can point it anywhere in the settings.
   // ZMC_DEFAULT_CHAT_FOLDER is for the test harness, which must never write into the real home.
   const defaultFolder = (): string => {
@@ -19,7 +19,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
     if (forced) return forced;
     const home = Services.dirsvc.get("Home", Ci.nsIFile);
     const docs = home.clone(); docs.append("Documents");
-    return PathUtils.join(docs.exists() ? docs.path : home.path, "Zotero-Chat");
+    return PathUtils.join(docs.exists() ? docs.path : home.path, "Zotero-Agent");
   };
   const chatFolder = () => settings().chatFolder || defaultFolder();
   const store = createStore(PathUtils.join(dataDir, "sessions"));

@@ -29,7 +29,7 @@ htmlcov/
 /private_tests/
 
 # Built from plugin/ by the release workflow, then shipped in the wheel and sdist
-src/zotero_mcp/chat_plugin/zotero-chat.xpi
+src/zotero_mcp/chat_plugin/zotero-agent.xpi
 
 # IDE specific files
 .idea/

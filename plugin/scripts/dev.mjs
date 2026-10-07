@@ -73,7 +73,7 @@ const addon = JSON.parse(readFileSync(join(root, "addon.json"), "utf8"));
 const chatDir = join(profile, "zotero-chat");
 const bridges = join(chatDir, "bridges");
 for (const d of ["sessions", "workspace"]) rmSync(join(chatDir, d), { recursive: true, force: true });
-// The default chat folder is ~/Documents/Zotero-Chat; a test must never create that, so it is redirected into .dev.
+// The default chat folder is ~/Documents/Zotero-Agent; a test must never create that, so it is redirected into .dev.
 const chatDefault = join(dev, "chat-default");
 rmSync(chatDefault, { recursive: true, force: true });
 if (existsSync(join(bridges, ".zmc-mock")) || flag("mock-agent")) rmSync(bridges, { recursive: true, force: true });

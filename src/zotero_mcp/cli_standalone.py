@@ -1258,9 +1258,9 @@ def _reveal(path) -> None:
 
 
 def cmd_plugin(args):
-    """Where the packaged Zotero chat plugin is, and how to install it."""
+    """Where the packaged Zotero Agent plugin is, and how to install it."""
     from pathlib import Path
-    name = "zotero-chat.xpi"
+    name = "zotero-agent.xpi"
     here = Path(__file__).resolve().parent
     # Wheels carry it in chat_plugin/; a source checkout has it after `npm run build`.
     xpi = next((p for p in (here / "chat_plugin" / name, here.parents[1] / "plugin" / "dist" / name)
@@ -1276,7 +1276,7 @@ def cmd_plugin(args):
     if args.reveal:
         _reveal(xpi)
     _out(args, "plugin", data={"path": str(xpi)}, text=(
-        f"Zotero chat plugin: {xpi}\n"
+        f"Zotero Agent plugin: {xpi}\n"
         "Install it in Zotero: Tools > Plugins, click the gear, Install Plugin From File, "
         "and choose that file.\n"
         "Setup and first run: https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md"))
@@ -1787,7 +1787,7 @@ def build_parser() -> argparse.ArgumentParser:
     pth_p.add_argument("item_key")
 
     # plugin
-    pl_p = sub.add_parser("plugin", help="Locate the Zotero chat plugin (.xpi) and show how to install it")
+    pl_p = sub.add_parser("plugin", help="Locate the Zotero Agent plugin (.xpi) and show how to install it")
     pl_p.add_argument("--path", action="store_true", help="Print only the path to the .xpi")
     pl_p.add_argument("--reveal", action="store_true", help="Also show the .xpi in the file manager")
 

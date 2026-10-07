@@ -162,7 +162,7 @@ zotero-cli related 10.1038/s41586-021-03819-2 --direction citations
 zotero-cli coverage --collection COLL01
 zotero-cli synthesize --tag "to-read" --format json
 
-# Zotero chat plugin: where the .xpi is and how to install it
+# Zotero Agent plugin: where the .xpi is and how to install it
 zotero-cli plugin
 zotero-cli plugin --path
 zotero-cli plugin --reveal

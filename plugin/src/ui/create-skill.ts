@@ -5,7 +5,7 @@ export const SKILLS_DIR_MARK = "{{SKILLS_DIR}}";
 
 export const CREATE_SKILL_MD = `---
 name: create-skill
-description: Write a new skill for the Zotero chat panel with the user - a SKILL.md of plain, numbered instructions the agent follows with zotero-cli. Use when the user asks to create, make or write a skill, or types /create-skill.
+description: Write a new skill for Zotero Agent (the chat panel in Zotero) with the user - a SKILL.md of plain, numbered instructions the agent follows with zotero-cli. Use when the user asks to create, make or write a skill, or types /create-skill.
 ---
 
 # Create a skill

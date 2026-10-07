@@ -1,6 +1,6 @@
-# Zotero chat plugin
+# Zotero Agent
 
-A chat panel inside Zotero, on the right of the library and of every reader tab. It talks to your own AI agent (Claude Code, Codex or pi), tells it what you have open (the selected item, the page you are on, the text or area you selected), and lets it work your library through [`zotero-cli`](cli.md) and its skill. Answers cite papers with real `zotero://` links, so a click opens the PDF at that page.
+Zotero Agent is an AI chat panel inside Zotero, on the right of the library and of every reader tab. It talks to your own AI agent (Claude Code, Codex or pi), tells it what you have open (the selected item, the page you are on, the text or area you selected), and lets it work your library through [`zotero-cli`](cli.md) and its skill. Answers cite papers with real `zotero://` links, so a click opens the PDF at that page.
 
 The agent is not restricted by the panel: it can search the web, run shell commands and read files, as it would in a terminal. Permission requests show up as cards in the chat, and a mode setting chooses between asking every time and allowing everything.
 
@@ -14,24 +14,24 @@ zotero-cli plugin --path    # just the path, for scripts
 zotero-cli plugin --reveal  # also show the file in your file manager
 ```
 
-In Zotero: **Tools > Plugins**, click the gear, **Install Plugin From File**, and choose that file. The plugin updates itself from `plugin/updates.json` in this repository. You can also download `zotero-chat.xpi` from the [GitHub release](https://github.com/54yyyu/zotero-mcp/releases/latest).
+In Zotero: **Tools > Plugins**, click the gear, **Install Plugin From File**, and choose that file. The plugin updates itself from `plugin/updates.json` in this repository. You can also download `zotero-agent.xpi` from the [GitHub release](https://github.com/54yyyu/zotero-mcp/releases/latest).
 
 ### Let your agent do it
 
 Paste this to Claude Code, Codex, pi or any other agent that has a shell:
 
 ```text
-Install the Zotero chat plugin for me. Make sure zotero-cli is installed (`uv tool install zotero-mcp-server`,
-or `pipx install zotero-mcp-server`), then run `zotero-cli plugin --reveal`: it prints the path of zotero-chat.xpi
+Install the Zotero Agent plugin for me. Make sure zotero-cli is installed (`uv tool install zotero-mcp-server`,
+or `pipx install zotero-mcp-server`), then run `zotero-cli plugin --reveal`: it prints the path of zotero-agent.xpi
 and shows it in my file manager. If it says the file is missing, download
-https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-chat.xpi instead. Zotero cannot install a
+https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi instead. Zotero cannot install a
 plugin from the command line, so finish by telling me the one step I do myself: in Zotero, Tools > Plugins, the
 gear, Install Plugin From File, and choose that file.
 ```
 
 The agent does everything except the last click: Zotero offers no supported way to install a plugin from outside (opening the file with Zotero offers to import it as a library, and a plugin dropped into the profile folder arrives switched off), so the file picker stays a human step.
 
-From a source checkout there is no packaged copy; build it with `npm ci && npm run build` in `plugin/`, which writes `plugin/dist/zotero-chat.xpi`. `zotero-cli plugin` finds that one too.
+From a source checkout there is no packaged copy; build it with `npm ci && npm run build` in `plugin/`, which writes `plugin/dist/zotero-agent.xpi`. `zotero-cli plugin` finds that one too.
 
 ## First run
 
@@ -62,7 +62,7 @@ The plugin never runs a model itself.
 
 ## Settings
 
-Open them from the gear in the panel, or in Zotero's own Settings window under **Zotero Chat** (the same cards; a change in either shows in the other at once). They are a stack of cards, and everything is per agent where it can differ between agents.
+Open them from the gear in the panel, or in Zotero's own Settings window under **Zotero Agent** (the same cards; a change in either shows in the other at once). They are a stack of cards, and everything is per agent where it can differ between agents.
 
 - **Agent.** Which agent new chats use, how it signs in (subscription or API key, per agent; see below), and for each one its default model, reasoning effort (Claude's effort, Codex's low to max, pi's thinking level) and permission mode. The lists come from the agent itself, so they show what your account really offers. The button under the message box (the model name, with the effort level beside it) opens one menu to switch the agent (a chat that already has messages asks first, since another agent starts a new chat), pick a model, and set the effort on a slider. **Default** marks the model the agent itself uses when you have not chosen one (pi's own default, Claude's, Codex's); choosing it again clears your choice, here and in the settings, where it is the Default option. A short list shows the first four models and the rest under More models. A long one (pi lists every OpenRouter model) has a search field: just start typing (or press /), every word must match the name or id, Down moves into the results, Enter picks the first match, Esc clears the search and then closes. Your current model and the default come first, then the providers you set up yourself, then the big cloud lists, each under its provider's name.
 - **Appearance.** Glass (frosted, translucent cards and menus; on by default, off is the flat look), the accent colour (Mono, black and white, by default; red and five more swatches, or any colour from the picker or as a hex code; text on it stays readable), a background (Plain by default, a soft Glow, five gradients, or a picture of your own, with its visibility and blur), text size, and density. Changes show as you make them. A picture is shrunk to 1600 px and kept in your Zotero profile as `zotero-chat/background.jpg`; it is never synced, and Remove deletes it.
@@ -130,12 +130,12 @@ Once the agent reports it, a small ring beside the permission mode shows how muc
 
 ## The chat folder, and continuing a chat in a terminal
 
-Every chat is a normal agent session that runs in a folder, by default `~/Documents/Zotero-Chat`. The panel installs the `zotero-cli` skill there (under `.claude/skills` and `.agents/skills`, plus a marked block in `AGENTS.md`; it only changes what it marked, so if you pick a folder you already use, the rest of your files are left alone). Change the folder in the settings; it applies to new chats. Each chat remembers the folder it started in, so changing the setting never breaks an old one.
+Every chat is a normal agent session that runs in a folder, by default `~/Documents/Zotero-Agent`. The panel installs the `zotero-cli` skill there (under `.claude/skills` and `.agents/skills`, plus a marked block in `AGENTS.md`; it only changes what it marked, so if you pick a folder you already use, the rest of your files are left alone). Change the folder in the settings; it applies to new chats. Each chat remembers the folder it started in, so changing the setting never breaks an old one.
 
 Because the agent keeps the session itself, you can continue a chat from a terminal. In the history list, **Copy terminal command** gives you the right command for that chat, for example:
 
 ```bash
-cd '/Users/you/Documents/Zotero-Chat' && claude --resume <session id>
+cd '/Users/you/Documents/Zotero-Agent' && claude --resume <session id>
 ```
 
 Codex uses `codex resume <session id>` and pi uses `pi --session <session id>`. Two things to know: do not run the same chat in the panel and in a terminal at the same time, and what you add in the terminal does not show up in the panel's history list (the panel keeps its own copy of the conversation; the agent's context has it).

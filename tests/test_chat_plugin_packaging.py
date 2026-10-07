@@ -1,4 +1,4 @@
-"""`zotero-cli plugin`, and the files that get the Zotero chat plugin to users.
+"""`zotero-cli plugin`, and the files that get the Zotero Agent plugin to users.
 
 The xpi is built from plugin/ at release time and is not committed, so what
 can break unnoticed is the plumbing: the command that finds it, the ignore and
@@ -15,7 +15,7 @@ from zotero_mcp import cli_standalone
 from zotero_mcp.cli_standalone import _CMD_MAP, build_parser
 
 REPO = Path(__file__).resolve().parent.parent
-XPI = "src/zotero_mcp/chat_plugin/zotero-chat.xpi"
+XPI = "src/zotero_mcp/chat_plugin/zotero-agent.xpi"
 
 
 def _run(monkeypatch, root: Path, *, path=False, json_out=False, reveal=False):
@@ -65,12 +65,12 @@ class TestPluginCommand:
         assert "Install Plugin From File" in capsys.readouterr().out
 
     def test_source_checkout_build_is_found(self, tmp_path, monkeypatch, capsys):
-        xpi = _xpi_in(tmp_path, "plugin/dist/zotero-chat.xpi")
+        xpi = _xpi_in(tmp_path, "plugin/dist/zotero-agent.xpi")
         _run(monkeypatch, tmp_path, path=True)
         assert capsys.readouterr().out == f"{xpi}\n"
 
     def test_packaged_copy_wins_over_a_checkout_build(self, tmp_path, monkeypatch, capsys):
-        _xpi_in(tmp_path, "plugin/dist/zotero-chat.xpi")
+        _xpi_in(tmp_path, "plugin/dist/zotero-agent.xpi")
         packaged = _xpi_in(tmp_path, XPI)
         _run(monkeypatch, tmp_path, path=True)
         assert capsys.readouterr().out == f"{packaged}\n"

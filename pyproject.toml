@@ -110,11 +110,11 @@ zotero-mcp-server = "zotero_mcp.cli:main"
 [tool.hatch.version]
 path = "src/zotero_mcp/_version.py"
 
-# The Zotero chat plugin is built from plugin/ at release time and not committed, so
+# The Zotero Agent plugin is built from plugin/ at release time and not committed, so
 # it is gitignored; artifacts overrides that. At the top level so the sdist carries it
 # too, since `python -m build` makes the wheel from the sdist.
 [tool.hatch.build]
-artifacts = ["src/zotero_mcp/chat_plugin/zotero-chat.xpi"]
+artifacts = ["src/zotero_mcp/chat_plugin/zotero-agent.xpi"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zotero_mcp"]

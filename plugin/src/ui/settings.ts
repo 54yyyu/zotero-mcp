@@ -179,7 +179,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
 
   function about(s: PanelSettings): HTMLElement {
     return section("About", "The version, and the keys that work everywhere.",
-      h("p.about", null, `Zotero chat ${host.about().version}`),
+      h("p.about", null, `Zotero Agent ${host.about().version}`),
       sub("Shortcuts", h("dl.keys", null, shortcuts(isMac(), s.enterToSend).flatMap(([what, k]) => [h("dt", null, what), h("dd", null, h("kbd", null, k))]))));
   }
 

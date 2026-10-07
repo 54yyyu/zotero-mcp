@@ -10,7 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 // plugin.js is the only script read at Zotero startup, so it is the one that must stay tiny. panel.js (UI, agent runtime, katex, marked)
 // is read when the panel first opens: its size is not a concern within reason, but a blow-up would be a mistake worth catching.
 // (Raised 2026-10-05 with skills and prompts: panel.js was at 650k, the xpi 203k.)
-const BUDGET = { "plugin.js": 12_000, "panel.js": 720_000, "zotero-chat.xpi": 230_000 };
+const BUDGET = { "plugin.js": 12_000, "panel.js": 720_000, "zotero-agent.xpi": 230_000 };
 
 test("bundles stay within their size budget", () => {
   execFileSync("node", [join(root, "scripts", "build.mjs")], { cwd: root, stdio: "pipe" });

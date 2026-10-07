@@ -786,7 +786,7 @@ await test("settings: clear history and reset settings ask first, then reach the
   await p.getByRole("button", { name: "Reset", exact: true }).click();
   await p.waitForFunction(() => window.__zmc.sim.data.resets === 1);
   assert.equal((await settings(p)).expandTools, false);
-  assert.match(await p.locator(".about").innerText(), /Zotero chat 0\.1\.0/);
+  assert.match(await p.locator(".about").innerText(), /Zotero Agent 0\.1\.0/);
   await p.keyboard.press("Escape");
   await p.locator('button[aria-label="History"]').click();
   await p.waitForSelector(".vempty");
@@ -841,7 +841,7 @@ await test("a citation chip keeps its trailing punctuation: no line starts with 
 await test("settings: chat folder choose, cancel and use default; the section explains itself", async (p) => {
   await openSettings(p);
   const folder = () => p.locator(".folder__p").innerText();
-  assert.equal(await folder(), "/Users/you/Documents/Zotero-Chat");
+  assert.equal(await folder(), "/Users/you/Documents/Zotero-Agent");
   await p.getByRole("button", { name: "Use default" }).isDisabled().then((d) => assert.ok(d, "nothing to reset yet"));
   await p.getByRole("button", { name: "Choose…" }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().chatFolder.endsWith("paper-notes"));
@@ -856,7 +856,7 @@ await test("settings: chat folder choose, cancel and use default; the section ex
   assert.match(await p.locator("section.sec", { hasText: "Chat folder" }).innerText(), /remembers its own folder[\s\S]*\.claude\/skills and AGENTS\.md/);
   await p.getByRole("button", { name: "Use default" }).click();
   await p.waitForFunction(() => window.__zmc.host.getSettings().chatFolder === "");
-  assert.equal(await folder(), "/Users/you/Documents/Zotero-Chat");
+  assert.equal(await folder(), "/Users/you/Documents/Zotero-Agent");
 });
 
 await test("history: each chat shows its folder; Copy terminal command copies the backend's command and says Copied; a resumed chat starts in its own folder", async (p) => {

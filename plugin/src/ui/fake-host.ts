@@ -73,7 +73,7 @@ interface Sim {
   closed: number;
 }
 
-const DEFAULT_FOLDER = "/Users/you/Documents/Zotero-Chat";
+const DEFAULT_FOLDER = "/Users/you/Documents/Zotero-Agent";
 // A stand-in photo for the background picker: an evening sky over hills, as an SVG (the real host gives a downscaled JPEG).
 const SAMPLE_IMAGE = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000"><defs><linearGradient id="s" x2="0" y2="1"><stop offset="0" stop-color="#2b3a67"/><stop offset=".55" stop-color="#e07a5f"/><stop offset="1" stop-color="#f2cc8f"/></linearGradient></defs><rect width="800" height="1000" fill="url(#s)"/><circle cx="560" cy="520" r="70" fill="#fbe7c6"/><path d="M0 700 Q200 560 400 680 T800 640 V1000 H0Z" fill="#3d405b"/><path d="M0 820 Q260 700 520 800 T800 780 V1000 H0Z" fill="#22223b"/></svg>')}`;
 const CITE = (k: string, p: number) => `zotero://open-pdf/library/items/${k}?page=${p}`;

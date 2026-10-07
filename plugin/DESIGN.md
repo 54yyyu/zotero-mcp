@@ -1,4 +1,4 @@
-# Zotero chat plugin: design
+# Zotero Agent plugin: design
 
 A side panel inside Zotero (library view and reader tabs) that chats with an agent. The agent is a normal
 ACP agent (Claude Code, Codex, pi) run on the user's own subscription, or on an API key. It uses `zotero-cli`
@@ -370,7 +370,7 @@ scripts, `zotero-cli` and the agent's shell are the tools.
 - Open: `ZoteroPane.loadURI("zotero://open-pdf/...")`.
 - Storage: sessions under `<profile>/zotero-chat/sessions/` (jsonl of ChatEvents + index). Settings in prefs `extensions.zotero-chat.*`.
   API keys in the login manager (`Services.logins`), never in prefs.
-- Settings pane: Zotero's Settings window lists a "Zotero Chat" pane (`Zotero.PreferencePanes.register`, not awaited, in
+- Settings pane: Zotero's Settings window lists a "Zotero Agent" pane (`Zotero.PreferencePanes.register`, not awaited, in
   `startup()`: 0.04 ms). Zotero inserts the pane's markup (`prefpane.xhtml`, one div) into the Settings window's own document and
   runs `prefpane.js` in a sandbox; that script hands the div to the plugin over `Services.obs`, and the plugin mounts the panel's
   own settings screen in a shadow root there (`ui/pane.ts`, the same `settingsView`, no copy). The pane loads its own copy of

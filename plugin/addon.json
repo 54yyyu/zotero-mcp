@@ -1,9 +1,9 @@
 {
-  "name": "Zotero MCP Chat",
+  "name": "Zotero Agent",
   "id": "chat@zotero-mcp",
-  "slug": "zotero-chat",
+  "slug": "zotero-agent",
   "version": "0.14.0",
-  "description": "A chat panel in Zotero for your own AI agent (Claude Code, Codex, pi). It reads what you are reading and works your library through zotero-cli.",
+  "description": "An AI chat panel in Zotero that runs your own agent (Claude Code, Codex, pi): chat with your PDFs, cite pages, annotate and organise your library through zotero-cli.",
   "homepage": "https://github.com/54yyyu/zotero-mcp",
   "updateUrl": "https://raw.githubusercontent.com/54yyyu/zotero-mcp/main/plugin/updates.json",
   "minZotero": "7.0"

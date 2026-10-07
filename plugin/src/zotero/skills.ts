@@ -11,7 +11,7 @@ import type { FoundFile } from "../ui/skills-model.ts";
 import { createSkillText } from "../ui/create-skill.ts";
 
 const MARK = ".zotero-chat";
-const MARK_TEXT = "Copied here by Zotero Chat from its skills folder; changes here are replaced. Edit the skill in Zotero Chat's settings.\n";
+const MARK_TEXT = "Copied here by Zotero Agent from its skills folder; changes here are replaced. Edit the skill in Zotero Agent's settings.\n";
 const MAX_TEXT = 256 * 1024;
 const BUILTIN: SkillEntry = { name: CREATE_SKILL, description: "Make a new skill with your agent: it asks a few questions, then writes it.", builtin: true };
 

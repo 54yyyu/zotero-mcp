@@ -1,4 +1,4 @@
-# Skills for the Zotero chat panel
+# Skills for Zotero Agent
 
 A skill is a folder with a `SKILL.md`: a short frontmatter (`name` and a one-line `description`), then plain Markdown
 instructions your agent follows, using `zotero-cli` and its own shell. It may also hold reference files it points to

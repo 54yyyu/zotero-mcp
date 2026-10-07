@@ -1,4 +1,4 @@
-// Zotero's Settings window gets a "Zotero Chat" pane (run with --mock-agent): registered at startup for almost nothing,
+// Zotero's Settings window gets a "Zotero Agent" pane (run with --mock-agent): registered at startup for almost nothing,
 // it loads only when opened, shows the panel's own settings cards, starts no agent, and a change made in it reaches an
 // open panel at once (and the other way round). Snapshots in light and dark are for a human to look at.
 async function main(ctx) {
@@ -15,7 +15,7 @@ async function main(ctx) {
   await ctx.waitFor(() => Zotero.PreferencePanes.pluginPanes.some((p) => p.id === "zotero-chat-pane"), "the pane is registered");
   const entry = Zotero.PreferencePanes.pluginPanes.find((p) => p.id === "zotero-chat-pane");
   out.label = entry.rawLabel;
-  check(entry.rawLabel === "Zotero Chat", "labelled Zotero Chat: " + entry.rawLabel);
+  check(entry.rawLabel === "Zotero Agent", "labelled Zotero Agent: " + entry.rawLabel);
   check(plugin.timing.paneLoadMs === null && plugin.timing.panelLoadMs === null && injected.loaded() === null, "neither the pane nor the panel is loaded at startup");
 
   // 2. open the pane before any panel exists: the cards, and no agent started (the Agent card offers a button instead)
