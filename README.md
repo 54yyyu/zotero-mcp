@@ -1,7 +1,10 @@
 <!-- mcp-name: io.github.54yyyu/zotero-mcp -->
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/54yyyu/zotero-mcp/main/docs/assets/logo.svg" width="88" height="88" alt="Zotero MCP logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/54yyyu/zotero-mcp/main/docs/assets/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/54yyyu/zotero-mcp/main/docs/assets/logo-light.svg" width="96" height="96" alt="Zotero MCP logo">
+  </picture>
 </p>
 
 <h1 align="center">Zotero MCP</h1>
