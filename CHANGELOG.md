@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deeply nested web page snapshots are extracted instead of silently replaced by Zotero's flat index text.** `html.parser` leaves unterminated tags nested, so pages with many unclosed `<li>`/`<td>` tags exceeded Python's recursion limit inside markdownify ("Extraction failed ... maximum recursion depth exceeded"), and `zotero_get_item_fulltext` fell back to the index text with no structure: 7,061 characters for a datosmacro page whose Markdown is 129,328, and the same failure kept a 1.1 MB article out of the semantic index. Extraction now retries once on a worker thread with a raised recursion limit (5000, restored afterwards) and a 64 MB stack; pages nested more than about 2,000 levels deep (one converts to 29M characters) still use the fallback.
+
 ## [0.14.0] - 2026-10-07
 
 ### Added

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -431,10 +432,61 @@ def _html_converter():
     return _SnapshotConverter(heading_style="ATX")
 
 
+#: Recursion limit for a retry after a snapshot overflowed the default one.
+#: markdownify recurses once or twice per nesting level, and html.parser does
+#: not close unterminated tags, so a long page of ``<li>`` or ``<td>`` without
+#: end tags nests hundreds of levels deep. 5000 covers DOM depths up to about
+#: 2000; a page nested deeper than that is generated markup rather than text
+#: and keeps failing over to the caller's fallback instead of ballooning (one
+#: 3,830-level snapshot converts to 29M characters in 18 s and 1.5 GB).
+_DEEP_RECURSION_LIMIT = 5000
+#: Stack for the retry thread. CPython before 3.11 spends C stack on every
+#: Python call and worker threads can have as little as 512 KB, so the retry
+#: gets its own rather than risking a crash at the raised limit.
+_DEEP_STACK_BYTES = 64 * 1024 * 1024
+_deep_lock = threading.Lock()
+
+
+def _convert_html(text: str) -> str:
+    """Markdown for ``text``, retrying once with more stack for deep pages."""
+    try:
+        return _html_converter().convert(text)
+    except RecursionError as first:
+        result: dict[str, object] = {}
+
+        def convert() -> None:
+            try:
+                result["text"] = _html_converter().convert(text)
+            except BaseException as exc:  # handed back to the caller's thread
+                result["error"] = exc
+
+        # The recursion limit and the default thread stack size are both
+        # process-wide, so one deep conversion at a time, restored afterwards.
+        with _deep_lock:
+            limit = sys.getrecursionlimit()
+            stack = threading.stack_size()
+            try:
+                sys.setrecursionlimit(max(limit, _DEEP_RECURSION_LIMIT))
+                try:
+                    threading.stack_size(_DEEP_STACK_BYTES)
+                    worker = threading.Thread(target=convert, daemon=True)
+                    worker.start()
+                except (RuntimeError, ValueError):
+                    raise first from None
+                finally:
+                    threading.stack_size(stack)
+                worker.join()
+            finally:
+                sys.setrecursionlimit(limit)
+        if "error" in result:
+            raise result["error"]  # type: ignore[misc]
+        return result["text"]  # type: ignore[return-value]
+
+
 def extract_html(file_path: str | Path) -> ExtractedDoc:
     """Convert an HTML snapshot to Markdown, without embedded image data."""
     return _doc_from_pages(
-        [_html_converter().convert(_read_text(file_path)).strip()],
+        [_convert_html(_read_text(file_path)).strip()],
         page_count=1,
         source="html",
     )

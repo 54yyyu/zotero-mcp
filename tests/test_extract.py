@@ -7,6 +7,7 @@ tolerant-vs-raising split between ``extract_file`` and the per-format
 functions.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -227,6 +228,27 @@ class TestExtractHtml:
         snapshot = tmp_path / "page.html"
         snapshot.write_text('<img alt="Figure 1" src="https://example.org/f1.png">')
         assert "![Figure 1](https://example.org/f1.png)" in extract_html(snapshot).text
+
+
+    def test_deeply_nested_page_is_extracted_not_dropped(self, tmp_path):
+        # html.parser leaves unterminated tags nested, and markdownify blew
+        # the default recursion limit (1000) at roughly 300 levels.
+        depth = 1500
+        snapshot = tmp_path / "deep.html"
+        snapshot.write_text("<div>" * depth + "<p>deep body text</p>")
+        before = sys.getrecursionlimit()
+        assert "deep body text" in extract_html(snapshot).text
+        assert sys.getrecursionlimit() == before
+        assert extract_file(snapshot).text.strip() == "deep body text"
+
+    def test_absurdly_nested_page_still_fails_cleanly(self, tmp_path):
+        snapshot = tmp_path / "abyss.html"
+        snapshot.write_text("<div>" * 20000 + "<p>x</p>")
+        before = sys.getrecursionlimit()
+        with pytest.raises(RecursionError):
+            extract_html(snapshot)
+        assert sys.getrecursionlimit() == before
+        assert extract_file(snapshot) is None
 
 
 class TestExtractTextFile:
