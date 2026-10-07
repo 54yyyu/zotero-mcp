@@ -178,9 +178,12 @@ class TestOpen:
 
     def _run(self, zot, group_id=0, **kwargs):
         args = _args(**{"item_key": None, "page": None, "annotation": None, **kwargs})
+        # cmd_open takes the client module off the package; a few test modules swap in a fresh
+        # zotero_mcp.client in sys.modules, so a patch by dotted path could miss it.
+        import zotero_mcp
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
-             patch("zotero_mcp.client.get_zotero_client", return_value=zot), \
-             patch("zotero_mcp.client.get_active_group_id", return_value=group_id), \
+             patch.object(zotero_mcp.client, "get_zotero_client", return_value=zot), \
+             patch.object(zotero_mcp.client, "get_active_group_id", return_value=group_id), \
              patch("zotero_mcp.cli_standalone._launch_url") as launch:
             cli_standalone.cmd_open(args)
         return launch.call_args.args[0]
