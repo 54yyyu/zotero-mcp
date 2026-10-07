@@ -194,7 +194,7 @@ Website: [stevenyuyy.com/zotero-mcp](https://stevenyuyy.com/zotero-mcp/) · [Cha
 
 ## Contributing
 
-Issues and pull requests are welcome. Run the tests with `uv run pytest tests/`. A live integration test plan, meant to be run by Claude against a real library, is in [docs/integration-test-plan.md](https://github.com/54yyyu/zotero-mcp/blob/main/docs/integration-test-plan.md).
+Issues and pull requests are welcome. Run the tests with `uv run pytest tests/`. A live integration test plan, meant to be run by Claude against a real library, is in [docs/integration-test-plan.md](https://github.com/54yyyu/zotero-mcp/blob/main/docs/integration-test-plan.md). Changes to the plugin in `plugin/` (AGPL-3.0) are accepted on the condition that the maintainer may also release them under other terms, including commercial ones.
 
 Thanks to everyone who has contributed code, fixes, and ideas to Zotero MCP.
 
@@ -216,7 +216,7 @@ Thanks to everyone who has contributed code, fixes, and ideas to Zotero MCP.
 
 ## Support
 
-Zotero MCP is free and MIT-licensed.
+Zotero MCP is free and open source.
 
 If it saves you or your lab time, sponsoring helps cover the unglamorous parts: Windows and WSL2 edge
 cases, Zotero schema changes, group-library support, and the embedding/search infrastructure.
@@ -228,4 +228,4 @@ triage on the issues affecting your workflow.
 
 ## License
 
-MIT
+The MCP server and `zotero-cli` are MIT ([LICENSE](https://github.com/54yyyu/zotero-mcp/blob/main/LICENSE)). The Zotero Agent plugin in `plugin/` is AGPL-3.0-or-later ([plugin/LICENSE](https://github.com/54yyyu/zotero-mcp/blob/main/plugin/LICENSE)), the license Zotero itself uses.

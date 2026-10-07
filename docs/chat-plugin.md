@@ -154,3 +154,7 @@ The plugin has no server and sends nothing itself. What leaves your machine is w
 - **A chat answers with nothing, or the panel says the agent finished without answering.** The model or its reasoning effort was probably refused (some servers reject a high reasoning level). Pick a lower effort or another model for that agent in the settings.
 - **The agent is not signed in.** Run `claude`, `codex` or `pi` once in a terminal and log in, or switch that agent to API-key mode.
 - **`zotero-cli plugin` says the xpi is not built.** You are running from a source checkout: build it as above, or download it from the release page.
+
+## License
+
+The plugin is AGPL-3.0-or-later (`plugin/LICENSE`), like Zotero itself; the rest of zotero-mcp is MIT. By sending a change to `plugin/`, you agree that it may also be released by the maintainer under other licence terms, including commercial ones.

@@ -4,6 +4,7 @@
   "slug": "zotero-agent",
   "version": "0.14.0",
   "description": "An AI chat panel in Zotero that runs your own agent (Claude Code, Codex, pi): chat with your PDFs, cite pages, annotate and organise your library through zotero-cli.",
+  "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/54yyyu/zotero-mcp",
   "updateUrl": "https://raw.githubusercontent.com/54yyyu/zotero-mcp/main/plugin/updates.json",
   "minZotero": "7.0"

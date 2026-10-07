@@ -10,12 +10,12 @@ authors = [
 ]
 description = "Zotero MCP server and CLI: chat with your Zotero research library in Claude, ChatGPT, Cursor, Codex and other AI agents"
 keywords = ["zotero", "mcp", "model-context-protocol", "cli", "research", "citations", "bibliography", "mcp-server", "claude", "chatgpt", "ai-agent", "semantic-search", "pdf", "zotero-plugin"]
-license = {text = "MIT"}
+license = "MIT AND AGPL-3.0-or-later"
+license-files = ["LICENSE", "plugin/LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -115,6 +115,10 @@ path = "src/zotero_mcp/_version.py"
 # too, since `python -m build` makes the wheel from the sdist.
 [tool.hatch.build]
 artifacts = ["src/zotero_mcp/chat_plugin/zotero-agent.xpi"]
+
+# hatchling reads only the top-level .gitignore, so the ignores in plugin/ (and plugin/preview/) are repeated here.
+[tool.hatch.build.targets.sdist]
+exclude = ["plugin/node_modules", "plugin/dist", "plugin/.dev*", "plugin/preview/shots", "plugin/**/*.xpi"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zotero_mcp"]

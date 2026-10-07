@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "description": "Chat side panel for Zotero, driven by any ACP agent",
+  "license": "AGPL-3.0-or-later",
   "engines": {
     "node": ">=24"
   },
