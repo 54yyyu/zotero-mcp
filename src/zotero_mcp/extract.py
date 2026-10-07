@@ -183,8 +183,10 @@ def _extract_pdf_reused(
                     whole = extract_pdf(path)
                 except Exception:
                     return None
-                if whole.page_numbers == tuple(range(whole.page_count)):
-                    _memo_put(key, whole)
+                # Kept even when it is not page by page (a scanner's text
+                # layer): the next read then skips straight to the subset
+                # path instead of parsing the whole file a second time.
+                _memo_put(key, whole)
     if whole is None or whole.page_numbers != tuple(range(whole.page_count)):
         return None
 

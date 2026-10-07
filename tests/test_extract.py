@@ -563,6 +563,24 @@ class TestParseReuse:
         monkeypatch.setattr(counting_inspector, "classify_pdf", lambda p: 1 / 0)
         assert pdf_page_count(pdf) == 4
 
+    def test_scanner_text_layer_is_not_reparsed_whole_on_every_read(
+        self, monkeypatch, tmp_path
+    ):
+        """A PDF whose whole-document parse falls back to the text layer cannot
+        be sliced by page; later reads must not repeat that whole parse."""
+        from zotero_mcp import extract
+
+        extract._parse_memo.clear()
+        fake = _CountingInspector(markdown=["", "", ""], text="scanned text")
+        monkeypatch.setattr("zotero_mcp.extract._pdf_inspector", lambda: fake)
+        pdf = tmp_path / "scan.pdf"
+        pdf.write_bytes(b"%PDF-1.4 s")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        assert fake.markdown_calls == [None, [0]]  # whole parse, then the subset
+        extract_pdf(pdf, pages=[1], reuse=True)
+        assert fake.markdown_calls == [None, [0], [1]]
+        extract._parse_memo.clear()
+
 
 class TestReaderOptsIntoReuse:
     def test_reader_passes_reuse_only_when_asked(self, monkeypatch):
