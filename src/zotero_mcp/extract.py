@@ -268,12 +268,63 @@ def _read_text(file_path: str | Path) -> str:
     return raw.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def extract_html(file_path: str | Path) -> ExtractedDoc:
-    """Convert an HTML snapshot to Markdown."""
-    from markdownify import markdownify
+def _inline_image_placeholder(alt: str) -> str:
+    """What an embedded ``data:`` image becomes in the Markdown.
 
+    Snapshots saved by the Zotero Connector inline every image as a
+    ``data:`` URI, and markdownify copies each one into ``![alt](data:...)``
+    verbatim. On one real snapshot that was 6.1M characters of base64 around
+    33K characters of text, which no agent can read and no embedding model
+    can use.
+
+    A short marker keeps the fact that a figure was there (so an agent can
+    say so, or open the PDF) for a few tokens. Brackets are removed from the
+    alt text so the marker stays balanced when the image sits inside a link.
+    """
+    label = " ".join(alt.replace("[", " ").replace("]", " ").split())
+    return f"[image: {label}]" if label else "[image]"
+
+
+def _is_data_uri(value) -> bool:
+    return isinstance(value, str) and value.lstrip()[:5].lower() == "data:"
+
+
+def _html_converter():
+    """A markdownify converter that drops embedded ``data:`` URIs.
+
+    markdownify copies a URL into the Markdown from three elements: an
+    image's ``src``, a video's ``poster`` or ``src`` (or its first
+    ``<source>``), and a link's ``href``. Each is checked here.
+    """
+    from markdownify import MarkdownConverter
+
+    class _SnapshotConverter(MarkdownConverter):
+        def convert_img(self, el, text, parent_tags):
+            if _is_data_uri(el.attrs.get("src")):
+                return _inline_image_placeholder(el.attrs.get("alt") or "")
+            return super().convert_img(el, text, parent_tags)
+
+        def convert_video(self, el, text, parent_tags):
+            for attr in ("poster", "src"):
+                if _is_data_uri(el.attrs.get(attr)):
+                    del el.attrs[attr]
+            for source in el.find_all("source"):
+                if _is_data_uri(source.attrs.get("src")):
+                    source.decompose()
+            return super().convert_video(el, text, parent_tags)
+
+        def convert_a(self, el, text, parent_tags):
+            if _is_data_uri(el.attrs.get("href")):
+                return text
+            return super().convert_a(el, text, parent_tags)
+
+    return _SnapshotConverter(heading_style="ATX")
+
+
+def extract_html(file_path: str | Path) -> ExtractedDoc:
+    """Convert an HTML snapshot to Markdown, without embedded image data."""
     return _doc_from_pages(
-        [markdownify(_read_text(file_path), heading_style="ATX").strip()],
+        [_html_converter().convert(_read_text(file_path)).strip()],
         page_count=1,
         source="html",
     )
