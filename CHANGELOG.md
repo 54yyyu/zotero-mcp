@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_search_items` applies `tag` and `item_type` to its semantic fallback.** When every text search came up empty, the last-resort semantic search ignored both filters: `tag="a"` returned items that do not carry the tag and `item_type="book"` returned articles, each presented as a match for the filtered query. The hits are now filtered with the same syntax as the text searches (` OR `, `-tag`, `a || b` types), and the index is asked for more candidates so the limit survives the filter. A tag containing a wildcard, which cannot be checked here, returns no fallback hits. The fallback note also no longer sits between the title and the `with tags:` line.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security
