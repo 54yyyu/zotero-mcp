@@ -2612,33 +2612,35 @@ class LocalZoteroReader:
             # quietly mean "return the whole library".
             if not (tag or item_type):
                 return None
-        for variant in variants:
-            # Escaped, but deliberately not zsearch_norm-folded: this free-text
-            # path matches by OR-ing _generate_search_variants, which also
-            # covers dash/space and umlaut *expansion* (Müller -> Mueller) that
-            # normalize() does not do. Folding here as well would over-match
-            # relative to the pyzotero path.
+        # Both sides are folded through zsearch_norm, as in advanced search:
+        # Zotero's own quick search (the pyzotero path) matches "indice",
+        # "índice" and "Índice" alike, while SQLite's LIKE folds ASCII case
+        # only. The variants still add what normalize() does not do, such as
+        # dash/space swaps and umlaut expansion (Müller -> Mueller).
+        folded = list(dict.fromkeys(_semantics.normalize(v) for v in variants))
+        norm = _semantics.SQLITE_NORM_FUNCTION
+        for variant in folded:
             pattern = f"%{_semantics.escape_like(variant)}%"
-            like_clauses.append("title_val.value LIKE ? ESCAPE '\\'")
+            like_clauses.append(f"{norm}(title_val.value) LIKE ? ESCAPE '\\'")
             like_params.append(pattern)
             like_clauses.append("date_val.value LIKE ? ESCAPE '\\'")
             like_params.append(pattern)
             like_clauses.append(
                 f"EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
-                f"WHERE ic.itemID = i.itemID AND {_CREATOR_NAME_EXPR} LIKE ? ESCAPE '\\')"
+                f"WHERE ic.itemID = i.itemID AND {norm}({_CREATOR_NAME_EXPR}) LIKE ? ESCAPE '\\')"
             )
             like_params.append(pattern)
             if qmode == "everything":
-                like_clauses.append("abstract_val.value LIKE ? ESCAPE '\\'")
+                like_clauses.append(f"{norm}(abstract_val.value) LIKE ? ESCAPE '\\'")
                 like_params.append(pattern)
                 like_clauses.append(
                     "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
-                    "WHERE itg.itemID = i.itemID AND t.name LIKE ? ESCAPE '\\')"
+                    f"WHERE itg.itemID = i.itemID AND {norm}(t.name) LIKE ? ESCAPE '\\')"
                 )
                 like_params.append(pattern)
                 like_clauses.append(
                     "EXISTS (SELECT 1 FROM itemNotes n WHERE "
-                    "(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND n.note LIKE ? ESCAPE '\\')"
+                    f"(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND {norm}(n.note) LIKE ? ESCAPE '\\')"
                 )
                 like_params.append(pattern)
 
