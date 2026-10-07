@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_find_related_papers` and the Scite tools no longer block every other tool while they wait on the network.** They held the shared Zotero API lock across each OpenAlex or Scite request, so with 1.5 s of OpenAlex latency a concurrent `zotero_get_recent` waited 6.3 s (2.7 s behind `scite_enrich_item`). The lock is now taken only around the reads from Zotero itself; the same test waits 0.01 s.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security

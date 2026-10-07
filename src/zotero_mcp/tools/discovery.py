@@ -9,7 +9,7 @@ from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils  # noqa: F401  (kept for module-level conventions)
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
-from zotero_mcp.client import with_zotero_api_lock
+from zotero_mcp.client import with_zotero_api_lock, zotero_api_lock
 from zotero_mcp.tools import _helpers
 
 _OPENALEX_BASE = "https://api.openalex.org"
@@ -150,7 +150,6 @@ def _render_related(papers: list[dict], heading: str) -> list[str]:
         "direction='citations', limit=10)."
     ),
 )
-@with_zotero_api_lock
 def find_related_papers(
     identifier: str,
     direction: Literal["references", "citations", "both"] = "both",
@@ -158,16 +157,21 @@ def find_related_papers(
     *,
     ctx: Context,
 ) -> str:
-    """Find references and/or citing works for a paper via OpenAlex."""
+    """Find references and/or citing works for a paper via OpenAlex.
+
+    The Zotero API lock is held only while reading from the Zotero backend,
+    never across an OpenAlex request (#431): each of those can take seconds,
+    and every other tool would wait behind it.
+    """
     try:
         if direction not in {"references", "citations", "both"}:
             return "Error: direction must be 'references', 'citations', or 'both'."
 
         limit = _helpers._normalize_limit(limit, default=20, max_val=50)
-        backend = _library.get_library_backend()
-
         ctx.info(f"Resolving identifier to DOI: {identifier}")
-        doi = _resolve_doi(identifier, backend)
+        with zotero_api_lock():
+            backend = _library.get_library_backend()
+            doi = _resolve_doi(identifier, backend)
         if not doi:
             return (
                 f"Could not resolve a DOI for '{identifier}'. Provide a valid "
@@ -228,8 +232,9 @@ def find_related_papers(
                 citations = citations[:limit]
 
         # Flag library membership for every related paper.
-        for p in references + citations:
-            p["in_library"] = _doi_in_library(backend, p["doi"]) if p["doi"] else False
+        with zotero_api_lock():
+            for p in references + citations:
+                p["in_library"] = _doi_in_library(backend, p["doi"]) if p["doi"] else False
 
         src_title = work.get("title") or work.get("display_name") or doi
         output = [
