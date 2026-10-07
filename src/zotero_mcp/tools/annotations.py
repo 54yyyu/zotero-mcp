@@ -7,6 +7,8 @@ import uuid
 from typing import Literal
 
 import requests
+from fastmcp.exceptions import ToolError
+from pyzotero.zotero_errors import ResourceNotFoundError
 
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
@@ -1193,7 +1195,7 @@ def manage_note(
 
     if action == "update":
         if note_text is None:
-            return (
+            raise ToolError(
                 "Error: action='update' requires note_text (the new HTML "
                 "body). item_key must be the note's own key."
             )
@@ -1321,16 +1323,16 @@ def update_note(
 
         zot, err = _get_note_write_client("updating notes")
         if err:
-            return err
+            raise ToolError(err)
 
         try:
             item = zot.item(item_key)
-        except Exception:
-            return f"Error: No item found with key: {item_key}"
+        except ResourceNotFoundError as e:
+            raise ToolError(f"Error: No item found with key: {item_key}") from e
 
         data = item.get("data", {})
         if data.get("itemType") != "note":
-            return f"Error: Item {item_key} is not a note (itemType={data.get('itemType')})"
+            raise ToolError(f"Error: Item {item_key} is not a note (itemType={data.get('itemType')})")
 
         html = _note_html.to_note_html(note_text)
         data["note"] = _note_html.append_note_html(data.get("note", ""), html) if append else html
@@ -1338,11 +1340,13 @@ def update_note(
         resp = zot.update_item(item)
         if _helpers._handle_write_response(resp, ctx):
             return f"Successfully updated note {item_key}"
-        return f"Failed to update note {item_key}"
+        raise ToolError(f"Failed to update note {item_key}")
 
+    except ToolError:
+        raise
     except Exception as e:
         ctx.error(f"Error updating note: {str(e)}")
-        return f"Error updating note: {_helpers.format_zotero_error(e)}"
+        raise ToolError(f"Error updating note: {_helpers.format_zotero_error(e)}") from e
 
 
 def delete_note(

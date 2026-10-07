@@ -1,3 +1,7 @@
+import pytest
+from fastmcp.exceptions import ToolError
+from pyzotero.zotero_errors import ResourceNotFoundError
+
 from zotero_mcp import server
 from zotero_mcp.tools import annotations as annotations_mod
 
@@ -159,7 +163,7 @@ class FakeZoteroForNoteUpdate:
 
     def item(self, key):
         if key not in self._items:
-            raise KeyError(key)
+            raise ResourceNotFoundError(key)
         return self._items[key]
 
     def update_item(self, item):
@@ -311,11 +315,10 @@ def test_update_note_rejects_non_note(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
     monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
-    result = server.update_note(
-        item_key="ITEM0001", note_text="<p>x</p>", append=False, ctx=DummyContext()
-    )
-
-    assert "is not a note" in result
+    with pytest.raises(ToolError, match="is not a note"):
+        server.update_note(
+            item_key="ITEM0001", note_text="<p>x</p>", append=False, ctx=DummyContext()
+        )
     assert fake.updated == []
 
 
@@ -324,11 +327,10 @@ def test_update_note_missing_key(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
     monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
-    result = server.update_note(
-        item_key="ZZZZZZZZ", note_text="<p>x</p>", append=False, ctx=DummyContext()
-    )
-
-    assert "No item found" in result
+    with pytest.raises(ToolError, match="No item found"):
+        server.update_note(
+            item_key="ZZZZZZZZ", note_text="<p>x</p>", append=False, ctx=DummyContext()
+        )
     assert fake.updated == []
 
 
@@ -559,11 +561,10 @@ def test_manage_note_update_dispatches(monkeypatch):
 
 
 def test_manage_note_update_requires_note_text():
-    result = annotations_mod.manage_note(
-        action="update", item_key="NOTE0001", ctx=DummyContext()
-    )
-
-    assert "requires note_text" in result
+    with pytest.raises(ToolError, match="requires note_text"):
+        annotations_mod.manage_note(
+            action="update", item_key="NOTE0001", ctx=DummyContext()
+        )
 
 
 def test_manage_note_delete_dispatches(monkeypatch):

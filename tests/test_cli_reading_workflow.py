@@ -74,6 +74,8 @@ class TestFailureReporting:
         "No items found for 'x'",
         "Successfully trashed annotation K (recoverable). Error count: 0",
         "Errors are rare in this paper",
+        "# Feed: Nature\n**URL:** https://example.org/rss",
+        "## Group Libraries\n- Reading group",
     ])
     def test_success_prose_is_not(self, text):
         assert not _reports_failure(text)

@@ -322,9 +322,14 @@ def cmd_get(args):
         print(result)
     elif sub == "fulltext":
         result = retrieval.get_item_fulltext(item_key=args.item_key, ctx=ctx)
+        # A failure leads with "Error"; a success leads with the item's
+        # metadata heading ("# Error-correcting codes" is a fine title). Only
+        # structured data skips _out's failure check, so a failure must not
+        # be wrapped as data.
+        failed = result.startswith("Error")
         _out(args, "get fulltext",
              data={"item_key": args.item_key, "text": result, "chars": len(result)}
-             if json_mode else None,
+             if json_mode and not failed else None,
              text=result)
     elif sub == "bibtex":
         result = retrieval.get_item_metadata(item_key=args.item_key, format="bibtex", ctx=ctx)

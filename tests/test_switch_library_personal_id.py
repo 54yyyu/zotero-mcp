@@ -123,3 +123,22 @@ def test_web_user_keyword_not_mapped_to_group_id(web_mode, monkeypatch, library_
     assert web_mode, "probe should have run"
     assert all(p["library_id"] != "5294983" for p in web_mode)
     assert web_mode == [{"library_id": library_id, "library_type": "user"}]
+
+
+@pytest.mark.parametrize(
+    "library_id, library_type",
+    [
+        ("0", "bogus"),  # unsupported library_type (#595)
+        ("99", "user"),
+        ("99", "group"),
+        ("99", "feed"),
+    ],
+)
+def test_rejected_switch_is_reported_as_a_failure(local_mode, library_id, library_type):
+    """The CLI turns prose that leads with "Error" into a failed envelope."""
+    from zotero_mcp.cli_standalone import _reports_failure
+
+    result = retrieval.switch_library(library_id, library_type, ctx=DummyContext())
+    assert result.startswith("Error: ")
+    assert _reports_failure(result)
+    assert _client.get_active_library() == {}
