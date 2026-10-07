@@ -109,6 +109,20 @@ class ZoteroMcpConfig:
         return self.zotero_db_path or self.semantic_search.zotero_db_path
 
 
+def resolve_chroma_dir(persist_directory: str | None = None) -> Path:
+    """Return the ChromaDB directory: ``semantic_search.persist_directory`` or
+    ``~/.config/zotero-mcp/chroma_db``.
+
+    The index and the model-free status reader must agree on this path, or an
+    index moved with the setting is reported empty. Moving it is the workaround
+    for ChromaDB failing to write its HNSW files under a non-ASCII path on
+    Windows (#617).
+    """
+    if persist_directory:
+        return Path(persist_directory).expanduser()
+    return Path.home() / ".config" / "zotero-mcp" / "chroma_db"
+
+
 _config_adapter: TypeAdapter[ZoteroMcpConfig] = TypeAdapter(ZoteroMcpConfig)
 
 
