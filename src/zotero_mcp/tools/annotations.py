@@ -1,5 +1,6 @@
 """Annotation and note tool functions for the Zotero MCP server."""
 
+import html
 import json
 import os
 import re
@@ -48,6 +49,15 @@ _MARKDOWN_WARNING = (
     "\n\nWarning: the note text looks like Markdown, which Zotero notes do "
     "NOT render — it was stored as literal text. Use simple HTML "
     "(p, strong, em, ul/li, a, code) for formatting."
+)
+
+
+# An opening or closing tag of an element a note can hold. Text without one
+# is plain text, so a bare "<" (as in "x<y and y>z") is not mistaken for HTML.
+_NOTE_HTML_TAG_RE = re.compile(
+    r"</?(?:p|div|br|hr|h[1-6]|ul|ol|li|blockquote|pre|code|span|a|b|i|u|s|em|"
+    r"strong|sub|sup|table|thead|tbody|tr|td|th|img)\b[^<>]*>",
+    re.IGNORECASE,
 )
 
 
@@ -1285,7 +1295,7 @@ def create_note(
 
         # Format the note content with proper HTML
         # If the note_text already has HTML, use it directly
-        if "<p>" in note_text or "<div>" in note_text:
+        if _NOTE_HTML_TAG_RE.search(note_text):
             html_content = note_text
             markdown_suffix = ""
         else:
@@ -1293,8 +1303,9 @@ def create_note(
             paragraphs = note_text.split("\n\n")
             html_parts = []
             for p in paragraphs:
-                # Replace newlines with <br/> tags
-                p_with_br = p.replace("\n", "<br/>")
+                # Escape first: Zotero reads an unescaped "<y and y>" as a
+                # tag and drops the text inside it. Then newlines to <br/>.
+                p_with_br = html.escape(p, quote=False).replace("\n", "<br/>")
                 html_parts.append("<p>" + p_with_br + "</p>")
             html_content = "".join(html_parts)
             # Warn (don't fail): Markdown-looking input is stored verbatim.
