@@ -1423,7 +1423,7 @@ def get_feed_items(
     try:
         local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
         if not local:
-            return "RSS feed items are only accessible in local mode (ZOTERO_LOCAL=true)."
+            return "Error: RSS feed items are only accessible in local mode (ZOTERO_LOCAL=true)."
 
         ctx.info(f"Fetching items from feed (libraryID={library_id})")
         from zotero_mcp.local_db import LocalZoteroReader

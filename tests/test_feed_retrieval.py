@@ -39,14 +39,13 @@ class FakeFeedReader:
         return None
 
 
-def test_list_feeds_web_mode_is_reported_as_an_error(monkeypatch):
+def test_feed_tools_in_web_mode_are_reported_as_errors(monkeypatch):
     monkeypatch.setenv("ZOTERO_LOCAL", "false")
 
     from zotero_mcp.tools import retrieval
 
-    result = retrieval.list_feeds(ctx=DummyContext())
-
-    assert result.startswith("Error:")
+    assert retrieval.list_feeds(ctx=DummyContext()).startswith("Error:")
+    assert retrieval.get_feed_items(library_id=2, ctx=DummyContext()).startswith("Error:")
 
 
 def test_get_feed_items_output_includes_publication_date(monkeypatch):
