@@ -10,7 +10,7 @@
 <h1 align="center">Zotero MCP: Chat with your Research Library in Claude, ChatGPT, and more</h1>
 
 <p align="center">
-  <b>Your Zotero library, local or web, in every AI agent.</b><br>
+  <b>Your Zotero library, in every AI agent.</b><br>
   Search, read, cite and annotate your papers from Claude, ChatGPT, Codex, Cursor, or a chat panel inside Zotero.
 </p>
 
