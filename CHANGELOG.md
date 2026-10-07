@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.13.3] - 2026-10-04
+## [0.13.3] - 2026-10-06
 
 ### Security
 
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stopped servers no longer leave copies of the library behind** (#645). The SQLite backend reads a private copy of `zotero.sqlite` plus its WAL (#536) and deleted it only at a normal exit, so every stop by SIGTERM (launchd, systemd, Docker) or SIGKILL left a full copy of the library in the temp directory, one per restart. Copies are now named after their process, and each process removes those of processes that are gone before making its first one; unnamed copies from older versions go once they are a week old. The snapshot tests no longer leave copies in the real temp directory either. On Windows, where a process id cannot be probed safely, only copies older than a week are removed.
 - **A failed batch-manifest save no longer loses the run** (#646). The manifest of an OpenAI/Gemini Batch API run, its only local record, was rewritten in place on every status refresh and import, so a crash or a full disk mid-write left truncated JSON. That run then disappeared from status and import, and an older run was treated as the newest. Manifests are now written to a temp file and renamed. The full-text cache index now uses the same writer, which also removes a fixed temp file name that concurrent writers shared.
 - **`zotero-cli library switch` no longer claims the switch carries over** (#606). Each `zotero-cli` command is a new process, so a switch only lasted for that one command, while the message said "All tools now operate on this library" and the next command silently read the default library. The CLI now says the switch lasts for this command only and prints the `ZOTERO_LIBRARY_ID` / `ZOTERO_LIBRARY_TYPE` values to use instead; `library reset` says the same.
+- **Merging duplicates no longer trashes the annotations on a duplicate's PDF** (#661). When a duplicate's attachment is the same file as one the keeper already has (same md5), `zotero_merge_duplicates` left it on the duplicate and trashed it, along with every highlight and note the user had made on that copy, and still reported "Merge complete". Such an attachment is now moved to the keeper whenever it has annotations or a child note, so the keeper may end up with two copies of the file but nothing is lost. Zotero's local API lists annotations only when asked for them by type, so the check asks for them explicitly.
 
 ## [0.13.2] - 2026-10-04
 

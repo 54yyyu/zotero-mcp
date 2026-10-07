@@ -1534,3 +1534,74 @@ class TestTitleRuleChangesAutoMerge:
         assert "### title:micro level study" in plan
         assert "**KEEP** `G1`" in plan
         assert "- trash `G3`" in plan
+
+
+# ---------------------------------------------------------------------------
+# A duplicate's copy of the keeper's PDF carries the user's annotations
+# ---------------------------------------------------------------------------
+
+def _make_annotation(key, parent):
+    return {"key": key, "version": 1, "data": {
+        "key": key,
+        "itemType": "annotation",
+        "parentItem": parent,
+        "annotationType": "highlight",
+        "annotationText": "my highlight",
+    }}
+
+
+class _AnnotationsByTypeFake(FakeZoteroForDuplicates):
+    """Zotero's local API lists annotations only when asked by itemType."""
+
+    def children(self, item_key, **kwargs):
+        kids = self._children.get(item_key, [])
+        wanted = kwargs.get("itemType")
+        if wanted:
+            return [k for k in kids if k["data"].get("itemType") == wanted]
+        return [k for k in kids if k["data"].get("itemType") != "annotation"]
+
+
+class TestMergeDuplicatesAnnotatedAttachments:
+    """The keeper already has the same PDF (same md5), but the duplicate's copy
+    is the one the user annotated. Skipping it left the annotations on an
+    attachment that is trashed with the duplicate."""
+
+    def _run(self, monkeypatch, dummy_ctx, dup_att_children):
+        fake = _AnnotationsByTypeFake()
+        keep_att = _make_attachment("KATT", "KEEP", "paper.pdf")
+        dup_att = _make_attachment("DATT", "DUP1", "paper.pdf")
+        fake._items = [_make_item("KEEP", "Keeper"), _make_item("DUP1", "Dup"),
+                       keep_att, dup_att, *dup_att_children]
+        fake._children = {"KEEP": [keep_att], "DUP1": [dup_att], "KATT": [],
+                          "DATT": list(dup_att_children)}
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        result = server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
+        )
+        return fake, result
+
+    def test_annotated_copy_of_the_same_pdf_moves_to_the_keeper(self, monkeypatch, dummy_ctx):
+        fake, result = self._run(monkeypatch, dummy_ctx, [_make_annotation("ANN1", "DATT")])
+        moved = [u for u in fake.update_calls
+                 if u.get("key") == "DATT" and u["data"].get("parentItem") == "KEEP"]
+        assert moved, "annotated PDF was left on the duplicate and trashed with it"
+        assert "duplicate attachments skipped" not in result
+
+    def test_plan_counts_the_annotated_copy_as_moving(self, monkeypatch, dummy_ctx):
+        fake = _AnnotationsByTypeFake()
+        keep_att = _make_attachment("KATT", "KEEP", "paper.pdf")
+        dup_att = _make_attachment("DATT", "DUP1", "paper.pdf")
+        ann = _make_annotation("ANN1", "DATT")
+        fake._items = [_make_item("KEEP", "Keeper"), _make_item("DUP1", "Dup"), keep_att, dup_att, ann]
+        fake._children = {"KEEP": [keep_att], "DUP1": [dup_att], "KATT": [], "DATT": [ann]}
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        preview = server.merge_duplicates(
+            keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=False, ctx=dummy_ctx
+        )
+        assert "skipped" not in preview.lower()
+        assert fake.update_calls == []
+
+    def test_unannotated_copy_of_the_same_pdf_is_still_skipped(self, monkeypatch, dummy_ctx):
+        fake, result = self._run(monkeypatch, dummy_ctx, [])
+        assert "DATT" not in {u.get("key") for u in fake.update_calls}
+        assert "1 duplicate attachments skipped" in result
