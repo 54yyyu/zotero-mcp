@@ -82,3 +82,44 @@ def test_get_config_roundtrips_new_fields():
     assert cfg["request_batch_size"] == 128
     assert cfg["rate_limit_rps"] == 5.0
     assert cfg["model_name"] == "text-embedding-3-small"
+
+
+def test_voyage_base_url_gets_base64_encoding_format():
+    # Voyage AI (api.voyageai.com via base_url) rejects encoding_format="float"
+    # with a 400; it only accepts "base64". Everything else keeps "float" (#348).
+    ef, calls = _make(batch_size=2)
+    ef.base_url = "https://api.voyageai.com/v1"
+    ef([0, 1])
+    assert calls and all(c["encoding_format"] == "base64" for c in calls)
+
+
+def test_non_voyage_base_url_keeps_float_encoding_format():
+    ef, calls = _make(batch_size=2)
+    ef.base_url = "https://openrouter.ai/api/v1"
+    ef([0, 1])
+    assert calls and all(c["encoding_format"] == "float" for c in calls)
+
+
+def _b64(vec):
+    import base64, struct
+    return base64.b64encode(struct.pack("<%df" % len(vec), *vec)).decode()
+
+
+def test_voyage_base64_response_is_decoded():
+    # Voyage returns embeddings as base64 str; the provider must decode to floats.
+    calls = []
+    class _Resp:
+        def __init__(self, items):
+            self.data = [type("D", (), {"embedding": _b64([float(x)])}) for x in items]
+    class _Emb:
+        @staticmethod
+        def create(model, input, encoding_format):
+            calls.append(encoding_format); return _Resp(input)
+    class _Client: embeddings = _Emb()
+    ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
+    ef.model_name = "voyage-4-large"; ef.base_url = "https://api.voyageai.com/v1"
+    ef.request_batch_size = 64; ef.rate_limit_rps = None
+    ef._rate_lock = threading.Lock(); ef._last_request_ts = 0.0; ef.client = _Client()
+    out = ef([0.5, 2.0])
+    assert calls == ["base64"]
+    assert out == [[0.5], [2.0]]
