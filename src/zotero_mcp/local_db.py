@@ -702,6 +702,76 @@ def note_local_write() -> None:
 _snapshot_lock = threading.Lock()
 _snapshots: dict[str, tuple[tuple, str, float, int]] = {}
 
+#: Snapshot directories are named ``zotero_mcp_db_<pid>_<random>`` so a later
+#: process can tell whose they are. Copies from before the pid was recorded
+#: are only removed once they are this old.
+_SNAPSHOT_PREFIX = "zotero_mcp_db_"
+_LEGACY_SNAPSHOT_MAX_AGE = 7 * 24 * 3600
+_swept_stale_snapshots = False
+
+
+_IS_WINDOWS = os.name == "nt"
+
+
+def _pid_alive(pid: int) -> bool:
+    if _IS_WINDOWS:
+        # os.kill(pid, 0) is not a liveness probe on Windows: signal 0 equals
+        # CTRL_C_EVENT there, so it can send Ctrl+C to processes on the
+        # console, and a failure is a generic OSError. Say "alive" and let the
+        # sweep fall back to the age rule.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Exists but belongs to someone else (EPERM), or the platform
+        # cannot tell: keep the directory.
+        return True
+    return True
+
+
+def _sweep_stale_snapshots() -> None:
+    """Remove snapshot directories left behind by processes that are gone.
+
+    ``_remove_snapshots`` runs at exit, but not when the process is stopped
+    by a signal: SIGTERM from launchd, systemd or Docker, or SIGKILL. Each
+    such stop used to leave a full copy of the user's library in the temp
+    directory, one per restart. Runs once per process, before its first copy.
+    """
+    global _swept_stale_snapshots
+    if _swept_stale_snapshots:
+        return
+    _swept_stale_snapshots = True
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        if not name.startswith(_SNAPSHOT_PREFIX):
+            continue
+        path = os.path.join(tmp, name)
+        owner = name[len(_SNAPSHOT_PREFIX):].split("_", 1)[0]
+        try:
+            if owner.isdigit() and "_" in name[len(_SNAPSHOT_PREFIX):]:
+                pid = int(owner)
+                if pid == os.getpid():
+                    continue
+                # Where liveness cannot be probed (Windows) only old copies go.
+                if _pid_alive(pid) and not (
+                    _IS_WINDOWS and now - os.path.getmtime(path) >= _LEGACY_SNAPSHOT_MAX_AGE
+                ):
+                    continue
+            elif now - os.path.getmtime(path) < _LEGACY_SNAPSHOT_MAX_AGE:
+                continue
+            if not os.path.isdir(path) or os.path.islink(path):
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
 
 @atexit.register
 def _remove_snapshots() -> None:
@@ -763,7 +833,8 @@ def _wal_snapshot_path(db_path: str) -> str | None:
                     # next read after the interval picks the change up. A copy
                     # made before our own latest write skips this, once.
                     return cached[1]
-            snap_dir = tempfile.mkdtemp(prefix="zotero_mcp_db_")
+            _sweep_stale_snapshots()
+            snap_dir = tempfile.mkdtemp(prefix=f"{_SNAPSHOT_PREFIX}{os.getpid()}_")
             snap = os.path.join(snap_dir, "zotero.sqlite")
             try:
                 shutil.copyfile(source, snap)
@@ -1130,10 +1201,20 @@ class LocalZoteroReader:
         Returns the configured ``extensions.zotero.baseAttachmentPath`` or
         ``None`` if the preference is not set or cannot be read. The
         preference lives in the profile directory's prefs.js; a prefs.js
-        next to the database is also checked for unusual setups.
+        next to the database is also checked for unusual setups. If multiple
+        profiles exist, prefer the profile whose configured data directory
+        contains this reader's database.
         """
-        prefs_files = [Path(self.db_path).parent / "prefs.js"]
-        prefs_files.extend(_profile_prefs_files())
+        db_parent = Path(self.db_path).expanduser().parent
+        profile_prefs = _profile_prefs_files()
+        matching_profile_prefs = []
+        for prefs_path in profile_prefs:
+            data_dir = _read_string_pref(prefs_path, "extensions.zotero.dataDir")
+            if data_dir and Path(data_dir).expanduser().resolve() == db_parent.resolve():
+                matching_profile_prefs.append(prefs_path)
+
+        prefs_files = [db_parent / "prefs.js"]
+        prefs_files.extend(matching_profile_prefs or profile_prefs)
         for prefs_path in prefs_files:
             if not prefs_path.exists():
                 continue
@@ -2041,8 +2122,19 @@ class LocalZoteroReader:
 
         return matching_items
 
-    def search_notes_local(self, query: str, limit: int = 20) -> list[dict]:
-        """Search notes in the local Zotero database by text content."""
+    def search_notes_local(
+        self, query: str, limit: int = 20, group_id: int | None = None
+    ) -> list[dict] | None:
+        """Search notes in the local Zotero database by text content.
+
+        Scoped like the other local searches: ``group_id`` 0 is the personal
+        library, a groupID one group, None every user/group library. Returns
+        None when the requested library isn't in this database.
+        """
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if lib_ids is None:
+            return None
+        lib_placeholders = ",".join("?" * len(lib_ids))
         conn = self._get_connection()
         cursor = conn.cursor()
         pattern = f"%{query}%"
@@ -2059,9 +2151,10 @@ class LocalZoteroReader:
             + _base_field_resolved_join("ptitle", "title", item_alias="pi")
             + """
             WHERE n.note LIKE ?
+            AND i.libraryID IN (""" + lib_placeholders + """)
             AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             LIMIT ?
-        """, (pattern, limit))
+        """, (pattern, *lib_ids, limit))
 
         results = []
         for row in cursor.fetchall():
@@ -2081,8 +2174,17 @@ class LocalZoteroReader:
             })
         return results
 
-    def search_annotations_local(self, query: str, limit: int = 20) -> list[dict]:
-        """Search annotations in the local Zotero database by text or comment."""
+    def search_annotations_local(
+        self, query: str, limit: int = 20, group_id: int | None = None
+    ) -> list[dict] | None:
+        """Search annotations in the local Zotero database by text or comment.
+
+        ``group_id`` scopes the search exactly as in ``search_notes_local``.
+        """
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if lib_ids is None:
+            return None
+        lib_placeholders = ",".join("?" * len(lib_ids))
         conn = self._get_connection()
         cursor = conn.cursor()
         pattern = f"%{query}%"
@@ -2102,9 +2204,10 @@ class LocalZoteroReader:
             + _base_field_resolved_join("gptitle", "title", item_alias="gpi")
             + """
             WHERE (ia.text LIKE ? OR ia.comment LIKE ?)
+            AND i.libraryID IN (""" + lib_placeholders + """)
             AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
             LIMIT ?
-        """, (pattern, pattern, limit))
+        """, (pattern, pattern, *lib_ids, limit))
 
         # Map integer annotation types to names
         type_map = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}

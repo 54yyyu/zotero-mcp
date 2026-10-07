@@ -869,6 +869,21 @@ def batch_update(
             "remove_tags, set_keys, and/or remove_keys."
         )
 
+    # Resolve a query/tag selection once and hand both halves the same keys.
+    # Searching again for the Extra half would run after the tag half has
+    # already edited tags, so tag='to-read' + remove_tags=['to-read'] found
+    # nothing and the Extra edits were silently dropped.
+    if tag_action and extra_action and not item_keys:
+        try:
+            item_keys = _search_item_keys(
+                _client.get_zotero_client(), query, _normalize_tag_selector(tag),
+                _helpers._normalize_limit(limit, default=50),
+            )
+        except Exception as e:
+            return f"Error selecting items: {_helpers.format_zotero_error(e)}"
+        if not item_keys:
+            return "No items found matching the given query/tag filters"
+
     reports = []
     if tag_action:
         reports.append(batch_update_tags(
@@ -1408,9 +1423,12 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         "ISSN": (cr.get("ISSN") or [""])[0],
     }
 
+    # A chapter's container is bookTitle and a conference paper's is
+    # proceedingsTitle; neither template has publicationTitle.
     container = (cr.get("container-title") or [""])[0]
-    if container:
-        field_map["publicationTitle"] = container
+    container_field = _citation_import._pick_container_field(zot_type, item_data)
+    if container and container_field:
+        field_map[container_field] = container
 
     abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
     if abstract:
@@ -2609,9 +2627,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             with tempfile.TemporaryDirectory() as tmpdir:
                 filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
                 filepath = os.path.join(tmpdir, filename)
-                with open(filepath, "wb") as f:
-                    for chunk in pdf_resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                _helpers._stream_pdf_download(pdf_resp, filepath)
                 webdav_suffix = _helpers._webdav_first_attach(
                     write_zot,
                     filename,
@@ -3663,6 +3679,23 @@ def _attachment_sig(data: dict) -> tuple | None:
     )
 
 
+def _has_children(write_zot, item_key: str) -> bool:
+    """Whether an attachment has children (annotations, an embedded note).
+
+    Annotations are asked for by type: Zotero's local API leaves them out of
+    a plain children listing. An unanswerable check counts as "has children":
+    the caller then moves the attachment instead of trashing it, which can
+    never lose anything.
+    """
+    try:
+        return bool(
+            write_zot.children(item_key, limit=1)
+            or write_zot.children(item_key, itemType="annotation", limit=1)
+        )
+    except Exception:
+        return True
+
+
 def _keeper_rank(entry: dict) -> tuple:
     """Sort key for keeper selection — the lowest-sorting member is the keeper.
 
@@ -3740,13 +3773,18 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         if kc.get("data", {}).get("itemType") == "attachment"
     }
     keeper_attachment_sigs.discard(None)
-    skipped_attachment_count = sum(
-        1
+    # A copy of a file the keeper already has is left on the duplicate and
+    # trashed with it, unless it carries annotations or a note of its own:
+    # those live on that copy, not on the keeper's, so it moves instead.
+    skip_attachment_keys = {
+        child.get("key")
         for dup in duplicates
         for child in dup["children"]
         if child.get("data", {}).get("itemType") == "attachment"
         and _attachment_sig(child.get("data", {})) in keeper_attachment_sigs
-    )
+        and not _has_children(write_zot, child.get("key"))
+    }
+    skipped_attachment_count = len(skip_attachment_keys)
 
     return {
         "keeper_key": keeper_key,
@@ -3761,6 +3799,7 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         "children_to_move": total_children_to_move - skipped_attachment_count,
         "skipped_attachment_count": skipped_attachment_count,
         "keeper_attachment_sigs": keeper_attachment_sigs,
+        "skip_attachment_keys": skip_attachment_keys,
     }
 
 
@@ -3826,8 +3865,9 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
                 fresh_child = write_zot.item(child_key)
                 child_data = fresh_child.get("data", {})
                 if (
-                    child_data.get("itemType") == "attachment"
+                    child_key in plan["skip_attachment_keys"]
                     and _attachment_sig(child_data) in plan["keeper_attachment_sigs"]
+                    and not _has_children(write_zot, child_key)
                 ):
                     result["skipped_dupes"].append(child_key)
                     continue
@@ -4962,9 +5002,10 @@ def _attach_from_url(write_zot, item_key, url, filename, ctx):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = os.path.join(tmpdir, filename)
-        with open(filepath, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+        try:
+            _helpers._stream_pdf_download(resp, filepath)
+        except _helpers.PdfDownloadError as e:
+            return f"Error: {e}."
         if os.path.getsize(filepath) < 1000:
             return (
                 "Error: Downloaded file is under 1 KB — likely an error "

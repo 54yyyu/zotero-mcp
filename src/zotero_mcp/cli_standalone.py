@@ -993,20 +993,40 @@ def cmd_db(args):
         sys.exit(1)
 
 
+_SWITCH_IS_PER_PROCESS = (
+    "This only lasts for this zotero-cli command: each command runs in a new "
+    "process, so the next one is back on the default library. To target this "
+    "library in later commands, set "
+    "`ZOTERO_LIBRARY_ID={library_id} ZOTERO_LIBRARY_TYPE={library_type}`."
+)
+
+
 def cmd_library(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
 
     if args.action == "switch":
-        _out(args, "library switch", text=retrieval.switch_library(
+        text = retrieval.switch_library(
             library_id=args.library_id, library_type=args.library_type, ctx=ctx,
-        ))
+        )
+        # The switch lives in this process only, and every zotero-cli command
+        # is a new process: the tool's "All tools now operate on this library"
+        # was true for the MCP server but not here (#606). Failure messages
+        # do not contain it, so they pass through unchanged.
+        text = text.replace(
+            retrieval.SWITCH_SUCCESS_NOTE,
+            _SWITCH_IS_PER_PROCESS.format(
+                library_id=args.library_id, library_type=args.library_type,
+            ),
+        )
+        _out(args, "library switch", text=text)
     elif args.action == "list":
         _out(args, "library list", text=retrieval.list_libraries(ctx=ctx))
     elif args.action == "reset":
         _client.clear_active_library()
-        print("Switched back to default library configuration.")
+        print("zotero-cli always starts on the default library "
+              "(ZOTERO_LIBRARY_ID/TYPE); nothing to reset.")
     else:
         print(f"Unknown library action: {args.action}", file=sys.stderr)
         sys.exit(1)
