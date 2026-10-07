@@ -2455,7 +2455,15 @@ class LocalZoteroReader:
         # client-side path matches it; it is bound, never interpolated. A name
         # the database does not know stays unsupported, so the caller keeps
         # its existing fallback for it.
-        if resolved in self._known_field_names():
+        #
+        # Ordering operators stay on the fallback: `compare` orders numerically
+        # when both sides parse as numbers (volume > 9 holds for "12"), while
+        # SQL would order the stored text ("12" < "9"). Date, year, dateAdded
+        # and dateModified have SQL forms of their own, above.
+        if (
+            resolved in self._known_field_names()
+            and operation not in _semantics.RANGE_OPS
+        ):
             sql, params = _scalar_condition(_resolved_field_subquery(), operation, value)
             return sql, [resolved, resolved, *params]
         return None

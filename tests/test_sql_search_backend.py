@@ -903,3 +903,15 @@ def test_advanced_search_sql_unknown_field_still_unsupported(tmp_path):
         assert _adv(reader, {"field": evil, "operation": "contains", "value": "x"}) is None
     finally:
         reader.close()
+
+
+def test_advanced_search_sql_leaves_ordering_on_other_fields_to_the_fallback(tmp_path):
+    """`volume isGreaterThan 9` is numeric on the API path (12 > 9); SQL would
+    order the stored text, where "12" < "9". Decline rather than disagree."""
+    reader = _reader_with_extra_fields(tmp_path)
+    try:
+        for op in ("isGreaterThan", "isLessThan", "isBefore", "isAfter"):
+            assert _adv(reader, {"field": "publisher", "operation": op, "value": "9"}) is None
+        assert _adv(reader, {"field": "publisher", "operation": "is", "value": "springer"}) is not None
+    finally:
+        reader.close()
