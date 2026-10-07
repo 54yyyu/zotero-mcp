@@ -378,6 +378,11 @@ _INDEX_SCHEMA_VERSION = 3
 _MASS_DELETION_MIN_DOCS = 25
 _MASS_DELETION_MIN_FRACTION = 0.25
 
+# Item types that are never indexed as standalone documents. Both API
+# fetch paths use this; the local SQLite scan in local_db.py excludes the
+# same three types in SQL (#604).
+_NON_INDEXED_ITEM_TYPES = frozenset({"attachment", "note", "annotation"})
+
 
 def _extract_fulltext_batch(reader, items):
     """Yield ``(item_id, (text, source) | None)`` for every item in ``items``.
@@ -2172,9 +2177,9 @@ class ZoteroSemanticSearch:
             if not items:
                 break
 
-            # Filter out attachments and notes by default
+            # Filter out attachments, notes and annotations
             filtered_items = [
-                item for item in items if item.get("data", {}).get("itemType") not in ["attachment", "note"]
+                item for item in items if item.get("data", {}).get("itemType") not in _NON_INDEXED_ITEM_TYPES
             ]
 
             all_items.extend(filtered_items)
@@ -2243,7 +2248,7 @@ class ZoteroSemanticSearch:
             item_type = item.get("data", {}).get("itemType")
             # Don't index attachments/notes as standalone entries; only
             # top-level research items participate in semantic search.
-            if item_type in {"attachment", "note", "annotation"}:
+            if item_type in _NON_INDEXED_ITEM_TYPES:
                 continue
             changed_items.append(item)
 
