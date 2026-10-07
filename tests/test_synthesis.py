@@ -232,6 +232,9 @@ class _BibZotero(FakeZotero):
             return super().collection_items(key, **kwargs)
         return rendered
 
+    def collection_items_top(self, key, **kwargs):
+        return self.collection_items(key, **kwargs)
+
 
 def test_export_bibliography_bib_strips_html(monkeypatch):
     fake = _BibZotero()
@@ -577,3 +580,78 @@ def test_export_bibliography_all_rows_empty_after_cleaning(monkeypatch):
     out = synthesis.export_bibliography(collection_key="COLL1234", ctx=DummyContext())
 
     assert out == "No bibliography entries produced for collection COLL1234."
+
+
+# ---------------------------------------------------------------------------
+# export_bibliography: a collection/library larger than one page
+# ---------------------------------------------------------------------------
+
+
+class _BigCollectionZotero(_BibZotero):
+    """191 top-level items, each with one child attachment, like a real library.
+
+    ``/items`` returns children interleaved with their parents (so the first
+    100 rows hold ~50 references); ``/items/top`` returns parents only. Both
+    honour ``start`` and ``limit``.
+    """
+
+    N = 191
+
+    def __init__(self):
+        super().__init__()
+        self.all_rows = []
+        self.top_rows = []
+        for i in range(self.N):
+            parent = {"key": f"P{i:07d}", "bib": f"<div>Ref {i}.</div>", "citation": f"<span>(Ref {i})</span>"}
+            child = {"key": f"C{i:07d}", "bib": "", "citation": ""}
+            self.all_rows += [parent, child]
+            self.top_rows.append(parent)
+
+    def _slice(self, rows, kwargs):
+        start = kwargs.get("start", 0)
+        limit = kwargs.get("limit", 25)
+        self.links = {"next": "..."} if start + limit < len(rows) else {}
+        rows = rows[start : start + limit]
+        if kwargs.get("format") == "bibtex":
+            return "\n".join(
+                f"@article{{{r['key']},\n  title = {{T}}\n}}" for r in rows
+            ).encode()
+        include = kwargs.get("include")
+        return [{"key": r["key"], include: r[include]} for r in rows]
+
+    def collection_items(self, key, **kwargs):
+        return self._slice(self.all_rows, kwargs)
+
+    def collection_items_top(self, key, **kwargs):
+        return self._slice(self.top_rows, kwargs)
+
+    def top(self, **kwargs):
+        return self._slice(self.top_rows, kwargs)
+
+
+@pytest.mark.parametrize("export_format", ["bib", "citation"])
+@pytest.mark.parametrize("collection_key", ["COLL1234", None])
+def test_export_bibliography_pages_through_whole_collection(
+    monkeypatch, export_format, collection_key
+):
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: _BigCollectionZotero())
+
+    out = synthesis.export_bibliography(
+        collection_key=collection_key, export_format=export_format, ctx=DummyContext()
+    )
+
+    numbered = [ln for ln in out.splitlines() if ln[:1].isdigit()]
+    assert len(numbered) == _BigCollectionZotero.N
+
+
+@pytest.mark.parametrize("collection_key", ["COLL1234", None])
+def test_export_bibliography_bibtex_pages_through_whole_collection(
+    monkeypatch, collection_key
+):
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: _BigCollectionZotero())
+
+    out = synthesis.export_bibliography(
+        collection_key=collection_key, export_format="bibtex", ctx=DummyContext()
+    )
+
+    assert out.count("@article{") == _BigCollectionZotero.N

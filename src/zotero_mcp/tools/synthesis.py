@@ -333,7 +333,7 @@ def _render_entries(rendered) -> list[str]:
         "item_keys: optional list of 8-character item keys (also accepts a "
         "JSON list string); takes precedence over collection_key. "
         "collection_key: optional collection to export instead; if neither is "
-        "given, the active library is exported (capped). "
+        "given, the active library is exported. "
         "style: CSL style short name (default 'apa'); e.g. 'modern-language-"
         "association', 'chicago-note-bibliography', 'ieee'. Ignored for "
         "bibtex. "
@@ -344,8 +344,8 @@ def _render_entries(rendered) -> list[str]:
         "(a fenced block for bibtex, a numbered list otherwise). "
         "Rendering uses Zotero's own CSL engine and works in local mode with "
         "no API credentials, as well as over the web API. "
-        "Capped at 100 items per call; scope with item_keys or collection_key "
-        "for anything larger. "
+        "item_keys is capped at 100 items per call; a collection or the whole "
+        "library is exported in full (top-level items only). "
         "Example: zotero_export_bibliography(item_keys=['RTKZQI8E'], "
         "style='apa', export_format='bib')."
     ),
@@ -402,6 +402,23 @@ def export_bibliography(
                 raw = bibtexparser.dumps(raw)
             return raw.decode("utf-8") if isinstance(raw, bytes) else raw
 
+        def _bibtex_pages(method, *args):
+            # A collection or library holds more than one page of references.
+            # Follow the response's rel="next" link rather than counting
+            # entries: standalone notes fill a page without producing any.
+            parts = []
+            start = 0
+            while True:
+                text = _bibtex_text(
+                    method(*args, format="bibtex", start=start, limit=100)
+                )
+                if text and text.strip():
+                    parts.append(text)
+                if not (getattr(zot, "links", None) or {}).get("next"):
+                    break
+                start += 100
+            return "\n".join(parts)
+
         try:
             if export_format == "bibtex":
                 # A whole-file export, not per-item entries: the API returns the
@@ -412,14 +429,14 @@ def export_bibliography(
                         for batch in key_batches
                     )
                 elif collection_key:
-                    rendered = _bibtex_text(
-                        zot.collection_items(collection_key, format="bibtex", limit=100)
-                    )
+                    # Top-level items only, as below: a collection's child
+                    # attachments and notes use up the page and have no entry.
+                    rendered = _bibtex_pages(zot.collection_items_top, collection_key)
                 else:
                     # Top-level items only. Attachments and notes have no
                     # bibliography entry, so including them would pad the
                     # export with blanks and crowd out real references.
-                    rendered = _bibtex_text(zot.top(format="bibtex", limit=100))
+                    rendered = _bibtex_pages(zot.top)
             else:
                 include = "bib" if export_format == "bib" else "citation"
                 fetch_kwargs = {"include": include, "style": style}
@@ -439,11 +456,14 @@ def export_bibliography(
                     }
                     rows = [by_key[k] for k in keys if k in by_key]
                 elif collection_key:
+                    # /items/top: child attachments and notes render as empty
+                    # entries, filled the 100-row page, and were then dropped,
+                    # so a 191-reference collection exported 51.
                     rows = _helpers._paginate(
-                        zot.collection_items, collection_key, max_items=100, **fetch_kwargs
+                        zot.collection_items_top, collection_key, **fetch_kwargs
                     )
                 else:
-                    rows = zot.top(limit=100, **fetch_kwargs)
+                    rows = _helpers._paginate(zot.top, **fetch_kwargs)
                 # Items with nothing to render (attachments, notes) come back
                 # with the field empty; drop them rather than emitting blanks.
                 rendered = [
