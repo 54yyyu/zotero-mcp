@@ -18,6 +18,7 @@ Search Strategy (in order):
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from contextlib import contextmanager
@@ -309,7 +310,7 @@ def _page_to_pdf_transform(page) -> tuple[float, float, float, float, float, flo
 def _convert_rects_to_zotero(
     bboxes: list[tuple[float, float, float, float]],
     page,
-) -> tuple[list[list[float]], float, float]:
+) -> list[list[float]]:
     """
     Convert PyMuPDF bounding boxes to Zotero's coordinate system.
 
@@ -322,16 +323,11 @@ def _convert_rects_to_zotero(
         page: The fitz page the bboxes belong to
 
     Returns:
-        Tuple of:
-        - List of [x0, y1, x1, y2] rects in Zotero coordinates
-        - Minimum y position (for sort index)
-        - Minimum x position (for sort index)
+        List of [x0, y1, x1, y2] rects in Zotero coordinates
     """
     a, b, c, d, e, f = _page_to_pdf_transform(page)
 
     rects = []
-    min_y = float("inf")
-    min_x = float("inf")
 
     for bbox in bboxes:
         x0, y0, x1, y1 = bbox
@@ -345,27 +341,108 @@ def _convert_rects_to_zotero(
             max(corner_ys),
         ]
         rects.append(rect)
-        min_y = min(min_y, rect[1])
-        min_x = min(min_x, rect[0])
 
-    return rects, min_y, min_x
+    return rects
 
 
-def _build_sort_index(page_index: int, min_y: float, min_x: float) -> str:
+def _rect_distance(a: list[float], b: list[float]) -> float:
+    """
+    Shortest distance between two rects.
+
+    Args:
+        a: [x1, y1, x2, y2] rect in Zotero coordinates
+        b: [x1, y1, x2, y2] rect in Zotero coordinates
+
+    Returns:
+        Shortest distance between the rects, 0 when they overlap
+    """
+    dx = max(b[0] - a[2], a[0] - b[2], 0.0)
+    dy = max(b[1] - a[3], a[1] - b[3], 0.0)
+    return math.hypot(dx, dy)
+
+
+def _is_counted_char(c: str) -> bool:
+    """
+    Check whether Zotero counts a character when numbering a page's characters.
+
+    Zotero's PDF text extraction leaves out spaces and control characters.
+
+    Args:
+        c: A single character
+
+    Returns:
+        False for a space or a control character, True otherwise
+    """
+    code = ord(c)
+    return c != " " and not (code <= 0x1F or 0x7F <= code <= 0x9F)
+
+
+def _extract_page_char_rects(page) -> list[list[float]]:
+    """
+    Extract the rects of the characters Zotero counts on a page, in content order.
+
+    Leaves out spaces, control characters, characters with a zero font size and
+    characters outside the page, like Zotero's PDF text extraction. A character's
+    position in this list is its character offset in the sort index.
+
+    Args:
+        page: The fitz page
+
+    Returns:
+        List of [x1, y1, x2, y2] rects in Zotero coordinates, or an empty list
+        if the page's text cannot be extracted
+    """
+    try:
+        # The default flags (199) clip text to the page. Leave out
+        # TEXT_PRESERVE_IMAGES (4): image data has no characters and is slow.
+        raw = page.get_text("rawdict", flags=195)
+    except Exception:
+        return []
+
+    bboxes = [
+        char["bbox"]
+        for block in raw.get("blocks", [])
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+        if span.get("size")
+        for char in span.get("chars", [])
+        if _is_counted_char(char["c"])
+    ]
+    return _convert_rects_to_zotero(bboxes, page)
+
+
+def _build_sort_index(page, page_index: int, rects: list[list[float]]) -> str:
     """
     Build Zotero annotation sort index string.
 
-    Format: PPPPP|YYYYYY|XXXXX (page|y-position|x-position)
+    Format: PPPPP|OOOOOO|TTTTT (page|character offset|top)
+
+    The offset is the position of the page character closest to the
+    annotation's topmost rect. The top is the page height minus the top edge
+    of that rect. Zotero orders a page's annotations by these two fields.
+
+    The offset comes from PyMuPDF's text extraction, while Zotero uses pdf.js.
+    It can differ from Zotero's own offset by a few characters.
 
     Args:
+        page: The fitz page the rects belong to
         page_index: 0-indexed page number
-        min_y: Minimum y position
-        min_x: Minimum x position
+        rects: Annotation rects in Zotero coordinates
 
     Returns:
         Sort index string
     """
-    return f"{page_index:05d}|{int(min_y):06d}|{int(min_x):05d}"
+    offset = 0
+    top = 0.0
+    if rects:
+        rect = max(rects, key=lambda r: r[3])
+        chars = _extract_page_char_rects(page)
+        if chars:
+            offset = min(range(len(chars)), key=lambda i: _rect_distance(chars[i], rect))
+        # page.rect is the page as displayed, so a quarter turn swaps its sides.
+        page_height = page.rect.width if getattr(page, "rotation", 0) % 180 else page.rect.height
+        top = max(page_height - rect[3], 0.0)
+    return f"{page_index:05d}|{offset:06d}|{math.floor(top):05d}"
 
 
 def _build_search_result(
@@ -386,8 +463,8 @@ def _build_search_result(
     Returns:
         Dict with pageIndex, rects, sort_index, matched_text
     """
-    rects, min_y, min_x = _convert_rects_to_zotero(bboxes, page)
-    sort_index = _build_sort_index(page_index, min_y, min_x)
+    rects = _convert_rects_to_zotero(bboxes, page)
+    sort_index = _build_sort_index(page, page_index, rects)
 
     return {
         "pageIndex": page_index,
@@ -640,11 +717,11 @@ def _search_single_page(page, page_index: int, search_text: str, best_debug: dic
         # Try with normalized whitespace
         text_instances = page.search_for(" ".join(search_text.split()))
     if text_instances:
-        rects, min_y, min_x = _convert_rects_to_zotero(list(text_instances), page)
+        rects = _convert_rects_to_zotero(list(text_instances), page)
         return {
             "pageIndex": page_index,
             "rects": rects,
-            "sort_index": _build_sort_index(page_index, min_y, min_x),
+            "sort_index": _build_sort_index(page, page_index, rects),
             "matched_text": search_text,
         }
 
@@ -657,11 +734,11 @@ def _search_single_page(page, page_index: int, search_text: str, best_debug: dic
             best_debug["score"] = score
             best_debug["page"] = page_index
         if fuzzy_result.get("rects"):
-            rects, min_y, min_x = _convert_rects_to_zotero(fuzzy_result["rects"], page)
+            rects = _convert_rects_to_zotero(fuzzy_result["rects"], page)
             return {
                 "pageIndex": page_index,
                 "rects": rects,
-                "sort_index": _build_sort_index(page_index, min_y, min_x),
+                "sort_index": _build_sort_index(page, page_index, rects),
                 "matched_text": fuzzy_result["matched_text"],
             }
 
@@ -872,12 +949,12 @@ def build_area_position_data(
 
         target_index = page_num - 1
         page = doc[target_index]
-        rects, min_y, min_x = _shown_rect_to_zotero(page, x, y, x + width, y + height)
+        rects = _shown_rect_to_zotero(page, x, y, x + width, y + height)
 
         return {
             "pageIndex": target_index,
             "rects": rects,
-            "sort_index": _build_sort_index(target_index, min_y, min_x),
+            "sort_index": _build_sort_index(page, target_index, rects),
         }
 
 
@@ -905,14 +982,14 @@ def build_note_position_data(pdf, page_num: int, x: float, y: float) -> dict:
 
         target_index = page_num - 1
         page = doc[target_index]
-        ((px, py, _, _),), _, _ = _shown_rect_to_zotero(page, x, y, x, y)
+        ((px, py, _, _),) = _shown_rect_to_zotero(page, x, y, x, y)
         half = NOTE_SIZE / 2
         rect = [round(v, 4) for v in (px - half, py - half, px + half, py + half)]
 
         return {
             "pageIndex": target_index,
             "rects": [rect],
-            "sort_index": _build_sort_index(target_index, max(rect[1], 0), max(rect[0], 0)),
+            "sort_index": _build_sort_index(page, target_index, [rect]),
         }
 
 
