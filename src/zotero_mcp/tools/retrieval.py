@@ -1212,7 +1212,9 @@ def switch_library(
 
         error = validate_library_switch(library_id, library_type)
         if error:
-            return error
+            # Leads with "Error" like every other refusal, which is what the
+            # CLI looks for to turn it into a failed envelope (#595).
+            return f"Error: {error}"
 
         if library_type == "user":
             # #603: "user", "0" and (local mode) the SQLite libraryID that
