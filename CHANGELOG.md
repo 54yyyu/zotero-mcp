@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tables without closing tags no longer flood HTML extraction with empty cells.** `html.parser` nests an unterminated `<tr>`/`<td>`, and markdownify then printed a blank header row and a `| --- |` row as wide as the whole table for every nested row: `zotero_get_item_fulltext` on a 74-row datosmacro statistics snapshot returned 218,832 characters, 92% `|  |  |` and `| --- | --- |` runs (one line of 125,237 characters), around 17K of real data. Runs of four or more empty cells or separators now collapse to one, so that page extracts to 17,931 characters with every word kept; 70 of 355 snapshots in one library shrink, 1.3M characters in all.
+
 ## [0.14.0] - 2026-10-07
 
 ### Added
