@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_advanced_search` answers any Zotero field from SQLite.** Only seven fields (title, abstract, DOI, publication, dates, item type) were translated to SQL, so a condition on `extra`, `publisher`, `volume`, `ISBN`, `url`, `language` or any other field sent the whole query on a walk of the library over the API: about 2 s, 11 requests and 2.5 MB on a 2,500-item library, against 2 ms in SQL. Any field in the database's field table is now queried directly, resolved per item type like `title`, with the name bound as a parameter. Names the database does not know behave as before.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security

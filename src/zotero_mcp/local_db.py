@@ -296,11 +296,21 @@ _CONDITION_FIELD_ALIASES = {
 #
 # abstractNote, DOI, extra and url have no mappings and take the plain forms.
 # Every name passed here is a core Zotero field, hence `fields` rather than
-# `fieldsCombined`; revisit if a caller-supplied name ever reaches these.
-def _field_id(field_name: str) -> str:
+# `fieldsCombined`. A caller-supplied name (advanced search on any field) never
+# reaches the interpolating form: it is checked against the `fields` table and
+# bound as a parameter (``bound=True``, see `_resolved_field_subquery`).
+_BOUND_FIELD_ID = "(SELECT fieldID FROM fields WHERE fieldName = ?)"
+
+
+def _field_id(field_name: str, bound: bool = False) -> str:
     """The fieldID as an uncorrelated scalar subquery, which SQLite evaluates
     once per statement. Joining `fields` instead scans it for every outer row
-    (it has no index on fieldName): 3x slower on the keyword search."""
+    (it has no index on fieldName): 3x slower on the keyword search.
+
+    ``bound=True`` emits a ``?`` placeholder in place of the name, for a name
+    that did not come from this module's own constants."""
+    if bound:
+        return _BOUND_FIELD_ID
     return f"(SELECT fieldID FROM fields WHERE fieldName = '{field_name}')"
 
 
@@ -336,12 +346,15 @@ def _base_field_resolved_subquery(
     item_alias: str = "i",
     value_expr: str = "v.value",
     extra_where: str = "",
+    bound: bool = False,
 ) -> str:
     """`_base_field_resolved_join` as a correlated scalar subquery, the shape
     a WHERE condition needs. ``value_expr`` lets the date variants (display
-    half, ISO prefix, year) share it.
+    half, ISO prefix, year) share it. ``bound`` leaves the field name as two
+    ``?`` placeholders (the caller binds the name twice, ahead of its other
+    parameters).
     """
-    field_id = _field_id(base_field_name)
+    field_id = _field_id(base_field_name, bound)
     return (
         f"(SELECT {value_expr} FROM itemData d "
         f"JOIN itemDataValues v ON d.valueID = v.valueID "
@@ -363,6 +376,14 @@ def _plain_field_subquery(field_name: str, item_alias: str = "i") -> str:
 
 # Single-valued fields resolvable to one scalar SQL expression correlated on
 # the outer query's `i` (items) / `it` (itemTypes) aliases.
+def _resolved_field_subquery() -> str:
+    """Scalar subquery for any validated Zotero field, the field name bound
+    twice. A base field resolves per item type (publisher of a thesis is
+    `university`); any other field has no mapping and falls back to its own
+    ID, so one form serves both."""
+    return _base_field_resolved_subquery("", bound=True)
+
+
 _SIMPLE_FIELD_SQL = {
     # `title` and `publicationTitle` are base fields — a case's title lives in
     # caseName, a webpage's publicationTitle in websiteTitle (#570). Matching
@@ -1036,6 +1057,7 @@ class LocalZoteroReader:
     fulltext_cache_enabled: bool = False
     config_path: str | None = None
     _library_labels: dict[int, tuple[int, str]] | None = None
+    _field_names: frozenset[str] | None = None
 
     def __init__(
         self,
@@ -1075,6 +1097,7 @@ class LocalZoteroReader:
         # index for them; valid for the lifetime of one connection.
         self._scan_choice: dict[tuple[int, ...], bool] = {}
         self._library_labels: dict[int, tuple[int, str]] | None = None
+        self._field_names: frozenset[str] | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
         self.attachment_priority: tuple[str, ...] = normalize_attachment_priority(
             attachment_priority
@@ -1167,6 +1190,7 @@ class LocalZoteroReader:
             return False
         self.close()
         self._library_labels = None
+        self._field_names = None
         return True
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -2422,7 +2446,22 @@ class LocalZoteroReader:
         resolved = _CONDITION_FIELD_ALIASES.get(field_lower, field)
         if resolved in _SIMPLE_FIELD_SQL:
             return _scalar_condition(_SIMPLE_FIELD_SQL[resolved], operation, value)
+        # Any other real Zotero field (extra, publisher, volume, ISBN, url, ...).
+        # The name must be a row of the `fields` table, matched exactly as the
+        # client-side path matches it; it is bound, never interpolated. A name
+        # the database does not know stays unsupported, so the caller keeps
+        # its existing fallback for it.
+        if resolved in self._known_field_names():
+            sql, params = _scalar_condition(_resolved_field_subquery(), operation, value)
+            return sql, [resolved, resolved, *params]
         return None
+
+    def _known_field_names(self) -> frozenset[str]:
+        """Names in the database's `fields` table (cached per reader)."""
+        if self._field_names is None:
+            rows = self._get_connection().execute("SELECT fieldName FROM fields").fetchall()
+            self._field_names = frozenset(r[0] for r in rows)
+        return self._field_names
 
     def _fetch_creators(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict]]:
         if not item_ids:
