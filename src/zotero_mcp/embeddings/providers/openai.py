@@ -216,7 +216,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
                 if isinstance(value, str):
                     raw_bytes = base64.b64decode(value, validate=True)
                     n = len(raw_bytes) // 4
-                    return list(struct.unpack("<%df" % n, raw_bytes[: n * 4]))
+                    return list(struct.unpack(f"<{n}f", raw_bytes[: n * 4]))
                 return value
 
             embeddings = [_decode(e) for e in embeddings]

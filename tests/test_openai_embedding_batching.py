@@ -6,6 +6,8 @@ __new__ so the tests don't require the optional `openai` package (CI does not
 install it).
 """
 
+import base64
+import struct
 import threading
 
 from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
@@ -100,26 +102,18 @@ def test_non_voyage_base_url_keeps_float_encoding_format():
     assert calls and all(c["encoding_format"] == "float" for c in calls)
 
 
-def _b64(vec):
-    import base64, struct
-    return base64.b64encode(struct.pack("<%df" % len(vec), *vec)).decode()
-
-
 def test_voyage_base64_response_is_decoded():
-    # Voyage returns embeddings as base64 str; the provider must decode to floats.
-    calls = []
-    class _Resp:
-        def __init__(self, items):
-            self.data = [type("D", (), {"embedding": _b64([float(x)])}) for x in items]
-    class _Emb:
-        @staticmethod
-        def create(model, input, encoding_format):
-            calls.append(encoding_format); return _Resp(input)
-    class _Client: embeddings = _Emb()
-    ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
-    ef.model_name = "voyage-4-large"; ef.base_url = "https://api.voyageai.com/v1"
-    ef.request_batch_size = 64; ef.rate_limit_rps = None
-    ef._rate_lock = threading.Lock(); ef._last_request_ts = 0.0; ef.client = _Client()
-    out = ef([0.5, 2.0])
-    assert calls == ["base64"]
-    assert out == [[0.5], [2.0]]
+    # Voyage returns each embedding as a base64 str; the provider decodes it to floats.
+    ef, calls = _make()
+    ef.base_url = "https://api.voyageai.com/v1"
+    plain_create = ef.client.embeddings.create
+
+    def create(model, input, encoding_format):
+        resp = plain_create(model, input, encoding_format)
+        for d in resp.data:
+            d.embedding = base64.b64encode(struct.pack(f"<{len(d.embedding)}f", *d.embedding)).decode()
+        return resp
+
+    ef.client.embeddings.create = create
+    assert ef([0.5, 2.0]) == [[0.5], [2.0]]
+    assert [c["encoding_format"] for c in calls] == ["base64"]
