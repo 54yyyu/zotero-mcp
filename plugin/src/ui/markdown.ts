@@ -293,19 +293,49 @@ function openTagAt(s: string): number {
   return stack[0]?.at ?? -1;
 }
 
+/**
+ * Where a link starts that has not finished arriving, or -1: a `[` whose `](url` has no closing `)` yet, or a short
+ * label (`[p.4`) still waiting for its `]`. Code spans and escapes are skipped. A citation link is long (a zotero://
+ * URL with &quote=), so without this its raw markdown shows for a while before it turns into a chip.
+ */
+export function openLinkAt(s: string): number {
+  let label = -1, url = -1, depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (url >= 0) { // inside (url...): parentheses nest, as in CommonMark
+      if (c === "\\") i++;
+      else if (c === "(") depth++;
+      else if (c === ")" && --depth === 0) { url = -1; label = -1; }
+      continue;
+    }
+    if (c === "`") {
+      const run = /^`+/.exec(s.slice(i))?.[0] ?? "`";
+      const end = s.indexOf(run, i + run.length);
+      if (end < 0) break;
+      i = end + run.length - 1;
+    } else if (c === "\\") i++;
+    else if (c === "[") label = i;
+    else if (c === "]" && label >= 0) {
+      if (s[i + 1] === "(") { url = label; depth = 1; i++; } else label = -1;
+    } else if (c === "\n" && label >= 0 && s[i + 1] === "\n") label = -1;
+  }
+  if (url >= 0) return url;
+  return label >= 0 && s.length - label <= 80 ? label : -1;
+}
+
 const closedFence = (raw: string) => /\n {0,3}(?:`{3,}|~{3,})[ \t]*\s*$/.test(raw);
 const HAS_INLINE = new Set(["paragraph", "heading", "list", "blockquote", "table", "text"]);
 
 /**
- * The block still streaming in, as it may be shown now: never a half-written formula (the block stops before it
- * until it closes), never a ```math fence before its end, never a table's header row as a line of pipes before
+ * The block still streaming in, as it may be shown now: never a half-written formula or link (the block stops before
+ * it until it closes), never a ```math fence before its end, never a table's header row as a line of pipes before
  * its delimiter row arrives. [] means nothing to show yet.
  */
 export function settledBlock(t: Token): Token[] {
   if (t.type === "code") return (t as Tokens.Code).lang?.trim().toLowerCase() === "math" && !closedFence(t.raw) ? [] : [t];
   if (!HAS_INLINE.has(t.type)) return [t];
   if (t.type === "paragraph" && /^ {0,3}\|/.test(t.raw)) return [];
-  const cuts = [openMathAt(t.raw), openTagAt(t.raw)].filter((c) => c >= 0);
+  const cuts = [openMathAt(t.raw), openTagAt(t.raw), openLinkAt(t.raw)].filter((c) => c >= 0);
   if (!cuts.length) return [t];
   const cut = Math.min(...cuts);
   const head = t.raw.slice(0, cut);

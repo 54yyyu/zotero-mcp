@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lexBlocks, openMathAt, settledBlock } from "../../src/ui/markdown.ts";
+import { lexBlocks, openLinkAt, openMathAt, settledBlock } from "../../src/ui/markdown.ts";
 
 const lastBlock = (src: string) => lexBlocks(src).filter((t) => t.type !== "space").at(-1)!;
 const shown = (src: string) => settledBlock(lastBlock(src)).map((t) => t.raw).join("").trimEnd();
@@ -36,4 +36,24 @@ test("settledBlock: the streaming block stops before an open formula, a math fen
   assert.equal(shown("Water is H<sub>2"), "Water is H", "a formatting tag waits for its closing tag");
   assert.equal(shown("<span style=\"color: red\">a <u>b</u>"), "");
   assert.equal(shown("H<sub>2</sub>O"), "H<sub>2</sub>O");
+});
+
+test("openLinkAt finds the link that has not finished arriving, and nothing else", () => {
+  const url = "zotero://open-pdf/library/items/ABCD1234?page=4&quote=addi";
+  assert.equal(openLinkAt(`grow large [p.4](${url}`), 11);
+  assert.equal(openLinkAt("grow large [p.4"), 11);
+  assert.equal(openLinkAt("see [Vaswani et al. 2017"), 4);
+  assert.equal(openLinkAt(`grow large [p.4](${url}) and more`), -1);
+  assert.equal(openLinkAt("a [link](https://x.org/a_(b)) done"), -1);
+  assert.equal(openLinkAt("a [link](https://x.org/a_(b"), 2);
+  assert.equal(openLinkAt("refs [3] and [4] are older"), -1);
+  assert.equal(openLinkAt("code `a[i` stays"), -1);
+  assert.equal(openLinkAt("an escaped \\[ bracket"), -1);
+  assert.equal(openLinkAt("[" + "x".repeat(100)), -1, "a long unclosed [ is text, not a label");
+});
+
+test("a citation is not shown as raw markdown while it streams", () => {
+  assert.equal(shown("The products grow large [p.4](zotero://open-pdf/library/items/AB?page=4&quote=the%20dot"), "The products grow large");
+  assert.equal(shown("The products grow large [p.4"), "The products grow large");
+  assert.equal(shown("The products grow large [p.4](zotero://open-pdf/library/items/AB?page=4)."), "The products grow large [p.4](zotero://open-pdf/library/items/AB?page=4).");
 });
