@@ -655,3 +655,16 @@ def test_export_bibliography_bibtex_pages_through_whole_collection(
     )
 
     assert out.count("@article{") == _BigCollectionZotero.N
+
+
+def test_export_bibliography_large_export_carries_size_warning(monkeypatch):
+    """A whole-library export is uncapped now, so a big one says how big."""
+    monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: _BigCollectionZotero())
+    monkeypatch.setattr(_BigCollectionZotero, "N", 600)
+
+    out = synthesis.export_bibliography(
+        collection_key="COLL1234", export_format="bibtex", ctx=DummyContext()
+    )
+
+    assert out.startswith("*Response size:")
+    assert "item_keys or collection_key" in out.splitlines()[0]

@@ -324,6 +324,9 @@ def _render_entries(rendered) -> list[str]:
     return entries
 
 
+_EXPORT_SIZE_HINT = "Scope with item_keys or collection_key to reduce size."
+
+
 @mcp.tool(
     name="zotero_export_bibliography",
     description=(
@@ -496,7 +499,9 @@ def export_bibliography(
 
         if export_format == "bibtex":
             body = "\n\n".join(e.strip() for e in entries if e.strip())
-            return f"# {format_label}\n\n```bibtex\n{body}\n```"
+            return _helpers._prepend_size_warning(
+                f"# {format_label}\n\n```bibtex\n{body}\n```", _EXPORT_SIZE_HINT
+            )
 
         header = f"# {format_label} ({style})"
         lines = [header, ""]
@@ -508,7 +513,7 @@ def export_bibliography(
             return f"No bibliography entries produced{scope}."
         for i, clean in enumerate(cleaned, 1):
             lines.append(f"{i}. {clean}")
-        return "\n".join(lines)
+        return _helpers._prepend_size_warning("\n".join(lines), _EXPORT_SIZE_HINT)
 
     except Exception as e:
         ctx.error(f"Error exporting bibliography: {str(e)}")
