@@ -459,3 +459,121 @@ class TestOcrLayerFallback:
         fake_inspector(markdown=["", ""], text="all of it")
         doc = extract_pdf("scan.pdf", pages=[0, 1])
         assert "all of it" in doc.text
+
+
+class _CountingInspector(_FakeInspector):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.markdown_calls = []
+
+    def extract_pages_markdown(self, path, pages=None):
+        self.markdown_calls.append(pages)
+        return super().extract_pages_markdown(path, pages=pages)
+
+
+@pytest.fixture
+def counting_inspector(monkeypatch):
+    from zotero_mcp import extract
+
+    extract._parse_memo.clear()
+    fake = _CountingInspector(markdown=["p0", "p1", "p2", "p3"])
+    monkeypatch.setattr("zotero_mcp.extract._pdf_inspector", lambda: fake)
+    yield fake
+    extract._parse_memo.clear()
+
+
+class TestParseReuse:
+    """pdf-inspector's markdown pass costs the same for one page as for the
+    whole file (3.7-6 s on some 28-page papers), so reading a paper in chunks
+    must not re-run it for every range."""
+
+    def test_page_ranges_of_one_file_parse_it_once(self, counting_inspector, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        first = extract_pdf(pdf, pages=[0, 1], reuse=True)
+        second = extract_pdf(pdf, pages=[2, 3], reuse=True)
+        head = extract_pdf(pdf, max_pages=3, reuse=True)
+        assert len(counting_inspector.markdown_calls) == 1
+        assert first.pages == ("p0", "p1") and first.page_numbers == (0, 1)
+        assert second.pages == ("p2", "p3") and second.page_numbers == (2, 3)
+        assert head.pages == ("p0", "p1", "p2") and head.truncated
+        assert head.page_count == 4
+
+    def test_without_reuse_every_call_parses(self, counting_inspector, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        extract_pdf(pdf, pages=[0])
+        extract_pdf(pdf, pages=[1])
+        assert counting_inspector.markdown_calls == [[0], [1]]
+
+    def test_a_changed_file_is_parsed_again(self, counting_inspector, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        pdf.write_bytes(b"%PDF-1.4 one, edited")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        assert len(counting_inspector.markdown_calls) == 2
+
+    def test_out_of_range_pages_are_dropped_like_the_uncached_path(
+        self, counting_inspector, tmp_path
+    ):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        doc = extract_pdf(pdf, pages=[3, 9], reuse=True)
+        assert doc.page_numbers == (3,)
+        assert not extract_pdf(pdf, pages=[9], reuse=True).pages
+
+    def test_memo_is_bounded(self, counting_inspector, tmp_path, monkeypatch):
+        from zotero_mcp import extract
+
+        monkeypatch.setattr(extract, "_MEMO_MAX_ENTRIES", 2)
+        for i in range(4):
+            pdf = tmp_path / f"p{i}.pdf"
+            pdf.write_bytes(b"%PDF-1.4 " + bytes([65 + i]))
+            extract_pdf(pdf, pages=[0], reuse=True)
+        assert len(extract._parse_memo) == 2
+
+    def test_memo_skips_documents_over_the_character_budget(
+        self, counting_inspector, tmp_path, monkeypatch
+    ):
+        from zotero_mcp import extract
+
+        monkeypatch.setattr(extract, "_MEMO_MAX_CHARS", 3)
+        pdf = tmp_path / "big.pdf"
+        pdf.write_bytes(b"%PDF-1.4 big")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        assert not extract._parse_memo
+
+    def test_ocr_flags_stay_absolute_in_a_reused_slice(self, monkeypatch, tmp_path):
+        from zotero_mcp import extract
+
+        extract._parse_memo.clear()
+        fake = _CountingInspector(markdown=["a", "", "c"])
+        monkeypatch.setattr("zotero_mcp.extract._pdf_inspector", lambda: fake)
+        pdf = tmp_path / "scan.pdf"
+        pdf.write_bytes(b"%PDF-1.4 s")
+        doc = extract_pdf(pdf, pages=[1, 2], reuse=True)
+        assert doc.page_numbers == (1, 2) and doc.needs_ocr == (1,)
+        extract._parse_memo.clear()
+
+    def test_page_count_reads_the_memo(self, counting_inspector, tmp_path, monkeypatch):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 one")
+        extract_pdf(pdf, pages=[0], reuse=True)
+        monkeypatch.setattr(counting_inspector, "classify_pdf", lambda p: 1 / 0)
+        assert pdf_page_count(pdf) == 4
+
+
+class TestReaderOptsIntoReuse:
+    def test_reader_passes_reuse_only_when_asked(self, monkeypatch):
+        from zotero_mcp import local_db
+
+        seen = []
+        monkeypatch.setattr(
+            local_db, "extract_file", lambda p, **kw: seen.append(kw) or None
+        )
+        indexer = local_db.LocalZoteroReader(db_path="x.sqlite")
+        interactive = local_db.LocalZoteroReader(db_path="x.sqlite", reuse_pdf_parse=True)
+        indexer._extract_doc_from_file(Path("a.pdf"))
+        interactive._extract_doc_from_file(Path("a.pdf"))
+        assert [kw["reuse"] for kw in seen] == [False, True]

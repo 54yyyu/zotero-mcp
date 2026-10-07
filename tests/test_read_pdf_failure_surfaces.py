@@ -126,7 +126,7 @@ def _patch_extract(monkeypatch, page_texts, total=None):
     def _fake_page_count(_path):
         return total_pages
 
-    def _fake_extract_pdf(_path, *, pages=None, max_pages=None):
+    def _fake_extract_pdf(_path, *, pages=None, max_pages=None, reuse=False):
         wanted = [p for p in (pages or range(total_pages)) if 0 <= p < total_pages]
         texts = [page_texts[p % len(page_texts)] for p in wanted]
         return ExtractedDoc(

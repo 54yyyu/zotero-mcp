@@ -325,7 +325,9 @@ def read_pdf_text(
                                                                  actual_end, clamped_note):
             try:
                 # extract_pdf takes 0-indexed pages; the tool's API is 1-indexed.
-                doc = extract_pdf(pdf_path, pages=list(range(start_page - 1, actual_end)))
+                doc = extract_pdf(
+                    pdf_path, pages=list(range(start_page - 1, actual_end)), reuse=True,
+                )
             except Exception as exc:
                 raise PdfReadError(
                     f"Could not read PDF for item {item_key}: {exc}",
