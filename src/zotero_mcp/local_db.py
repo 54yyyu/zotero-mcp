@@ -2153,11 +2153,15 @@ class LocalZoteroReader:
             WHERE n.note LIKE ?
             AND i.libraryID IN (""" + lib_placeholders + """)
             AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-            LIMIT ?
-        """, (pattern, *lib_ids, limit))
+        """, (pattern, *lib_ids))
 
+        # The limit applies after the clean-text filter below: an SQL LIMIT
+        # let markup-only hits (e.g. "zotero" inside Zotero 7 citation URIs)
+        # use up the budget and hide real matches.
         results = []
-        for row in cursor.fetchall():
+        for row in cursor:
+            if len(results) >= limit:
+                break
             note_html = row[1] or ""
             # Post-filter: skip if query only matches HTML tags, not content
             from zotero_mcp.utils import clean_html

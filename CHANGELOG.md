@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Note search no longer misses real matches behind markup-only hits** (#635). `search_notes_local` applied its SQL `LIMIT` before discarding notes whose match was only in HTML markup, so a query like `zotero` or `version` (present in Zotero 7 citation attributes) could fill the limit with discarded rows and return few or no notes. The limit now applies after the filter.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security
