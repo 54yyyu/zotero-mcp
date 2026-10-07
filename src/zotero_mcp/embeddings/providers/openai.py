@@ -173,7 +173,11 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         provider via ``base_url``, only accepts ``encoding_format="base64"``
         and rejects ``"float"`` with a 400. Send base64 there and decode it
         below: the SDK decodes base64 only when it chose that format itself,
-        not when the caller passes ``encoding_format`` explicitly.
+        not when the caller passes ``encoding_format`` explicitly. Voyage
+        requests also carry ``input_type`` (``"document"`` for corpus
+        ingestion, ``"query"`` for retrieval), mirroring Gemini's
+        ``task_type``; it rides in ``extra_body`` because the typed
+        ``create()`` has no such kwarg.
 
         Headers come back via ``with_raw_response`` where the SDK offers it, so
         the limiter can read whatever rate-limit headroom the provider reports.
@@ -188,6 +192,12 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             "input": texts,
             "encoding_format": "base64" if voyage else "float",
         }
+        # Voyage's API takes input_type to distinguish corpus documents from
+        # retrieval queries; both directions are valid embeddings, but the
+        # pair is optimized when labeled. The typed create() has no such
+        # kwarg, so it rides in extra_body like other provider extras.
+        if voyage:
+            request["extra_body"] = {"input_type": "query" if is_query else "document"}
         # Pass dimensions only when explicitly set; some OpenAI-compatible
         # backends (e.g. certain OpenRouter models) reject the parameter, so we
         # omit it rather than risk a 400 on backends that don't support

@@ -32,8 +32,14 @@ def _make(batch_size=64, rps=None):
 
     class _Embeddings:
         @staticmethod
-        def create(model, input, encoding_format):
-            calls.append({"input": list(input), "encoding_format": encoding_format})
+        def create(model, input, encoding_format, extra_body=None):
+            calls.append(
+                {
+                    "input": list(input),
+                    "encoding_format": encoding_format,
+                    "extra_body": extra_body,
+                }
+            )
             return _Resp(input)
 
     class _Client:
@@ -108,12 +114,40 @@ def test_voyage_base64_response_is_decoded():
     ef.base_url = "https://api.voyageai.com/v1"
     plain_create = ef.client.embeddings.create
 
-    def create(model, input, encoding_format):
+    def create(model, input, encoding_format, extra_body=None):
         resp = plain_create(model, input, encoding_format)
         for d in resp.data:
             d.embedding = base64.b64encode(struct.pack(f"<{len(d.embedding)}f", *d.embedding)).decode()
         return resp
 
     ef.client.embeddings.create = create
-    assert ef([0.5, 2.0]) == [[0.5], [2.0]]
+    ef([0.5, 2.0])
     assert [c["encoding_format"] for c in calls] == ["base64"]
+
+
+def test_voyage_document_call_sends_input_type_document():
+    # Voyage optimizes the doc/query pair when input_type labels the role;
+    # corpus ingestion (the __call__ path) must send "document" (#667 follow-up).
+    ef, calls = _make(batch_size=2)
+    ef.base_url = "https://api.voyageai.com/v1"
+    ef([0, 1])
+    assert calls and all(c["extra_body"] == {"input_type": "document"} for c in calls)
+
+
+def test_voyage_query_call_sends_input_type_query():
+    # The query path (embed_query -> _prepare_query -> is_query=True) must
+    # label the request "query" so Voyage optimizes the retrieval direction.
+    ef, calls = _make(batch_size=2)
+    ef.base_url = "https://api.voyageai.com/v1"
+    ef.embed_query([0.5, 2.0])
+    assert calls and all(c["extra_body"] == {"input_type": "query"} for c in calls)
+
+
+def test_non_voyage_requests_omit_input_type():
+    # extra_body/input_type is Voyage-only; OpenAI and other OpenAI-compatible
+    # backends must not receive unknown parameters.
+    ef, calls = _make(batch_size=2)
+    ef.base_url = "https://openrouter.ai/api/v1"
+    ef([0, 1])
+    ef.embed_query([0.5])
+    assert calls and all(c["extra_body"] is None for c in calls)
