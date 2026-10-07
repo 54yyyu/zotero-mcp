@@ -257,6 +257,20 @@ class TestExtractHtml:
         assert "| --- | --- | --- |" in text
         assert "| 1 |  | 3 |" in text
 
+    def test_wide_tables_keep_their_separator_and_empty_cells(self, tmp_path):
+        # Five columns is past the scaffolding run length: a header with text
+        # keeps its separator row and a sparse data row keeps its empty cells.
+        snapshot = tmp_path / "page.html"
+        snapshot.write_text(
+            "<table><tr><th>A</th><th>B</th><th>C</th><th>D</th><th>E</th></tr>"
+            "<tr><td>1</td><td></td><td></td><td></td><td></td></tr>"
+            "<tr><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td></tr></table>"
+        )
+        text = extract_html(snapshot).text
+        assert "| A | B | C | D | E |" in text
+        assert "| --- | --- | --- | --- | --- |" in text
+        assert "| 1 |  |  |  |  |" in text
+
 
 class TestExtractTextFile:
     def test_reads_content_verbatim(self, tmp_path):

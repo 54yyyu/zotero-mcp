@@ -436,6 +436,8 @@ def _html_converter():
 _TABLE_RUN = 4
 _EMPTY_CELL_RUN = re.compile(r"\|(?:[ \t]*\|){%d,}" % _TABLE_RUN)
 _SEPARATOR_RUN = re.compile(r"\|(?: ?-{3,} ?\|){%d,}" % _TABLE_RUN)
+#: A separator inside a line with other cells never occurs in a real table row.
+_NESTED_SEPARATOR = re.compile(r"\|(?: ?-{3,} ?\|){2,}")
 
 
 def _collapse_table_scaffolding(markdown: str) -> str:
@@ -447,13 +449,25 @@ def _collapse_table_scaffolding(markdown: str) -> str:
     row, a blank header line and a ``| --- |`` line as wide as the whole
     table. On a 74-row statistics table that was 200K of ``|  |  |`` and
     ``| --- | --- |`` around 17K of data, with a single line of 125K
-    characters. Runs of four or more empty cells (or separators) become one
-    and a repeated scaffolding line is dropped; every cell with text is kept.
+    characters.
+
+    Only that scaffolding is shortened, so real tables keep their shape: a
+    line of nothing but empty cells, a separator line under such a blank
+    header, and a line that carries a separator in the middle of its cells.
+    A header with text keeps its separator, and a data row keeps its empty
+    cells. Every cell with text is kept.
     """
     out = []
     for line in markdown.split("\n"):
         if line.startswith("|"):
-            line = _SEPARATOR_RUN.sub("| --- |", _EMPTY_CELL_RUN.sub("|  |", line))
+            stripped = line.rstrip()
+            if _EMPTY_CELL_RUN.fullmatch(stripped):
+                line = "|  |"
+            elif _SEPARATOR_RUN.fullmatch(stripped):
+                if out and out[-1] == "|  |":
+                    line = "| --- |"
+            elif _NESTED_SEPARATOR.search(line):
+                line = _SEPARATOR_RUN.sub("| --- |", _EMPTY_CELL_RUN.sub("|  |", line))
             if line in ("|  |", "| --- |") and out and out[-1] == line:
                 continue
         out.append(line)
