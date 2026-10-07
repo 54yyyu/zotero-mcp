@@ -49,6 +49,7 @@ Or have the proxy rewrite `Host` to `localhost:<port>`. To switch the check off 
 - **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
 - **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
 - **Ollama `Read timed out`**: see the `timeout` and `request_batch_size` settings in [Semantic search](semantic-search.md#ollama)
+- **`Error loading hnsw index` on Windows**: your user folder name has non-ASCII characters. Move the index to an ASCII path with `persist_directory`, see [Index location](semantic-search.md#index-location)
 
 <a id="database-issues"></a>
 
