@@ -236,6 +236,8 @@ _HTML_START = re.compile(r"\s*<(?:div|p|h[1-6]|ul|ol|table|pre|blockquote)[\s>]"
 
 def to_note_html(text: str) -> str:
     """Note text as the editor's HTML: HTML input (it starts with a block tag) is sanitized, anything else is markdown."""
+    if not text.strip():  # clearing a note: no empty editor wrapper
+        return ""
     return sanitize_note_html(text) if _HTML_START.match(text) else markdown_to_note_html(text)
 
 
