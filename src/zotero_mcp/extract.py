@@ -433,10 +433,9 @@ def _html_converter():
     return _SnapshotConverter(heading_style="ATX")
 
 
-#: A run of this many empty (or ``---``) table cells is layout scaffolding.
-_TABLE_RUN = 4
-_EMPTY_CELL_RUN = re.compile(r"\|(?:[ \t]*\|){%d,}" % _TABLE_RUN)
-_SEPARATOR_RUN = re.compile(r"\|(?: ?-{3,} ?\|){%d,}" % _TABLE_RUN)
+#: A run of four or more empty (or ``---``) table cells is layout scaffolding.
+_EMPTY_CELL_RUN = re.compile(r"\|(?:[ \t]*\|){4,}")
+_SEPARATOR_RUN = re.compile(r"\|(?: ?-{3,} ?\|){4,}")
 #: A separator inside a line with other cells never occurs in a real table row.
 _NESTED_SEPARATOR = re.compile(r"\|(?: ?-{3,} ?\|){2,}")
 
