@@ -57,6 +57,18 @@ class TestCandidates:
         assert roaming / "Claude Desktop" / CONFIG_NAME in candidates
         assert local / "Claude-3p" / CONFIG_NAME in candidates
 
+    def test_windows_candidates_include_the_store_packaged_app(self, monkeypatch, tmp_path):
+        """The Microsoft Store build reads %APPDATA%\\Claude through a package
+        redirect, so the file lives under Packages\\Claude_<id> (#26)."""
+        _, local = _windows_env(monkeypatch, tmp_path)
+        packaged = local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude"
+
+        assert packaged / CONFIG_NAME not in setup_helper.claude_config_candidates()
+
+        _write_config(packaged / CONFIG_NAME, "store")
+        assert packaged / CONFIG_NAME in setup_helper.claude_config_candidates()
+        assert setup_helper.find_all_claude_configs() == [packaged / CONFIG_NAME]
+
     def test_macos_candidates_keep_classic_paths_and_add_claude_3p(self, monkeypatch, fake_home):
         monkeypatch.setattr(setup_helper.sys, "platform", "darwin")
 
