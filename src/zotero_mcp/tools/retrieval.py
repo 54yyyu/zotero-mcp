@@ -226,6 +226,7 @@ def get_item_fulltext(
                     db_path=zotero_db_path,
                     pdf_max_pages=max_pages,
                     attachment_priority=config.semantic_search.extraction.attachment_priority,
+                    reuse_pdf_parse=True,
                 ) as reader:
                     local_item = reader.get_item_by_key(item_key)
                     if local_item:

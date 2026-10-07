@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reading a PDF in page ranges no longer re-parses it every time.** `zotero_read_pdf_pages` and `zotero_get_item_fulltext` ran pdf-inspector's whole-document Markdown pass on every call, and it costs about the same for one page as for the whole file (3.7-6 s on some 28-page papers, with the GIL held so other tools stalled), so reading a paper in chunks paid it again for each chunk. The parse of an unchanged file is now kept in a small in-process memo (3 files, 8M characters in all), so repeat and different-range reads of the same PDF return in milliseconds. Indexing is unchanged.
+
 ## [0.13.3] - 2026-10-06
 
 ### Security

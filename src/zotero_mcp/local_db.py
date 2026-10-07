@@ -1034,6 +1034,7 @@ class LocalZoteroReader:
     # never write into the user's real cache directory.
     extraction_workers: int = 1
     fulltext_cache_enabled: bool = False
+    reuse_pdf_parse: bool = False
     config_path: str | None = None
     _library_labels: dict[int, tuple[int, str]] | None = None
 
@@ -1045,6 +1046,7 @@ class LocalZoteroReader:
         extraction_workers: int = 1,
         fulltext_cache_enabled: bool = False,
         config_path: str | None = None,
+        reuse_pdf_parse: bool = False,
     ):
         """
         Initialize the local database reader.
@@ -1068,6 +1070,9 @@ class LocalZoteroReader:
                 would otherwise poison the cache with truncated text.
             config_path: Semantic-search config path, used only to locate the
                 fulltext cache directory next to it.
+            reuse_pdf_parse: Serve repeat reads of an unchanged PDF from the
+                in-process parse memo (``extract_pdf(reuse=True)``). For
+                interactive tools; indexing leaves it off.
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
@@ -1082,6 +1087,7 @@ class LocalZoteroReader:
         self.extraction_workers: int = max(1, int(extraction_workers or 1))
         self.fulltext_cache_enabled: bool = fulltext_cache_enabled
         self.config_path: str | None = config_path
+        self.reuse_pdf_parse: bool = reuse_pdf_parse
 
     def _find_zotero_db(self) -> str:
         """
@@ -1329,7 +1335,11 @@ class LocalZoteroReader:
         and a caller that has to re-derive them gets a second source of truth
         (#448).
         """
-        return extract_file(file_path, max_pages=self._resolve_pdf_max_pages())
+        return extract_file(
+            file_path,
+            max_pages=self._resolve_pdf_max_pages(),
+            reuse=self.reuse_pdf_parse,
+        )
 
     def _get_fulltext_meta_for_item(self, item_id: int):
         meta = []
