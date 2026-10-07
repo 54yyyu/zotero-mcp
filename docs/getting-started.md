@@ -130,6 +130,12 @@ A tunnel makes your locally running `zotero-mcp` server securely available to a 
     ```
     Leave `--host` at its default (localhost): ngrok forwards to localhost, and binding `0.0.0.0` would also expose the server to your local network.
 
+    The server refuses requests whose `Host` header is not `localhost` or `127.0.0.1` (protection against DNS rebinding), and ngrok forwards its public hostname by default. Tell the server about it before starting, using your own ngrok hostname:
+    ```bash
+    export FASTMCP_HTTP_ALLOWED_HOSTS='["<random-string>.ngrok-free.app"]'
+    ```
+    or start ngrok with `ngrok http 8000 --host-header=rewrite`, which sends `localhost:8000` instead. If a tunnel gets `421 Misdirected Request`, this is why.
+
 Important: you should probably leave this terminal open in order to ensure tunnel traffic is successfully transiting to the server.
 
 3.  **Start the ngrok tunnel**: Open a *second* terminal and start ngrok, pointing it to the port your server is using (8000). Here is an instruction that will work on a mac

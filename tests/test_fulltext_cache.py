@@ -259,3 +259,23 @@ def test_update_db_survives_a_broken_cache(cfg, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "could not purge stale fulltext cache entries" in out
     assert "Database update completed" in out
+
+
+def test_index_save_uses_a_unique_temp_file_each_time(tmp_path, monkeypatch):
+    """The index used to be staged in one fixed ``index.json.tmp`` that
+    concurrent writers shared; each save must stage in its own temp file."""
+    staged = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        staged.append(os.path.basename(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
+    fulltext_cache._save_index_unlocked(tmp_path, {"n": 1})
+    fulltext_cache._save_index_unlocked(tmp_path, {"n": 2})
+
+    assert len(staged) == 2 and staged[0] != staged[1]
+    assert "index.json.tmp" not in staged
+    assert json.loads((tmp_path / "index.json").read_text()) == {"n": 2}
+    assert [p.name for p in tmp_path.iterdir()] == ["index.json"]

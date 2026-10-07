@@ -1,6 +1,8 @@
 """OpenAI (and OpenAI-compatible) embedding function."""
 
+import base64
 import os
+import struct
 from typing import Any
 
 from chromadb.utils.embedding_functions import register_embedding_function
@@ -167,6 +169,12 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         float makes every OpenAI-compatible backend, native OpenAI included,
         respond deterministically.
 
+        Exception: Voyage AI (``api.voyageai.com``), reachable through this
+        provider via ``base_url``, only accepts ``encoding_format="base64"``
+        and rejects ``"float"`` with a 400. Send base64 there and decode it
+        below: the SDK decodes base64 only when it chose that format itself,
+        not when the caller passes ``encoding_format`` explicitly.
+
         Headers come back via ``with_raw_response`` where the SDK offers it, so
         the limiter can read whatever rate-limit headroom the provider reports.
         OpenAI-compatible backends and test doubles that do not expose it fall
@@ -174,10 +182,11 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         """
         embeddings_api = self.client.embeddings
         raw_api = getattr(embeddings_api, "with_raw_response", None)
+        voyage = bool(self.base_url and "voyageai" in self.base_url)
         request = {
             "model": self.model_name,
             "input": texts,
-            "encoding_format": "float",
+            "encoding_format": "base64" if voyage else "float",
         }
         # Pass dimensions only when explicitly set; some OpenAI-compatible
         # backends (e.g. certain OpenRouter models) reject the parameter, so we
@@ -196,7 +205,22 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             response = embeddings_api.create(**request)
             headers = None
 
-        return [data.embedding for data in response.data], headers
+        embeddings = [data.embedding for data in response.data]
+        if voyage:
+            # The OpenAI SDK (through at least 1.9x) does not decode base64
+            # embeddings: Voyage's data.embedding arrives as a base64 str even
+            # though the response model types it as list[float]. Voyage requires
+            # encoding_format="base64" (it 400s on "float"), so decode here:
+            # float32 little-endian, 4 bytes each, "="-padded standard alphabet.
+            def _decode(value):
+                if isinstance(value, str):
+                    raw_bytes = base64.b64decode(value, validate=True)
+                    n = len(raw_bytes) // 4
+                    return list(struct.unpack(f"<{n}f", raw_bytes[: n * 4]))
+                return value
+
+            embeddings = [_decode(e) for e in embeddings]
+        return embeddings, headers
 
     def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
         """Retry rate limits and server-side failures; fail fast on the rest."""

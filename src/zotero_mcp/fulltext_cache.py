@@ -44,6 +44,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from zotero_mcp.utils import write_json_atomic
+
 logger = logging.getLogger(__name__)
 
 _INDEX_LOCK = threading.Lock()
@@ -102,12 +104,9 @@ def _load_index_unlocked(root: Path) -> dict[str, Any]:
 
 
 def _save_index_unlocked(root: Path, index: dict[str, Any]) -> None:
-    path = _index_path(root)
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(index, f, indent=2)
-    _private_chmod(tmp)
-    os.replace(tmp, path)
+    # A unique temp name per write: the old fixed ".json.tmp" was shared by
+    # concurrent writers.
+    write_json_atomic(_index_path(root), index)
 
 
 def put_cached_text(
