@@ -30,6 +30,7 @@ from zotero_mcp.cli import (
     _print_update_stats,
     obfuscate_config_for_display,
     setup_zotero_environment,
+    tolerate_console_encoding,
 )
 
 # ---------------------------------------------------------------------------
@@ -1925,6 +1926,7 @@ fields are not removed or retyped without bumping it. Parse defensively.
 
 
 def main():
+    tolerate_console_encoding()
     parser = build_parser()
     args = parser.parse_args()
 
