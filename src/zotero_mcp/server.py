@@ -139,7 +139,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
     update_item,
 )
 
-from zotero_mcp.toolsets import apply_toolsets
+from zotero_mcp.toolsets import apply_profile, apply_toolsets
 from zotero_mcp.utils import (  # noqa: F401
     clean_html,
     format_creators,
@@ -147,10 +147,14 @@ from zotero_mcp.utils import (  # noqa: F401
     is_local_mode,
 )
 
-# Apply the optional-toolset profile now that every tool module above has
+# Apply the optional-toolset selection now that every tool module above has
 # registered its tools. This uses the stdio default; `zotero-mcp serve`
 # re-applies once the real transport is known, which is what lets the ChatGPT
 # connector tools appear only when the server is actually reachable by ChatGPT.
-# Callers that import `mcp` directly still get the configured profile rather
+# Callers that import `mcp` directly still get the configured selection rather
 # than the full surface.
 apply_toolsets(mcp)
+# A named ZOTERO_MCP_PROFILE, if set, is a hard allowlist applied on top of
+# the above — see zotero_mcp.toolsets for why this is a separate mechanism
+# from toolsets rather than another toolset group.
+apply_profile(mcp)
