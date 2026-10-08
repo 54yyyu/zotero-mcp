@@ -268,9 +268,36 @@ def _update_lock_path() -> Path:
     return Path.home() / ".config" / "zotero-mcp" / "update.lock"
 
 
+# msvcrt.locking is a mandatory byte-range lock: the pid text at offset 0 must
+# stay readable for the process that loses the race, so the lock sits past it.
+_WIN_LOCK_OFFSET = 4096
+
+
+def _try_lock(fd) -> bool:
+    """Take a non-blocking exclusive lock on the open file; False if held."""
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt  # Windows
+
+        fd.seek(_WIN_LOCK_OFFSET)
+        try:
+            msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+        finally:
+            fd.seek(0)
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
 @contextlib.contextmanager
 def _acquire_update_lock(lock_path: Path):
-    """Non-blocking exclusive flock over an update-database run.
+    """Non-blocking exclusive lock over an update-database run.
 
     Yields True if the lock was acquired (caller should proceed), False if
     another process already holds it (caller should skip). This prevents the
@@ -282,16 +309,9 @@ def _acquire_update_lock(lock_path: Path):
     holder on a filesystem with quirky flock semantics) and the user knowingly
     accepts the small double-work risk.
 
-    Windows lacks ``fcntl``; on that platform the function degrades to a
-    no-op and yields True so behaviour matches pre-lock releases.
+    ``fcntl.flock`` on POSIX, ``msvcrt.locking`` on Windows (#267).
     """
     if _force_update_requested():
-        yield True
-        return
-
-    try:
-        import fcntl
-    except ImportError:
         yield True
         return
 
@@ -299,11 +319,9 @@ def _acquire_update_lock(lock_path: Path):
     fd = None
     try:
         # "a" not "w": a process that loses the race must not truncate the
-        # holder's pid before flock fails. We truncate after acquiring.
+        # holder's pid before the lock fails. We truncate after acquiring.
         fd = open(lock_path, "a")
-        try:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        if not _try_lock(fd):
             yield False
             return
         # Record our pid so a concurrent invocation can report the holder.
@@ -359,6 +377,11 @@ _INDEX_SCHEMA_VERSION = 3
 # the next re-embed.
 _MASS_DELETION_MIN_DOCS = 25
 _MASS_DELETION_MIN_FRACTION = 0.25
+
+# Item types that are never indexed as standalone documents. Both API
+# fetch paths use this; the local SQLite scan in local_db.py excludes the
+# same three types in SQL (#604).
+_NON_INDEXED_ITEM_TYPES = frozenset({"attachment", "note", "annotation"})
 
 
 def _extract_fulltext_batch(reader, items):
@@ -2154,9 +2177,9 @@ class ZoteroSemanticSearch:
             if not items:
                 break
 
-            # Filter out attachments and notes by default
+            # Filter out attachments, notes and annotations
             filtered_items = [
-                item for item in items if item.get("data", {}).get("itemType") not in ["attachment", "note"]
+                item for item in items if item.get("data", {}).get("itemType") not in _NON_INDEXED_ITEM_TYPES
             ]
 
             all_items.extend(filtered_items)
@@ -2225,7 +2248,7 @@ class ZoteroSemanticSearch:
             item_type = item.get("data", {}).get("itemType")
             # Don't index attachments/notes as standalone entries; only
             # top-level research items participate in semantic search.
-            if item_type in {"attachment", "note", "annotation"}:
+            if item_type in _NON_INDEXED_ITEM_TYPES:
                 continue
             changed_items.append(item)
 

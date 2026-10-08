@@ -18,7 +18,9 @@ an environment failure worth seeing, not a test bug.
 
 import importlib.util
 import inspect
+import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -31,7 +33,11 @@ if sys.version_info >= (3, 14):
 if importlib.util.find_spec("chromadb") is None:
     pytest.skip("chromadb not installed", allow_module_level=True)
 
-from zotero_mcp.chroma_client import ChromaClient
+from zotero_mcp.chroma_client import (
+    ChromaClient,
+    create_chroma_client,
+    read_collection_status,
+)
 
 GROUP_ID = 6015547
 
@@ -395,3 +401,25 @@ def test_fakes_conform_to_real_chroma_client_api(fake_cls):
                 f"real ChromaClient.{name} signature rejects the fake's call shape "
                 f"({fake_cls.__module__}.{fake_cls.__qualname__}): {e}"
             )
+
+
+# ---------------------------------------------------------------------------
+# semantic_search.persist_directory (#617)
+# ---------------------------------------------------------------------------
+
+def test_configured_persist_directory_is_written_and_read(monkeypatch, tmp_path):
+    """The status reader is handed only the config path, so it has to find a
+    moved index on its own, or it reports the index as empty."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.delenv("ZOTERO_EMBEDDING_MODEL", raising=False)
+    index_dir = tmp_path / "moved" / "chroma_db"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"semantic_search": {"persist_directory": str(index_dir)}})
+    )
+
+    _seed(create_chroma_client(str(config_path)), 3)
+
+    status = read_collection_status(str(config_path))
+    assert status["persist_directory"] == str(index_dir)
+    assert status["count"] == 3

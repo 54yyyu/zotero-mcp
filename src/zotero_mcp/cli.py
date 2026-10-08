@@ -706,8 +706,23 @@ def cmd_authorize_local(args):
     return 0
 
 
+def tolerate_console_encoding():
+    """Make print() unable to crash on a character the console cannot encode.
+
+    Windows consoles default to cp1252 or cp936, where an emoji or a title in
+    another script raised UnicodeEncodeError and aborted the command (#26).
+    Keep the encoding and replace what it cannot hold.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main():
     """Main entry point for the CLI."""
+    tolerate_console_encoding()
     parser = argparse.ArgumentParser(
         description="Zotero Model Context Protocol server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
