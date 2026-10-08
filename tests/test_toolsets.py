@@ -30,6 +30,12 @@ from zotero_mcp.toolsets import (
 CONNECTOR = "chatgpt-connector"
 
 
+@pytest.fixture(autouse=True)
+def _semantic_extra_installed(monkeypatch):
+    """Pin extra detection so results don't depend on what this env has."""
+    monkeypatch.setattr("zotero_mcp.toolsets.semantic_extra_installed", lambda: True)
+
+
 class TestResolveEnabled:
     def test_unset_uses_default_profile(self, monkeypatch):
         monkeypatch.delenv(TOOLSETS_ENV_VAR, raising=False)
@@ -151,3 +157,95 @@ class TestApplyToolsets:
             assert default < full
         finally:
             apply_toolsets(mcp, raw="all", transport="streamable-http")
+
+
+class TestSemanticToolset:
+    """#572: semantic tools form a toolset, hidden when the extra is missing."""
+
+    @pytest.fixture
+    def base_install(self, monkeypatch):
+        monkeypatch.setattr("zotero_mcp.toolsets.semantic_extra_installed", lambda: False)
+
+    def test_semantic_search_is_its_own_default_on_group(self):
+        assert "zotero_semantic_search" in TOOLSETS["semantic"]
+        assert "semantic" in DEFAULT_ON
+        assert "semantic" in resolve_enabled("")
+
+    def test_none_no_longer_includes_semantic_search(self):
+        assert "semantic" not in resolve_enabled("none")
+        assert resolve_enabled("none,semantic") == {"semantic"}
+
+    def test_base_install_drops_groups_that_need_the_extra(self, base_install):
+        enabled = resolve_enabled("")
+        assert "semantic" not in enabled and "search-admin" not in enabled
+        assert enabled == set(DEFAULT_ON) - {"semantic", "search-admin"}
+        assert "semantic" not in resolve_enabled("all")
+
+    def test_base_install_keeps_groups_named_explicitly(self, base_install):
+        # Asked for by name: keep it, so the tool answers with the install
+        # hint instead of being silently absent.
+        assert "semantic" in resolve_enabled("none,semantic")
+
+    def test_discovery_does_not_need_the_extra(self, base_install):
+        # find_related_papers / library_coverage use OpenAlex, not the index.
+        assert "discovery" in resolve_enabled("discovery")
+        assert "discovery" in resolve_enabled("all")
+
+    def test_base_install_tool_list_has_no_semantic_tools(self, base_install):
+        from zotero_mcp.server import mcp
+
+        try:
+            apply_toolsets(mcp, raw=None, transport="streamable-http")
+            listed = {t.name for t in asyncio.run(mcp.list_tools())}
+            assert not listed & (TOOLSETS["semantic"] | TOOLSETS["search-admin"])
+            assert "zotero_search_items" in listed
+            # The connector search falls back to keyword search (0.12.5).
+            assert "search" in listed
+        finally:
+            apply_toolsets(mcp, raw="all", transport="streamable-http")
+
+
+class TestNoneSemanticNotice:
+    """#572: a `none` spec that relied on semantic search gets one warning."""
+
+    NOTICE = "no longer includes zotero_semantic_search"
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        monkeypatch.setattr("zotero_mcp.toolsets._none_notice_logged", False)
+
+    @pytest.fixture
+    def mcp(self):
+        from zotero_mcp.server import mcp
+
+        yield mcp
+        apply_toolsets(mcp, raw="all")
+
+    def _notices(self, caplog):
+        return [r for r in caplog.records if self.NOTICE in r.getMessage()]
+
+    @pytest.mark.parametrize("raw", ["none", "none,discovery", "NONE"])
+    def test_warns_when_none_says_nothing_about_semantic(self, mcp, caplog, raw):
+        apply_toolsets(mcp, raw=raw)
+        notices = self._notices(caplog)
+        assert len(notices) == 1
+        assert notices[0].levelname == "WARNING"
+        assert "none,semantic" in notices[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "raw", ["", "none,semantic", "none,-semantic", "all", "discovery"]
+    )
+    def test_silent_when_the_spec_decides(self, mcp, caplog, raw):
+        apply_toolsets(mcp, raw=raw)
+        assert not self._notices(caplog)
+
+    def test_silent_without_the_extra(self, mcp, caplog, monkeypatch):
+        monkeypatch.setattr("zotero_mcp.toolsets.semantic_extra_installed", lambda: False)
+        apply_toolsets(mcp, raw="none")
+        assert not self._notices(caplog)
+
+    def test_logged_once_across_repeated_applies(self, mcp, caplog):
+        # server.py applies at import, `serve` applies again with the transport.
+        apply_toolsets(mcp, raw="none")
+        apply_toolsets(mcp, raw="none", transport="streamable-http")
+        assert len(self._notices(caplog)) == 1
