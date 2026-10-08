@@ -33,7 +33,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.14.0</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.14.1</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
@@ -140,6 +140,15 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.14.1<small>Oct 2026</small></div>
+          <div>
+            <h3>Fixes for <span class="hl c-yellow">Windows</span>, annotations and snapshots</h3>
+            <p>On Windows the index update lock now works, so two servers no longer both index, and <code>setup</code> and <code>zotero-cli</code> no longer crash on a console that cannot show emoji or Chinese; <code>setup</code> also finds the Microsoft Store build of Claude Desktop. The index can live anywhere with <code>semantic_search.persist_directory</code>, which helps a Windows home folder with non-ASCII characters. Created annotations sort in reading order, Voyage embeddings send <code>input_type</code>, web snapshots drop empty table scaffolding and convert deeply nested pages, and <code>update-db</code> no longer indexes annotations as documents.</p>
+            <p class="fine">With fixes from @lots-o (#685), @sghng (#684), @dnlfis42 (#609), @MohammadHijjawi97 (#607), @RizgarOzan (#615) and @falcon1-1-code (#687, #688).</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.14.0<small>Oct 2026</small></div>
           <div>
             <h3>Zotero Agent: <span class="hl c-yellow">your own agent</span>, inside Zotero</h3>
@@ -424,7 +433,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.14.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.14.1 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
