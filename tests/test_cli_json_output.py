@@ -345,6 +345,35 @@ class TestSearchCommand:
         assert payload["data"]["items"] == []
 
 
+    def _failed_search(self, message, json_out):
+        args = _args(mode="items", query="x", qmode="titleCreatorYear", limit=10,
+                     collection=None, detail="summary", json_out=json_out)
+        search_mod = MagicMock()
+        search_mod.search_items.return_value = message
+
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"),              patch("zotero_mcp.cli_standalone._read_backend", return_value=MagicMock()),              patch("zotero_mcp.cli_standalone._import_tools",
+                   return_value=(search_mod, MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            with pytest.raises(SystemExit) as exc:
+                cmd_search(args)
+        return exc.value.code
+
+    def test_a_failed_search_is_an_error_not_an_empty_result(self, capsys):
+        code = self._failed_search("Error: this query could not be served", json_out=True)
+
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "tool_error"
+
+    def test_a_failed_search_exits_nonzero_in_markdown_mode_too(self, capsys):
+        code = self._failed_search("Error: this query could not be served", json_out=False)
+
+        assert code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "could not be served" in captured.err
+
+
 class TestGetCommand:
     def test_metadata_returns_the_raw_record(self, capsys):
         args = _args(subcommand="metadata", item_key="ABCD1234",

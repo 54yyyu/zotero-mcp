@@ -285,6 +285,9 @@ def cmd_search(args):
             search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
         )
 
+    if _reports_failure(result):
+        _out(args, "search", text=result)
+
     if _json_mode(args):
         keys = _keys_from_markdown(result)
         items = _fetch_projected(_read_backend(), keys,
