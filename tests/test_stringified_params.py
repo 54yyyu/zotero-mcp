@@ -121,6 +121,22 @@ class TestValidationLayer:
                 f"stringified conditions still rejected at the boundary: {exc}"
             )
 
+    def test_single_condition_object_passes_validation(self, registered_tools):
+        """One condition sent as a bare object, not a list of one, is a shape
+        models produce often. It was rejected at the boundary with a raw
+        pydantic "Input should be a valid list" error."""
+        tool = next(t for t in registered_tools if t.name == "zotero_advanced_search")
+
+        try:
+            asyncio.run(tool.run({
+                "conditions": {"field": "itemType", "operation": "is", "value": "book"},
+                "limit": 1,
+            }))
+        except Exception as exc:
+            assert type(exc).__name__ != "ValidationError", (
+                f"a single condition object is still rejected at the boundary: {exc}"
+            )
+
     def test_stringified_rect_passes_validation(self, registered_tools):
         tool = next(t for t in registered_tools if t.name == "zotero_create_annotation")
 
