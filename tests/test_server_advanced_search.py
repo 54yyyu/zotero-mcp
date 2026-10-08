@@ -334,9 +334,10 @@ def test_advanced_search_still_accepts_known_and_aliased_fields(monkeypatch):
         assert "Unknown field" not in result, field
 
 
-def test_advanced_search_accepts_a_bare_condition_object(monkeypatch):
+def test_advanced_search_rejects_wrong_case_field(monkeypatch):
+    """Field names are case-sensitive, so "Title" is rejected like a typo."""
     result = _run_adv(
-        monkeypatch, {"field": "title", "operation": "contains", "value": "x"}
+        monkeypatch, [{"field": "Title", "operation": "contains", "value": "x"}]
     )
-    assert "Unknown field" not in result
-    assert "No items found" in result
+    assert result.startswith("Error: Unknown field 'Title' in condition 1")
+    assert "Did you mean: title" in result

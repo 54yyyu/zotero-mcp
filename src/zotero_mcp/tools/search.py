@@ -884,9 +884,10 @@ def _unknown_condition_field_error(
     hint = f" Did you mean: {', '.join(close)}?" if close else ""
     return (
         f"Error: Unknown field '{field}' in condition {index}.{hint} "
-        "Field names are case-sensitive Zotero field names (title, creator, "
-        "date, year, tag, collection, itemType, dateAdded, dateModified, "
-        "publicationTitle, abstractNote, extra, publisher, ...). "
+        "Field names are Zotero field names and case-sensitive (title, date, "
+        "itemType, dateAdded, dateModified, publicationTitle, abstractNote, "
+        "extra, publisher, ...); the aliases creator, tag, collection and year "
+        "match in any case. "
         f"Supported operations: {', '.join(sorted(valid_operations))}"
     )
 
@@ -929,7 +930,7 @@ def _unknown_condition_field_error(
 )
 @with_zotero_api_lock
 def advanced_search(
-    conditions: list[dict[str, str]] | dict[str, str] | str,
+    conditions: list[dict[str, str]] | str,
     join_mode: Literal["all", "any"] = "all",
     sort_by: str | None = None,
     sort_direction: Literal["asc", "desc"] = "asc",
@@ -984,11 +985,6 @@ def advanced_search(
                     "Error: conditions must be valid JSON when provided as a string "
                     f"({parse_error})"
                 )
-
-        # One condition passed as a bare object is one condition, not a type
-        # error.
-        if isinstance(conditions, dict):
-            conditions = [conditions]
 
         if not isinstance(conditions, list) or not conditions:
             return "Error: No search conditions provided"
