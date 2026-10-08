@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_advanced_search` rejects a field name it does not know.** A typo such as `titel` was a valid-looking condition that matched nothing, so the tool answered "No items found matching the search criteria" and the mistake went unnoticed. It now returns an error naming the field, up to three close matches (`Did you mean: title?`) and the supported operations.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added
