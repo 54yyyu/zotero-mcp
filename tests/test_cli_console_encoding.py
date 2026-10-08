@@ -34,4 +34,4 @@ def test_entry_points_survive_a_console_that_cannot_encode(monkeypatch, entry, a
     with patch("sys.argv", argv), pytest.raises(SystemExit):
         entry()
     print("\U0001f527 Installation Details: → 论文")  # must not raise
-    assert raw.getvalue().endswith(b"Installation Details: ? ??\n")
+    assert raw.getvalue().rstrip(b"\r\n").endswith(b"Installation Details: ? ??")  # Windows writes \r\n
