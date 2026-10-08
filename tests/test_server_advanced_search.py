@@ -82,7 +82,7 @@ def test_advanced_search_rejects_unknown_operation(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Collection conditions (#418)
+# Condition shapes
 # ---------------------------------------------------------------------------
 
 def _run_conditions(monkeypatch, conditions, **kwargs):
@@ -112,6 +112,10 @@ def test_advanced_search_still_rejects_an_empty_object(monkeypatch):
     result = _run_conditions(monkeypatch, {})
     assert result.startswith("Error:")
 
+
+# ---------------------------------------------------------------------------
+# Collection conditions (#418)
+# ---------------------------------------------------------------------------
 
 def _collection_items():
     """Two items in the target collection, one outside it, one in none."""
