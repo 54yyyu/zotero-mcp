@@ -135,6 +135,13 @@ def claude_config_candidates() -> list:
         localappdata = os.environ.get("LOCALAPPDATA")
         if localappdata:
             config_paths.append(Path(localappdata) / "Claude-3p" / CLAUDE_CONFIG_FILENAME)
+            # The Store build redirects %APPDATA%\\Claude into its package
+            # folder (#26); a file written to the real %APPDATA% is never read.
+            config_paths.extend(
+                Path(localappdata).glob(
+                    f"Packages/Claude_*/LocalCache/Roaming/Claude/{CLAUDE_CONFIG_FILENAME}"
+                )
+            )
 
     # Linux
     else:
@@ -506,6 +513,10 @@ def setup_semantic_search(
             "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
             "candidate_multiplier": 3,
         })
+    # Setup has no prompt for it; dropping it would point the index back at
+    # the default path (#617).
+    if existing_semantic_config and existing_semantic_config.get("persist_directory"):
+        config["persist_directory"] = existing_semantic_config["persist_directory"]
     if existing_semantic_config and existing_semantic_config.get("chunking"):
         config["chunking"] = existing_semantic_config["chunking"]
     else:

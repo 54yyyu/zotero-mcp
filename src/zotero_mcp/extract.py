@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import sys
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -431,10 +433,101 @@ def _html_converter():
     return _SnapshotConverter(heading_style="ATX")
 
 
+#: A run of four or more empty (or ``---``) table cells is layout scaffolding.
+_EMPTY_CELL_RUN = re.compile(r"\|(?:[ \t]*\|){4,}")
+_SEPARATOR_RUN = re.compile(r"\|(?: ?-{3,} ?\|){4,}")
+#: A separator inside a line with other cells never occurs in a real table row.
+_NESTED_SEPARATOR = re.compile(r"\|(?: ?-{3,} ?\|){2,}")
+
+
+def _collapse_table_scaffolding(markdown: str) -> str:
+    """Shorten the runs of empty table cells markdownify emits for layout tables.
+
+    ``html.parser`` does not close an unterminated ``<td>``/``<tr>``, so a
+    snapshot whose table omits those end tags (legal HTML) nests every row
+    inside the previous one, and markdownify then prints, for each nested
+    row, a blank header line and a ``| --- |`` line as wide as the whole
+    table. On a 74-row statistics table that was 200K of ``|  |  |`` and
+    ``| --- | --- |`` around 17K of data, with a single line of 125K
+    characters.
+
+    Only that scaffolding is shortened, so real tables keep their shape: a
+    line of nothing but empty cells, a separator line under such a blank
+    header, and a line that carries a separator in the middle of its cells.
+    A header with text keeps its separator, and a data row keeps its empty
+    cells. Every cell with text is kept.
+    """
+    out = []
+    for line in markdown.split("\n"):
+        if line.startswith("|"):
+            stripped = line.rstrip()
+            if _EMPTY_CELL_RUN.fullmatch(stripped):
+                line = "|  |"
+            elif _SEPARATOR_RUN.fullmatch(stripped):
+                if out and out[-1] == "|  |":
+                    line = "| --- |"
+            elif _NESTED_SEPARATOR.search(line):
+                line = _SEPARATOR_RUN.sub("| --- |", _EMPTY_CELL_RUN.sub("|  |", line))
+            if line in ("|  |", "| --- |") and out and out[-1] == line:
+                continue
+        out.append(line)
+    return "\n".join(out)
+#: Recursion limit for a retry after a snapshot overflowed the default one.
+#: markdownify recurses once or twice per nesting level, and html.parser does
+#: not close unterminated tags, so a long page of ``<li>`` or ``<td>`` without
+#: end tags nests hundreds of levels deep. 5000 covers DOM depths up to about
+#: 2000; a page nested deeper than that is generated markup rather than text
+#: and keeps failing over to the caller's fallback instead of ballooning (one
+#: 3,830-level snapshot converts to 29M characters in 18 s and 1.5 GB).
+_DEEP_RECURSION_LIMIT = 5000
+#: Stack for the retry thread. CPython before 3.11 spends C stack on every
+#: Python call and worker threads can have as little as 512 KB, so the retry
+#: gets its own rather than risking a crash at the raised limit.
+_DEEP_STACK_BYTES = 64 * 1024 * 1024
+_deep_lock = threading.Lock()
+
+
+def _convert_html(text: str) -> str:
+    """Markdown for ``text``, retrying once with more stack for deep pages."""
+    try:
+        return _html_converter().convert(text)
+    except RecursionError as first:
+        result: dict[str, object] = {}
+
+        def convert() -> None:
+            try:
+                result["text"] = _html_converter().convert(text)
+            except BaseException as exc:  # handed back to the caller's thread
+                result["error"] = exc
+
+        # The recursion limit and the default thread stack size are both
+        # process-wide, so one deep conversion at a time, restored afterwards.
+        with _deep_lock:
+            limit = sys.getrecursionlimit()
+            stack = threading.stack_size()
+            try:
+                sys.setrecursionlimit(max(limit, _DEEP_RECURSION_LIMIT))
+                try:
+                    threading.stack_size(_DEEP_STACK_BYTES)
+                    worker = threading.Thread(target=convert, daemon=True)
+                    worker.start()
+                except (RuntimeError, ValueError):
+                    raise first from None
+                finally:
+                    threading.stack_size(stack)
+                worker.join()
+            finally:
+                sys.setrecursionlimit(limit)
+        if "error" in result:
+            raise result["error"]  # type: ignore[misc]
+        return result["text"]  # type: ignore[return-value]
+
+
 def extract_html(file_path: str | Path) -> ExtractedDoc:
     """Convert an HTML snapshot to Markdown, without embedded image data."""
+    markdown = _convert_html(_read_text(file_path)).strip()
     return _doc_from_pages(
-        [_html_converter().convert(_read_text(file_path)).strip()],
+        [_collapse_table_scaffolding(markdown)],
         page_count=1,
         source="html",
     )

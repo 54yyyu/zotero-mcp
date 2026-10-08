@@ -12,7 +12,10 @@ from zotero_mcp.tools import annotations
 
 
 class FakePage:
-    """Minimal fitz page stub with geometry and optional label."""
+    """Minimal fitz page stub with geometry and optional label.
+
+    It has no text, so sort indexes get character offset 0.
+    """
 
     def __init__(self, width=600, height=800, label="1", transformation_matrix=None):
         self.rect = types.SimpleNamespace(width=width, height=height)
@@ -92,7 +95,7 @@ def test_create_area_annotation_happy_path(monkeypatch, fake_zot):
     assert "annotationText" not in created
     assert created["annotationComment"] == "Figure detail"
     assert created["annotationPageLabel"] == "7"
-    assert created["annotationSortIndex"] == "00000|000320|00060"
+    assert created["annotationSortIndex"] == "00000|000000|00160"
 
     position = json.loads(created["annotationPosition"])
     assert position == {
@@ -144,7 +147,7 @@ def test_create_area_annotation_offset_mediabox(monkeypatch, fake_zot):
     # y -> 840.2 - y.
     (rect,) = position["rects"]
     assert rect == pytest.approx([101.43, 363.98, 280.02, 681.46], abs=1e-4)
-    assert created["annotationSortIndex"] == "00000|000363|00101"
+    assert created["annotationSortIndex"] == "00000|000000|00112"
 
 
 @pytest.mark.parametrize(
@@ -241,7 +244,7 @@ def test_create_annotation_rect_creates_area_annotation(monkeypatch, fake_zot):
     assert "Successfully created area annotation" in result
     created = fake_zot.created[0]
     assert created["annotationType"] == "image"
-    assert created["annotationSortIndex"] == "00000|000320|00060"
+    assert created["annotationSortIndex"] == "00000|000000|00160"
     assert json.loads(created["annotationPosition"]) == {
         "pageIndex": 0,
         "rects": [[60.0, 320.0, 240.0, 640.0]],

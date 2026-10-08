@@ -110,6 +110,22 @@ zotero-mcp db-status
 
 How much of each PDF is extracted, and which attachment is read when an item has several, is set in [Text extraction settings](configuration.md#text-extraction-settings).
 
+### Index location
+
+The index is stored in `~/.config/zotero-mcp/chroma_db`. To keep it elsewhere, set `persist_directory` in `~/.config/zotero-mcp/config.json`:
+
+```json
+{
+  "semantic_search": {
+    "persist_directory": "D:/zotero-mcp/chroma_db"
+  }
+}
+```
+
+On Windows the path must be ASCII-only. If your user folder name has other characters (for example `C:\Users\王林澜`), ChromaDB writes part of the index to the wrong place once it holds about 1,000 items, and every later search fails with `Error loading hnsw index`. Point `persist_directory` at an ASCII path and run `zotero-mcp update-db --force-rebuild`.
+
+`zotero-mcp setup` keeps this setting. Moving it starts an empty index unless you move the old `chroma_db` folder there too.
+
 ## Example queries
 
 In your AI assistant:
