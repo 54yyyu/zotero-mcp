@@ -876,7 +876,7 @@ def search_by_citation_key(
 )
 @with_zotero_api_lock
 def advanced_search(
-    conditions: list[dict[str, str]] | str,
+    conditions: list[dict[str, str]] | dict[str, str] | str,
     join_mode: Literal["all", "any"] = "all",
     sort_by: str | None = None,
     sort_direction: Literal["asc", "desc"] = "asc",
@@ -931,6 +931,13 @@ def advanced_search(
                     "Error: conditions must be valid JSON when provided as a string "
                     f"({parse_error})"
                 )
+
+        # One condition sent as a bare object, rather than a list of one, is
+        # a shape models produce often. Without `dict` on the annotation it was
+        # a raw pydantic list_type error at the boundary, and as a JSON string
+        # it reached here as "No search conditions provided".
+        if isinstance(conditions, dict) and conditions:
+            conditions = [conditions]
 
         if not isinstance(conditions, list) or not conditions:
             return "Error: No search conditions provided"

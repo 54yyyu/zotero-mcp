@@ -85,6 +85,34 @@ def test_advanced_search_rejects_unknown_operation(monkeypatch):
 # Collection conditions (#418)
 # ---------------------------------------------------------------------------
 
+def _run_conditions(monkeypatch, conditions, **kwargs):
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: FakeZotero([]))
+    return server.advanced_search(conditions=conditions, ctx=DummyContext(), **kwargs)
+
+
+def test_advanced_search_accepts_a_single_condition_object(monkeypatch):
+    """A bare condition object is one condition, not "No search conditions
+    provided"."""
+    result = _run_conditions(
+        monkeypatch, {"field": "title", "operation": "contains", "value": "x"}
+    )
+    assert "No search conditions provided" not in result
+    assert "No items found" in result
+
+
+def test_advanced_search_accepts_a_single_condition_object_as_json(monkeypatch):
+    result = _run_conditions(
+        monkeypatch, '{"field": "title", "operation": "contains", "value": "x"}'
+    )
+    assert "No search conditions provided" not in result
+    assert "No items found" in result
+
+
+def test_advanced_search_still_rejects_an_empty_object(monkeypatch):
+    result = _run_conditions(monkeypatch, {})
+    assert result.startswith("Error:")
+
+
 def _collection_items():
     """Two items in the target collection, one outside it, one in none."""
     return [

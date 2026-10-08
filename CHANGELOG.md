@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zotero_advanced_search` accepts a single condition sent as a bare object.** `{"field": "title", "operation": "contains", "value": "x"}` instead of a list of one was rejected with a raw pydantic "Input should be a valid list" error, and the same object as a JSON string answered "No search conditions provided". It is now read as a one-condition list. An empty object is still an error.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added
