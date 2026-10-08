@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The literature-review and contradicting-evidence prompts fall back to `zotero_search_items` when semantic search is not usable** (#572). `zotero_literature_review` and `zotero_find_contradicting_evidence` always told the model to call `zotero_semantic_search`, which fails without the `[semantic]` extra and is absent when a toolset spec leaves it out. They now check at render time (ChromaDB found with `find_spec`, not imported, and the tool's toolset enabled) and otherwise name `zotero_search_items` with `qmode='everything'`, one key term per query. With semantic search usable the text is unchanged.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added
