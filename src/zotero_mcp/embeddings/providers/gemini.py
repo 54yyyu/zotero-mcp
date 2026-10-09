@@ -172,9 +172,12 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
         if self._is_v2():
             # v2 models: task instruction already embedded in the prompt text
             # by _prepare_document/_prepare_query above; no config= argument.
+            # One Content per text: google-genai >= 1.72 folds a list of plain
+            # strings into a single Content for gemini-embedding-2, and the
+            # model returns one aggregated vector for it (#697).
             response = self.client.models.embed_content(
                 model=self.model_name,
-                contents=texts,
+                contents=[self.types.Content(parts=[self.types.Part(text=t)]) for t in texts],
             )
         elif is_query:
             response = self.client.models.embed_content(
