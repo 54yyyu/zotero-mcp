@@ -256,6 +256,11 @@ The `sse` transport is still accepted but deprecated.
 
 ## Available Tools
 
+For web discovery alongside your library, try the runnable
+[Parallel Search MCP example](../examples/parallel-search/README.md). It pairs
+Zotero's tools with free web search and page fetching in a FastMCP client,
+without a Parallel account or API key.
+
 The full, current tool list is in [Tools](tools.md). Search, metadata, full text, collections, tags, notes, annotations, PDF reading, adding and editing items, and semantic search are all covered; some groups are opt-in via `ZOTERO_MCP_TOOLSETS`.
 
 ## Example Queries

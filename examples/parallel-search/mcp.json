@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "zotero": {
+      "command": "zotero-mcp",
+      "args": ["serve", "--transport", "stdio"],
+      "env": {"ZOTERO_LOCAL": "true"}
+    },
+    "parallel": {
+      "url": "https://search.parallel.ai/mcp",
+      "transport": "http",
+      "headers": {
+        "User-Agent": "zotero-mcp-parallel-example/1.0 (https://github.com/54yyyu/zotero-mcp)"
+      }
+    }
+  }
+}

@@ -17,6 +17,7 @@ venv/
 env/
 .env
 .venv/
+.venv-parallel/
 
 # Testing
 .pytest_cache/
