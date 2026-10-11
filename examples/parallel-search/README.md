@@ -41,7 +41,7 @@ on your PATH, set `command` to its absolute path.
 
 FastMCP prefixes tool names with the server name: Parallel exposes
 `parallel_web_search` and `parallel_web_fetch`; Zotero exposes names such as
-`zotero_zotero_search_items` and `zotero_zotero_add_by_doi`. Use `available_tools`
+`zotero_zotero_search_items` and `zotero_zotero_add_item`. Use `available_tools`
 to see the enabled tools. In your own FastMCP client, use `list_tools()` to inspect
 each tool's `inputSchema` before calling it.
 
