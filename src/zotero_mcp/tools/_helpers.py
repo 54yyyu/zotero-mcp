@@ -1263,6 +1263,40 @@ def _title_search_query(title):
     return " ".join(cleaned.split()) or None
 
 
+def _sqlite_doi_candidate_keys(doi, ctx=None) -> list[str] | None:
+    """Keys of items whose DOI field contains `doi`, read from zotero.sqlite.
+
+    None means "cannot answer here" and the caller falls back to the API
+    search. That fallback is a ``qmode='everything'`` quick search, which the
+    Web API needs because it cannot search the DOI field — but against the
+    local API it is a full-text scan of the whole library, run once per DOI.
+    On a large library a batch of 11 DOIs held Zotero at 100% CPU for
+    minutes. In local mode the DOI is a column we can read directly.
+
+    ``contains`` rather than ``is`` so a stored ``https://doi.org/…`` form is
+    still a candidate; the caller's exact normalized comparison decides.
+    """
+    if not _utils.is_local_mode() or _utils.get_search_backend() != "sqlite":
+        return None
+    from zotero_mcp.library import _sqlite_reader
+
+    try:
+        reader = _sqlite_reader()
+        if reader is None:
+            return None
+        rows = reader.advanced_search_sql(
+            [{"field": "DOI", "operation": "contains", "value": doi}],
+            group_id=_client.get_active_group_id(),
+        )
+    except Exception as e:
+        if ctx is not None:
+            ctx.warning(f"SQLite DOI lookup failed (using the API search): {e}")
+        return None
+    if rows is None:
+        return None
+    return [row["key"] for row in rows]
+
+
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
                         title=None, ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
@@ -1399,6 +1433,15 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             if _matches(data):
                 matches.append(item)
         return matches
+
+    if doi:
+        keys = _sqlite_doi_candidate_keys(doi, ctx)
+        if keys is not None:
+            # The DOI field itself was searched, so a miss is final: neither
+            # pass below could confirm anything this lookup did not find.
+            # Candidates are fetched through ``zot`` so the versions returned
+            # are the ones the write path will be checked against.
+            return _confirm(zot.item(k) for k in keys)
 
     matches = _confirm(_search(query, "everything"))
     if matches:
