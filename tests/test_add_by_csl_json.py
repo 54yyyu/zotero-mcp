@@ -173,6 +173,22 @@ class TestOaPdfAttempt:
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
 
+    def test_page_range_reaches_the_preview_check(self, monkeypatch, dummy_ctx):
+        """CSL-JSON brings no CrossRef message, so the item's own pages field
+        is what tells the cascade how long the article is."""
+        _patch_hybrid(monkeypatch)
+        seen = {}
+
+        def stub(write_zot, item_key, doi, ctx, **kwargs):
+            seen.update(kwargs)
+            return "stubbed"
+
+        monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
+
+        write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
+
+        assert seen["pages"] == "1-10"
+
     def test_no_doi_no_attempt(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         called = {"count": 0}

@@ -5466,6 +5466,7 @@ def _create_and_attach_batch(
                         crossref_metadata=(crossref_by_doi or {}).get(doi),
                         attach_mode=attach_mode,
                         page_pdf_url=(page_pdf_by_doi or {}).get(doi),
+                        pages=item_data.get("pages"),
                     )
                 except _helpers.OaPdfRequiredError as e:
                     error = (

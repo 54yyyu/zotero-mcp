@@ -1141,7 +1141,7 @@ class TestCrossrefMetadataReachesTheCascade:
         downloaded = []
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._download_and_attach_pdf",
-            lambda zot, key, url, doi, ctx: downloaded.append(url) or "",
+            lambda zot, key, url, doi, ctx, expected_pages=None: downloaded.append(url) or "",
         )
 
         result = write.add_item(

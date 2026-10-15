@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The open-access PDF cascade asks OpenAlex for repository copies.** When `zotero_add_item` or a batch import attaches a PDF for a DOI, it now tries every `pdf_url` OpenAlex lists after Unpaywall and before the publisher's `citation_pdf_url`, open-access locations first. OpenAlex knows institutional repository copies that Unpaywall does not count as open access. For Maraun 2013 in J. Climate, DOI 10.1175/jcli-d-12-00821.1, Unpaywall has nothing and the AMS page offers a 2-page preview, while OpenAlex lists the full 7-page PDF in the GEOMAR repository. A URL already tried under one source is not downloaded again under the next.
 
+### Fixed
+
+- **A publisher's preview PDF is no longer attached as the paper.** Some `citation_pdf_url`s serve the first page or two of an article as a real PDF, which passed the content-type, size and `%PDF` checks. When the item has a page range, from its `pages` field or CrossRef's `page`, a download with fewer than 60% of those pages is now skipped before any upload and the cascade moves on to the next source. The AMS preview for 10.1175/jcli-d-12-00821.1 has 2 pages against a range of 2137-2143. Items without a usable range, such as an article number or a single page, are not checked, and neither is a file the page counter cannot read.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added
