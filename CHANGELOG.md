@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A startup semantic update no longer holds up the MCP handshake** (#706). With `auto_update: true` and `update_frequency: "startup"` (or a due `daily` run), the server ran the update in a worker thread of its own process, where native calls that hold the GIL (ChromaDB, loading or downloading the embedding model) and, on Windows, DLL loads stall the event loop as well: Claude Desktop's `initialize` went unanswered until the update finished, timed out, and shut the server down. The update now runs as a child `zotero-mcp update-db` process (with `--fulltext` in local mode), its output relayed to the server's log, and the server answers at once. The update lock still keeps it from racing a manual `update-db` or a second server, and an update unfinished at shutdown is stopped and resumes on the next start. Reported by @marius-ne.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added
