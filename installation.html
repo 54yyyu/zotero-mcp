@@ -21,7 +21,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.14.1</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.15.0</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./">Overview</a>
       <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
@@ -40,7 +40,7 @@
 <main id="main">
   <div class="doc-hero">
     <div class="wrap">
-      <span class="kicker">Guide &middot; v0.14.1</span>
+      <span class="kicker">Guide &middot; v0.15.0</span>
       <h1>Install and set up</h1>
       <p>Install the package, let your AI app reach Zotero, choose local or web access, then connect your client. Most people are done after step 2 and <code>zotero-mcp setup</code>.</p>
     </div>
@@ -56,6 +56,7 @@
         <li><a href="#connection">Choose a connection</a></li>
         <li><a href="#clients">Connect a client</a></li>
         <li><a href="#skill">Agent skill</a></li>
+        <li><a href="#agent">Zotero Agent plugin</a></li>
         <li><a href="#semantic">Semantic search</a></li>
         <li><a href="#docker">Docker</a></li>
         <li><a href="#updating">Updating</a></li>
@@ -91,7 +92,7 @@
           <thead><tr><th>Extra</th><th>Adds</th></tr></thead>
           <tbody>
             <tr><td><code>semantic</code></td><td>Semantic search: ChromaDB, sentence-transformers, OpenAI and Gemini embeddings</td></tr>
-            <tr><td><code>pdf</code></td><td>PDF outlines and figure detection (PyMuPDF), EPUB annotation support</td></tr>
+            <tr><td><code>pdf</code></td><td>PDF outlines, page layout and page images (PyMuPDF), EPUB annotation support</td></tr>
             <tr><td><code>scite</code></td><td>Scite citation counts and retraction alerts, no account needed</td></tr>
             <tr><td><code>all</code></td><td>All of the above</td></tr>
           </tbody>
@@ -148,7 +149,7 @@
 <span class="line">    }</span>
 <span class="line">  }</span>
 <span class="line">}</span></pre></div>
-        <p>On macOS the file is at <code>~/Library/Application Support/Claude/</code>, on Windows at <code>%APPDATA%\Claude\</code>. Restart Claude Desktop after editing it. If Claude can&rsquo;t find the <code>zotero-mcp</code> command, use the full path instead: <code>zotero-mcp setup-info</code> prints it.</p>
+        <p>On macOS the file is at <code>~/Library/Application Support/Claude/</code>, on Windows at <code>%APPDATA%\Claude\</code>. With the Microsoft Store build of Claude Desktop the real file is under <code>%LOCALAPPDATA%\<wbr>Packages\<wbr>Claude_&lt;id&gt;\<wbr>LocalCache\<wbr>Roaming\<wbr>Claude\</code>, and <code>setup</code> finds it. Restart Claude Desktop after editing it. If Claude can&rsquo;t find the <code>zotero-mcp</code> command, use the full path instead: <code>zotero-mcp setup-info</code> prints it.</p>
 
         <h3 id="claude-code">Claude Code</h3>
         <p>Add the same <code>mcpServers</code> entry to <code>~/.claude.json</code>, then run <code>/mcp</code> to check that the server is connected. Claude Code can also run commands, so the <a href="#skill">agent skill</a> is usually the cheaper option in context. Environment variables set in the shell where you run <code>claude</code> override the config values.</p>
@@ -156,7 +157,8 @@
         <h3 id="chatgpt">ChatGPT</h3>
         <p>ChatGPT connects to MCP servers over the web, so it needs Developer Mode and a tunnel (such as ngrok) to a server running on your computer.</p>
         <div class="code"><pre><span class="line"><span class="pr">$ </span>zotero-mcp serve --transport streamable-http --port 8000</span>
-<span class="line"><span class="pr">$ </span>ngrok http 8000</span></pre></div>
+<span class="line"><span class="pr">$ </span>ngrok http 8000 --host-header=rewrite</span></pre></div>
+        <p>The server only accepts requests addressed to localhost, which protects it from DNS rebinding. <code>--host-header=rewrite</code> makes ngrok send that; otherwise list the tunnel&rsquo;s hostname in <code>FASTMCP_HTTP_ALLOWED_HOSTS</code>, for example <code>'["abc.ngrok-free.app"]'</code>. A <code>421 Misdirected Request</code> means neither is set.</p>
         <p>In ChatGPT, open Settings &rarr; Connectors, turn on Developer Mode under Advanced, and create a connector pointing at <code>https://&lt;your-tunnel&gt;/mcp</code>. Over HTTP, the server adds the <code>search</code> and <code>fetch</code> tools that ChatGPT deep research needs.</p>
         <div class="callout c-red">
           <p><strong>The tunnel URL works like a password.</strong> <code>zotero-mcp serve</code> has no authentication of its own, so anyone with the URL can use every tool, including writes if credentials are configured. Keep the URL private, stop the tunnel when you&rsquo;re not using it, and leave <code>--host</code> at its default.</p>
@@ -201,7 +203,15 @@
             <tr><td>Gemini CLI</td><td><code>GEMINI.md</code> or <code>.gemini/</code></td><td>A short pointer block in <code>GEMINI.md</code></td></tr>
           </tbody>
         </table></div>
-        <p>It never overwrites your changes without <code>--force</code>. In shared files like <code>AGENTS.md</code>, it only edits the text between its own markers. The skill costs 98 tokens until the agent uses it. An MCP server with the default tools costs 13,448 on every request.</p>
+        <p>It never overwrites your changes without <code>--force</code>. In shared files like <code>AGENTS.md</code>, it only edits the text between its own markers. The skill costs 98 tokens until the agent uses it. An MCP server with the default tools costs 16,815 on every request.</p>
+      </section>
+
+      <section id="agent">
+        <h2>Zotero Agent plugin</h2>
+        <p>A chat panel inside Zotero, run by your own Claude Code, Codex or pi. You need Zotero 7 or newer, <code>zotero-cli</code> on your PATH (step 1), Node.js, and an agent signed in once in a terminal. It works on macOS, Linux and Windows.</p>
+        <div class="code"><pre><span class="line"><span class="pr">$ </span>zotero-cli plugin            <span class="cm"># where the .xpi is, and how to install it</span></span>
+<span class="line"><span class="pr">$ </span>zotero-cli plugin --reveal   <span class="cm"># also show it in your file manager</span></span></pre></div>
+        <p>In Zotero, open <strong>Tools &rarr; Plugins</strong>, click the gear, choose <strong>Install Plugin From File</strong>, and pick that file. You can also <a href="https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi">download zotero-agent.xpi</a> from the latest release. After that, Zotero updates the plugin itself. The first time you open the panel, it checks the local API, write access, <code>zotero-cli</code>, Node.js and your agent, and offers a fix where it can. See <a href="agent/">Zotero Agent</a> for what it does.</p>
       </section>
 
       <section id="semantic">
@@ -215,12 +225,12 @@
           <thead><tr><th>Model</th><th>Notes</th></tr></thead>
           <tbody>
             <tr><td>Default (all-MiniLM-L6-v2)</td><td>Free and runs locally</td></tr>
-            <tr><td>OpenAI</td><td><code>text-embedding-3-small</code> or <code>-large</code>. Can use the Batch API for large libraries.</td></tr>
+            <tr><td>OpenAI</td><td><code>text-embedding-3-small</code> or <code>-large</code>. Can use the Batch API for large libraries. With <code>OPENAI_BASE_URL</code>, any OpenAI-compatible API, including Voyage AI.</td></tr>
             <tr><td>Gemini</td><td><code>gemini-embedding-001</code>. Can use the Batch API.</td></tr>
             <tr><td>Ollama</td><td>Runs locally, for example <code>nomic-embed-text</code> or <code>bge-m3</code></td></tr>
           </tbody>
         </table></div>
-        <p>The index can update manually, every time the server starts, daily, or every N days. PDFs are parsed with pdf-inspector, which keeps the document&rsquo;s headings. Full text can optionally be split into passages (<code>semantic_search.chunking</code>). If you change embedding models, rebuild with <code>zotero-mcp update-db --force-rebuild</code>. With OpenAI or Gemini a rebuild is billed again, so try a plain <code>update-db</code> first.</p>
+        <p>The index can update manually, every time the server starts, daily, or every N days. PDFs are parsed with pdf-inspector, which keeps the document&rsquo;s headings. Full text can optionally be split into passages (<code>semantic_search.chunking</code>). The index lives in <code>~/.config/zotero-mcp/chroma_db</code>; set <code>semantic_search.persist_directory</code> in <code>config.json</code> to keep it elsewhere. On Windows that path must be ASCII-only, so move it if your user folder name has other characters. If you change embedding models, rebuild with <code>zotero-mcp update-db --force-rebuild</code>. With OpenAI or Gemini a rebuild is billed again, so try a plain <code>update-db</code> first.</p>
       </section>
 
       <section id="docker">
@@ -255,7 +265,11 @@
         <h4>Semantic search returns nothing</h4>
         <p>Build the index with <code>zotero-mcp update-db</code> and check it with <code>zotero-mcp db-status</code>. For better results, index full text with <code>--fulltext</code>.</p>
         <h4>Errors after changing embedding models or install method</h4>
-        <p><code>zotero-mcp update-db --force-rebuild</code> recreates the index with your current model. Back up <code>~/.config/zotero-mcp/chroma_db/</code> first.</p>
+        <p><code>zotero-mcp update-db --force-rebuild</code> recreates the index with your current model. Back up the index folder first (<code>~/.config/zotero-mcp/chroma_db/</code>, or your <code>persist_directory</code>).</p>
+        <h4>Claude Desktop closes the server at startup</h4>
+        <p>Update to 0.15.0 or later. Before that, with the index set to update when the server starts, the update could hold up Claude Desktop&rsquo;s handshake until it timed out. It now runs as a separate process.</p>
+        <h4><code>Error loading hnsw index</code> on Windows</h4>
+        <p>Your user folder name has non-ASCII characters. Move the index to an ASCII path with <code>semantic_search.persist_directory</code>, then run <code>zotero-mcp update-db --force-rebuild</code>.</p>
         <p>Still stuck? Ask in <a href="https://github.com/54yyyu/zotero-mcp/discussions">Discussions</a> or on <a href="https://discord.gg/BvgjbcBUqg">Discord</a>, or <a href="https://github.com/54yyyu/zotero-mcp/issues">open an issue</a>.</p>
       </section>
     </article>
@@ -264,7 +278,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.14.1 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.15.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>

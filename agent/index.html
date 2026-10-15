@@ -28,7 +28,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../css/styles.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Zotero Agent","applicationCategory":"UtilitiesApplication","operatingSystem":"Zotero 7 or newer","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT","url":"https://stevenyuyy.com/zotero-mcp/agent/","downloadUrl":"https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi","author":{"@type":"Person","name":"Steven Yu","url":"https://github.com/54yyyu"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Zotero Agent","applicationCategory":"UtilitiesApplication","operatingSystem":"Zotero 7 or newer","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://www.gnu.org/licenses/agpl-3.0.html","url":"https://stevenyuyy.com/zotero-mcp/agent/","downloadUrl":"https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi","author":{"@type":"Person","name":"Steven Yu","url":"https://github.com/54yyyu"}}</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -36,7 +36,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="../"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.14.1</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.15.0</a>
     <nav class="nav-links" aria-label="Main">
       <a href="../">Overview</a>
       <a href="./" aria-current="page">Zotero Agent</a>
@@ -66,7 +66,7 @@
           <a class="btn btn-accent" href="https://github.com/54yyyu/zotero-mcp/releases/latest/download/zotero-agent.xpi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>Download zotero-agent.xpi</a>
           <a class="btn btn-ghost" href="#install">How to install</a>
         </div>
-        <div class="hero-meta"><span>Free and MIT licensed</span><span>No extra API key</span><span>Zotero 7 or newer</span><span>Updates itself</span></div>
+        <div class="hero-meta"><span>Free and open source</span><span>No extra API key</span><span>Zotero 7 or newer</span><span>Updates itself</span></div>
       </div>
       <div class="frame reveal" data-video>
         <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>Zotero &middot; Attention Is All You Need</span></div>
@@ -272,8 +272,9 @@
         <details><summary>Can it change my library?</summary><div><p>Yes, through <code>zotero-cli</code>: notes, annotations, tags, collections, new items. On Zotero 10, run <code>zotero-mcp authorize-local</code> once to allow writes. Permission requests appear as cards in the chat, and a mode setting chooses between asking every time and allowing everything.</p></div></details>
         <details><summary>Does it slow Zotero down?</summary><div><p>No. At startup it adds a toolbar button and a shortcut; the chat itself loads the first time you open the panel, and the panel is closed by default.</p></div></details>
         <details><summary>Can I keep going in a terminal?</summary><div><p>Yes. Every chat is a normal agent session in a folder (by default <code>~/Documents/Zotero-Agent</code>). In the history list, <strong>Copy terminal command</strong> gives you the command to resume it, for example <code>claude --resume</code> with the session id.</p></div></details>
+        <details><summary>Does it work on Windows?</summary><div><p>Yes, since 0.15.0: the plugin finds Claude Code, Codex and pi on your PATH and starts them the Windows way. Translating with pi is not available on Windows yet. Windows support is new, so if something fails, please say so on <a href="https://github.com/54yyyu/zotero-mcp/issues/700">#700</a>.</p></div></details>
         <details><summary>How does it update?</summary><div><p>Zotero checks for new versions of the plugin and installs them, like any other plugin.</p></div></details>
-        <details><summary>Is it free?</summary><div><p>Yes, and MIT licensed, like the rest of Zotero MCP. Your agent&rsquo;s usage counts against your own plan or key.</p></div></details>
+        <details><summary>Is it free?</summary><div><p>Yes. The plugin is AGPL-3.0, the license Zotero itself uses; the MCP server and <code>zotero-cli</code> stay MIT. Your agent&rsquo;s usage counts against your own plan or key.</p></div></details>
         <details><summary>Something is not working</summary><div><p>The dot at the top of the panel opens a status page that says what is missing. If Zotero has been running for days and the panel says its local API is not responding, restart Zotero. More in the <a href="https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md#troubleshooting">plugin guide</a>, or ask on <a href="https://discord.gg/BvgjbcBUqg">Discord</a>.</p></div></details>
       </div>
     </div>
@@ -305,7 +306,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.14.1 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.15.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>

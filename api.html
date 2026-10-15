@@ -21,7 +21,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.14.1</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.15.0</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./">Overview</a>
       <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
@@ -40,7 +40,7 @@
 <main id="main">
   <div class="doc-hero">
     <div class="wrap">
-      <span class="kicker">Reference &middot; v0.14.1</span>
+      <span class="kicker">Reference &middot; v0.15.0</span>
       <h1>Tools, settings, and commands</h1>
       <p>Everything the MCP server and <code>zotero-cli</code> offer. Tools marked with a group name only appear when that group is turned on.</p>
     </div>
@@ -71,9 +71,9 @@
         <div class="table-wrap"><table>
           <thead><tr><th>Value</th><th>Effect</th></tr></thead>
           <tbody>
-            <tr><td><em>unset</em></td><td>Default: core tools plus <code>libraries</code>, <code>search-admin</code>, <code>pdf-geometry</code></td></tr>
+            <tr><td><em>unset</em></td><td>Default: core tools plus <code>semantic</code>, <code>libraries</code>, <code>search-admin</code>, <code>pdf-geometry</code></td></tr>
             <tr><td><code>all</code></td><td>Every tool</td></tr>
-            <tr><td><code>none</code></td><td>Core tools only</td></tr>
+            <tr><td><code>none</code></td><td>Core tools only, without semantic search. <code>none,semantic</code> adds it back.</td></tr>
             <tr><td><code>scite,feeds</code></td><td>Core plus the named groups</td></tr>
             <tr><td><code>all,-scite</code></td><td>Everything except the named groups</td></tr>
           </tbody>
@@ -81,8 +81,9 @@
         <div class="table-wrap"><table>
           <thead><tr><th>Group</th><th>Default</th><th>Contents</th></tr></thead>
           <tbody>
+            <tr><td><code>semantic</code></td><td>on</td><td><code>zotero_semantic_search</code>. Needs <code>[semantic]</code>.</td></tr>
             <tr><td><code>libraries</code></td><td>on</td><td>List and switch between personal and group libraries</td></tr>
-            <tr><td><code>search-admin</code></td><td>on</td><td>Build and inspect the semantic search index</td></tr>
+            <tr><td><code>search-admin</code></td><td>on</td><td>Build and inspect the semantic search index. Needs <code>[semantic]</code>.</td></tr>
             <tr><td><code>pdf-geometry</code></td><td>on</td><td>Page layout and PDF outline</td></tr>
             <tr><td><code>scite</code></td><td>off</td><td>Scite citation counts and retraction checks</td></tr>
             <tr><td><code>duplicates</code></td><td>off</td><td>Find and merge duplicate items</td></tr>
@@ -92,6 +93,7 @@
             <tr><td><code>chatgpt-connector</code></td><td>auto</td><td><code>search</code> and <code>fetch</code> for ChatGPT deep research. On over HTTP, off over stdio.</td></tr>
           </tbody>
         </table></div>
+        <p>Without the <code>[semantic]</code> extra, <code>semantic</code> and <code>search-admin</code> are left out automatically, so the model isn&rsquo;t offered tools that can only reply with install instructions. Name them in <code>ZOTERO_MCP_TOOLSETS</code> to keep them anyway. A value that uses <code>none</code> without naming <code>semantic</code> logs one warning at startup, because <code>none</code> included semantic search before 0.15.0; <code>none,-semantic</code> leaves it out without the warning.</p>
         <div class="code"><div class="code-label">Claude Desktop / Claude Code env</div><pre><span class="line"><span class="ky">"env"</span>: {</span>
 <span class="line">  <span class="ky">"ZOTERO_LOCAL"</span>: <span class="st">"true"</span>,</span>
 <span class="line">  <span class="ky">"ZOTERO_MCP_TOOLSETS"</span>: <span class="st">"scite,duplicates"</span></span>
@@ -106,7 +108,7 @@
             <tr><td><code>zotero_advanced_search</code></td><td>Search on multiple fields with AND or OR, including date ranges</td></tr>
             <tr><td><code>zotero_search_by_tag</code></td><td>Filter by tags, with OR and exclusions</td></tr>
             <tr><td><code>zotero_search_by_citation_key</code></td><td>Look up one item by its Better BibTeX citation key</td></tr>
-            <tr><td><code>zotero_semantic_search</code></td><td>Find papers by meaning, using embeddings. Needs <code>[semantic]</code>.</td></tr>
+            <tr><td><code>zotero_semantic_search</code><span class="badge on">semantic</span></td><td>Find papers by meaning, using embeddings. Needs <code>[semantic]</code>.</td></tr>
             <tr><td><code>zotero_get_recent</code></td><td>List recently added items, optionally from one collection</td></tr>
             <tr><td><code>zotero_update_search_database</code><span class="badge on">search-admin</span></td><td>Build or refresh the semantic index</td></tr>
             <tr><td><code>zotero_get_search_database_status</code><span class="badge on">search-admin</span></td><td>Show item count, last update, and embedding model</td></tr>
@@ -224,6 +226,7 @@
             <tr><td><code>ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL</code></td><td>Minimum seconds between database snapshot refreshes (default <code>5</code>)</td></tr>
             <tr><td><code>ZOTERO_MCP_TOOLSETS</code></td><td>Which optional tool groups are on (see <a href="#toolsets">Tool groups</a>)</td></tr>
             <tr><td><code>ZOTERO_MCP_SCHEMA_REFRESH</code></td><td><code>0</code> turns off the weekly refresh of Zotero&rsquo;s item type list</td></tr>
+            <tr><td><code>FASTMCP_HTTP_ALLOWED_HOSTS</code></td><td>Over HTTP, extra <code>Host</code> names to accept, as a JSON list, for a tunnel or reverse proxy (for example <code>'["abc.ngrok-free.app"]'</code>)</td></tr>
           </tbody>
         </table></div>
         <h3>Semantic search</h3>
@@ -248,6 +251,7 @@
             <tr><td><code>authorize-local [--status|--revoke|--print]</code></td><td>Get or manage the local write key</td></tr>
             <tr><td><code>install-skill [--target|--list-targets|--force]</code></td><td>Install the <code>zotero-cli</code> agent skill</td></tr>
             <tr><td><code>update-db [--fulltext] [--batch] [--force-rebuild]</code></td><td>Build or update the semantic index</td></tr>
+            <tr><td><code>batch-status</code>, <code>batch-import</code></td><td>Check on and import OpenAI or Gemini Batch API embeddings</td></tr>
             <tr><td><code>db-status</code>, <code>db-inspect</code></td><td>Show index status, or inspect indexed documents</td></tr>
             <tr><td><code>update [--check-only]</code></td><td>Update to the latest release</td></tr>
             <tr><td><code>version</code></td><td>Print the installed version</td></tr>
@@ -263,8 +267,10 @@
 <span class="line"><span class="pr">$ </span>zotero-cli search --mode semantic "attention mechanisms"</span>
 <span class="line"><span class="pr">$ </span>zotero-cli get metadata ABC123 --format bibtex</span>
 <span class="line"><span class="pr">$ </span>zotero-cli outline ABC123</span>
+<span class="line"><span class="pr">$ </span>zotero-cli read ABC123 --find "robustness check"</span>
 <span class="line"><span class="pr">$ </span>zotero-cli read ABC123 --start-page 42 --end-page 55</span>
 <span class="line"><span class="pr">$ </span>zotero-cli read ABC123 --start-page 44 --format image</span>
+<span class="line"><span class="pr">$ </span>zotero-cli open ABC123 --page 44</span>
 <span class="line"></span>
 <span class="line"><span class="cm"># notes and annotations</span></span>
 <span class="line"><span class="pr">$ </span>zotero-cli notes create --item-key ABC123 --text "My note" --tags "idea"</span>
@@ -273,8 +279,12 @@
 <span class="line"><span class="cm"># add, organize, export</span></span>
 <span class="line"><span class="pr">$ </span>zotero-cli add doi 10.1038/s41586-021-03819-2 -c "Reading List"</span>
 <span class="line"><span class="pr">$ </span>zotero-cli add bibtex --file refs.bib</span>
+<span class="line"><span class="pr">$ </span>zotero-cli attach ABC123 --file notes.md</span>
 <span class="line"><span class="pr">$ </span>zotero-cli batch --query "machine learning" --add-tags survey --limit 100</span>
-<span class="line"><span class="pr">$ </span>zotero-cli export --collection COLL01 --format bibtex</span></pre></div>
+<span class="line"><span class="pr">$ </span>zotero-cli export --collection COLL01 --format bibtex</span>
+<span class="line"></span>
+<span class="line"><span class="cm"># the Zotero Agent plugin file, and how to install it</span></span>
+<span class="line"><span class="pr">$ </span>zotero-cli plugin</span></pre></div>
 
         <h3>JSON output</h3>
         <p>Every result has the same wrapper, and it always goes to stdout. On success it holds <code>data</code>. On failure it holds <code>error.message</code> and a stable <code>error.code</code>. Run <code>zotero-cli --json-schema</code> for the full format.</p>
@@ -288,7 +298,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.14.1 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.15.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
