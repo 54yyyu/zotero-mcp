@@ -299,3 +299,45 @@ def test_partially_present_sort_field_still_sorts(monkeypatch):
     result = _run_sorted(monkeypatch, items, sort_by="dateAdded", sort_direction="desc")
     assert "was not applied" not in result
     assert _order(result) == ["Newer", "Older", "NoDate"]
+
+
+def _run_adv(monkeypatch, conditions, **kwargs):
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: FakeZotero([]))
+    return server.advanced_search(conditions=conditions, ctx=DummyContext(), **kwargs)
+
+
+def test_advanced_search_rejects_misspelled_field_with_suggestion(monkeypatch):
+    """"titel" used to be a valid-looking condition that matched nothing, so
+    the tool answered "No items found" and the typo went unnoticed."""
+    result = _run_adv(
+        monkeypatch, [{"field": "titel", "operation": "contains", "value": "deep"}]
+    )
+    assert result.startswith("Error: Unknown field 'titel' in condition 1")
+    assert "Did you mean: title" in result
+    assert "contains" in result and "doesNotContain" in result  # valid operators
+
+
+def test_advanced_search_unknown_field_without_close_match(monkeypatch):
+    result = _run_adv(
+        monkeypatch, [{"field": "zzzzqqq", "operation": "is", "value": "x"}]
+    )
+    assert result.startswith("Error: Unknown field 'zzzzqqq'")
+    assert "Did you mean" not in result
+
+
+def test_advanced_search_still_accepts_known_and_aliased_fields(monkeypatch):
+    for field in ("title", "Creator", "tags", "year", "doi", "extra", "publisher",
+                  "itemtype", "dateAdded", "collection", "nameOfAct"):
+        result = _run_adv(
+            monkeypatch, [{"field": field, "operation": "contains", "value": "x"}]
+        )
+        assert "Unknown field" not in result, field
+
+
+def test_advanced_search_rejects_wrong_case_field(monkeypatch):
+    """Field names are case-sensitive, so "Title" is rejected like a typo."""
+    result = _run_adv(
+        monkeypatch, [{"field": "Title", "operation": "contains", "value": "x"}]
+    )
+    assert result.startswith("Error: Unknown field 'Title' in condition 1")
+    assert "Did you mean: title" in result

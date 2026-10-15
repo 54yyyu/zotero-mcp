@@ -838,6 +838,60 @@ def search_by_citation_key(
         return f"Error looking up citation key: {str(e)}"
 
 
+# Names advanced_search accepts beyond the per-item-type field names in the
+# schema: the aliases both backends resolve, `year`, and the item-level keys an
+# API item carries.
+_EXTRA_CONDITION_FIELDS = frozenset(
+    {"year", "key", "version", "parentItem", "dateAdded", "dateModified", "itemType"}
+)
+
+
+def _known_condition_fields() -> set[str]:
+    """Every field name a condition can meaningfully name, or an empty set when
+    the field schema is unavailable (nothing is then rejected)."""
+    from zotero_mcp import schema as _schema
+
+    try:
+        table = _schema.get_table()["itemTypes"]
+    except Exception:
+        return set()
+    names: set[str] = set()
+    for fields in table.values():
+        for actual, base in fields.items():
+            names.add(actual)
+            names.add(base)
+    if not names:
+        return set()
+    return names | _EXTRA_CONDITION_FIELDS | set(_semantics.FIELD_ALIASES)
+
+
+def _unknown_condition_field_error(
+    field: str, index: int, valid_operations: set[str]
+) -> str | None:
+    """An error naming close matches when `field` is not a field any backend
+    can match on, else None. Without it a typo ("titel") is a valid-looking
+    condition that matches nothing, and the tool answers "No items found"."""
+    known = _known_condition_fields()
+    if not known or field in known or field.lower() in _semantics.FIELD_ALIASES:
+        return None
+    import difflib
+
+    by_lower = {name.lower(): name for name in sorted(known)}
+    close: list[str] = []
+    for lowered in difflib.get_close_matches(field.lower(), list(by_lower), n=3, cutoff=0.6):
+        if by_lower[lowered] not in close:
+            close.append(by_lower[lowered])
+    hint = f" Did you mean: {', '.join(close)}?" if close else ""
+    return (
+        f"Error: Unknown field '{field}' in condition {index}.{hint} "
+        "Field names are Zotero field names and case-sensitive (title, date, "
+        "itemType, dateAdded, dateModified, publicationTitle, abstractNote, "
+        "extra, publisher, ...); the aliases creator, tag, collection and year "
+        "match in any case. "
+        f"Supported operations: {', '.join(sorted(valid_operations))}"
+    )
+
+
 @mcp.tool(
     name="zotero_advanced_search",
     description=(
@@ -977,6 +1031,8 @@ def advanced_search(
                 )
             if not field:
                 return f"Error: Condition {i} has an empty field"
+            if (unknown := _unknown_condition_field_error(field, i, valid_operations)):
+                return unknown
 
             parsed_conditions.append(
                 {"field": field, "operation": operation, "value": value}
