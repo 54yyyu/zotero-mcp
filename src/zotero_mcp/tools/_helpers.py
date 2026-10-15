@@ -1846,6 +1846,11 @@ def _guess_content_type(filename):
         "djvu": "image/vnd.djvu",
         "html": "text/html",
         "txt": "text/plain",
+        "md": "text/markdown",
+        # application/yaml is the registered type (RFC 9512), but Zotero's
+        # full-text indexer only takes text/*.
+        "yaml": "text/yaml",
+        "yml": "text/yaml",
         "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "rtf": "application/rtf",

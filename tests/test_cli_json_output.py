@@ -389,6 +389,21 @@ class TestGetCommand:
         data = json.loads(capsys.readouterr().out)["data"]
         assert data["chars"] == 11
         assert data["text"] == "hello world"
+        assert data["truncated"] is False
+
+    def test_fulltext_reports_truncation_as_fields(self, capsys):
+        args = _args(subcommand="fulltext", item_key="ABCD1234")
+        retrieval = MagicMock()
+        retrieval.get_item_fulltext.return_value = (
+            "# Paper\n\n## Full Text (pages 1-10 of 22 — TRUNCATED)\n\ntext")
+
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
+             patch("zotero_mcp.cli_standalone._import_tools",
+                   return_value=(MagicMock(), retrieval, MagicMock(), MagicMock(), MagicMock())):
+            cmd_get(args)
+
+        data = json.loads(capsys.readouterr().out)["data"]
+        assert (data["truncated"], data["pages_read"], data["page_count"]) == (True, 10, 22)
 
     def test_unknown_subcommand_is_a_json_error(self, capsys):
         args = _args(subcommand="nonsense")

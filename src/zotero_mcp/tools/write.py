@@ -40,7 +40,10 @@ from zotero_mcp.tools import _helpers
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
 
 # Shared by add_from_file and attach_file. URL attach mode is PDF-only.
-_ATTACH_ALLOWED_EXTS = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf"}
+# .json stays out: _SOURCE_TYPE_BY_EXT merges this set last, and `add x.json`
+# must remain a CSL-JSON import (#703).
+_ATTACH_ALLOWED_EXTS = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf",
+                        ".md", ".yaml", ".yml"}
 
 
 def _resolve_collections_arg(

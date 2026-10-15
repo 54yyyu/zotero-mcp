@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Markdown and YAML files can be attached** (#703). `zotero-cli attach` and `add file` accept `.md`, `.yaml` and `.yml`, stored as `text/markdown` and `text/yaml` so Zotero's own full-text indexer picks them up. `.json` stays a CSL-JSON import. Requested by @rizakardas.
+- **`zotero-cli --json get fulltext` says when a read was cut short** (#701). `data.truncated` is always present, and a capped read adds `pages_read` and `page_count`, so a script no longer has to parse the TRUNCATED heading out of `data.text`.
+
+### Fixed
+
+- **`url` conditions work in SQLite advanced search** (#701). The field was missing from the SQL map, so with `--all-libraries`, which has no API fallback, every `url` condition failed. Reported by @jstotero.
+- **`zotero-cli edit --collections` help says it replaces** (#701). It read "Add to collections", but the tool replaces the item's memberships, so following the help removed the item from its other collections. The help now says so and points at `collections manage --add-to`.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added
