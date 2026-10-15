@@ -395,6 +395,7 @@ _SIMPLE_FIELD_SQL = {
     # "date" is handled separately below (_DATE_DISPLAY_SQL / _DATE_RANGE_SQL)
     # — it needs an operator-aware expression, unlike every other field here.
     "DOI": _plain_field_subquery("DOI"),
+    "url": _plain_field_subquery("url"),
     "publicationTitle": _base_field_resolved_subquery("publicationTitle"),
     "dateAdded": "i.dateAdded",
     "dateModified": "i.dateModified",

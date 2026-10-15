@@ -32,19 +32,21 @@ def _build_db(db_path: Path) -> dict[str, int]:
     )
     conn.executemany(
         "INSERT INTO fields (fieldID, fieldName) VALUES (?, ?)",
-        [(1, "title"), (2, "abstractNote"), (13, "date"), (26, "DOI"), (27, "publicationTitle")],
+        [(1, "title"), (2, "abstractNote"), (13, "date"), (26, "DOI"), (27, "publicationTitle"),
+         (28, "url")],
     )
     conn.execute("INSERT INTO creatorTypes VALUES (1, 'author')")
 
     def add_item(item_id, key, item_type_id, library_id, title=None, date=None,
-                 abstract=None, doi=None, pub_title=None,
+                 abstract=None, doi=None, pub_title=None, url=None,
                  date_added="2024-01-01 00:00:00", date_modified="2024-01-01 00:00:00"):
         conn.execute(
             "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded, dateModified) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (item_id, key, item_type_id, library_id, date_added, date_modified),
         )
-        field_values = [(1, title), (2, abstract), (13, date), (26, doi), (27, pub_title)]
+        field_values = [(1, title), (2, abstract), (13, date), (26, doi), (27, pub_title),
+                        (28, url)]
         value_id = item_id * 100
         for field_id, value in field_values:
             if value is None:
@@ -57,6 +59,7 @@ def _build_db(db_path: Path) -> dict[str, int]:
     add_item(1, "PERS0001", 1, 1, title="Quantum Networks and Learning",
              date="2024-01-15", abstract="A paper about quantum stuff",
              doi="10.1/quantum", pub_title="Journal of Quantum",
+             url="https://example.org/quantum",
              date_modified="2024-06-01 00:00:00")
     add_item(2, "PERS0002", 1, 1, title="Classical Literature Review", date="2018-05-01")
     add_item(3, "PERS0003", 2, 1, title="Ignored Attachment")  # itemType=attachment
@@ -276,6 +279,21 @@ def test_advanced_search_sql_title_and_year(tmp_path):
         )
     finally:
         reader.close()
+    assert {r["key"] for r in result} == {"PERS0001"}
+
+
+def test_advanced_search_sql_url_contains(tmp_path):
+    """url is servable from SQLite, so --all-libraries has no gap there (#701)."""
+    reader = _reader(tmp_path)
+    try:
+        result = reader.advanced_search_sql(
+            conditions=[{"field": "url", "operation": "contains", "value": "example.org"}],
+            join_mode="all",
+            group_id=0,
+        )
+    finally:
+        reader.close()
+    assert result is not None
     assert {r["key"] for r in result} == {"PERS0001"}
 
 

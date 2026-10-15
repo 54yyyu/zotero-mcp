@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The literature-review and contradicting-evidence prompts fall back to `zotero_search_items` when semantic search is not usable** (#572). `zotero_literature_review` and `zotero_find_contradicting_evidence` always told the model to call `zotero_semantic_search`, which fails without the `[semantic]` extra and is absent when a toolset spec leaves it out. They now check at render time (ChromaDB found with `find_spec`, not imported, and the tool's toolset enabled) and otherwise name `zotero_search_items` with `qmode='everything'`, one key term per query. With semantic search usable the text is unchanged.
 - **`zotero_advanced_search` rejects a field name it does not know.** A typo such as `titel` was a valid-looking condition that matched nothing, so the tool answered "No items found matching the search criteria" and the mistake went unnoticed. It now returns an error naming the field, up to three close matches (`Did you mean: title?`) and the supported operations.
 - **`zotero_advanced_search` accepts a single condition sent as a bare object.** `{"field": "title", "operation": "contains", "value": "x"}` instead of a list of one was rejected with a raw pydantic "Input should be a valid list" error, and the same object as a JSON string answered "No search conditions provided". It is now read as a one-condition list. An empty object is still an error.
+### Added
+
+- **Markdown and YAML files can be attached** (#703). `zotero-cli attach` and `add file` accept `.md`, `.yaml` and `.yml`, stored as `text/markdown` and `text/yaml` so Zotero's own full-text indexer picks them up. `.json` stays a CSL-JSON import. Requested by @rizakardas.
+- **`zotero-cli --json get fulltext` says when a read was cut short** (#701). `data.truncated` is always present, and a capped read adds `pages_read` and `page_count`, so a script no longer has to parse the TRUNCATED heading out of `data.text`.
+
+### Fixed
+
+- **`url` conditions work in SQLite advanced search** (#701). The field was missing from the SQL map, so with `--all-libraries`, which has no API fallback, every `url` condition failed. Reported by @jstotero.
+- **`zotero-cli edit --collections` help says it replaces** (#701). It read "Add to collections", but the tool replaces the item's memberships, so following the help removed the item from its other collections. The help now says so and points at `collections manage --add-to`.
 
 ## [0.14.1] - 2026-10-07
 

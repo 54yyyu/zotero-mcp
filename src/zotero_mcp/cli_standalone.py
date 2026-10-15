@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 
 from zotero_mcp import cli_json as _cli_json
@@ -331,10 +332,15 @@ def cmd_get(args):
         # structured data skips _out's failure check, so a failure must not
         # be wrapped as data.
         failed = result.startswith("Error")
-        _out(args, "get fulltext",
-             data={"item_key": args.item_key, "text": result, "chars": len(result)}
-             if json_mode and not failed else None,
-             text=result)
+        data = None
+        if json_mode and not failed:
+            data = {"item_key": args.item_key, "text": result, "chars": len(result)}
+            # The TRUNCATED heading is prose; scripts reading data.chars need it as fields.
+            m = re.search(r"\(pages 1-(\d+) of (\d+) — TRUNCATED\)", result)
+            data["truncated"] = bool(m)
+            if m:
+                data["pages_read"], data["page_count"] = int(m.group(1)), int(m.group(2))
+        _out(args, "get fulltext", data=data, text=result)
     elif sub == "bibtex":
         result = retrieval.get_item_metadata(item_key=args.item_key, format="bibtex", ctx=ctx)
         _out(args, "get bibtex",
@@ -1688,8 +1694,9 @@ def build_parser() -> argparse.ArgumentParser:
     e_p.add_argument("--tags", help="Replace all tags (comma-separated)")
     e_p.add_argument("--add-tags")
     e_p.add_argument("--remove-tags")
-    e_p.add_argument("--collections", help="Add to collections (comma-separated keys)")
-    e_p.add_argument("--collection-names", help="Add to collections (comma-separated names)")
+    e_p.add_argument("--collections", help="Replace the item's collections (comma-separated keys); "
+                     "use `collections manage --add-to` to add without removing")
+    e_p.add_argument("--collection-names", help="Replace the item's collections (comma-separated names)")
     e_p.add_argument("--doi")
     e_p.add_argument("--url")
     e_p.add_argument("--extra")
@@ -1906,7 +1913,7 @@ Commands returning structured data
   get recent            data.items[]
   get collections       data.collections[]
   get tags              data.tags[]
-  get fulltext          data.text, data.chars
+  get fulltext          data.text, data.chars, data.truncated (+ pages_read, page_count)
   read --find           data.mode, data.matches[] (page, hits, snippets[]),
                         data.more_pages[], data.hits, data.total_pages
   get bibtex            data.bibtex
