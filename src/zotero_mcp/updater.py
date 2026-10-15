@@ -476,15 +476,19 @@ def restore_configurations(backup_dir: Path) -> bool:
             logger.error(f"Could not restore semantic search config: {e}")
             success = False
 
-    # Restore ChromaDB database
+    # Restore ChromaDB database, only if it went missing. A package update
+    # never writes to the index, and replacing it means deleting it first: a
+    # partial backup (disk full, an unreadable file) then loses data, and
+    # persist_directory may share its folder with other files. A running
+    # server's open database also rejects writes afterwards on POSIX, and on
+    # Windows its file locks can leave the delete incomplete.
     chroma_backup = backup_dir / "chroma_db"
     if chroma_backup.exists():
         try:
             chroma_db_path = _chroma_dir()
-            if chroma_db_path.exists():
-                shutil.rmtree(chroma_db_path)
-            shutil.copytree(chroma_backup, chroma_db_path)
-            print("Restored ChromaDB database")
+            if not chroma_db_path.exists():
+                shutil.copytree(chroma_backup, chroma_db_path)
+                print("Restored ChromaDB database")
         except Exception as e:
             logger.error(f"Could not restore ChromaDB database: {e}")
             success = False
