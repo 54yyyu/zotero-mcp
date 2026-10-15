@@ -87,6 +87,21 @@ def test_substring_hit_with_a_different_doi_is_rejected(local_sqlite):
     assert zot.searches == []
 
 
+def test_a_candidate_the_client_cannot_fetch_is_skipped(local_sqlite):
+    """A key the DB snapshot has but the API lost costs that candidate only."""
+    class _Lost(_NoSearchZotero):
+        def item(self, item_key):
+            if item_key == "GONE0001":
+                raise RuntimeError("404 Not Found")
+            return super().item(item_key)
+
+    zot = _Lost()
+    zot._items = [_item("EXIST001", DOI)]
+    local_sqlite(_Reader([_item("GONE0001", DOI), _item("EXIST001", DOI)]))
+    out = _helpers.find_existing_items(zot, doi=DOI)
+    assert [i["key"] for i in out] == ["EXIST001"]
+
+
 def test_falls_back_to_quick_search_when_sqlite_cannot_answer(local_sqlite):
     zot = FakeZotero()
     zot._items = [_item("EXIST001", DOI)]

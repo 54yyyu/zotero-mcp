@@ -1414,6 +1414,19 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
                 ctx.warning(f"Existing-item search failed (treating as no match): {e}")
             return None
 
+    def _fetch(key):
+        # Same policy as _search: a throttle propagates, any other failure
+        # (e.g. a key the DB snapshot has but the API no longer does) costs
+        # this one candidate, not the import.
+        try:
+            return zot.item(key)
+        except (TooManyRetriesError, TooManyRequestsError):
+            raise
+        except Exception as e:
+            if ctx is not None:
+                ctx.warning(f"Could not fetch dedup candidate {key}: {e}")
+            return None
+
     def _confirm(candidates):
         matches = []
         for item in candidates or []:
@@ -1442,7 +1455,7 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             # pass below could confirm anything this lookup did not find.
             # Candidates are fetched through ``zot`` so the versions returned
             # are the ones the write path will be checked against.
-            return _confirm(zot.item(k) for k in keys)
+            return _confirm(_fetch(k) for k in keys)
 
     matches = _confirm(_search(query, "everything"))
     if matches:

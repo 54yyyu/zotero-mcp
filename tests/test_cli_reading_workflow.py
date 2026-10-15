@@ -65,6 +65,8 @@ class TestFailureReporting:
         "Could not find text on page 9",
         "Cannot write: read-only",
         "\n**Error:** something",
+        "Semantic search error: index missing",
+        "Collection not found: ABCD1234",
     ])
     def test_failure_prose_is_recognised(self, text):
         assert _reports_failure(text)
