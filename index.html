@@ -298,12 +298,12 @@
 
       <div class="cost">
         <h3>Context used before you type anything</h3>
-        <p>An MCP server sends every tool&rsquo;s schema with every request. A skill costs 98 tokens until it&rsquo;s used.</p>
+        <p>An MCP server sends every tool&rsquo;s schema with every request. A skill costs <span data-cost="skill_frontmatter">98</span> tokens until it&rsquo;s used.</p>
         <ul class="bars">
-          <li class="bar"><span class="bar-label">MCP, all tools<small>53 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:100%"></span><span class="bar-val">20,942</span></span></li>
-          <li class="bar"><span class="bar-label">MCP, default tools<small>41 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:80.3%"></span><span class="bar-val">16,815</span></span></li>
-          <li class="bar"><span class="bar-label">Skill, instructions loaded<small>only when it&rsquo;s used</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:11.5%"></span><span class="bar-val">2,400</span></span></li>
-          <li class="bar"><span class="bar-label">Skill, description only<small>always</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:0.47%"></span><span class="bar-val">98</span></span></li>
+          <li class="bar" data-cost="all"><span class="bar-label">MCP, all tools<small>53 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:100%"></span><span class="bar-val">20,942</span></span></li>
+          <li class="bar" data-cost="default"><span class="bar-label">MCP, default tools<small>41 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:80.3%"></span><span class="bar-val">16,815</span></span></li>
+          <li class="bar" data-cost="skill_body"><span class="bar-label">Skill, instructions loaded<small>only when it&rsquo;s used</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:11.5%"></span><span class="bar-val">2,400</span></span></li>
+          <li class="bar" data-cost="skill_frontmatter"><span class="bar-label">Skill, description only<small>always</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:0.47%"></span><span class="bar-val">98</span></span></li>
         </ul>
         <p class="fine">Tokens (cl100k_base), measured with <code>scripts/measure_context_cost.py</code>. This is only the fixed cost. It doesn&rsquo;t measure whether the task succeeds or how many steps it takes.</p>
       </div>
