@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A publisher's preview PDF is no longer attached as the paper.** Some `citation_pdf_url`s serve the first page or two of an article as a real PDF, which passed the content-type, size and `%PDF` checks. When the item has a page range, from its `pages` field or CrossRef's `page`, a download with fewer than 60% of those pages is now skipped before any upload and the cascade moves on to the next source. The AMS preview for 10.1175/jcli-d-12-00821.1 has 2 pages against a range of 2137-2143. Items without a usable range, such as an article number or a single page, are not checked, and neither is a file the page counter cannot read.
+### Changed
+
+- **Semantic search is its own toolset, and hidden on installs without the `[semantic]` extra** (#572). `zotero_semantic_search` moves from core into a new `semantic` toolset that is on by default, so default installs see no change. `ZOTERO_MCP_TOOLSETS=none` now leaves it out too; use `none,semantic` to keep it. A spec that uses `none` without naming `semantic` logs one warning at startup saying so; `none,-semantic` leaves it out without the warning. `semantic` and `search-admin` are left out automatically when ChromaDB isn't installed, so a base install no longer advertises tools that can only reply with install instructions; naming them in `ZOTERO_MCP_TOOLSETS` keeps them. The connector `search` keeps its keyword fallback.
 
 ## [0.14.1] - 2026-10-07
 
