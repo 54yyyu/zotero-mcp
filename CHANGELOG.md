@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Zotero Agent plugin finds the agent CLIs on Windows** (#700). Detection ran `command -v` through `/bin/sh`, so on Windows every backend failed with `File at path "/bin/sh" does not exist, or is not executable`. There the plugin now searches PATH with `where.exe` (PATHEXT aware, taking `codex.cmd` rather than npm's extension-less shim), reads the environment from `cmd.exe /c set`, runs npm's `.cmd` shims by the script or `.exe` they wrap, makes its folders with Node instead of `mkdir`, and stops agents with `taskkill`. macOS and Linux are unchanged. Translating with pi is still unavailable on Windows.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added

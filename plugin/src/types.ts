@@ -206,6 +206,8 @@ export interface Proc {
 
 /** agent/ never imports node:child_process or Gecko's Subprocess; it is handed one of these. */
 export interface Spawner {
+  /** Windows: no /bin/sh, `;`-separated PATH, executables found through PATHEXT (findBinary), npm's `.cmd` shims. */
+  readonly windows?: boolean;
   spawn(command: string, args: string[], opts: { cwd?: string; env: Record<string, string> }): Promise<Proc>;
   /** Run to completion; stdout and stderr captured. */
   run(command: string, args: string[], opts: { cwd?: string; env: Record<string, string>; timeoutMs?: number }): Promise<{ code: number | null; stdout: string; stderr: string }>;

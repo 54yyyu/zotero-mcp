@@ -3,9 +3,9 @@
 // The installer (src/zotero_mcp/skill_install.py) is idempotent and never clobbers: a destination
 // that exists and differs is reported and left alone (exit 1 when nothing was written at all), and
 // in AGENTS.md only the block between its own markers is ever touched.
-// No node:fs (Gecko): the directory is made by /bin/sh.
+// No node:fs (Gecko): the directory is made by /bin/sh (by node on Windows).
 import type { Spawner } from "../types.ts";
-import { dirnameOf, findBinary } from "./env.ts";
+import { dirnameOf, findBinary, nodeEval } from "./env.ts";
 
 export interface WorkspaceOpts {
   /** Absolute path of `zotero-cli` when the host found it; `zotero-mcp` is looked for beside it first. */
@@ -20,7 +20,7 @@ async function installerCommands(spawner: Spawner, env: Record<string, string>, 
   const add = (command: string | null, args: string[] = []) => {
     if (command && !out.some((o) => o.command === command && o.args.join(" ") === args.join(" "))) out.push({ command, args });
   };
-  if (opts.zoteroCli) {
+  if (opts.zoteroCli && !spawner.windows) {
     const sibling = `${dirnameOf(opts.zoteroCli)}/zotero-mcp`;
     const r = await spawner.run("/bin/sh", ["-c", '[ -x "$1" ] && echo ok', "sh", sibling], { env, timeoutMs: 5_000 }).catch(() => null);
     if (r?.stdout.trim() === "ok") add(sibling);
@@ -38,7 +38,9 @@ async function installerCommands(spawner: Spawner, env: Record<string, string>, 
  */
 export async function prepareWorkspace(spawner: Spawner, dir: string, opts: WorkspaceOpts = {}): Promise<string> {
   const env = await spawner.baseEnv();
-  const made = await spawner.run("/bin/sh", ["-c", 'mkdir -p "$1"', "sh", dir], { env, timeoutMs: 10_000 });
+  const made = spawner.windows
+    ? await nodeEval(spawner, env, 'require("fs").mkdirSync(process.argv[1],{recursive:true})', dir)
+    : await spawner.run("/bin/sh", ["-c", 'mkdir -p "$1"', "sh", dir], { env, timeoutMs: 10_000 });
   if (made.code !== 0) throw new Error(`could not create the workspace ${dir}: ${(made.stderr || made.stdout).trim()}`);
   for (const c of await installerCommands(spawner, env, opts)) {
     try {
