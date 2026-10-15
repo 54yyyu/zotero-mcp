@@ -1127,14 +1127,14 @@ class TestCrossrefMetadataReachesTheCascade:
     def test_arxiv_preprint_is_actually_attached(
         self, monkeypatch, fake_zot, dummy_ctx
     ):
-        """End to end: Unpaywall/S2/PMC find nothing, so the arXiv leg is the
+        """End to end: Unpaywall/OpenAlex/S2/PMC find nothing, so the arXiv leg is the
         only source that can produce a PDF."""
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
         )
         msg = _make_crossref_message(DOI="10.1111/a", **_ARXIV_PREPRINT_RELATION)
         monkeypatch.setattr("requests.get", fake_crossref_get(lambda d: msg))
-        for source in ("_try_unpaywall", "_try_semantic_scholar", "_try_pmc"):
+        for source in ("_try_unpaywall", "_try_openalex", "_try_semantic_scholar", "_try_pmc"):
             monkeypatch.setattr(
                 f"zotero_mcp.tools._helpers.{source}", lambda *a, **kw: None
             )

@@ -2201,6 +2201,57 @@ def _try_unpaywall(doi, ctx):
         return None
 
 
+def _openalex_pdf_urls(work):
+    """Every ``pdf_url`` in an OpenAlex work record, best first, no repeats.
+
+    ``best_oa_location`` leads, then the open-access locations, then the
+    rest. Closed locations are kept because OpenAlex marks a location closed
+    when it cannot read a licence for it, and such a copy often downloads
+    fine. The GEOMAR repository copy of 10.1175/jcli-d-12-00821.1 is one, on
+    a work whose ``open_access.is_oa`` is false and for which Unpaywall has
+    nothing.
+    """
+    locations = [loc for loc in (work.get("locations") or []) if isinstance(loc, dict)]
+    ordered = [work.get("best_oa_location") or {}]
+    ordered += [loc for loc in locations if loc.get("is_oa")]
+    ordered += [loc for loc in locations if not loc.get("is_oa")]
+
+    urls = []
+    for loc in ordered:
+        pdf_url = loc.get("pdf_url")
+        if pdf_url and pdf_url not in urls:
+            urls.append(pdf_url)
+    return urls
+
+
+def _try_openalex(doi, ctx):
+    """Try OpenAlex for PDF URLs across all the locations it knows of.
+
+    Unlike the other sources this returns a list or ``None``, because
+    OpenAlex often lists several copies and the first can be the paywalled
+    publisher one.
+    """
+    try:
+        resp = requests.get(
+            f"https://api.openalex.org/works/https://doi.org/{doi}",
+            params={"mailto": "zotero-mcp@users.noreply.github.com",
+                    "select": "best_oa_location,locations"},
+            headers={"User-Agent": _utils.USER_AGENT},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        urls = _openalex_pdf_urls(resp.json())
+        if urls:
+            ctx.info(f"OpenAlex: found {len(urls)} PDF location(s)")
+            return urls
+        return None
+    except Exception as e:
+        ctx.info(f"OpenAlex lookup failed: {e}")
+        return None
+
+
 def _try_arxiv_from_crossref(crossref_metadata, ctx):
     """Check CrossRef metadata for an arXiv ID and return a PDF URL."""
     if not crossref_metadata:
@@ -2314,7 +2365,7 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
     advertised, when one was read. Publishers running OJS, Atypon,
     Silverchair, Highwire and Springer all publish it, and it is how the
     browser connector finds a PDF the aggregators below have never heard
-    of. Tried first; see the source list.
+    of. Tried after Unpaywall and OpenAlex; see the source list.
     """
     if attach_mode == "none":
         return "skipped (attach_mode=none)"
@@ -2332,7 +2383,14 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
     #
     # Behind Unpaywall it still does the thing it was added for: for a
     # paper no aggregator has indexed, it is the only source there is.
-    sources = [("Unpaywall", lambda: _try_unpaywall(doi, ctx))]
+    #
+    # OpenAlex sits between the two for the same reason. It knows of
+    # repository copies in institutional archives that Unpaywall does not
+    # count as open access, and those are full text.
+    sources = [
+        ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
+        ("OpenAlex", lambda: _try_openalex(doi, ctx)),
+    ]
     if page_pdf_url:
         sources.append(("the publisher's page", lambda: page_pdf_url))
     sources += [
@@ -2342,11 +2400,19 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
     ]
 
     found_urls = []  # Track URLs found but not downloadable
+    # OpenAlex usually lists the publisher's PDF too, the same URL the
+    # landing page advertises; one failed download of it is enough.
+    tried_urls = set()
 
     for source_name, find_url in sources:
         try:
-            pdf_url = find_url()
-            if pdf_url:
+            found = find_url()
+            # OpenAlex returns a list, every other source one URL or None.
+            candidates = [found] if isinstance(found, str) else list(found or [])
+            for pdf_url in candidates:
+                if pdf_url in tried_urls:
+                    continue
+                tried_urls.add(pdf_url)
                 ctx.info(f"Trying PDF from {source_name}: {pdf_url}")
                 found_urls.append((source_name, pdf_url))
 

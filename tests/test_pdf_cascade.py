@@ -1,5 +1,6 @@
-"""Unit tests for the PDF attachment cascade (_try_unpaywall, _try_arxiv_from_crossref,
-_try_semantic_scholar, _try_pmc, _download_and_attach_pdf, _try_attach_oa_pdf)."""
+"""Unit tests for the PDF attachment cascade (_try_unpaywall, _try_openalex,
+_try_arxiv_from_crossref, _try_semantic_scholar, _try_pmc, _download_and_attach_pdf,
+_try_attach_oa_pdf)."""
 
 import json
 
@@ -10,6 +11,7 @@ from zotero_mcp.server import (
     _download_and_attach_pdf,
     _try_arxiv_from_crossref,
     _try_attach_oa_pdf,
+    _try_openalex,
     _try_pmc,
     _try_semantic_scholar,
     _try_unpaywall,
@@ -130,6 +132,76 @@ class TestTryUnpaywall:
         monkeypatch.setattr(requests, "get", fake_get)
         result = _try_unpaywall("10.1234/slow", dummy_ctx)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _try_openalex
+# ---------------------------------------------------------------------------
+
+class TestTryOpenAlex:
+
+    def _get(self, monkeypatch, payload, status=200):
+        seen = []
+
+        def fake_get(url, **kwargs):
+            seen.append((url, kwargs))
+            return _FakeHTTPResponse(status, json_data=payload)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        return seen
+
+    def test_collects_pdf_urls_skipping_nulls(self, monkeypatch, dummy_ctx):
+        """The shape of 10.1175/jcli-d-12-00821.1: no best_oa_location, a
+        publisher location without a pdf_url, and a closed repository copy."""
+        self._get(monkeypatch, {
+            "best_oa_location": None,
+            "locations": [
+                {"is_oa": False, "pdf_url": None},
+                {"is_oa": False, "pdf_url": "http://repo.example.org/1/paper.pdf"},
+            ],
+        })
+        result = _try_openalex("10.1234/test", dummy_ctx)
+        assert result == ["http://repo.example.org/1/paper.pdf"]
+
+    def test_best_then_open_then_closed_without_duplicates(self, monkeypatch, dummy_ctx):
+        self._get(monkeypatch, {
+            "best_oa_location": {"is_oa": True, "pdf_url": "https://b.example/best.pdf"},
+            "locations": [
+                {"is_oa": False, "pdf_url": "https://pub.example/paywalled.pdf"},
+                {"is_oa": True, "pdf_url": "https://b.example/best.pdf"},
+                {"is_oa": True, "pdf_url": "https://repo.example/oa.pdf"},
+                {"is_oa": False, "pdf_url": "https://pub.example/paywalled.pdf"},
+            ],
+        })
+        result = _try_openalex("10.1234/test", dummy_ctx)
+        assert result == [
+            "https://b.example/best.pdf",
+            "https://repo.example/oa.pdf",
+            "https://pub.example/paywalled.pdf",
+        ]
+
+    def test_missing_locations(self, monkeypatch, dummy_ctx):
+        self._get(monkeypatch, {"best_oa_location": None})
+        assert _try_openalex("10.1234/test", dummy_ctx) is None
+
+    def test_no_record(self, monkeypatch, dummy_ctx):
+        self._get(monkeypatch, None, status=404)
+        assert _try_openalex("10.1234/test", dummy_ctx) is None
+
+    def test_timeout(self, monkeypatch, dummy_ctx):
+        def fake_get(url, **kwargs):
+            raise requests.exceptions.Timeout("timed out")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        assert _try_openalex("10.1234/slow", dummy_ctx) is None
+
+    def test_identifies_itself(self, monkeypatch, dummy_ctx):
+        """Same mailto as discovery.py, so requests land in the polite pool."""
+        seen = self._get(monkeypatch, {"locations": []})
+        _try_openalex("10.1234/test", dummy_ctx)
+        url, kwargs = seen[0]
+        assert url == "https://api.openalex.org/works/https://doi.org/10.1234/test"
+        assert kwargs["params"]["mailto"] == "zotero-mcp@users.noreply.github.com"
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +606,82 @@ class TestPublisherPagePdfUrl:
                             lambda url, **kw: _FakeHTTPResponse(404))
         result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
         assert "PubMed Central" in result, result
-        for expected in ("Unpaywall", "arXiv", "Semantic Scholar"):
+        for expected in ("Unpaywall", "OpenAlex", "arXiv", "Semantic Scholar"):
             assert expected in result, result
+
+
+class TestOpenAlexInTheCascade:
+    """OpenAlex goes after Unpaywall and before the publisher's page."""
+
+    PDF = b"%PDF-1.4 " + b"x" * 2000
+    PAGE_URL = "https://journals.example.com/previewpdf/1.pdf"
+    REPO_URL = "http://repo.example.org/1/paper.pdf"
+
+    def _fake_get(self, unpaywall_pdf=None, openalex_urls=(), pdf_urls=(), log=None):
+        def fake_get(url, **kwargs):
+            if log is not None:
+                log.append(url)
+            if "unpaywall.org" in url:
+                best = {"url_for_pdf": unpaywall_pdf} if unpaywall_pdf else None
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": best, "oa_locations": []})
+            if "openalex.org" in url:
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": None,
+                    "locations": [{"is_oa": False, "pdf_url": u} for u in openalex_urls],
+                })
+            if url in pdf_urls:
+                return _FakeHTTPResponse(
+                    200, content=self.PDF,
+                    headers={"Content-Type": "application/pdf"},
+                )
+            return _FakeHTTPResponse(404)
+        return fake_get
+
+    def test_openalex_before_the_publisher_page(self, monkeypatch, dummy_ctx):
+        """Both download. The publisher's citation_pdf_url is the one that
+        can be a preview, so the repository copy has to be tried first."""
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            openalex_urls=[self.REPO_URL],
+            pdf_urls=(self.REPO_URL, self.PAGE_URL)))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL)
+        assert "PDF attached (source: OpenAlex)" in result
+        assert len(zot.attachments) == 1
+
+    def test_unpaywall_before_openalex(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        log = []
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            unpaywall_pdf="https://oa.example.org/x.pdf",
+            openalex_urls=[self.REPO_URL],
+            pdf_urls=("https://oa.example.org/x.pdf", self.REPO_URL), log=log))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
+        assert "Unpaywall" in result
+        assert not any("openalex.org" in u for u in log)
+
+    def test_later_openalex_locations_are_tried(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            openalex_urls=["https://pub.example/paywalled.pdf", self.REPO_URL],
+            pdf_urls=(self.REPO_URL,)))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
+        assert "PDF attached (source: OpenAlex)" in result
+
+    def test_a_url_both_sources_name_is_fetched_once(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        log = []
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            openalex_urls=[self.PAGE_URL], log=log))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL)
+        assert "PDF attached" not in result
+        assert log.count(self.PAGE_URL) == 1
 
 
 class TestAThirdPartyUrlIsNotTrusted:

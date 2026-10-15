@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The open-access PDF cascade asks OpenAlex for repository copies.** When `zotero_add_item` or a batch import attaches a PDF for a DOI, it now tries every `pdf_url` OpenAlex lists after Unpaywall and before the publisher's `citation_pdf_url`, open-access locations first. OpenAlex knows institutional repository copies that Unpaywall does not count as open access. For Maraun 2013 in J. Climate, DOI 10.1175/jcli-d-12-00821.1, Unpaywall has nothing and the AMS page offers a 2-page preview, while OpenAlex lists the full 7-page PDF in the GEOMAR repository. A URL already tried under one source is not downloaded again under the next.
+
 ## [0.14.1] - 2026-10-07
 
 ### Added
