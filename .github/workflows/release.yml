@@ -132,8 +132,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install (with [semantic], so the default profile is measured as users get it)
-        run: python -m pip install -e ".[semantic]" tiktoken
+      - name: Install (chromadb registers the semantic tools, so the default profile is measured as users get it)
+        run: python -m pip install -e . chromadb tiktoken
       - name: Update the site
         run: |
           VERSION="${GITHUB_REF_NAME#v}"

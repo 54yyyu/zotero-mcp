@@ -118,7 +118,7 @@ artifacts = ["src/zotero_mcp/chat_plugin/zotero-agent.xpi"]
 
 # hatchling reads only the top-level .gitignore, so the ignores in plugin/ (and plugin/preview/) are repeated here.
 [tool.hatch.build.targets.sdist]
-exclude = ["plugin/node_modules", "plugin/dist", "plugin/.dev*", "plugin/preview/shots", "plugin/**/*.xpi"]
+exclude = ["site", "plugin/node_modules", "plugin/dist", "plugin/.dev*", "plugin/preview/shots", "plugin/**/*.xpi"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zotero_mcp"]
