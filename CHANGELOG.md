@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- YAML attachments (`.yaml`, `.yml`, or `application/yaml`) are recognized as text for fulltext extraction and attachment selection (#703).
+
 ## [0.14.1] - 2026-10-07
 
 ### Added

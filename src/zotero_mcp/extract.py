@@ -45,12 +45,12 @@ _HTML_SUFFIXES = frozenset({".html", ".htm", ".xhtml"})
 # don't want it in the semantic index.
 _TEXTUAL_SUFFIXES = frozenset({
     ".txt", ".vtt", ".srt", ".sbv", ".md", ".markdown", ".rst",
-    ".csv", ".tsv", ".json", ".xml", ".log", ".text",
+    ".csv", ".tsv", ".json", ".xml", ".log", ".text", ".yaml", ".yml",
 })
 _TEXTUAL_CONTENT_TYPES = frozenset({
     "text/plain", "text/vtt", "text/markdown", "text/csv",
     "text/tab-separated-values", "text/srt", "application/json",
-    "application/xml", "text/xml",
+    "application/xml", "text/xml", "application/yaml",
 })
 
 _MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
