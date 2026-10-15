@@ -1,11 +1,15 @@
 // Spawner for Gecko: Subprocess.sys.mjs underneath. agent/ is handed this instead of node:child_process.
 import type { Proc, Spawner } from "../types.ts";
+import { cmdLine, shimTarget } from "../agent/windows.ts";
 
 const FALLBACK_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 
 function Subprocess(): any {
   return ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess;
 }
+
+const isWindows = () => Services.appinfo.OS === "WINNT";
+const system32 = (exe: string) => `${Services.env.get("SystemRoot") || "C:\\Windows"}\\System32\\${exe}`;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -31,8 +35,8 @@ async function tree(pid: number): Promise<number[]> {
 
 function parseEnv(text: string): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^([A-Za-z_][A-Za-z0-9_()]*)=(.*)$/.exec(line); // Windows has ProgramFiles(x86)
     if (m) env[m[1]!] = m[2]!;
   }
   return env;
@@ -87,6 +91,11 @@ class GeckoProc implements Proc {
 
   async kill(): Promise<void> {
     if (this.gone) return;
+    if (isWindows()) {
+      await quick(system32("taskkill.exe"), ["/PID", String(this.pid), "/T", "/F"]);
+      await Promise.race([this.exited, sleep(2000)]);
+      return;
+    }
     const pids = await tree(this.pid);
     await quick("/bin/kill", ["-TERM", ...pids.map(String)]);
     for (let i = 0; i < 20 && !this.gone; i++) await sleep(150);
@@ -97,7 +106,17 @@ class GeckoProc implements Proc {
 
 let baseEnvCache: Promise<Record<string, string>> | null = null;
 
+/** Windows has no login shell: the process env as `set` prints it, with PATH spelled PATH (it is `Path` there) and HOME as the profile folder. */
+async function loadWindowsEnv(): Promise<Record<string, string>> {
+  const env = parseEnv(await quick(Services.env.get("ComSpec") || system32("cmd.exe"), ["/d", "/c", "set"]));
+  const path = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
+  if (path && path !== "PATH") { env.PATH = env[path]!; delete env[path]; }
+  if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+  return env;
+}
+
 async function loadBaseEnv(): Promise<Record<string, string>> {
+  if (isWindows()) return loadWindowsEnv();
   const process = parseEnv(await quick("/usr/bin/env", []));
   const shell = Services.env.get("SHELL") || "/bin/zsh";
   // -i as well as -l: nvm and friends are usually set up in .zshrc, which a login shell alone skips.
@@ -122,13 +141,27 @@ async function loadBaseEnv(): Promise<Record<string, string>> {
   return merged;
 }
 
+/** A `.cmd`: the program an npm shim wraps (see agent/windows.ts), else cmd.exe. */
+async function windowsShim(sp: any, shim: string, args: string[], env: Record<string, string>): Promise<[string, string[]]> {
+  try {
+    const target = shimTarget(await IOUtils.readUTF8(shim));
+    if (target) {
+      const file = PathUtils.join(PathUtils.parent(shim)!, ...target.split("\\"));
+      return /\.exe$/i.test(file) ? [file, args] : [await sp.pathSearch("node.exe", env), [file, ...args]];
+    }
+  } catch { /* not readable, or no node on PATH: cmd.exe below */ }
+  return cmdLine(Services.env.get("ComSpec") || system32("cmd.exe"), shim, args);
+}
+
 export function createGeckoSpawner(): Spawner {
   async function launch(command: string, args: string[], opts: { cwd?: string; env: Record<string, string> }) {
     const sp = Subprocess();
-    const exe = command.includes("/") ? command : await sp.pathSearch(command, opts.env);
+    let exe = /[\\/]/.test(command) ? command : await sp.pathSearch(command, opts.env);
+    if (isWindows() && /\.(cmd|bat)$/i.test(exe)) [exe, args] = await windowsShim(sp, exe, args, opts.env);
     return sp.call({ command: exe, arguments: args, environment: opts.env, environmentAppend: false, workdir: opts.cwd, stderr: "pipe" });
   }
   return {
+    windows: isWindows(),
     async spawn(command, args, opts) {
       return new GeckoProc(await launch(command, args, opts));
     },
