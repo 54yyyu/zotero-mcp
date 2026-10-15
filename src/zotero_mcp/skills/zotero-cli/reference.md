@@ -258,8 +258,8 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--tags` -- Replace all tags (comma-separated)
  - `--add-tags`
  - `--remove-tags`
- - `--collections` -- Add to collections (comma-separated keys)
- - `--collection-names` -- Add to collections (comma-separated names)
+ - `--collections` -- Replace the item's collections (comma-separated keys); use `collections manage --add-to` to add without removing
+ - `--collection-names` -- Replace the item's collections (comma-separated names)
  - `--doi`
  - `--url`
  - `--extra`
