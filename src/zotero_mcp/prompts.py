@@ -9,7 +9,29 @@ These are intentionally dependency-free and never touch the Zotero API at
 import time, so they load in any environment.
 """
 
+import importlib.util
+
+from zotero_mcp import toolsets
 from zotero_mcp._app import mcp
+
+_SEMANTIC_TOOL = "zotero_semantic_search"
+
+
+def _semantic_search_usable() -> bool:
+    """Whether a prompt can send the model to ``zotero_semantic_search``.
+
+    The tool needs ChromaDB (the ``[semantic]`` extra), checked with
+    ``find_spec`` so nothing is imported, and it is visible only while a
+    toolset holding it is enabled (a core tool always is). Read at render time,
+    so a prompt never names a tool the client cannot call.
+    """
+    if importlib.util.find_spec("chromadb") is None:
+        return False
+    groups = [name for name, tools in toolsets.TOOLSETS.items() if _SEMANTIC_TOOL in tools]
+    if not groups:
+        return True
+    enabled = toolsets.resolve_enabled()
+    return any(name in enabled for name in groups)
 
 
 @mcp.prompt(
@@ -24,13 +46,24 @@ def literature_review(topic: str, depth: str = "standard") -> str:
         depth: 'quick' (library only), 'standard' (library + citation graph),
             or 'deep' (also flag coverage gaps to fetch).
     """
+    if _semantic_search_usable():
+        find_step = (
+            f"1. Run `zotero_semantic_search(query='{topic}', limit=12)` to find the most "
+            "relevant papers already in the library. Note each paper's key and the "
+            "matched passage."
+        )
+    else:
+        find_step = (
+            "1. Run `zotero_search_items(query=<one key term of the topic>, "
+            "qmode='everything', limit=12)` once per key term (each extra word narrows "
+            "the match) to find the most relevant papers already in the library. Note "
+            "each paper's key and the matching passage of its title or abstract."
+        )
     steps = [
         f"Conduct a literature review on: **{topic}**.",
         "",
         "Work through these steps, citing item keys and quoting matched passages:",
-        f"1. Run `zotero_semantic_search(query='{topic}', limit=12)` to find the most "
-        "relevant papers already in the library. Note each paper's key and the "
-        "matched passage.",
+        find_step,
         "2. Cluster the results into themes. For each theme, name the key papers and "
         "summarize their contribution in 1-2 sentences with the supporting quote.",
     ]
@@ -91,14 +124,26 @@ def synthesize_my_notes(scope: str) -> str:
 )
 def find_contradicting_evidence(claim: str) -> str:
     """Search the library for evidence for and against *claim*."""
-    return "\n".join(
-        [
-            f"Stress-test this claim against my Zotero library: **{claim}**",
-            "",
+    if _semantic_search_usable():
+        search_steps = [
             "1. `zotero_semantic_search(query=<the claim>, limit=10)` — find papers directly on this topic.",
             "2. `zotero_semantic_search` again with an INVERTED / skeptical phrasing of "
             "the claim (e.g. limitations, null results, criticisms) to surface "
             "disconfirming work.",
+        ]
+    else:
+        search_steps = [
+            "1. `zotero_search_items(query=<one key term of the claim>, qmode='everything', "
+            "limit=10)`, once per key term (each extra word narrows the match), to find "
+            "papers directly on this topic.",
+            "2. `zotero_search_items` again with skeptical terms (e.g. limitations, null "
+            "results, criticisms), one per query, to surface disconfirming work.",
+        ]
+    return "\n".join(
+        [
+            f"Stress-test this claim against my Zotero library: **{claim}**",
+            "",
+            *search_steps,
             "3. Sort the results into SUPPORTS / CONTRADICTS / MIXED, quoting the matched "
             "passage and citing the item key for each.",
             "4. Weigh the evidence: note study quality signals where visible (sample, "

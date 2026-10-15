@@ -62,7 +62,11 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "zotero_merge_duplicates",
         }
     ),
-    # Corpus-level exploration built on the semantic index.
+    # The semantic index: embedding search over titles, abstracts and full
+    # text. Needs the `[semantic]` extra (ChromaDB plus an embedding model).
+    "semantic": frozenset({"zotero_semantic_search"}),
+    # Corpus-level exploration against OpenAlex: related papers, coverage of
+    # a field. Independent of the semantic index.
     "discovery": frozenset(
         {
             "zotero_find_related_papers",
@@ -123,6 +127,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
 #: maintenance rather than research, or apply only to some users.
 DEFAULT_ON: frozenset[str] = frozenset(
     {
+        "semantic",
         "libraries",
         "search-admin",
         "pdf-geometry",
@@ -134,6 +139,18 @@ DEFAULT_ON: frozenset[str] = frozenset(
 _HTTP_TRANSPORTS = frozenset({"streamable-http", "sse", "http"})
 
 _CONNECTOR_TOOLSET = "chatgpt-connector"
+
+#: Groups whose every tool needs the ``[semantic]`` extra. On an install
+#: without it they are left out unless named explicitly (#572), so a base
+#: install doesn't advertise tools that can only answer with an install hint.
+NEEDS_SEMANTIC_EXTRA: frozenset[str] = frozenset({"semantic", "search-admin"})
+
+
+def semantic_extra_installed() -> bool:
+    """Whether the ``[semantic]`` extra is present, without importing it."""
+    import importlib.util
+
+    return importlib.util.find_spec("chromadb") is not None
 
 
 class UnknownToolsetError(ValueError):
@@ -149,6 +166,7 @@ def resolve_enabled(
     raw: str | None = None,
     *,
     transport: str | None = None,
+    semantic_installed: bool | None = None,
 ) -> set[str]:
     """Return the set of optional toolsets that should be enabled.
 
@@ -159,6 +177,9 @@ def resolve_enabled(
         transport: Transport the server is about to run under. HTTP-family
             transports add the ChatGPT connector group unless the spec already
             decided it explicitly.
+        semantic_installed: Whether the ``[semantic]`` extra is installed.
+            ``None`` detects it. Without it, :data:`NEEDS_SEMANTIC_EXTRA`
+            groups are dropped unless the spec names them.
 
     Raises:
         UnknownToolsetError: If the spec names an unknown toolset. Failing here
@@ -208,7 +229,31 @@ def resolve_enabled(
         else:
             enabled.discard(_CONNECTOR_TOOLSET)
 
+    # Without the extra these groups can only answer "install it". Named
+    # explicitly, they stay, so the operator gets that answer rather than a
+    # tool that silently isn't there.
+    if semantic_installed is None:
+        semantic_installed = semantic_extra_installed()
+    if not semantic_installed:
+        enabled -= NEEDS_SEMANTIC_EXTRA - named
+
     return enabled
+
+
+_none_notice_logged = False
+
+
+def _none_drops_semantic(raw: str | None) -> bool:
+    """Whether a spec relies on ``none`` while saying nothing about ``semantic``.
+
+    Before #572, ``none`` still included ``zotero_semantic_search``; a spec like
+    that silently loses it on upgrade. Naming ``semantic`` either way
+    (``none,semantic`` or ``none,-semantic``) states the choice.
+    """
+    if raw is None:
+        raw = os.environ.get(TOOLSETS_ENV_VAR)
+    spec = _split(raw or "")
+    return "none" in spec and not {"semantic", "-semantic"} & set(spec)
 
 
 def apply_toolsets(
@@ -225,7 +270,34 @@ def apply_toolsets(
     server applies a transport-agnostic default at import time and the CLI
     re-applies once the real transport is known.
     """
+    global _none_notice_logged
+    import logging
+
+    logger = logging.getLogger(__name__)
     enabled = resolve_enabled(raw, transport=transport)
+    with_extra = resolve_enabled(raw, transport=transport, semantic_installed=True)
+    dropped = sorted(with_extra - enabled)
+    if dropped:
+        logger.info(
+            "Semantic search extra not installed; leaving out toolset(s) %s. "
+            "Install zotero-mcp-server[semantic] to enable them.",
+            ", ".join(dropped),
+        )
+    # A warning, not info: the default log level is WARNING, and this exists
+    # for operators who will not read the changelog. Once per process, since
+    # the server applies the profile twice at startup.
+    if (
+        not _none_notice_logged
+        and _none_drops_semantic(raw)
+        and semantic_extra_installed()
+    ):
+        _none_notice_logged = True
+        logger.warning(
+            "%s uses 'none', which no longer includes zotero_semantic_search "
+            "(#572). Use 'none,semantic' to keep it, or 'none,-semantic' to "
+            "leave it out without this notice.",
+            TOOLSETS_ENV_VAR,
+        )
 
     on: set[str] = set()
     off: set[str] = set()

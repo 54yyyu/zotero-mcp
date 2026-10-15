@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,73 +25,102 @@ logging.basicConfig(
 )
 
 
-def _sync_semantic_update() -> None:
-    """Check for and run semantic search auto-update (called in a worker thread).
+def _semantic_update_command() -> list[str] | None:
+    """The ``update-db`` command line if a semantic auto-update is due, else None.
 
-    Every early return below happens *before* ``zotero_mcp.semantic_search`` is
-    imported. That module pulls in ChromaDB and numpy, which costs roughly a
-    second even when warm, and on Windows the import — running here, in the
-    lifespan's worker thread — wedged the process for the length of the first
-    tool call (#485). ``config_light`` answers "is an update due?" from the
-    config file alone, with no third-party imports at all, so only a server
-    that is actually about to index anything pays for ChromaDB.
+    Decided from the config file alone: ``config_light`` imports nothing
+    third-party, so a server with no update due never loads ChromaDB (#485).
+    The update itself runs in a child process (``_spawn_semantic_update``).
     """
     from zotero_mcp.config_light import should_update
 
     config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
     if not config_path.exists():
-        return
+        return None
 
-    # Avoid initializing ChromaDB on every server startup when no semantic
-    # auto-update is due. This also avoids racing a foreground
-    # zotero_semantic_search call for the same persisted ChromaDB directory.
     try:
         with open(config_path) as f:
             cfg = json.load(f)
         update_cfg = cfg.get("semantic_search", {}).get("update_config", {})
     except Exception:
         # An unreadable config cannot say an update is due, and guessing "yes"
-        # here is what would drag the heavy import back in on every startup.
-        return
+        # here is what would drag the heavy work back in on every startup.
+        return None
 
     if not should_update(update_cfg):
-        return
+        return None
 
-    from zotero_mcp.semantic_search import create_semantic_search
+    cmd = [sys.executable, "-m", "zotero_mcp.cli", "update-db"]
+    if is_local_mode():
+        cmd.append("--fulltext")
+    return cmd
 
-    search = create_semantic_search(str(config_path))
-    if not search.should_update_database():
-        return
 
-    sys.stderr.write("Auto-updating semantic search database...\n")
-    stats = search.update_database(extract_fulltext=is_local_mode())
-    sys.stderr.write(
-        f"Database update completed: {stats.get('processed_items', 0)} items processed\n"
+def _spawn_semantic_update(cmd: list[str]) -> subprocess.Popen:
+    """Start the update in its own process, output piped back to us.
+
+    Out of process because in a worker thread it shares this interpreter: a
+    native call that holds the GIL (model and index loading, ChromaDB) or, on
+    Windows, a DLL load stalls the event loop too, so the server could not
+    answer ``initialize`` until the update finished and the client gave up
+    (#706, #485).
+
+    stdin is DEVNULL and stdout/stderr are a pipe to us, never the client's
+    pipes: a child that outlived the server would otherwise hold them open
+    and the client would never see the connection close (#431).
+    """
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        # A console child of a windowless server would open a console window.
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+
+
+def _relay_update_output(proc: subprocess.Popen) -> None:
+    """Copy the child's output to our stderr (the client's log) until it exits."""
+    for line in proc.stdout:
+        sys.stderr.write(line)
+    returncode = proc.wait()
+    if returncode != 0:
+        sys.stderr.write(f"Warning: semantic search auto-update exited with code {returncode}\n")
 
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
     """Manage server startup and shutdown lifecycle.
 
-    Semantic search initialization (ChromaDB + embedding model) is
-    offloaded to a worker thread so it cannot block the event loop.
-    The previous synchronous call prevented FastMCP from responding
-    to the MCP ``initialize`` request within the 60-second client
-    timeout.
+    The semantic auto-update runs as a child ``zotero-mcp update-db`` process
+    (see ``_spawn_semantic_update``), with only the relay of its output on a
+    worker thread, so nothing it does can hold up the MCP handshake (#706).
+    The update lock in ``update_database`` still keeps it from racing a
+    manual ``update-db`` or another server.
 
-    On shutdown the worker thread is left to finish on its own —
-    ``asyncio.to_thread`` threads cannot be interrupted, and
-    ChromaDB (SQLite WAL) is crash-safe, so an unfinished update
-    simply resumes on the next startup.
+    On shutdown an unfinished update is terminated: ChromaDB (SQLite WAL)
+    is crash-safe, so it simply resumes on the next startup.
     """
     sys.stderr.write("Starting Zotero MCP server...\n")
+    update_proc: subprocess.Popen | None = None
 
     async def _background_update():
+        nonlocal update_proc
         try:
-            await asyncio.to_thread(_sync_semantic_update)
+            cmd = _semantic_update_command()
+            if cmd is None:
+                return
+            sys.stderr.write("Auto-updating semantic search database...\n")
+            update_proc = _spawn_semantic_update(cmd)
+            await asyncio.to_thread(_relay_update_output, update_proc)
         except Exception as e:
-            sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
+            sys.stderr.write(f"Warning: Could not run semantic search auto-update: {e}\n")
 
     async def _refresh_schema():
         # TTL-gated conditional GET; degrades to the vendored floor on failure.
@@ -110,6 +140,8 @@ async def server_lifespan(server: FastMCP):
     yield {}
 
     sys.stderr.write("Shutting down Zotero MCP server...\n")
+    if update_proc is not None and update_proc.poll() is None:
+        update_proc.terminate()
 
 
 class _ZoteroMCP(FastMCP):

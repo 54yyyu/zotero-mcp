@@ -9,8 +9,8 @@ const port = () => Number(Zotero.Prefs.get("httpServer.port")) || 23119;
  * Zotero's own window is refused by the platform, and would not catch the server that has gone quiet.) 0 = no answer.
  */
 async function httpStatus(spawner: Spawner, env: Record<string, string>, path: string, headers: string[] = []): Promise<number> {
-  const args = ["-s", "-m", "4", "-o", "/dev/null", "-w", "%{http_code}", ...headers.flatMap((h) => ["-H", h]), `http://127.0.0.1:${port()}${path}`];
-  const r = await spawner.run("/usr/bin/curl", args, { env, timeoutMs: 8000 }).catch(() => null);
+  const args = ["-s", "-m", "4", "-o", spawner.windows ? "NUL" : "/dev/null", "-w", "%{http_code}", ...headers.flatMap((h) => ["-H", h]), `http://127.0.0.1:${port()}${path}`];
+  const r = await spawner.run(spawner.windows ? `${env["SystemRoot"] ?? "C:\\Windows"}\\System32\\curl.exe` : "/usr/bin/curl", args, { env, timeoutMs: 8000 }).catch(() => null);
   return Number(r?.stdout.trim()) || 0;
 }
 

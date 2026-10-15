@@ -396,7 +396,8 @@ class TestAttachFileLocal:
         assert "absolute path" in result
 
     @pytest.mark.parametrize(
-        "name", ["notes.docx", "draft.odt", "memo.rtf", "scan.djvu", "book.epub"]
+        "name", ["notes.docx", "draft.odt", "memo.rtf", "scan.djvu", "book.epub",
+                 "paper.md", "data.yaml", "data.yml"]
     )
     def test_accepts_supplementary_types(self, name, monkeypatch, dummy_ctx):
         """Not PDF-only: the supporting-document types are attachable too."""

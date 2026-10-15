@@ -4,7 +4,7 @@ import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, Spa
 import { AcpClient } from "./acp.ts";
 import { BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from "./backends.ts";
 import { ensureBridge, locateBridge } from "./bridges.ts";
-import { bridgeEnv, dirnameOf, findBinary, stripApiKeys, withPathFirst } from "./env.ts";
+import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
 
 export interface RuntimeOpts {
@@ -38,6 +38,7 @@ export const CATALOG_CLEANUP = 'real=$(cd "$1" && pwd -P); d="$HOME/.claude/proj
 async function lockedEnv(spawner: Spawner, env: Record<string, string>, spec: BackendSpec, { cwd, model }: StartOpts): Promise<Record<string, string>> {
   if (spec.id === "claude-code") return { MAX_THINKING_TOKENS: "0", ...(model ? { ANTHROPIC_MODEL: model } : {}) };
   if (spec.id === "codex") return { CODEX_CONFIG: JSON.stringify({ sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled" }) };
+  if (spawner.windows) throw new Error("Translating with pi is not available on Windows yet. Choose another agent for translation.");
   const pi = await findCli(spawner, env, spec);
   if (!pi) throw new Error(spec.cli!.hint);
   const script = `${cwd}/pi-locked.sh`;
@@ -60,7 +61,9 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
   /** A short-lived session in a temp workspace, read and closed. Nothing is left running; Claude is asked not to keep the session, the others cannot be. */
   async function probeCatalog(id: BackendId): Promise<Catalog> {
     const env = await spawner.baseEnv();
-    const made = await spawner.run("/bin/sh", ["-c", 'mktemp -d "${TMPDIR:-/tmp}/zotero-chat-catalog.XXXXXX"'], { env, timeoutMs: 10_000 });
+    const made = spawner.windows
+      ? await nodeEval(spawner, env, 'const{tmpdir}=require("os");console.log(require("fs").mkdtempSync(require("path").join(tmpdir(),"zotero-chat-catalog-")))')
+      : await spawner.run("/bin/sh", ["-c", 'mktemp -d "${TMPDIR:-/tmp}/zotero-chat-catalog.XXXXXX"'], { env, timeoutMs: 10_000 });
     const cwd = made.stdout.trim();
     if (made.code !== 0 || !cwd) throw new Error("could not create a temporary workspace to read the agent's options");
     try {
@@ -78,7 +81,10 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
         await session.close();
       }
     } finally {
-      await spawner.run("/bin/sh", ["-c", CATALOG_CLEANUP, "sh", cwd], { env, timeoutMs: 10_000 }).catch(() => undefined);
+      await (spawner.windows
+        ? nodeEval(spawner, env, 'require("fs").rmSync(process.argv[1],{recursive:true,force:true})', cwd)
+        : spawner.run("/bin/sh", ["-c", CATALOG_CLEANUP, "sh", cwd], { env, timeoutMs: 10_000 })
+      ).catch(() => undefined);
     }
   }
 

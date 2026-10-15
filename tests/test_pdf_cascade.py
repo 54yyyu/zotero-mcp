@@ -1,5 +1,6 @@
-"""Unit tests for the PDF attachment cascade (_try_unpaywall, _try_arxiv_from_crossref,
-_try_semantic_scholar, _try_pmc, _download_and_attach_pdf, _try_attach_oa_pdf)."""
+"""Unit tests for the PDF attachment cascade (_try_unpaywall, _try_openalex,
+_try_arxiv_from_crossref, _try_semantic_scholar, _try_pmc, _download_and_attach_pdf,
+_try_attach_oa_pdf)."""
 
 import json
 
@@ -10,6 +11,7 @@ from zotero_mcp.server import (
     _download_and_attach_pdf,
     _try_arxiv_from_crossref,
     _try_attach_oa_pdf,
+    _try_openalex,
     _try_pmc,
     _try_semantic_scholar,
     _try_unpaywall,
@@ -130,6 +132,76 @@ class TestTryUnpaywall:
         monkeypatch.setattr(requests, "get", fake_get)
         result = _try_unpaywall("10.1234/slow", dummy_ctx)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _try_openalex
+# ---------------------------------------------------------------------------
+
+class TestTryOpenAlex:
+
+    def _get(self, monkeypatch, payload, status=200):
+        seen = []
+
+        def fake_get(url, **kwargs):
+            seen.append((url, kwargs))
+            return _FakeHTTPResponse(status, json_data=payload)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        return seen
+
+    def test_collects_pdf_urls_skipping_nulls(self, monkeypatch, dummy_ctx):
+        """The shape of 10.1175/jcli-d-12-00821.1: no best_oa_location, a
+        publisher location without a pdf_url, and a closed repository copy."""
+        self._get(monkeypatch, {
+            "best_oa_location": None,
+            "locations": [
+                {"is_oa": False, "pdf_url": None},
+                {"is_oa": False, "pdf_url": "http://repo.example.org/1/paper.pdf"},
+            ],
+        })
+        result = _try_openalex("10.1234/test", dummy_ctx)
+        assert result == ["http://repo.example.org/1/paper.pdf"]
+
+    def test_best_then_open_then_closed_without_duplicates(self, monkeypatch, dummy_ctx):
+        self._get(monkeypatch, {
+            "best_oa_location": {"is_oa": True, "pdf_url": "https://b.example/best.pdf"},
+            "locations": [
+                {"is_oa": False, "pdf_url": "https://pub.example/paywalled.pdf"},
+                {"is_oa": True, "pdf_url": "https://b.example/best.pdf"},
+                {"is_oa": True, "pdf_url": "https://repo.example/oa.pdf"},
+                {"is_oa": False, "pdf_url": "https://pub.example/paywalled.pdf"},
+            ],
+        })
+        result = _try_openalex("10.1234/test", dummy_ctx)
+        assert result == [
+            "https://b.example/best.pdf",
+            "https://repo.example/oa.pdf",
+            "https://pub.example/paywalled.pdf",
+        ]
+
+    def test_missing_locations(self, monkeypatch, dummy_ctx):
+        self._get(monkeypatch, {"best_oa_location": None})
+        assert _try_openalex("10.1234/test", dummy_ctx) is None
+
+    def test_no_record(self, monkeypatch, dummy_ctx):
+        self._get(monkeypatch, None, status=404)
+        assert _try_openalex("10.1234/test", dummy_ctx) is None
+
+    def test_timeout(self, monkeypatch, dummy_ctx):
+        def fake_get(url, **kwargs):
+            raise requests.exceptions.Timeout("timed out")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        assert _try_openalex("10.1234/slow", dummy_ctx) is None
+
+    def test_identifies_itself(self, monkeypatch, dummy_ctx):
+        """Same mailto as discovery.py, so requests land in the polite pool."""
+        seen = self._get(monkeypatch, {"locations": []})
+        _try_openalex("10.1234/test", dummy_ctx)
+        url, kwargs = seen[0]
+        assert url == "https://api.openalex.org/works/https://doi.org/10.1234/test"
+        assert kwargs["params"]["mailto"] == "zotero-mcp@users.noreply.github.com"
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +606,237 @@ class TestPublisherPagePdfUrl:
                             lambda url, **kw: _FakeHTTPResponse(404))
         result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
         assert "PubMed Central" in result, result
-        for expected in ("Unpaywall", "arXiv", "Semantic Scholar"):
+        for expected in ("Unpaywall", "OpenAlex", "arXiv", "Semantic Scholar"):
             assert expected in result, result
+
+
+class TestOpenAlexInTheCascade:
+    """OpenAlex goes after Unpaywall and before the publisher's page."""
+
+    PDF = b"%PDF-1.4 " + b"x" * 2000
+    PAGE_URL = "https://journals.example.com/previewpdf/1.pdf"
+    REPO_URL = "http://repo.example.org/1/paper.pdf"
+
+    def _fake_get(self, unpaywall_pdf=None, openalex_urls=(), pdf_urls=(), log=None):
+        def fake_get(url, **kwargs):
+            if log is not None:
+                log.append(url)
+            if "unpaywall.org" in url:
+                best = {"url_for_pdf": unpaywall_pdf} if unpaywall_pdf else None
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": best, "oa_locations": []})
+            if "openalex.org" in url:
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": None,
+                    "locations": [{"is_oa": False, "pdf_url": u} for u in openalex_urls],
+                })
+            if url in pdf_urls:
+                return _FakeHTTPResponse(
+                    200, content=self.PDF,
+                    headers={"Content-Type": "application/pdf"},
+                )
+            return _FakeHTTPResponse(404)
+        return fake_get
+
+    def test_openalex_before_the_publisher_page(self, monkeypatch, dummy_ctx):
+        """Both download. The publisher's citation_pdf_url is the one that
+        can be a preview, so the repository copy has to be tried first."""
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            openalex_urls=[self.REPO_URL],
+            pdf_urls=(self.REPO_URL, self.PAGE_URL)))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL)
+        assert "PDF attached (source: OpenAlex)" in result
+        assert len(zot.attachments) == 1
+
+    def test_unpaywall_before_openalex(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        log = []
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            unpaywall_pdf="https://oa.example.org/x.pdf",
+            openalex_urls=[self.REPO_URL],
+            pdf_urls=("https://oa.example.org/x.pdf", self.REPO_URL), log=log))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
+        assert "Unpaywall" in result
+        assert not any("openalex.org" in u for u in log)
+
+    def test_later_openalex_locations_are_tried(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            openalex_urls=["https://pub.example/paywalled.pdf", self.REPO_URL],
+            pdf_urls=(self.REPO_URL,)))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx)
+        assert "PDF attached (source: OpenAlex)" in result
+
+    def test_a_url_both_sources_name_is_fetched_once(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        log = []
+        monkeypatch.setattr(requests, "get", self._fake_get(
+            openalex_urls=[self.PAGE_URL], log=log))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL)
+        assert "PDF attached" not in result
+        assert log.count(self.PAGE_URL) == 1
+
+
+def _pdf_with_pages(n_pages):
+    """A minimal, valid PDF with ``n_pages`` blank pages, padded past the
+    1000-byte floor in ``_download_and_attach_pdf``."""
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>"]
+    kids = " ".join(f"{3 + i} 0 R" for i in range(n_pages))
+    objs.append(f"<< /Type /Pages /Kids [{kids}] /Count {n_pages} >>".encode())
+    objs += [b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"] * n_pages
+    out = bytearray(b"%PDF-1.4\n%" + b"x" * 1200 + b"\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref}\n%%EOF\n").encode()
+    return bytes(out)
+
+
+class TestPreviewPdfIsNotAttached:
+    """A publisher's citation_pdf_url can serve a first-page preview: a real
+    PDF of the right content type, above the size floor. AMS does this for
+    10.1175/jcli-d-12-00821.1, pages 2137-2143, with a 2-page PDF. The page
+    range on the item is the only thing that gives it away."""
+
+    PAGE_URL = "https://journals.example.com/previewpdf/1.pdf"
+    PMC_URL = "https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/pdf/"
+
+    def _fake_get(self, pdfs):
+        def fake_get(url, **kwargs):
+            if url in pdfs:
+                return _FakeHTTPResponse(
+                    200, content=pdfs[url],
+                    headers={"Content-Type": "application/pdf"},
+                )
+            if "unpaywall.org" in url:
+                return _FakeHTTPResponse(200, json_data={
+                    "best_oa_location": None, "oa_locations": []})
+            if "openalex.org" in url:
+                return _FakeHTTPResponse(200, json_data={"locations": []})
+            if "semanticscholar.org" in url:
+                return _FakeHTTPResponse(200, json_data={"openAccessPdf": None})
+            if "ncbi.nlm.nih.gov/tools/idconv" in url:
+                return _FakeHTTPResponse(200, json_data={
+                    "records": [{"pmcid": "PMC1234567"}]})
+            return _FakeHTTPResponse(404)
+        return fake_get
+
+    def test_preview_is_skipped_for_the_next_source(self, monkeypatch):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        messages = []
+
+        class _Ctx(DummyContext):
+            def info(self, msg, *_args, **_kwargs):
+                messages.append(msg)
+
+        ctx = _Ctx()
+        monkeypatch.setattr(requests, "get", self._fake_get({
+            self.PAGE_URL: _pdf_with_pages(2),
+            self.PMC_URL: _pdf_with_pages(7),
+        }))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", ctx,
+                                    page_pdf_url=self.PAGE_URL,
+                                    pages="2137-2143")
+        assert "PDF attached (source: PubMed Central)" in result
+        assert len(zot.attachments) == 1
+        assert any("likely a preview" in m for m in messages)
+
+    def test_a_preview_alone_is_never_uploaded(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get({
+            self.PAGE_URL: _pdf_with_pages(2),
+        }))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL,
+                                    pages="2137-2143")
+        assert "PDF attached" not in result
+        assert zot.attachments == []
+
+    def test_crossref_page_is_used_when_the_item_has_none(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get({
+            self.PAGE_URL: _pdf_with_pages(2),
+        }))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    crossref_metadata={"page": "2137-2143"},
+                                    page_pdf_url=self.PAGE_URL)
+        assert "PDF attached" not in result
+        assert zot.attachments == []
+
+    @pytest.mark.parametrize("pages", [None, "", "e1234", "2137", "1-5, 9-12", "xii-xx"])
+    def test_short_pdf_is_kept_without_a_page_range(self, monkeypatch, dummy_ctx, pages):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get({
+            self.PAGE_URL: _pdf_with_pages(2),
+        }))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL, pages=pages)
+        assert "PDF attached (source: the publisher's page)" in result
+        assert len(zot.attachments) == 1
+
+    def test_full_pdf_is_kept_with_a_page_range(self, monkeypatch, dummy_ctx):
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get({
+            self.PAGE_URL: _pdf_with_pages(7),
+        }))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL,
+                                    pages="2137-2143")
+        assert "PDF attached (source: the publisher's page)" in result
+
+    def test_a_pdf_that_cannot_be_counted_is_kept(self, monkeypatch, dummy_ctx):
+        """Page counting is a heuristic on top of the existing checks, so a
+        file the counter cannot parse is attached as before."""
+        _allow_ssrf_guard(monkeypatch)
+        zot = _AttachZotero()
+        monkeypatch.setattr(requests, "get", self._fake_get({
+            self.PAGE_URL: b"%PDF-1.4 " + b"x" * 2000,
+        }))
+        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/x", dummy_ctx,
+                                    page_pdf_url=self.PAGE_URL,
+                                    pages="2137-2143")
+        assert "PDF attached" in result
+
+
+class TestExpectedPageCount:
+
+    @pytest.mark.parametrize("pages,expected", [
+        ("2137-2143", 7),
+        ("2137\u20132143", 7),
+        ("2137--2143", 7),
+        (" 2137 - 2143 ", 7),
+        ("1189-95", 7),
+        ("S12-S20", 9),
+        ("S12-20", 9),
+    ])
+    def test_ranges(self, pages, expected):
+        from zotero_mcp.tools._helpers import _expected_page_count
+        assert _expected_page_count(pages) == expected
+
+    @pytest.mark.parametrize("pages", [
+        None, "", "2137", "e1234", "1-5, 9-12", "xii-xx", "A1-B9", "1-1", "1-99999",
+    ])
+    def test_not_a_usable_range(self, pages):
+        from zotero_mcp.tools._helpers import _expected_page_count
+        assert _expected_page_count(pages) is None
 
 
 class TestAThirdPartyUrlIsNotTrusted:

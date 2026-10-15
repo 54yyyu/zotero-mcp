@@ -9,6 +9,7 @@ Covers:
 
 import importlib.util
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -201,6 +202,10 @@ class TestGeminiV2Support:
         ef.client = mock_client
         ef.types = mock_types
         ef.max_input_tokens = 8000 - GeminiEmbeddingFunction.V2_PREFIX_TOKEN_BUDGET
+        # Content/Part with the SDK's attribute shape, so a test can read back
+        # what each request carried without google-genai installed.
+        mock_types.Content.side_effect = lambda parts: SimpleNamespace(parts=parts)
+        mock_types.Part.side_effect = lambda text: SimpleNamespace(text=text)
         return ef
 
     def test_v2_call_prepends_doc_prefix_no_config(self):
@@ -223,7 +228,7 @@ class TestGeminiV2Support:
         call_kwargs = mock_client.models.embed_content.call_args.kwargs
         # v2 uses no EmbedContentConfig — task instruction goes in the prompt
         assert "config" not in call_kwargs
-        assert call_kwargs["contents"] == [
+        assert [c.parts[0].text for c in call_kwargs["contents"]] == [
             f"{GeminiEmbeddingFunction.V2_DOC_PREFIX}doc text"
         ]
         mock_types.EmbedContentConfig.assert_not_called()
@@ -247,7 +252,7 @@ class TestGeminiV2Support:
         mock_client.models.embed_content.assert_called_once()
         call_kwargs = mock_client.models.embed_content.call_args.kwargs
         assert "config" not in call_kwargs
-        assert call_kwargs["contents"] == [
+        assert [c.parts[0].text for c in call_kwargs["contents"]] == [
             f"{GeminiEmbeddingFunction.V2_QUERY_PREFIX}query text"
         ]
         mock_types.EmbedContentConfig.assert_not_called()
@@ -276,7 +281,7 @@ class TestGeminiV2Support:
         long_query = "a" * 50_000
         ef.embed_query_text(long_query)
 
-        sent = mock_client.models.embed_content.call_args.kwargs["contents"][0]
+        sent = mock_client.models.embed_content.call_args.kwargs["contents"][0].parts[0].text
         # Must start with the v2 query prefix
         assert sent.startswith(GeminiEmbeddingFunction.V2_QUERY_PREFIX)
         # Body after the prefix must be truncated (not the full 50_000 chars)
@@ -295,7 +300,7 @@ class TestGeminiV2Support:
         def fake_embed_content(model, contents, **kwargs):
             response = MagicMock()
             response.embeddings = [
-                MagicMock(values=[float(ord(c[len(GeminiEmbeddingFunction.V2_DOC_PREFIX)]))])
+                MagicMock(values=[float(ord(c.parts[0].text[len(GeminiEmbeddingFunction.V2_DOC_PREFIX)]))])
                 for c in contents
             ]
             return response
@@ -313,6 +318,21 @@ class TestGeminiV2Support:
         # Verify order: each output vector encodes the first char of its input
         for i, vec in enumerate(result):
             assert vec[0] == float(ord(inputs[i][0]))
+
+    def test_v2_sends_one_content_per_text(self):
+        """google-genai >= 1.72 folds a list of plain strings into one Content
+        for gemini-embedding-2, and the model answers it with one aggregated
+        vector (#697). Each text has to go out as its own Content."""
+        def folding_embed_content(model, contents, **kwargs):
+            if all(isinstance(c, str) for c in contents):
+                contents = [" ".join(contents)]
+            return MagicMock(embeddings=[MagicMock(values=[0.0]) for _ in contents])
+
+        mock_client = MagicMock()
+        mock_client.models.embed_content.side_effect = folding_embed_content
+        ef = self._v2_ef(mock_client, MagicMock())
+
+        assert len(ef(["a", "b", "c"])) == 3
 
     def test_v2_init_logic_max_input_tokens(self):
         """v2 instances reserve V2_PREFIX_TOKEN_BUDGET from max_input_tokens.
