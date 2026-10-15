@@ -54,6 +54,7 @@ from zotero_mcp.tools._helpers import (  # noqa: F401
     _resolve_collection_names,
     _try_arxiv_from_crossref,
     _try_attach_oa_pdf,
+    _try_openalex,
     _try_pmc,
     _try_semantic_scholar,
     _try_unpaywall,

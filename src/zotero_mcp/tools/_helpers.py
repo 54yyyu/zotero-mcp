@@ -34,6 +34,7 @@ from pyzotero.errors import (
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+from zotero_mcp.extract import pdf_page_count
 from zotero_mcp.identifiers import (
     TITLE_TAG_RE,
     arxiv_identity,
@@ -1617,6 +1618,56 @@ class PdfDownloadError(Exception):
     """A PDF download was stopped for being too large or too slow."""
 
 
+#: A single page range, "2137-2143", "S12-S20" or the abbreviated "123-45".
+_PAGE_RANGE_RE = re.compile(r"^\s*([A-Za-z]*)(\d+)\s*[-\u2010-\u2015]+\s*([A-Za-z]*)(\d+)\s*$")
+
+#: A PDF with fewer pages than this share of the item's page range is taken
+#: for a preview. Publishers' previews are one or two pages of the article,
+#: so the ratio only needs to separate "a fraction" from "all of it", and it
+#: leaves room for a preprint typeset more tightly than the journal.
+_PREVIEW_PAGE_RATIO = 0.6
+
+
+def _expected_page_count(pages):
+    """Number of pages a ``pages`` field like ``"2137-2143"`` spans, or ``None``.
+
+    ``None`` for anything that is not one plain range: a single page, an
+    article number, a list of ranges, roman numerals, or a range whose
+    prefixes differ. ``None`` turns the preview check off, so a guess here
+    would only ever cost a real PDF.
+    """
+    m = _PAGE_RANGE_RE.match(str(pages or ""))
+    if not m:
+        return None
+    first_prefix, first, last_prefix, last = m.groups()
+    if last_prefix and last_prefix.lower() != first_prefix.lower():
+        return None
+    if len(last) < len(first) and int(last) < int(first):
+        last = first[:len(first) - len(last)] + last
+    count = int(last) - int(first) + 1
+    if count < 2 or count > 1000:
+        return None
+    return count
+
+
+def _looks_like_preview(filepath, expected_pages, ctx):
+    """True when the PDF at ``filepath`` has well under ``expected_pages``.
+
+    A PDF that cannot be counted is given the benefit of the doubt.
+    """
+    try:
+        actual = pdf_page_count(filepath)
+    except Exception:
+        return False
+    if actual < 1 or actual >= expected_pages * _PREVIEW_PAGE_RATIO:
+        return False
+    ctx.info(
+        f"Downloaded PDF has {actual} page(s) but the item spans "
+        f"{expected_pages}, likely a preview. Not attaching it"
+    )
+    return True
+
+
 def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DEADLINE) -> None:
     """Write a streamed PDF response to ``filepath``.
 
@@ -1722,12 +1773,16 @@ def _guarded_pdf_get(pdf_url, ctx):
     return None
 
 
-def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
+def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx, expected_pages=None):
     """Download a PDF from a URL and attach it to a Zotero item.
 
     The URL is fetched through ``_guarded_pdf_get`` (SSRF guard + manual
     redirect re-validation), since it originates from third-party metadata
     APIs rather than the user.
+
+    ``expected_pages`` is how many pages the item's page range spans, when
+    known. A download with far fewer is a publisher preview and is not
+    attached; see ``_looks_like_preview``.
 
     Returns the WebDAV-status suffix string on success (``""`` when WebDAV
     is not configured, otherwise something like ``" (uploaded to WebDAV
@@ -1763,6 +1818,12 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
                 if not f.read(5).startswith(b"%PDF"):
                     ctx.info("Downloaded file is not a PDF (no %PDF header)")
                     return None
+
+            # A first-page preview passes every check above. Its page count
+            # is the one thing that gives it away, and only when the item
+            # says how long the article is.
+            if expected_pages and _looks_like_preview(filepath, expected_pages, ctx):
+                return None
 
             suffix = _webdav_first_attach(
                 write_zot,
@@ -2244,6 +2305,57 @@ def _try_unpaywall(doi, ctx):
         return None
 
 
+def _openalex_pdf_urls(work):
+    """Every ``pdf_url`` in an OpenAlex work record, best first, no repeats.
+
+    ``best_oa_location`` leads, then the open-access locations, then the
+    rest. Closed locations are kept because OpenAlex marks a location closed
+    when it cannot read a licence for it, and such a copy often downloads
+    fine. The GEOMAR repository copy of 10.1175/jcli-d-12-00821.1 is one, on
+    a work whose ``open_access.is_oa`` is false and for which Unpaywall has
+    nothing.
+    """
+    locations = [loc for loc in (work.get("locations") or []) if isinstance(loc, dict)]
+    ordered = [work.get("best_oa_location") or {}]
+    ordered += [loc for loc in locations if loc.get("is_oa")]
+    ordered += [loc for loc in locations if not loc.get("is_oa")]
+
+    urls = []
+    for loc in ordered:
+        pdf_url = loc.get("pdf_url")
+        if pdf_url and pdf_url not in urls:
+            urls.append(pdf_url)
+    return urls
+
+
+def _try_openalex(doi, ctx):
+    """Try OpenAlex for PDF URLs across all the locations it knows of.
+
+    Unlike the other sources this returns a list or ``None``, because
+    OpenAlex often lists several copies and the first can be the paywalled
+    publisher one.
+    """
+    try:
+        resp = requests.get(
+            f"https://api.openalex.org/works/https://doi.org/{doi}",
+            params={"mailto": "zotero-mcp@users.noreply.github.com",
+                    "select": "best_oa_location,locations"},
+            headers={"User-Agent": _utils.USER_AGENT},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        urls = _openalex_pdf_urls(resp.json())
+        if urls:
+            ctx.info(f"OpenAlex: found {len(urls)} PDF location(s)")
+            return urls
+        return None
+    except Exception as e:
+        ctx.info(f"OpenAlex lookup failed: {e}")
+        return None
+
+
 def _try_arxiv_from_crossref(crossref_metadata, ctx):
     """Check CrossRef metadata for an arXiv ID and return a PDF URL."""
     if not crossref_metadata:
@@ -2344,7 +2456,7 @@ class OaPdfRequiredError(Exception):
 
 
 def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
-                       attach_mode="auto", page_pdf_url=None):
+                       attach_mode="auto", page_pdf_url=None, pages=None):
     """Attempt to find and attach an open-access PDF for a DOI.
 
     attach_mode: 'auto' downloads and uploads the first working OA PDF;
@@ -2357,7 +2469,12 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
     advertised, when one was read. Publishers running OJS, Atypon,
     Silverchair, Highwire and Springer all publish it, and it is how the
     browser connector finds a PDF the aggregators below have never heard
-    of. Tried first; see the source list.
+    of. Tried after Unpaywall and OpenAlex; see the source list.
+
+    pages: the item's Zotero ``pages`` field, for example ``"2137-2143"``.
+    Falls back to CrossRef's ``page``. When either gives a page range, a
+    download with well under that many pages is taken for a preview and the
+    cascade moves on to the next source.
     """
     if attach_mode == "none":
         return "skipped (attach_mode=none)"
@@ -2375,7 +2492,14 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
     #
     # Behind Unpaywall it still does the thing it was added for: for a
     # paper no aggregator has indexed, it is the only source there is.
-    sources = [("Unpaywall", lambda: _try_unpaywall(doi, ctx))]
+    #
+    # OpenAlex sits between the two for the same reason. It knows of
+    # repository copies in institutional archives that Unpaywall does not
+    # count as open access, and those are full text.
+    sources = [
+        ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
+        ("OpenAlex", lambda: _try_openalex(doi, ctx)),
+    ]
     if page_pdf_url:
         sources.append(("the publisher's page", lambda: page_pdf_url))
     sources += [
@@ -2384,12 +2508,24 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
         ("PubMed Central", lambda: _try_pmc(doi, ctx)),
     ]
 
+    expected_pages = _expected_page_count(
+        pages or (crossref_metadata or {}).get("page")
+    )
+
     found_urls = []  # Track URLs found but not downloadable
+    # OpenAlex usually lists the publisher's PDF too, the same URL the
+    # landing page advertises; one failed download of it is enough.
+    tried_urls = set()
 
     for source_name, find_url in sources:
         try:
-            pdf_url = find_url()
-            if pdf_url:
+            found = find_url()
+            # OpenAlex returns a list, every other source one URL or None.
+            candidates = [found] if isinstance(found, str) else list(found or [])
+            for pdf_url in candidates:
+                if pdf_url in tried_urls:
+                    continue
+                tried_urls.add(pdf_url)
                 ctx.info(f"Trying PDF from {source_name}: {pdf_url}")
                 found_urls.append((source_name, pdf_url))
 
@@ -2398,7 +2534,8 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                         return f"PDF linked (source: {source_name})"
                 else:  # "auto" or "required" — try download only
                     webdav_suffix = _download_and_attach_pdf(
-                        write_zot, item_key, pdf_url, doi, ctx
+                        write_zot, item_key, pdf_url, doi, ctx,
+                        expected_pages=expected_pages,
                     )
                     if webdav_suffix is not None:
                         return f"PDF attached (source: {source_name}){webdav_suffix}"
