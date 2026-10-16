@@ -5689,6 +5689,51 @@ def add_by_bibtex(
         return f"Error adding by BibTeX: {_helpers.format_zotero_error(e)}"
 
 
+_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+
+def add_by_pmid(
+    pmid: str | list[str],
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    create_missing_collections: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """Add items by PubMed ID, from PubMed's full XML record (E-utilities
+    efetch), mapped the way Zotero's PubMed translator maps it. Unlike a DOI
+    import through CrossRef, the item keeps its PMID and PMCID, so it can be
+    found again by the identifier it was added by, and it carries the
+    abstract, MeSH headings, keywords and language that CrossRef lacks.
+    """
+    pmids = pmid if isinstance(pmid, list) else re.split(r"[\s,]+", str(pmid))
+    pmids = [p.strip() for p in pmids if p and p.strip()]
+    bad = [p for p in pmids if not p.isdigit()]
+    if not pmids or bad:
+        return f"Error: a PMID is digits only: {', '.join(bad) or '(none given)'}"
+    try:
+        resp = requests.get(_EFETCH_URL, timeout=30, params={
+            "db": "pubmed", "retmode": "xml", "id": ",".join(pmids),
+            "tool": "zotero-mcp"})
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except (requests.RequestException, ET.ParseError) as e:
+        return f"Error: PubMed lookup failed: {e}"
+    records = [_citation_import.pubmed_xml_to_csl(a) for a in root.findall("PubmedArticle")]
+    got = {r["PMID"] for r in records}
+    missing = [p for p in pmids if p not in got]
+    if missing:
+        # Books (PubmedBookArticle) and unknown IDs land here.
+        return f"Error: PubMed returned no journal-article record for PMID {', '.join(missing)}"
+    return add_by_csl_json(
+        csl_json=records, collections=collections, tags=tags,
+        attach_mode=attach_mode, if_exists=if_exists,
+        create_missing_collections=create_missing_collections, ctx=ctx,
+    )
+
+
 def add_by_csl_json(
     csl_json: str | list | dict | None = None,
     file_path: str | None = None,
@@ -5789,7 +5834,7 @@ def add_by_csl_json(
 # zotero_add_item — the single public add facade
 # ---------------------------------------------------------------------------
 
-_ADD_SOURCE_TYPES = ("doi", "url", "isbn", "bibtex", "csl_json", "file")
+_ADD_SOURCE_TYPES = ("doi", "url", "isbn", "pmid", "bibtex", "csl_json", "file")
 
 _BIBTEX_EXTS = {".bib", ".bibtex"}
 _CSL_JSON_EXTS = {".json", ".csljson"}
@@ -5953,7 +5998,7 @@ def detect_source_type(source: str) -> str:
 
     raise ValueError(
         f"Could not tell what kind of source '{s[:80]}' is. Pass source_type "
-        "explicitly (doi, url, isbn, bibtex, csl_json, or file); note that "
+        "explicitly (doi, url, isbn, pmid, bibtex, csl_json, or file); note that "
         "file paths must be absolute and ISBNs must pass their checksum."
     )
 
@@ -5965,8 +6010,8 @@ def detect_source_type(source: str) -> str:
         "CSL JSON, or a local file. Use for every 'add this to Zotero' "
         "request. "
         "source: the identifier, URL, citation text, or ABSOLUTE file "
-        "path. DOI/URL/ISBN also take many at once (list or "
-        "comma/newline-separated), each resolved independently. "
+        "path. DOI/URL/ISBN/PMID also take many at once (list or "
+        "comma/newline-separated). "
         "BibTeX/CSL JSON may be inline (many entries per call) or a path "
         "to .bib/.bibtex/.json/.csljson; documents are .pdf, .epub, .docx "
         "and similar. "
@@ -5999,7 +6044,7 @@ def detect_source_type(source: str) -> str:
 def add_item(
     source: str,
     source_type: Literal[
-        "auto", "doi", "url", "isbn", "bibtex", "csl_json", "file"
+        "auto", "doi", "url", "isbn", "pmid", "bibtex", "csl_json", "file"
     ] = "auto",
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
@@ -6052,6 +6097,8 @@ def add_item(
         return add_by_url(url=source, attach_mode=attach_mode, **common)
     if resolved == "isbn":
         return add_by_isbn(isbn=source, **common)
+    if resolved == "pmid":
+        return add_by_pmid(pmid=source, attach_mode=attach_mode, **common)
     if resolved == "file":
         return add_from_file(file_path=source, title=title, **common)
     # BibTeX / CSL JSON arrive either inline or as a path to a citation file.

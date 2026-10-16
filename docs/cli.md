@@ -100,6 +100,7 @@ zotero-cli add doi 10.1038/s41586-021-03819-2
 zotero-cli add url https://arxiv.org/abs/2301.00001
 zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
 zotero-cli add isbn 9780262046305
+zotero-cli add pmid 31842878,16446872                # PubMed record: keeps PMID/PMCID, MeSH tags
 zotero-cli add bibtex --file refs.bib                # or --bibtex '@article{...}'
 zotero-cli add bibtex --bibtex - < refs.bib          # stdin via -
 zotero-cli add csl-json --file refs.json             # or --json '...' / --json -
