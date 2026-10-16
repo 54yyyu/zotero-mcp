@@ -11,6 +11,7 @@ failed on every Crossref payload it met in production.
 |---|---|
 | `crossref_csl_journal_article.json` | `https://api.crossref.org/works/10.1016/j.jbusvent.2019.105970/transform/application/vnd.citationstyles.csl+json` |
 | `crossref_csl_book_chapter.json` | `https://api.crossref.org/works/10.5876/9781607320395.c008/transform/application/vnd.citationstyles.csl+json` |
+| `pubmed_efetch.xml` | `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&retmode=xml&id=31842878,16446872,10375727` |
 
 Both fetched 2026-08-20 and stored verbatim, pretty-printed, with one
 exception: the article's 108-entry `reference` list is dropped. It is a third
@@ -23,3 +24,10 @@ vocabulary (`journal-article`, `book-chapter`) rather than the CSL spec's, and
 
 To refresh one, re-fetch the URL above and drop `reference`. Do not edit them
 by hand — an edited fixture is a hand-written fixture again.
+
+`pubmed_efetch.xml` was fetched 2026-10-16 and stored verbatim. Its three
+records cover what `pubmed_xml_to_csl` maps: PMCID, MeSH headings and author
+keywords, a structured abstract and an e-pub date (31842878); a translated
+`[...]` title in a non-English article with abbreviated MEDLINE pages
+(16446872); and a retracted article with its `RetractionIn` notice (10375727).
+Re-fetch the URL to refresh it.

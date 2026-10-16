@@ -742,6 +742,12 @@ def cmd_add(args):
             if_exists=if_exists, create_missing_collections=create_missing,
             ctx=ctx,
         ))
+    elif args.subcommand == "pmid":
+        _out(args, "add pmid", text=write_mod.add_by_pmid(
+            pmid=args.pmid, collections=collections, tags=tags,
+            attach_mode=args.attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing, ctx=ctx,
+        ))
     elif args.subcommand == "bibtex":
         bibtex = sys.stdin.read() if args.bibtex == "-" else args.bibtex
         _out(args, "add bibtex", text=write_mod.add_by_bibtex(
@@ -1643,6 +1649,11 @@ def build_parser() -> argparse.ArgumentParser:
     aisbn = add_sub.add_parser("isbn", help="Add book by ISBN")
     aisbn.add_argument("isbn")
     _add_common_flags(aisbn)
+    apmid = add_sub.add_parser("pmid", help="Add item(s) by PubMed ID, keeping the PMID")
+    apmid.add_argument("pmid", help="One PMID, or several comma-separated")
+    _add_common_flags(apmid)
+    apmid.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"],
+                       default="auto")
     abib = add_sub.add_parser("bibtex", help="Add items from BibTeX")
     abib.add_argument("--bibtex",
                       help="Inline BibTeX (use - to read from stdin)")

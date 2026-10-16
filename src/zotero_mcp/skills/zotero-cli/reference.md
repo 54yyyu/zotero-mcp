@@ -193,6 +193,16 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--if-exists` -- one of `file`, `skip`, `duplicate` -- default `file` -- When the item already exists: 'file' (default) reuses it and adds missing collections/tags; 'skip' leaves it untouched; 'duplicate' creates a new item anyway
  - `--create-collections` -- Create collections that don't exist yet (including parent/child paths)
 
+### `add pmid`
+
+ - `<pmid>` -- One PMID, or several comma-separated
+ - `--collections` -- Comma-separated collection keys, names, or paths
+ - `-c, --collection` -- Collection key, name, or parent/child path (repeatable; not comma-split, so names with commas work)
+ - `--tags` -- Comma-separated tags
+ - `--if-exists` -- one of `file`, `skip`, `duplicate` -- default `file` -- When the item already exists: 'file' (default) reuses it and adds missing collections/tags; 'skip' leaves it untouched; 'duplicate' creates a new item anyway
+ - `--create-collections` -- Create collections that don't exist yet (including parent/child paths)
+ - `--attach-mode` -- one of `auto`, `linked_url`, `import_file`, `none`, `required` -- default `auto`
+
 ### `add bibtex`
 
  - `--bibtex` -- Inline BibTeX (use - to read from stdin)

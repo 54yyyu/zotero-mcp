@@ -119,6 +119,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
     add_by_csl_json,
     add_by_doi,
     add_by_isbn,
+    add_by_pmid,
     add_by_url,
     add_from_file,
     add_item,
