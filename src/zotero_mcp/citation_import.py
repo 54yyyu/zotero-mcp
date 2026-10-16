@@ -531,7 +531,8 @@ def bibtex_entry_to_zotero(
     # PMID / PMCID
     for src_key, label in (("pmid", "PMID"), ("pmcid", "PMCID")):
         val = (fields.get(src_key) or "").strip()
-        if val:
+        # Zotero 7.1+ has native PMID and PMCID fields; Extra only where it has not.
+        if val and not _set_if_in_template(template, label, val):
             _append_extra(template, f"{label}: {val}")
 
     # Note -> extra
@@ -642,6 +643,16 @@ def csl_json_to_zotero(
     _set_if_in_template(template, "ISBN", _csl_text(csl.get("ISBN")))
     _set_if_in_template(template, "ISSN", _csl_text(csl.get("ISSN")))
     _set_if_in_template(template, "DOI", _csl_text(csl.get("DOI")))
+    for label in ("PMID", "PMCID"):
+        val = _csl_text(csl.get(label))
+        if val and not _set_if_in_template(template, label, val):
+            _append_extra(template, f"{label}: {val}")
+    # Zotero's own CSL mapping; a type without the field keeps it in Extra.
+    mapped = {
+        k for k, field in (("container-title-short", "journalAbbreviation"),
+                           ("source", "libraryCatalog"))
+        if _set_if_in_template(template, field, _csl_text(csl.get(k)))
+    }
     _set_if_in_template(template, "url", _csl_text(csl.get("URL")))
     _set_if_in_template(template, "language", _csl_text(csl.get("language")))
     _set_if_in_template(template, "abstractNote", _csl_text(csl.get("abstract")))
@@ -697,6 +708,7 @@ def csl_json_to_zotero(
         "edition", "ISBN", "ISSN", "DOI", "URL", "language",
         "abstract", "number-of-pages", "number",
         "genre", "keyword", "keywords", "note",
+        "PMID", "PMCID", *mapped,
     }
     for k, v in csl.items():
         if k in handled:
