@@ -115,6 +115,39 @@ jobs:
             || gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
           gh release upload "$GITHUB_REF_NAME" zotero-agent.xpi --clobber
 
+  site:
+    needs: publish
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # tags and merges, for the credits line
+      - uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          path: gh-pages
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install (chromadb registers the semantic tools, so the default profile is measured as users get it)
+        run: python -m pip install -e . chromadb tiktoken
+      - name: Update the site
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          HL="site/releases/$VERSION.md"
+          python scripts/site_release.py --version "$VERSION" --site gh-pages $([ -f "$HL" ] && echo --highlights "$HL")
+      - name: Commit to gh-pages
+        working-directory: gh-pages
+        run: |
+          git diff --quiet && { echo "site already up to date"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "site: ${GITHUB_REF_NAME#v}"
+          git push
+
   publish-registry:
     needs: publish
     runs-on: ubuntu-latest

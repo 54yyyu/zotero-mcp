@@ -9,7 +9,7 @@ Zotero MCP connects a [Zotero](https://www.zotero.org/) library to AI assistants
 | Entry point | What it is | Use it when |
 |---|---|---|
 | `zotero-cli` | A command-line client with `--json` output on every command | **You can run shell commands.** It costs no context until used. |
-| `zotero-mcp serve` | An MCP server exposing ~38 tools by default | Your client speaks MCP but has no shell (Claude Desktop, ChatGPT). |
+| `zotero-mcp serve` | An MCP server exposing ~41 tools by default | Your client speaks MCP but has no shell (Claude Desktop, ChatGPT). |
 
 Both read the same configuration. If you have a shell, prefer `zotero-cli`: the MCP server's tool schemas cost about 13.4k tokens on every request whether or not they are used.
 
