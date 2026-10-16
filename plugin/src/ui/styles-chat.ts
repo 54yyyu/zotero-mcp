@@ -11,6 +11,11 @@ export const CHAT_STYLES = `
 
 /* ---------- messages ---------- */
 .zmc .msg { min-width: 0; animation: zmc-rise 120ms ease; }
+.zmc :is(.md, .ubub__text, .thought__body, .sd__pre, .plan__t, .perm__what, .notice__body, .stopnote) {
+  cursor: text;
+  user-select: text;
+  -moz-user-select: text;
+}
 .zmc .msg--assistant:not([data-state="running"]) { content-visibility: auto; contain-intrinsic-size: auto 120px; }
 .zmc .msg--user { display: flex; justify-content: flex-end; }
 .zmc .ubub { max-width: min(88%, 34rem); padding: var(--s2) var(--s3); background: var(--paper-raised); border: 1px solid var(--rule); border-radius: var(--r3) var(--r3) var(--r0) var(--r3); }
