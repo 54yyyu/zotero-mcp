@@ -219,7 +219,7 @@ def test_db_status_reports_chunking_as_not_applied_on_batch_path(monkeypatch, tm
 
     status = search.get_database_status()
 
-    assert status["chunking"] == {"enabled": True, "effective": False}
+    assert status["chunking"] == {"enabled": True, "effective": False, "max_tokens": 8000}
     assert "NOT applied" in _format_chunking_status(status)
 
 
@@ -228,7 +228,7 @@ def test_db_status_reports_chunking_as_effective_off_the_batch_path(monkeypatch,
 
     status = search.get_database_status()
 
-    assert status["chunking"] == {"enabled": True, "effective": True}
+    assert status["chunking"] == {"enabled": True, "effective": True, "max_tokens": 8000}
     assert _format_chunking_status(status) == "enabled"
 
 
@@ -237,5 +237,52 @@ def test_db_status_reports_chunking_disabled(monkeypatch, tmp_path):
 
     status = search.get_database_status()
 
-    assert status["chunking"] == {"enabled": False, "effective": False}
+    assert status["chunking"] == {"enabled": False, "effective": False, "max_tokens": 8000}
     assert _format_chunking_status(status) == "disabled (item-level indexing)"
+
+
+# ---------------------------------------------------------------------------
+# Fulltext without chunking on a small-context model
+# ---------------------------------------------------------------------------
+
+def _fit_search(monkeypatch, tmp_path, *, batch=False, chunking=False, max_tokens=256):
+    search = _build_search(monkeypatch, tmp_path, batch=batch, chunking=chunking)
+    search.chroma_client.embedding_max_tokens = max_tokens
+    # Fulltext extraction needs the local sqlite reader; the warning comes first.
+    monkeypatch.setattr(search, "_get_items_from_source", lambda *a, **k: [])
+    return search
+
+
+def test_fulltext_without_chunking_warns_when_model_limit_is_small(monkeypatch, tmp_path, capsys):
+    search = _fit_search(monkeypatch, tmp_path)
+
+    stats = search.update_database(extract_fulltext=True)
+
+    assert stats["fulltext_truncated"] is True
+    err = capsys.readouterr().err
+    assert "only the first ~256 tokens of each item" in err
+    assert "--force-rebuild" in err
+    assert err.count("Full text is being indexed as one vector per item") == 1
+
+
+def test_fulltext_warning_not_shown_without_fulltext_chunking_or_for_large_models(
+    monkeypatch, tmp_path, capsys
+):
+    for kwargs, extract in [
+        ({}, False),  # no --fulltext
+        ({"chunking": True}, True),  # chunking on
+        ({"max_tokens": 8000}, True),  # model limit is large
+        ({"batch": True}, True),  # batch path has its own warning
+    ]:
+        search = _fit_search(monkeypatch, tmp_path, **kwargs)
+        stats = search.update_database(extract_fulltext=extract)
+        assert "fulltext_truncated" not in stats
+        assert "Full text is being indexed" not in capsys.readouterr().err
+
+
+def test_db_status_notes_small_model_limit_when_chunking_is_off(monkeypatch, tmp_path):
+    search = _fit_search(monkeypatch, tmp_path)
+
+    status = search.get_database_status()
+
+    assert "first ~256 tokens" in _format_chunking_status(status)

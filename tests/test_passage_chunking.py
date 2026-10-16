@@ -238,6 +238,42 @@ def test_chunking_config_loaded_from_file(monkeypatch, tmp_path):
     assert s._chunking_config["chunk_size"] == 256
 
 
+def _fit_search(monkeypatch, max_tokens, chars_per_token=None, **config):
+    s = _chunking_search(monkeypatch, {"chunk_size": 1500, "overlap": 200, **config})
+    s.chroma_client.embedding_max_tokens = max_tokens
+    if chars_per_token:
+        s.chroma_client.embedding_function = type("EF", (), {"chars_per_token": chars_per_token})()
+    return s
+
+
+def test_chunk_size_shrinks_to_fit_small_model(monkeypatch, caplog):
+    s = _fit_search(monkeypatch, 256)  # default chroma EF: no chars_per_token, falls back to 4
+    with caplog.at_level("INFO", logger="zotero_mcp.semantic_search"):
+        assert s._effective_chunk_size() == int(256 * 4 * 0.85)
+        s._effective_chunk_size()
+    assert sum("chunk_size reduced" in r.message for r in caplog.records) == 1
+
+
+def test_chunk_size_uses_embedding_function_chars_per_token(monkeypatch):
+    s = _fit_search(monkeypatch, 256, chars_per_token=3)
+    assert s._effective_chunk_size() == int(256 * 3 * 0.85)
+
+
+def test_chunk_size_unchanged_when_model_limit_fits(monkeypatch, caplog):
+    s = _fit_search(monkeypatch, 8000)
+    with caplog.at_level("INFO", logger="zotero_mcp.semantic_search"):
+        assert s._effective_chunk_size() == 1500
+    assert not caplog.records
+
+
+def test_passages_fit_small_model(monkeypatch):
+    s = _fit_search(monkeypatch, 256, max_chunks_per_item=100)
+    s._process_item_batch([_long_item("ITEM0001")], force_rebuild=True)
+    docs = s.chroma_client.upserted_docs
+    assert len(docs) > 1
+    assert max(len(d) for d in docs) <= int(256 * 4 * 0.85)
+
+
 # ---------------------------------------------------------------------------
 # Chunk grouping in enrichment
 # ---------------------------------------------------------------------------
