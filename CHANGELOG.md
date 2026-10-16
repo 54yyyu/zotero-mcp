@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Passages are sized to fit the embedding model.** With `semantic_search.chunking` on, the default `chunk_size` of 1500 characters (about 350 tokens) is longer than all-MiniLM-L6-v2 reads (256 tokens), so the tail of every passage was cut off before embedding. `chunk_size` is now capped at about 85% of the model's token limit (4 characters per token, 3 for OpenAI), roughly 870 characters for the default model, and the change is logged once. Models whose limit already fits keep the configured size. The new "Passage chunking" section in `docs/configuration.md` also recommends raising `max_chunks_per_item` to cover whole papers.
+- **`update-db --fulltext` warns when the full text cannot be searched.** Without chunking each item is one vector cut at the model's input limit, 256 tokens for the default model, so the extracted PDF body was dropped without a word. A user found only the abstract indexed by reading the ChromaDB collection. `update-db --fulltext` now prints one warning saying so and how to fix it (enable `semantic_search.chunking`, rebuild with `--force-rebuild`), and `db-status` shows the limit next to the chunking line. The Batch API path keeps its own warning.
+
 ## [0.15.0] - 2026-10-15
 
 ### Added

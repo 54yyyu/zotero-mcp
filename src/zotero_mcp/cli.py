@@ -369,6 +369,9 @@ def _format_chunking_status(status: dict) -> str:
     """
     chunking = status.get("chunking", {})
     if not chunking.get("enabled"):
+        max_tokens = chunking.get("max_tokens")
+        if isinstance(max_tokens, (int, float)) and max_tokens < 2000:
+            return f"disabled (item-level indexing; only the first ~{int(max_tokens)} tokens of each item are searchable)"
         return "disabled (item-level indexing)"
     if chunking.get("effective"):
         return "enabled"
