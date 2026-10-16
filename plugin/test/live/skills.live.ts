@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { DRAWING_GUIDE, FORMAT_GUIDE, buildBrief, createRuntime } from "../../src/agent/index.ts";
+import { CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, buildBrief, createRuntime } from "../../src/agent/index.ts";
 import type { BackendId, ChatEvent, StartOpts } from "../../src/types.ts";
 import { AGENT_SKILL_DIRS, invocationText } from "../../src/ui/skills-model.ts";
 import { createNodeSpawner } from "../node-spawner.ts";
@@ -34,7 +34,7 @@ for (const backend of backends) {
       const cwd = mkdtempSync(join(tmpdir(), "zmc-live-skill-"));
       dirs.push(cwd);
       for (const d of AGENT_SKILL_DIRS) { mkdirSync(join(cwd, d, "token-check"), { recursive: true }); writeFileSync(join(cwd, d, "token-check", "SKILL.md"), SKILL); }
-      const session = await runtime.start({ backend, cwd, brief: `${buildBrief()}\n\n${DRAWING_GUIDE}\n\n${FORMAT_GUIDE}`, ...SETUP[backend] } as StartOpts);
+      const session = await runtime.start({ backend, cwd, brief: `${buildBrief()}\n\n${DRAWING_GUIDE}\n\n${CALLOUT_GUIDE}\n\n${FORMAT_GUIDE}`, ...SETUP[backend] } as StartOpts);
       const events: ChatEvent[] = [];
       session.on((e) => {
         events.push(e);

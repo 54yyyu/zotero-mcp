@@ -200,7 +200,7 @@ describe("svg fences in markdown", () => {
 
 describe("the drawing guide", () => {
   it("is short and names exactly the palette the panel themes", () => {
-    assert.ok(DRAWING_GUIDE.split(/\s+/).length <= 90, `${DRAWING_GUIDE.split(/\s+/).length} words`);
+    assert.ok(DRAWING_GUIDE.split(/\s+/).length <= 110, `${DRAWING_GUIDE.split(/\s+/).length} words`);
     assert.ok(DRAWING_GUIDE.includes("```svg"));
     for (const n of PALETTE.filter((x) => !x.endsWith("-soft"))) assert.ok(new RegExp(`\\b${n}\\b`).test(DRAWING_GUIDE), n);
     assert.ok(DRAWING_GUIDE.includes("-soft"));

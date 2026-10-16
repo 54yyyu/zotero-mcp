@@ -15,14 +15,14 @@ import type { Token, Tokens } from "marked";
 export type MdNode = string | MdEl;
 export interface MdEl { tag: string; attrs?: Record<string, string>; kids?: MdNode[] }
 
-/** Element tags the tree may contain. `codeblock`, `math`, `cite`, `tablewrap`, `diagram` are ours; the DOM builder knows them. */
+/** Element tags the tree may contain. `codeblock`, `math`, `cite`, `tablewrap`, `diagram`, `callout`, `calloutTitle`, `ref` are ours; the DOM builder knows them. */
 export const ALLOWED_TAGS: ReadonlySet<string> = new Set([
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "code", "em", "strong", "del",
   "a", "br", "hr", "table", "thead", "tbody", "tr", "th", "td", "img", "span",
-  "codeblock", "math", "cite", "tablewrap", "diagram", "u", "sub", "sup",
+  "codeblock", "math", "cite", "tablewrap", "diagram", "callout", "calloutTitle", "ref", "u", "sub", "sup",
 ]);
 /** `color` and `bg` (on span only) hold a validated hex colour, nothing else. */
-export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(["href", "src", "alt", "title", "start", "align", "lang", "display", "class", "colspan", "open", "color", "bg"]);
+export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(["href", "src", "alt", "title", "start", "align", "lang", "display", "class", "colspan", "open", "color", "bg", "kind", "label"]);
 /** The only class names a tree may carry (set by this file, never from agent text). */
 export const ALLOWED_CLASSES: ReadonlySet<string> = new Set(["md-raw", "md-task", "md-task--on", "md-nobr"]);
 
@@ -142,6 +142,40 @@ function spanColors(attrs: string): { color?: string; bg?: string } {
 
 interface FormatToken { type: "fmt"; raw: string; tag: string; color?: string; bg?: string; tokens: Token[] }
 
+// ───────────────────────────── callouts ─────────────────────────────
+// A formal statement or an aside as a card: `> [!definition] Title` (Obsidian / GitHub alert syntax) or a LaTeX
+// `\begin{definition}[Title]\label{def:x} … \end{definition}`. Both become one `callout` node; mdview.ts draws it, numbers
+// the statements across the chat, and turns `\ref{def:x}` into a link to the card.
+
+export type CalloutTone = "thm" | "def" | "rem" | "proof" | "note" | "tip" | "key" | "warn" | "bad";
+export interface CalloutKind { label: string; tone: CalloutTone; numbered: boolean }
+const stmt = (label: string, tone: CalloutTone): CalloutKind => ({ label, tone, numbered: true });
+const aside = (label: string, tone: CalloutTone): CalloutKind => ({ label, tone, numbered: false });
+export const CALLOUT_KINDS: Readonly<Record<string, CalloutKind>> = {
+  theorem: stmt("Theorem", "thm"), lemma: stmt("Lemma", "thm"), proposition: stmt("Proposition", "thm"), corollary: stmt("Corollary", "thm"),
+  claim: stmt("Claim", "thm"), conjecture: stmt("Conjecture", "thm"),
+  definition: stmt("Definition", "def"), notation: stmt("Notation", "def"),
+  remark: stmt("Remark", "rem"), example: stmt("Example", "rem"), exercise: stmt("Exercise", "rem"),
+  proof: aside("Proof", "proof"),
+  note: aside("Note", "note"), tip: aside("Tip", "tip"), important: aside("Important", "key"), warning: aside("Warning", "warn"), caution: aside("Caution", "bad"),
+};
+/** Display environments that need no card: KaTeX has them, an agent just forgets the `$$`. */
+const MATH_ENVS = new Set(["equation", "equation*", "align", "align*", "gather", "gather*"]);
+const ENV_NAMES = [...Object.keys(CALLOUT_KINDS), ...MATH_ENVS].map((n) => n.replace("*", "\\*")).join("|");
+const ENV_OPEN = new RegExp(`^ {0,3}\\\\begin\\{(${ENV_NAMES})\\}`, "i");
+
+interface EnvToken { type: "texEnv"; raw: string; env: string; title: string; label: string; body: string }
+
+/** `\label{x}` and the `\ref{x}` that points at it: letters, digits and `:_.-/` only. */
+const LABEL = /\\label\{([\w:.\/-]{1,80})\}/;
+const REF_AT = /^\\(?:c|auto)?ref\{([\w:.\/-]{1,80})\}/;
+/** The first `\label{x}` of `text`, and `text` without any label (a half-arrived `\label{de` too). */
+function splitLabel(text: string): { label: string; text: string } {
+  return { label: LABEL.exec(text)?.[1] ?? "", text: text.replace(/\\label\{[^{}\n]*(?:\}|$)/g, "") };
+}
+/** `[!definition] Title` (the first line of an alert blockquote; `+` and `-` fold marks are ignored), then the body. */
+const ALERT = /^\[!([A-Za-z]+)\][+-]?[ \t]*([^\n]*)(?:\n([\s\S]*))?$/;
+
 // ───────────────────────────── marked with math ─────────────────────────────
 // `$x$` must hug its content and not be followed by a digit, so "costs $5 and $10" stays text.
 
@@ -205,6 +239,41 @@ const marked = new Marked({
         if ((m = RE.dollar.exec(src) || RE.paren.exec(src))) return { type: "mathInline", raw: m[0], tex: m[1] as string, display: false } satisfies MathToken;
         if ((m = RE.bracket.exec(src))) return { type: "mathInline", raw: m[0], tex: m[1] as string, display: true } satisfies MathToken;
         return undefined;
+      },
+    },
+    {
+      // \begin{definition}[Title]\label{def:x} … \end{definition}. Unclosed (still streaming, or a forgotten \end) it runs to the
+      // end of the text, so the card grows as it arrives; a display environment (align, equation) is math once it closes.
+      name: "texEnv",
+      level: "block",
+      start: (src: string) => src.match(new RegExp(ENV_OPEN.source, "im"))?.index,
+      tokenizer(src: string) {
+        const m = ENV_OPEN.exec(src);
+        if (!m) return undefined;
+        const env = (m[1] as string).toLowerCase();
+        const close = `\\end{${m[1]}}`;
+        const at = src.toLowerCase().indexOf(close.toLowerCase(), m[0].length);
+        if (MATH_ENVS.has(env)) {
+          if (at < 0) return undefined;
+          const raw = src.slice(0, at + close.length);
+          return { type: "mathBlock", raw: raw + (/^[ \t]*(?:\n+|$)/.exec(src.slice(raw.length))?.[0] ?? ""), tex: raw.trim(), display: true } satisfies MathToken;
+        }
+        const end = at < 0 ? src.length : at + close.length;
+        // unclosed: a half-typed `\end{def` at the very end is the closing tag arriving, not text
+        const inner = src.slice(m[0].length, at < 0 ? src.length : at).replace(at < 0 ? /\\(?:e(?:n(?:d(?:\{[^{}\n]*)?)?)?)?[ \t]*$/ : /(?!)/, "");
+        const head = /^[ \t]*(?:\[([^\]\n]*)(?:\]|$))?/.exec(inner) as RegExpExecArray;
+        const { label, text } = splitLabel(inner.slice(head[0].length));
+        return { type: "texEnv", raw: src.slice(0, end) + (/^[ \t]*(?:\n+|$)/.exec(src.slice(end))?.[0] ?? ""), env, title: (head[1] ?? "").trim(), label, body: text.replace(/^[ \t]*\n/, "") } satisfies EnvToken;
+      },
+    },
+    {
+      // \ref{def:x}: a link to the card with that \label (mdview.ts resolves it once the cards are numbered).
+      name: "texRef",
+      level: "inline",
+      start: (src: string) => src.match(/\\(?:c|auto)?ref\{/)?.index,
+      tokenizer(src: string) {
+        const m = REF_AT.exec(src);
+        return m ? { type: "texRef", raw: m[0], label: m[1] as string } : undefined;
       },
     },
   ],
@@ -324,7 +393,11 @@ export function openLinkAt(s: string): number {
 }
 
 const closedFence = (raw: string) => /\n {0,3}(?:`{3,}|~{3,})[ \t]*\s*$/.test(raw);
-const HAS_INLINE = new Set(["paragraph", "heading", "list", "blockquote", "table", "text"]);
+const HAS_INLINE = new Set(["paragraph", "heading", "list", "blockquote", "table", "text", "texEnv"]);
+/** A display environment (align, equation) whose \end has not arrived: still a paragraph of TeX, so not shown yet. */
+const OPEN_MATH_ENV = new RegExp(`^ {0,3}\\\\begin\\{(?:${[...MATH_ENVS].map((n) => n.replace("*", "\\*")).join("|")})\\}`, "i");
+/** `\ref{de` or `\ref` at the very end: a reference not finished arriving. */
+const OPEN_REF = /\\(?:c|auto)?(?:r(?:ef(?:\{[^{}]*)?|e)?)?$/;
 
 /**
  * The block still streaming in, as it may be shown now: never a half-written formula or link (the block stops before
@@ -334,8 +407,10 @@ const HAS_INLINE = new Set(["paragraph", "heading", "list", "blockquote", "table
 export function settledBlock(t: Token): Token[] {
   if (t.type === "code") return (t as Tokens.Code).lang?.trim().toLowerCase() === "math" && !closedFence(t.raw) ? [] : [t];
   if (!HAS_INLINE.has(t.type)) return [t];
-  if (t.type === "paragraph" && /^ {0,3}\|/.test(t.raw)) return [];
-  const cuts = [openMathAt(t.raw), openTagAt(t.raw), openLinkAt(t.raw)].filter((c) => c >= 0);
+  if (t.type === "paragraph" && (/^ {0,3}\|/.test(t.raw) || OPEN_MATH_ENV.test(t.raw))) return [];
+  if (t.type === "blockquote" && /^\[!?[A-Za-z]*$/.test((t as Tokens.Blockquote).text ?? "")) return []; // `> [!defin`: the kind has not arrived
+  const openRef = OPEN_REF.exec(t.raw.trimEnd())?.index ?? -1;
+  const cuts = [openMathAt(t.raw), openTagAt(t.raw), openLinkAt(t.raw), openRef].filter((c) => c >= 0);
   if (!cuts.length) return [t];
   const cut = Math.min(...cuts);
   const head = t.raw.slice(0, cut);
@@ -426,6 +501,7 @@ function inlineRaw(tokens: Token[] | undefined, depth: number): MdNode[] {
         out.push(el("math", [m.tex.trim()], { display: m.display ? "1" : "0" }));
         break;
       }
+      case "texRef": out.push(el("ref", [(t as unknown as { label: string }).label])); break;
       case "link": {
         const l = t as Tokens.Link;
         const kids = inline(l.tokens, depth + 1);
@@ -457,6 +533,14 @@ function blocks(tokens: Token[] | undefined, depth: number): MdNode[] {
   return out;
 }
 
+/** A callout card: its title (inline Markdown), then its body as blocks. */
+function callout(kind: string, title: string, label: string, body: string, depth: number): MdEl {
+  const head = title.trim() ? lexBlocks(title.trim()).find((x) => x.type === "paragraph") : undefined;
+  const kids: MdNode[] = head ? [el("calloutTitle", inline((head as Tokens.Paragraph).tokens, depth + 1))] : [];
+  kids.push(...blocks(lexBlocks(body), depth + 1));
+  return el("callout", kids, { kind, ...(label ? { label } : {}) });
+}
+
 /** One block token as nodes (marked's `space` and `def` produce none). */
 export function blockNodes(t: Token, depth = 0): MdNode[] {
   if (depth > MAX_DEPTH) return [el("p", [t.raw])];
@@ -475,7 +559,19 @@ export function blockNodes(t: Token, depth = 0): MdNode[] {
       return [el(`h${Math.min(6, Math.max(1, hh.depth))}`, inline(hh.tokens, depth + 1))];
     }
     case "hr": return [el("hr")];
-    case "blockquote": return [el("blockquote", blocks((t as Tokens.Blockquote).tokens, depth + 1))];
+    case "blockquote": {
+      const bq = t as Tokens.Blockquote;
+      const alert = ALERT.exec(bq.text ?? "");
+      if (alert && CALLOUT_KINDS[(alert[1] as string).toLowerCase()]) {
+        const { label, text } = splitLabel(alert[3] ?? "");
+        return [callout((alert[1] as string).toLowerCase(), alert[2] ?? "", label, text, depth)];
+      }
+      return [el("blockquote", blocks(bq.tokens, depth + 1))];
+    }
+    case "texEnv": {
+      const e = t as unknown as EnvToken;
+      return [callout(e.env, e.title, e.label, e.body, depth)];
+    }
     case "code": {
       const c = t as Tokens.Code;
       const lang = (c.lang ?? "").trim().split(/\s+/)[0] ?? "";
