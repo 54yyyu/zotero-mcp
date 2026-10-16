@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Add items by PubMed ID** (#692, #714). `zotero_add_item` takes `source_type="pmid"` (a PMID is detected as such only when named), and `zotero-cli add pmid 12345678` takes one or several. One PubMed `efetch` request returns the full record, mapped the way Zotero's PubMed translator does it, so the item keeps its PMID and PMCID and carries the abstract, MeSH headings, keywords and language that a DOI import through Crossref lacks. Dedup, collections, tags and `if_exists` work as for the other sources. Thanks @rizakardas.
+- **Add items by PubMed ID** (#692, #714). `zotero_add_item` takes `source_type="pmid"` (a bare number is not auto-detected, so name the source type), and `zotero-cli add pmid 12345678` takes one or several. One PubMed `efetch` request returns the full record, mapped the way Zotero's PubMed translator does it, so the item keeps its PMID and PMCID and carries the abstract, MeSH headings, keywords and language that a DOI import through Crossref lacks. Dedup, collections, tags and `if_exists` work as for the other sources. Thanks @rizakardas.
 
 ### Fixed
 
