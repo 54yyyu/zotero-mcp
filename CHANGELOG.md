@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-16
+
+### Added
+
+- **Add items by PubMed ID** (#692, #714). `zotero_add_item` takes `source_type="pmid"` (a bare number is not auto-detected, so name the source type), and `zotero-cli add pmid 12345678` takes one or several. One PubMed `efetch` request returns the full record, mapped the way Zotero's PubMed translator does it, so the item keeps its PMID and PMCID and carries the abstract, MeSH headings, keywords and language that a DOI import through Crossref lacks. Dedup, collections, tags and `if_exists` work as for the other sources. Thanks @rizakardas.
+
+### Fixed
+
+- **The Zotero Agent panel no longer cuts off a PDF read at a fixed zoom.** Opening or widening the panel narrows the reader; Page Width, Auto and Page Fit already refit, but a fixed zoom such as 120% kept its page width and spilled out of the view. A fixed zoom that no longer fits now becomes Page Width; one that still fits is left as set.
+- **BibTeX and CSL JSON imports write the native PMID and PMCID fields** (#692, #713). Zotero 7.1+ has both on journal articles, but the converters put them in Extra, so an imported item could not be found with `PMID is ...`. They go to the native field when the schema has it and to Extra otherwise. CSL JSON also maps `container-title-short` to Journal Abbr and `source` to Library Catalog, as Zotero's own CSL mapping does. Thanks @rizakardas.
+- **`.yaml` and `.yml` files get a text content type on the default upload path too** (#715, follow-up to #703). pyzotero asks `mimetypes` for the type, which says `application/octet-stream` on Python 3.10 to 3.13 and `application/yaml` on 3.14, neither of which Zotero full-text indexes; the 0.15.0 fix only covered the WebDAV and two-step paths. Thanks @lots-o.
+- **Chat text can be selected and copied in the Zotero Agent panel** (#716). Zotero's window chrome can set `user-select: none`, which the panel inherited; answers, your messages and the other readable parts of the chat now turn it back on. Thanks @IceGiraffe.
+- **Passages are sized to fit the embedding model.** With `semantic_search.chunking` on, the default `chunk_size` of 1500 characters (about 350 tokens) is longer than all-MiniLM-L6-v2 reads (256 tokens), so the tail of every passage was cut off before embedding. `chunk_size` is now capped at about 85% of the model's token limit (4 characters per token, 3 for OpenAI), roughly 870 characters for the default model, and the change is logged once. Models whose limit already fits keep the configured size. The new "Passage chunking" section in `docs/configuration.md` also recommends raising `max_chunks_per_item` to cover whole papers.
+- **`update-db --fulltext` warns when the full text cannot be searched.** Without chunking each item is one vector cut at the model's input limit, 256 tokens for the default model, so the extracted PDF body was dropped without a word. A user found only the abstract indexed by reading the ChromaDB collection. `update-db --fulltext` now prints one warning saying so and how to fix it (enable `semantic_search.chunking`, rebuild with `--force-rebuild`), and `db-status` shows the limit next to the chunking line. The Batch API path keeps its own warning.
+
 ## [0.15.0] - 2026-10-15
 
 ### Added

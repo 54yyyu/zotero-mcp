@@ -209,6 +209,38 @@ To read one specific attachment regardless of priority, pass that attachment's o
 
 Extracted text is reliable for prose and unreliable for math and tables. `zotero_read_pdf_pages` flags the pages where that happens and can return those pages as images (`format='image'`).
 
+## Passage chunking
+
+By default each item is indexed as one vector: title, authors, abstract and any full text joined and cut at the embedding model's input limit. The default model, all-MiniLM-L6-v2, reads 256 tokens (about 1,000 characters), so with `update-db --fulltext` the body of a PDF is extracted but never embedded and only the start of each item is searchable. `zotero-mcp update-db --fulltext` and `zotero-mcp db-status` say so when this applies.
+
+Passage chunking indexes each item as several overlapping passages instead, so search can match anywhere in a paper and return the matching passage with its page. It is off by default. These keys live under `semantic_search.chunking`:
+
+```json
+{
+  "semantic_search": {
+    "chunking": {
+      "enabled": true,
+      "chunk_size": 1500,
+      "overlap": 200,
+      "max_chunks_per_item": 100
+    }
+  }
+}
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | Index passages instead of one vector per item. |
+| `chunk_size` | `1500` | Target passage length in characters. |
+| `overlap` | `200` | Characters shared between neighbouring passages. |
+| `max_chunks_per_item` | `20` | Passages kept per item. Text past the last passage is not indexed. |
+
+Chunking only applies to items indexed after you turn it on, so run `zotero-mcp update-db --fulltext --force-rebuild` once. It is not applied on the Batch API path.
+
+A passage longer than the model can read would lose its tail, so `chunk_size` is lowered to fit: about 85% of the model's token limit, at 4 characters per token (3 for OpenAI). For the default model that is roughly 870 characters per passage whatever `chunk_size` says. Models with a larger limit keep your `chunk_size`, and the change is logged once at info level.
+
+With the default model, 20 passages cover about 13,000 characters, a few pages. To index whole papers, raise `max_chunks_per_item`: 100 covers roughly 20 pages, and longer papers need more. Each passage is one vector, so the database grows with it.
+
 ## Command-line options
 
 ```bash

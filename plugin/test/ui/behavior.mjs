@@ -46,6 +46,22 @@ await test("enter sends, shift+enter adds a line, the draft clears", async (p) =
   assert.match(prompt, /<zotero-context>[\s\S]*Bertrand and Mullainathan 2004[\s\S]*<\/zotero-context>\n\nline one\nline two/);
 });
 
+await test("message content remains selectable when Zotero's host disables text selection", async (p) => {
+  await p.evaluate(() => { window.__zmc.shadow.host.style.userSelect = "none"; });
+  await send(p, "compare");
+  await done(p);
+  const selectable = await p.evaluate(() => {
+    const root = window.__zmc.shadow;
+    const selectors = [".md", ".ubub__text", ".thought__body", ".sd__pre", ".plan__t", ".perm__what", ".notice__body", ".stopnote"];
+    return Object.fromEntries(selectors.map((selector) => {
+      const el = root.querySelector(selector);
+      return [selector, el ? getComputedStyle(el).userSelect : null];
+    }));
+  });
+  assert.equal(selectable[".md"], "text", "assistant prose overrides the host's non-selectable chrome");
+  assert.equal(selectable[".ubub__text"], "text", "the user's message is selectable too");
+});
+
 await test("escape stops a running answer; the stopped turn says so", async (p) => {
   await sim(p, () => { window.__zmc.sim.speed = 20; });
   await send(p, "slow answer");

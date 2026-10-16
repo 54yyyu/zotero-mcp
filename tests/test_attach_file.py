@@ -1,6 +1,7 @@
 """Tests for zotero_attach_file (tools/write.attach_file) and its helpers."""
 
 import hashlib
+import mimetypes
 
 import pytest
 from conftest import DummyContext, FakeZotero, skip_on_windows
@@ -410,6 +411,38 @@ class TestAttachFileLocal:
         )
         assert "Unsupported file type" not in result
         assert fake.attachments[0]["files"][0][0] == name
+
+    @pytest.mark.parametrize(
+        "ext,ctype", [(".md", "text/markdown"), (".yaml", "text/yaml"), (".yml", "text/yaml")]
+    )
+    def test_text_attachments_get_a_text_content_type(self, ext, ctype, monkeypatch, dummy_ctx):
+        """pyzotero takes contentType from mimetypes inside attachment_both, and
+        by then mimetypes may say anything: application/yaml on Python 3.14,
+        the platform defaults after EbookLib's bare mimetypes.init(). Zotero
+        doesn't full-text index application/yaml or application/octet-stream."""
+        # Swapped in as the module functions so the real MIME database is left
+        # alone. Built before _patch_path_valid: the first MimeTypes() runs
+        # init(), which looks for system MIME files with os.path.isfile.
+        db = mimetypes.MimeTypes()
+        db.add_type("application/x-wrong", ext)
+        monkeypatch.setattr(mimetypes, "add_type", db.add_type)
+        monkeypatch.setattr(mimetypes, "guess_type", db.guess_type)
+        fake = FakeZoteroForAttach()
+        upload = fake.attachment_both
+        sent = []
+
+        def attachment_both(files, parentid=None, **kwargs):
+            sent.append(mimetypes.guess_type(files[0][1])[0])
+            return upload(files, parentid=parentid, **kwargs)
+
+        fake.attachment_both = attachment_both
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        server.attach_file(item_key="ITEM1", file_path=f"/Users/test/data{ext}", ctx=dummy_ctx)
+
+        assert sent == [ctype]
+        assert _helpers._guess_content_type(f"data{ext}") == ctype
 
     def test_rejects_bad_extension(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()

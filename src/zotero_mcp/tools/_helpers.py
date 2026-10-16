@@ -340,6 +340,14 @@ def item_template_for(zot, item_type: str, link_mode: str | None = None) -> dict
         return _local_item_template(zot, item_type, link_mode)
 
 
+# Uploads take their contentType from mimetypes, in attach_files and inside
+# pyzotero, and its answer for these depends on the Python version and the
+# platform's MIME database (application/octet-stream, application/yaml, ...).
+# application/yaml is the registered type (RFC 9512), but Zotero full-text
+# indexes PDF, EPUB and its own text types, and that isn't one of them.
+_TEXT_ATTACHMENT_TYPES = {".md": "text/markdown", ".yaml": "text/yaml", ".yml": "text/yaml"}
+
+
 def attach_files(zot, pairs, parentid=None) -> dict:
     """Attach files as child items. *pairs* is [(display_title, file_path)].
 
@@ -350,6 +358,10 @@ def attach_files(zot, pairs, parentid=None) -> dict:
     ``{"success": [...], "unchanged": [...], "failure": [...]}`` shape is the
     same either way.
     """
+    # On every call, not once at import: the first time EbookLib has to guess
+    # an EPUB item's type it runs a bare mimetypes.init(), which drops these.
+    for ext, ctype in _TEXT_ATTACHMENT_TYPES.items():
+        mimetypes.add_type(ctype, ext)
     try:
         return zot.attachment_both(pairs, parentid=parentid)
     except Exception as exc:
@@ -1963,11 +1975,7 @@ def _guess_content_type(filename):
         "djvu": "image/vnd.djvu",
         "html": "text/html",
         "txt": "text/plain",
-        "md": "text/markdown",
-        # application/yaml is the registered type (RFC 9512), but Zotero's
-        # full-text indexer only takes text/*.
-        "yaml": "text/yaml",
-        "yml": "text/yaml",
+        **{e.lstrip("."): t for e, t in _TEXT_ATTACHMENT_TYPES.items()},
         "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "rtf": "application/rtf",

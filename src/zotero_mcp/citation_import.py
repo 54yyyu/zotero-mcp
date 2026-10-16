@@ -531,7 +531,8 @@ def bibtex_entry_to_zotero(
     # PMID / PMCID
     for src_key, label in (("pmid", "PMID"), ("pmcid", "PMCID")):
         val = (fields.get(src_key) or "").strip()
-        if val:
+        # Zotero 7.1+ has native PMID and PMCID fields; Extra only where it has not.
+        if val and not _set_if_in_template(template, label, val):
             _append_extra(template, f"{label}: {val}")
 
     # Note -> extra
@@ -642,6 +643,16 @@ def csl_json_to_zotero(
     _set_if_in_template(template, "ISBN", _csl_text(csl.get("ISBN")))
     _set_if_in_template(template, "ISSN", _csl_text(csl.get("ISSN")))
     _set_if_in_template(template, "DOI", _csl_text(csl.get("DOI")))
+    for label in ("PMID", "PMCID"):
+        val = _csl_text(csl.get(label))
+        if val and not _set_if_in_template(template, label, val):
+            _append_extra(template, f"{label}: {val}")
+    # Zotero's own CSL mapping; a type without the field keeps it in Extra.
+    mapped = {
+        k for k, field in (("container-title-short", "journalAbbreviation"),
+                           ("source", "libraryCatalog"))
+        if _set_if_in_template(template, field, _csl_text(csl.get(k)))
+    }
     _set_if_in_template(template, "url", _csl_text(csl.get("URL")))
     _set_if_in_template(template, "language", _csl_text(csl.get("language")))
     _set_if_in_template(template, "abstractNote", _csl_text(csl.get("abstract")))
@@ -697,6 +708,7 @@ def csl_json_to_zotero(
         "edition", "ISBN", "ISSN", "DOI", "URL", "language",
         "abstract", "number-of-pages", "number",
         "genre", "keyword", "keywords", "note",
+        "PMID", "PMCID", *mapped,
     }
     for k, v in csl.items():
         if k in handled:
@@ -711,6 +723,152 @@ def csl_json_to_zotero(
         _append_extra(template, f"{k}: {v}")
 
     return template
+
+
+# ---------------------------------------------------------------------------
+# PubMed XML -> CSL JSON
+# ---------------------------------------------------------------------------
+
+_MONTHS = {m: i for i, m in enumerate(
+    "jan feb mar apr may jun jul aug sep oct nov dec".split(), 1)}
+_SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
+                "into", "nor", "of", "on", "or", "the", "to", "with", "und",
+                "de", "des", "du", "la", "le", "et", "y"}
+# Correction notices a reader must see on the item itself.
+_NOTICE_TYPES = ("RetractionIn", "RetractionOf", "ErratumIn", "ErratumFor",
+                 "ExpressionOfConcernIn", "UpdateIn", "RepublishedIn")
+
+
+def _xml_text(el) -> str:
+    return " ".join("".join(el.itertext()).split()) if el is not None else ""
+
+
+def _title_case(s: str) -> str:
+    """Journal titles as Zotero's PubMed translator writes them
+    ("Statistics in medicine" -> "Statistics in Medicine")."""
+    words = s.split(" ")
+    return " ".join(
+        w if (i and w.lower() in _SMALL_WORDS) or w[:1].isupper() or not w
+        else w[:1].upper() + w[1:]
+        for i, w in enumerate(words))
+
+
+def _expand_pages(p: str) -> str:
+    """MEDLINE abbreviates the last page: 2409-19 -> 2409-2419."""
+    m = re.fullmatch(r"(\d+)-(\d+)", p)
+    if m and len(m.group(2)) < len(m.group(1)):
+        a, b = m.groups()
+        return f"{a}-{a[:len(a) - len(b)]}{b}"
+    return p
+
+
+def _pubmed_date(el) -> list[int] | None:
+    if el is None:
+        return None
+    year = el.findtext("Year")
+    if not year:  # MedlineDate: "2009 May-Jun", "1998 Dec-1999 Jan"
+        m = re.match(r"(\d{4})(?:\s+([A-Za-z]{3}))?", el.findtext("MedlineDate") or "")
+        if not m:
+            return None
+        parts = [int(m.group(1))]
+        if m.group(2) and m.group(2).lower() in _MONTHS:
+            parts.append(_MONTHS[m.group(2).lower()])
+        return parts
+    parts = [int(year)]
+    month = (el.findtext("Month") or "").strip()
+    if month:
+        parts.append(int(month) if month.isdigit() else _MONTHS.get(month[:3].lower(), 0))
+        if not parts[-1]:
+            parts.pop()
+        elif el.findtext("Day"):
+            parts.append(int(el.findtext("Day")))
+    return parts
+
+
+def pubmed_xml_to_csl(article) -> dict:
+    """One <PubmedArticle> as CSL JSON, the shape Zotero's PubMed translator
+    gives: native PMID/PMCID, abstract with its section labels, MeSH headings
+    and author keywords as tags, language, journal abbreviation, expanded
+    pages. What Zotero has no field for (publication types, the e-pub date,
+    correction and retraction notices) goes to Extra as `Label: value`.
+    """
+    mc = article.find("MedlineCitation")
+    art = mc.find("Article")
+    journal = art.find("Journal")
+    ji = journal.find("JournalIssue")
+    ids = {a.get("IdType"): (a.text or "").strip()
+           for a in article.findall("PubmedData/ArticleIdList/ArticleId")}
+
+    title = _xml_text(art.find("ArticleTitle")) or _xml_text(art.find("VernacularTitle"))
+    title = title.rstrip(".")
+    if title.startswith("[") and title.endswith("]"):  # translated title
+        title = title[1:-1].rstrip(".")
+    csl = {"type": "article-journal", "title": title, "source": "PubMed",
+           "PMID": (mc.findtext("PMID") or "").strip()}
+    if ids.get("pmc"):
+        csl["PMCID"] = ids["pmc"]
+    if ":" in title:
+        csl["title-short"] = title.split(":", 1)[0].strip()
+
+    authors = []
+    for a in art.findall("AuthorList/Author"):
+        if a.findtext("CollectiveName"):
+            authors.append({"literal": _xml_text(a.find("CollectiveName"))})
+        elif a.findtext("LastName"):
+            authors.append({"family": a.findtext("LastName").strip(),
+                            "given": (a.findtext("ForeName") or a.findtext("Initials") or "").strip()})
+    if authors:
+        csl["author"] = authors
+
+    def put(key, value):
+        if value:
+            csl[key] = value
+
+    put("container-title", _title_case(_xml_text(journal.find("Title"))))
+    put("container-title-short", (journal.findtext("ISOAbbreviation") or "").replace(".", "").strip())
+    put("ISSN", (journal.findtext("ISSN") or "").strip())
+    put("volume", (ji.findtext("Volume") or "").strip())
+    put("issue", (ji.findtext("Issue") or "").strip())
+    put("page", _expand_pages((art.findtext("Pagination/MedlinePgn") or "").strip()))
+    put("language", (art.findtext("Language") or "").strip())
+    issued = _pubmed_date(ji.find("PubDate"))
+    if issued:
+        csl["issued"] = {"date-parts": [issued]}
+    doi = ids.get("doi") or next((e.text for e in art.findall("ELocationID")
+                                  if e.get("EIdType") == "doi"), "")
+    put("DOI", (doi or "").strip())
+
+    sections = []
+    for t in art.findall("Abstract/AbstractText"):
+        label, text = t.get("Label"), _xml_text(t)
+        if label and label.upper() != "UNLABELLED":
+            label = label.capitalize() if label.isupper() else label
+            sections.append(f"{label}: {text}")
+        elif text:
+            sections.append(text)
+    put("abstract", "\n".join(sections))
+
+    tags = [_xml_text(d) for d in mc.findall("MeshHeadingList/MeshHeading/DescriptorName")]
+    tags += [_xml_text(k) for k in mc.findall("KeywordList/Keyword")]
+    tags = list(dict.fromkeys(t for t in tags if t))
+    if tags:
+        csl["keyword"] = tags
+
+    # Extra: what PubMed records and Zotero has no field for.
+    put("Publication Type", "; ".join(_xml_text(p) for p in art.findall(
+        "PublicationTypeList/PublicationType")))
+    epub = _pubmed_date(art.find("ArticleDate"))
+    if epub:
+        csl["Epub Date"] = "-".join(f"{x:02d}" for x in epub)
+    for c in mc.findall("CommentsCorrectionsList/CommentsCorrections"):
+        if c.get("RefType") in _NOTICE_TYPES:
+            ref = _xml_text(c.find("RefSource"))
+            pmid = (c.findtext("PMID") or "").strip()
+            key = re.sub(r"(?<!^)(?=[A-Z])", " ", c.get("RefType"))
+            prev = csl.get(key)
+            val = ref + (f" (PMID {pmid})" if pmid else "")
+            csl[key] = f"{prev}; {val}" if prev else val
+    return csl
 
 
 # ---------------------------------------------------------------------------

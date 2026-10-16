@@ -800,6 +800,57 @@ class ZoteroSemanticSearch:
         logger.warning(message)
         _report(f"\nWarning: {message}\n")
 
+    # Share of the model's input limit a passage may fill. Characters per token
+    # is an estimate, and the head of a passage is cut off if it overshoots.
+    CHUNK_FIT_MARGIN = 0.85
+
+    # Below this many tokens a single vector cannot hold a whole paper.
+    SMALL_CONTEXT_TOKENS = 2000
+
+    def _effective_chunk_size(self) -> int:
+        """``chunk_size`` capped so a passage fits the embedding model's limit.
+
+        The default chunk_size (1500 chars, ~350 tokens) is longer than
+        all-MiniLM-L6-v2 reads (256 tokens), which would silently cut the tail
+        off every passage. Models whose limit already fits are unchanged.
+        """
+        configured = int(self._chunking_config.get("chunk_size", 1500))
+        max_tokens = getattr(self.chroma_client, "embedding_max_tokens", None)
+        if not isinstance(max_tokens, (int, float)) or max_tokens <= 0:
+            return configured
+        ef = getattr(self.chroma_client, "embedding_function", None)
+        chars_per_token = getattr(ef, "chars_per_token", 4)
+        fit = max(1, int(max_tokens * chars_per_token * self.CHUNK_FIT_MARGIN))
+        if fit >= configured:
+            return configured
+        if not getattr(self, "_chunk_fit_logged", False):
+            self._chunk_fit_logged = True
+            logger.info(
+                f"Passage chunk_size reduced from {configured} to {fit} characters to fit "
+                f"the embedding model's {int(max_tokens)}-token input limit."
+            )
+        return fit
+
+    def _fulltext_fit_warning(self) -> str | None:
+        """Warning for item-level fulltext indexing on a small-context model.
+
+        Without chunking, an item's text is one vector truncated at the model's
+        input limit, so a PDF's body is dropped and only the start (usually
+        the abstract) stays searchable.
+        """
+        max_tokens = getattr(self.chroma_client, "embedding_max_tokens", None)
+        if not isinstance(max_tokens, (int, float)) or max_tokens >= self.SMALL_CONTEXT_TOKENS:
+            return None
+        if self._chunking_enabled:
+            return None
+        model = getattr(self.chroma_client, "embedding_model", None) or "The embedding model"
+        return (
+            f"Full text is being indexed as one vector per item, and {model} takes only "
+            f"{int(max_tokens)} tokens, so only the first ~{int(max_tokens)} tokens of each "
+            "item (usually the abstract) are searchable. Enable semantic_search.chunking in "
+            "config.json and rebuild with --force-rebuild to index whole papers."
+        )
+
     def _load_reranker_config(self) -> dict[str, Any]:
         """Load reranker configuration from file or use defaults."""
         return load_reranker_config(self.config_path)
@@ -2739,6 +2790,15 @@ class ZoteroSemanticSearch:
                 stats["chunking_ignored"] = True
                 self._warn_chunking_ignored_on_batch_path(active_batch_provider)
 
+            # Same silent loss without chunking: --fulltext extracts whole PDFs
+            # but a small-context model embeds only the first few hundred tokens.
+            # The batch path is left to its own warning above.
+            fit_warning = self._fulltext_fit_warning() if extract_fulltext and not batch_enabled else None
+            if fit_warning:
+                stats["fulltext_truncated"] = True
+                logger.warning(fit_warning)
+                _report(f"\nWarning: {fit_warning}\n")
+
             # In batch mode, defer destructive rebuilds until import so the
             # existing search index remains usable while the batch runs.
             if force_full_rebuild and not batch_enabled:
@@ -3142,7 +3202,7 @@ class ZoteroSemanticSearch:
         stats = {"processed": 0, "skipped": 0, "errors": 0}
 
         chunking = self._chunking_enabled
-        chunk_size = int(self._chunking_config.get("chunk_size", 1500))
+        chunk_size = self._effective_chunk_size() if chunking else 0
         overlap = int(self._chunking_config.get("overlap", 200))
         max_chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
 
@@ -4335,6 +4395,7 @@ class ZoteroSemanticSearch:
             "chunking": {
                 "enabled": self._chunking_enabled,
                 "effective": self._chunking_enabled and not batch_active,
+                "max_tokens": getattr(self.chroma_client, "embedding_max_tokens", None),
             },
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
