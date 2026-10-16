@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-16
+
+### Fixed
+
+- **The Zotero Agent panel no longer cuts off a PDF read at a fixed zoom.** Opening or widening the panel narrows the reader; Page Width, Auto and Page Fit already refit, but a fixed zoom such as 120% kept its page width and spilled out of the view. A fixed zoom that no longer fits now becomes Page Width; one that still fits is left as set.
+
 ## [0.15.0] - 2026-10-15
 
 ### Added

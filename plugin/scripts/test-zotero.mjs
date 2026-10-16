@@ -23,6 +23,7 @@ const suites = [
   ["notes", ["--mock-agent", ...welcomed]], // Save as note: real child/standalone notes, math and links in the HTML, diagrams as embedded images the editor renders
   ["translate", ["--mock-agent", ...welcomed]],
   ["skills", ["--mock-agent", ...welcomed]], // skills and prompts: lazy scan, import through the real host, sync into the chat folder, /name as a plain message // the reader's Translate: nothing loads until pressed, the answer streams into Zotero's own popup, the chat is untouched
+  ["refit", []], // a fixed zoom that the open panel would push out of the view becomes page-width
   ["cite", ["--mock-agent"]], // a quote link flashes the sentence in the reader
   ["welcome", ["--mock-agent"]],
   ["agent", []], // the real bridge's handshake: no prompt, no tokens
