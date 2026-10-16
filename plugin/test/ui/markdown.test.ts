@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, MAX_MD, collectSources, citeLabel, citeTitle, decodeEntities, mdToTree, parseZoteroUri, safeHref, safeImageSrc, walk } from "../../src/ui/markdown.ts";
+import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, CALLOUT_KINDS, MAX_MD, collectSources, citeLabel, citeTitle, decodeEntities, mdToTree, parseZoteroUri, safeHref, safeImageSrc, walk } from "../../src/ui/markdown.ts";
 import type { MdNode } from "../../src/ui/markdown.ts";
 import { HOSTILE_SHAPES, XSS_CORPUS } from "./corpus.ts";
 
@@ -22,6 +22,7 @@ function violation(tree: MdNode[]): string | null {
       if (k === "class") for (const c of v.split(/\s+/)) if (!ALLOWED_CLASSES.has(c)) return `class ${c}`;
     }
     if (el.tag === "img" && !el.attrs?.src) return "img without src";
+    if (el.tag === "callout" && !(el.attrs?.kind && el.attrs.kind in CALLOUT_KINDS && /^[\w:./-]{0,80}$/.test(el.attrs.label ?? ""))) return `callout ${JSON.stringify(el.attrs)}`;
   }
   return null;
 }
@@ -187,4 +188,40 @@ test("the tooltip of a long chip label is the label; with a quote it is the quot
   const long = "IDH-A tumors are associated with more microglia/macrophages";
   assert.equal(citeTitle("zotero://open-pdf/library/items/ABCD1234?page=4", long), long);
   assert.equal(citeTitle("zotero://open-pdf/library/items/ABCD1234?page=4&quote=white%20names", long), "“white names”");
+});
+
+const tagsOf = (src: string) => [...walk(mdToTree(src))].map((e) => e.tag);
+
+test("callouts: an alert blockquote and a LaTeX environment become the same card, with title, label and body", () => {
+  const alert = mdToTree("> [!definition] Scaled **dot**-product\n> Row $i$ holds scores.\n>\n> $$a_{ij}$$\n\nafter");
+  const [card, after] = alert as [{ tag: string; attrs: Record<string, string>; kids: { tag: string }[] }, { tag: string }];
+  assert.equal(card.tag, "callout");
+  assert.equal(card.attrs.kind, "definition");
+  assert.deepEqual(card.kids.map((k) => k.tag), ["calloutTitle", "p", "math"]);
+  assert.equal(after.tag, "p");
+  const env = mdToTree("\\begin{theorem}[Banach]\\label{thm:b}\nEvery map.\n\nSecond $y$.\n\\end{theorem}\n\nBy \\ref{thm:b}.");
+  const [thm, p] = env as [{ tag: string; attrs: Record<string, string>; kids: { tag: string; kids?: unknown[] }[] }, { kids: unknown[] }];
+  assert.deepEqual([thm.tag, thm.attrs.kind, thm.attrs.label], ["callout", "theorem", "thm:b"]);
+  assert.deepEqual(thm.kids.map((k) => k.tag), ["calloutTitle", "p", "p"]);
+  assert.deepEqual(JSON.stringify(thm.kids[0]?.kids), '["Banach"]');
+  assert.ok(JSON.stringify(p.kids).includes('"tag":"ref"'));
+});
+
+test("callouts: GitHub alert kinds are cards without a number; a plain quote, an unknown kind and other environments stay as they were", () => {
+  assert.equal(CALLOUT_KINDS.warning?.numbered, false);
+  assert.deepEqual(tagsOf("> [!WARNING]\n> careful"), ["callout", "p"]);
+  assert.deepEqual(tagsOf("> [!banana] hi"), ["blockquote", "p"]);
+  assert.deepEqual(tagsOf("> just a quote"), ["blockquote", "p"]);
+  assert.ok(!tagsOf("\\begin{itemize}\n\\item a\n\\end{itemize}").includes("callout"));
+  assert.deepEqual(tagsOf("\\begin{align}\na &= b\n\\end{align}"), ["math"]);
+  assert.deepEqual(tagsOf("A \\ref{def:x} and `\\ref{y}` and $\\ref{z}$"), ["p", "ref", "code", "math"]);
+});
+
+test("callouts: a missing \\end, a hostile label and nesting cannot escape the policy", () => {
+  assert.equal(violation(mdToTree("\\begin{definition}[<script>x</script>]\\label{a\"onload=x}\nbody [x](javascript:1)")), null);
+  assert.equal(violation(mdToTree("> [!note] <img src=x onerror=y>\n> [z](javascript:1)")), null);
+  const deep = "\\begin{lemma}\n".repeat(60) + "x";
+  assert.equal(violation(mdToTree(deep)), null);
+  assert.ok(depth(mdToTree(deep)) <= 40);
+  assert.deepEqual(tagsOf("\\begin{proof}\nno end"), ["callout", "p"]);
 });

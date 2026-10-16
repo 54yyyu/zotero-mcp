@@ -4,6 +4,7 @@
 import type { ChipSummary } from "../types.ts";
 import type { AssistantMessage, Message, NoticeMessage, TranscriptState, UserMessage } from "./transcript.ts";
 import { answerText, textsOf } from "./transcript.ts";
+import { linkCallouts, takeCalloutsDirty } from "./callout.ts";
 import { collectSources } from "./markdown.ts";
 import type { CitedSource } from "./markdown.ts";
 import { dots, glint, permSeg, planSeg, stepsSeg, textSeg, thoughtSeg, toSegs } from "./parts.ts";
@@ -300,6 +301,7 @@ export class Feed {
     });
     this.syncLine();
     this.syncEmpty();
+    if (takeCalloutsDirty()) linkCallouts(this.inner);
     if (this.stick) this.toBottom(false);
   }
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lexBlocks, openLinkAt, openMathAt, settledBlock } from "../../src/ui/markdown.ts";
+import { lexBlocks, mdToTree, openLinkAt, openMathAt, settledBlock } from "../../src/ui/markdown.ts";
 
 const lastBlock = (src: string) => lexBlocks(src).filter((t) => t.type !== "space").at(-1)!;
 const shown = (src: string) => settledBlock(lastBlock(src)).map((t) => t.raw).join("").trimEnd();
@@ -56,4 +56,15 @@ test("a citation is not shown as raw markdown while it streams", () => {
   assert.equal(shown("The products grow large [p.4](zotero://open-pdf/library/items/AB?page=4&quote=the%20dot"), "The products grow large");
   assert.equal(shown("The products grow large [p.4"), "The products grow large");
   assert.equal(shown("The products grow large [p.4](zotero://open-pdf/library/items/AB?page=4)."), "The products grow large [p.4](zotero://open-pdf/library/items/AB?page=4).");
+});
+
+test("settledBlock: a callout grows as it arrives, never with its kind, an open formula or an open reference as raw text", () => {
+  assert.equal(shown("> [!defin"), "");
+  assert.equal(shown("> [!definition] Title\n> A map $T: X"), "> [!definition] Title\n> A map");
+  assert.equal(shown("\\begin{definition}[Sca"), "\\begin{definition}");
+  assert.equal(shown("\\begin{theorem}\\label{thm:b}\nIt holds.\n\nBy \\ref{thm"), "\\begin{theorem}\\label{thm:b}\nIt holds.\n\nBy");
+  assert.equal(shown("\\begin{align}\na &= b"), "");
+  assert.ok(!JSON.stringify(mdToTree("\\begin{lemma}\nIt holds.\n\\end{le")).includes("end")); // the closing tag arriving is not text
+  assert.equal(shown("so \\ref{def:x"), "so");
+  assert.equal(shown("so \\ref{def:x} then"), "so \\ref{def:x} then");
 });

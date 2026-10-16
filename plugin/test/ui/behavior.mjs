@@ -1131,6 +1131,36 @@ await test("a 400-turn chat opens fast and a streamed token stays cheap; the jum
 const dgFill = (sel, prop) => (p) => p.evaluate(([s, pr]) => getComputedStyle(window.__zmc.shadow.querySelector(s))[pr], [sel, prop]);
 const barOpacity = (p, i = 0) => p.evaluate((k) => getComputedStyle(window.__zmc.shadow.querySelectorAll(".dg__bar")[k]).opacity, i);
 
+const shadowText = (p, sel) => p.evaluate((q) => [...window.__zmc.shadow.querySelectorAll(q)].map((e) => e.textContent), sel);
+
+await test("callouts: numbered across the chat, a \\ref links to its card and flashes it, an unknown label says so", async (p) => {
+  await sim(p, () => { window.__zmc.sim.nextAnswer = "> [!definition] Metric\n> $d$ is a metric.\n\n\\begin{theorem}[Banach]\\label{thm:a}\nA fixed point exists.\n\\end{theorem}\n\n> [!tip]\n> unnumbered"; });
+  await send(p, "one");
+  await done(p);
+  await sim(p, () => { window.__zmc.sim.nextAnswer = "Using \\ref{thm:a}, and \\ref{def:none}.\n\n> [!lemma] L\n> body"; });
+  await send(p, "two");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length >= 2);
+  assert.deepEqual(await shadowText(p, ".cb__num"), [" 1", " 2", " 3"]);
+  assert.deepEqual(await shadowText(p, ".cbref"), ["Theorem 2", "def:none"]);
+  assert.equal(await p.locator(".cbref--missing").count(), 1);
+  await p.locator(".cbref").first().click();
+  assert.equal(await p.locator('.cb--thm.cb--flash').count(), 1);
+  assert.deepEqual(await sim(p, () => window.__zmc.shadow.querySelector(".cb--def").getAttribute("data-kind")), "definition");
+});
+
+await test("callouts: a card streams in as a card, never as raw markup", async (p) => {
+  await sim(p, () => { window.__zmc.sim.nextAnswer = "Here:\n\n\\begin{definition}[Metric space]\\label{def:m}\nA set with a map $d$ such that $d(x,y) = 0$ iff $x = y$, see \\ref{def:m}.\n\\end{definition}\n\n> [!theorem] Banach\n> Every contraction has a fixed point.\n\nDone."; });
+  await send(p, "stream it");
+  await p.waitForSelector(".md--streaming .cb", { timeout: 8000 });
+  for (let i = 0; i < 12 && await p.locator(".md--streaming").count(); i++) {
+    const t = (await shadowText(p, ".md")).join(" ");
+    assert.ok(!/\\begin|\\end|\[!|\\ref|\\label/.test(t), t);
+    await p.waitForTimeout(60);
+  }
+  await done(p);
+  assert.equal(await p.locator(".cb").count(), 2);
+}, { params: { speed: 40 } });
+
 await test("diagrams render as themed figures; the toolbar shows on hover and focus; Source toggles; Save calls the host", async (p) => {
   await send(p, "draw it");
   await done(p);

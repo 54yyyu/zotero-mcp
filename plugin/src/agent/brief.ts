@@ -56,10 +56,16 @@ export const TOOL_SHEET = [
 
 /**
  * How to draw, sent once with the brief (system prompt, or the first prompt), never per turn. Separate from the brief
- * so the brief's cap stays about the core; capped at 90 words itself (test/ui/diagram.test.ts checks it names exactly
+ * so the brief's cap stays about the core; capped at 110 words itself (test/ui/diagram.test.ts checks it names exactly
  * the palette ui/diagram-svg.ts themes).
  */
-export const DRAWING_GUIDE = "Diagrams: when a picture explains better than words (a pipeline, a 2x2, a causal graph), draw raw SVG in a ```svg block. One idea per drawing; viewBox about 360 wide, no width/height, no background rect, no style, script or images. Colour only with these names as fill/stroke values: ink (text, main lines), muted, line (borders), surface (box fill), accent, teal, violet, orange, red, green, and NAME-soft for area fills (accent-soft). Stroke 1.5, rx 8 boxes, labels 12px (11 small), text-anchor middle, arrowheads as a <marker>.";
+export const DRAWING_GUIDE = "Diagrams: when a picture explains better than words (a pipeline, a 2x2, a causal graph), draw raw SVG in a ```svg block. One idea, few elements, aligned to a grid, generous padding, every node labelled; the explanation goes in prose, not in the drawing. viewBox about 360 wide, no width/height, no background rect, no style, script or images. Colour only with these names as fill/stroke values: ink (text, main lines), muted, line (borders), surface (box fill), accent, teal, violet, orange, red, green, and NAME-soft for area fills (accent-soft). Stroke 1.5, round caps, rx 8 boxes, labels 12px (11 small, 13 bold titles), text-anchor middle, arrowheads as a <marker>.";
+
+/**
+ * Cards for formal statements, sent beside the drawing guide. ui/markdown.ts reads both spellings (Obsidian-style alerts
+ * and LaTeX environments), ui/callout.ts numbers the statements across the chat and links \ref to them.
+ */
+export const CALLOUT_GUIDE = "Callouts: put a formal statement in a card, as a blockquote opened by `> [!definition] Optional title` (kinds: definition, theorem, lemma, proposition, corollary, claim, remark, example, proof, note, tip, warning) or as LaTeX `\\begin{theorem}[Title] \\end{theorem}`. Statements are numbered across the chat. Name one with `\\label{thm:x}` inside it, and later write `\\ref{thm:x}` (not inside $…$) to link it instead of restating it. Only for statements worth numbering.";
 
 /**
  * The formatting Zotero notes have and Markdown lacks, sent once beside the drawing guide. The panel renders exactly
