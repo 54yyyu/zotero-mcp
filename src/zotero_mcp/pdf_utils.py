@@ -285,17 +285,33 @@ def _clip_span(span: dict, lo: int, hi: int) -> tuple[tuple, str] | None:
 # Coordinate Conversion
 # =============================================================================
 
+def _pdf_to_page_transform(page) -> tuple[float, float, float, float, float, float]:
+    """
+    Native PDF user space -> PyMuPDF page space, as (a, b, c, d, e, f).
+
+    PyMuPDF reports text in the unrotated page with the CropBox's top-left
+    corner as origin. On an unrotated page that mapping is
+    page.transformation_matrix. On a page with /Rotate, PyMuPDF builds that
+    matrix as (1, 0, 0, -1, 0, cropbox height) and so drops a page box origin
+    that is not (0, 0): rects would land off by the CropBox / MediaBox offset.
+    The mapping below is the same on every page, rotated or not.
+    """
+    if not getattr(page, "rotation", 0) % 360:
+        return tuple(page.transformation_matrix)
+    cropbox, mediabox = page.cropbox, page.mediabox
+    return (1.0, 0.0, 0.0, -1.0, -cropbox.x0, mediabox.y1 - cropbox.y0)
+
+
 def _page_to_pdf_transform(page) -> tuple[float, float, float, float, float, float]:
     """
-    Inverse of page.transformation_matrix as (a, b, c, d, e, f).
+    Inverse of _pdf_to_page_transform as (a, b, c, d, e, f).
 
     Maps PyMuPDF page space (top-left origin, normalized to the CropBox so
     page.rect is (0, 0, w, h)) back to native PDF user space (MediaBox
     lower-left origin), which is where Zotero positions annotations. Besides
-    flipping the y-axis, this restores any non-zero page box origin and
-    accounts for page rotation.
+    flipping the y-axis, this restores any non-zero page box origin.
     """
-    a, b, c, d, e, f = page.transformation_matrix
+    a, b, c, d, e, f = _pdf_to_page_transform(page)
     det = a * d - b * c
     return (
         d / det,
@@ -675,6 +691,45 @@ def _fuzzy_search_page(search_text: str, text_index) -> dict | None:
     }
 
 
+def _first_occurrence_bboxes(search_rects: list, search_text: str, text_index) -> list | None:
+    """
+    Boxes of one occurrence of search_text, when it occurs more than once on the page.
+
+    page.search_for returns the rects of every occurrence, with nothing to
+    tell where one ends and the next begins, so a quote that appears twice on
+    a page (a repeated table cell, a sentence from the abstract) would be
+    highlighted twice. This finds the occurrences in the page's text index
+    and keeps the one at search_for's first rect.
+
+    Args:
+        search_rects: Rects from page.search_for, in PyMuPDF page space
+        search_text: Text that was searched for
+        text_index: (spans, cumulative, span_positions) for the page
+
+    Returns:
+        Boxes of that occurrence in PyMuPDF page space, or None when the text
+        index has at most one occurrence (then all rects belong to it, e.g. a
+        quote over several lines)
+    """
+    spans, cumulative, span_positions = text_index
+    needle = normalize_for_matching(search_text)
+    if not needle:
+        return None
+    starts = [m.start() for m in re.finditer(re.escape(needle), cumulative)]
+    if len(starts) < 2:
+        return None
+
+    first = list(search_rects[0])
+    best = None
+    for start in starts:
+        bboxes, _ = _get_spans_in_range(start, start + len(needle), span_positions, spans)
+        if bboxes:
+            distance = _rect_distance(list(bboxes[0]), first)
+            if best is None or distance < best[0]:
+                best = (distance, bboxes)
+    return best[1] if best else None
+
+
 def _search_single_page(page, page_index: int, search_text: str, best_debug: dict) -> dict | None:
     """
     Search for text on a single PDF page using multiple strategies.
@@ -717,7 +772,10 @@ def _search_single_page(page, page_index: int, search_text: str, best_debug: dic
         # Try with normalized whitespace
         text_instances = page.search_for(" ".join(search_text.split()))
     if text_instances:
-        rects = _convert_rects_to_zotero(list(text_instances), page)
+        bboxes = list(text_instances)
+        if len(bboxes) > 1:
+            bboxes = _first_occurrence_bboxes(bboxes, search_text, text_index()) or bboxes
+        rects = _convert_rects_to_zotero(bboxes, page)
         return {
             "pageIndex": page_index,
             "rects": rects,
@@ -894,7 +952,7 @@ def text_in_rects(pdf, page_index: int, rects: list[list[float]]) -> str:
 
     with open_pdf(pdf) as doc:
         page = doc[page_index]
-        to_page = page.transformation_matrix
+        to_page = fitz.Matrix(*_pdf_to_page_transform(page))
         parts = []
         for x0, y0, x1, y1 in rects:
             box = fitz.Rect(x0, y0, x1, y1) * to_page
