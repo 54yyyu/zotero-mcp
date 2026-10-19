@@ -13,6 +13,8 @@ import { CHIP_ICON, clear, env, flashCheck, fmtTokens, h, icon, setKids } from "
 import { noteLine, trySave } from "./notes.ts";
 import type { NoteState } from "./notes.ts";
 import { Pacer, thinkOf } from "./think.ts";
+import { START, intentUp, isUpKey, pinned, scrolled } from "./follow.ts";
+import type { Follow } from "./follow.ts";
 import type { Think } from "./think.ts";
 
 export type { MsgActions };
@@ -186,8 +188,8 @@ export class Feed {
   private jump: HTMLElement;
   private live: HTMLElement;
   private views = new Map<string, { msg: Message; el: HTMLElement; asst?: AssistantView }>();
-  private stick = true;
-  private lastTop = 0;
+  /** Whether new content scrolls the feed (follow.ts): only until the reader moves up. */
+  private follow: Follow = START;
   private empty: HTMLElement | null = null;
   private lastState: TranscriptState | null = null;
   private lastRetry = false;
@@ -202,21 +204,26 @@ export class Feed {
     this.jump = h("button.jump", { type: "button", hidden: true, "aria-label": "Jump to the latest message", title: "Jump to the latest", onclick: () => this.toBottom(true) }, icon("down"));
     this.live = h("div.sr", { role: "status", "aria-live": "polite" });
     this.el = h("div.feedwrap", null, this.scroller, this.jump, this.live);
-    this.scroller.addEventListener("scroll", () => {
-      const s = this.scroller;
-      const dist = s.scrollHeight - s.scrollTop - s.clientHeight;
-      if (dist < 48) this.stick = true;
-      else if (s.scrollTop < this.lastTop - 1) this.stick = false;
-      this.lastTop = s.scrollTop;
-      this.jump.hidden = this.stick;
-    });
+    this.scroller.addEventListener("scroll", () => this.take(scrolled(this.follow, this.scroller)));
     // The scroll event comes a frame late, and a token rendered in that gap would snap a reader back down. Intent to read
-    // upward (wheel up, PageUp, Home, arrow up) lets go of the bottom at once; reaching the bottom again takes it back.
-    const letGo = () => { if (this.scroller.scrollTop > 0) { this.stick = false; this.jump.hidden = false; } };
+    // upward (wheel up, PageUp, Home, arrow up, a finger dragging down) lets go of the bottom at once; only coming back
+    // down to the bottom (or the jump button) takes it again — never a band near the bottom, which trapped a trackpad.
+    const letGo = () => this.take(intentUp(this.follow, this.scroller));
     this.scroller.addEventListener("wheel", (e) => { if (e.deltaY < 0) letGo(); }, { passive: true });
-    this.scroller.addEventListener("keydown", (e) => { if (e.key === "PageUp" || e.key === "Home" || e.key === "ArrowUp") letGo(); });
+    this.scroller.addEventListener("keydown", (e) => { if (isUpKey(e)) letGo(); });
+    let touchY: number | null = null;
+    this.scroller.addEventListener("touchstart", (e) => { touchY = e.touches[0]?.clientY ?? null; }, { passive: true });
+    this.scroller.addEventListener("touchmove", (e) => {
+      const y = e.touches[0]?.clientY;
+      if (y != null && touchY != null && y > touchY + 2) letGo();
+      if (y != null) touchY = y;
+    }, { passive: true });
     const RO = env.win.ResizeObserver;
-    if (RO) new RO(() => { if (this.stick) this.toBottom(false); }).observe(this.inner);
+    if (RO) {
+      const ro = new RO(() => { if (this.follow.on) this.toBottom(false); });
+      ro.observe(this.inner);
+      ro.observe(this.scroller); // the feed itself shrinking (the composer grew)
+    }
   }
 
   /** Content shown when the transcript is empty (the empty state); removed as soon as a message exists. */
@@ -240,7 +247,7 @@ export class Feed {
   setPending(label: string | null): void {
     this.pending = label;
     this.syncLine();
-    if (label !== null && this.stick) this.toBottom(false);
+    if (label !== null && this.follow.on) this.toBottom(false);
   }
 
   /** The one indicator: under the running answer (hidden while that answer's thought row carries it), else under the last
@@ -267,12 +274,15 @@ export class Feed {
 
   toBottom(smooth: boolean): void {
     const s = this.scroller;
-    this.stick = true;
-    this.jump.hidden = true;
     const reduce = env.win.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     if (smooth && !reduce) s.scrollTo({ top: s.scrollHeight, behavior: "smooth" });
     else s.scrollTop = s.scrollHeight;
-    this.lastTop = s.scrollTop;
+    this.take(pinned(s));
+  }
+
+  private take(f: Follow): void {
+    this.follow = f;
+    this.jump.hidden = f.on;
   }
 
   /** Re-render after the state changed. `canRetry`: the last answer may offer "Try again". */
@@ -302,7 +312,7 @@ export class Feed {
     this.syncLine();
     this.syncEmpty();
     if (takeCalloutsDirty()) linkCallouts(this.inner);
-    if (this.stick) this.toBottom(false);
+    if (this.follow.on) this.toBottom(false);
   }
 
   private create(m: Message): { msg: Message; el: HTMLElement; asst?: AssistantView } {
@@ -318,7 +328,7 @@ export class Feed {
     for (const k of [...this.inner.children]) if (k !== this.empty) k.remove();
     this.line.el.remove();
     this.pace.drop();
-    this.stick = true;
+    this.follow = START;
   }
 
   /** The chat settings that change how messages look; applied to what is already shown too. */
