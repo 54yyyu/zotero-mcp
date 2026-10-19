@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- HuggingFace embedding provider: load each model once per process. ChromaDB rebuilds the embedding function from the persisted collection config on every upsert and query, which reloaded the `SentenceTransformer` each time and, on CUDA, exhausted GPU memory during `update-db` (#726).
+
 ## [0.15.1] - 2026-10-16
 
 ### Added
