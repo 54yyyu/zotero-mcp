@@ -228,6 +228,56 @@ def pdf_page_count(file_path: str | Path) -> int:
     return _pdf_inspector().classify_pdf(str(file_path)).page_count
 
 
+def _recover_ocr_pages(
+    path: str,
+    page_numbers: tuple[int, ...],
+    markdown_pages: list[str],
+) -> tuple[list[str], set[int]]:
+    """Recover a scanned page's hidden text without flattening page provenance.
+
+    PyMuPDF is an optional [pdf] dependency. Only pages with an image and
+    invisible text missing from the Markdown are replaced; ordinary pages
+    keep the primary parser's formatting. This reads an existing OCR layer,
+    not an OCR service, and cannot restore glyphs absent from that layer.
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        try:
+            import fitz as pymupdf  # PyMuPDF 1.24.2
+        except ImportError:
+            return markdown_pages, set()
+
+    out = list(markdown_pages)
+    recovered: set[int] = set()
+    try:
+        with pymupdf.open(path) as pdf:
+            for index, number in enumerate(page_numbers):
+                page = pdf[number]
+                if not page.get_image_info():
+                    continue
+                compact = re.sub(r"\s+", "", markdown_pages[index])
+                # OCR producers may encode one character per text operation.
+                # Comparing spans separately can mistake every character for
+                # one occurring in a short visible date / download stamp.
+                hidden = "".join(
+                    chr(char[0]) for span in page.get_texttrace() if span["type"] == 3 for char in span["chars"]
+                )
+                hidden = re.sub(r"\s+", "", hidden)
+                if not hidden or hidden in compact:
+                    continue
+                text = page.get_text().replace(PAGE_SEPARATOR, "\n").strip()
+                if text:
+                    out[index] = (
+                        "*[Plain text from the PDF's OCR layer; layout and headings are not preserved.]*\n\n" + text
+                    )
+                    recovered.add(number)
+    except Exception as exc:
+        # Optional recovery must not turn a successful primary parse into an error.
+        logger.debug("OCR text-layer recovery unavailable for %s: %s", path, exc)
+    return out, recovered
+
+
 def extract_pdf(
     file_path: str | Path,
     *,
@@ -306,14 +356,17 @@ def extract_pdf(
     if total is None:
         total = len(result.pages)
 
+    page_numbers = tuple(page.page for page in result.pages)
+    markdown_pages, recovered = _recover_ocr_pages(
+        path,
+        page_numbers,
+        [page.markdown or "" for page in result.pages],
+    )
+
     # Scanner OCR layers (invisible text over a page image, as written by
     # Xerox/ABBYY devices) come back as empty markdown with needs_ocr on every
     # page, although the plain-text pass returns that layer (#611).
-    if (
-        can_fall_back
-        and result.pages
-        and not any((page.markdown or "").strip() for page in result.pages)
-    ):
+    if can_fall_back and result.pages and not any(markdown.strip() for markdown in markdown_pages):
         fallback = _text_layer_fallback(
             pdf_inspector, path, wanted=wanted, total=total, truncated=truncated,
         )
@@ -321,14 +374,14 @@ def extract_pdf(
             return fallback
 
     return _doc_from_pages(
-        [page.markdown or "" for page in result.pages],
+        markdown_pages,
         page_count=total,
         source="pdf",
         # Read page indices off the page objects rather than
         # ``pages_needing_ocr``: these stay absolute when a subset was
         # requested, so they remain comparable to ``page_numbers``.
-        page_numbers=tuple(page.page for page in result.pages),
-        needs_ocr=tuple(page.page for page in result.pages if page.needs_ocr),
+        page_numbers=page_numbers,
+        needs_ocr=tuple(page.page for page in result.pages if page.needs_ocr and page.page not in recovered),
         truncated=truncated,
     )
 
