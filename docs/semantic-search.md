@@ -64,6 +64,13 @@ Raise `timeout` if indexing reports `Read timed out`; lower
 `request_batch_size` to make each request cover less GPU work, which usually
 fixes timeouts more reliably than raising the timeout alone.
 
+For Ollama and OpenAI-compatible servers, `max_input_tokens` caps the text sent
+per document (default 8000). Set it below the server's limit when indexing
+reports an input that is too large, for example llama-server's
+`input (N tokens) is too large to process`. It is counted with OpenAI's
+tokenizer, so leave headroom for the model's own: `3000` for a model served
+with a 4096-token batch.
+
 ### OpenAI Batch API
 
 When you choose OpenAI, setup also asks whether database updates should use
