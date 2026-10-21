@@ -680,12 +680,15 @@ def _new_scoped_client(library_id: str, library_type: str, api_key: str | None, 
     """Construct a pyzotero client scoped to one library — seam for tests."""
     from pyzotero import zotero
 
-    return zotero.Zotero(
+    from zotero_mcp.client import _with_api_url
+
+    zot = zotero.Zotero(
         library_id=library_id,
         library_type=library_type,
         api_key=api_key,
         local=local,
     )
+    return zot if local else _with_api_url(zot)
 
 
 class ZoteroSemanticSearch:

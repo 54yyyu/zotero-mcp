@@ -58,6 +58,10 @@ If you want to connect to your Zotero library via the web API:
    export ZOTERO_LIBRARY_TYPE=user  # or 'group' for group libraries
    ```
 
+   For a self-hosted server that speaks the Zotero Web API (such as
+   [altero](https://github.com/eseifert/altero)), also set `ZOTERO_API_URL` to its
+   base URL, the same value as Zotero desktop's `extensions.zotero.api.url`.
+
 ## Integrating with Claude Desktop and Claude Code
 
 1. **Auto-configure** (recommended):
