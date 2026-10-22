@@ -1,6 +1,6 @@
 // Spawner for Gecko: Subprocess.sys.mjs underneath. agent/ is handed this instead of node:child_process.
 import type { Proc, Spawner } from "../types.ts";
-import { cmdLine, shimTarget } from "../agent/windows.ts";
+import { cmdLine, shimTarget, resolveShimCommand  } from "../agent/windows.ts";
 
 const FALLBACK_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 
@@ -147,7 +147,7 @@ async function windowsShim(sp: any, shim: string, args: string[], env: Record<st
     const target = shimTarget(await IOUtils.readUTF8(shim));
     if (target) {
       const file = PathUtils.join(PathUtils.parent(shim)!, ...target.split("\\"));
-      return /\.exe$/i.test(file) ? [file, args] : [await sp.pathSearch("node.exe", env), [file, ...args]];
+      return resolveShimCommand(file, args, () => sp.pathSearch("node.exe", env),);
     }
   } catch { /* not readable, or no node on PATH: cmd.exe below */ }
   return cmdLine(Services.env.get("ComSpec") || system32("cmd.exe"), shim, args);

@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { BACKENDS } from "../../src/agent/backends.ts";
 import { dirnameOf, findBinary, withPathFirst } from "../../src/agent/env.ts";
 import { createRuntime, prepareWorkspace } from "../../src/agent/index.ts";
-import { cmdLine, shimTarget } from "../../src/agent/windows.ts";
+import { cmdLine, resolveShimCommand, shimTarget } from "../../src/agent/windows.ts";
 import type { Spawner } from "../../src/types.ts";
 
 const ENV = { PATH: "C:\\Windows\\System32;C:\\Program Files\\nodejs", HOME: "C:\\Users\\me", SystemRoot: "C:\\Windows" };
@@ -98,8 +98,51 @@ describe("windows: npm .cmd shims", () => {
     assert.equal(shimTarget("@echo off\r\nsome-other-tool %*"), null);
   });
 
+  it("recognizes npm .cmd shims that invoke the CLI through a variable", () => {
+    const npmShim = [
+      '@ECHO OFF',
+      'SETLOCAL',
+      'SET "NODE_EXE=%~dp0\\node.exe"',
+      'IF NOT EXIST "%NODE_EXE%" (',
+      '  SET "NODE_EXE=node"',
+      ')',
+      'SET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js"',
+      '"%NODE_EXE%" "%NPM_CLI_JS%" %*',
+    ].join("\r\n");
+
+    assert.equal(
+      shimTarget(npmShim),
+      "node_modules\\npm\\bin\\npm-cli.js",
+    );
+  });
+
   it("anything else goes through cmd.exe", () => {
     assert.deepEqual(cmdLine("C:\\Windows\\System32\\cmd.exe", "C:\\x\\a.bat", ["b"]), ["C:\\Windows\\System32\\cmd.exe", ["/d", "/c", "C:\\x\\a.bat", "b"]]);
+  });
+
+  it("launches npm's CLI through Node with paths containing spaces", async () => {
+    const file =
+      "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+
+    const node =
+      "C:\\Program Files\\nodejs\\node.exe";
+
+    const args = [
+      "install",
+      "--prefix",
+      "C:\\Users\\First Last\\AppData\\Roaming\\Zotero\\bridges",
+    ];
+
+    const result = await resolveShimCommand(
+      file,
+      args,
+      async () => node,
+    );
+
+    assert.deepEqual(result, [
+      node,
+      [file, ...args],
+    ]);
   });
 });
 
