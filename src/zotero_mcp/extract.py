@@ -25,7 +25,8 @@ import os
 import re
 import sys
 import threading
-from collections import OrderedDict
+import unicodedata
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -228,17 +229,67 @@ def pdf_page_count(file_path: str | Path) -> int:
     return _pdf_inspector().classify_pdf(str(file_path)).page_count
 
 
+def _trace_lines(spans: list[dict]) -> list[dict]:
+    """Split trace spans at actual baselines; one span may contain many lines."""
+    lines: list[dict] = []
+    for span in spans:
+        previous = None
+        for char in span["chars"]:
+            direction = span["dir"]
+            if previous is not None:
+                last, last_size, last_direction = previous
+                dx = char[2][0] - last[2][0]
+                dy = char[2][1] - last[2][1]
+                same_line = (
+                    direction == last_direction
+                    and abs(dx * direction[1] - dy * direction[0]) <= max(span["size"], last_size) / 2
+                    and abs(dx * direction[0] + dy * direction[1]) <= max(span["size"], last_size) * 2
+                )
+            else:
+                same_line = False
+            if not same_line:
+                lines.append({**span, "chars": []})
+            lines[-1]["chars"].append(char)
+            previous = (char, span["size"], direction)
+    return lines
+
+
+def _trace_text(spans: list[dict]) -> str:
+    """Read selected text, including positioned words within a single span."""
+    parts: list[str] = []
+    previous = None
+    for span in spans:
+        direction = span["dir"]
+        for char in span["chars"]:
+            if previous is not None:
+                last, last_size, last_direction = previous
+                dx = char[2][0] - last[2][0]
+                dy = char[2][1] - last[2][1]
+                size = max(span["size"], last_size)
+                across = abs(dx * direction[1] - dy * direction[0])
+                if direction != last_direction or across > size / 2:
+                    parts.append("\n")
+                else:
+                    x0, y0, x1, y1 = last[3]
+                    end = max(x * direction[0] + y * direction[1] for x, y in ((x0, y0), (x0, y1), (x1, y0), (x1, y1)))
+                    beginning = char[2][0] * direction[0] + char[2][1] * direction[1]
+                    if beginning - end > (span.get("spacewidth") or size / 3) / 2:
+                        parts.append(" ")
+            parts.append(chr(char[0]))
+            previous = (char, span["size"], direction)
+    return "".join(parts)
+
+
 def _recover_ocr_pages(
     path: str,
     page_numbers: tuple[int, ...],
     markdown_pages: list[str],
 ) -> tuple[list[str], set[int]]:
-    """Recover a scanned page's hidden text without flattening page provenance.
+    """Recover dominant hidden text on scan images, preserving other Markdown.
 
-    PyMuPDF is an optional [pdf] dependency. Only pages with an image and
-    invisible text missing from the Markdown are replaced; ordinary pages
-    keep the primary parser's formatting. This reads an existing OCR layer,
-    not an OCR service, and cannot restore glyphs absent from that layer.
+    PyMuPDF is optional. Recovery requires an image covering at least 80% of
+    the page and at least as much hidden text as visible text. Figure labels
+    alone must not flatten a born-digital page or clear its OCR routing.
     """
     try:
         import pymupdf
@@ -248,35 +299,69 @@ def _recover_ocr_pages(
         except ImportError:
             return markdown_pages, set()
 
+    def words(text: str) -> Counter:
+        return Counter(re.findall(r"\w+", unicodedata.normalize("NFC", text).casefold()))
+
     out = list(markdown_pages)
     recovered: set[int] = set()
     try:
         with pymupdf.open(path) as pdf:
             for index, number in enumerate(page_numbers):
-                page = pdf[number]
-                if not page.get_image_info():
-                    continue
-                compact = re.sub(r"\s+", "", markdown_pages[index])
-                # OCR producers may encode one character per text operation.
-                # Comparing spans separately can mistake every character for
-                # one occurring in a short visible date / download stamp.
-                hidden = "".join(
-                    chr(char[0]) for span in page.get_texttrace() if span["type"] == 3 for char in span["chars"]
-                )
-                hidden = re.sub(r"\s+", "", hidden)
-                if not hidden or hidden in compact:
-                    continue
-                text = page.get_text().replace(PAGE_SEPARATOR, "\n").strip()
-                if text:
-                    out[index] = (
-                        "*[Plain text from the PDF's OCR layer; layout and headings are not preserved.]*\n\n" + text
-                    )
-                    recovered.add(number)
+                try:
+                    page = pdf[number]
+                    area = page.rect.get_area()
+                    if not area or not any(
+                        (pymupdf.Rect(image["bbox"]) & page.rect).get_area() >= area * 0.8
+                        for image in page.get_image_info()
+                    ):
+                        continue
+                    spans = page.get_texttrace()
+                    hidden_spans = _trace_lines([span for span in spans if span["type"] == 3])
+                    visible_spans = _trace_lines([span for span in spans if span["type"] != 3])
+                    hidden = _trace_text(hidden_spans)
+                    visible = _trace_text(visible_spans)
+                    if not hidden.strip() or "\ufffd" in hidden:
+                        continue
+                    if len(re.sub(r"\s+", "", hidden)) < len(re.sub(r"\s+", "", visible)):
+                        continue
+                    hidden_words = words(hidden)
+                    if hidden_words and not (hidden_words - words(markdown_pages[index])):
+                        continue
+
+                    # Keep stamps outside the transcription; never emit a second,
+                    # overlapping visible OCR layer via get_text()'s union.
+                    def line_box(span):
+                        chars = span["chars"]
+                        return pymupdf.Rect(
+                            min(char[3][0] for char in chars),
+                            min(char[3][1] for char in chars),
+                            max(char[3][2] for char in chars),
+                            max(char[3][3] for char in chars),
+                        )
+
+                    boxes = [line_box(span) for span in hidden_spans]
+                    extras = [
+                        span for span in visible_spans if not any(line_box(span).intersects(box) for box in boxes)
+                    ]
+                    text = _trace_text(hidden_spans + extras)
+                    if "\ufffd" in text:
+                        continue
+                    # Form feed belongs exclusively to source page boundaries;
+                    # other C0/C1 controls are not useful attachment text either.
+                    text = "".join(
+                        char if unicodedata.category(char) != "Cc" or char in "\n\t" else "\n" for char in text
+                    ).strip()
+                    if text:
+                        out[index] = (
+                            "*[Plain text from the PDF's OCR layer; layout and headings are not preserved.]*\n\n" + text
+                        )
+                        recovered.add(number)
+                except Exception as exc:
+                    logger.warning("OCR text-layer recovery failed on page %s of %s: %s", number, path, exc)
     except Exception as exc:
-        # Optional recovery must not turn a successful primary parse into an error.
+        # An unavailable optional parser must not break successful Markdown.
         logger.debug("OCR text-layer recovery unavailable for %s: %s", path, exc)
     return out, recovered
-
 
 def extract_pdf(
     file_path: str | Path,
