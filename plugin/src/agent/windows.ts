@@ -5,10 +5,12 @@
 /**
  * The program an npm `.cmd` shim runs, relative to the shim's folder (`node_modules\@openai\codex\bin\codex.js`), or null
  * when it does not look like one. The shim names it as `"%dp0%\<path>" %*`; the `node.exe` it probes beside itself is skipped.
+ * Node's own `npm.cmd`/`npx.cmd` are not shims: they set `NPM_CLI_JS=%~dp0\<path>` and end in `"%NODE_EXE%" "%NPM_CLI_JS%" %*`.
  */
 export function shimTarget(shim: string): string | null {
   for (const m of shim.matchAll(/"%dp0%\\([^"%]+)"/g)) if (!/^node(\.exe)?$/i.test(m[1]!)) return m[1]!;
-  return null;
+  const cli = /^"%NODE_EXE%"\s+"%(\w+)%"\s+%\*/m.exec(shim)?.[1];
+  return cli ? new RegExp(`SET "${cli}=%~dp0\\\\([^"%]+)"`, "i").exec(shim)?.[1] ?? null : null;
 }
 
 /** The command line for a `.cmd`/`.bat` that is not an npm shim: through cmd.exe, which is only safe while no argument has a space or a quote. */
