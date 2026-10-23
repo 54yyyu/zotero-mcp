@@ -168,6 +168,11 @@ libraries is two items, and collapsing them would hide where each copy lives.
   serve maintenance rather than research, or apply only to some users are off
   by default. See [Tool groups](tools.md#tool-groups).
 
+**Shared server** (see [Sharing one server between clients](#sharing-one-server-between-clients)):
+- `ZOTERO_MCP_SHARED=1`: Serve this stdio client from a server shared with other clients that have the same configuration
+- `ZOTERO_MCP_SHARED_IDLE`: Seconds a shared server waits without clients before exiting (default `600`; `0` keeps it running)
+- `ZOTERO_MCP_SHARED_DIR`: Directory for the shared server's socket and log (default: `$XDG_RUNTIME_DIR/zotero-mcp`, else `zotero-mcp-<uid>` in the temporary directory)
+
 **Item schema:**
 - `ZOTERO_MCP_SCHEMA_REFRESH=0`: Disable the weekly background refresh of
   Zotero's item-type schema from `api.zotero.org`. The schema is what routes a
@@ -178,6 +183,30 @@ libraries is two items, and collapsing them would hide where each copy lives.
   still refreshes on demand.
 - `ZOTERO_MCP_SCHEMA_CACHE`: Custom path for the refreshed schema cache
   (default: `~/.cache/zotero-mcp/schema.json`).
+
+## Sharing one server between clients
+
+Every MCP client that runs `zotero-mcp` over stdio starts a server of its own, about 100 MB each. With a few Claude Code sessions, their subagents and a desktop app open, that is a dozen copies of the same server reading the same library. Add `ZOTERO_MCP_SHARED=1` to each client's server entry and they share one:
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "command": "zotero-mcp",
+      "env": { "ZOTERO_LOCAL": "true", "ZOTERO_MCP_SHARED": "1" }
+    }
+  }
+}
+```
+
+Nothing else in the client changes. `zotero-mcp serve` then runs as a small relay (about 20 MB) that connects to the shared server over a Unix socket only you can open, starting the server if none is running. Each client still has its own MCP session: `zotero_switch_library` changes the library only for the client that called it, a single-use local write key from `zotero_authorize_local_writes` belongs to the client that asked for it, and one client's slow call does not make another's wait for the Zotero API lock.
+
+- Clients share a server only when their configuration matches: the same zotero-mcp installation and version, and the same `ZOTERO_*`, embedding-provider, proxy and CA certificate variables. Anything else gets a server of its own.
+- A shared server exits after `ZOTERO_MCP_SHARED_IDLE` seconds (default 600) with no clients, or never if it is `0`. After an upgrade, new clients start a new server and the old one exits once its clients have gone.
+- If the shared server stops, every client using it loses its connection and has to reconnect (`/mcp` in Claude Code). A separate server per client would have lost only one.
+- The server's own output goes to a `.log` file next to its socket rather than to each client's MCP log.
+- Tool work done in Python, rather than by Zotero, now shares one process: with 10 clients listing tools at the same moment, the median response took 48 ms instead of 24 ms. Calls answered by Zotero are unaffected, because Zotero handles one request at a time whether the clients share a server or not.
+- It needs fastmcp 3 or later, and Windows is not supported yet. Otherwise the setting prints a notice and the client gets a private server as before.
 
 ## Text extraction settings
 

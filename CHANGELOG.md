@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Many stdio clients can share one server** (#739). With `ZOTERO_MCP_SHARED=1` in a client's environment, `zotero-mcp serve` becomes a relay of the standard library alone that forwards its stdin and stdout over a private Unix socket to a long-lived server, which it starts if none is running for that configuration. Each connection is served as its own MCP session by the SDK's own stdio transport, and the active library, a single-use local write key and the Zotero API lock are kept per client: `zotero_switch_library` in one session does not re-scope another's, and one client's 300 s PDF download cannot make another's read fail after 45 s. (A shared HTTP server still has one active library for all its clients; on the stateless 2026-07-28 protocol nothing tells their requests apart.) Clients share a server only when version, installation and every behaviour-changing environment variable match; the server exits when idle. Measured with 10 clients on macOS: 260–370 MB in total instead of 883 MB, clients after the first attach in 0.15–0.31 s instead of 1.4–2.7 s, and calls to Zotero take as long as before. Off by default; POSIX only for now, and needs fastmcp 3 or later. See "Sharing one server between clients" in `docs/configuration.md`.
+
 ## [0.15.1] - 2026-10-16
 
 ### Added

@@ -29,6 +29,7 @@ from zotero_mcp.extract import (
     normalize_attachment_priority,
     pick_by_priority,
 )
+from zotero_mcp.shared import current_client
 from zotero_mcp.utils import (
     _paginate,
     format_creators,
@@ -96,12 +97,17 @@ def zotero_api_lock():
     blocked behind (#431).
     """
     timeout = _lock_timeout()
+    # A shared server's clients each get their own lock, as they did when each
+    # had its own process: Zotero itself queues requests from different
+    # clients, and one client's long download must not fail another's read.
+    scope = current_client.get()
+    lock = _zotero_api_lock if scope is None else scope.api_lock
     if timeout <= 0:
         # Opt-out: original unbounded behaviour.
-        with _zotero_api_lock:
+        with lock:
             yield
         return
-    acquired = _zotero_api_lock.acquire(timeout=timeout)
+    acquired = lock.acquire(timeout=timeout)
     if not acquired:
         raise ZoteroApiBusyError(
             f"Another Zotero API operation is still in progress and did not "
@@ -113,7 +119,7 @@ def zotero_api_lock():
     try:
         yield
     finally:
-        _zotero_api_lock.release()
+        lock.release()
 
 
 def with_zotero_api_lock(func):
@@ -137,27 +143,38 @@ def with_zotero_api_lock(func):
 _active_library_override: dict[str, str] = {}
 
 
+def _library_override() -> dict[str, str]:
+    """The override of the client being served.
+
+    Process-wide, except on a shared server, where each client has its own
+    and one client's switch must not re-scope the others (#739).
+    """
+    scope = current_client.get()
+    return _active_library_override if scope is None else scope.library_override
+
+
 def set_active_library(library_id: str, library_type: str) -> None:
     """Set runtime library override for all subsequent get_zotero_client() calls."""
-    _active_library_override["library_id"] = library_id
-    _active_library_override["library_type"] = library_type
+    override = _library_override()
+    override["library_id"] = library_id
+    override["library_type"] = library_type
 
 
 def clear_active_library() -> None:
     """Clear runtime library override, reverting to environment variable defaults."""
-    _active_library_override.clear()
+    _library_override().clear()
 
 
 def get_active_library() -> dict[str, str]:
     """Return the current active library override (empty dict if using defaults)."""
-    return dict(_active_library_override)
+    return dict(_library_override())
 
 
 def get_active_group_id() -> int:
     """group_id (0 = personal, else Zotero groupID) of the library
     ``get_zotero_client()`` is currently scoped to."""
 
-    override = _active_library_override
+    override = _library_override()
     library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID") or "0"
     library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
     if library_type == "group":
@@ -307,7 +324,7 @@ def get_zotero_client() -> zotero.Zotero:
         ValueError: If required environment variables are missing.
     """
     # Runtime overrides take precedence over environment variables
-    override = _active_library_override
+    override = _library_override()
     library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID")
     library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
     api_key = os.getenv("ZOTERO_API_KEY")
@@ -414,6 +431,17 @@ DEFAULT_APP_NAME = "Zotero MCP"
 
 # Credentials granted during this process, before/instead of anything on disk.
 _local_write_state: dict[str, Any] = {}
+
+
+def _write_state() -> dict[str, Any]:
+    """Credentials granted to the client being served.
+
+    Process-wide, except on a shared server, where a single-use key one client
+    was granted must not be consumed by another client's write.
+    """
+    scope = current_client.get()
+    return _local_write_state if scope is None else scope.local_write_state
+
 # Cached capability probe: {"server_id": str | None, "checked_at": float}
 _local_probe_cache: dict[str, Any] = {}
 # A negative probe is re-checked after this long, so upgrading or restarting
@@ -523,8 +551,9 @@ def get_local_write_credentials() -> tuple[str | None, str | None, str | None]:
     Precedence: credentials granted in this process, then the environment,
     then the config file. Source is "session", "env", "config" or None.
     """
-    if key := _local_write_state.get("key"):
-        return key, _local_write_state.get("server_id"), "session"
+    state = _write_state()
+    if key := state.get("key"):
+        return key, state.get("server_id"), "session"
 
     if key := os.getenv(LOCAL_API_KEY_ENV, "").strip():
         return key, os.getenv(LOCAL_SERVER_ID_ENV, "").strip() or None, "env"
@@ -540,7 +569,7 @@ def _local_key_remembered() -> bool | None:
     """Whether the active key was granted with "Always Allow", if we know."""
     _key, _server_id, source = get_local_write_credentials()
     if source == "session":
-        return _local_write_state.get("remember")
+        return _write_state().get("remember")
     if source == "config":
         return (load_zotero_mcp_config().get("local_api") or {}).get("remember")
     return None
@@ -566,7 +595,7 @@ def store_local_write_credentials(
     but cannot be parsed — the session copy is still set, so the caller can
     keep working and warn.
     """
-    _local_write_state.update({"key": key, "server_id": server_id, "remember": remember})
+    _write_state().update({"key": key, "server_id": server_id, "remember": remember})
 
     try:
         config = _readable_config_for_update()
@@ -591,8 +620,9 @@ def clear_local_write_credentials() -> bool:
     through the environment cannot be cleared from here — the caller is
     expected to say so.
     """
-    cleared = bool(_local_write_state)
-    _local_write_state.clear()
+    state = _write_state()
+    cleared = bool(state)
+    state.clear()
 
     try:
         config = _readable_config_for_update()
@@ -622,7 +652,7 @@ def get_local_write_client() -> zotero.Zotero | None:
     if not key:
         return None
 
-    override = _active_library_override
+    override = _library_override()
     library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
     library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID")
     # The local API addresses the user library as users/0 whatever the web
@@ -692,7 +722,7 @@ def authorize_local_api(
                 result["key"], zot.server_id, remember, app_name
             )
         else:
-            _local_write_state.update(
+            _write_state().update(
                 {
                     "key": result["key"],
                     "server_id": zot.server_id,
