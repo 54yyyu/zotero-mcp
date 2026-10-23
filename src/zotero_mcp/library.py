@@ -378,20 +378,27 @@ class ApiBackend:
         return related
 
     def find_by_citation_key(self, citekey: str) -> dict | None:
-        # No indexed field to query server-side, so this stays the ranked
-        # substring search it always was: fetch candidates, verify locally.
+        # No indexed field to query server-side. The web API's quick search
+        # indexes neither ``citationKey`` nor ``extra``, so the ranked search
+        # only finds a key that also happens to appear in another field. When
+        # it misses, scan the top-level items — child attachments and notes
+        # never carry a citekey — and verify each one locally.
         from zotero_mcp.tools import _helpers
+
+        def matches(item: dict) -> bool:
+            data = item.get("data", {})
+            return data.get("citationKey") == citekey or _helpers._extra_has_citekey(
+                data.get("extra", ""), citekey
+            )
 
         self._zot.add_parameters(
             q=citekey, qmode="everything", itemType="-attachment", limit=25
         )
         for item in self._zot.items() or []:
-            data = item.get("data", {})
-            if data.get("citationKey") == citekey or _helpers._extra_has_citekey(
-                data.get("extra", ""), citekey
-            ):
+            if matches(item):
                 return item
-        return None
+        found = _utils._paginate(self._zot.top, keep=matches, max_items=1)
+        return found[0] if found else None
 
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]:
         if collection_key:

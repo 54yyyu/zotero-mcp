@@ -70,6 +70,9 @@ class _CitekeyFakeZotero(FakeZotero):
     def add_parameters(self, **kwargs):
         self._params.update(kwargs)
 
+    def top(self, start=0, limit=100, **kwargs):
+        return self._items[start:start + limit]
+
 
 # ---------------------------------------------------------------------------
 # search_by_citation_key – web/API mode (Strategy B)
@@ -109,6 +112,42 @@ class TestSearchByCitationKeyWebMode:
         assert "Citation Key: Smith2024" in result
         assert "Deep Learning" in result
         assert "ABC123" in result
+
+    def test_found_when_quick_search_misses(self, monkeypatch):
+        # The real web API's q search indexes neither citationKey nor extra,
+        # so it returns nothing for a citekey; the lookup must scan instead.
+        # Both matches sit on the second page of the scan.
+        class _UnindexedFakeZotero(_CitekeyFakeZotero):
+            def items(self, **kwargs):
+                return [] if self._params.pop("q", None) else self._items
+
+            def top(self, start=0, limit=100, **kwargs):
+                return self._items[start:start + limit]
+
+        fake = _UnindexedFakeZotero()
+        fake._items = [
+            _make_item(key=f"FILL{i:04d}", title=f"Filler {i}") for i in range(100)
+        ] + [
+            _make_item(
+                key="PM74U8A2",
+                title="Surveillance Capitalism",
+                extra="tex.lccn: 2018039998\nCitation Key: zuboff2019age",
+            ),
+            _make_item(
+                key="LTXZUUHS",
+                title="Action Alerts",
+                extra="Section: Action Alerts",
+                citationKey="hosang2024nyt",
+            ),
+        ]
+        monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
+        monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
+
+        result = search_by_citation_key("zuboff2019age", ctx=DummyContext())
+        assert "PM74U8A2" in result
+
+        result = search_by_citation_key("hosang2024nyt", ctx=DummyContext())
+        assert "LTXZUUHS" in result
 
     def test_no_match(self, monkeypatch):
         fake = _CitekeyFakeZotero()
