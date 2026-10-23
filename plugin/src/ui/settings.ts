@@ -31,7 +31,7 @@ export interface SettingsDeps {
   catalogReady?: (b: BackendId) => boolean;
 }
 
-export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLElement; render(): void } {
+export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLElement; render(): void; leave(): Promise<void> } {
   const body = h("div.set");
   const cats = new Map<BackendId, CatState>();
   const keys: Partial<Record<BackendId, boolean>> = {};
@@ -207,7 +207,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
         flag("showUsage", "Show tokens and cost", "A small line under each answer. Off by default."),
         flag("openAtStart", "Open the panel when Zotero starts", ""),
       ),
-      translate(s), skills(), folder(s), data(), about(s),
+      translate(s), skills.card(), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));
     if (scroller) scroller.scrollTop = top;
     if (fid) (body.querySelector(`[data-fid="${CSS.escape(fid)}"]`) as HTMLElement | null)?.focus({ preventScroll: true });
@@ -217,5 +217,6 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
   o.refreshStatuses();
   render();
   void Promise.all(BACKENDS.map((b) => host.hasApiKey(b).then((v) => (keys[b] = v), () => (keys[b] = false)))).then(render);
-  return { el, render };
+  // `leave`: the screen is going away (Esc, Back, the pane closing); a prompt still being typed is saved first.
+  return { el, render, leave: skills.leave };
 }

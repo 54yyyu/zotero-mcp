@@ -77,6 +77,11 @@ export const setFlag = (key: FlagKey, on: boolean): Partial<PanelSettings> => ({
 export const editPrompt = (list: PromptEntry[], i: number, patch: Partial<Pick<PromptEntry, "title" | "text">>): PromptEntry[] => list.map((p, k) => (k === i ? { ...p, ...patch } : p));
 export const addPrompt = (list: PromptEntry[], id: string): PromptEntry[] => [...list, { id, title: "", text: "" }];
 export const removePrompt = (list: PromptEntry[], i: number): PromptEntry[] => list.filter((_, k) => k !== i);
+/** The editor's two fields written back to prompt `i`: the same list when neither changed (or there is no such prompt), so the caller can skip the save. */
+export const flushPrompt = (list: PromptEntry[], i: number, title: string, text: string): PromptEntry[] => {
+  const p = list[i];
+  return !p || (p.title === title && p.text === text) ? list : editPrompt(list, i, { title, text });
+};
 
 /** The shortcut reference: [what, keys] for this platform. */
 export const shortcuts = (mac: boolean, enterToSend: boolean): [string, string][] => [

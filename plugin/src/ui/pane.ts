@@ -38,5 +38,5 @@ export function mountSettings(root: ShadowRoot, host: SettingsHost, catalogReady
       view.render();
     }),
   ];
-  return { dispose() { for (const off of offs) off(); clear(root); } };
+  return { dispose() { void view.leave(); for (const off of offs) off(); clear(root); } };
 }

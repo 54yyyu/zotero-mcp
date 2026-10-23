@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "../../src/ui/fake-host.ts";
 import { CATALOGS, defaultSettings } from "../../src/ui/fake-catalog.ts";
-import { addPrompt, editPrompt, effective, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, shortPath, shortcuts } from "../../src/ui/settings-model.ts";
+import { addPrompt, editPrompt, effective, flushPrompt, modeHelp, removePrompt, setAuth, setFlag, setFolder, setPerBackend, shortPath, shortcuts } from "../../src/ui/settings-model.ts";
 
 const host = () => new FakeHost({ speed: 0, noHistory: true });
 
@@ -69,6 +69,21 @@ test("prompt edits: add, edit and delete return new lists and keep the pins", ()
   assert.equal(added.length, 5);
   assert.deepEqual(added[4], { id: "pX", title: "", text: "" });
   assert.deepEqual(removePrompt(added, 0).map((p) => p.id), ["p2", "p3", "p4", "pX"]);
+});
+
+test("flushPrompt writes the editor's fields back only when one changed, and keeps the pin", () => {
+  const p0 = defaultSettings().prompts;
+  const same = flushPrompt(p0, 2, p0[2]!.title, p0[2]!.text);
+  assert.equal(same, p0, "nothing changed: the same list, so no save");
+  assert.equal(flushPrompt(p0, 9, "x", "y"), p0, "no such prompt: the same list");
+  const title = flushPrompt(p0, 2, "Hypotheses", p0[2]!.text);
+  assert.deepEqual(title[2], { ...p0[2], title: "Hypotheses" });
+  const text = flushPrompt(p0, 2, p0[2]!.title, "List three.");
+  assert.deepEqual(text[2], { ...p0[2], text: "List three." });
+  assert.equal(text[2]?.slot, 3, "a flush keeps the pin");
+  const fresh = flushPrompt(addPrompt(p0, "pX"), 4, "Summarise", "Summarise the paper.");
+  assert.deepEqual(fresh[4], { id: "pX", title: "Summarise", text: "Summarise the paper." }, "a new prompt gets both fields from one flush");
+  assert.equal(p0[2]?.title, "Propose testable hypotheses", "the input list is untouched");
 });
 
 test("data actions reach the host: clear history, reveal the workspace, reset settings (keeps keys and chats gone)", async () => {

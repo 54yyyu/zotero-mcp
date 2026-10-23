@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Zotero Agent prompt editor keeps what you typed.** A prompt's title and text were saved only when a field lost focus, so pressing Done straight after typing, or leaving with Esc or Back while the cursor was still in a field, could throw the text away and leave an empty "Untitled prompt" row. The editor now holds a draft that survives re-renders and writes it back on Done, on the pencil, on Delete, when another editor opens, and when the Settings screen or pane closes.
+
 ## [0.15.1] - 2026-10-16
 
 ### Added

@@ -4,17 +4,18 @@
 import type { PanelSettings, SettingsHost, SkillEntry, SkillImport } from "../types.ts";
 import { env, errMessage, h, icon, isMac, nextId, slotLabel } from "./dom.ts";
 import type { Kid } from "./dom.ts";
-import { addPrompt, editPrompt, removePrompt, shortPath } from "./settings-model.ts";
+import { addPrompt, flushPrompt, removePrompt, shortPath } from "./settings-model.ts";
 import { hint, section } from "./settings-parts.ts";
 import { forgetSkill, isOn, nameProblem, setOn, slotOf, togglePin } from "./skills-model.ts";
 import type { ItemRef } from "./skills-model.ts";
 
 const SAFETY = "Skills tell your agent what to do, and it acts with your permissions. Only add skills you trust or wrote.";
 
-export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSettings>): Promise<void>; rerender(): void; createSkill?: () => void }): () => HTMLElement {
+export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSettings>): Promise<void>; rerender(): void; createSkill?: () => void }): { card(): HTMLElement; leave(): Promise<void> } {
   let skills: SkillEntry[] | null = null;
   let loadErr = "";
   let editing: string | null = null; // "p:<id>" or "s:<name>"
+  let draft: { id: string; title: string; text: string } | null = null; // the open prompt editor's fields; written back when the editor goes away
   let source: string | null = null; // the SKILL.md being edited
   let confirming: string | null = null;
   let adding: (SkillImport & { keep: boolean; err: string }) | null = null;
@@ -26,8 +27,18 @@ export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSet
   const load = () => host.skills.list().then((l) => { skills = l; loadErr = ""; }, (e) => { loadErr = errMessage(e); }).finally(o.rerender);
   const keyOf = (r: ItemRef) => (r.kind === "prompt" ? `p:${r.id}` : `s:${r.name}`);
 
+  /** Saves a prompt editor's fields when they differ from what is stored. Every way out of the editor (Done, the pencil, Delete, opening another, Esc, leaving Settings) goes through here, so nothing typed is lost. */
+  async function flush(d: typeof draft): Promise<void> {
+    if (!d) return;
+    const list = host.getSettings().prompts;
+    const next = flushPrompt(list, list.findIndex((p) => p.id === d.id), d.title, d.text);
+    if (next !== list) await o.save({ prompts: next });
+  }
+  /** Closes the open prompt editor, saving it, and marks `next` (null: none) as the one being edited. The caller re-renders. */
+  async function edit(next: string | null): Promise<void> { const d = draft; draft = null; editing = next; await flush(d); }
+
   async function editSkill(name: string) {
-    try { source = await host.skills.read(name); editing = `s:${name}`; } catch (e) { say(`Couldn't open it: ${errMessage(e)}`); return; }
+    try { source = await host.skills.read(name); await edit(`s:${name}`); } catch (e) { say(`Couldn't open it: ${errMessage(e)}`); return; }
     o.rerender();
   }
 
@@ -90,25 +101,26 @@ export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSet
         pinBtn,
         h("label.switch.switch--sm", { title: on ? "On: in the / menu" : "Off" }, sw, h("span.switch__track", null, h("span.switch__thumb"))),
         builtin ? null : h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": `Edit ${title}`, title: "Edit", "aria-expanded": String(editing === key), dataset: { fid: `edit:${key}` },
-          onclick: () => { if (editing === key) { editing = null; o.rerender(); } else if (r.kind === "skill") void editSkill(r.name); else { editing = key; o.rerender(); } } }, icon("pencil"))))];
+          onclick: () => { if (r.kind === "skill" && editing !== key) void editSkill(r.name); else void edit(editing === key ? null : key).then(o.rerender); } }, icon("pencil"))))];
     if (editing === key) out.push(r.kind === "prompt" ? promptEditor(r.id) : skillEditor(r.name));
     return out;
   }
 
   /** Delete lives in the editor, so a row stays one line at 300 px; it asks first, in the row's place. */
-  const delBtn = (key: string, title: string) => h("button.btn.btn--sm.btn--quiet-danger.pe__del", { type: "button", "aria-label": `Delete ${title}`, dataset: { fid: `del:${key}` }, onclick: () => { confirming = key; editing = null; o.rerender(); } }, icon("trash"), "Delete");
+  const delBtn = (key: string, title: string) => h("button.btn.btn--sm.btn--quiet-danger.pe__del", { type: "button", "aria-label": `Delete ${title}`, dataset: { fid: `del:${key}` }, onclick: () => { confirming = key; void edit(null).then(o.rerender); } }, icon("trash"), "Delete");
 
+  /** The fields show the draft, not the stored prompt, so a re-render while typing (a save, a status message) keeps the text. A field saves when it loses focus, as before; Done saves whatever is still in a focused field. */
   function promptEditor(id: string): HTMLElement {
-    const list = host.getSettings().prompts;
-    const i = list.findIndex((p) => p.id === id);
-    const p = list[i];
+    const p = host.getSettings().prompts.find((x) => x.id === id);
     if (!p) return h("div");
-    const ta = h("textarea.input.pe__text", { rows: "3", placeholder: "The message to send", "aria-label": "Prompt text", dataset: { fid: `ptext:${id}` }, onchange: () => void o.save({ prompts: editPrompt(host.getSettings().prompts, i, { text: (ta as HTMLTextAreaElement).value }) }) }) as HTMLTextAreaElement;
-    ta.value = p.text;
+    if (draft?.id !== id) draft = { id, title: p.title, text: p.text };
+    const d = draft;
+    const ta = h("textarea.input.pe__text", { rows: "3", placeholder: "The message to send", "aria-label": "Prompt text", dataset: { fid: `ptext:${id}` }, oninput: () => { d.text = ta.value; }, onchange: () => void flush(d) }) as HTMLTextAreaElement;
+    ta.value = d.text;
     return h("div.pe", null,
-      h("input.input.input--sm", { type: "text", value: p.title, placeholder: "Title (the button's label)", "aria-label": "Prompt title", dataset: { fid: `ptitle:${id}` }, onchange: (e: Event) => void o.save({ prompts: editPrompt(host.getSettings().prompts, i, { title: (e.target as HTMLInputElement).value }) }) }),
+      h("input.input.input--sm", { type: "text", value: d.title, placeholder: "Title (the button's label)", "aria-label": "Prompt title", dataset: { fid: `ptitle:${id}` }, oninput: (e: Event) => { d.title = (e.target as HTMLInputElement).value; }, onchange: () => void flush(d) }),
       ta,
-      h("div.pe__acts", null, delBtn(`p:${id}`, p.title || "this prompt"), h("button.btn.btn--sm", { type: "button", onclick: () => { editing = null; o.rerender(); } }, "Done")));
+      h("div.pe__acts", null, delBtn(`p:${id}`, p.title || "this prompt"), h("button.btn.btn--sm", { type: "button", onclick: () => void edit(null).then(o.rerender) }, "Done")));
   }
 
   function skillEditor(name: string): HTMLElement {
@@ -151,7 +163,7 @@ export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSet
         h("button.btn.btn--sm", { type: "button", onclick: () => { adding = null; o.rerender(); } }, "Cancel")));
   }
 
-  return () => {
+  const render = () => {
     if (!skills && !loadErr) void load();
     const s = host.getSettings();
     const rows: Kid[] = [];
@@ -167,7 +179,7 @@ export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSet
       h("div.sp__list", null, ...rows),
       adding ? preview(adding) : h("div.sp__btns", null,
         h("button.btn.btn--sm", { type: "button", dataset: { fid: "sp:add" }, onclick: () => void pick() }, icon("plus"), "Add skill…"),
-        h("button.btn.btn--sm", { type: "button", dataset: { fid: "sp:new" }, onclick: () => { const id = nextId("p") + Date.now().toString(36); editing = `p:${id}`; void o.save({ prompts: addPrompt(host.getSettings().prompts, id) }); } }, icon("plus"), "New prompt"),
+        h("button.btn.btn--sm", { type: "button", dataset: { fid: "sp:new" }, onclick: () => { const id = nextId("p") + Date.now().toString(36); void edit(`p:${id}`).then(() => o.save({ prompts: addPrompt(host.getSettings().prompts, id) })); } }, icon("plus"), "New prompt"),
         o.createSkill ? h("button.btn.btn--sm", { type: "button", onclick: o.createSkill }, icon("sparkle"), "Create with the agent") : null),
       msg ? h("p.sec__hint.sp__msg", { role: "status" }, msg) : null,
       h("div.sec__sub", { role: "group", "aria-label": "Skills folder" },
@@ -179,4 +191,5 @@ export function skillsCard(host: SettingsHost, o: { save(patch: Partial<PanelSet
     card = sec;
     return sec;
   };
+  return { card: render, leave: () => edit(null) };
 }

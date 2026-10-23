@@ -49,7 +49,7 @@ class Panel {
   private look: Look;
 
   private view: View = "chat";
-  private activeView: { render?: () => void; refresh?: () => void } | null = null;
+  private activeView: { render?: () => void; refresh?: () => void; leave?: () => Promise<void> } | null = null;
   private pendingRender = false;
   private emptyShown: boolean | null = null;
   private autoPicked = false;
@@ -160,6 +160,7 @@ class Panel {
     this.viewEl.hidden = v === "chat";
     this.historyBtn.setAttribute("aria-pressed", String(v === "history"));
     this.statusBtn.setAttribute("aria-pressed", String(v === "status"));
+    void this.activeView?.leave?.();
     this.activeView = null;
     clear(this.viewEl);
     if (v === "chat") { this.composer.focus(); return; }
