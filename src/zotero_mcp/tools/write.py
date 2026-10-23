@@ -5519,6 +5519,10 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
     'file'/'skip' and a DOI match exists; otherwise None (proceed to
     create). Entries without a DOI always create — title matching is out
     of scope (#4).
+
+    The result carries the item's ``data.citationKey`` when it has one, as
+    _handle_existing_item reports it for the single-item adders (see there
+    for why ``extra`` is not consulted).
     """
     if if_exists == "duplicate":
         return None
@@ -5538,6 +5542,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
         return None
 
     item = existing[0]
+    citation_key = (item.get("data") or {}).get("citationKey")
     if if_exists == "skip":
         return {
             "ok": True, "key": item.get("key"), "doi": doi,
@@ -5545,6 +5550,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
             "title": item.get("data", {}).get("title") or "(untitled)",
             "collections_failed": [],
             "existed": "skipped — already in library",
+            "citation_key": citation_key,
         }
 
     summary = _converge_existing_item(write_zot, item, coll_keys, tags, ctx)
@@ -5561,6 +5567,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
         "error": None, "title": summary["title"],
         "collections_failed": summary["colls_failed"],
         "existed": f"reused existing — {detail}",
+        "citation_key": citation_key,
     }
 
 
@@ -5576,6 +5583,8 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
             lines.append(f"{verb}: **{r['title']}**")
             lines.append("")
             lines.append(f"Item key: `{r['key']}`")
+            if r.get("citation_key"):
+                lines.append(f"Citation key: `{r['citation_key']}`")
             if r["doi"]:
                 lines.append(f"DOI: {r['doi']}")
             if r.get("existed"):
@@ -5601,6 +5610,8 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
                     line += f" (DOI: {r['doi']})"
                 if r.get("existed"):
                     line += f" [{r['existed']}]"
+                if r.get("citation_key"):
+                    line += f" [citation key: {r['citation_key']}]"
                 if r["pdf_status"]:
                     line += f" [{r['pdf_status']}]"
                 if r.get("collections_failed"):

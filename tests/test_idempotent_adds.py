@@ -1169,3 +1169,67 @@ class TestExistingItemReportsCitationKey:
         assert "Item key: `EXIST001`" in result
         assert "Citation key: `Existing2024Paper`" in result
         assert re.search(r"Item key: `([^`]+)`", result).group(1) == "EXIST001"
+
+
+class TestBatchReuseReportsCitationKey:
+    """The batch imports (BibTeX, CSL-JSON, PubMed) report reuse too.
+
+    They do not go through _handle_existing_item but through
+    _maybe_reuse_existing and _format_batch_result, so the citation key has
+    to be carried separately. The reasoning is the same: the dedup search
+    returned the full item, so the key costs nothing.
+    """
+
+    BIB = ("@article{exists, title={Existing Paper}, author={A, B}, "
+           "year={2024}, doi={" + DOI + "}}")
+
+    def _patch(self, monkeypatch, fake_zot):
+        fake_zot._items[0]["data"]["citationKey"] = "Existing2024Paper"
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake_zot, fake_zot),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf",
+            lambda *a, **kw: "skipped (test)",
+        )
+
+    @pytest.mark.parametrize("if_exists", ["skip", "file"])
+    def test_single_entry_reports_citation_key(
+        self, monkeypatch, fake_zot, dummy_ctx, if_exists
+    ):
+        self._patch(monkeypatch, fake_zot)
+
+        result = server.add_by_bibtex(
+            bibtex=self.BIB, if_exists=if_exists, ctx=dummy_ctx,
+        )
+
+        assert fake_zot.created == []
+        assert "Citation key: `Existing2024Paper`" in result
+        assert re.search(r"Item key: `([^`]+)`", result).group(1) == "EXIST001"
+
+    def test_multi_entry_reports_citation_key_on_the_reused_line(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        self._patch(monkeypatch, fake_zot)
+        bib = self.BIB + (
+            "\n@article{fresh, title={Fresh Paper}, author={C, D}, year={2024}}"
+        )
+
+        result = server.add_by_bibtex(bibtex=bib, if_exists="file", ctx=dummy_ctx)
+
+        reused = next(ln for ln in result.splitlines() if "`EXIST001`" in ln)
+        assert "[citation key: Existing2024Paper]" in reused
+
+    def test_no_line_when_the_item_has_no_citation_key(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        self._patch(monkeypatch, fake_zot)
+        del fake_zot._items[0]["data"]["citationKey"]
+
+        result = server.add_by_bibtex(
+            bibtex=self.BIB, if_exists="skip", ctx=dummy_ctx,
+        )
+
+        assert "Already in library" in result
+        assert "itation key" not in result

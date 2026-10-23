@@ -217,3 +217,24 @@ class TestAddByPmid:
         result = write.add_by_pmid("31842878", ctx=dummy_ctx)
         assert result.startswith("Error: PubMed lookup failed")
         assert fake.created == []
+
+
+def test_reuse_reports_citation_key(efetch, fake, dummy_ctx):
+    """A PubMed add that finds the article already present names its citation key.
+
+    PubMed adds go through the CSL-JSON batch path, not _handle_existing_item,
+    so this is the route that would otherwise drop it.
+    """
+    csl = _records()["31842878"]
+    fake._items = [{
+        "key": "EXIST001", "version": 1,
+        "data": {"itemType": "journalArticle", "title": csl["title"],
+                 "DOI": csl["DOI"], "citationKey": "VanCalster2019Calibration",
+                 "collections": [], "tags": []},
+    }]
+
+    result = write.add_by_pmid("31842878", if_exists="skip", ctx=dummy_ctx)
+
+    assert fake.created == []
+    assert "Item key: `EXIST001`" in result
+    assert "Citation key: `VanCalster2019Calibration`" in result
