@@ -761,6 +761,9 @@ def main():
         default=8000,
         help="Port to bind to for SSE transport (default: 8000)",
     )
+    # Internal: how a ZOTERO_MCP_SHARED=1 client starts the server it shares
+    # (see zotero_mcp.shared).
+    server_parser.add_argument("--shared-daemon", metavar="SOCKET", help=argparse.SUPPRESS)
 
     # Setup command
     setup_parser = subparsers.add_parser("setup", help="Configure zotero-mcp (Claude Desktop or standalone)")
@@ -1493,10 +1496,27 @@ def main():
             sys.exit(1)
 
     elif args.command == "serve":
-        # Lazy import — triggers heavy dependencies (FastMCP, ChromaDB, etc.)
-        from zotero_mcp.server import mcp
         # Get transport with a default value if not specified
         transport = getattr(args, "transport", "stdio")
+        shared_daemon = getattr(args, "shared_daemon", None)
+        if transport == "stdio" and not shared_daemon:
+            # Before the server import: a client of a shared server runs
+            # nothing but a stdlib byte pump (ZOTERO_MCP_SHARED=1).
+            from zotero_mcp import shared
+            if shared.requested():
+                # Settings in the order the server takes them — the .env file
+                # that importing client.py loads (found from this package's
+                # directory, as there), then the config files — so this client
+                # resolves to the same configuration and that configuration
+                # decides which shared server it may use.
+                from dotenv import load_dotenv
+                load_dotenv()
+                setup_zotero_environment()
+                status = shared.run_shim()
+                if status is not None:
+                    sys.exit(status)
+        # Lazy import — triggers heavy dependencies (FastMCP, ChromaDB, etc.)
+        from zotero_mcp.server import mcp
         # Ensure environment is initialized (Claude config or standalone config)
         setup_zotero_environment()
         # Re-apply the toolset profile now that the transport is known. The
@@ -1517,7 +1537,10 @@ def main():
         # worker thread can attempt it (#485). Must precede the warmup thread.
         _preimport_semantic_search_on_main_thread()
         _warmup_reranker_in_background()
-        if transport == "stdio":
+        if shared_daemon:
+            from zotero_mcp.shared import serve_daemon
+            serve_daemon(mcp, shared_daemon)
+        elif transport == "stdio":
             mcp.run(transport="stdio")
         elif transport == "streamable-http":
             host = getattr(args, "host", "localhost")
