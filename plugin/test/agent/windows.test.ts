@@ -109,11 +109,7 @@ describe("windows: npm .cmd shims", () => {
       'SET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js"',
       '"%NODE_EXE%" "%NPM_CLI_JS%" %*',
     ].join("\r\n");
-
-    assert.equal(
-      shimTarget(npmShim),
-      "node_modules\\npm\\bin\\npm-cli.js",
-    );
+    assert.equal(shimTarget(npmShim), "node_modules\\npm\\bin\\npm-cli.js",);
   });
 
   it("anything else goes through cmd.exe", () => {
@@ -121,28 +117,19 @@ describe("windows: npm .cmd shims", () => {
   });
 
   it("launches npm's CLI through Node with paths containing spaces", async () => {
-    const file =
-      "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
-
-    const node =
-      "C:\\Program Files\\nodejs\\node.exe";
-
+    const file = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+    const node = "C:\\Program Files\\nodejs\\node.exe";
     const args = [
       "install",
       "--prefix",
       "C:\\Users\\First Last\\AppData\\Roaming\\Zotero\\bridges",
     ];
-
     const result = await resolveShimCommand(
       file,
       args,
       async () => node,
     );
-
-    assert.deepEqual(result, [
-      node,
-      [file, ...args],
-    ]);
+    assert.deepEqual(result, [node, [file, ...args],]);
   });
 });
 
