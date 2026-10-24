@@ -248,6 +248,86 @@ def _make_local_http_client(timeout: float = _LOCAL_READ_TIMEOUT) -> Any:
     )
 
 
+def _is_wsl() -> bool:
+    """Whether this process is running inside WSL (WSL1 or WSL2).
+
+    WSL is identified the way Microsoft documents it: ``WSL_DISTRO_NAME`` is
+    exported into the environment, and ``/proc/version`` carries the kernel's
+    ``microsoft`` tag. Both are checked so detection still works in a stripped
+    environment or on a kernel that omits one marker.
+
+    Native Linux must return False here: it also has a default route, and
+    rewriting Zotero's local endpoint to that gateway would break every
+    non-WSL install.
+    """
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        with open("/proc/version", encoding="ascii", errors="replace") as version_file:
+            return "microsoft" in version_file.read().lower()
+    except OSError:
+        return False
+
+
+def _get_wsl_host_ip() -> str | None:
+    """Return the Windows host IP when running inside WSL2, or None otherwise.
+
+    WSL2 in NAT mode has its own network namespace, so ``localhost``/``127.0.0.1``
+    refers to the Linux container, not the Windows host running Zotero. The
+    Windows host is reachable at the default gateway, which is the second field
+    of the ``00000000`` (default) route in ``/proc/net/route``. Reading it there
+    is what lets local mode work without a manually configured portproxy.
+
+    Returns None outside WSL, and on any parse failure — callers then leave
+    pyzotero's default endpoint untouched.
+    """
+    if not _is_wsl():
+        return None
+    try:
+        with open("/proc/net/route", encoding="ascii") as route_file:
+            for line in route_file:
+                fields = line.split()
+                if len(fields) >= 3 and fields[1] == "00000000":
+                    gateway = int(fields[2], 16)
+                    return ".".join(
+                        str((gateway >> (8 * i)) & 0xFF) for i in range(4)
+                    )
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _apply_wsl_local_endpoint(zot: zotero.Zotero) -> zotero.Zotero:
+    """Point a local client at the Windows host and fix its Host header.
+
+    pyzotero hardcodes ``http://127.0.0.1:23119/api`` for local mode, which is
+    the WSL container itself under WSL2 NAT — so every API call fails with
+    "Cannot connect to Zotero local API". When running under WSL and the default
+    gateway names a usable host, rewrite the endpoint to reach it.
+
+    Zotero's local server also rejects any request whose ``Host`` header is not
+    ``localhost:23119`` with a 400, so the connection must *address* the host IP
+    while *presenting* ``localhost:23119``. Overriding ``default_headers`` (rather
+    than mutating ``client.headers``) keeps that override in place across the
+    re-application in :func:`_apply_default_headers` and any later call.
+    """
+    host_ip = _get_wsl_host_ip()
+    if not host_ip or host_ip == "127.0.0.1":
+        return zot
+
+    zot.endpoint = f"http://{host_ip}:23119/api"
+
+    original_default_headers = zot.default_headers
+
+    def _default_headers_with_host() -> dict[str, str]:
+        headers = original_default_headers()
+        headers["Host"] = "localhost:23119"
+        return headers
+
+    zot.default_headers = _default_headers_with_host  # type: ignore[method-assign]
+    return zot
+
+
 def _apply_default_headers(zot: zotero.Zotero) -> zotero.Zotero:
     """Restore the pyzotero headers that supplying our own client drops.
 
@@ -331,7 +411,9 @@ def get_zotero_client() -> zotero.Zotero:
         local=local,
         client=_make_local_http_client() if local else None,
     )
-    return _apply_default_headers(zot) if local else zot
+    if not local:
+        return zot
+    return _apply_default_headers(_apply_wsl_local_endpoint(zot))
 
 
 def get_local_zotero_client() -> zotero.Zotero | None:
