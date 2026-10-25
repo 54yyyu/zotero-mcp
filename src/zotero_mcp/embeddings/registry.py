@@ -167,9 +167,71 @@ def _huggingface_ef_factory(config: dict[str, Any]) -> Any:
     )
 
 
+def _resolve_intra_op_threads() -> int:
+    """How many ONNX Runtime intra-op threads the default EF may use.
+
+    ONNX Runtime sizes its thread pool from the *total* logical core count and
+    then binds each thread to a specific core index. Under a restricted CPU
+    affinity mask (containers, Slurm jobs, ``taskset``) that bind fails with
+    ``pthread_setaffinity_np ... Invalid argument`` and floods stderr once per
+    thread. An explicit thread count makes ORT skip affinity pinning entirely.
+
+    ``ONNXRUNTIME_INTRA_OP_NUM_THREADS`` wins when set to a positive integer,
+    matching what the user in the issue expected the library to honour. It is
+    otherwise capped at the number of CPUs this process is actually allowed to
+    run on, so a 192-core host with an 8-core mask no longer asks for 192
+    threads. A value of ``0`` is ORT's "let it decide" sentinel and is never
+    returned.
+    """
+    env_value = os.environ.get("ONNXRUNTIME_INTRA_OP_NUM_THREADS")
+    if env_value is not None:
+        try:
+            configured = int(env_value)
+        except ValueError:
+            configured = 0
+        if configured > 0:
+            return configured
+
+    try:
+        allowed = len(os.sched_getaffinity(0))  # Linux-only
+    except (AttributeError, OSError):
+        allowed = os.cpu_count() or 1
+    return max(1, allowed)
+
+
+def _cap_onnx_intra_op_threads() -> None:
+    """Make every ``ort.InferenceSession`` respect :func:`_resolve_intra_op_threads`.
+
+    ChromaDB's ``ONNXMiniLM_L6_V2`` builds its own ``SessionOptions`` and never
+    exposes them, so the only interception point is ``InferenceSession`` itself.
+    Sessions that already chose a thread count (``!= 0``) are left untouched, so
+    an explicit caller configuration always wins. The patch is installed once;
+    repeated calls are no-ops.
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return
+
+    original_init = ort.InferenceSession.__init__
+    if getattr(original_init, "_zotero_mcp_intra_op_capped", False):
+        return
+
+    def _patched_init(self, path_or_bytes, sess_options=None, providers=None, **kwargs):
+        if sess_options is None:
+            sess_options = ort.SessionOptions()
+        if getattr(sess_options, "intra_op_num_threads", 0) == 0:
+            sess_options.intra_op_num_threads = _resolve_intra_op_threads()
+        return original_init(self, path_or_bytes, sess_options, providers, **kwargs)
+
+    _patched_init._zotero_mcp_intra_op_capped = True
+    ort.InferenceSession.__init__ = _patched_init
+
+
 def _default_ef_factory(config: dict[str, Any]) -> Any:
     from chromadb.utils import embedding_functions
 
+    _cap_onnx_intra_op_threads()
     ef = embedding_functions.DefaultEmbeddingFunction()
     ef.max_input_tokens = 256  # all-MiniLM-L6-v2 max_seq_length
     return ef
