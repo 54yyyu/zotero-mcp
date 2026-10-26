@@ -65,14 +65,30 @@ def damaged_index(tmp_path):
     SharedSystemClient.clear_system_cache()
 
 
-def test_status_reports_a_damaged_index_as_unreadable(damaged_index):
+def test_status_reports_a_header_that_undercounts_pages_as_unreadable(damaged_index):
+    """The on-disk signature of #747, found from the header without opening ChromaDB."""
+    db = damaged_index / "chroma.sqlite3"
+    pages = db.stat().st_size // 4096
+    with open(db, "r+b") as f:
+        f.seek(28)
+        f.write((pages - 3).to_bytes(4, "big"))
+
     info = read_collection_status(None, persist_directory=str(damaged_index))
 
     assert info["unreadable"] is True
     assert info["count"] == 0
-    assert "metadata segment" in info["error"]
-    assert info["size_bytes"] >= (damaged_index / "chroma.sqlite3").stat().st_size
-    assert info["last_written"] == (damaged_index / "chroma.sqlite3").stat().st_mtime
+    assert "header counts" in info["error"] and "cut off" in info["error"]
+    assert info["size_bytes"] >= db.stat().st_size
+    assert info["last_written"] == db.stat().st_mtime
+
+
+def test_status_reports_writes_chromadb_has_not_applied(damaged_index):
+    # The log-apply failure itself only shows when ChromaDB opens the index
+    # (search, update-db); the status read, which does not, reports the backlog.
+    info = read_collection_status(None, persist_directory=str(damaged_index))
+
+    assert info["initialized"] is True
+    assert info["pending_writes"] == 1
 
 
 def test_status_of_a_new_directory_is_not_initialized_not_unreadable(tmp_path):

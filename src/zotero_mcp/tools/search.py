@@ -1754,6 +1754,11 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append("## Collection Information")
         output.append(f"**Name:** {collection_info.get('name', 'Unknown')}")
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
+        if collection_info.get("pending_writes"):
+            output.append(
+                f"**Pending Writes:** {collection_info['pending_writes']} "
+                "(logged but not yet applied; applied when the index is next opened)"
+            )
         output.append(f"**Embedding Model:** {collection_info.get('embedding_model', 'Unknown')}")
         output.append(f"**Database Path:** {collection_info.get('persist_directory', 'Unknown')}")
 

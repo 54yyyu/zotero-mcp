@@ -14,6 +14,7 @@ class object, so the re-exported name has to *be* the registered class.
 import json
 import logging
 import os
+import sqlite3
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -35,9 +36,8 @@ from zotero_mcp.utils import ensure_private_dir, install_hint, suppress_stdout
 
 try:
     import chromadb
-    from chromadb import Documents, EmbeddingFunction, Embeddings
+    from chromadb import EmbeddingFunction
     from chromadb.config import Settings
-    from chromadb.errors import NotFoundError
 except ImportError as e:
     raise ImportError(
         f"chromadb is required for semantic search. {install_hint('semantic')}"
@@ -603,6 +603,16 @@ def create_chroma_client(
         except Exception as e:
             logger.warning(f"Error loading config from {config_path}: {e}")
 
+    # In the MCP server, ChromaDB runs in a worker process that exits when
+    # idle, because the index it loads is never released in-process.
+    if persist_directory is None:
+        from zotero_mcp import chroma_worker
+
+        idle = config.get("idle_unload_minutes", chroma_worker.DEFAULT_IDLE_UNLOAD_MINUTES)
+        worker = chroma_worker.shared_client(config_path, idle)
+        if worker is not None:
+            return worker
+
     # Pick the embedding model. config.json is the richer, authoritative source
     # (it also carries the matching api_key / base_url / model_name), so it wins
     # over the ZOTERO_EMBEDDING_MODEL env var whenever it names a concrete model.
@@ -636,37 +646,6 @@ def create_chroma_client(
         embedding_model=config["embedding_model"],
         embedding_config=config["embedding_config"]
     )
-
-
-class _NoEmbeddingFunction(EmbeddingFunction):
-    """Placeholder embedding function used for read-only status reads.
-
-    Passing an explicit embedding function to ``get_collection`` stops ChromaDB
-    from reconstructing the collection's persisted embedding function — which,
-    for the default backend, eagerly downloads the ~80MB ONNX MiniLM model.
-    Counting rows never embeds anything, so this is never actually called; it
-    raises if it ever is, to make misuse loud rather than silently wrong.
-
-    ``name()`` MUST return ``"default"``. ChromaDB >=1.x validates the supplied
-    embedding function against the collection's persisted config in
-    ``validate_embedding_function_conflict_on_get`` and raises a ``ValueError``
-    whenever the supplied ``name()`` differs from the persisted one — *unless*
-    the supplied name is ``"default"``, which short-circuits the check. Without
-    this, opening a collection that was built with any real backend (default,
-    openai, gemini, ...) raises a conflict; ``read_collection_status`` then
-    swallowed that error and reported "0 documents / not initialized" against a
-    fully populated database (issue #362).
-    """
-
-    def __init__(self):
-        pass
-
-    def __call__(self, input: Documents) -> Embeddings:  # pragma: no cover - never invoked
-        raise RuntimeError("embedding is unavailable in status-only mode")
-
-    @staticmethod
-    def name() -> str:
-        return "default"
 
 
 def release_chroma_clients() -> None:
@@ -772,24 +751,70 @@ def read_collection_status(
         "persist_directory": persist_directory,
     }
 
+    # Read the counts from chroma.sqlite3 directly, read-only. Asking ChromaDB
+    # for count() loads the collection's whole vector index into this process
+    # and keeps it there (gigabytes for a large full-text index), and on a
+    # damaged index it writes while retrying its pending log (#747).
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return {**base, "count": 0, "initialized": False}
     try:
-        with suppress_stdout():
-            client = chromadb.PersistentClient(
-                path=persist_directory,
-                settings=Settings(anonymized_telemetry=False, allow_reset=True),
-            )
-            try:
-                collection = client.get_collection(
-                    name=collection_name,
-                    embedding_function=_NoEmbeddingFunction(),
-                )
-            except NotFoundError:
-                # Collection does not exist yet — database not initialized.
-                # Any other error is a database that cannot be read, and is
-                # reported as one below rather than as "not initialized" (#747).
+        if problem := sqlite_page_count_problem(db):
+            raise sqlite3.DatabaseError(problem)
+        con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+        try:
+            row = con.execute("SELECT id FROM collections WHERE name = ?", (collection_name,)).fetchone()
+            if row is None:
                 return {**base, "count": 0, "initialized": False}
-            count = collection.count()
-        return {**base, "count": count, "initialized": True}
+            count, pending = con.execute(
+                """
+                SELECT
+                    (SELECT count(*) FROM embeddings e JOIN segments s ON e.segment_id = s.id
+                     WHERE s.collection = :c AND s.scope = 'METADATA'),
+                    (SELECT count(*) FROM embeddings_queue
+                     WHERE topic LIKE '%' || :c AND seq_id > coalesce(
+                         (SELECT min(m.seq_id) FROM max_seq_id m JOIN segments s ON m.segment_id = s.id
+                          WHERE s.collection = :c), 0))
+                """,
+                {"c": row[0]},
+            ).fetchone()
+        finally:
+            con.close()
+        result = {**base, "count": count, "initialized": True}
+        if pending:
+            # Writes ChromaDB has logged but not applied yet; it applies them
+            # the next time the index is opened.
+            result["pending_writes"] = pending
+        return result
     except Exception as e:
         logger.error(f"Error reading collection status: {e}")
         return {**base, "count": 0, "error": str(e), **unreadable_index_facts(persist_directory)}
+
+
+def sqlite_page_count_problem(db: Path) -> str | None:
+    """Say so if an SQLite file is longer than its header's page count; None if not.
+
+    SQLite never leaves a healthy rollback-journal database like that. It is
+    what a write that grew the file and was cut off before the header was
+    updated leaves behind, and SQLite then reports the tables that point past
+    the counted pages as "malformed" (#747). The check reads 100 bytes, so it
+    costs nothing on a 20 GB index. WAL databases are skipped: their file and
+    header lag the log by design.
+    """
+    if Path(f"{db}-wal").exists():
+        return None
+    with open(db, "rb") as f:
+        header = f.read(100)
+    if len(header) < 100 or not header.startswith(b"SQLite format 3\x00"):
+        return "not an SQLite database"
+    page_size = int.from_bytes(header[16:18], "big")
+    page_size = 65536 if page_size == 1 else page_size
+    page_count = int.from_bytes(header[28:32], "big")
+    trusted = header[24:28] == header[92:96]  # change counter == version-valid-for
+    file_pages = db.stat().st_size // page_size
+    if trusted and page_count < file_pages:
+        return (
+            f"the database file holds {file_pages} pages but its header counts {page_count}; "
+            "a write was cut off before it finished"
+        )
+    return None
