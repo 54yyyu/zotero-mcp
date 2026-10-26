@@ -63,6 +63,22 @@ zotero-mcp update-db --force-rebuild
 
 A forced rebuild deletes the whole ChromaDB collection and re-embeds every item in the active library from scratch. With OpenAI or Gemini embeddings that is billed again in full, and it takes as long as the first build. If the index also holds other libraries (or documents with no library attribution), the command refuses and asks for `--allow-mass-deletion`; passing that flag drops those documents permanently. Back up `~/.config/zotero-mcp/chroma_db/` first, and try a plain `zotero-mcp update-db` before rebuilding.
 
+<a id="repairing-an-unreadable-index"></a>
+
+### Repairing an unreadable index
+
+If `db-status` shows a document count of 0 and an error from ChromaDB (for example `Failed to apply logs to the metadata segment` or `database disk image is malformed`) while the `chroma_db` folder is still large, the index is damaged rather than empty. This usually follows an `update-db` that was interrupted part way through. `repair-db` rebuilds it from its own files without calling the embedding provider:
+
+```bash
+zotero-mcp repair-db --dry-run   # report what can be recovered; changes nothing
+zotero-mcp repair-db             # rebuild the index
+zotero-mcp update-db --fulltext  # embed the items repair-db left out
+```
+
+It reads the vectors from the index's HNSW files and the documents and metadata from `chroma.sqlite3`, and keeps an item only if all of its chunks have a document and a vector and their metadata agree. The rest are left out and listed in a report next to the index. The new index replaces the old one, which is kept as `chroma_db.broken-<timestamp>`; delete it once search works. The rebuild needs free disk space of about the size of the old index. `update-db --fulltext` skips items that are already indexed, so it only embeds the ones left out. Without `--fulltext`, `update-db` reads only items changed since the last sync and does not pick them up.
+
+`repair-db` cannot help when the vector files are missing or in a format it does not know (it says so); rebuild with `update-db --force-rebuild` then.
+
 ## Update issues
 
 - **Update command fails**: Check your internet connection and try `zotero-mcp update --force`

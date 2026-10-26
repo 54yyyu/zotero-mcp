@@ -537,12 +537,18 @@ class ChromaClient:
             raise
 
 
-def create_chroma_client(config_path: str | None = None) -> ChromaClient:
+def create_chroma_client(
+    config_path: str | None = None,
+    *,
+    persist_directory: str | None = None,
+) -> ChromaClient:
     """
     Create a ChromaClient instance from configuration.
 
     Args:
         config_path: Path to configuration file
+        persist_directory: Build the client on this directory instead of the
+            configured one (``repair-db`` writes its rebuilt index here)
 
     Returns:
         Configured ChromaClient instance
@@ -592,7 +598,7 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
 
     return ChromaClient(
         collection_name=config["collection_name"],
-        persist_directory=config.get("persist_directory"),
+        persist_directory=persist_directory or config.get("persist_directory"),
         embedding_model=config["embedding_model"],
         embedding_config=config["embedding_config"]
     )

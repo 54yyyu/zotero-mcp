@@ -410,6 +410,32 @@ def _provider_label(provider: str) -> str:
     return provider.capitalize()
 
 
+def _print_repair_report(report) -> None:
+    from collections import Counter
+
+    print(f"\nRepair {'check (dry run)' if report.dry_run else 'completed'}:")
+    print(f"- Items kept: {report.items_kept} ({report.chunks_kept} chunks)")
+    print(f"- Items left out: {len(report.excluded)}")
+    for reason, count in Counter(report.excluded.values()).most_common():
+        print(f"    {count:>6}  {reason}")
+    if report.header_page_count_fixed:
+        print("- Corrected the page count in a copy of the database header")
+    if report.skipped_rows:
+        print(f"- Unreadable rows skipped: {report.skipped_rows}")
+    print(f"- Report: {report.report_path}")
+    if report.dry_run:
+        print("\nNothing was changed. Run without --dry-run to rebuild the index.")
+        return
+    print(f"- Old index kept at: {report.broken_directory}")
+    print("\nNext steps:")
+    if report.excluded:
+        print("  zotero-mcp update-db --fulltext   # embeds the items left out; indexed items are skipped")
+        print("  (without --fulltext, update-db only reads items changed since the last sync,")
+        print("   so it does not pick up the items left out; their keys are in the report)")
+    print("  Restart any running zotero-mcp server so it opens the new index.")
+    print(f"  When search works, delete the old index: {report.broken_directory}")
+
+
 def _print_update_stats(stats: dict) -> None:
     is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
     batch_provider = stats.get("batch_provider", "openai")
@@ -877,6 +903,16 @@ def main():
     inspect_parser.add_argument("--stats", action="store_true", help="Show aggregate stats (formerly db-stats)")
     inspect_parser.add_argument("--config-path", help="Path to semantic search configuration file")
 
+    # Repair command: rebuild an unreadable index from its own files
+    repair_db_parser = subparsers.add_parser(
+        "repair-db",
+        help="Rebuild an unreadable semantic search database from its own files, without re-embedding",
+    )
+    repair_db_parser.add_argument("--dry-run", action="store_true",
+                                  help="Check what can be recovered and report it; change nothing")
+    repair_db_parser.add_argument("--config-path",
+                                  help="Path to semantic search configuration file")
+
     # Update command
     update_parser = subparsers.add_parser("update", help="Update zotero-mcp to the latest version")
     update_parser.add_argument("--check-only", action="store_true",
@@ -1311,6 +1347,22 @@ def main():
         except Exception as e:
             print(f"Error getting database status: {e}")
             sys.exit(1)
+
+    elif args.command == "repair-db":
+        from zotero_mcp.index_repair import RepairError, repair_index
+        from zotero_mcp.semantic_search import _acquire_update_lock, _update_lock_path
+
+        config_path = _semantic_config_path(args.config_path)
+        with _acquire_update_lock(_update_lock_path()) as acquired:
+            if not acquired:
+                print("Error: a database update is running; try again when it has finished.", file=sys.stderr)
+                sys.exit(1)
+            try:
+                report = repair_index(str(config_path), dry_run=args.dry_run)
+            except RepairError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        _print_repair_report(report)
 
     elif args.command == "db-inspect":
         # Setup Zotero environment variables
