@@ -1759,7 +1759,16 @@ def get_search_database_status(*, ctx: Context) -> str:
 
         if collection_info.get("initialized") is False and not collection_info.get("error"):
             output.append("**Status:** Not initialized — run zotero_update_search_database first.")
-        if collection_info.get('error'):
+        if collection_info.get("unreadable"):
+            # A damaged index reads as 0 documents; say so, with what to run (#747).
+            from zotero_mcp.chroma_client import unreadable_index_message
+
+            output.append("**Status:** Unreadable — the index is damaged, not empty.")
+            output.append("")
+            output.append("```")
+            output.append(unreadable_index_message(collection_info, update_config.get("last_update")))
+            output.append("```")
+        elif collection_info.get('error'):
             output.append(f"**Error:** {collection_info['error']}")
 
         output.append("")

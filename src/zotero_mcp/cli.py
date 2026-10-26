@@ -1341,7 +1341,11 @@ def main():
             print(f"- OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
             print(f"- Passage chunking: {_format_chunking_status(status)}")
 
-            if collection_info.get('error'):
+            if collection_info.get("unreadable"):
+                from zotero_mcp.chroma_client import unreadable_index_message
+
+                print(f"\nError: {unreadable_index_message(collection_info, update_config.get('last_update'))}")
+            elif collection_info.get('error'):
                 print(f"\nError: {collection_info['error']}")
 
         except Exception as e:

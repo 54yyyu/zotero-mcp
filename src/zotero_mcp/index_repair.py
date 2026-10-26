@@ -340,7 +340,7 @@ def repair_index(
     ``dry_run`` checks everything and reports what would be kept, writing
     nothing but a temporary working copy that is removed afterwards.
     """
-    from .chroma_client import create_chroma_client
+    from .chroma_client import create_chroma_client, release_chroma_clients
     from .config import resolve_chroma_dir
 
     collection_name = "zotero_library"
@@ -473,7 +473,7 @@ def repair_index(
                 f"{report.chunks_kept}; the old index was left in place."
             )
         del target
-        _release_chroma_clients()
+        release_chroma_clients()
         broken_dir = persist_dir.with_name(f"{persist_dir.name}.broken-{stamp}")
         os.rename(persist_dir, broken_dir)
         os.rename(new_dir, persist_dir)
@@ -491,16 +491,6 @@ def repair_index(
     }, indent=1))
     report.report_path = str(report_path)
     return report
-
-
-def _release_chroma_clients() -> None:
-    """Drop ChromaDB's per-path client cache so the new index's files are closed before the swap."""
-    try:
-        from chromadb.api.client import SharedSystemClient
-
-        SharedSystemClient.clear_system_cache()
-    except Exception as e:  # pragma: no cover - best effort
-        logger.debug(f"could not clear the ChromaDB client cache: {e}")
 
 
 def _batched(rows: Iterator[tuple], size: int = 50_000) -> Iterator[list[tuple]]:

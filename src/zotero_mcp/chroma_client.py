@@ -37,6 +37,7 @@ try:
     import chromadb
     from chromadb import Documents, EmbeddingFunction, Embeddings
     from chromadb.config import Settings
+    from chromadb.errors import NotFoundError
 except ImportError as e:
     raise ImportError(
         f"chromadb is required for semantic search. {install_hint('semantic')}"
@@ -87,8 +88,10 @@ class ChromaClient:
         # the registry lookup used when a persisted collection config is
         # rebuilt below (issue #382).
         ensure_embedding_functions_registered()
+        self._open()
 
-        # Initialize ChromaDB client with stdout suppression
+    def _open(self) -> None:
+        """Open the persistent client and the collection in ``persist_directory``."""
         with suppress_stdout():
             self.client = chromadb.PersistentClient(
                 path=self.persist_directory,
@@ -392,8 +395,39 @@ class ChromaClient:
                 "count": 0,
                 "embedding_model": self.embedding_model,
                 "persist_directory": self.persist_directory,
-                "error": str(e)
+                "error": str(e),
+                **unreadable_index_facts(self.persist_directory),
             }
+
+    def read_error(self) -> str | None:
+        """Why the collection cannot be read, or None when it can.
+
+        Counting reads the metadata segment, which is the part an interrupted
+        write leaves unreadable (#747).
+        """
+        try:
+            self.collection.count()
+            return None
+        except Exception as e:
+            return str(e)
+
+    def move_aside(self) -> str:
+        """Rename the index directory to ``<dir>.broken-<timestamp>`` and start an empty one.
+
+        For an index ChromaDB cannot read: deleting it through ChromaDB would
+        run into the same error, and a rename keeps the data for ``repair-db``
+        or a manual look. Returns the new name of the old directory.
+        """
+        from datetime import datetime
+
+        self.collection = None
+        self.client = None
+        release_chroma_clients()
+        current = Path(self.persist_directory)
+        moved = current.with_name(f"{current.name}.broken-{datetime.now():%Y%m%d-%H%M%S}")
+        os.rename(current, moved)
+        self._open()
+        return str(moved)
 
     def reset_collection(self) -> None:
         """Reset (clear) the collection."""
@@ -635,6 +669,63 @@ class _NoEmbeddingFunction(EmbeddingFunction):
         return "default"
 
 
+def release_chroma_clients() -> None:
+    """Drop ChromaDB's per-path client cache, closing the files it holds open.
+
+    Needed before an index directory is renamed: a later client for the same
+    path would otherwise reuse the cached one, still bound to the old files.
+    """
+    try:
+        from chromadb.api.client import SharedSystemClient
+
+        SharedSystemClient.clear_system_cache()
+    except Exception as e:  # pragma: no cover - best effort
+        logger.debug(f"could not clear the ChromaDB client cache: {e}")
+
+
+def unreadable_index_facts(persist_directory: str) -> dict[str, Any]:
+    """Size and last write of an index ChromaDB failed to read, if one is on disk.
+
+    Empty when there is no ``chroma.sqlite3``: then the failure is not a
+    damaged index, and the caller's plain error is the right message.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    try:
+        if db.stat().st_size == 0:
+            return {}
+        size = sum(f.stat().st_size for f in Path(persist_directory).rglob("*") if f.is_file())
+        return {"unreadable": True, "size_bytes": size, "last_written": db.stat().st_mtime}
+    except OSError:
+        return {}
+
+
+def unreadable_index_message(info: dict[str, Any], last_update: str | None) -> str:
+    """What to tell the user about an index that exists but cannot be read (#747).
+
+    The last write against the last successful update tells an interrupted
+    update (written later) from damage of some other kind.
+    """
+    from datetime import datetime, timedelta
+
+    written = datetime.fromtimestamp(info["last_written"])
+    try:
+        last = datetime.fromisoformat(last_update) if last_update else None
+    except ValueError:
+        last = None
+    late = last is not None and written - last > timedelta(minutes=5)
+    lines = [
+        f"The semantic index exists ({info['size_bytes'] / 2**30:.1f} GB) but ChromaDB cannot read it:",
+        f"  {info.get('error', 'unknown error')}",
+        f"Last successful update: {last:%Y-%m-%d %H:%M}" if last else "Last successful update: never recorded",
+        f"Index last written:     {written:%Y-%m-%d %H:%M}"
+        + (" (after the last successful update; an interrupted update is the usual cause)" if late else ""),
+        f"Index location:         {info.get('persist_directory', '')}",
+        "To recover it without re-embedding: zotero-mcp repair-db",
+        "To re-embed everything instead:      zotero-mcp update-db --force-rebuild",
+    ]
+    return "\n".join(lines)
+
+
 def read_collection_status(
     config_path: str | None = None,
     *,
@@ -692,11 +783,13 @@ def read_collection_status(
                     name=collection_name,
                     embedding_function=_NoEmbeddingFunction(),
                 )
-            except Exception:
+            except NotFoundError:
                 # Collection does not exist yet — database not initialized.
+                # Any other error is a database that cannot be read, and is
+                # reported as one below rather than as "not initialized" (#747).
                 return {**base, "count": 0, "initialized": False}
             count = collection.count()
         return {**base, "count": count, "initialized": True}
     except Exception as e:
         logger.error(f"Error reading collection status: {e}")
-        return {**base, "count": 0, "error": str(e)}
+        return {**base, "count": 0, "error": str(e), **unreadable_index_facts(persist_directory)}
