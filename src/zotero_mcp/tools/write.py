@@ -5659,7 +5659,7 @@ def add_by_bibtex(
             except Exception as e:
                 results.append({
                     "ok": False, "key": None, "doi": None, "pdf_status": None,
-                    "error": f"conversion failed: {e}",
+                    "error": f"conversion failed: {_helpers.format_zotero_error(e)}",
                     "title": entry.get("citekey") or "(unknown)",
                 })
                 continue
@@ -5800,7 +5800,7 @@ def add_by_csl_json(
             except Exception as e:
                 results.append({
                     "ok": False, "key": None, "doi": None, "pdf_status": None,
-                    "error": f"conversion failed: {e}",
+                    "error": f"conversion failed: {_helpers.format_zotero_error(e)}",
                     "title": str(entry.get("id") or entry.get("title") or "(unknown)"),
                 })
                 continue
