@@ -86,6 +86,8 @@ zotero-cli get children ABC123                 # attachments and notes
 # Edit item metadata
 zotero-cli edit ABC123 --title "New Title"
 zotero-cli edit ABC123 --add-tags "reviewed,important" --date "2024"
+# Every tag flag is comma-separated; a JSON array addresses names with commas
+zotero-cli edit ABC123 --remove-tags '["Barrel organ, Hydraulic"]'
 
 # Notes and annotations
 zotero-cli notes list ABC123
