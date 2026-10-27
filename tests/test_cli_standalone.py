@@ -519,6 +519,13 @@ class TestCmdTags:
         assert kwargs["tag"] == ["Barrel organ, Hydraulic"]
         assert kwargs["remove_tags"] == ["Barrel organ, Hydraulic"]
 
+    def test_item_keys_select_a_known_set_of_items(self):
+        kwargs = self._run(["--item-keys", "ABCD1234,EFGH5678", "--remove", "x"])
+        assert kwargs["item_keys"] == ["ABCD1234", "EFGH5678"]
+
+    def test_item_keys_default_to_none(self):
+        assert self._run(["--tag", "x", "--remove", "x"])["item_keys"] is None
+
 
 # ---------------------------------------------------------------------------
 # cmd_add

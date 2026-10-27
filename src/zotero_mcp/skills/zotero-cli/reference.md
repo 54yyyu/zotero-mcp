@@ -251,6 +251,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
 ## `tags`
 
+ - `--item-keys` -- Comma-separated item keys to edit; --query and --tag are then ignored
  - `--query`
  - `--tag` -- Select items by tag (comma-separated, or a JSON array if a name has a comma; any matches)
  - `--add` -- Tags to add (comma-separated, or a JSON array if a name has a comma)

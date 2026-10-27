@@ -807,6 +807,7 @@ def cmd_tags(args):
         remove_tags=_split_tags(args.remove),
         tag=_split_tags(args.tag),
         limit=args.limit,
+        item_keys=_split_csv(args.item_keys),
         ctx=ctx,
     ))
 
@@ -1705,6 +1706,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # tags
     t_p = sub.add_parser("tags", help="Batch update tags on matched items")
+    t_p.add_argument("--item-keys",
+                     help="Comma-separated item keys to edit; --query and --tag are then ignored")
     t_p.add_argument("--query")
     t_p.add_argument("--tag", help=f"Select items by tag ({TAG_LIST_HELP}; any matches)")
     t_p.add_argument("--add", help=f"Tags to add ({TAG_LIST_HELP})")

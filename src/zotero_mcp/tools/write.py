@@ -438,7 +438,7 @@ def batch_update_tags(
             return f"Error: {validation_error}"
 
         if not query and not tag and not explicit_keys:
-            return "Error: Must provide a search query and/or tag filter"
+            return "Error: Must provide item_keys, a search query and/or a tag filter"
 
         if not add_tags and not remove_tags:
             return "Error: You must specify either tags to add or tags to remove"
