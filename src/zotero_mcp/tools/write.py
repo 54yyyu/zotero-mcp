@@ -393,14 +393,27 @@ def _normalize_tag_selector(tag):
     return tag or None
 
 
-def _search_item_keys(zot, query, tag, limit) -> list[str]:
-    """Item keys matching a query and/or tag selector (the batch selector)."""
-    params = {"limit": limit}
+def _selection_params(query, tag) -> dict:
+    """Search parameters for the batch selector: a query and/or a tag.
+
+    A query alone also matches attachments (by title), which a caller asking
+    for items about X does not mean to edit, so the server is asked to leave
+    them out. A tag selection keeps them: an attachment carrying the tag is
+    exactly what removing that tag has to reach.
+    """
+    params = {}
     if query:
         params["q"] = query
     if tag:
         params["tag"] = tag
-    zot.add_parameters(**params)
+    else:
+        params["itemType"] = "-attachment"
+    return params
+
+
+def _search_item_keys(zot, query, tag, limit) -> list[str]:
+    """Item keys matching a query and/or tag selector (the batch selector)."""
+    zot.add_parameters(limit=limit, **_selection_params(query, tag))
     return [it.get("key") for it in (zot.items() or []) if it.get("key")]
 
 
@@ -485,12 +498,7 @@ def batch_update_tags(
                 return f"No items found for item_keys {explicit_keys}"
         else:
             # Search for items matching the query and/or tag filter
-            params = {"limit": limit}
-            if query:
-                params["q"] = query
-            if tag:
-                params["tag"] = tag
-            zot.add_parameters(**params)
+            zot.add_parameters(limit=limit, **_selection_params(query, tag))
             items = zot.items()
 
             if not items:
@@ -509,11 +517,6 @@ def batch_update_tags(
 
         # Process each item
         for item in items:
-            # Skip attachments if they were included in the results
-            if item["data"].get("itemType") == "attachment":
-                skipped_count += 1
-                continue
-
             # Get current tags
             current_tags = item["data"].get("tags", [])
             current_tag_values = {t["tag"] for t in current_tags}
@@ -832,8 +835,9 @@ def batch_update_extra(
         "place, else appending; remove_keys deletes those lines; lines "
         "without a colon are preserved. "
         "limit: max items for query/tag selection (default 50). "
-        "Attachments and items needing no change are skipped and "
-        "counted. Requires a writable library. "
+        "A query-only selection leaves attachments out; Extra edits "
+        "skip attachments, notes and annotations. Items needing no "
+        "change are skipped and counted. Requires a writable library. "
         "Example: zotero_batch_update(tag='to-read', "
         "add_tags=['reviewed'], remove_tags=['to-read'])."
     )
