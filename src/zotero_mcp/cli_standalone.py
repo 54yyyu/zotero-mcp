@@ -1712,7 +1712,8 @@ def build_parser() -> argparse.ArgumentParser:
     t_p.add_argument("--tag", help=f"Select items by tag ({TAG_LIST_HELP}; any matches)")
     t_p.add_argument("--add", help=f"Tags to add ({TAG_LIST_HELP})")
     t_p.add_argument("--remove", help=f"Tags to remove ({TAG_LIST_HELP})")
-    t_p.add_argument("--limit", type=int, default=50)
+    t_p.add_argument("--limit", type=int, default=50,
+                     help="Most items to select by --query/--tag (at most 1000)")
 
     # edit (item metadata)
     e_p = sub.add_parser("edit", help="Edit metadata fields of an existing item")
@@ -1883,7 +1884,8 @@ def build_parser() -> argparse.ArgumentParser:
     b_p.add_argument("--remove-tags", help=f"Tags to remove ({TAG_LIST_HELP})")
     b_p.add_argument("--set", help="JSON object of Extra keys to set")
     b_p.add_argument("--remove-keys", help="Comma-separated Extra keys to remove")
-    b_p.add_argument("--limit", type=int, default=50)
+    b_p.add_argument("--limit", type=int, default=50,
+                     help="Most items to select by --query/--tag (at most 1000)")
 
     return parser
 

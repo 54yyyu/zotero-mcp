@@ -411,10 +411,39 @@ def _selection_params(query, tag) -> dict:
     return params
 
 
-def _search_item_keys(zot, query, tag, limit) -> list[str]:
-    """Item keys matching a query and/or tag selector (the batch selector)."""
-    zot.add_parameters(limit=limit, **_selection_params(query, tag))
-    return [it.get("key") for it in (zot.items() or []) if it.get("key")]
+#: Most items one batch call selects by query or tag. It was
+#: _normalize_limit's default of 100, fetched as one page with nothing said
+#: when more matched; the selection is now paged, as get_collection_items
+#: is (#453), and the report says when the limit cut it short.
+_BATCH_MAX_LIMIT = 1000
+
+
+def _normalize_batch_limit(limit) -> int:
+    return _helpers._normalize_limit(limit, default=50, max_val=_BATCH_MAX_LIMIT)
+
+
+def _select_batch_items(zot, query, tag, limit) -> tuple[list, bool]:
+    """Items matching the batch selector, up to *limit*, and whether more
+    matched (one item past the limit is fetched to tell)."""
+    items = _utils._paginate(
+        zot.items, max_items=limit + 1, **_selection_params(query, tag)
+    )
+    return items[:limit], len(items) > limit
+
+
+def _limit_note(limit: int) -> str:
+    return (
+        f"More items matched than limit={limit}; only the first {limit} "
+        f"were processed. Raise limit (up to {_BATCH_MAX_LIMIT}) or narrow "
+        "the selection."
+    )
+
+
+def _search_item_keys(zot, query, tag, limit) -> tuple[list[str], bool]:
+    """Item keys matching a query and/or tag selector (the batch selector),
+    and whether more matched than *limit*."""
+    items, more = _select_batch_items(zot, query, tag, limit)
+    return [it.get("key") for it in items if it.get("key")], more
 
 
 @with_zotero_api_lock
@@ -477,7 +506,8 @@ def batch_update_tags(
         except ValueError as e:
             return str(e)
 
-        limit = _helpers._normalize_limit(limit, default=50)
+        limit = _normalize_batch_limit(limit)
+        more_matched = False
 
         # Normalize tag parameter: accept string, list, or JSON string
         tag = _normalize_tag_selector(tag)
@@ -498,8 +528,7 @@ def batch_update_tags(
                 return f"No items found for item_keys {explicit_keys}"
         else:
             # Search for items matching the query and/or tag filter
-            zot.add_parameters(limit=limit, **_selection_params(query, tag))
-            items = zot.items()
+            items, more_matched = _select_batch_items(zot, query, tag, limit)
 
             if not items:
                 filter_desc = []
@@ -590,6 +619,8 @@ def batch_update_tags(
         response.append(f"Items processed: {len(items)}")
         response.append(f"Items updated: {updated_count}")
         response.append(f"Items skipped: {skipped_count}")
+        if more_matched:
+            response.append("\n" + _limit_note(limit))
 
         if add_tags:
             response.append("\n## Tags Added")
@@ -696,10 +727,11 @@ def batch_update_extra(
             return f"Error: {validation_error}"
 
         tag = _normalize_tag_selector(tag)
+        limit = _normalize_batch_limit(limit)
+        more_matched = False
         if not item_keys and (query or tag):
-            item_keys = _search_item_keys(
-                _client.get_zotero_client(), query, tag,
-                _helpers._normalize_limit(limit, default=50),
+            item_keys, more_matched = _search_item_keys(
+                _client.get_zotero_client(), query, tag, limit,
             )
             if not item_keys:
                 filter_desc = []
@@ -800,6 +832,8 @@ def batch_update_extra(
         response.append(f"Items processed: {len(item_keys)}")
         response.append(f"Items updated: {updated_count}")
         response.append(f"Items skipped: {skipped_count}")
+        if more_matched:
+            response.append("\n" + _limit_note(limit))
 
         if set_keys:
             response.append("\n## Keys Set")
@@ -834,7 +868,8 @@ def batch_update_extra(
         "case-insensitively by its `key:` prefix and replacing it in "
         "place, else appending; remove_keys deletes those lines; lines "
         "without a colon are preserved. "
-        "limit: max items for query/tag selection (default 50). "
+        "limit: max items for query/tag selection (default 50, at most "
+        "1000); the report says when more matched. "
         "A query-only selection leaves attachments out; Extra edits "
         "skip attachments, notes and annotations. Items needing no "
         "change are skipped and counted. Requires a writable library. "
@@ -880,11 +915,13 @@ def batch_update(
     # Searching again for the Extra half would run after the tag half has
     # already edited tags, so tag='to-read' + remove_tags=['to-read'] found
     # nothing and the Extra edits were silently dropped.
+    more_matched = False
     if tag_action and extra_action and not item_keys:
+        limit = _normalize_batch_limit(limit)
         try:
-            item_keys = _search_item_keys(
+            item_keys, more_matched = _search_item_keys(
                 _client.get_zotero_client(), query, _normalize_tag_selector(tag),
-                _helpers._normalize_limit(limit, default=50),
+                limit,
             )
         except Exception as e:
             return f"Error selecting items: {_helpers.format_zotero_error(e)}"
@@ -902,6 +939,8 @@ def batch_update(
             item_keys=item_keys, set_keys=set_keys, remove_keys=remove_keys,
             query=query, tag=tag, limit=limit, ctx=ctx,
         ))
+    if more_matched:
+        reports.append(_limit_note(limit))
     return "\n\n".join(reports)
 
 

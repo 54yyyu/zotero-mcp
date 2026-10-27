@@ -14,16 +14,18 @@ from zotero_mcp.tools import write
 
 
 class FakeZot:
+    """Pages like the API: honours start/limit, records the last request."""
+
     def __init__(self, items):
         self._items = items
         self.params = {}
+        self.requests = 0
         self.updated = []
 
-    def add_parameters(self, **kwargs):
+    def items(self, start=0, limit=100, **kwargs):
         self.params = kwargs
-
-    def items(self, **kwargs):
-        return copy.deepcopy(self._items)
+        self.requests += 1
+        return copy.deepcopy(self._items[start:start + limit])
 
     def item(self, key):
         return copy.deepcopy(next(it for it in self._items if it["key"] == key))
@@ -42,13 +44,17 @@ ATTACHMENT = {
 }
 
 
-@pytest.fixture
-def fake(monkeypatch):
-    zot = FakeZot([ATTACHMENT])
+def _install(monkeypatch, items):
+    zot = FakeZot(items)
     monkeypatch.setattr(
         "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (zot, zot)
     )
     return zot
+
+
+@pytest.fixture
+def fake(monkeypatch):
+    return _install(monkeypatch, [ATTACHMENT])
 
 
 def test_tag_selection_removes_the_tag_from_an_attachment(fake, dummy_ctx):
@@ -88,3 +94,56 @@ def test_combined_batch_selection_follows_the_same_rule(dummy_ctx):
 
     write._search_item_keys(zot, "organ", "to-read", 50)
     assert "itemType" not in zot.params
+
+
+# ---------------------------------------------------------------------------
+# limit: a query/tag selection is paged, and a cut-short one says so
+# ---------------------------------------------------------------------------
+
+
+def _tagged(n):
+    return [
+        {"key": f"ITEM{i:04d}",
+         "data": {"itemType": "journalArticle", "tags": [{"tag": "old"}]}}
+        for i in range(n)
+    ]
+
+
+def test_a_limit_past_one_page_is_honoured(monkeypatch, dummy_ctx):
+    zot = _install(monkeypatch, _tagged(250))
+
+    result = write.batch_update_tags(
+        tag="old", remove_tags=["old"], limit=500, ctx=dummy_ctx,
+    )
+
+    assert "Items updated: 250" in result
+    assert zot.requests == 3
+    assert "More items matched" not in result
+
+
+def test_a_selection_cut_short_by_limit_says_so(monkeypatch, dummy_ctx):
+    zot = _install(monkeypatch, _tagged(3))
+
+    result = write.batch_update_tags(
+        tag="old", remove_tags=["old"], limit=2, ctx=dummy_ctx,
+    )
+
+    assert "Items updated: 2" in result
+    assert len(zot.updated) == 2
+    assert "More items matched than limit=2" in result
+
+
+def test_a_selection_that_exactly_fills_limit_is_not_reported_as_cut(monkeypatch, dummy_ctx):
+    _install(monkeypatch, _tagged(2))
+
+    result = write.batch_update_tags(
+        tag="old", remove_tags=["old"], limit=2, ctx=dummy_ctx,
+    )
+
+    assert "More items matched" not in result
+
+
+def test_search_item_keys_reports_more_matched():
+    keys, more = write._search_item_keys(FakeZot(_tagged(3)), "", "old", 2)
+    assert keys == ["ITEM0000", "ITEM0001"]
+    assert more is True
