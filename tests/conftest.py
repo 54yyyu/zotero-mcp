@@ -100,7 +100,15 @@ def isolate_local_write_state(monkeypatch, tmp_path):
         "_local_probe_cache",
         {"server_id": None, "checked_at": time.monotonic()},
     )
-    for var in ("ZOTERO_LOCAL_API_KEY", "ZOTERO_LOCAL_SERVER_ID", "ZOTERO_LOCAL_WRITE"):
+    # A developer's own WebDAV settings would send web-API uploads to WebDAV.
+    for var in (
+        "ZOTERO_LOCAL_API_KEY",
+        "ZOTERO_LOCAL_SERVER_ID",
+        "ZOTERO_LOCAL_WRITE",
+        "ZOTERO_WEBDAV_URL",
+        "ZOTERO_WEBDAV_USERNAME",
+        "ZOTERO_WEBDAV_PASSWORD",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
