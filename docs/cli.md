@@ -86,6 +86,8 @@ zotero-cli get children ABC123                 # attachments and notes
 # Edit item metadata
 zotero-cli edit ABC123 --title "New Title"
 zotero-cli edit ABC123 --add-tags "reviewed,important" --date "2024"
+zotero-cli edit BOOK1234 --field seriesNumber=2
+zotero-cli edit SOFT1234 --field versionNumber=v9.15 --field extra=
 
 # Notes and annotations
 zotero-cli notes list ABC123
@@ -172,6 +174,8 @@ zotero-cli plugin --reveal
 zotero-cli batch --item-keys ABC123,DEF456 --add-tags screened
 zotero-cli batch --query "machine learning" --add-tags survey --limit 100
 ```
+
+For metadata without a dedicated `edit` flag, repeat `--field NAME=VALUE` using Zotero's field names. Values stay strings; only the first `=` separates the name from the value, and `--field extra=` clears Extra. Generic assignments override matching named flags; the last assignment to the same name wins. Fields use the same item-type schema validation as other edits: unknown names fail, and fields unavailable on the item's type are reported as skipped.
 
 An annotation plan (`plan.jsonl`) is one JSON object per line: `{"page": 4, "text": "exact words", "comment": "...", "color": "yellow"}` for a highlight, or `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box. Colors take Zotero's names: yellow, red, green, blue, purple, magenta, orange, gray.
 
