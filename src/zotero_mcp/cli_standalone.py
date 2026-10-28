@@ -1734,7 +1734,10 @@ def build_parser() -> argparse.ArgumentParser:
     e_p.add_argument("--isbn")
     e_p.add_argument("--book-title")
     e_p.add_argument(
-        "--field", action="append", type=_field_assignment, metavar="NAME=VALUE",
+        "--field",
+        action="append",
+        type=_field_assignment,
+        metavar="NAME=VALUE",
         help="Set a Zotero metadata field (repeatable; overrides named flags; NAME= clears a field)",
     )
 
