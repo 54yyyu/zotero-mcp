@@ -89,7 +89,9 @@ def test_webdav_upload_gets_the_note_once(profiles, hybrid, monkeypatch):
 
     profiles(FILE_SYNC_OFF)
     monkeypatch.setattr(webdav, "is_webdav_configured", lambda: True)
-    monkeypatch.setattr(webdav, "upload_attachment_to_webdav", lambda **kw: None)
+    monkeypatch.setattr(
+        webdav, "upload_attachment_to_webdav", lambda **kw: ("d41d8cd98f00b204e9800998ecf8427e", 0)
+    )
 
     suffix = _helpers._webdav_first_attach(
         _AttachFake(), "paper.pdf", "/abs/paper.pdf", "ITEM1", DummyContext()
