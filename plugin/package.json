@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test 'test/**/*.test.ts'",
     "test:zotero": "node scripts/test-zotero.mjs",
+    "test:fonts": "node scripts/dev.mjs --script test/zotero/fonts.js --build --mock-agent --pref 'extensions.zotero-chat.settings={\"welcomed\":true}'",
     "dev": "node scripts/dev.mjs"
   },
   "devDependencies": {

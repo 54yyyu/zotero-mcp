@@ -192,7 +192,9 @@ for (const k of ["ZMC_LIVE", "ZMC_LIVE_HANDSHAKE", "ZMC_LIVE_BACKENDS", "ZMC_PI_
 // -ZoteroDebugText is huge, so Zotero's own output is only kept when asked for (--debug).
 const logFile = join(dev, "zotero.log");
 const sink = flag("debug") ? openSync(logFile, "w") : "ignore";
-const child = spawn(ZOTERO, ["--profile", profile, "--new-instance", "-ZoteroDebugText"], { env, stdio: ["ignore", sink, sink] });
+// Pending application updates run before user.js is read. Skip them for this test launch, too: otherwise macOS can
+// wait for administrator authentication before the isolated profile even opens (app.update.enabled is too late).
+const child = spawn(ZOTERO, ["--first-startup", "--profile", profile, "--new-instance", "-ZoteroDebugText"], { env, stdio: ["ignore", sink, sink] });
 console.log(`dev: zotero pid ${child.pid}, server port ${port}, data ${data}`);
 
 let killed = false;

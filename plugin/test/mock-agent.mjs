@@ -201,6 +201,10 @@ async function prompt(id, params) {
     send({ id, result: { stopReason, usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } });
   };
   cancelled.delete(sid);
+  if (text.includes("SCENARIO:fonts")) {
+    chunk("日本語：日本語の漢字とかなを確認します。\n\n简体中文：检查汉字的字体显示。\n\n繁體中文：檢查漢字的字體顯示。\n\n骨 直 令 返 遍 雪 海 誤\n\n**骨 直 令 返 遍 雪 海 誤**\n\nLatin: Zotero Agent 0123456789");
+    return end();
+  }
   // MOCK_BANNER_IN_TURN=1 (pi): the startup banner shows up again inside the first turn, as a straggler.
   if (process.env.MOCK_BANNER_IN_TURN && s && !s.bannered) {
     s.bannered = true;

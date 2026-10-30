@@ -459,6 +459,17 @@ Layers of test: unit (`node --test`, runtime against `test/mock-agent.mjs`, a de
 loads the plugin, runs a script, writes a JSON result, takes a window snapshot with `drawSnapshot`, quits); and one opt-in live
 test with real Claude Code (`ZMC_LIVE=1`), one tiny prompt, no library writes.
 
+`cd plugin && npm run test:fonts` runs an opt-in font visual test in that isolated Zotero. It renders a real mock-agent
+conversation (user bubble, Markdown body, bold text and composer), with inherited language, `ja`, `zh-Hans` and `zh-Hant`,
+in light and dark. For each case it compares the shipped CSS's pixels against the same chat temporarily set to
+`system-ui, sans-serif` on the same machine. No Japanese or Chinese font is pinned, and no cross-platform golden is
+used. The fixture language is set only by the test; it does not add language detection to the product.
+`plugin/.dev/shots/fonts-*-actual.png`, `*-system.png`, `*-diff.png` (pink marks changed pixels) and `fonts-report.json`
+are the review artifacts. Repeated reference captures must match exactly; a serif negative control must differ.
+The test is intentionally added before the CSS fix: it exits non-zero wherever the current font stack differs from
+the system reference. Run it on each supported OS; a pass only establishes equivalence on that machine and does not
+prove that an untagged Chinese message will get Chinese glyphs on a Japanese system.
+
 ## Budgets (the codebase stays fast, accurate and free of redundancy)
 
 What matters is that the plugin never slows Zotero's own startup, so that is the number under test: with the panel closed,
