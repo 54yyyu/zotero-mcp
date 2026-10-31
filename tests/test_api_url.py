@@ -6,6 +6,13 @@ from zotero_mcp import client as _client
 from zotero_mcp import semantic_search
 
 
+@pytest.fixture(scope="session")
+def httpserver_listen_address():
+    # The plugin binds "localhost" by default, whose lookup can stall past the
+    # 30 s timeout on macOS CI runners; an IP literal and a free port avoid it.
+    return ("127.0.0.1", 0)
+
+
 @pytest.fixture
 def web_mode(monkeypatch):
     monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
