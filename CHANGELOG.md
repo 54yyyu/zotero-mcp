@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A damaged semantic index is reported as damaged, not as empty** (#747). When ChromaDB could not read the index, `zotero_get_search_database_status` and `db-status` showed `Document Count: 0` with ChromaDB's error, and a collection that failed to open was reported as "not initialized". Both now say the index is unreadable and show its size on disk, the last successful update and when the index was last written (a write after the last successful update points to an interrupted update), with the two ways out: `repair-db`, or `update-db --force-rebuild`. `update-db` and `zotero_semantic_search` stop with the same message instead of ChromaDB's error alone. `--force-rebuild` on an unreadable index renames it to `chroma_db.broken-<timestamp>` and starts a new one, rather than deleting the collection through ChromaDB, the same code that cannot read it.
+- **The HuggingFace embedding provider loads each model once per process** (#726). ChromaDB rebuilds the embedding function from the persisted collection config on every upsert and query, which reloaded the `SentenceTransformer` each time and, on CUDA, exhausted GPU memory during `update-db` (#726).
 
 ## [0.15.1] - 2026-10-16
 
