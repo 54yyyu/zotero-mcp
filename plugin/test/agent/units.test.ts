@@ -76,6 +76,7 @@ describe("brief", () => {
     assert.ok(b.includes("zotero://open-pdf/library/items/ATTKEY?page=8"));
     assert.ok(b.includes("zotero://open-pdf/groups/"));
     assert.ok(b.includes("zotero://select/library/items/"));
+    assert.match(b, /Answer in the user's language/);
   });
   it("lists the common commands itself, so reading the skill is not a first step (each one parses: tests/test_chat_plugin_packaging.py)", () => {
     assert.doesNotMatch(buildBrief(), /skill here first/);

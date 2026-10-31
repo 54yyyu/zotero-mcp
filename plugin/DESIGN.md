@@ -188,6 +188,8 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
 - Composer: auto context chip for the current item (bookmark = pin), `Text Selection` chip when text is selected in the reader,
   `Selected Area` chip with thumbnail + Go to Annotation / Remove, `+` and `@` to attach items/collections/annotations,
   one model button, mode picker, Send / Stop (Esc), Enter sends, Shift+Enter newline, drop an annotation on it.
+  A picture pasted or dropped on it (a screenshot, a saved figure) is an image card for the next message only, redrawn as
+  PNG at most 1568 px on the long edge (`ui/images.ts`); a backend without image input gets a notice, not silence.
   The model button (`ui/pickers.ts`) shows the model and, softly, the effort level; its one dropdown opens right above it: the agents
   as a segmented row (status dot from `detect()`; one that is not ready says why and is not chosen), the chosen agent's models
   (`ui/model-list.ts`, pure, below), 
@@ -225,6 +227,7 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
   `$$`, `\[`, `\(`, `$` or formatting tag, hides a ```` ```math ```` fence until it closes and a table's header row until its
   delimiter row arrives. Finished blocks keep their DOM nodes (a test checks it).
 - Diagrams: a ```` ```svg ```` block is a figure (below).
+- Callouts: `> [!definition] Title` or `\begin{theorem}[Title]\label{thm:x} … \end{theorem}` is a numbered card (below).
 - The indicator (`ui/think.ts` pure, `parts.ts dots/glint`, `messages.ts WorkLine`, `styles-think.ts`): **one** per turn, a
   3x3 dot matrix in `--agent` (mono, or the accent) and a label with a glint running across it. While a shown thought streams
   it sits in that thought row (in place of the old pulse dot; the row stays expandable and settles to a quiet "Thought");
@@ -242,6 +245,21 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
   ticks at the display's 120 Hz) plus WebRender recompositing the window; a background-position shimmer, or a sliding
   window with a mask, cost 130-300 ms a second, so neither shipped. Chromium (CDP, no script on the page): 0.01-0.02 ms of
   main-thread work a frame, idle or running. Reduced motion: still dots at 60%, a plain muted label. No setting: one look.
+
+### Callouts (ui/markdown.ts parse, ui/callout.ts DOM)
+
+A formal statement or an aside as a card, "DEFINITION 1 — Title" over its body. Two spellings reach the same `callout` node:
+an Obsidian/GitHub alert (`> [!definition] Title`, then the body in the quote) and a LaTeX environment
+(`\begin{theorem}[Title]\label{thm:x}` … `\end{theorem}`; a display environment such as `align` is just math). Kinds
+(`CALLOUT_KINDS`): theorem, lemma, proposition, corollary, claim, conjecture (accent bar, italic body), definition, notation
+(teal), remark, example, exercise (grey), proof (no box, italic head, a drawn end square), and the unnumbered alerts note, tip,
+important, warning, caution. An unknown kind stays a plain quote. Statements are numbered across the whole chat in reading
+order by a pass over the feed (`linkCallouts`, run by `Feed.update` only when a card or reference was drawn, so a chat without
+them pays nothing); `\ref{thm:x}` (also `\cref`, `\autoref`) becomes a "Theorem 2" button that scrolls to the card and
+flashes it, with the statement in its tooltip; a label nobody defined shows muted. Streaming: an unclosed environment runs to
+the end of the text, so the card grows as it arrives, and `settledBlock` holds back a half-typed kind, `\end{`, `\ref{` or
+formula. Save as note: a quote whose first line is the bold label, numbered within the note, `\ref` as its "Theorem 2".
+`CALLOUT_GUIDE` (brief.ts, about 70 words, sent once with the drawing guide) tells the agent both spellings.
 
 ### Diagrams (ui/diagram-svg.ts pure, ui/diagram.ts DOM)
 

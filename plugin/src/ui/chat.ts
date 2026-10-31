@@ -130,6 +130,7 @@ export class Chat {
         this.sent = next;
         this.lastContext = plan;
       } catch { /* the question still goes */ }
+      if (ctx.images.length && !sess.supportsImages) this.dispatch({ t: "notice", level: "warn", message: "This agent doesn't take images, so the pictures were left out of that message." });
       const said = await this.d.expand(text, this.cwd);
       await sess.prompt({
         text: [ctx.text, said].filter(Boolean).join("\n\n"),

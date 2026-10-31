@@ -6,6 +6,7 @@ import type { NoteRequest, SavedNote } from "../types.ts";
 import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, HEX_COLOR, MAX_MD, blockNodes, citeTitle, lexBlocks, safeHref, safeImageSrc, settledBlock } from "./markdown.ts";
 import type { MdNode } from "./markdown.ts";
 import { copyText, edgeFade, env, flashCheck, h, icon } from "./dom.ts";
+import { calloutEl, jumpToCallout, refEl } from "./callout.ts";
 
 /** `open` gets a link or citation chip that was clicked (http(s) or zotero: only ever reaches it); `saveFile` is the host's file picker
  *  (diagram export), `saveNote` the host's note writer (a diagram's "Add to a note"). */
@@ -136,6 +137,12 @@ function toDom(node: MdNode, rc: RenderCtx): Node {
       return h("button.cite", { type: "button", dataset: { href }, title: citeTitle(href, label) }, h("span.cite__t", null, icon("item"), h("span.cite__l", null, label)));
     }
     case "tablewrap": return h("div.md-table", null, ...kids.map(sub));
+    case "callout": {
+      const title = typeof kids[0] === "object" && kids[0].tag === "calloutTitle" ? kids[0] : null;
+      return calloutEl(attrs.kind ?? "", attrs.label, title && (title.kids ?? []).map(sub), kids.filter((k) => k !== title).map(sub));
+    }
+    case "calloutTitle": return h("span", null, ...kids.map(sub));
+    case "ref": return refEl(textOf(node));
     case "img": {
       const src = safeImageSrc(attrs.src);
       return src ? h("img", { src, alt: attrs.alt ?? "" }) : env.doc.createTextNode(attrs.alt ?? "");
@@ -193,6 +200,8 @@ export class MdView {
     this.el = h("div.md");
     this.el.addEventListener("click", (e) => {
       const t = e.target as Element | null;
+      const ref = t?.closest?.("button.cbref") as HTMLElement | null;
+      if (ref) { e.preventDefault(); jumpToCallout(ref); return; }
       const cite = t?.closest?.("button.cite") as HTMLElement | null;
       if (cite?.dataset.href) { e.preventDefault(); this.hooks.open(cite.dataset.href); return; }
       const a = t?.closest?.("a[href]") as HTMLAnchorElement | null;

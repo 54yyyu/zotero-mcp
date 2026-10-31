@@ -841,6 +841,34 @@ await test("drop on the composer: dragover state without layout shift, chips add
   assert.equal(await p.locator(".cchips .chip:not(.chip--auto)").count(), 0, "a new chat starts clean");
 });
 
+// A picture as a File, the way a screenshot arrives on the clipboard (always "image.png") or a dragged file.
+const pictureData = (p, { w, h, name }) => p.evaluateHandle(async ([w, h, name]) => {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const g = c.getContext("2d"); g.fillStyle = "#3a6"; g.fillRect(0, 0, w, h);
+  const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+  const d = new DataTransfer(); d.items.add(new File([blob], name, { type: "image/png" })); return d;
+}, [w, h, name]);
+
+await test("a pasted or dropped picture becomes an image chip, scaled to 1568 px, sent once with the next message", async (p) => {
+  const shot = await pictureData(p, { w: 3200, h: 1000, name: "image.png" });
+  await p.evaluate((dt) => window.__zmc.shadow.querySelector(".cin").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })), shot);
+  await p.waitForSelector(".area .area__img");
+  assert.match(await p.locator(".area__head").innerText(), /^Image$/, "a screenshot's generic name is not shown");
+  assert.equal(await p.locator(".area .lnk").count(), 1, "Remove only: no Go to Page for a picture");
+  assert.equal(await p.locator(".cin").inputValue(), "", "no text was pasted");
+  const fig = await pictureData(p, { w: 40, h: 30, name: "figure-3.png" });
+  await fire(p, "drop", fig);
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".area").length === 2);
+  await send(p, "what is in these?");
+  await done(p);
+  const sent = await sim(p, () => window.__zmc.sim.prompts[0]);
+  assert.equal(sent.images.length, 2);
+  const sizes = await p.evaluate((imgs) => Promise.all(imgs.map(async (i) => { const b = await createImageBitmap(await (await fetch(`data:image/png;base64,${i.data}`)).blob()); return [b.width, b.height]; })), sent.images);
+  assert.deepEqual(sizes, [[1568, 490], [40, 30]], "the long edge is capped, small pictures keep their size");
+  assert.match(sent.text, /image: figure-3\.png/);
+  assert.equal(await p.locator(".area").count(), 0, "pictures are for that message only");
+});
+
 await test("a citation chip keeps its trailing punctuation: no line starts with a lone . , ; :", async (p) => {
   await sim(p, () => { window.__zmc.sim.nextAnswer = "Prose that goes on for a while so the line is nearly full before it reaches the chip [Pager et al. 2009, p.8](zotero://open-pdf/library/items/PAGER009?page=8). Next [Quillian 2017](zotero://select/library/items/QUIL2017), then more words [A 2020](zotero://select/library/items/AAAAAAAA); done."; });
   for (const w of [300, 320, 360, 420, 480]) {
@@ -1131,6 +1159,36 @@ await test("a 400-turn chat opens fast and a streamed token stays cheap; the jum
 const dgFill = (sel, prop) => (p) => p.evaluate(([s, pr]) => getComputedStyle(window.__zmc.shadow.querySelector(s))[pr], [sel, prop]);
 const barOpacity = (p, i = 0) => p.evaluate((k) => getComputedStyle(window.__zmc.shadow.querySelectorAll(".dg__bar")[k]).opacity, i);
 
+const shadowText = (p, sel) => p.evaluate((q) => [...window.__zmc.shadow.querySelectorAll(q)].map((e) => e.textContent), sel);
+
+await test("callouts: numbered across the chat, a \\ref links to its card and flashes it, an unknown label says so", async (p) => {
+  await sim(p, () => { window.__zmc.sim.nextAnswer = "> [!definition] Metric\n> $d$ is a metric.\n\n\\begin{theorem}[Banach]\\label{thm:a}\nA fixed point exists.\n\\end{theorem}\n\n> [!tip]\n> unnumbered"; });
+  await send(p, "one");
+  await done(p);
+  await sim(p, () => { window.__zmc.sim.nextAnswer = "Using \\ref{thm:a}, and \\ref{def:none}.\n\n> [!lemma] L\n> body"; });
+  await send(p, "two");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length >= 2);
+  assert.deepEqual(await shadowText(p, ".cb__num"), [" 1", " 2", " 3"]);
+  assert.deepEqual(await shadowText(p, ".cbref"), ["Theorem 2", "def:none"]);
+  assert.equal(await p.locator(".cbref--missing").count(), 1);
+  await p.locator(".cbref").first().click();
+  assert.equal(await p.locator('.cb--thm.cb--flash').count(), 1);
+  assert.deepEqual(await sim(p, () => window.__zmc.shadow.querySelector(".cb--def").getAttribute("data-kind")), "definition");
+});
+
+await test("callouts: a card streams in as a card, never as raw markup", async (p) => {
+  await sim(p, () => { window.__zmc.sim.nextAnswer = "Here:\n\n\\begin{definition}[Metric space]\\label{def:m}\nA set with a map $d$ such that $d(x,y) = 0$ iff $x = y$, see \\ref{def:m}.\n\\end{definition}\n\n> [!theorem] Banach\n> Every contraction has a fixed point.\n\nDone."; });
+  await send(p, "stream it");
+  await p.waitForSelector(".md--streaming .cb", { timeout: 8000 });
+  for (let i = 0; i < 12 && await p.locator(".md--streaming").count(); i++) {
+    const t = (await shadowText(p, ".md")).join(" ");
+    assert.ok(!/\\begin|\\end|\[!|\\ref|\\label/.test(t), t);
+    await p.waitForTimeout(60);
+  }
+  await done(p);
+  assert.equal(await p.locator(".cb").count(), 2);
+}, { params: { speed: 40 } });
+
 await test("diagrams render as themed figures; the toolbar shows on hover and focus; Source toggles; Save calls the host", async (p) => {
   await send(p, "draw it");
   await done(p);
@@ -1315,8 +1373,8 @@ await test("explain better: only on the last finished answer; it asks again, int
   await p.locator('button[aria-label="Explain it better"]').click();
   await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll('.msg--assistant[data-state="end_turn"]').length === 2);
   const last = (await sim(p, () => window.__zmc.sim.prompts)).at(-1).text;
-  assert.match(last, /<zotero-context>[\s\S]*<\/zotero-context>\n\nExplain that again from the intuition first, with a tiny example, then the details\.$/);
-  assert.equal(await p.locator(".ubub__text").last().innerText(), "Explain that again from the intuition first, with a tiny example, then the details.");
+  assert.match(last, /<zotero-context>[\s\S]*<\/zotero-context>\n\nExplain that again from the intuition first, with a tiny example, then the details, in the language of your last answer\.$/);
+  assert.equal(await p.locator(".ubub__text").last().innerText(), "Explain that again from the intuition first, with a tiny example, then the details, in the language of your last answer.");
   assert.equal(await p.locator('button[aria-label="Explain it better"]').count(), 1, "the earlier answer lost it");
   assert.equal(await p.locator('.msg--assistant').last().locator('button[aria-label="Explain it better"]').count(), 1);
 });

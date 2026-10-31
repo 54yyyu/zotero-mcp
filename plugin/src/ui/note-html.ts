@@ -5,7 +5,7 @@
 // <pre class="math">$$…$$</pre> (schema version 9; Zotero writes 8 when a note has no math). Citation links stay
 // ordinary zotero:// links, which the note keeps clickable. A diagram becomes an embedded image when the host
 // imported its PNG (`image(i)`), else its SVG source as code.
-import { HEX_COLOR, mdToTree } from "./markdown.ts";
+import { CALLOUT_KINDS, HEX_COLOR, mdToTree, walk } from "./markdown.ts";
 import type { MdEl, MdNode } from "./markdown.ts";
 
 export interface NoteHtmlOpts {
@@ -41,6 +41,18 @@ export function noteDiagrams(markdown: string): string[] {
 export function noteHtml(markdown: string, o: NoteHtmlOpts = {}): string {
   let diagrams = 0;
   let math = false;
+  const tree = mdToTree(markdown.replace(/\r\n?/g, "\n"));
+
+  // Callouts are numbered within the note (the chat's own numbering lives in the panel), so a \ref reads "Theorem 2".
+  const numbers = new Map<MdEl, number>();
+  const names = new Map<string, string>();
+  let count = 0;
+  for (const c of walk(tree)) {
+    if (c.tag !== "callout") continue;
+    const spec = CALLOUT_KINDS[c.attrs?.kind ?? ""];
+    if (spec?.numbered) numbers.set(c, ++count);
+    if (c.attrs?.label && spec && !names.has(c.attrs.label)) names.set(c.attrs.label, spec.numbered ? `${spec.label} ${count}` : spec.label);
+  }
 
   const mathHtml = (tex: string, block: boolean): string => {
     math = true; // the editor strips only the outer delimiters, so the TeX goes in as it is
@@ -92,12 +104,22 @@ export function noteHtml(markdown: string, o: NoteHtmlOpts = {}): string {
       case "hr": return "<hr>";
       case "img": return esc(a.alt ?? ""); // a data: image inside the answer: its words, not a second attachment path
       case "blockquote": return `<blockquote>${kids(n, true)}</blockquote>`;
+      case "callout": { // a quote whose first line is the bold label; the title carries its own inline markup
+        const spec = CALLOUT_KINDS[a.kind ?? ""];
+        const first = n.kids?.[0];
+        const title = typeof first !== "string" && first?.tag === "calloutTitle" ? first : null;
+        const num = numbers.get(n);
+        const label = `${spec?.label ?? esc(a.kind ?? "")}${num ? ` ${num}` : ""}${spec?.tone === "proof" ? "." : ""}`;
+        const rest = (n.kids ?? []).filter((k) => k !== title).map((k) => node(k, true)).join("");
+        return `<blockquote><p><strong>${label}</strong>${title ? ` — ${kids(title)}` : ""}</p>${rest}${spec?.tone === "proof" ? "<p>∎</p>" : ""}</blockquote>`;
+      }
+      case "ref": return esc(names.get(textOf(n)) ?? textOf(n));
     }
     if (PLAIN.has(n.tag)) return `<${n.tag}>${kids(n)}</${n.tag}>`;
     return kids(n, block); // tablewrap, our spans: their content only
   }
 
-  const body = mdToTree(markdown.replace(/\r\n?/g, "\n")).map((n) => node(n, true)).join("");
+  const body = tree.map((n) => node(n, true)).join("");
   const title = o.title?.trim() ? `<h1>${esc(o.title.replace(/\s+/g, " ").trim())}</h1>` : "";
   return `<div data-schema-version="${math ? 9 : 8}">${title}${body}</div>`;
 }
