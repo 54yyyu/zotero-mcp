@@ -88,6 +88,8 @@ zotero-cli edit ABC123 --title "New Title"
 zotero-cli edit ABC123 --add-tags "reviewed,important" --date "2024"
 zotero-cli edit BOOK1234 --field seriesNumber=2
 zotero-cli edit SOFT1234 --field versionNumber=v9.15 --field extra=
+# Every tag flag is comma-separated; a JSON array addresses names with commas
+zotero-cli edit ABC123 --remove-tags '["Barrel organ, Hydraulic"]'
 
 # Notes and annotations
 zotero-cli notes list ABC123

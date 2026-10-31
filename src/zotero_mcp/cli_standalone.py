@@ -249,7 +249,7 @@ def cmd_search(args):
 
     if args.mode == "tag":
         result = search_mod.search_by_tag(
-            tag=args.query.split(","), limit=args.limit,
+            tag=_split_tags(args.query), limit=args.limit,
             collection_key=getattr(args, "collection", None), ctx=ctx,
         )
     elif args.mode == "citekey":
@@ -464,7 +464,7 @@ def cmd_annotations(args):
             note=_parse_rect(getattr(args, "note", None), size=2, flag="--note"),
             comment=getattr(args, "comment", None),
             color=_resolve_color(args.color),
-            tags=_split_csv(getattr(args, "tags", None)), ctx=ctx,
+            tags=_split_tags(getattr(args, "tags", None)), ctx=ctx,
         )
         if getattr(args, "open", False) and not _reports_failure(text):
             import re
@@ -478,8 +478,8 @@ def cmd_annotations(args):
         _out(args, "annotations update", text=annotations.update_annotation(
             annotation_key=args.annotation_key, text=getattr(args, "text", None),
             comment=getattr(args, "comment", None), color=getattr(args, "color", None),
-            add_tags=_split_csv(getattr(args, "add_tags", None)),
-            remove_tags=_split_csv(getattr(args, "remove_tags", None)), ctx=ctx,
+            add_tags=_split_tags(getattr(args, "add_tags", None)),
+            remove_tags=_split_tags(getattr(args, "remove_tags", None)), ctx=ctx,
         ))
     elif args.subcommand == "delete":
         _out(args, "annotations delete", text=annotations.delete_annotation(
@@ -677,7 +677,7 @@ def cmd_notes(args):
             print("Error: provide note text via --text TEXT or --text - (reads stdin)",
                   file=sys.stderr)
             sys.exit(1)
-        tags = args.tags.split(",") if args.tags else []
+        tags = _split_tags(args.tags) or []
         _out(args, "notes create", text=annotations.create_note(
             item_key=args.item_key, note_title=args.title or "CLI Note",
             note_text=note_text, tags=tags, ctx=ctx,
@@ -712,7 +712,7 @@ def cmd_add(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
-    tags = args.tags.split(",") if args.tags else None
+    tags = _split_tags(args.tags)
     collections = _collect_collection_specs(args)
     if_exists = getattr(args, "if_exists", "file")
     create_missing = getattr(args, "create_collections", False)
@@ -803,10 +803,11 @@ def cmd_tags(args):
     ctx = _ctx(args)
     _out(args, "tags", text=write_mod.batch_update_tags(
         query=args.query or "",
-        add_tags=args.add.split(",") if args.add else None,
-        remove_tags=args.remove.split(",") if args.remove else None,
-        tag=args.tag.split(",") if args.tag else None,
+        add_tags=_split_tags(args.add),
+        remove_tags=_split_tags(args.remove),
+        tag=_split_tags(args.tag),
         limit=args.limit,
+        item_keys=_split_csv(args.item_keys),
         ctx=ctx,
     ))
 
@@ -863,9 +864,9 @@ def cmd_edit(args):
         item_key=args.item_key,
         fields=fields or None,
         creators=creators,
-        tags=args.tags.split(",") if args.tags else None,
-        add_tags=args.add_tags.split(",") if args.add_tags else None,
-        remove_tags=args.remove_tags.split(",") if args.remove_tags else None,
+        tags=_split_tags(args.tags),
+        add_tags=_split_tags(args.add_tags),
+        remove_tags=_split_tags(args.remove_tags),
         collections=args.collections.split(",") if args.collections else None,
         collection_names=args.collection_names.split(",") if args.collection_names else None,
         ctx=ctx,
@@ -1092,6 +1093,22 @@ def _split_csv(value):
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+#: Help suffix for every flag that takes tag names.
+TAG_LIST_HELP = "comma-separated, or a JSON array if a name has a comma"
+
+
+def _split_tags(value):
+    """Tag flag value -> list, or None when the flag was absent.
+
+    Tag names may contain commas (Library of Congress headings such as
+    "Barrel organ, Hydraulic"), which a comma split can never address. So a
+    value is read the way the MCP tools read a tag list: a JSON array (or
+    JSON string) is taken whole, anything else is comma-separated.
+    """
+    from zotero_mcp.tools._helpers import _normalize_str_list_input
+    return _normalize_str_list_input(value, "tags") or None
+
+
 #: The eight colors of Zotero's own annotation palette, by the names its
 #: reader uses. Accepting names spares a caller from memorising hex codes and
 #: keeps annotations on colors Zotero can filter by.
@@ -1290,7 +1307,7 @@ def cmd_synthesize(args):
     json_mode = _json_mode(args)
     fmt = "json" if (json_mode and args.format == "markdown") else args.format
     result = synthesis_mod.synthesize_annotations(
-        collection_key=args.collection, tag=_split_csv(args.tag),
+        collection_key=args.collection, tag=_split_tags(args.tag),
         limit=args.limit, format=fmt, ctx=_ctx(args),
     )
     if json_mode:
@@ -1424,8 +1441,8 @@ def cmd_batch(args):
             _fail(args, "batch", f"invalid JSON in --set: {e}", "bad_json")
     _out(args, "batch", text=write_mod.batch_update(
         item_keys=_split_csv(args.item_keys), query=args.query or "",
-        tag=_split_csv(args.tag), add_tags=_split_csv(args.add_tags),
-        remove_tags=_split_csv(args.remove_tags), set_keys=set_keys,
+        tag=_split_tags(args.tag), add_tags=_split_tags(args.add_tags),
+        remove_tags=_split_tags(args.remove_tags), set_keys=set_keys,
         remove_keys=_split_csv(args.remove_keys), limit=args.limit, ctx=_ctx(args),
     ))
 
@@ -1567,8 +1584,8 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--text")
     au.add_argument("--comment")
     au.add_argument("--color")
-    au.add_argument("--add-tags", help="Comma-separated tags to add")
-    au.add_argument("--remove-tags", help="Comma-separated tags to remove")
+    au.add_argument("--add-tags", help=f"Tags to add ({TAG_LIST_HELP})")
+    au.add_argument("--remove-tags", help=f"Tags to remove ({TAG_LIST_HELP})")
     ad = a_sub.add_parser("delete", help="Delete an annotation")
     ad.add_argument("annotation_key")
     ac = a_sub.add_parser("create", help="Create a highlight (--text), an area box (--rect) "
@@ -1583,7 +1600,7 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--comment")
     ac.add_argument("--color", default="#ffd400",
                     help=f"Hex, or a Zotero color name: {', '.join(ZOTERO_COLORS)}")
-    ac.add_argument("--tags", help="Comma-separated tags")
+    ac.add_argument("--tags", help=f"Tags ({TAG_LIST_HELP})")
     ac.add_argument("--open", action="store_true",
                     help="Then show the new annotation in the Zotero reader")
     ab = a_sub.add_parser("batch", help="Create many annotations from JSON Lines in one run")
@@ -1615,7 +1632,7 @@ def build_parser() -> argparse.ArgumentParser:
     nc.add_argument("--item-key", required=True)
     nc.add_argument("--title")
     nc.add_argument("--text", help=_note_text_help)
-    nc.add_argument("--tags")
+    nc.add_argument("--tags", help=f"Tags ({TAG_LIST_HELP})")
     nu = n_sub.add_parser("update", help="Replace (or --append to) a note's text")
     nu.add_argument("--item-key", required=True)
     nu.add_argument("--text", help=_note_text_help)
@@ -1635,7 +1652,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Collection key, name, or parent/child path "
                             "(repeatable; not comma-split, so names with "
                             "commas work)")
-        p.add_argument("--tags", help="Comma-separated tags")
+        p.add_argument("--tags", help=f"Tags ({TAG_LIST_HELP})")
         p.add_argument("--if-exists", dest="if_exists",
                        choices=["file", "skip", "duplicate"], default="file",
                        help="When the item already exists: 'file' (default) "
@@ -1704,11 +1721,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # tags
     t_p = sub.add_parser("tags", help="Batch update tags on matched items")
+    t_p.add_argument("--item-keys",
+                     help="Comma-separated item keys to edit; --query and --tag are then ignored")
     t_p.add_argument("--query")
-    t_p.add_argument("--tag")
-    t_p.add_argument("--add")
-    t_p.add_argument("--remove")
-    t_p.add_argument("--limit", type=int, default=50)
+    t_p.add_argument("--tag", help=f"Select items by tag ({TAG_LIST_HELP}; any matches)")
+    t_p.add_argument("--add", help=f"Tags to add ({TAG_LIST_HELP})")
+    t_p.add_argument("--remove", help=f"Tags to remove ({TAG_LIST_HELP})")
+    t_p.add_argument("--limit", type=int, default=50,
+                     help="Most items to select by --query/--tag (at most 1000)")
 
     # edit (item metadata)
     e_p = sub.add_parser("edit", help="Edit metadata fields of an existing item")
@@ -1718,9 +1738,9 @@ def build_parser() -> argparse.ArgumentParser:
     e_p.add_argument("--date")
     e_p.add_argument("--publication-title")
     e_p.add_argument("--abstract")
-    e_p.add_argument("--tags", help="Replace all tags (comma-separated)")
-    e_p.add_argument("--add-tags")
-    e_p.add_argument("--remove-tags")
+    e_p.add_argument("--tags", help=f"Replace all tags ({TAG_LIST_HELP})")
+    e_p.add_argument("--add-tags", help=f"Tags to add ({TAG_LIST_HELP})")
+    e_p.add_argument("--remove-tags", help=f"Tags to remove ({TAG_LIST_HELP})")
     e_p.add_argument("--collections", help="Replace the item's collections (comma-separated keys); "
                      "use `collections manage --add-to` to add without removing")
     e_p.add_argument("--collection-names", help="Replace the item's collections (comma-separated names)")
@@ -1858,7 +1878,7 @@ def build_parser() -> argparse.ArgumentParser:
     # synthesize
     syn_p = sub.add_parser("synthesize", help="Synthesise annotations across items")
     syn_p.add_argument("--collection")
-    syn_p.add_argument("--tag", help="Comma-separated tags to scope by")
+    syn_p.add_argument("--tag", help=f"Tags to scope by ({TAG_LIST_HELP})")
     syn_p.add_argument("--limit", type=int, default=200)
     syn_p.add_argument("--format", choices=["markdown", "json"], default="markdown")
 
@@ -1881,12 +1901,13 @@ def build_parser() -> argparse.ArgumentParser:
     b_p = sub.add_parser("batch", help="Update tags/Extra fields across many items")
     b_p.add_argument("--item-keys", help="Comma-separated item keys")
     b_p.add_argument("--query", help="Select items by search query instead")
-    b_p.add_argument("--tag", help="Comma-separated tags to select by")
-    b_p.add_argument("--add-tags", help="Comma-separated tags to add")
-    b_p.add_argument("--remove-tags", help="Comma-separated tags to remove")
+    b_p.add_argument("--tag", help=f"Tags to select by ({TAG_LIST_HELP})")
+    b_p.add_argument("--add-tags", help=f"Tags to add ({TAG_LIST_HELP})")
+    b_p.add_argument("--remove-tags", help=f"Tags to remove ({TAG_LIST_HELP})")
     b_p.add_argument("--set", help="JSON object of Extra keys to set")
     b_p.add_argument("--remove-keys", help="Comma-separated Extra keys to remove")
-    b_p.add_argument("--limit", type=int, default=50)
+    b_p.add_argument("--limit", type=int, default=50,
+                     help="Most items to select by --query/--tag (at most 1000)")
 
     return parser
 

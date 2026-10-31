@@ -123,7 +123,7 @@ class FakeReadZot:
     def add_parameters(self, **kwargs):
         pass
 
-    def items(self):
+    def items(self, **kwargs):
         return self._items
 
     def item(self, item_key):

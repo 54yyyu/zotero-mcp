@@ -2,7 +2,7 @@
 
 import json
 
-from conftest import FakeZotero
+from conftest import FakeZotero, pyzotero_http_module
 
 from zotero_mcp import server
 from zotero_mcp.tools import write
@@ -355,3 +355,39 @@ class TestErrorPaths:
         )
         result = write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
         assert "local-only" in result.lower()
+
+    def test_refused_template_fetch_explains_zotero_is_not_running(
+        self, monkeypatch, dummy_ctx
+    ):
+        """#744: the per-entry conversion-failed branch used to interpolate
+        the raw errno from a refused item-template fetch."""
+        fake = _patch_hybrid(monkeypatch)
+        http = pyzotero_http_module()
+        request = http.Request("GET", "http://127.0.0.1:23119/api/users/0/items")
+        exc = http.ConnectError("[WinError 10061] Connection refused", request=request)
+
+        def raise_connect(item_type, linkmode=None):
+            raise exc
+
+        fake.item_template = raise_connect
+
+        result = write.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        assert "Failed to add **X2020**" in result
+        assert "conversion failed:" in result
+        assert "Zotero is not running" in result
+        assert "WinError 10061" not in result
+
+    def test_ordinary_conversion_error_is_unchanged(self, monkeypatch, dummy_ctx):
+        """Non-ConnectError conversion failures still surface as-is."""
+        _patch_hybrid(monkeypatch)
+
+        def boom(entry, template_fn):
+            raise ValueError("unknown CSL type")
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools.write._citation_import.csl_json_to_zotero",
+            boom,
+        )
+        result = write.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        assert "conversion failed: unknown CSL type" in result
+        assert "Zotero is not running" not in result

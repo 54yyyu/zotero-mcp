@@ -77,6 +77,9 @@ rather than opening a dialog that can't help.
 - `ZOTERO_API_KEY`: Your Zotero API key (for web API)
 - `ZOTERO_LIBRARY_ID`: Your Zotero library ID (for web API)
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
+- `ZOTERO_API_URL`: Web API base URL, for a self-hosted server that speaks the Zotero Web
+  API (e.g. [altero](https://github.com/eseifert/altero)) instead of zotero.org — the same
+  value as Zotero desktop's `extensions.zotero.api.url` (default: `https://api.zotero.org`)
 - `ZOTERO_LOCAL_API_KEY`: Local API key for writes (Zotero 10+). Normally set for you by
   `zotero-mcp authorize-local`; use the variable for containers and CI, where the config
   file isn't convenient
