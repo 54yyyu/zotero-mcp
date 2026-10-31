@@ -490,39 +490,30 @@ def _server_id_mismatch_message() -> str:
     )
 
 
+# pyzotero addresses its local API as localhost before 1.15.2 and 127.0.0.1 after.
+_LOCAL_API_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
 def _is_local_connection_error(exc: Exception) -> bool:
     """Whether *exc* is a refused connection to the local Zotero server.
 
     None of the ``format_zotero_error`` call sites pass ``zot``, so this can't
     ask whether the client is local. It matches on the request URL instead:
-    only the local API listens on 127.0.0.1:23119, so a web-API outage (or a
-    refusal to any other host) is left to fall through to ``str(exc)`` rather
-    than being misreported as "Zotero is not running".
+    only the local API listens on port 23119 of the loopback host, so a
+    web-API outage (or a refusal to any other host) is left to fall through to
+    ``str(exc)`` rather than being misreported as "Zotero is not running".
 
     The exception class comes from whichever HTTP library pyzotero is built
-    against — ``httpx2.ConnectError`` on pyzotero >= 1.15, ``httpx.ConnectError``
-    before that. Resolve it through the client's own helper for the same reason
-    ``_make_local_http_client`` does (#512).
+    against (``httpx2`` on pyzotero >= 1.15, ``httpx`` before), so resolve it
+    through the client's own helper, as ``_make_local_http_client`` does (#512).
     """
     try:
-        connect_error = _client._pyzotero_httpx().ConnectError
+        if not isinstance(exc, _client._pyzotero_httpx().ConnectError):
+            return False
+        url = exc.request.url  # raises when no request is attached
+        return url.host in _LOCAL_API_HOSTS and url.port == 23119
     except Exception:
         return False
-    if not isinstance(exc, connect_error):
-        return False
-    try:
-        request = exc.request
-    except Exception:
-        return False
-    url = getattr(request, "url", None)
-    if url is None:
-        return False
-    try:
-        host = url.host
-        port = url.port
-    except Exception:
-        return False
-    return host == "127.0.0.1" and port == 23119
 
 
 def format_zotero_error(exc: Exception, zot=None) -> str:

@@ -276,10 +276,13 @@ class TestErrorMessages:
         request = http.Request("GET", url)
         return http.ConnectError("[Errno 61] Connection refused", request=request)
 
-    def test_refused_local_connection_says_zotero_is_not_running(self):
+    # pyzotero addresses the local API as localhost before 1.15.2, and the
+    # package supports pyzotero >= 1.14.
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+    def test_refused_local_connection_says_zotero_is_not_running(self, host):
         """#744: with Zotero closed the raw errno is printed with no hint that
         the app has to be running."""
-        exc = self._connect_error("http://127.0.0.1:23119/api/users/0/items")
+        exc = self._connect_error(f"http://{host}:23119/api/users/0/items")
         msg = _helpers.format_zotero_error(exc)
         assert "Zotero is not running" in msg
         assert "127.0.0.1:23119" in msg
