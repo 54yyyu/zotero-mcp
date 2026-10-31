@@ -71,6 +71,7 @@ class Panel {
       turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? "Answer finished" : "Turn ended"),
       setupFailed: () => void this.health.refresh(),
       sessionChanged: () => this.syncPickers(),
+      shownChanged: () => this.refreshChips(),
       expand: (text, cwd) => this.expand(text, cwd),
     });
     this.feed = new Feed({
@@ -332,7 +333,8 @@ class Panel {
 
   // ───────────────────────────── the chat ─────────────────────────────
 
-  private refreshChips(): void { this.composer.setChips(this.chips.current()); }
+  /** Chips already shown in a sent message are left out: they still reach the agent, as a one-line reminder. */
+  private refreshChips(): void { if (this.chat) this.composer.setChips(this.chips.current().filter((c) => !this.chat.isShown(c))); }
 
   private paintEmpty(): void {
     const s = this.host.getSettings();

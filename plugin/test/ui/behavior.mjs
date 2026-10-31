@@ -151,6 +151,11 @@ await test("selected area tile: thumbnail, click goes to the annotation, × on h
   await done(p);
   const images = await sim(p, () => window.__zmc.sim.prompts[0].images?.length);
   assert.equal(images, 1, "the area image goes with the question");
+  assert.equal(await p.locator(".thumb").count(), 0, "sent, it leaves the composer while it stays selected");
+});
+
+await test("a tile's x shows on hover and removes it before sending", async (p) => {
+  await sim(p, () => window.__zmc.sim.setContext("area"));
   await p.locator(".thumb").hover();
   await p.locator(".thumb__x").click();
   assert.equal(await p.locator(".thumb").count(), 0);
@@ -838,9 +843,13 @@ await test("drop on the composer: dragover state without layout shift, chips add
   assert.equal(await p.locator(".cchips .chip:not(.chip--auto)").count(), 2, "an empty result adds nothing");
   await send(p, "what do these say?");
   await done(p);
-  assert.equal(await p.locator(".cchips .chip:not(.chip--auto)").count(), 2, "pinned drops stay after a send");
   assert.match(await sim(p, () => window.__zmc.sim.prompts[0].text), /Pager 2003[\s\S]*Lundberg 2021/);
-  await p.locator(".cchips .chip:not(.chip--auto) .chip__pin").first().click();
+  assert.equal(await p.locator(".cchips .chip:not(.chip--auto)").count(), 0, "sent once, they leave the composer");
+  assert.match(await p.locator(".msg--user .ubub__chips").innerText(), /Pager 2003[\s\S]*Lundberg 2021/, "the message shows them");
+  await send(p, "and now?");
+  await done(p);
+  assert.match(await sim(p, () => window.__zmc.sim.prompts[1].text), /Still open, unchanged[^\n]*Pager 2003/, "pinned drops are still named to the agent");
+  assert.equal(await p.locator(".msg--user").last().locator(".ubub__chips .chip").count(), 0, "and not shown again");
   await p.locator('button[aria-label="New chat"]').click();
   assert.equal(await p.locator(".cchips .chip:not(.chip--auto)").count(), 0, "a new chat starts clean");
 });

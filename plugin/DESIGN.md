@@ -124,6 +124,11 @@ tokens) and "this page" stays right. Everything goes in full again when the sess
 have the history, so it is treated as unsent) and after the agent compacts (claude and codex report `compaction_update`
 because `initialize` asks for it; pi says so in a notice), since the summary may have dropped what was sent.
 
+**The composer shows only what is new** (`Chat.isShown`). Once a message has carried a chip, the chip leaves the
+composer, and later messages' bubbles do not repeat it; the agent still gets the reminder line. Where the user is (the
+open paper, a selected item or collection) comes back only for a different item, never for a page turn; what they point
+at (a selection, an area, a picture) comes back when it changes. A new chat or a compaction shows everything again.
+
 The block keeps two things apart. **What the user is pointing at now** (the live text selection and up to 3 selected
 annotations: areas, highlights, notes) comes under "You are pointing at:", each with its key (an area's image once; the key
 lets the agent re-fetch it with zotero-cli). A selected annotation whose text is the live selection is said once.
