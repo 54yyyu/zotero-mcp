@@ -276,7 +276,9 @@ class FakeZoteroForBatch(FakeZoteroForExtra):
     def add_parameters(self, **kwargs):
         self.params = kwargs
 
-    def items(self):
+    def items(self, **kwargs):
+        if kwargs:
+            self.params = kwargs
         return list(self._items.values())
 
 
@@ -363,9 +365,9 @@ def test_batch_update_reports_no_match_for_unknown_keys(monkeypatch):
 class FakeZoteroTagFilter(FakeZoteroForBatch):
     """Search honours the ``tag`` parameter against the items' live tags."""
 
-    def items(self):
+    def items(self, **kwargs):
+        out = super().items(**kwargs)
         tag = self.params.get("tag")
-        out = list(self._items.values())
         if tag:
             out = [it for it in out
                    if tag in {t["tag"] for t in it["data"].get("tags", [])}]

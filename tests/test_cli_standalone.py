@@ -14,6 +14,7 @@ from zotero_mcp.cli_standalone import (
     cmd_edit,
     cmd_notes,
     cmd_search,
+    cmd_tags,
     main,
 )
 
@@ -469,6 +470,61 @@ class TestCmdEdit:
 
         call_kwargs = mock_write.update_item.call_args.kwargs
         assert call_kwargs["add_tags"] == ["tag1", "tag2", "tag3"]
+
+    def test_edit_takes_a_json_array_for_tags_with_commas(self):
+        args = self._args(remove_tags='["Barrel organ, Hydraulic", "Organ"]')
+        mock_write = MagicMock()
+        mock_write.update_item.return_value = "ok"
+
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            with patch("zotero_mcp.cli_standalone._import_tools",
+                       return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock())):
+                cmd_edit(args)
+
+        call_kwargs = mock_write.update_item.call_args.kwargs
+        assert call_kwargs["remove_tags"] == ["Barrel organ, Hydraulic", "Organ"]
+
+
+# ---------------------------------------------------------------------------
+# cmd_tags
+# ---------------------------------------------------------------------------
+
+class TestCmdTags:
+    """Parsed from real argv, with batch_update_tags autospecced, so a flag
+    the parser lacks or a kwarg the tool lacks fails here."""
+
+    def _run(self, argv):
+        mock_write = MagicMock()
+        mock_write.batch_update_tags = create_autospec(
+            write_tools.batch_update_tags, return_value="ok")
+        args = build_parser().parse_args(["tags", *argv])
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            with patch("zotero_mcp.cli_standalone._import_tools",
+                       return_value=(MagicMock(), MagicMock(), MagicMock(),
+                                     mock_write, MagicMock())):
+                cmd_tags(args)
+        return mock_write.batch_update_tags.call_args.kwargs
+
+    def test_comma_separated_flags_still_split(self):
+        kwargs = self._run(["--tag", "a,b", "--add", "x, y", "--remove", "z"])
+        assert kwargs["tag"] == ["a", "b"]
+        assert kwargs["add_tags"] == ["x", "y"]
+        assert kwargs["remove_tags"] == ["z"]
+
+    def test_json_array_addresses_a_tag_containing_a_comma(self):
+        kwargs = self._run([
+            "--tag", '["Barrel organ, Hydraulic"]',
+            "--remove", '["Barrel organ, Hydraulic"]',
+        ])
+        assert kwargs["tag"] == ["Barrel organ, Hydraulic"]
+        assert kwargs["remove_tags"] == ["Barrel organ, Hydraulic"]
+
+    def test_item_keys_select_a_known_set_of_items(self):
+        kwargs = self._run(["--item-keys", "ABCD1234,EFGH5678", "--remove", "x"])
+        assert kwargs["item_keys"] == ["ABCD1234", "EFGH5678"]
+
+    def test_item_keys_default_to_none(self):
+        assert self._run(["--tag", "x", "--remove", "x"])["item_keys"] is None
 
 
 # ---------------------------------------------------------------------------
