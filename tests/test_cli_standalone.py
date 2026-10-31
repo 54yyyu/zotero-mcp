@@ -505,6 +505,10 @@ class TestCmdTags:
                 cmd_tags(args)
         return mock_write.batch_update_tags.call_args.kwargs
 
+    def test_warns_on_stderr_that_it_is_deprecated(self, capsys):
+        self._run(["--tag", "a", "--add", "b"])
+        assert "zotero-cli tags is deprecated" in capsys.readouterr().err
+
     def test_comma_separated_flags_still_split(self):
         kwargs = self._run(["--tag", "a,b", "--add", "x, y", "--remove", "z"])
         assert kwargs["tag"] == ["a", "b"]

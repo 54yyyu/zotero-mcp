@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The MCP server can free the semantic index's memory when semantic search is idle (opt-in).** ChromaDB loads a collection's whole vector index on the first query and keeps it until the process exits; nothing in its API releases it, and the 1.x bindings ignore `chroma_memory_limit_bytes`. A server that ran one semantic search therefore held the index for as long as it ran, often days: about 6 GB for a million OpenAI passages. With `semantic_search.idle_unload_minutes` set (it is off by default; 10 is a good value), the server runs ChromaDB in a worker process that starts at the first semantic call and exits after that many idle minutes; the next call starts a new worker and reloads the index. Only ChromaDB moves: fetching the Zotero items for the hits, the active library and the result formatting stay in the server. `0`, the default, keeps the previous in-process behavior. The command-line tools are unchanged, since their process ends with the command. See "Semantic search memory" in `docs/configuration.md`.
 - **The search database status reads its counts from the database file.** `zotero_get_search_database_status` called ChromaDB's `count()`, which loads the whole vector index just to count it, and on a damaged index made ChromaDB retry its pending writes into the file. It now reads `chroma.sqlite3` read-only, reports writes ChromaDB has logged but not applied, and recognizes the on-disk signature of an interrupted write (a file longer than its header's page count) as an unreadable index without opening it.
 - **The Zotero Agent answers in the language you write in**, and "Explain better" keeps the language of the last answer.
-- **`zotero-cli tags` addresses tag names that contain commas** (a JSON array), reaches attachments when items are selected by tag or key, takes `--item-keys`, and pages `--limit` up to 1000, saying so when more items matched (#752).
+- **`zotero-cli batch` and `tags` address tag names that contain commas** (a JSON array), reaches attachments when items are selected by tag or key, takes `--item-keys`, and pages `--limit` up to 1000, saying so when more items matched (#752).
 
 ### Fixed
 
@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **No more leaked database copies on Windows** (#736). The local SQLite snapshot is cleaned up when the process that made it is gone.
 - **A dry run of batch annotations reads metadata from the selected group library** in local-only mode (#731, #732).
 - **Highlights on rotated pages land in the right place, and a quote that repeats on a page is highlighted once** (#720).
+- **Batch Extra edits fetch each item once** instead of twice: a separately built read client made every item look like it came from another backend.
+- **`docs/cli.md` examples that did not parse** (`coll list`, `tags list`, `library info`) now name the real commands.
+
+### Deprecated
+
+- **`zotero-cli tags` is deprecated in favor of `zotero-cli batch`**, which takes the same selection and does the same tag edits with `--add-tags` / `--remove-tags`, plus Extra edits. `tags` still works and prints a notice on stderr; it will be removed in 0.17.
 
 ## [0.15.1] - 2026-10-16
 

@@ -772,10 +772,11 @@ def batch_update_extra(
             return "Error: replace=True is incompatible with remove_keys"
 
         ctx.info(f"Batch updating Extra field for {len(item_keys)} item(s)")
-        zot = _client.get_zotero_client()
-
+        # One resolution for both roles, as in batch_update_tags: a separate
+        # read client made `write_zot is not zot` always true, so every item
+        # was fetched twice.
         try:
-            _, write_zot = _helpers._get_write_client(ctx)
+            zot, write_zot = _helpers._get_write_client(ctx)
         except ValueError as e:
             return str(e)
 

@@ -126,9 +126,9 @@ zotero-cli add doi 10.1038/s41586-021-03819-2 -c "New Topic" --create-collection
 # --collections remains the comma-separated form
 
 # Collections and tags
-zotero-cli coll list                          # list collections (short alias)
+zotero-cli get collections
 zotero-cli coll search "PhD Research"
-zotero-cli tags list
+zotero-cli get tags
 
 # Semantic search database
 zotero-cli db update
@@ -136,7 +136,7 @@ zotero-cli db update --fulltext --force-rebuild
 zotero-cli db status
 
 # Library and duplicates
-zotero-cli library info
+zotero-cli get libraries
 zotero-cli duplicates find
 
 # Reading PDFs — find the section first, then read only those pages

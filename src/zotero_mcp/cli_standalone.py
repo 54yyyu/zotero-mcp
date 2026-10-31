@@ -798,6 +798,9 @@ def cmd_collections(args):
 
 
 def cmd_tags(args):
+    # Deprecated in 0.15.2, removal in 0.17: `batch` does the same with --add-tags/--remove-tags.
+    print("zotero-cli tags is deprecated and will be removed in 0.17; use: "
+          "zotero-cli batch --add-tags ... --remove-tags ...", file=sys.stderr)
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
@@ -1720,7 +1723,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmg.add_argument("--remove-from")
 
     # tags
-    t_p = sub.add_parser("tags", help="Batch update tags on matched items")
+    t_p = sub.add_parser("tags", help="Deprecated: use batch --add-tags/--remove-tags")
     t_p.add_argument("--item-keys",
                      help="Comma-separated item keys to edit; --query and --tag are then ignored")
     t_p.add_argument("--query")
