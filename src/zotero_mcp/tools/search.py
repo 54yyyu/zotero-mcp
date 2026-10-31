@@ -1553,7 +1553,7 @@ def semantic_search(
             if rerank.get("applied"):
                 output.append(
                     f"*Ranked by {rerank.get('model')} over "
-                    f"{rerank.get('candidates')} candidate passages.*"
+                    f"{rerank.get('candidates')} candidates.*"
                 )
             else:
                 output.append(

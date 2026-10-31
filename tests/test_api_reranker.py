@@ -314,7 +314,7 @@ def test_tool_output_names_the_reranker(monkeypatch, tmp_path):
     out = _run_tool(monkeypatch, tmp_path, {
         "model": "voyage/rerank-3", "applied": True, "error": None, "candidates": 80,
     })
-    assert "Ranked by voyage/rerank-3 over 80 candidate passages" in out
+    assert "Ranked by voyage/rerank-3 over 80 candidates" in out
     assert "**Relevance:** 0.910" in out
     assert "**Similarity:** 0.520" in out
 

@@ -196,14 +196,15 @@ provider's key in the environment the server runs in (`VOYAGE_API_KEY`,
 
 Any other endpoint that takes `{model, query, documents, top_n}` and answers
 with `{index, relevance_score}` records works with `base_url` and
-`api_key_env` in place of `provider`.
+`api_key_env` in place of `provider`. `timeout` (seconds, default 30) bounds
+each call; one retry follows a 429 or 5xx answer.
 
 **Privacy:** with a hosted provider, every search sends the query and the text
 of the candidate passages — dozens of excerpts from your library — to that
 provider. The local cross-encoder sends nothing anywhere.
 
 Search results say how they were ordered: *"Ranked by voyage/rerank-3 over 80
-candidate passages"*, with the re-ranker's score as **Relevance** and the
+candidates"*, with the re-ranker's score as **Relevance** and the
 embedding similarity alongside. If a hosted call fails — a wrong model name,
 an expired key, a timeout — the search still answers, in embedding order, and
 says why: *"re-ranking with voyage/rerank-3 failed (HTTP 401 …)"*.
