@@ -1,16 +1,44 @@
 """ZOTERO_API_URL points the web API clients at a self-hosted server."""
 
+import http.server
+import socketserver
+import threading
+
 import pytest
 
 from zotero_mcp import client as _client
 from zotero_mcp import semantic_search
 
 
-@pytest.fixture(scope="session")
-def httpserver_listen_address():
-    # The plugin binds "localhost" by default, whose lookup can stall past the
-    # 30 s timeout on macOS CI runners; an IP literal and a free port avoid it.
-    return ("127.0.0.1", 0)
+@pytest.fixture
+def api_server():
+    """A stand-in Zotero Web API on 127.0.0.1 that records the paths it serves.
+
+    socketserver.TCPServer, not http.server.HTTPServer (or pytest-httpserver,
+    built on it): HTTPServer.server_bind calls socket.getfqdn(), a reverse DNS
+    lookup that stalls past the test timeout on macOS CI runners.
+    """
+    paths = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            paths.append(self.path.split("?")[0])
+            body = b"[]"
+            self.send_response(200)
+            for k, v in (("Content-Type", "application/json"), ("Total-Results", "0"), ("Content-Length", str(len(body)))):
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/", paths
+    server.shutdown()
+    server.server_close()
 
 
 @pytest.fixture
@@ -33,11 +61,11 @@ def test_web_client_defaults_to_zotero_org(web_mode, monkeypatch):
         lambda: semantic_search._new_scoped_client("123", "user", "webkey", False),
     ],
 )
-def test_web_clients_send_requests_to_api_url(web_mode, monkeypatch, httpserver, factory):
-    httpserver.expect_request("/users/123/items").respond_with_json([], headers={"Total-Results": "0"})
-    monkeypatch.setenv("ZOTERO_API_URL", httpserver.url_for("/"))
+def test_web_clients_send_requests_to_api_url(web_mode, monkeypatch, api_server, factory):
+    url, paths = api_server
+    monkeypatch.setenv("ZOTERO_API_URL", url)
     assert factory().items(limit=1) == []
-    httpserver.check_assertions()
+    assert paths == ["/users/123/items"]
 
 
 def test_local_client_ignores_api_url(monkeypatch):
