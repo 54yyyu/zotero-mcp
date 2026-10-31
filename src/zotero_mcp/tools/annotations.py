@@ -2114,7 +2114,7 @@ def _fetch_attachment_file(
         if web_client is not None:
             meta_client = web_client
         else:
-            override = _client.get_active_library()
+            override = _client.get_active_library() or {}
             library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
             meta_client = (
                 _client.get_zotero_client()
