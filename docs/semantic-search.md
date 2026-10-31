@@ -131,31 +131,12 @@ On Windows the path must be ASCII-only. If your user folder name has other chara
 
 `zotero-mcp setup` keeps this setting. Moving it starts an empty index unless you move the old `chroma_db` folder there too.
 
-## Passage indexing
+## Section labels
 
-By default each item is one vector: its metadata, abstract and as much full
-text as the embedding model accepts. With chunking on, each item is indexed as
-overlapping passages instead, so a search can land on page 14 of a paper and
-quote it, and long documents are searchable past the model's input limit.
-
-```jsonc
-"semantic_search": {
-  "chunking": {
-    "enabled": true,
-    "chunk_size": 1500,            // characters per passage
-    "overlap": 200,                // characters shared by neighbouring passages
-    "max_chunks_per_item": 20      // guard against very long documents
-  }
-}
-```
-
-Changing any of these needs a rebuild (`zotero-mcp update-db --fulltext --force-rebuild`).
-
-### Section labels
-
-Each passage records the section of the paper it falls in — Abstract,
+With [passage chunking](configuration.md#passage-chunking) on, each passage
+records the section of the paper it falls in (Abstract,
 Introduction, Methods, Results, Discussion, Conclusion, References, Appendix or
-Back matter — and search results show it first in the **Location** line. A hit
+Back matter), and search results show it first in the **Location** line. A hit
 in someone's Introduction is a citation of a finding; a hit in their Results is
 the finding.
 

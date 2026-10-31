@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`zotero-mcp repair-db` rebuilds an unreadable semantic index without re-embedding it** (#747). An `update-db` cut off part way through can leave `chroma.sqlite3` in a state ChromaDB refuses to read, and the only way out was `--force-rebuild`, which re-embeds the whole library: hours and a full API bill for a large full-text index. `repair-db` reads the vectors from the index's HNSW files and the documents and metadata from a copy of `chroma.sqlite3` (full table scans, so damaged indexes do not matter; a header that undercounts its pages is corrected in the copy), and writes every item whose chunks all have a document, a vector and matching metadata into a fresh index. The rest are left out and listed in a report; `update-db --fulltext` embeds them. The old index is kept as `chroma_db.broken-<timestamp>`. `--dry-run` reports what would be kept without changing anything. On a 1.16-million-chunk OpenAI index damaged this way it kept 36,421 of 36,442 items.
+- **Each indexed passage carries the paper section it falls in** (#721, split from #547). With chunking on, passages get a `section` label (Abstract, Introduction, Methods, Results, Discussion, Conclusion, References, Appendix, Back matter), shown first in the Location line and usable in `filters`. Headings are matched by shape; unrecognised headings end a label rather than letting it run on. Existing indexes get labels after a rebuild.
 
 ### Changed
 
