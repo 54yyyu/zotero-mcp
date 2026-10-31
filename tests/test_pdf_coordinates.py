@@ -12,7 +12,7 @@ import tempfile
 
 import pytest
 
-from zotero_mcp.pdf_utils import build_area_position_data, find_text_position
+from zotero_mcp.pdf_utils import build_area_position_data, find_text_position, text_in_rects
 
 SENTENCE = "judgmental anchoring has durable effects lasting up to one week"
 
@@ -97,6 +97,66 @@ def test_find_text_position_offset_mediabox_includes_origin():
         assert page_part == "00000"
         assert offset_part == "000000"  # SENTENCE is the page's only text
         assert int(top_part) == int(crop_height - rect[3])
+
+
+
+@pytest.mark.parametrize("rotation", [90, 180, 270])
+@pytest.mark.parametrize(
+    "mediabox, cropbox",
+    [(None, (27, 27, 585, 765)), (OFFSET_MEDIABOX, None)],
+    ids=["cropbox-offset", "mediabox-offset"],
+)
+def test_find_text_position_rotated_page_keeps_box_origin(rotation, mediabox, cropbox):
+    """On a /Rotate page PyMuPDF's transformation_matrix drops a page box
+    origin that is not (0, 0), so its inverse put highlights off by that
+    offset. Rotating a page does not move its content in PDF user space, so
+    the rects must equal those of the unrotated page."""
+    import fitz
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path, reference_rects = _make_pdf(tmpdir, mediabox=mediabox)
+        doc = fitz.open(path)
+        if cropbox is not None:
+            doc[0].set_cropbox(fitz.Rect(*cropbox))
+        doc[0].set_rotation(rotation)
+        doc.saveIncr()
+        doc.close()
+
+        result = find_text_position(path, 1, SENTENCE)
+
+        assert "error" not in result
+        _assert_rects_close(result["rects"], reference_rects)
+        assert text_in_rects(path, 0, result["rects"]) == SENTENCE
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [[SENTENCE], ["judgmental anchoring has durable", "effects lasting up to one week"]],
+    ids=["one-line", "two-lines"],
+)
+def test_find_text_position_highlights_repeated_quote_once(lines):
+    """page.search_for returns every occurrence of the quote; a quote that
+    appears twice on a page must be highlighted once, at the first
+    occurrence, and only over the quote's own words."""
+    import fitz
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        for top in (100, 400):
+            page.insert_text(fitz.Point(72, top), "Before. " + lines[0], fontsize=11)
+            for i, line in enumerate(lines[1:], start=1):
+                page.insert_text(fitz.Point(72, top + 20 * i), line + " After.", fontsize=11)
+        path = os.path.join(tmpdir, "repeated.pdf")
+        doc.save(path)
+        doc.close()
+
+        result = find_text_position(path, 1, SENTENCE)
+
+        assert "error" not in result
+        assert len(result["rects"]) == len(lines)
+        assert all(rect[1] > 792 - 200 for rect in result["rects"])  # the first occurrence
+        assert text_in_rects(path, 0, result["rects"]) == SENTENCE
 
 
 def test_build_area_position_offset_mediabox():
