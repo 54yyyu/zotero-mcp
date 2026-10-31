@@ -4858,6 +4858,47 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
     )
 
 
+def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
+    """Create a LINKED-file child attachment (records the path, copies nothing).
+
+    Mirrors Zotero's "Add Link to File": the PDF stays where it is and
+    Zotero stores the absolute path with linkMode='linked_file'. Goes through
+    the local API so no bytes are uploaded and no cloud quota is consumed.
+    """
+    existing = _helpers._find_child_attachment(
+        write_zot, item_key, filename=display_name
+    )
+    if existing is not None:
+        data = existing.get("data", {}) or {}
+        existing_key = existing.get("key") or data.get("key")
+        return (
+            f"Linked attachment already present on `{item_key}`: {display_name}"
+            f" (key `{existing_key}`) — not re-linked."
+        )
+    try:
+        template = _helpers.item_template_for(
+            write_zot, "attachment", "linked_file"
+        )
+        template["path"] = file_path
+        template["title"] = display_name
+        template["contentType"] = (
+            _helpers._guess_content_type(display_name) or "application/pdf"
+        )
+        template["parentItem"] = item_key
+        result = write_zot.create_items([template])
+    except Exception as e:
+        ctx.error(f"Error linking file: {e}")
+        return f"Error linking file: {e}"
+    if not result.get("success"):
+        return f"Error: failed to create linked attachment: {result}"
+    key = list(result["successful"].values())[0]["key"]
+    return (
+        f"Linked file attached to `{item_key}`: {display_name} (key `{key}`) — "
+        f"file NOT moved; path: {file_path}. "
+        "Run zotero_update_search_database to index it for semantic search."
+    )
+
+
 @mcp.tool(
     name="zotero_attach_file",
     description=(
@@ -4883,6 +4924,11 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         "cloud storage quota unless WebDAV sync is configured. Run "
         "zotero_update_search_database afterwards to index the new file "
         "for semantic search. "
+        "link_mode: 'import' (default) uploads the file bytes; "
+        "'linked' records the absolute path only (like Zotero's "
+        "'Add Link to File') — the file is NOT moved or copied and no "
+        "cloud quota is used. 'linked' requires file_path (not url) and "
+        "a writable library. "
         "Example: zotero_attach_file(item_key='ABCD2345', "
         "file_path='/Users/me/smith-2020.pdf')."
     ),
@@ -4894,6 +4940,7 @@ def attach_file(
     url: str | None = None,
     filename: str | None = None,
     *,
+    link_mode: str = "import",
     ctx: Context,
 ) -> str:
     try:
@@ -4946,6 +4993,10 @@ def attach_file(
                 filename += ext
             display_name = filename or os.path.basename(file_path)
             ctx.info(f"Attaching local file to {item_key}: {display_name}")
+            if link_mode == "linked":
+                return _attach_linked_file(
+                    write_zot, item_key, display_name, file_path, ctx
+                )
             if filename and filename != os.path.basename(file_path):
                 # pyzotero's attachment_both() derives the *stored* filename
                 # from the real file's basename, not the title tuple element
