@@ -109,6 +109,11 @@ async def server_lifespan(server: FastMCP):
     """
     sys.stderr.write("Starting Zotero MCP server...\n")
     update_proc: subprocess.Popen | None = None
+    # Semantic search runs ChromaDB in a worker that exits when idle, so a
+    # server that searched once does not hold the index's memory for days.
+    from zotero_mcp import chroma_worker
+
+    chroma_worker.enable_worker_mode()
 
     async def _background_update():
         nonlocal update_proc
@@ -142,6 +147,7 @@ async def server_lifespan(server: FastMCP):
     sys.stderr.write("Shutting down Zotero MCP server...\n")
     if update_proc is not None and update_proc.poll() is None:
         update_proc.terminate()
+    chroma_worker.stop_all()
 
 
 class _ZoteroMCP(FastMCP):

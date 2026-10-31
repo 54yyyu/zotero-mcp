@@ -811,6 +811,14 @@ def cmd_tags(args):
     ))
 
 
+def _field_assignment(value: str) -> tuple[str, str]:
+    """Parse one metadata assignment, preserving empty values and '=' in text."""
+    name, separator, text = value.partition("=")
+    if not separator or not name.strip():
+        raise argparse.ArgumentTypeError("expected NAME=VALUE with a nonempty field name")
+    return name.strip(), text
+
+
 def cmd_edit(args):
     """Edit metadata fields of an existing Zotero item."""
     setup_zotero_environment()
@@ -847,6 +855,9 @@ def cmd_edit(args):
         "book_title": args.book_title,
     }
     fields = {k: v for k, v in flat_fields.items() if v is not None}
+    # Keep the writer's schema validation and base-field resolution in one
+    # place. Explicit generic assignments take precedence over named flags.
+    fields.update(getattr(args, "field", None) or [])
 
     _out(args, "edit", text=write_mod.update_item(
         item_key=args.item_key,
@@ -949,7 +960,11 @@ def cmd_db(args):
         print(f"- Should update: {status.get('should_update', False)}")
         print(f"- OpenAI Batch API: {'active' if bc.get('active') else 'inactive'}")
         print(f"- Passage chunking: {_format_chunking_status(status)}")
-        if ci.get("error"):
+        if ci.get("unreadable"):
+            from zotero_mcp.chroma_client import unreadable_index_message
+
+            print(f"\nError: {unreadable_index_message(ci, uc.get('last_update'))}")
+        elif ci.get("error"):
             print(f"\nError: {ci['error']}")
 
     elif args.subcommand == "inspect":
@@ -1722,6 +1737,13 @@ def build_parser() -> argparse.ArgumentParser:
     e_p.add_argument("--edition")
     e_p.add_argument("--isbn")
     e_p.add_argument("--book-title")
+    e_p.add_argument(
+        "--field",
+        action="append",
+        type=_field_assignment,
+        metavar="NAME=VALUE",
+        help="Set a Zotero metadata field (repeatable; overrides named flags; NAME= clears a field)",
+    )
 
     # duplicates
     d_p = sub.add_parser("duplicates", help="Find or merge duplicate items")

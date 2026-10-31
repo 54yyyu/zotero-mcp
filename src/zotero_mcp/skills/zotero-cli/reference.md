@@ -283,6 +283,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--edition`
  - `--isbn`
  - `--book-title`
+ - `--field` -- Set a Zotero metadata field (repeatable; overrides named flags; NAME= clears a field)
 
 ## `duplicates`
 
