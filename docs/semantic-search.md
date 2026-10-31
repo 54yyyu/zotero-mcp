@@ -161,6 +161,53 @@ Two consequences:
   Unlabelled passages are still searched; only a `section` filter excludes
   them.
 
+## Re-ranking
+
+A re-ranker reads the query and each candidate passage together and scores how
+well the passage answers the query — slower than comparing embeddings, but
+more accurate, so it is applied to the shortlist the embedding search
+returns. `candidate_multiplier` sets the shortlist: papers per wanted result.
+
+A local cross-encoder runs on your machine (needs `sentence-transformers`; the
+strong models want a GPU):
+
+```jsonc
+"reranker": {
+  "enabled": true,
+  "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+  "candidate_multiplier": 3
+}
+```
+
+A hosted re-ranker answers in well under a second without a GPU. Set
+`provider` to `voyage`, `cohere`, `openrouter` or `contextual`, and put the
+provider's key in the environment the server runs in (`VOYAGE_API_KEY`,
+`COHERE_API_KEY`, `OPENROUTER_API_KEY`, `CONTEXTUAL_API_KEY`):
+
+```jsonc
+"reranker": {
+  "enabled": true,
+  "provider": "voyage",
+  "model": "rerank-3",
+  "candidate_multiplier": 5,
+  "instruction": "Prefer passages that report findings over ones that cite them."  // optional
+}
+```
+
+Any other endpoint that takes `{model, query, documents, top_n}` and answers
+with `{index, relevance_score}` records works with `base_url` and
+`api_key_env` in place of `provider`.
+
+**Privacy:** with a hosted provider, every search sends the query and the text
+of the candidate passages — dozens of excerpts from your library — to that
+provider. The local cross-encoder sends nothing anywhere.
+
+Search results say how they were ordered: *"Ranked by voyage/rerank-3 over 80
+candidate passages"*, with the re-ranker's score as **Relevance** and the
+embedding similarity alongside. If a hosted call fails — a wrong model name,
+an expired key, a timeout — the search still answers, in embedding order, and
+says why: *"re-ranking with voyage/rerank-3 failed (HTTP 401 …)"*.
+
 ## Example queries
 
 In your AI assistant:

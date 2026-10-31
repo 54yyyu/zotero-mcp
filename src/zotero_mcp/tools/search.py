@@ -1544,9 +1544,27 @@ def semantic_search(
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
+        # Say how the order was produced. A hosted re-ranker that fails falls
+        # back to retrieval order on purpose, and without this line that
+        # fallback is invisible: a wrong model name or an expired key would
+        # quietly degrade every search.
+        rerank = results.get("rerank")
+        if rerank:
+            if rerank.get("applied"):
+                output.append(
+                    f"*Ranked by {rerank.get('model')} over "
+                    f"{rerank.get('candidates')} candidate passages.*"
+                )
+            else:
+                output.append(
+                    f"**Note:** re-ranking with {rerank.get('model')} failed "
+                    f"({rerank.get('error')}); results are in embedding-similarity order."
+                )
+            output.append("")
 
         for i, result in enumerate(search_results, 1):
             similarity_score = result.get("similarity_score", 0)
+            rerank_score = result.get("rerank_score")
             zotero_item = result.get("zotero_item", {})
 
             # Prefer the grounded passage — the window of the document that
@@ -1571,7 +1589,13 @@ def semantic_search(
                 loc_bits.append(f"char ~{off}")
 
             if zotero_item:
-                extra = {"Relevance": f"{similarity_score:.3f}"}
+                if rerank_score is not None:
+                    extra = {
+                        "Relevance": f"{rerank_score:.3f}",
+                        "Similarity": f"{similarity_score:.3f}",
+                    }
+                else:
+                    extra = {"Relevance": f"{similarity_score:.3f}"}
                 if loc_bits:
                     extra["Location"] = ", ".join(loc_bits)
                 if snippet:
