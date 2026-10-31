@@ -131,6 +131,55 @@ On Windows the path must be ASCII-only. If your user folder name has other chara
 
 `zotero-mcp setup` keeps this setting. Moving it starts an empty index unless you move the old `chroma_db` folder there too.
 
+## Passage indexing
+
+By default each item is one vector: its metadata, abstract and as much full
+text as the embedding model accepts. With chunking on, each item is indexed as
+overlapping passages instead, so a search can land on page 14 of a paper and
+quote it, and long documents are searchable past the model's input limit.
+
+```jsonc
+"semantic_search": {
+  "chunking": {
+    "enabled": true,
+    "chunk_size": 1500,            // characters per passage
+    "overlap": 200,                // characters shared by neighbouring passages
+    "max_chunks_per_item": 20      // guard against very long documents
+  }
+}
+```
+
+Changing any of these needs a rebuild (`zotero-mcp update-db --fulltext --force-rebuild`).
+
+### Section labels
+
+Each passage records the section of the paper it falls in — Abstract,
+Introduction, Methods, Results, Discussion, Conclusion, References, Appendix or
+Back matter — and search results show it first in the **Location** line. A hit
+in someone's Introduction is a citation of a finding; a hit in their Results is
+the finding.
+
+The label is ordinary chunk metadata, so it can be filtered on:
+
+```python
+zotero_semantic_search(query="...", filters={"section": {"$ne": "Introduction"}})
+zotero_semantic_search(query="...", filters={"section": {"$in": ["Results", "Discussion"]}})
+```
+
+Headings are recognised by shape (a line of their own, optional numbering, an
+optional colon), because extracted PDF text keeps line breaks but not styling.
+A heading the parser does not recognise ends the current label rather than
+letting it run on, so a passage is left unlabelled rather than mislabelled.
+Two consequences:
+
+- **An existing index has no labels** until it is rebuilt with
+  `zotero-mcp update-db --fulltext --force-rebuild`. Items indexed or
+  re-indexed after upgrading get them as they go.
+- **Books mostly come out unlabelled.** Chapter titles are not section names,
+  and many book PDFs extract without any heading the parser can read.
+  Unlabelled passages are still searched; only a `section` filter excludes
+  them.
+
 ## Example queries
 
 In your AI assistant:

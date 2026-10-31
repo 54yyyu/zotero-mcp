@@ -566,6 +566,138 @@ def _page_for_offset(text: str, offset: int) -> int | None:
     return text.count(_PAGE_SEPARATOR, 0, max(0, offset)) + 1
 
 
+# Canonical section labels, keyed by the heading that introduces them. Longer
+# names precede the shorter ones they contain ("materials and methods" before
+# "methods") so the alternation below cannot match a prefix of a longer
+# heading. Deliberately conservative: an unrecognised heading leaves the
+# passage unlabelled rather than mislabelled, since a wrong section is worse
+# than none for a reader deciding whether a hit is the paper's own claim.
+_SECTION_ALIASES: tuple[tuple[str, str], ...] = (
+    (r"abstract", "Abstract"),
+    (r"introduction", "Introduction"),
+    (r"background", "Introduction"),
+    (r"related work", "Introduction"),
+    (r"literature review", "Introduction"),
+    (r"theoretical framework", "Introduction"),
+    (r"(?:the\s+)?present study", "Introduction"),
+    (r"materials?\s+and\s+methods?", "Methods"),
+    (r"methodology", "Methods"),
+    (r"methods?", "Methods"),
+    (r"participants?", "Methods"),
+    (r"measures?", "Methods"),
+    (r"procedure", "Methods"),
+    (r"data\s+analys[ei]s", "Methods"),
+    (r"statistical\s+analys[ei]s", "Methods"),
+    (r"results?\s+and\s+discussion", "Results"),
+    (r"results?", "Results"),
+    (r"findings?", "Results"),
+    (r"general\s+discussion", "Discussion"),
+    (r"discussion", "Discussion"),
+    (r"limitations?", "Discussion"),
+    (r"implications?", "Discussion"),
+    (r"conclusions?", "Conclusion"),
+    (r"acknowledge?ments?", "Back matter"),
+    (r"funding", "Back matter"),
+    (r"conflicts? of interest", "Back matter"),
+    (r"references?", "References"),
+    (r"bibliography", "References"),
+    (r"appendix[\w \t.:-]*", "Appendix"),
+    (r"supplementary[\w \t.:-]*", "Appendix"),
+)
+
+# A heading is recognised by shape as well as name: its own line, optionally
+# numbered ("3.", "3.1", "IV."), nothing after it but an optional colon.
+# Extracted PDF text keeps line breaks but loses styling, so shape is the only
+# signal left that a line is a heading rather than prose mentioning the word.
+_SECTION_HEADING_RE = re.compile(
+    r"^[ \t]*(?:\d+(?:\.\d+)*[.)]?[ \t]+|[IVXivx]{1,5}[.)][ \t]+)?"
+    r"(" + "|".join(pattern for pattern, _ in _SECTION_ALIASES) + r")"
+    r"[ \t]*:?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+# A chapter or part heading ends whatever section preceded it. Without this a
+# label runs forward until the next *recognised* heading, and since chapter
+# titles are not recognised, every chapter after the first in an edited volume
+# or monograph inherits the tail of the one before it, usually "References",
+# because chapter bibliographies are the last thing this parser recognises.
+# That is the mislabelling the module set out to avoid.
+#
+# A false positive here only clears a label, never invents one, so the pattern
+# can afford to be generous: any line that opens with Chapter/Part/Book and a
+# number, numeral or spelled-out ordinal, with or without a title after it.
+_SECTION_RESET_RE = re.compile(
+    r"""
+    ^[ \t]*(?:
+        # A chapter, part or book heading, numbered any of the usual ways.
+        (?:chapter|part|book)[ \t]+
+        (?:\d{1,3}|[ivxlc]{1,7}|one|two|three|four|five|six|seven|eight|nine|
+           ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|
+           eighteen|nineteen|twenty)
+        \b[^\n]{0,80}
+      |
+        # An all-capitals line short enough to be a heading rather than
+        # prose. Extracted PDFs lose styling, so case and length are what is
+        # left to go on; requiring two letters and no lowercase keeps ordinary
+        # sentences, wrapped fragments and bare numbers out. Case-sensitive
+        # even though the pattern as a whole is not, since case is the signal.
+        (?-i:
+            (?=[^\na-z]{5,70}[ \t]*$)
+            (?=[^\n]*[A-Z][^\n]*[A-Z])
+            [A-Z0-9][^\na-z]{4,69}
+        )
+    )
+    [ \t]*$
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+
+
+def _section_offsets(text: str) -> list[tuple[int, str | None]]:
+    """Offsets of recognised section headings in *text*, in document order.
+
+    A ``None`` label marks a chapter or part boundary, which ends the previous
+    section without starting a named one.
+
+    Computed once per document and shared by all of its passages: scanning the
+    whole text per chunk would be quadratic in a long paper.
+    """
+    text = text or ""
+    marks: list[tuple[int, str | None]] = []
+    for match in _SECTION_HEADING_RE.finditer(text):
+        heading = match.group(1).strip()
+        for pattern, label in _SECTION_ALIASES:
+            if re.fullmatch(pattern, heading, re.IGNORECASE):
+                marks.append((match.start(), label))
+                break
+    # A recognised heading may also look like an unrecognised one (a line
+    # reading "METHODS" matches both), and the label must win over the reset.
+    named = {offset for offset, _ in marks}
+    marks.extend(
+        (match.start(), None)
+        for match in _SECTION_RESET_RE.finditer(text)
+        if match.start() not in named
+    )
+    marks.sort(key=lambda mark: mark[0])
+    return marks
+
+
+def _section_at(marks: list[tuple[int, str | None]], offset: int) -> str | None:
+    """The section label in force at *offset*, or None when unknown.
+
+    None is returned before the first recognised heading (front matter, and
+    every document whose headings this parser did not recognise) and after a
+    chapter boundary that has not yet been followed by one.
+    """
+    label: str | None = None
+    for start, name in marks:
+        if start > offset:
+            break
+        label = name
+    return label
+
+
 def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
     """Return the ``width``-char window of *text* richest in query terms.
 
@@ -3272,6 +3404,7 @@ class ZoteroSemanticSearch:
                         stats["skipped"] += 1
                         continue
                     n_chunks = len(passages)
+                    section_marks = _section_offsets(doc_text)
                     for ci, (chunk_text, c0, c1) in enumerate(passages):
                         cmeta = dict(metadata)
                         cmeta["parent_item_key"] = item_key
@@ -3282,6 +3415,9 @@ class ZoteroSemanticSearch:
                         page = _page_for_offset(doc_text, c0)
                         if page is not None:
                             cmeta["page"] = page
+                        section = _section_at(section_marks, c0)
+                        if section is not None:
+                            cmeta["section"] = section
                         documents.append(self.chroma_client.truncate_text(chunk_text))
                         metadatas.append(cmeta)
                         ids.append(f"{item_key}#{ci}")
@@ -4218,7 +4354,7 @@ class ZoteroSemanticSearch:
             }
             # Passage provenance — present only on a chunk-indexed collection.
             if isinstance(meta, dict):
-                for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page"):
+                for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page", "section"):
                     if mk in meta:
                         enriched_result[mk] = meta[mk]
             if "char_start" not in enriched_result and passage_offset:
