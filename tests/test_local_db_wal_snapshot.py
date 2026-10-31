@@ -316,7 +316,6 @@ def test_snapshot_dir_names_its_process(zotero_like_db):
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot probe pid liveness; only old copies are swept")
 def test_copy_left_by_a_killed_process_is_removed(zotero_like_db):
     orphan = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_abcd1234")
     local_db._wal_snapshot_path(str(zotero_like_db[0]))
@@ -362,15 +361,60 @@ def test_unrelated_temp_entries_are_untouched(zotero_like_db):
     assert os.path.exists(other)
 
 
-def test_windows_never_probes_pids_and_sweeps_by_age_only(zotero_like_db, monkeypatch):
-    """os.kill(pid, 0) sends CTRL_C_EVENT on Windows, so it must not be called there."""
+def test_windows_never_uses_os_kill_and_sweeps_by_age_when_it_cannot_ask(zotero_like_db, monkeypatch):
+    """os.kill(pid, 0) sends CTRL_C_EVENT on Windows, so it must not be called
+    there; when the kernel cannot be asked either, only old copies go."""
     def no_kill(*a, **k):
         raise AssertionError("os.kill must not be used as a liveness probe on Windows")
 
+    def no_kernel(pid):
+        raise OSError("OpenProcess unavailable")
+
     monkeypatch.setattr(local_db, "_IS_WINDOWS", True)
     monkeypatch.setattr(local_db.os, "kill", no_kill)
+    monkeypatch.setattr(local_db, "_windows_pid_alive", no_kernel)
     fresh = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_abcd1234")
     old = _fake_snapshot(f"zotero_mcp_db_{_dead_pid()}_old12345", age=8 * 24 * 3600)
     local_db._wal_snapshot_path(str(zotero_like_db[0]))
     assert os.path.exists(fresh)  # cannot tell it is dead, so it stays while young
     assert not os.path.exists(old)
+
+
+# ---------------------------------------------------------------------------
+# Windows: a copy with an open connection cannot be deleted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="asks the Windows kernel")
+def test_windows_probe_tells_a_running_process_from_an_exited_one():
+    assert local_db._windows_pid_alive(os.getpid())
+    assert not local_db._windows_pid_alive(_dead_pid())
+
+
+def test_exit_cleanup_closes_open_readers_before_deleting_their_copy(zotero_like_db):
+    """Every short-lived process (each zotero-cli run) used to leave its copy on
+    Windows: the reader's connection was still open when the copy was deleted."""
+    reader = LocalZoteroReader(db_path=str(zotero_like_db[0]))
+    assert reader.get_all_item_keys() == {"OLDITEM1", "NEWITEM1"}  # connection stays open
+    snap_dir = os.path.dirname(next(iter(local_db._snapshots.values()))[1])
+    local_db._remove_snapshots()
+    assert not os.path.exists(snap_dir)
+    assert reader._connection is None
+
+
+def test_a_replaced_copy_still_open_is_deleted_once_its_reader_lets_go(zotero_like_db):
+    path, writer = zotero_like_db
+    holder = LocalZoteroReader(db_path=str(path))
+    holder.get_all_item_keys()  # keeps the first copy open
+    first_dir = os.path.dirname(local_db._wal_snapshot_path(str(path)))
+
+    writer.execute("INSERT INTO items (key) VALUES ('NEWITEM2')")
+    writer.commit()
+    local_db._wal_snapshot_path(str(path))  # replaces the first copy
+    holder.close()
+
+    writer.execute("INSERT INTO items (key) VALUES ('NEWITEM3')")
+    writer.commit()
+    local_db._wal_snapshot_path(str(path))  # the next copy retries the first one
+    assert not os.path.exists(first_dir)
+    assert not local_db._superseded_snapshots

@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
@@ -731,17 +732,73 @@ _SNAPSHOT_PREFIX = "zotero_mcp_db_"
 _LEGACY_SNAPSHOT_MAX_AGE = 7 * 24 * 3600
 _swept_stale_snapshots = False
 
+# Windows cannot delete a file that has an open SQLite connection, and
+# ``rmtree(ignore_errors=True)`` fails silently on it. Readers are tracked so
+# the exit cleanup can close them first, and a replaced copy that could not be
+# deleted yet is remembered and retried on the next copy and at exit.
+_open_readers: "weakref.WeakSet[LocalZoteroReader]" = weakref.WeakSet()
+_superseded_snapshots: set[str] = set()
+
+
+def _remove_snapshot_dir(path: str) -> bool:
+    """Delete one copy's directory; True when it is gone."""
+    shutil.rmtree(path, ignore_errors=True)
+    return not os.path.exists(path)
+
+
+def _retry_superseded_snapshots() -> None:
+    for path in list(_superseded_snapshots):
+        if _remove_snapshot_dir(path):
+            _superseded_snapshots.discard(path)
+
 
 _IS_WINDOWS = os.name == "nt"
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """Whether ``pid`` is a running process, asked of the Windows kernel.
+
+    OpenProcess fails with ERROR_ACCESS_DENIED for a process that exists but
+    belongs to someone else, and with ERROR_INVALID_PARAMETER for a pid no
+    process holds. A handle to a process that has exited but is not yet reaped
+    reports an exit code other than STILL_ACTIVE. Anything unexpected counts as
+    alive, so a copy is kept rather than deleted.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    process_query_limited_information = 0x1000
+    error_invalid_parameter = 87
+    still_active = 259
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return ctypes.get_last_error() != error_invalid_parameter
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _pid_alive(pid: int) -> bool:
     if _IS_WINDOWS:
         # os.kill(pid, 0) is not a liveness probe on Windows: signal 0 equals
         # CTRL_C_EVENT there, so it can send Ctrl+C to processes on the
-        # console, and a failure is a generic OSError. Say "alive" and let the
-        # sweep fall back to the age rule.
-        return True
+        # console, and a failure is a generic OSError. Ask the kernel instead;
+        # where that is not possible, say "alive" and let the sweep fall back
+        # to the age rule.
+        try:
+            return _windows_pid_alive(pid)
+        except (AttributeError, OSError):
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -797,10 +854,22 @@ def _sweep_stale_snapshots() -> None:
 
 @atexit.register
 def _remove_snapshots() -> None:
-    """Delete this process's database copies; they hold the whole library."""
+    """Delete this process's database copies; they hold the whole library.
+
+    Open readers are closed first: on Windows a copy with an open connection
+    cannot be deleted, so every short-lived process (each ``zotero-cli`` run)
+    used to leave its copy behind. A connection made on another thread cannot
+    be closed from here and keeps its copy; the next process's sweep removes it.
+    """
+    for reader in list(_open_readers):
+        try:
+            reader.close()
+        except Exception:  # a connection owned by another thread, or already gone
+            pass
     for _sig, snap, _made_at, _gen in list(_snapshots.values()):
-        shutil.rmtree(os.path.dirname(snap), ignore_errors=True)
+        _remove_snapshot_dir(os.path.dirname(snap))
     _snapshots.clear()
+    _retry_superseded_snapshots()
 
 
 def _file_signature(path: str) -> tuple[int, int] | None:
@@ -856,6 +925,7 @@ def _wal_snapshot_path(db_path: str) -> str | None:
                     # made before our own latest write skips this, once.
                     return cached[1]
             _sweep_stale_snapshots()
+            _retry_superseded_snapshots()
             snap_dir = tempfile.mkdtemp(prefix=f"{_SNAPSHOT_PREFIX}{os.getpid()}_")
             snap = os.path.join(snap_dir, "zotero.sqlite")
             try:
@@ -872,9 +942,12 @@ def _wal_snapshot_path(db_path: str) -> str | None:
                 shutil.rmtree(snap_dir, ignore_errors=True)
                 continue
             if cached:
-                # Best effort: an open connection elsewhere keeps its files
-                # alive on POSIX, and on Windows the directory is left behind.
-                shutil.rmtree(os.path.dirname(cached[1]), ignore_errors=True)
+                # An open connection elsewhere keeps its files alive on POSIX;
+                # on Windows it blocks the delete, so the directory is retried
+                # once that reader has moved on (next copy, or exit).
+                old_dir = os.path.dirname(cached[1])
+                if not _remove_snapshot_dir(old_dir):
+                    _superseded_snapshots.add(old_dir)
             _snapshots[source] = (before, snap, time.monotonic(), gen)
             return snap
     logger.warning(
@@ -1112,6 +1185,9 @@ class LocalZoteroReader:
         self.fulltext_cache_enabled: bool = fulltext_cache_enabled
         self.config_path: str | None = config_path
         self.reuse_pdf_parse: bool = reuse_pdf_parse
+        # So the exit cleanup can close this reader's connection before it
+        # deletes the database copy the connection has open.
+        _open_readers.add(self)
 
     def _find_zotero_db(self) -> str:
         """
