@@ -56,6 +56,7 @@ def config(tmp_path, monkeypatch):
     path.write_text(json.dumps({"semantic_search": {
         "persist_directory": str(persist),
         "embedding_model": "default",
+        "idle_unload_minutes": 10,  # opt-in: the default (0) keeps ChromaDB in-process
     }}))
     # The worker is `python -m zotero_mcp.chroma_worker`; make sure it imports
     # this checkout, as the server's own interpreter would.
@@ -182,13 +183,14 @@ def test_a_call_in_flight_when_the_worker_dies_raises(config, monkeypatch):
         client.get_collection_info()
 
 
-def test_zero_idle_minutes_keeps_chromadb_in_process(tmp_path, monkeypatch):
+@pytest.mark.parametrize("idle", [{"idle_unload_minutes": 0}, {}], ids=["zero", "unset"])
+def test_zero_or_unset_idle_minutes_keeps_chromadb_in_process(tmp_path, monkeypatch, idle):
     monkeypatch.setattr(chroma_worker, "_enabled", True)
     monkeypatch.setattr(chroma_worker, "_shared", {})
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"semantic_search": {
         "persist_directory": str(tmp_path / "chroma_db"),
-        "idle_unload_minutes": 0,
+        **idle,
     }}))
 
     assert isinstance(create_chroma_client(str(path)), ChromaClient)

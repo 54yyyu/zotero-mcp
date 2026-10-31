@@ -248,7 +248,7 @@ With the default model, 20 passages cover about 13,000 characters, a few pages. 
 
 ## Semantic search memory
 
-ChromaDB loads the whole vector index into memory the first time a search runs, and keeps it there until the process holding it exits. Each vector takes its dimension × 4 bytes: a million passages with OpenAI's `text-embedding-3-small` (1,536 dimensions) need about 6 GB. The MCP server therefore runs ChromaDB in a separate worker process. The worker starts at the first semantic search and exits after a set time with no semantic calls, which returns that memory to the system. The next search starts a new worker and loads the index again, which takes a few seconds for a small index and can take half a minute for a large one.
+ChromaDB loads the whole vector index into memory the first time a search runs, and keeps it there until the process holding it exits. Each vector takes its dimension × 4 bytes: a million passages with OpenAI's `text-embedding-3-small` (1,536 dimensions) need about 6 GB. To get that memory back, set `idle_unload_minutes`: the MCP server then runs ChromaDB in a separate worker process. The worker starts at the first semantic search and exits after a set time with no semantic calls, which returns that memory to the system. The next search starts a new worker and loads the index again, which takes a few seconds for a small index and can take half a minute for a large one.
 
 ```json
 {
@@ -260,7 +260,7 @@ ChromaDB loads the whole vector index into memory the first time a search runs, 
 
 | Setting | Default | What it does |
 |---|---|---|
-| `idle_unload_minutes` | `10` | Minutes without a semantic search or index update before the worker exits. `0` runs ChromaDB inside the server instead, where the index stays loaded until the server exits. |
+| `idle_unload_minutes` | `0` (off) | Minutes without a semantic search or index update before the worker exits. `0` runs ChromaDB inside the server, where the index stays loaded until the server exits. |
 
 The status tool (`zotero_get_search_database_status`) reads its counts from the database file and never loads the index. Command-line tools such as `update-db` run ChromaDB in their own process, which frees the index when the command finishes.
 

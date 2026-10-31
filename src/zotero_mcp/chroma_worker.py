@@ -11,7 +11,7 @@ In the server, :func:`zotero_mcp.chroma_client.create_chroma_client` therefore
 returns a :class:`WorkerChromaClient`. It forwards every ``ChromaClient``
 call to a child process (``python -m zotero_mcp.chroma_worker``) that owns
 the real client, and stops that process after
-``semantic_search.idle_unload_minutes`` (default 10) without a call. The next
+``semantic_search.idle_unload_minutes`` (off by default; 10 is a good value) without a call. The next
 call starts a new one, whose first query loads the index again. Everything
 else a semantic search does, such as fetching the Zotero items for its hits,
 stays in the server, so the active library and its clients are unaffected.
@@ -36,7 +36,7 @@ from typing import Any, BinaryIO
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_IDLE_UNLOAD_MINUTES = 10
+DEFAULT_IDLE_UNLOAD_MINUTES = 0
 
 _HEADER = struct.Struct(">Q")
 
