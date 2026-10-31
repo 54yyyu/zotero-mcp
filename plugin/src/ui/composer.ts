@@ -151,7 +151,9 @@ export class Composer {
 
   setChips(chips: ContextChip[]): void {
     this.chipsEl.hidden = chips.length === 0;
-    setKids(this.chipsEl, chips.map((c) => ((c.kind === "area" || c.kind === "image") ? this.areaCard(c) : this.chip(c))));
+    const pic = (c: ContextChip) => c.kind === "area" || c.kind === "image";
+    const thumbs = chips.filter(pic).map((c) => this.thumb(c));
+    setKids(this.chipsEl, [...chips.filter((c) => !pic(c)).map((c) => this.chip(c)), ...(thumbs.length ? [h("div.cthumbs", null, thumbs)] : [])]);
   }
 
   private chip(c: ContextChip): HTMLElement {
@@ -167,16 +169,18 @@ export class Composer {
       pin, x);
   }
 
-  private areaCard(c: ContextChip): HTMLElement {
+  /** A selected area or a pasted picture: a small tile, its name as the tooltip, × on hover. An area opens its page. */
+  private thumb(c: ContextChip): HTMLElement {
     const src = c.image && B64.test(c.image.data) ? `data:image/png;base64,${c.image.data}` : null;
-    const own = c.kind === "image"; // a pasted picture: nowhere in Zotero to go to
-    return h("div.area", null,
-      h("div.area__head", null, icon("area"), h("span", null, c.label || "Selected Area")),
-      src ? h("img.area__img", { src, alt: own ? "The pasted image" : "The selected area of the page" }) : h("div.area__none", null, "No preview"),
-      h("div.area__acts", null,
-        own ? null : h("button.lnk", { type: "button", onclick: () => this.opts.open(c.ref) }, icon("external"), c.ref.annotationKey ? "Go to Annotation" : "Go to Page"),
-        h("button.lnk", { type: "button", onclick: () => this.opts.onRemoveChip(c) }, icon("close"), "Remove")));
+    const label = c.label || "Selected Area";
+    const img = src ? h("img.thumb__img", { src, alt: "" }) : h("span.thumb__none", null, icon("area"));
+    const go = c.kind === "image" ? null : c.ref.annotationKey ? "Go to Annotation" : "Go to Page"; // a pasted picture lives nowhere in Zotero
+    return h("div.thumb", { title: go ? `${label} · ${go}` : label },
+      go ? h("button.thumb__main", { type: "button", "aria-label": `${go}: ${label}`, onclick: () => this.opts.open(c.ref) }, img)
+        : h("div.thumb__main", { role: "img", "aria-label": label }, img),
+      h("button.thumb__x", { type: "button", "aria-label": `Remove ${label}`, title: "Remove", onclick: () => this.opts.onRemoveChip(c) }, icon("close")));
   }
+
 
   // --- typing
 

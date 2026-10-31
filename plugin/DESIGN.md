@@ -186,9 +186,9 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
 - Header: close, new chat, history, doctor/status dot, account label.
 - Empty state: the logo, one line, and "Start with": the pinned skills and prompts as a list (below).
 - Composer: auto context chip for the current item (bookmark = pin), `Text Selection` chip when text is selected in the reader,
-  `Selected Area` chip with thumbnail + Go to Annotation / Remove, `+` and `@` to attach items/collections/annotations,
+  a selected area as a 72 px thumbnail tile (click: go to the annotation; × on hover removes it), `+` and `@` to attach items/collections/annotations,
   one model button, mode picker, Send / Stop (Esc), Enter sends, Shift+Enter newline, drop an annotation on it.
-  A picture pasted or dropped on it (a screenshot, a saved figure) is an image card for the next message only, redrawn as
+  A picture pasted or dropped on it (a screenshot, a saved figure) is the same kind of tile, for the next message only, redrawn as
   PNG at most 1568 px on the long edge (`ui/images.ts`); a backend without image input gets a notice, not silence.
   The model button (`ui/pickers.ts`) shows the model and, softly, the effort level; its one dropdown opens right above it: the agents
   as a segmented row (status dot from `detect()`; one that is not ready says why and is not chosen), the chosen agent's models

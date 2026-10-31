@@ -55,7 +55,7 @@ const BASE = `
 .zmc [hidden] { display: none !important; }
 .zmc svg { display: block; flex: none; }
 .zmc :is(.hrow__f svg, .stopnote svg) { width: 12px; height: 12px; }
-.zmc :is(.btn svg, .lnk svg, .chip__i svg, .chip__btn svg, .area__head svg, .pick svg, .pop__search svg, .pop__ic svg, .menu__check svg, .keyrow__ok svg, .folder svg, .step__icon svg, .step__st svg, .plan__head svg, .perm--done svg) { width: 14px; height: 14px; }
+.zmc :is(.btn svg, .lnk svg, .chip__i svg, .chip__btn svg, .pick svg, .pop__search svg, .pop__ic svg, .menu__check svg, .keyrow__ok svg, .folder svg, .step__icon svg, .step__st svg, .plan__head svg, .perm--done svg) { width: 14px; height: 14px; }
 .zmc :is(.iconbtn svg, .send svg, .dropveil svg, .jump svg) { width: 16px; height: 16px; }
 .zmc :is(.stat__t, .chip__t, .hrow__f span, .hrow__t, .folder__p, .source__t, .step__title, .perm--done .perm__what) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zmc h1, .zmc h2, .zmc h3 { margin: 0; font-weight: 600; }
@@ -169,11 +169,16 @@ const BASE = `
 .zmc .chip__x { display: none; } .zmc .chip:hover .chip__x, .zmc .chip:focus-within .chip__x, .zmc .chip:not(.chip--auto) .chip__x { display: grid; }
 @media (hover: none) { .zmc .chip__x { display: grid; } }
 .zmc .cerr { flex: 1 0 100%; font-size: var(--fs-2); color: var(--danger); }
-.zmc .area { flex: 1 0 100%; padding: var(--s2) var(--s3); border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper); }
-.zmc .area__head { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2); font-size: var(--fs-2); font-weight: 500; color: var(--ink-muted); }
-.zmc .area__img { display: block; max-width: 100%; max-height: 120px; margin: 0 auto; border: 1px solid var(--rule); border-radius: var(--r1); background: #fff; object-fit: contain; }
-.zmc .area__none { padding: var(--s4); text-align: center; font-size: var(--fs-2); color: var(--ink-faint); }
-.zmc .area__acts { display: flex; justify-content: space-between; margin: var(--s2) calc(-1 * var(--s2)) calc(-1 * var(--s1)); }
+.zmc .cthumbs { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: var(--s2); padding-top: var(--s1); }
+.zmc .thumb { position: relative; flex: none; width: 72px; height: 72px; }
+.zmc .thumb__main { display: block; width: 100%; height: 100%; padding: 0; border: 1px solid var(--rule); border-radius: var(--r2); overflow: hidden; background: var(--paper); }
+.zmc button.thumb__main { cursor: pointer; } .zmc button.thumb__main:hover { border-color: var(--rule-strong); }
+.zmc .thumb__img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.zmc .thumb__none { display: grid; place-items: center; height: 100%; color: var(--ink-faint); }
+.zmc .thumb__x { position: absolute; top: 4px; right: 4px; display: none; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: rgb(0 0 0 / 0.6); color: #fff; }
+.zmc .thumb__x svg { width: 12px; height: 12px; }
+.zmc .thumb:hover .thumb__x, .zmc .thumb:focus-within .thumb__x { display: grid; }
+@media (hover: none) { .zmc .thumb__x { display: grid; } }
 .zmc .cin { display: block; width: 100%; min-height: 24px; max-height: 168px; padding: 0; margin: 0; border: 0; background: none; resize: none; outline: none; font-size: var(--fs-4); line-height: 24px; overflow-y: auto; }
 .zmc .cin:focus-visible { outline: none; }
 .zmc .ctools { display: flex; align-items: center; gap: var(--s1); margin-left: calc(-1 * (var(--h-sm) - 16px) / 2); }

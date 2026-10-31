@@ -139,17 +139,21 @@ await test("pinning keeps a chip when the focus moves; dismissing hides it until
   assert.equal(await p.locator(".cchips .chip").count(), 1, "back in focus: shown again");
 });
 
-await test("selected area card: thumbnail, go to annotation, remove", async (p) => {
+await test("selected area tile: thumbnail, click goes to the annotation, × on hover removes it", async (p) => {
   await sim(p, () => window.__zmc.sim.setContext("area"));
-  assert.ok(await p.locator(".area__img").isVisible());
-  await p.getByRole("button", { name: "Go to Annotation" }).click();
+  assert.ok(await p.locator(".thumb__img").isVisible());
+  const box = await p.locator(".thumb").boundingBox();
+  assert.deepEqual([box.width, box.height], [72, 72], "a small tile, not a full-width card");
+  assert.equal(await p.locator(".thumb__x").isVisible(), false, "× only on hover");
+  await p.getByRole("button", { name: /^Go to Annotation: / }).click();
   assert.equal((await sim(p, () => window.__zmc.sim.opened)).at(-1).annotationKey, "ANNAREA1");
   await send(p, "explain");
   await done(p);
   const images = await sim(p, () => window.__zmc.sim.prompts[0].images?.length);
   assert.equal(images, 1, "the area image goes with the question");
-  await p.getByRole("button", { name: "Remove" }).click();
-  assert.equal(await p.locator(".area").count(), 0);
+  await p.locator(".thumb").hover();
+  await p.locator(".thumb__x").click();
+  assert.equal(await p.locator(".thumb").count(), 0);
 });
 
 await test("an unchanged area and selection go once; later turns only name them", async (p) => {
@@ -852,13 +856,13 @@ const pictureData = (p, { w, h, name }) => p.evaluateHandle(async ([w, h, name])
 await test("a pasted or dropped picture becomes an image chip, scaled to 1568 px, sent once with the next message", async (p) => {
   const shot = await pictureData(p, { w: 3200, h: 1000, name: "image.png" });
   await p.evaluate((dt) => window.__zmc.shadow.querySelector(".cin").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })), shot);
-  await p.waitForSelector(".area .area__img");
-  assert.match(await p.locator(".area__head").innerText(), /^Image$/, "a screenshot's generic name is not shown");
-  assert.equal(await p.locator(".area .lnk").count(), 1, "Remove only: no Go to Page for a picture");
+  await p.waitForSelector(".thumb .thumb__img");
+  assert.equal(await p.locator(".thumb").getAttribute("title"), "Image", "a screenshot's generic name is not shown");
+  assert.equal(await p.locator("button.thumb__main").count(), 0, "no Go to Page for a picture");
   assert.equal(await p.locator(".cin").inputValue(), "", "no text was pasted");
   const fig = await pictureData(p, { w: 40, h: 30, name: "figure-3.png" });
   await fire(p, "drop", fig);
-  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".area").length === 2);
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".thumb").length === 2);
   await send(p, "what is in these?");
   await done(p);
   const sent = await sim(p, () => window.__zmc.sim.prompts[0]);
@@ -866,7 +870,7 @@ await test("a pasted or dropped picture becomes an image chip, scaled to 1568 px
   const sizes = await p.evaluate((imgs) => Promise.all(imgs.map(async (i) => { const b = await createImageBitmap(await (await fetch(`data:image/png;base64,${i.data}`)).blob()); return [b.width, b.height]; })), sent.images);
   assert.deepEqual(sizes, [[1568, 490], [40, 30]], "the long edge is capped, small pictures keep their size");
   assert.match(sent.text, /image: figure-3\.png/);
-  assert.equal(await p.locator(".area").count(), 0, "pictures are for that message only");
+  assert.equal(await p.locator(".thumb").count(), 0, "pictures are for that message only");
 });
 
 await test("a citation chip keeps its trailing punctuation: no line starts with a lone . , ; :", async (p) => {
