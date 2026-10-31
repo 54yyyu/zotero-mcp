@@ -183,7 +183,8 @@ class WorkerChromaClient:
 # Only the long-running server opts in: a CLI command exits when it is done,
 # which frees the index anyway, and the worker itself must open the real client.
 _enabled = False
-_shared: dict[tuple[str | None, float], WorkerChromaClient] = {}
+# config_path -> ((config mtime, idle minutes), client)
+_shared: dict[str | None, tuple[tuple[float, float], WorkerChromaClient]] = {}
 _shared_lock = threading.Lock()
 
 
@@ -201,18 +202,29 @@ def shared_client(config_path: str | None, idle_minutes: float) -> WorkerChromaC
     """
     if not _enabled or idle_minutes <= 0:
         return None
-    key = (config_path, float(idle_minutes))
+    try:
+        mtime = os.stat(config_path).st_mtime if config_path else 0.0
+    except OSError:
+        mtime = 0.0
+    stamp = (mtime, float(idle_minutes))
     with _shared_lock:
-        client = _shared.get(key)
-        if client is None:
-            client = _shared[key] = WorkerChromaClient(config_path, idle_seconds=idle_minutes * 60)
-        return client
+        entry = _shared.get(config_path)
+        if entry is not None and entry[0] == stamp:
+            return entry[1]
+        # A changed config (a new embedding model, say) gets a fresh worker,
+        # as it got a fresh in-process client on the next call before.
+        stale = entry[1] if entry is not None else None
+        client = WorkerChromaClient(config_path, idle_seconds=idle_minutes * 60)
+        _shared[config_path] = (stamp, client)
+    if stale is not None:
+        stale.stop()
+    return client
 
 
 def stop_all() -> None:
     """Stop every worker this process started (server shutdown)."""
     with _shared_lock:
-        clients = list(_shared.values())
+        clients = [client for _stamp, client in _shared.values()]
     for client in clients:
         client.stop()
 

@@ -79,6 +79,26 @@ def test_server_gets_one_worker_backed_client_per_config(config):
     assert first is second
 
 
+def test_a_changed_config_gets_a_fresh_worker(config):
+    # Before the worker, every tool call built a client from the current
+    # config; a shared worker must not keep serving the old one.
+    first = create_chroma_client(config)
+    assert first.embedding_model == "default"
+    pid = first.worker_pid
+    data = json.loads(open(config).read())
+    data["semantic_search"]["embedding_model"] = "openai"
+    data["semantic_search"]["embedding_config"] = {"api_key": "sk-test"}
+    with open(config, "w") as f:
+        json.dump(data, f)
+    os.utime(config, (time.time() + 5, time.time() + 5))
+
+    second = create_chroma_client(config)
+
+    assert second is not first
+    assert first.worker_pid is None and pid is not None
+    assert create_chroma_client(config) is second
+
+
 def test_calls_run_in_the_worker_not_in_this_process(config):
     client = create_chroma_client(config)
 
