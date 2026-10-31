@@ -4865,8 +4865,10 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
     Zotero stores the absolute path with linkMode='linked_file'. Goes through
     the local API so no bytes are uploaded and no cloud quota is consumed.
     """
+    # Dedupe on the real file name: a filename override only sets the title,
+    # so comparing the override would never match on a re-run.
     existing = _helpers._find_child_attachment(
-        write_zot, item_key, filename=display_name
+        write_zot, item_key, filename=os.path.basename(file_path)
     )
     if existing is not None:
         data = existing.get("data", {}) or {}
@@ -4889,9 +4891,9 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
     except Exception as e:
         ctx.error(f"Error linking file: {e}")
         return f"Error linking file: {e}"
-    if not result.get("success"):
+    if not (isinstance(result, dict) and result.get("success")):
         return f"Error: failed to create linked attachment: {result}"
-    key = list(result["successful"].values())[0]["key"]
+    key = next(iter(result["success"].values()))
     return (
         f"Linked file attached to `{item_key}`: {display_name} (key `{key}`) — "
         f"file NOT moved; path: {file_path}. "
@@ -4928,7 +4930,7 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
         "'linked' records the absolute path only (like Zotero's "
         "'Add Link to File') — the file is NOT moved or copied and no "
         "cloud quota is used. 'linked' requires file_path (not url) and "
-        "a writable library. "
+        "a writable library; filename then only sets the title. "
         "Example: zotero_attach_file(item_key='ABCD2345', "
         "file_path='/Users/me/smith-2020.pdf')."
     ),
@@ -4951,6 +4953,10 @@ def attach_file(
     try:
         if bool(file_path) == bool(url):
             return "Error: Provide exactly one of file_path or url."
+        if link_mode not in ("import", "linked"):
+            return "Error: link_mode must be 'import' or 'linked'."
+        if link_mode == "linked" and url:
+            return "Error: link_mode='linked' needs file_path, not url."
 
         # Validate the parent item before touching any file.
         try:
