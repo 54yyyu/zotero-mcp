@@ -2,6 +2,7 @@
 // It owns the draft and the popups; the controller (index.ts) owns what a send does.
 import type { BackendId, ContextChip, ItemHit, ZoteroRef } from "../types.ts";
 import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids } from "./dom.ts";
+import { imageFiles } from "./images.ts";
 import type { Fill } from "./economy.ts";
 import { SearchPopup } from "./search.ts";
 import { Pickers } from "./pickers.ts";
@@ -24,6 +25,8 @@ export interface ComposerOpts {
   onTogglePin(chip: ContextChip): void;
   /** Something was dropped on the composer; resolves with how many chips it added. */
   onDrop(data: DataTransfer): Promise<number>;
+  /** Pictures pasted into the message box. */
+  onPasteImages(files: File[]): void;
   onPick(kind: PickKind, id: string): void;
   /** The agent's models and modes. May start the agent, so it is asked only when a picker opens. */
   loadChoices(): Promise<Choices>;
@@ -73,6 +76,7 @@ export class Composer {
       rows: "1", placeholder: "Ask about your library…", "aria-label": "Message", "aria-autocomplete": "list",
       oninput: () => this.onInput(),
       onkeydown: (e: KeyboardEvent) => this.onKey(e),
+      onpaste: (e: ClipboardEvent) => { const files = imageFiles(e.clipboardData); if (files.length) { e.preventDefault(); this.opts.onPasteImages(files); } },
       onfocus: () => { if (!this.warmed) { this.warmed = true; this.opts.onFirstFocus(); } },
     }) as HTMLTextAreaElement;
     this.pop = new SearchPopup(opts, (hit) => this.pickHit(hit), () => this.afterPopClose());
@@ -147,7 +151,7 @@ export class Composer {
 
   setChips(chips: ContextChip[]): void {
     this.chipsEl.hidden = chips.length === 0;
-    setKids(this.chipsEl, chips.map((c) => (c.kind === "area" ? this.areaCard(c) : this.chip(c))));
+    setKids(this.chipsEl, chips.map((c) => ((c.kind === "area" || c.kind === "image") ? this.areaCard(c) : this.chip(c))));
   }
 
   private chip(c: ContextChip): HTMLElement {
@@ -165,11 +169,12 @@ export class Composer {
 
   private areaCard(c: ContextChip): HTMLElement {
     const src = c.image && B64.test(c.image.data) ? `data:image/png;base64,${c.image.data}` : null;
+    const own = c.kind === "image"; // a pasted picture: nowhere in Zotero to go to
     return h("div.area", null,
       h("div.area__head", null, icon("area"), h("span", null, c.label || "Selected Area")),
-      src ? h("img.area__img", { src, alt: "The selected area of the page" }) : h("div.area__none", null, "No preview"),
+      src ? h("img.area__img", { src, alt: own ? "The pasted image" : "The selected area of the page" }) : h("div.area__none", null, "No preview"),
       h("div.area__acts", null,
-        h("button.lnk", { type: "button", onclick: () => this.opts.open(c.ref) }, icon("external"), c.ref.annotationKey ? "Go to Annotation" : "Go to Page"),
+        own ? null : h("button.lnk", { type: "button", onclick: () => this.opts.open(c.ref) }, icon("external"), c.ref.annotationKey ? "Go to Annotation" : "Go to Page"),
         h("button.lnk", { type: "button", onclick: () => this.opts.onRemoveChip(c) }, icon("close"), "Remove")));
   }
 

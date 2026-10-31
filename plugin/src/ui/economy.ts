@@ -39,7 +39,7 @@ const opening = (s = "") => {
   return `"${words.slice(0, 8).join(" ")}${words.length > 8 ? "…" : ""}"`;
 };
 
-const FOCUS = new Set<ContextChip["kind"]>(["selection", "area", "annotation"]);
+const FOCUS = new Set<ContextChip["kind"]>(["selection", "area", "annotation", "image"]);
 
 /** Short lines naming the chips sent before, so "this selection" still resolves without resending it. */
 export function repeatLine(chips: ContextChip[]): string {
@@ -49,6 +49,7 @@ export function repeatLine(chips: ContextChip[]): string {
       case "selection": return `selected text${pageOf(c)} ${opening(c.text)}`;
       case "area": return c.ref.annotationKey ? `selected area${pageOf(c)} (annotation ${c.ref.annotationKey})` : `the whole page${pageOf(c)}, as an image`;
       case "annotation": return `annotation ${c.ref.annotationKey}${pageOf(c)} ${opening(c.text)}`;
+      case "image": return `the picture they pasted (${c.label})`;
       case "collection": return `collection ${c.ref.collectionKey} (${c.label})`;
       default: return `item ${c.ref.itemKey} (${c.label})`;
     }

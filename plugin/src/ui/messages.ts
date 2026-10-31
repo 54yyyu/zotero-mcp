@@ -157,7 +157,7 @@ class AssistantView {
 
 function chipRow(chips: ChipSummary[], actions: MsgActions): HTMLElement {
   return h("div.ubub__chips", null, chips.map((c) =>
-    h("button.chip.chip--sm", { type: "button", title: c.text ? `${c.label}: ${c.text.slice(0, 300)}` : c.label, onclick: () => actions.open(c.ref) },
+    h("button.chip.chip--sm", { type: "button", title: c.text ? `${c.label}: ${c.text.slice(0, 300)}` : c.label, ...(c.kind === "image" ? { disabled: true } : { onclick: () => actions.open(c.ref) }) },
       h("span.chip__i", null, icon(CHIP_ICON[c.kind] ?? "item")), h("span.chip__t", null, c.label))));
 }
 

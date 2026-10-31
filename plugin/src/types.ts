@@ -26,7 +26,8 @@ export interface ZoteroRef {
 export interface ContextChip {
   id: string;
   /** `paper`: for the agent only, never shown (zotero/paper.ts): a paper's metadata, or where its full text's file is. */
-  kind: "item" | "reader" | "selection" | "area" | "annotation" | "collection" | "note" | "paper";
+  /** `image`: a picture the user pasted or dropped (ui/images.ts), not from Zotero. */
+  kind: "item" | "reader" | "selection" | "area" | "annotation" | "collection" | "note" | "paper" | "image";
   /** What the chip says: "Bell 2017", "Text Selection", "Selected Area · p.19". */
   label: string;
   /** Added by the panel because the user's focus moved there; false = the user added it. */
@@ -36,7 +37,7 @@ export interface ContextChip {
   ref: ZoteroRef;
   /** Selection / annotation text, or the passage the chip stands for. */
   text?: string;
-  /** Selected area as a PNG (base64, no data: prefix). */
+  /** A selected area or a pasted picture as a PNG (base64, no data: prefix). */
   image?: { mime: "image/png"; data: string };
   /** Sent unchanged earlier in this chat (ui/economy.ts): the agent gets one short reminder, never the text or image again. */
   repeat?: boolean;

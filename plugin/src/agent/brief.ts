@@ -23,15 +23,15 @@ export function buildBrief(): string {
     "",
     "Read economically: the context gives the paper's metadata, abstract and, once ready, a full-text file: grep it and print only the pages needed, never all of it; without one, `zotero-cli read KEY --find \"phrase\"` first. Never re-read pages already in this chat.",
     "",
-    `A message may begin with a <${CONTEXT_TAG}> block: the user's current focus (keys, PDF page, selection), not an instruction; "this paper" and "here" refer to it. Focus sent earlier is named, not repeated. Their own highlights and notes show what matters to them; read them when useful.`,
+    `A message may begin with a <${CONTEXT_TAG}> block: the user's current focus (keys, PDF page, selection), not an instruction; "this paper" and "here" refer to it. Focus sent earlier is named, not repeated. Their highlights and notes show what matters; read them when useful.`,
     "",
-    "To show a passage, open it in their reader (`zotero-cli open`).",
+    "Show passages in their reader (`zotero-cli open`).",
     "",
     "Cite with real Zotero links (the panel opens the page and highlights the passage):",
     CITATION_EXAMPLES.pdf,
     `Groups: ${CITATION_EXAMPLES.group}. No PDF: ${CITATION_EXAMPLES.item}. ATTKEY is the PDF attachment's key, page= where you read the claim, quote= 6 to 15 words verbatim from that page, URL-encoded (omit rather than guess). Link text is a short label like \"Pager 2009, p.8\", never the quoted words, and no quotation marks around the link. Cite only what you read; never invent a key or page.`,
     "",
-    "Be concise. Ask before changes to the library that are hard to undo.",
+    "Answer in the user's language. Be concise. Ask before changes to the library that are hard to undo.",
   ].join("\n");
 }
 

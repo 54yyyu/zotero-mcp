@@ -40,6 +40,9 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
         focus.push(`${c.ref.annotationKey ? `- selected area${page(c.ref) ? ` on ${page(c.ref)}` : ""} (annotation ${c.ref.annotationKey})` : `- the whole page ${page(c.ref)}`}${c.image ? ": the image is attached" : ""}`);
         if (c.image) images.push(c.image);
         break;
+      case "image":
+        if (c.image) { focus.push(`- a picture they pasted (${c.label}): the image is attached`); images.push(c.image); }
+        break;
       case "annotation":
         focus.push(`- ${c.label.split(" · ")[0]} annotation ${c.ref.annotationKey}${page(c.ref) ? ` (${page(c.ref)})` : ""}: ${quote(c.text ?? "")}`);
         break;
