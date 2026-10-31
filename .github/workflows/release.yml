@@ -38,7 +38,7 @@ jobs:
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest pytest-timeout "fastmcp<4" pyzotero python-dotenv "pdf-inspector==0.2.6" markdownify chromadb unidecode bibtexparser tiktoken pymupdf
+          python -m pip install pytest pytest-timeout "fastmcp<4" pyzotero python-dotenv "pdf-inspector==0.2.6" markdownify chromadb unidecode bibtexparser tiktoken pymupdf pytest-httpserver
           python -m pip install -e . --no-deps
       - name: Run tests
         run: pytest --ignore=tests/test_lifespan.py

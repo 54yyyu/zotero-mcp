@@ -475,7 +475,14 @@ def repair_index(
         del target
         release_chroma_clients()
         broken_dir = persist_dir.with_name(f"{persist_dir.name}.broken-{stamp}")
-        os.rename(persist_dir, broken_dir)
+        try:
+            os.rename(persist_dir, broken_dir)
+        except PermissionError as e:  # Windows: something still has the index files open
+            raise RepairError(
+                f"the rebuilt index is ready at {new_dir}, but {persist_dir} could not be renamed ({e}). "
+                f"Stop every Zotero MCP server and client using it, then rename {persist_dir} out of the way "
+                f"and {new_dir} to {persist_dir.name}."
+            ) from e
         os.rename(new_dir, persist_dir)
         report.broken_directory = str(broken_dir)
 

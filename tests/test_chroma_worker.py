@@ -142,6 +142,7 @@ def test_a_value_that_cannot_cross_the_boundary_is_an_error_not_a_dead_worker(co
     assert client.worker_pid == pid
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="kills the worker with POSIX signals")
 def test_idle_worker_exits_and_the_next_call_starts_a_new_one(config, monkeypatch):
     monkeypatch.setattr(chroma_worker, "_shared", {})
     client = chroma_worker.shared_client(config, idle_minutes=0.5 / 60)  # half a second
@@ -159,6 +160,7 @@ def test_idle_worker_exits_and_the_next_call_starts_a_new_one(config, monkeypatc
     assert client.worker_pid not in (None, first)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="kills the worker with POSIX signals")
 def test_a_worker_that_dies_is_replaced_on_the_next_call(config):
     client = create_chroma_client(config)
     client.get_collection_info()
@@ -168,6 +170,7 @@ def test_a_worker_that_dies_is_replaced_on_the_next_call(config):
     assert client.get_collection_info()["count"] == N  # a fresh worker answers
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="kills the worker with POSIX signals")
 def test_a_call_in_flight_when_the_worker_dies_raises(config, monkeypatch):
     client = create_chroma_client(config)
     client.get_collection_info()

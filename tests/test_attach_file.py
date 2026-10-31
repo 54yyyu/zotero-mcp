@@ -2,6 +2,7 @@
 
 import hashlib
 import mimetypes
+import os
 
 import pytest
 from conftest import DummyContext, FakeZotero, skip_on_windows
@@ -589,7 +590,7 @@ class TestAttachFileLinked:
         assert fake.attachments == []  # nothing uploaded
         (created,) = fake.created
         assert created["linkMode"] == "linked_file"
-        assert created["path"] == "/Users/test/smith-2020.pdf"
+        assert created["path"] == os.path.realpath("/Users/test/smith-2020.pdf")  # D:\Users\... on Windows
         assert created["parentItem"] == "ITEM1"
         assert created["contentType"] == "application/pdf"
         assert "Linked file attached" in result

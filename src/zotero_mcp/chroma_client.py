@@ -425,7 +425,13 @@ class ChromaClient:
         release_chroma_clients()
         current = Path(self.persist_directory)
         moved = current.with_name(f"{current.name}.broken-{datetime.now():%Y%m%d-%H%M%S}")
-        os.rename(current, moved)
+        try:
+            os.rename(current, moved)
+        except PermissionError as e:  # Windows: ChromaDB or another process still has the files open
+            raise RuntimeError(
+                f"Could not move the unreadable index at {current} aside ({e}). Stop every Zotero MCP "
+                f"server using it and run `zotero-mcp repair-db`, or delete the folder and run update-db."
+            ) from e
         self._open()
         return str(moved)
 
