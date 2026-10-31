@@ -106,7 +106,12 @@ zotero-mcp update-db --force-rebuild
 
 # Check database status
 zotero-mcp db-status
+
+# Rebuild an unreadable index from its own files, without re-embedding
+zotero-mcp repair-db
 ```
+
+`repair-db` is for an index that ChromaDB can no longer read, typically after an interrupted update; see [Repairing an unreadable index](troubleshooting.md#repairing-an-unreadable-index).
 
 How much of each PDF is extracted, and which attachment is read when an item has several, is set in [Text extraction settings](configuration.md#text-extraction-settings).
 

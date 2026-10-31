@@ -31,7 +31,12 @@ except Exception:
 
 
 from . import batch_common, fulltext_cache, gemini_batch, openai_batch
-from .chroma_client import ChromaClient, create_chroma_client
+from .chroma_client import (
+    ChromaClient,
+    create_chroma_client,
+    unreadable_index_facts,
+    unreadable_index_message,
+)
 from .client import get_active_group_id, get_zotero_client
 from .client import read_config_for_update as _read_config_for_update
 
@@ -2689,6 +2694,26 @@ class ZoteroSemanticSearch:
             # library.
             self._run_group_id = self._client_group_id()
 
+            # An index ChromaDB cannot read fails every later step with an
+            # error that does not say why (#747). Stop with one that does; a
+            # forced rebuild moves it aside instead of deleting it through
+            # ChromaDB, which would hit the same error.
+            if read_error := self.chroma_client.read_error():
+                info = {
+                    "error": read_error,
+                    "persist_directory": self.chroma_client.persist_directory,
+                    **unreadable_index_facts(self.chroma_client.persist_directory),
+                }
+                if not force_full_rebuild:
+                    stats["error"] = (
+                        unreadable_index_message(info, self.update_config.get("last_update"))
+                        if info.get("unreadable") else f"Cannot read the semantic index: {read_error}"
+                    )
+                    return stats
+                moved = self.chroma_client.move_aside()
+                logger.warning("Moved the unreadable index to %s for --force-rebuild", moved)
+                _report(f"The index could not be read; moved it to {moved} and building a new one.\n")
+
             # --force-rebuild resets the ENTIRE collection but repopulates
             # only the active library. Combinations that would silently drop
             # indexed data need the same explicit opt-in as any other mass
@@ -4125,6 +4150,18 @@ class ZoteroSemanticSearch:
 
         except Exception as e:
             logger.error(f"Error performing semantic search: {e}")
+            error = str(e)
+            try:
+                # A damaged index fails here with ChromaDB's own words; say what it means (#747).
+                persist_directory = self.chroma_client.persist_directory
+                facts = unreadable_index_facts(persist_directory)
+                if facts and self.chroma_client.read_error():
+                    error = unreadable_index_message(
+                        {"error": error, "persist_directory": persist_directory, **facts},
+                        self.update_config.get("last_update"),
+                    )
+            except Exception:
+                pass
             return {
                 "query": query,
                 "limit": limit,
@@ -4132,7 +4169,7 @@ class ZoteroSemanticSearch:
                 "group_id": group_id,
                 "results": [],
                 "total_found": 0,
-                "error": str(e),
+                "error": error,
             }
 
     def _enrich_search_results(

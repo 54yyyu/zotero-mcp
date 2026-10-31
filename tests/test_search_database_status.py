@@ -29,6 +29,11 @@ Fix
 ``_NoEmbeddingFunction.name()`` returns ``"default"``, which short-circuits the
 conflict check for *any* persisted backend. The no-op function is still never
 invoked, because ``count()`` does not embed.
+
+Since then ``read_collection_status`` reads the counts from ``chroma.sqlite3``
+directly and never opens the collection through ChromaDB, which loaded the
+whole vector index to count it. The embedding-function conflict cannot arise
+any more; the tests below still pin the populated count for every backend.
 """
 
 import shutil
@@ -87,13 +92,6 @@ def _populate(persist_dir, collection_name, n=5):
         documents=[f"doc {i}" for i in range(n)],
     )
     return n
-
-
-def test_no_embedding_function_name_is_default():
-    """The fix hinges on this exact value: ``"default"`` is the only name that
-    ChromaDB's conflict check short-circuits on, regardless of the persisted
-    backend (default / openai / gemini / ...)."""
-    assert chroma_client._NoEmbeddingFunction.name() == "default"
 
 
 def test_read_collection_status_reports_populated_count():

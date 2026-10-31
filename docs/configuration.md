@@ -241,6 +241,26 @@ A passage longer than the model can read would lose its tail, so `chunk_size` is
 
 With the default model, 20 passages cover about 13,000 characters, a few pages. To index whole papers, raise `max_chunks_per_item`: 100 covers roughly 20 pages, and longer papers need more. Each passage is one vector, so the database grows with it.
 
+<a id="semantic-search-memory"></a>
+
+## Semantic search memory
+
+ChromaDB loads the whole vector index into memory the first time a search runs, and keeps it there until the process holding it exits. Each vector takes its dimension × 4 bytes: a million passages with OpenAI's `text-embedding-3-small` (1,536 dimensions) need about 6 GB. The MCP server therefore runs ChromaDB in a separate worker process. The worker starts at the first semantic search and exits after a set time with no semantic calls, which returns that memory to the system. The next search starts a new worker and loads the index again, which takes a few seconds for a small index and can take half a minute for a large one.
+
+```json
+{
+  "semantic_search": {
+    "idle_unload_minutes": 10
+  }
+}
+```
+
+| Setting | Default | What it does |
+|---|---|---|
+| `idle_unload_minutes` | `10` | Minutes without a semantic search or index update before the worker exits. `0` runs ChromaDB inside the server instead, where the index stays loaded until the server exits. |
+
+The status tool (`zotero_get_search_database_status`) reads its counts from the database file and never loads the index. Command-line tools such as `update-db` run ChromaDB in their own process, which frees the index when the command finishes.
+
 ## Command-line options
 
 ```bash

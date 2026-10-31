@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`zotero-mcp repair-db` rebuilds an unreadable semantic index without re-embedding it** (#747). An `update-db` cut off part way through can leave `chroma.sqlite3` in a state ChromaDB refuses to read, and the only way out was `--force-rebuild`, which re-embeds the whole library: hours and a full API bill for a large full-text index. `repair-db` reads the vectors from the index's HNSW files and the documents and metadata from a copy of `chroma.sqlite3` (full table scans, so damaged indexes do not matter; a header that undercounts its pages is corrected in the copy), and writes every item whose chunks all have a document, a vector and matching metadata into a fresh index. The rest are left out and listed in a report; `update-db --fulltext` embeds them. The old index is kept as `chroma_db.broken-<timestamp>`. `--dry-run` reports what would be kept without changing anything. On a 1.16-million-chunk OpenAI index damaged this way it kept 36,421 of 36,442 items.
+
+### Changed
+
+- **The MCP server frees the semantic index's memory when semantic search is idle.** ChromaDB loads a collection's whole vector index on the first query and keeps it until the process exits; nothing in its API releases it, and the 1.x bindings ignore `chroma_memory_limit_bytes`. A server that ran one semantic search therefore held the index for as long as it ran, often days: about 6 GB for a million OpenAI passages. The server now runs ChromaDB in a worker process that starts at the first semantic call and exits after `semantic_search.idle_unload_minutes` (default 10) without one; the next call starts a new worker and reloads the index. Only ChromaDB moves: fetching the Zotero items for the hits, the active library and the result formatting stay in the server. `0` keeps the previous in-process behavior. The command-line tools are unchanged, since their process ends with the command. See "Semantic search memory" in `docs/configuration.md`.
+- **The search database status reads its counts from the database file.** `zotero_get_search_database_status` called ChromaDB's `count()`, which loads the whole vector index just to count it, and on a damaged index made ChromaDB retry its pending writes into the file. It now reads `chroma.sqlite3` read-only, reports writes ChromaDB has logged but not applied, and recognizes the on-disk signature of an interrupted write (a file longer than its header's page count) as an unreadable index without opening it.
+
+### Fixed
+
+- **A damaged semantic index is reported as damaged, not as empty** (#747). When ChromaDB could not read the index, `zotero_get_search_database_status` and `db-status` showed `Document Count: 0` with ChromaDB's error, and a collection that failed to open was reported as "not initialized". Both now say the index is unreadable and show its size on disk, the last successful update and when the index was last written (a write after the last successful update points to an interrupted update), with the two ways out: `repair-db`, or `update-db --force-rebuild`. `update-db` and `zotero_semantic_search` stop with the same message instead of ChromaDB's error alone. `--force-rebuild` on an unreadable index renames it to `chroma_db.broken-<timestamp>` and starts a new one, rather than deleting the collection through ChromaDB, the same code that cannot read it.
+
 ## [0.15.1] - 2026-10-16
 
 ### Added

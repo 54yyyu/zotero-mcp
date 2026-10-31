@@ -37,6 +37,11 @@ class FakeChromaClient:
     def truncate_text(self, text, max_tokens=None):
         return text[:4000]
 
+    def read_error(self):
+
+        return None
+
+
     def get_existing_ids(self, ids):
         return {i for i in ids if i in self._metas}
 

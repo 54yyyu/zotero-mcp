@@ -949,7 +949,11 @@ def cmd_db(args):
         print(f"- Should update: {status.get('should_update', False)}")
         print(f"- OpenAI Batch API: {'active' if bc.get('active') else 'inactive'}")
         print(f"- Passage chunking: {_format_chunking_status(status)}")
-        if ci.get("error"):
+        if ci.get("unreadable"):
+            from zotero_mcp.chroma_client import unreadable_index_message
+
+            print(f"\nError: {unreadable_index_message(ci, uc.get('last_update'))}")
+        elif ci.get("error"):
             print(f"\nError: {ci['error']}")
 
     elif args.subcommand == "inspect":
