@@ -169,17 +169,38 @@ export class Composer {
       pin, x);
   }
 
-  /** A selected area or a pasted picture: a small tile, its name as the tooltip, × on hover. An area opens its page. */
+  /** A selected area or a pasted picture: a small tile, its name as the tooltip, × on its corner. Click: a large preview. */
   private thumb(c: ContextChip): HTMLElement {
     const src = c.image && B64.test(c.image.data) ? `data:image/png;base64,${c.image.data}` : null;
     const label = c.label || "Selected Area";
     const img = src ? h("img.thumb__img", { src, alt: "" }) : h("span.thumb__none", null, icon("area"));
-    const go = c.kind === "image" ? null : c.ref.annotationKey ? "Go to Annotation" : "Go to Page"; // a pasted picture lives nowhere in Zotero
-    return h("div.thumb", { title: go ? `${label} · ${go}` : label },
-      go ? h("button.thumb__main", { type: "button", "aria-label": `${go}: ${label}`, onclick: () => this.opts.open(c.ref) }, img)
+    return h("div.thumb", { title: label },
+      src ? h("button.thumb__main", { type: "button", "aria-label": `Preview ${label}`, onclick: (e: Event) => this.preview(c, src, e.currentTarget as HTMLElement) }, img)
         : h("div.thumb__main", { role: "img", "aria-label": label }, img),
       h("button.thumb__x", { type: "button", "aria-label": `Remove ${label}`, title: "Remove", onclick: () => this.opts.onRemoveChip(c) }, icon("close")));
   }
+
+  /** The picture at panel size over a dimmed panel. Esc, × or a click outside closes it; an area can go to its page. */
+  private preview(c: ContextChip, src: string, from: HTMLElement): void {
+    const root = this.el.closest(".zmc");
+    if (!root) return;
+    const label = c.label || "Selected Area";
+    const close = () => { box.remove(); from.focus(); };
+    const go = c.kind === "image" ? null : c.ref.annotationKey ? "Go to Annotation" : "Go to Page"; // a pasted picture lives nowhere in Zotero
+    const shut = h("button.lb__x", { type: "button", "aria-label": "Close preview", title: "Close (Esc)", onclick: close }, icon("close")) as HTMLButtonElement;
+    const box = h("div.lb", {
+      role: "dialog", "aria-modal": "true", "aria-label": label,
+      onclick: (e: Event) => { if (e.target === box) close(); },
+      onkeydown: (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); close(); } },
+    },
+      shut,
+      h("img.lb__img", { src, alt: label }),
+      h("div.lb__cap", null, h("span", null, label),
+        go ? h("button.lnk", { type: "button", onclick: () => { close(); this.opts.open(c.ref); } }, icon("external"), go) : null));
+    root.appendChild(box);
+    shut.focus();
+  }
+
 
 
   // --- typing
