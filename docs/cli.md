@@ -12,12 +12,12 @@ The MCP server sends every enabled tool's name, description and JSON parameter s
 
 | Route | Tokens in context | When it is paid |
 |---|---:|---|
-| MCP, default profile (41 tools) | 16,815 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=none` (34 tools) | 14,317 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=all` (53 tools) | 20,942 | every request |
+| MCP, default profile (38 tools) | 7,939 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=none` (31 tools) | 6,863 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=all` (50 tools) | 11,225 | every request |
 | CLI skill, frontmatter only | 98 | always |
 | CLI skill, body loaded | 2,400 | once the skill fires |
-| CLI skill + full command reference | 6,158 | worst case |
+| CLI skill + full command reference | 6,582 | worst case |
 
 That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the relationship stops holding.
 

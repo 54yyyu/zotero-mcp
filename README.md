@@ -50,7 +50,7 @@ One package, `zotero-mcp-server`, ships all three. Pick the one that fits where 
 |---|---|---|---|
 | **For** | Chat apps that speak MCP but have no shell: Claude Desktop, ChatGPT, Cherry Studio, Chorus | Agents with a shell: Claude Code, Codex, Cursor, Windsurf, Gemini CLI, Amp, OpenCode | Chatting inside Zotero, next to the PDF you are reading |
 | **How** | `zotero-mcp setup` | `zotero-mcp install-skill` | `zotero-cli plugin`, then install the `.xpi` in Zotero |
-| **Why** | Works in any MCP client | 98 tokens in context until it is needed, instead of ~17k | Knows the item, page and selection you have open; answers link to pages |
+| **Why** | Works in any MCP client | 98 tokens in context until it is needed, instead of ~8k | Knows the item, page and selection you have open; answers link to pages |
 | **Guide** | [Getting started](https://github.com/54yyyu/zotero-mcp/blob/main/docs/getting-started.md) | [CLI and agent skill](https://github.com/54yyyu/zotero-mcp/blob/main/docs/cli.md) | [Zotero Agent plugin](https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md) |
 
 ## What it does
@@ -158,11 +158,11 @@ An MCP server sends every tool's schema on every request, before you type anythi
 
 | Route | In context | Paid |
 |---|---:|---|
-| MCP server, default profile (41 tools) | **16,815** | every request |
-| MCP server, all tools (53) | 20,942 | every request |
+| MCP server, default profile (38 tools) | **7,939** | every request |
+| MCP server, all tools (50) | 11,225 | every request |
 | Agent skill, frontmatter only | **98** | always |
 | Agent skill, body loaded | 2,400 | when it fires |
-| Agent skill + full command reference | 6,158 | worst case |
+| Agent skill + full command reference | 6,582 | worst case |
 
 Use the MCP server when your client speaks MCP but has no shell (Claude Desktop, ChatGPT); use the skill when it has a shell. Both share one config. Details: [CLI and agent skill](https://github.com/54yyyu/zotero-mcp/blob/main/docs/cli.md).
 

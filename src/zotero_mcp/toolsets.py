@@ -2,7 +2,7 @@
 
 Every registered ``@mcp.tool`` is sent to the client on *every* request as
 part of the tool list, so the tool surface is a fixed tax on each session's
-context window. The full surface costs roughly 23k tokens; a reading or
+context window. The full surface costs roughly 12k tokens; a reading or
 literature-review session typically touches a small fraction of it.
 
 This module carves the optional groups out of that surface. Anything not
@@ -18,10 +18,12 @@ Selection happens through the ``ZOTERO_MCP_TOOLSETS`` environment variable:
 Value                        Effect
 ===========================  ==================================================
 unset                        Core plus :data:`DEFAULT_ON` (the default profile)
-``all``                      Every tool, matching pre-0.9 behaviour
+``all``                      Every group except ``legacy``
 ``none``                     Core only
 ``scite,feeds``              Core plus the named groups
 ``all,-scite``               Every group except the negated ones
+``default,legacy``           The default profile plus the pre-0.16 names of
+                             merged tools (until 0.17)
 ===========================  ==================================================
 
 Names are case-insensitive and may be separated by commas or whitespace.
@@ -117,6 +119,18 @@ TOOLSETS: dict[str, frozenset[str]] = {
     # is transport-scoped rather than listed in DEFAULT_ON; see
     # :func:`resolve_enabled`.
     "chatgpt-connector": frozenset({"search", "fetch"}),
+    # Old names of tools merged in 0.16, kept for one minor so configs and
+    # prompts that name them keep working. Off unless named explicitly (not
+    # even `all` includes it: the merged tools already cover every call).
+    # Removed in 0.17.
+    "legacy": frozenset(
+        {
+            "zotero_search_by_tag",  # -> zotero_search_items(tag=...)
+            "zotero_create_collection",  # -> zotero_manage_collection
+            "zotero_update_collection",
+            "zotero_delete_collection",
+        }
+    ),
 }
 
 #: Toolsets enabled when ``ZOTERO_MCP_TOOLSETS`` is unset.
@@ -139,6 +153,9 @@ DEFAULT_ON: frozenset[str] = frozenset(
 _HTTP_TRANSPORTS = frozenset({"streamable-http", "sse", "http"})
 
 _CONNECTOR_TOOLSET = "chatgpt-connector"
+
+#: Groups that `all` leaves out; they are enabled only by name.
+_EXPLICIT_ONLY: frozenset[str] = frozenset({"legacy"})
 
 #: Groups whose every tool needs the ``[semantic]`` extra. On an install
 #: without it they are left out unless named explicitly (#572), so a base
@@ -203,14 +220,16 @@ def resolve_enabled(
             name = token[1:] if negated else token
 
             if name == "all":
-                candidates = set(TOOLSETS)
+                candidates = set(TOOLSETS) - _EXPLICIT_ONLY
+            elif name == "default":
+                candidates = set(DEFAULT_ON)
             elif name == "none":
                 candidates = set()
             elif name in TOOLSETS:
                 candidates = {name}
                 named.add(name)
             else:
-                valid = ", ".join(sorted(TOOLSETS) + ["all", "none"])
+                valid = ", ".join(sorted(TOOLSETS) + ["all", "default", "none"])
                 raise UnknownToolsetError(
                     f"Unknown toolset {name!r} in {TOOLSETS_ENV_VAR}. Valid values: {valid}"
                 )

@@ -134,6 +134,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
     delete_item,
     find_duplicates,
     get_pdf_outline,
+    manage_collection,
     manage_collections,
     merge_duplicates,
     remove_item_relation,

@@ -27,18 +27,14 @@ _MAX_TIMEOUT = 55
 @mcp.tool(
     name="zotero_authorize_local_writes",
     description=(
-        "Request permission to write to the local Zotero library (Zotero 10+). "
-        "BLOCKS until the user answers a dialog that appears in the Zotero "
-        "app, so tell them to switch to Zotero before calling this. "
-        "\"Always Allow\" grants a reusable key that is saved for future "
-        "sessions; \"Allow\" grants a key good for exactly ONE write. "
-        "Call this when a write tool reports that no writable backend is "
-        "configured and zotero_write_capabilities says the server supports "
-        "local writes but no key is held. Not needed in web API mode. "
-        "app_name: the name shown to the user in the dialog. "
-        "timeout: seconds to wait for the answer (5-55, default 45). "
-        "Zotero rate-limits this to about 5 prompts per minute — do not retry "
-        "in a loop. Example: zotero_authorize_local_writes()."
+        "Ask the user to allow writes to the local Zotero library (Zotero "
+        "10+). BLOCKS until they answer a dialog in the Zotero app, so tell "
+        "them to switch to Zotero first. 'Always Allow' saves a reusable key; "
+        "'Allow' covers one write. Call it when a write fails and "
+        "zotero_write_capabilities says local writes are supported but no key "
+        "is held. app_name: shown in the dialog. timeout: seconds to wait "
+        "(5-55, default 45). Zotero allows about 5 prompts a minute: do not "
+        "retry in a loop."
     )
 )
 def authorize_local_writes(
@@ -123,14 +119,12 @@ def authorize_local_writes(
 @mcp.tool(
     name="zotero_write_capabilities",
     description=(
-        "Report whether and how this server can write to Zotero: local API, "
-        "web API, hybrid (local reads + cloud writes), or nothing. Read-only "
-        "and instant — it never opens a dialog. Call it when a write tool "
-        "reports that no writable backend is configured, to find out which "
-        "fix applies before asking the user for anything: if the local "
-        "server supports writes but no key is held, call "
-        "zotero_authorize_local_writes; otherwise web API credentials are "
-        "needed. Takes no arguments. Example: zotero_write_capabilities()."
+        "Report whether this server can write to Zotero (local API, web API, "
+        "hybrid, or not at all) and what is missing. Instant; opens no "
+        "dialog. Call it when a write tool reports no writable backend, "
+        "before asking the user: if local writes are supported but no key is "
+        "held, call zotero_authorize_local_writes; otherwise web API "
+        "credentials are needed."
     )
 )
 def write_capabilities(*, ctx: Context) -> str:
