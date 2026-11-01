@@ -446,6 +446,145 @@ def _search_item_keys(zot, query, tag, limit) -> tuple[list[str], bool]:
     return [it.get("key") for it in items if it.get("key")], more
 
 
+#: Zotero's cap on keys per ``itemKey`` filter and on objects per
+#: multi-object write; both the web and the local API enforce it.
+_BATCH_CHUNK = 50
+
+
+def _fetch_items_by_key(zot, keys, ctx, *, fetch_missing: bool = True) -> dict:
+    """``{key: item}`` for *keys*, one ``itemKey`` request per 50 keys.
+
+    The batch edits used to call ``zot.item(key)`` once per key: 1000 keys,
+    1000 round trips before a single write. An ``itemKey`` filter also returns
+    the items' child notes, which are dropped, and omits trashed items, which
+    ``item()`` returns; so with *fetch_missing* a key the batch did not return
+    is fetched on its own, and one that cannot be fetched is reported and left
+    out, as before. A client without ``items()`` gets the per-key path.
+    """
+    found: dict = {}
+    if callable(getattr(zot, "items", None)):
+        for start in range(0, len(keys), _BATCH_CHUNK):
+            chunk = keys[start:start + _BATCH_CHUNK]
+            wanted = set(chunk)
+            try:
+                rows = _utils._paginate(zot.items, itemKey=",".join(chunk))
+            except Exception:
+                continue  # the per-key pass below reports each key's error
+            for it in rows or []:
+                key = it.get("key") if isinstance(it, dict) else None
+                if key in wanted and key not in found:
+                    found[key] = it
+    if fetch_missing:
+        for key in keys:
+            if key in found:
+                continue
+            try:
+                fetched = zot.item(key)
+            except Exception as e:
+                ctx.error(f"Failed to fetch item {key}: {e}")
+                continue
+            if fetched:
+                found[key] = fetched
+    return found
+
+
+def _multi_write_failures(write_zot) -> dict:
+    """Per-object failures of the multi-object write *write_zot* just sent.
+
+    A multi-object POST answers 200 even when some objects were refused, and
+    lists those under ``failed`` by their index in the payload; pyzotero's
+    ``update_items`` returns True regardless and leaves the response on
+    ``write_zot.request``. Unreadable means nothing to report: the HTTP
+    status already passed.
+    """
+    try:
+        failed = write_zot.request.json().get("failed") or {}
+        return {int(i): f for i, f in failed.items()}
+    except Exception:
+        return {}
+
+
+def _write_batch_edits(zot, write_zot, edits, ctx) -> tuple[int, int]:
+    """Write edited items back, 50 per request. Returns (updated, failed).
+
+    *edits* is a list of ``(key, item, mutate)``: *item* is the read-side item
+    with the edit already applied, and *mutate* applies the same edit to a
+    freshly fetched copy. When reads and writes go to different backends
+    (hybrid mode) the versions are unrelated, so the write-side copies are
+    fetched, in batches, and edited instead. An object refused for a stale
+    version (412) goes through the per-item re-fetch-and-retry; a chunk the
+    backend will not take as a batch is written one item at a time, so a bad
+    item fails alone and is counted alone.
+    """
+    hybrid = write_zot is not zot
+    if hybrid:
+        write_side = _fetch_items_by_key(
+            write_zot, [key for key, _it, _m in edits], ctx, fetch_missing=False,
+        )
+        pending = []
+        for key, _it, mutate in edits:
+            fresh = write_side.get(key)
+            if fresh is not None:
+                mutate(fresh)
+            pending.append((key, fresh, mutate))
+    else:
+        pending = list(edits)
+
+    updated = failed = 0
+    one_by_one = []  # (key, item or None, mutate); None means re-fetch first
+    batchable = []
+    can_batch = callable(getattr(write_zot, "update_items", None))
+    for key, item, mutate in pending:
+        if item is None:
+            one_by_one.append((key, None, mutate))
+        elif can_batch:
+            batchable.append((key, _helpers._strip_unwritable_fields(item), mutate))
+        else:
+            one_by_one.append((key, item, mutate))
+
+    for start in range(0, len(batchable), _BATCH_CHUNK):
+        chunk = batchable[start:start + _BATCH_CHUNK]
+        try:
+            write_zot.update_items([item for _k, item, _m in chunk])
+        except Exception as e:
+            ctx.info(
+                f"Batch write of {len(chunk)} item(s) failed ({e}); "
+                "writing them one at a time."
+            )
+            one_by_one.extend(chunk)
+            continue
+        refused = _multi_write_failures(write_zot)
+        for idx, (key, _item, mutate) in enumerate(chunk):
+            failure = refused.get(idx)
+            if failure is None:
+                updated += 1
+            elif isinstance(failure, dict) and failure.get("code") == 412:
+                one_by_one.append((key, None, mutate))
+            else:
+                message = failure.get("message") if isinstance(failure, dict) else failure
+                ctx.error(f"Failed to update item {key}: {message}")
+                failed += 1
+
+    for key, item, mutate in one_by_one:
+        try:
+            if item is None:
+                result = _helpers._update_item_with_version_retry(
+                    write_zot, key, mutate, ctx=ctx,
+                )
+            else:
+                result = write_zot.update_item(item)
+        except Exception as e:
+            ctx.error(f"Failed to update item {key}: {e}")
+            failed += 1
+            continue
+        if _helpers._handle_write_response(result, ctx):
+            updated += 1
+        else:
+            ctx.error(f"Update may have failed for item {key}: {result}")
+            failed += 1
+    return updated, failed
+
+
 @with_zotero_api_lock
 def batch_update_tags(
     query: str = "",
@@ -515,15 +654,8 @@ def batch_update_tags(
         if explicit_keys:
             # Explicit selection: fetch each key; a key that can't be fetched
             # is reported and skipped rather than failing the whole batch.
-            items = []
-            for key in explicit_keys:
-                try:
-                    fetched = zot.item(key)
-                except Exception as e:
-                    ctx.error(f"Failed to fetch item {key}: {e}")
-                    continue
-                if fetched:
-                    items.append(fetched)
+            fetched = _fetch_items_by_key(zot, explicit_keys, ctx)
+            items = [fetched[key] for key in explicit_keys if key in fetched]
             if not items:
                 return f"No items found for item_keys {explicit_keys}"
         else:
@@ -539,10 +671,10 @@ def batch_update_tags(
                 return f"No items found matching {' and '.join(filter_desc) or 'the given filters'}"
 
         # Initialize counters
-        updated_count = 0
         skipped_count = 0
         added_tag_counts = {tag: 0 for tag in (add_tags or [])}
         removed_tag_counts = {tag: 0 for tag in (remove_tags or [])}
+        edits = []
 
         # Process each item
         for item in items:
@@ -575,43 +707,18 @@ def batch_update_tags(
                         added_tag_counts[tag] += 1
                         needs_update = True
 
-            # Update the item if needed
             if needs_update:
-                try:
-                    item_key = item.get("key", "unknown")
+                def _set_tags(it, tags=current_tags):
+                    it["data"]["tags"] = tags
 
-                    # When reads and writes go to different backends, the
-                    # version numbers are unrelated — re-fetch from the write
-                    # side so the update carries a version it recognizes.
-                    if write_zot is not zot:
-                        def _set_tags(it):
-                            it["data"]["tags"] = current_tags
-
-                        try:
-                            ctx.info(f"Updating item {item_key} via web API with tags: {current_tags}")
-                            result = _helpers._update_item_with_version_retry(
-                                write_zot, item_key, _set_tags, ctx=ctx,
-                            )
-                        except Exception as e:
-                            ctx.error(f"Failed to fetch/update item {item_key} via web API: {str(e)}")
-                            skipped_count += 1
-                            continue
-                    else:
-                        item["data"]["tags"] = current_tags
-                        ctx.info(f"Updating item {item_key} with tags: {current_tags}")
-                        result = write_zot.update_item(item)
-
-                    if _helpers._handle_write_response(result, ctx):
-                        updated_count += 1
-                    else:
-                        ctx.error(f"Update may have failed for item {item_key}: {result}")
-                        skipped_count += 1
-                except Exception as e:
-                    ctx.error(f"Failed to update item {item.get('key', 'unknown')}: {str(e)}")
-                    # Continue with other items instead of failing completely
-                    skipped_count += 1
+                item["data"]["tags"] = current_tags
+                edits.append((item.get("key", "unknown"), item, _set_tags))
             else:
                 skipped_count += 1
+
+        # One multi-object write per 50 items rather than one PATCH each.
+        updated_count, failed_count = _write_batch_edits(zot, write_zot, edits, ctx)
+        skipped_count += failed_count
 
         # Format the response
         response = ["# Batch Tag Update Results", ""]
@@ -780,16 +887,12 @@ def batch_update_extra(
         except ValueError as e:
             return str(e)
 
-        updated_count = 0
         skipped_count = 0
+        edits = []
+        fetched = _fetch_items_by_key(zot, item_keys, ctx)
 
         for item_key in item_keys:
-            try:
-                item = zot.item(item_key)
-            except Exception as e:
-                ctx.error(f"Failed to fetch item {item_key}: {str(e)}")
-                skipped_count += 1
-                continue
+            item = fetched.get(item_key)
             if not item:
                 skipped_count += 1
                 continue
@@ -806,28 +909,15 @@ def batch_update_extra(
                 skipped_count += 1
                 continue
 
-            try:
-                # If writing via web API, re-fetch the item from web to get
-                # the correct version number for the update
-                if write_zot is not zot:
-                    def _set_extra(it):
-                        it["data"]["extra"] = new_extra
+            def _set_extra(it, value=new_extra):
+                it["data"]["extra"] = value
 
-                    result = _helpers._update_item_with_version_retry(
-                        write_zot, item_key, _set_extra, ctx=ctx,
-                    )
-                else:
-                    item["data"]["extra"] = new_extra
-                    result = write_zot.update_item(item)
+            item["data"]["extra"] = new_extra
+            edits.append((item_key, item, _set_extra))
 
-                if _helpers._handle_write_response(result, ctx):
-                    updated_count += 1
-                else:
-                    ctx.error(f"Update may have failed for item {item_key}: {result}")
-                    skipped_count += 1
-            except Exception as e:
-                ctx.error(f"Failed to update item {item_key}: {str(e)}")
-                skipped_count += 1
+        # One multi-object write per 50 items rather than one PATCH each.
+        updated_count, failed_count = _write_batch_edits(zot, write_zot, edits, ctx)
+        skipped_count += failed_count
 
         response = ["# Batch Extra Update Results", ""]
         response.append(f"Items processed: {len(item_keys)}")

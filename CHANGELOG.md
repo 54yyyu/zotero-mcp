@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Batch tag and Extra edits take about 40 requests for 1000 items instead of 2000.** `zotero_batch_update` and `zotero-cli batch` fetched every explicit key with its own request and wrote every edited item with its own PATCH. Keys are now fetched 50 per request and edits written 50 per request, on the web and the local API alike; in hybrid mode the web copies are fetched in batches too (60 requests instead of 3000). An item refused for a stale version is still re-fetched and retried on its own, any other refused item is reported and counted as skipped, and a batch the backend will not take is written one item at a time.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
