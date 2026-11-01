@@ -75,7 +75,7 @@ def protected_server(monkeypatch, *, allow_unauthenticated=False):
     return server, probe, calls
 
 
-@pytest.mark.parametrize("host", ["localhost", "LOCALHOST", "LocalHost.", "127.0.0.1", "127.9.8.7", "::1"])
+@pytest.mark.parametrize("host", ["localhost", "LOCALHOST", "LocalHost.", "127.0.0.1", "127.9.8.7", "::1", "[::1]"])
 def test_loopback_without_token_is_allowed_with_one_stderr_warning(host, capsys):
     server = FastMCP("Loopback fixture")
     assert _is_loopback_host(host)
@@ -218,6 +218,62 @@ def test_streamable_http_authenticates_real_discovery_and_tool_call(monkeypatch,
     assert "authentication is disabled" not in captured.err
 
 
+def guarded_app(server, transport, monkeypatch):
+    """The app as `serve` builds it on 127.0.0.1: our auth plus the Host/Origin guard."""
+    import inspect
+
+    from zotero_mcp import cli
+
+    if "host_origin_protection" not in inspect.signature(server.http_app).parameters:
+        pytest.skip("installed fastmcp predates the Host/Origin guard")
+    monkeypatch.delenv(cli._HOST_ORIGIN_ENV_VAR, raising=False)
+    path = "/sse/" if transport == "sse" else "/mcp"
+    kwargs = cli._http_guard_kwargs(server, transport, "127.0.0.1")
+    assert kwargs, "serve must turn the Host/Origin guard on"
+    return server.http_app(transport=transport, path=path, **kwargs), path
+
+
+@pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+def test_guard_rejects_rebound_host_and_foreign_origin_even_with_the_token(transport, monkeypatch):
+    server, probe, calls = protected_server(monkeypatch)
+    app, path = guarded_app(server, transport, monkeypatch)
+    headers = {**ACCEPT_HEADERS, **AUTH_HEADERS}
+    with TestClient(app, base_url="http://127.0.0.1:8799") as client:
+        rebound = client.post(path, json=INITIALIZE, headers={**headers, "Host": "evil.example:8799"})
+        foreign = client.post(path, json=INITIALIZE, headers={**headers, "Origin": "http://evil.example"})
+        # SSE answers a POST to its stream path with 405 before auth; GET opens it.
+        method = "GET" if transport == "sse" else "POST"
+        unauthenticated = client.request(method, path, json=INITIALIZE, headers=ACCEPT_HEADERS)
+    assert rebound.status_code == 421
+    assert foreign.status_code == 403
+    assert unauthenticated.status_code == 401
+    assert probe.methods == [] and calls == []
+
+
+def test_guarded_streamable_http_serves_local_requests(monkeypatch):
+    server, _, _ = protected_server(monkeypatch)
+    app, path = guarded_app(server, "streamable-http", monkeypatch)
+    with TestClient(app, base_url="http://127.0.0.1:8799") as client:
+        local = client.post(
+            path, json=INITIALIZE,
+            headers={**ACCEPT_HEADERS, **AUTH_HEADERS, "Origin": "http://localhost:3000"},
+        )
+    assert local.status_code == 200, local.text
+
+
+def test_loopback_without_token_serves_local_clients_unchanged(monkeypatch, capsys):
+    server = FastMCP("Loopback fixture")
+    configure_http_auth(server, "127.0.0.1")
+    assert server.auth is None
+    app, path = guarded_app(server, "streamable-http", monkeypatch)
+    with TestClient(app, base_url="http://127.0.0.1:8799") as client:
+        local = client.post(path, json=INITIALIZE, headers=ACCEPT_HEADERS)
+        rebound = client.post(path, json=INITIALIZE, headers={**ACCEPT_HEADERS, "Host": "evil.example"})
+    assert local.status_code == 200, local.text
+    assert rebound.status_code == 421
+    assert "authentication is disabled" in capsys.readouterr().err
+
+
 @contextmanager
 def loopback_server(app):
     """Run only the synthetic app, using an already-bound ephemeral socket."""
@@ -358,7 +414,10 @@ def test_cli_rejects_unauthenticated_public_bind_before_warmup(transport, cli_fi
 def test_cli_loads_standalone_token_before_auth_configuration(transport, cli_fixture, capsys):
     cli_fixture.write_config({TOKEN_ENV: TOKEN})
     cli_fixture.invoke("serve", "--transport", transport, "--host", "0.0.0.0", "--port", "8765")
-    cli_fixture.run.assert_called_once_with(transport=transport, host="0.0.0.0", port=8765)
+    cli_fixture.run.assert_called_once()
+    assert cli_fixture.run.call_args.kwargs.items() >= {
+        "transport": transport, "host": "0.0.0.0", "port": 8765,
+    }.items()
     assert cli_fixture.mcp.auth is not None
     captured = capsys.readouterr()
     assert TOKEN not in captured.out + captured.err
@@ -399,7 +458,10 @@ def test_empty_environment_token_does_not_fall_back_to_valid_config(cli_fixture,
 
 def test_cli_accepts_explicit_unauthenticated_override(cli_fixture, capsys):
     cli_fixture.invoke("serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--allow-unauthenticated")
-    cli_fixture.run.assert_called_once_with(transport="streamable-http", host="0.0.0.0", port=8000)
+    cli_fixture.run.assert_called_once()
+    assert cli_fixture.run.call_args.kwargs.items() >= {
+        "transport": "streamable-http", "host": "0.0.0.0", "port": 8000,
+    }.items()
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.count("Warning:") == 1

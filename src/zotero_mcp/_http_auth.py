@@ -43,7 +43,7 @@ def _is_loopback_host(host: str) -> bool:
     if host.lower().removesuffix(".") == "localhost":
         return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        return ipaddress.ip_address(host.removeprefix("[").removesuffix("]")).is_loopback
     except ValueError:
         return False
 
@@ -61,8 +61,9 @@ def configure_http_auth(mcp, host: str, allow_unauthenticated: bool = False) -> 
     if not _is_loopback_host(host) and not allow_unauthenticated:
         raise ValueError(
             "Refusing to serve unauthenticated HTTP on a non-loopback host. "
-            f"Set {_TOKEN_ENV}, use --host 127.0.0.1 or --host ::1, "
-            "or explicitly opt in with --allow-unauthenticated."
+            f"Set {_TOKEN_ENV} (generate one with: python -c "
+            "'import secrets; print(secrets.token_urlsafe(32))'), "
+            "use --host 127.0.0.1, or explicitly opt in with --allow-unauthenticated."
         )
     print(
         "Warning: HTTP authentication is disabled. Anyone who can reach this "

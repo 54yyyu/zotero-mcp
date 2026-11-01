@@ -221,17 +221,15 @@ _GUARD_OFF = {"0", "false", "no", "off"}
 _GUARD_STRICT = {"1", "true", "yes", "on"}
 
 
-def _is_loopback_bind(host: str) -> bool:
-    return host in ("localhost", "::1", "[::1]") or host.startswith("127.")
-
-
 def _guard_notice(host: str) -> None:
     """Tell the operator the guard is on and how to get past it behind a proxy.
 
     A tunnel or reverse proxy (ngrok, Cloudflare Tunnel, nginx) forwards its
     public hostname as the Host header, which the guard answers with 421.
     """
-    if not _is_loopback_bind(host):
+    from zotero_mcp._http_auth import _is_loopback_host
+
+    if not _is_loopback_host(host):
         return
     print(
         "Host/Origin check on (DNS-rebinding protection): requests must name "
@@ -280,7 +278,9 @@ def _sse_guard_kwargs(server, setting: str, host: str) -> dict:
     mode = "strict" if setting in _GUARD_STRICT else "auto"
     allowed_hosts = getattr(fastmcp.settings, "http_allowed_hosts", None)
     allowed_origins = getattr(fastmcp.settings, "http_allowed_origins", None)
-    if mode == "auto" and _is_loopback_bind(host):
+    from zotero_mcp._http_auth import _is_loopback_host
+
+    if mode == "auto" and _is_loopback_host(host):
         allowed_hosts = [*(allowed_hosts or []), host]
     _guard_notice(host)
     return {
