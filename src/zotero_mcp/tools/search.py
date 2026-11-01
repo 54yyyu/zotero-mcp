@@ -1,5 +1,6 @@
 """Search-related tool functions for the Zotero MCP server."""
 
+import contextvars
 import json
 import logging as _logging
 import re
@@ -8,14 +9,13 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
-from fastmcp.exceptions import ToolError
 
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
-from zotero_mcp._context import Context
+from zotero_mcp._context import Context, ToolError
 from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.local_db import PERSONAL_LIBRARY_GROUP_ID, get_local_zotero_reader
 from zotero_mcp.tools import _helpers
@@ -56,7 +56,12 @@ def _maybe_fire_presearch_sync(search) -> None:
         except Exception as e:
             _search_logger.debug(f"Background pre-search sync failed: {e}")
 
-    _threading.Thread(target=_run, daemon=True, name="zmcp-presearch-sync").start()
+    # In the caller's context, so the sync covers the library this client
+    # session has switched to (#739), not the process-wide one.
+    _threading.Thread(
+        target=contextvars.copy_context().run, args=(_run,),
+        daemon=True, name="zmcp-presearch-sync",
+    ).start()
 
 
 #: How long the client-side advanced-search walk may run before it returns a

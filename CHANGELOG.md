@@ -23,10 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`zotero_manage_collection(action="create"|"update"|"delete")`** replaces `zotero_create_collection`, `zotero_update_collection` and `zotero_delete_collection`, the same shape as `zotero_manage_note`. `zotero-cli` commands and flags are unchanged.
 - **`ZOTERO_MCP_TOOLSETS` accepts `default`**, the default profile, so a group can be added to it: `default,scite`.
 - A test now fails when the tool surface of the default, `none` or `all` profile grows past its ceiling, and the per-tool minimum description budgets are gone.
+- **Batch tag and Extra edits take about 40 requests for 1000 items instead of 2000.** `zotero_batch_update` and `zotero-cli batch` fetched every explicit key with its own request and wrote every edited item with its own PATCH. Keys are now fetched 50 per request and edits written 50 per request, on the web and the local API alike; in hybrid mode the web copies are fetched in batches too (60 requests instead of 3000). An item refused for a stale version is still re-fetched and retried on its own, any other refused item is reported and counted as skipped, and a batch the backend will not take is written one item at a time.
+- **`zotero-cli` commands start in about 0.4 s instead of 1.0 s.** Every command that used a tool loaded FastMCP and the MCP SDK on the way, about half a second spent on a server registry the CLI never uses. `zotero-cli` now runs the tools without them; the MCP server is unchanged. Measured with `zotero-cli get collections` against a local stand-in API: 1.00 s before, 0.41 s after. `--help` was already fast (0.05 s).
 
 ### Deprecated
 
 - **`zotero_search_by_tag`, `zotero_create_collection`, `zotero_update_collection` and `zotero_delete_collection`** are off by default and kept in a new `legacy` tool group until 0.17, when they are removed. `ZOTERO_MCP_TOOLSETS=default,legacy` brings them back; `all` does not include `legacy`. Use `zotero_search_items(tag=...)` and `zotero_manage_collection` instead.
+
+### Fixed
+
+- **`zotero-cli db batch-status` and `db batch-import` work for Gemini batch runs.** They always read OpenAI's batch manifests. They now run the same code as `zotero-mcp batch-status` / `batch-import`: the provider follows the configured embedding model, or `--provider`. `zotero-cli db update` takes every `zotero-mcp update-db` flag, including `--batch`, `--batch-provider`, `--extraction-workers` and `--auto-loop`; its existing flags are unchanged.
+- **`zotero_switch_library` on a shared HTTP server no longer moves other clients** (#739). The active library was one value for the whole server, so over streamable HTTP or SSE one client's switch re-scoped every other client's reads and writes. A switch made in a client session (an SSE connection, or a streamable HTTP session on protocol 2025-11-25 or earlier) now holds for that session only; MCP resources follow it too. Requests on the stateless 2026-07-28 protocol have no session, so a switch there is still server-wide, and the tool now says so. stdio is unchanged.
+- **`zotero-cli` prints a failure once** (#744). A tool that failed logged the raw exception and then returned the same failure explained, and the CLI printed both, the raw one (`[Errno 61] Connection refused`) first. Logged errors are now held until the result is printed and left out when the result already reports them; other errors still print, and `--verbose` prints them as they happen.
+- **With Zotero closed and no write key, the write error says Zotero is not running** (#744) instead of claiming the Zotero build lacks the local write API (Zotero 10 or newer). The capability probe now tells "nothing listening on 127.0.0.1:23119" apart from "a Zotero without the write API answered"; `zotero-mcp authorize-local` uses the same distinction.
 
 ## [0.15.2] - 2026-10-31
 
