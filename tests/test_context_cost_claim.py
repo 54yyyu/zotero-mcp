@@ -110,3 +110,28 @@ class TestReportShape:
     def test_encoding_is_recorded(self, report):
         """A token count without its tokenizer is not a measurement."""
         assert report["encoding"]
+
+
+#: Ceilings on the tool surface each profile sends on every request
+#: (name + description + input schema + output schema, cl100k_base), measured
+#: with the ``[semantic]`` extra installed; a base install lists fewer tools
+#: and lands lower. Set a little above the measured value so wording tweaks
+#: pass but growth fails. If a change legitimately needs more, raise the
+#: number here and say why in the PR: that is a choice, not an accident.
+SURFACE_CEILINGS = {
+    "(unset - default)": 17_300,
+    "none": 14_800,
+    "all": 21_500,
+}
+
+
+class TestSurfaceCeiling:
+    @pytest.mark.parametrize("profile", sorted(SURFACE_CEILINGS))
+    def test_profile_stays_under_its_ceiling(self, report, profile):
+        row = next(r for r in report["mcp"] if r["profile"] == profile)
+        ceiling = SURFACE_CEILINGS[profile]
+        top = ", ".join(f"{n} {t}" for n, t in list(row["per_tool"].items())[:5])
+        assert row["tokens"] <= ceiling, (
+            f"{profile}: tool surface is {row['tokens']} tokens, over its "
+            f"{ceiling} ceiling. Heaviest tools: {top}. Trim before raising it."
+        )

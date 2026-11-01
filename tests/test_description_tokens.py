@@ -1,18 +1,17 @@
 """Token-usage tests for @mcp.tool descriptions.
 
-Locks in the token footprint of each tool's top-level description so that
-future edits don't silently regress to smelly single-line descriptions OR
-balloon far past the rubric-compliant range.
+Every tool description is sent to the client on every request, so the real
+guard is the total-surface ceiling in ``test_context_cost_claim.py``, which
+counts descriptions, parameter schemas and output schemas together. This file
+keeps two per-description checks that the total cannot express:
 
-Inspired by Hasan et al., *"Model Context Protocol (MCP) Tool Descriptions
-Are Smelly!"* (arXiv:2602.14878), which finds a compact variant of all six
-rubric components (purpose, guidelines, limitations, parameter explanation,
-examples, length/completeness) tends to produce the best cost/accuracy
-trade-off.
+* a hard cap, so one tool cannot quietly absorb the savings of the others;
+* a floor, so a covered tool never regresses to a purpose-only one-liner,
+  the most common smell in Hasan et al., *"Model Context Protocol (MCP) Tool
+  Descriptions Are Smelly!"* (arXiv:2602.14878).
 
-Budgets are set per tool based on the post-rubric-rewrite values, with a
-generous ±50% band so small wording changes don't break the test — only
-regressions to one-liners or runaway growth do.
+There are deliberately no per-tool minimum budgets: they existed to stop
+descriptions shrinking, and shrinking without losing guidance is the goal.
 
 Skipped when `tiktoken` isn't installed.
 """
@@ -22,50 +21,42 @@ import pytest
 tiktoken = pytest.importorskip("tiktoken")
 
 
-# Per-tool token budgets (min, max). Measured on the post-rubric-rewrite
-# descriptions; min ≈ 0.67×, max ≈ 1.5× of the current value.
-# If you legitimately need to exceed a max, update the budget and mention
-# why in the PR — that's an active choice, not an accident.
-TOOL_BUDGETS = {
+#: Tools whose descriptions must stay above the one-liner floor.
+COVERED_TOOLS = frozenset({
     # tools/annotations.py
-    "zotero_get_annotations":          (110, 245),
-    "zotero_get_notes":                (119, 267),
-    "zotero_manage_note":              (139, 312),
-    "zotero_create_annotation":        (196, 439),
+    "zotero_get_annotations",
+    "zotero_get_notes",
+    "zotero_manage_note",
+    "zotero_create_annotation",
     # tools/local_auth.py
-    "zotero_authorize_local_writes":   (115, 260),
-    "zotero_write_capabilities":       ( 70, 165),
+    "zotero_authorize_local_writes",
+    "zotero_write_capabilities",
     # tools/retrieval.py
-    "zotero_get_tags":                 ( 85, 195),
-    "zotero_get_item_children":        (138, 310),
+    "zotero_get_tags",
+    "zotero_get_item_children",
     # tools/write.py
-    "zotero_add_item":                 (277, 450),  # max clamped to the hard cap
-    "zotero_update_item":              (190, 426),
-    "zotero_batch_update":             (131, 294),
-    "zotero_set_item_collections":     ( 98, 220),
-    "zotero_update_collection":        ( 84, 188),
-    # Both rewritten for the paging/auto-merge work (#394, #395): the auto
-    # mode's two-call confirmation and keeper heuristic are things a model has
-    # to know before it calls, so they belong in the description. merge's max
-    # is clamped to the hard cap.
-    "zotero_find_duplicates":          (234, 450),
-    "zotero_merge_duplicates":         (295, 450),
-    "zotero_attach_file":              (190, 430),
+    "zotero_add_item",
+    "zotero_update_item",
+    "zotero_batch_update",
+    "zotero_set_item_collections",
+    "zotero_update_collection",
+    "zotero_find_duplicates",
+    "zotero_merge_duplicates",
+    "zotero_attach_file",
     # tools/search.py
-    "zotero_search_items":             (175, 400),
-    "zotero_search_by_tag":            (115, 265),
-    "zotero_search_by_citation_key":   (125, 280),
-    "zotero_advanced_search":          (175, 400),
-    # filters guidance widened (single-key example, $and, no year key);
-    # new baseline ~319 tokens, max clamped to the hard cap.
-    "zotero_semantic_search":          (214, 450),
-    "zotero_update_search_database":   (130, 295),
-    "zotero_get_search_database_status": ( 75, 170),
-}
+    "zotero_search_items",
+    "zotero_search_by_tag",
+    "zotero_search_by_citation_key",
+    "zotero_advanced_search",
+    "zotero_semantic_search",
+    "zotero_update_search_database",
+    "zotero_get_search_database_status",
+})
 
-# Global ceiling: even rubric-rich descriptions shouldn't exceed this.
-# The paper's RQ-2 data shows diminishing returns (and AS inflation) past
-# this range for compact variants.
+#: Below this a description is a purpose-only one-liner.
+FLOOR = 30
+
+#: No single description should need more than this.
 PER_TOOL_HARD_MAX = 450
 
 
@@ -127,39 +118,18 @@ def descriptions():
     return descs
 
 
-class TestDescriptionTokenBudgets:
-    """Each tool's description must fit within its rubric-compliant band."""
+class TestCoverageStaysInSync:
+    """COVERED_TOOLS must not accumulate entries for tools that no longer exist.
 
-    @pytest.mark.parametrize("tool_name,bounds", list(TOOL_BUDGETS.items()))
-    def test_tool_within_budget(self, enc, descriptions, tool_name, bounds):
-        lo, hi = bounds
-        desc = descriptions.get(tool_name)
-        if desc is None:
-            pytest.skip(f"{tool_name} not registered (may be gated by extras)")
-        n = len(enc.encode(desc))
-        assert lo <= n <= hi, (
-            f"{tool_name}: {n} tokens outside budget [{lo}, {hi}]. "
-            f"Too few tokens usually means a smelly one-liner; "
-            f"too many usually means bloat. Update the budget here if the "
-            f"change is intentional."
-        )
-
-
-class TestBudgetsStayInSync:
-    """TOOL_BUDGETS must not accumulate entries for tools that no longer exist.
-
-    ``test_tool_within_budget`` skips a tool it cannot find, which is the right
-    call for extras-gated tools but means a renamed or merged tool silently
-    loses its budget instead of failing. Without this check the suite reports
-    green while quietly covering less than it claims.
+    A renamed or merged tool would otherwise silently drop out of the floor
+    check while the suite reports green.
     """
 
-    def test_no_budget_entries_for_missing_tools(self, descriptions):
-        stale = sorted(set(TOOL_BUDGETS) - set(descriptions))
+    def test_no_entries_for_missing_tools(self, descriptions):
+        stale = sorted(COVERED_TOOLS - set(descriptions))
         assert not stale, (
-            f"TOOL_BUDGETS references tools that are no longer registered: {stale}. "
-            f"Remove the entry if the tool is gone, or rename it if the tool was "
-            f"renamed — and add a budget for whatever replaced it."
+            f"COVERED_TOOLS references tools that are no longer registered: {stale}. "
+            f"Remove the entry if the tool is gone, or rename it if the tool was renamed."
         )
 
 
@@ -179,42 +149,14 @@ class TestGlobalCeiling:
 
 
 class TestRubricFloor:
-    """No tool we've committed to keeping rubric-compliant should regress
-    to a trivial one-liner. 'Purpose-only' descriptions are the most
-    common smell from Hasan et al. and cost the most in practice.
-
-    Only tools in TOOL_BUDGETS are enforced here — other tools in the
-    codebase are known-smelly work not yet addressed; extending coverage
-    means adding the tool to TOOL_BUDGETS in a follow-up PR.
-    """
-
     def test_no_trivial_descriptions_for_covered_tools(self, enc, descriptions):
-        trivial = []
-        for name in TOOL_BUDGETS:
-            desc = descriptions.get(name)
-            if desc is None:
-                continue
-            n = len(enc.encode(desc))
-            if n < 30:
-                trivial.append((name, n))
+        trivial = [
+            (name, n)
+            for name in sorted(COVERED_TOOLS)
+            if (desc := descriptions.get(name)) is not None
+            and (n := len(enc.encode(desc))) < FLOOR
+        ]
         assert not trivial, (
-            f"Regression — covered tools now < 30 tokens (likely one-liners): "
+            f"Regression: covered tools now < {FLOOR} tokens (likely one-liners): "
             f"{trivial}."
         )
-
-    def test_known_smelly_tools_are_tracked(self, enc, descriptions):
-        """Catalog which *other* tools are still smelly so contributors see
-        the backlog. This test is INFORMATIONAL — it prints but does not
-        fail. Promote a tool to TOOL_BUDGETS once you've rewritten it."""
-        remaining = []
-        for name, desc in descriptions.items():
-            if name in TOOL_BUDGETS:
-                continue
-            n = len(enc.encode(desc))
-            if n < 30:
-                remaining.append((name, n))
-        if remaining:
-            print(
-                f"\n[info] {len(remaining)} tool(s) still below 30-token floor "
-                f"(not yet in TOOL_BUDGETS): {remaining}"
-            )
