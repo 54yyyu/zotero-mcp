@@ -35,17 +35,18 @@ print(json.dumps({{
 
 
 def test_the_entry_point_runs_tools_without_fastmcp(tmp_path):
-    env = {
+    # The parent's environment minus any Zotero settings: Windows needs its own
+    # variables (SYSTEMROOT for sockets, USERPROFILE for the home folder).
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZOTERO")}
+    env.update({
         "HOME": str(tmp_path),
-        "PATH": "/usr/bin:/bin",
+        "USERPROFILE": str(tmp_path),
         "ZOTERO_LOCAL": "false",
         "ZOTERO_API_KEY": "k",
         "ZOTERO_LIBRARY_ID": "1",
         # Nothing listens here: the command fails fast after loading the tools.
         "ZOTERO_API_URL": "http://127.0.0.1:9",
-        # Windows cannot load its socket provider without these (WinError 10106).
-        **{k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR") if k in os.environ},
-    }
+    })
     proc = subprocess.run(
         [sys.executable, "-c", _ENTRY_PROBE.format(src=SRC)],
         capture_output=True, text=True, timeout=120, env=env,
