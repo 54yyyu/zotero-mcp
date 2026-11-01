@@ -59,7 +59,10 @@ def obfuscate_config_for_display(config):
 
     obfuscated = config.copy()
     for key in list(obfuscated):
-        if _is_sensitive_key(key):
+        if key == "ZOTERO_MCP_AUTH_TOKEN":
+            # Also hide invalid non-string values that HTTP startup rejects.
+            obfuscated[key] = "********"
+        elif _is_sensitive_key(key):
             obfuscated[key] = obfuscate_sensitive_value(obfuscated[key])
     return obfuscated
 
@@ -108,10 +111,14 @@ def load_standalone_env_vars():
         return {}
 
 
-def apply_environment_variables(env_vars):
+def apply_environment_variables(env_vars, *, validate_http_auth=False):
     """Apply environment variables to current process."""
     for key, value in env_vars.items():
         if key not in os.environ:  # Don't override existing env vars
+            if validate_http_auth and key == "ZOTERO_MCP_AUTH_TOKEN":
+                from zotero_mcp._http_auth import validate_auth_token
+
+                validate_auth_token(value)
             os.environ[key] = str(value)
 
 
@@ -214,17 +221,15 @@ _GUARD_OFF = {"0", "false", "no", "off"}
 _GUARD_STRICT = {"1", "true", "yes", "on"}
 
 
-def _is_loopback_bind(host: str) -> bool:
-    return host in ("localhost", "::1", "[::1]") or host.startswith("127.")
-
-
 def _guard_notice(host: str) -> None:
     """Tell the operator the guard is on and how to get past it behind a proxy.
 
     A tunnel or reverse proxy (ngrok, Cloudflare Tunnel, nginx) forwards its
     public hostname as the Host header, which the guard answers with 421.
     """
-    if not _is_loopback_bind(host):
+    from zotero_mcp._http_auth import _is_loopback_host
+
+    if not _is_loopback_host(host):
         return
     print(
         "Host/Origin check on (DNS-rebinding protection): requests must name "
@@ -273,7 +278,9 @@ def _sse_guard_kwargs(server, setting: str, host: str) -> dict:
     mode = "strict" if setting in _GUARD_STRICT else "auto"
     allowed_hosts = getattr(fastmcp.settings, "http_allowed_hosts", None)
     allowed_origins = getattr(fastmcp.settings, "http_allowed_origins", None)
-    if mode == "auto" and _is_loopback_bind(host):
+    from zotero_mcp._http_auth import _is_loopback_host
+
+    if mode == "auto" and _is_loopback_host(host):
         allowed_hosts = [*(allowed_hosts or []), host]
     _guard_notice(host)
     return {
@@ -549,11 +556,11 @@ def _print_batch_import(stats: dict, provider: str = "openai") -> None:
             print(f"- ... {len(stats['errors']) - 20} more")
 
 
-def setup_zotero_environment():
+def setup_zotero_environment(*, validate_http_auth=False):
     """Setup Zotero environment for CLI commands."""
     # Load standalone env first so global flags (e.g., ZOTERO_NO_CLAUDE) take effect
     standalone_env_vars = load_standalone_env_vars()
-    apply_environment_variables(standalone_env_vars)
+    apply_environment_variables(standalone_env_vars, validate_http_auth=validate_http_auth)
 
     # Respect global switch to disable Claude detection
     no_claude = str(os.environ.get("ZOTERO_NO_CLAUDE", "")).lower() in ("1", "true", "yes")
@@ -561,7 +568,7 @@ def setup_zotero_environment():
     # Load and apply Claude Desktop env unless disabled
     if not no_claude:
         claude_env_vars = load_claude_desktop_env_vars()
-        apply_environment_variables(claude_env_vars)
+        apply_environment_variables(claude_env_vars, validate_http_auth=validate_http_auth)
 
     # Apply fallback defaults for local Zotero if no config found.
     # Only apply when no API key is configured — if an API key exists,
@@ -651,6 +658,13 @@ def cmd_authorize_local(args):
             "Writes already go through the Zotero web API."
         )
         return 7
+
+    if not _client.probe_local_server_id() and _client.local_server_unreachable():
+        print(
+            "Zotero is not running (nothing listening on 127.0.0.1:23119). "
+            "Start Zotero and retry."
+        )
+        return 5
 
     if not _client.probe_local_server_id():
         print(
@@ -749,6 +763,234 @@ def tolerate_console_encoding():
             pass
 
 
+# ---------------------------------------------------------------------------
+# Semantic database commands, shared with `zotero-cli db`
+# ---------------------------------------------------------------------------
+
+def add_update_db_arguments(parser) -> None:
+    """The options of `zotero-mcp update-db`, also `zotero-cli db update`."""
+    parser.add_argument("--force-rebuild", action="store_true",
+                                 help="Force complete rebuild of the database")
+    parser.add_argument("--limit", type=int,
+                                 help="Limit number of items to process (for testing; does not advance the sync watermark)")
+    parser.add_argument("--fulltext", action="store_true",
+                                 help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
+    parser.add_argument("--allow-mass-deletion", action="store_true",
+                                 help="One-run opt-in when the deletion pass would remove "
+                                      "a large share of the library's indexed documents "
+                                      "(e.g. after intentionally purging the library)")
+    parser.add_argument("--config-path",
+                                 help="Path to semantic search configuration file")
+    parser.add_argument("--db-path",
+                                 help="Path to Zotero database file (zotero.sqlite), overrides config")
+    parser.add_argument("--extraction-workers", type=int, metavar="N",
+                                 help="Parse N attachments in parallel during --fulltext "
+                                      "(default: semantic_search.extraction.workers, or 1 for "
+                                      "sequential). Capped at the CPU count")
+    parser.add_argument("--clear-fulltext-cache", action="store_true",
+                                 help="Discard the transient extracted-fulltext cache before "
+                                      "running, forcing every attachment to be re-parsed")
+    batch_group = parser.add_mutually_exclusive_group()
+    batch_group.add_argument("--batch", dest="use_batch", action="store_true",
+                             help="Submit embeddings through the configured provider's asynchronous "
+                                  "Batch API (pair with --batch-provider to choose explicitly)")
+    batch_group.add_argument("--no-batch", dest="use_batch", action="store_false",
+                             help="Use realtime embeddings even if a Batch API is enabled in config")
+    parser.set_defaults(use_batch=None)
+    parser.add_argument("--batch-provider", choices=BATCH_PROVIDERS, default=None,
+                                 help="Batch provider to use with --batch (default: inferred from the "
+                                      "configured embedding model)")
+    parser.add_argument("--batch-max-tokens", type=int, default=None, metavar="N",
+                                 help="Cap estimated tokens enqueued with the provider at once; "
+                                      "chunks beyond it are held back; batch-import and --auto-loop "
+                                      "submit them as earlier ones finish")
+    parser.add_argument("--batch-max-requests", type=int, default=None, metavar="N",
+                                 help="Cap requests per uploaded batch file")
+    parser.add_argument("--auto-loop", action="store_true",
+                                 help="After submitting, keep polling, importing completed batches and "
+                                      "submitting held-back chunks until the run finishes")
+    parser.add_argument("--poll-interval", type=int, default=60, metavar="SECONDS",
+                                 help="Seconds between --auto-loop polls (default: 60)")
+
+    # Deprecated per-provider forms, kept working so existing scripts and
+    # docs do not break. --batch/--batch-provider is the supported spelling.
+    openai_batch_group = parser.add_mutually_exclusive_group()
+    openai_batch_group.add_argument("--openai-batch", dest="openai_batch", action="store_true",
+                                   help="Deprecated: use --batch --batch-provider openai")
+    openai_batch_group.add_argument("--no-openai-batch", dest="openai_batch", action="store_false",
+                                   help="Deprecated: use --no-batch")
+    parser.set_defaults(openai_batch=None)
+    gemini_batch_group = parser.add_mutually_exclusive_group()
+    gemini_batch_group.add_argument("--gemini-batch", dest="gemini_batch", action="store_true",
+                                   help="Deprecated: use --batch --batch-provider gemini")
+    gemini_batch_group.add_argument("--no-gemini-batch", dest="gemini_batch", action="store_false",
+                                   help="Deprecated: use --no-batch")
+    parser.set_defaults(gemini_batch=None)
+
+
+def _add_batch_lifecycle_arguments(parser, batch_id_help: str) -> None:
+    parser.add_argument("--batch-id", action="append", help=batch_id_help)
+    parser.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
+                        help="Which provider's manifests to read (default: inferred from config)")
+    parser.add_argument("--config-path", help="Path to semantic search configuration file")
+
+
+def add_batch_status_arguments(parser) -> None:
+    _add_batch_lifecycle_arguments(parser, "Specific batch ID to inspect; can be repeated")
+
+
+def add_batch_import_arguments(parser) -> None:
+    _add_batch_lifecycle_arguments(
+        parser,
+        "Specific batch ID to import; can be repeated. Importing by id never "
+        "submits pending chunks; run batch-import without ids to resume a "
+        "throttled run",
+    )
+
+
+def run_update_db(args) -> None:
+    """`zotero-mcp update-db` and `zotero-cli db update`."""
+    # Reject conflicting flags before anything reads or writes the config:
+    # this is a usage error, and it should not depend on the embedding
+    # provider being installed or on a config existing at all.
+    if args.use_batch is not None and (args.openai_batch is not None or args.gemini_batch is not None):
+        print(
+            "Error: --batch/--no-batch cannot be combined with the deprecated "
+            "--openai-batch/--gemini-batch flags. Use --batch --batch-provider NAME.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Setup Zotero environment variables
+    setup_zotero_environment()
+
+    from zotero_mcp.semantic_search import create_semantic_search
+
+    # Determine config path
+    config_path = _semantic_config_path(args.config_path)
+
+    print(f"Using configuration: {config_path}")
+
+    # Get optional db_path override from CLI
+    db_path = getattr(args, 'db_path', None)
+    if db_path:
+        print(f"Using custom Zotero database: {db_path}")
+        # Save the db_path to config file for future use
+        _save_zotero_db_path_to_config(config_path, db_path)
+
+    if getattr(args, "clear_fulltext_cache", False):
+        from zotero_mcp import fulltext_cache
+
+        removed = fulltext_cache.clear_all(config_path=str(config_path))
+        print(f"Cleared transient fulltext cache ({removed} entries)")
+
+    try:
+        # Create semantic search instance with optional db_path override
+        search = create_semantic_search(
+            str(config_path),
+            db_path=db_path,
+            extraction_workers=getattr(args, "extraction_workers", None),
+        )
+        for flag, provider in (("--openai-batch", "openai"), ("--gemini-batch", "gemini")):
+            if getattr(args, f"{provider}_batch") is True and (
+                search.chroma_client.embedding_model != provider
+            ):
+                print(
+                    f"Error: {flag} requires ZOTERO_EMBEDDING_MODEL={provider}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        print("Starting database update...")
+        if args.fulltext:
+            from zotero_mcp.utils import is_local_mode
+            if not is_local_mode():
+                print(
+                    "Error: --fulltext requires local mode but ZOTERO_LOCAL is not enabled.\n"
+                    "Full-text indexing needs access to Zotero's local database.\n"
+                    "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print("Extracting full-text content from local Zotero database...")
+        stats = search.update_database(
+            force_full_rebuild=args.force_rebuild,
+            limit=args.limit,
+            extract_fulltext=args.fulltext,
+            use_openai_batch=args.openai_batch,
+            use_gemini_batch=args.gemini_batch,
+            use_batch=args.use_batch,
+            batch_provider=args.batch_provider,
+            batch_max_tokens=args.batch_max_tokens,
+            batch_max_requests=args.batch_max_requests,
+            auto_loop=args.auto_loop,
+            batch_poll_interval=args.poll_interval,
+            allow_mass_deletion=args.allow_mass_deletion,
+        )
+
+        _print_update_stats(stats)
+
+        if stats.get('error'):
+            print(f"Error: {stats['error']}")
+            sys.exit(1)
+
+        # Best-effort sweep so the transient cache cannot outlive the runs
+        # that fill it. Per-item eviction already covers everything that
+        # embeds successfully; this catches what it structurally cannot —
+        # entries abandoned by an interrupted run, entries whose
+        # attachment has since been deleted, and .txt files orphaned by a
+        # crash between writing the text and saving the index. Never fatal:
+        # the update itself has already succeeded by this point.
+        try:
+            from zotero_mcp import fulltext_cache
+
+            purged = fulltext_cache.purge_stale(config_path=str(config_path))
+            if purged:
+                print(f"Purged {purged} stale fulltext cache entries")
+        except Exception as e:
+            print(f"Note: could not purge stale fulltext cache entries ({e})")
+
+    except Exception as e:
+        print(f"Error updating database: {e}")
+        sys.exit(1)
+
+
+def run_batch_status(args, provider: str | None = None) -> None:
+    """`batch-status`; *provider* pins one (the openai-batch-* aliases)."""
+    setup_zotero_environment()
+
+    from zotero_mcp.semantic_search import create_semantic_search
+
+    config_path = _semantic_config_path(args.config_path)
+    try:
+        search = create_semantic_search(str(config_path))
+        provider = provider or args.provider
+        provider = provider or _detect_batch_provider(search)
+        status = search._get_batch_status(provider, batch_ids=args.batch_id)
+        _print_batch_status(status, provider)
+    except Exception as e:
+        print(f"Error getting batch status: {e}")
+        sys.exit(1)
+
+
+def run_batch_import(args, provider: str | None = None) -> None:
+    """`batch-import`; *provider* pins one (the openai-batch-* aliases)."""
+    setup_zotero_environment()
+
+    from zotero_mcp.semantic_search import create_semantic_search
+
+    config_path = _semantic_config_path(args.config_path)
+    try:
+        search = create_semantic_search(str(config_path))
+        provider = provider or args.provider
+        provider = provider or _detect_batch_provider(search)
+        stats = search._import_batch(provider, batch_ids=args.batch_id)
+        _print_batch_import(stats, provider)
+    except Exception as e:
+        print(f"Error importing batch: {e}")
+        sys.exit(1)
+
+
 def main():
     """Main entry point for the CLI."""
     tolerate_console_encoding()
@@ -779,13 +1021,18 @@ def main():
     server_parser.add_argument(
         "--host",
         default="localhost",
-        help="Host to bind to for SSE transport (default: localhost)",
+        help="Host to bind to for HTTP transports (default: localhost)",
     )
     server_parser.add_argument(
         "--port",
         type=int,
         default=8000,
-        help="Port to bind to for SSE transport (default: 8000)",
+        help="Port to bind to for HTTP transports (default: 8000)",
+    )
+    server_parser.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="Allow HTTP on a non-loopback host without authentication (unsafe)",
     )
 
     # Setup command
@@ -806,63 +1053,7 @@ def main():
 
     # Update database command
     update_db_parser = subparsers.add_parser("update-db", help="Update semantic search database")
-    update_db_parser.add_argument("--force-rebuild", action="store_true",
-                                 help="Force complete rebuild of the database")
-    update_db_parser.add_argument("--limit", type=int,
-                                 help="Limit number of items to process (for testing; does not advance the sync watermark)")
-    update_db_parser.add_argument("--fulltext", action="store_true",
-                                 help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
-    update_db_parser.add_argument("--allow-mass-deletion", action="store_true",
-                                 help="One-run opt-in when the deletion pass would remove "
-                                      "a large share of the library's indexed documents "
-                                      "(e.g. after intentionally purging the library)")
-    update_db_parser.add_argument("--config-path",
-                                 help="Path to semantic search configuration file")
-    update_db_parser.add_argument("--db-path",
-                                 help="Path to Zotero database file (zotero.sqlite), overrides config")
-    update_db_parser.add_argument("--extraction-workers", type=int, metavar="N",
-                                 help="Parse N attachments in parallel during --fulltext "
-                                      "(default: semantic_search.extraction.workers, or 1 for "
-                                      "sequential). Capped at the CPU count")
-    update_db_parser.add_argument("--clear-fulltext-cache", action="store_true",
-                                 help="Discard the transient extracted-fulltext cache before "
-                                      "running, forcing every attachment to be re-parsed")
-    batch_group = update_db_parser.add_mutually_exclusive_group()
-    batch_group.add_argument("--batch", dest="use_batch", action="store_true",
-                             help="Submit embeddings through the configured provider's asynchronous "
-                                  "Batch API (pair with --batch-provider to choose explicitly)")
-    batch_group.add_argument("--no-batch", dest="use_batch", action="store_false",
-                             help="Use realtime embeddings even if a Batch API is enabled in config")
-    update_db_parser.set_defaults(use_batch=None)
-    update_db_parser.add_argument("--batch-provider", choices=BATCH_PROVIDERS, default=None,
-                                 help="Batch provider to use with --batch (default: inferred from the "
-                                      "configured embedding model)")
-    update_db_parser.add_argument("--batch-max-tokens", type=int, default=None, metavar="N",
-                                 help="Cap estimated tokens enqueued with the provider at once; "
-                                      "chunks beyond it are held back; batch-import and --auto-loop "
-                                      "submit them as earlier ones finish")
-    update_db_parser.add_argument("--batch-max-requests", type=int, default=None, metavar="N",
-                                 help="Cap requests per uploaded batch file")
-    update_db_parser.add_argument("--auto-loop", action="store_true",
-                                 help="After submitting, keep polling, importing completed batches and "
-                                      "submitting held-back chunks until the run finishes")
-    update_db_parser.add_argument("--poll-interval", type=int, default=60, metavar="SECONDS",
-                                 help="Seconds between --auto-loop polls (default: 60)")
-
-    # Deprecated per-provider forms, kept working so existing scripts and
-    # docs do not break. --batch/--batch-provider is the supported spelling.
-    openai_batch_group = update_db_parser.add_mutually_exclusive_group()
-    openai_batch_group.add_argument("--openai-batch", dest="openai_batch", action="store_true",
-                                   help="Deprecated: use --batch --batch-provider openai")
-    openai_batch_group.add_argument("--no-openai-batch", dest="openai_batch", action="store_false",
-                                   help="Deprecated: use --no-batch")
-    update_db_parser.set_defaults(openai_batch=None)
-    gemini_batch_group = update_db_parser.add_mutually_exclusive_group()
-    gemini_batch_group.add_argument("--gemini-batch", dest="gemini_batch", action="store_true",
-                                   help="Deprecated: use --batch --batch-provider gemini")
-    gemini_batch_group.add_argument("--no-gemini-batch", dest="gemini_batch", action="store_false",
-                                   help="Deprecated: use --no-batch")
-    update_db_parser.set_defaults(gemini_batch=None)
+    add_update_db_arguments(update_db_parser)
 
     # Batch lifecycle commands. The openai-batch-* spellings shipped in 0.10.0
     # stay as aliases pinned to --provider openai.
@@ -870,25 +1061,13 @@ def main():
         ("batch-status", "Show embedding Batch API status"),
         ("openai-batch-status", "Deprecated alias for batch-status --provider openai"),
     ):
-        sp = subparsers.add_parser(name, help=helptext)
-        sp.add_argument("--batch-id", action="append",
-                        help="Specific batch ID to inspect; can be repeated")
-        sp.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
-                        help="Which provider's manifests to read (default: inferred from config)")
-        sp.add_argument("--config-path", help="Path to semantic search configuration file")
+        add_batch_status_arguments(subparsers.add_parser(name, help=helptext))
 
     for name, helptext in (
         ("batch-import", "Import completed batch embeddings"),
         ("openai-batch-import", "Deprecated alias for batch-import --provider openai"),
     ):
-        sp = subparsers.add_parser(name, help=helptext)
-        sp.add_argument("--batch-id", action="append",
-                        help="Specific batch ID to import; can be repeated. Importing by id never "
-                             "submits pending chunks; run batch-import without ids to resume a "
-                             "throttled run")
-        sp.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
-                        help="Which provider's manifests to read (default: inferred from config)")
-        sp.add_argument("--config-path", help="Path to semantic search configuration file")
+        add_batch_import_arguments(subparsers.add_parser(name, help=helptext))
 
     # Database status command
     db_status_parser = subparsers.add_parser("db-status", help="Show semantic search database status")
@@ -1167,141 +1346,13 @@ def main():
         sys.exit(setup_main(args))
 
     elif args.command == "update-db":
-        # Reject conflicting flags before anything reads or writes the config:
-        # this is a usage error, and it should not depend on the embedding
-        # provider being installed or on a config existing at all.
-        if args.use_batch is not None and (args.openai_batch is not None or args.gemini_batch is not None):
-            print(
-                "Error: --batch/--no-batch cannot be combined with the deprecated "
-                "--openai-batch/--gemini-batch flags. Use --batch --batch-provider NAME.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        # Setup Zotero environment variables
-        setup_zotero_environment()
-
-        from zotero_mcp.semantic_search import create_semantic_search
-
-        # Determine config path
-        config_path = _semantic_config_path(args.config_path)
-
-        print(f"Using configuration: {config_path}")
-
-        # Get optional db_path override from CLI
-        db_path = getattr(args, 'db_path', None)
-        if db_path:
-            print(f"Using custom Zotero database: {db_path}")
-            # Save the db_path to config file for future use
-            _save_zotero_db_path_to_config(config_path, db_path)
-
-        if getattr(args, "clear_fulltext_cache", False):
-            from zotero_mcp import fulltext_cache
-
-            removed = fulltext_cache.clear_all(config_path=str(config_path))
-            print(f"Cleared transient fulltext cache ({removed} entries)")
-
-        try:
-            # Create semantic search instance with optional db_path override
-            search = create_semantic_search(
-                str(config_path),
-                db_path=db_path,
-                extraction_workers=getattr(args, "extraction_workers", None),
-            )
-            for flag, provider in (("--openai-batch", "openai"), ("--gemini-batch", "gemini")):
-                if getattr(args, f"{provider}_batch") is True and (
-                    search.chroma_client.embedding_model != provider
-                ):
-                    print(
-                        f"Error: {flag} requires ZOTERO_EMBEDDING_MODEL={provider}",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-
-            print("Starting database update...")
-            if args.fulltext:
-                from zotero_mcp.utils import is_local_mode
-                if not is_local_mode():
-                    print(
-                        "Error: --fulltext requires local mode but ZOTERO_LOCAL is not enabled.\n"
-                        "Full-text indexing needs access to Zotero's local database.\n"
-                        "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-                print("Extracting full-text content from local Zotero database...")
-            stats = search.update_database(
-                force_full_rebuild=args.force_rebuild,
-                limit=args.limit,
-                extract_fulltext=args.fulltext,
-                use_openai_batch=args.openai_batch,
-                use_gemini_batch=args.gemini_batch,
-                use_batch=args.use_batch,
-                batch_provider=args.batch_provider,
-                batch_max_tokens=args.batch_max_tokens,
-                batch_max_requests=args.batch_max_requests,
-                auto_loop=args.auto_loop,
-                batch_poll_interval=args.poll_interval,
-                allow_mass_deletion=args.allow_mass_deletion,
-            )
-
-            _print_update_stats(stats)
-
-            if stats.get('error'):
-                print(f"Error: {stats['error']}")
-                sys.exit(1)
-
-            # Best-effort sweep so the transient cache cannot outlive the runs
-            # that fill it. Per-item eviction already covers everything that
-            # embeds successfully; this catches what it structurally cannot —
-            # entries abandoned by an interrupted run, entries whose
-            # attachment has since been deleted, and .txt files orphaned by a
-            # crash between writing the text and saving the index. Never fatal:
-            # the update itself has already succeeded by this point.
-            try:
-                from zotero_mcp import fulltext_cache
-
-                purged = fulltext_cache.purge_stale(config_path=str(config_path))
-                if purged:
-                    print(f"Purged {purged} stale fulltext cache entries")
-            except Exception as e:
-                print(f"Note: could not purge stale fulltext cache entries ({e})")
-
-        except Exception as e:
-            print(f"Error updating database: {e}")
-            sys.exit(1)
+        run_update_db(args)
 
     elif args.command in ("batch-status", "openai-batch-status"):
-        setup_zotero_environment()
-
-        from zotero_mcp.semantic_search import create_semantic_search
-
-        config_path = _semantic_config_path(args.config_path)
-        try:
-            search = create_semantic_search(str(config_path))
-            provider = "openai" if args.command == "openai-batch-status" else args.provider
-            provider = provider or _detect_batch_provider(search)
-            status = search._get_batch_status(provider, batch_ids=args.batch_id)
-            _print_batch_status(status, provider)
-        except Exception as e:
-            print(f"Error getting batch status: {e}")
-            sys.exit(1)
+        run_batch_status(args, "openai" if args.command == "openai-batch-status" else None)
 
     elif args.command in ("batch-import", "openai-batch-import"):
-        setup_zotero_environment()
-
-        from zotero_mcp.semantic_search import create_semantic_search
-
-        config_path = _semantic_config_path(args.config_path)
-        try:
-            search = create_semantic_search(str(config_path))
-            provider = "openai" if args.command == "openai-batch-import" else args.provider
-            provider = provider or _detect_batch_provider(search)
-            stats = search._import_batch(provider, batch_ids=args.batch_id)
-            _print_batch_import(stats, provider)
-        except Exception as e:
-            print(f"Error importing batch: {e}")
-            sys.exit(1)
+        run_batch_import(args, "openai" if args.command == "openai-batch-import" else None)
 
     elif args.command == "db-status":
         # Setup Zotero environment variables
@@ -1554,7 +1605,16 @@ def main():
         # Get transport with a default value if not specified
         transport = getattr(args, "transport", "stdio")
         # Ensure environment is initialized (Claude config or standalone config)
-        setup_zotero_environment()
+        try:
+            setup_zotero_environment(validate_http_auth=transport != "stdio")
+            if transport != "stdio":
+                from zotero_mcp._http_auth import configure_http_auth
+
+                configure_http_auth(
+                    mcp, args.host, allow_unauthenticated=args.allow_unauthenticated,
+                )
+        except ValueError as e:
+            server_parser.error(str(e))
         # Re-apply the toolset profile now that the transport is known. The
         # import-time call in server.py assumed stdio; an HTTP transport also
         # needs the ChatGPT connector tools. setup_zotero_environment() runs

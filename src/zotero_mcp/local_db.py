@@ -583,7 +583,7 @@ def _tag_condition(operation: str, value: str) -> tuple[str, list]:
 # reading the caller wanted, decline the query and let them fall back.
 _TAG_WILDCARDS = ("%", "*")
 
-# ` OR ` as documented by `zotero_search_by_tag`, and `||` as Zotero's own
+# ` OR ` as documented for `zotero_search_items(tag=...)`, and `||` as Zotero's own
 # API spells it. Uppercase only: "or" is an ordinary word inside a tag name.
 _TAG_OR_SEPARATOR = re.compile(r"\s+OR\s+|\|\|")
 
@@ -591,7 +591,7 @@ _TAG_OR_SEPARATOR = re.compile(r"\s+OR\s+|\|\|")
 def _tag_dsl_condition(entries: list[str]) -> tuple[str, list] | None:
     """Compile the `tag=` boolean DSL into one SQL fragment.
 
-    The syntax is the one `zotero_search_by_tag` documents and pyzotero
+    The syntax is the one `zotero_search_items(tag=...)` documents and pyzotero
     forwards to Zotero's `tag` parameter: entries are ANDed, ` OR ` (or
     Zotero's own `||` spelling) disjoins within an entry, and a leading `-`
     on a term excludes it.
@@ -2740,7 +2740,7 @@ class LocalZoteroReader:
         like_params: list = []
         if not variants:
             # A blank query is a *filter-only* search — "every item carrying
-            # this tag" — which is exactly what zotero_search_by_tag asks for
+            # this tag" — which is exactly what a tag-only zotero_search_items asks for
             # and which this backend can answer perfectly well. It is only
             # unanswerable with nothing else to filter on, since that would
             # quietly mean "return the whole library".

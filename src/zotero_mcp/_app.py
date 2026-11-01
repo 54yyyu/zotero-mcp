@@ -9,8 +9,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastmcp import FastMCP
-
+from zotero_mcp import _serverless
 from zotero_mcp._context import sync_context
 from zotero_mcp._version import __version__
 from zotero_mcp.utils import is_local_mode
@@ -95,7 +94,7 @@ def _relay_update_output(proc: subprocess.Popen) -> None:
 
 
 @asynccontextmanager
-async def server_lifespan(server: FastMCP):
+async def server_lifespan(server: "FastMCP"):
     """Manage server startup and shutdown lifecycle.
 
     The semantic auto-update runs as a child ``zotero-mcp update-db`` process
@@ -150,15 +149,52 @@ async def server_lifespan(server: FastMCP):
     chroma_worker.stop_all()
 
 
-class _ZoteroMCP(FastMCP):
-    """FastMCP whose tools get a context they can log to synchronously."""
+if _serverless.ENABLED:
+    # zotero-cli: the decorators leave the tools as plain functions.
+    mcp = _serverless.App()
+else:
+    from fastmcp import FastMCP
 
-    def tool(self, name_or_fn=None, **kwargs):
-        if callable(name_or_fn):
-            return super().tool(sync_context(name_or_fn), **kwargs)
-        register = super().tool(name_or_fn, **kwargs)
-        return lambda fn: register(sync_context(fn))
+    from zotero_mcp._tool_schema import advertise
 
+    class _ZoteroMCP(FastMCP):
+        """FastMCP whose tools get a context they can log to synchronously.
 
-# Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
-mcp = _ZoteroMCP("Zotero", version=__version__, lifespan=server_lifespan)
+        Tools return markdown strings, and FastMCP would advertise each one with
+        an ``{"result": string}`` output schema and send the same text twice, as
+        content and as structured content. The schema tells a client nothing the
+        text does not, yet costs ~35 tokens per tool on every request, so it is
+        off unless a tool asks for one.
+
+        The registered copy of each tool also differs from the module function
+        in what it advertises: when the tool has a ``description``, its docstring
+        is hidden, because FastMCP would otherwise turn the docstring's Args into
+        per-parameter descriptions that repeat the tool description; and its
+        parameter schemas are compacted (see :mod:`zotero_mcp._tool_schema`).
+        The module function, which the CLI and tests call, keeps its docstring.
+        """
+
+        def tool(self, name_or_fn=None, **kwargs):
+            kwargs.setdefault("output_schema", None)
+
+            def register(fn, decorator):
+                registered = sync_context(fn)
+                if kwargs.get("description"):
+                    registered.__doc__ = None
+                advertise(registered, fn)
+                decorator(registered)
+                return sync_context(fn)
+
+            if callable(name_or_fn):
+                return register(name_or_fn, lambda f: super(_ZoteroMCP, self).tool(f, **kwargs))
+            decorator = super().tool(name_or_fn, **kwargs)
+            return lambda fn: register(fn, decorator)
+
+        def resource(self, uri, **kwargs):
+            # Resources read the active library too, which on HTTP is the
+            # client session's (#739).
+            register = super().resource(uri, **kwargs)
+            return lambda fn: register(sync_context(fn))
+
+    # Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
+    mcp = _ZoteroMCP("Zotero", version=__version__, lifespan=server_lifespan)

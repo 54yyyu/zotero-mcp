@@ -11,7 +11,7 @@ Zotero MCP connects a [Zotero](https://www.zotero.org/) library to AI assistants
 | `zotero-cli` | A command-line client with `--json` output on every command | **You can run shell commands.** It costs no context until used. |
 | `zotero-mcp serve` | An MCP server exposing ~41 tools by default | Your client speaks MCP but has no shell (Claude Desktop, ChatGPT). |
 
-Both read the same configuration. If you have a shell, prefer `zotero-cli`: the MCP server's tool schemas cost about 13.4k tokens on every request whether or not they are used.
+Both read the same configuration. If you have a shell, prefer `zotero-cli`: the MCP server's tool schemas cost about 8k tokens on every request whether or not they are used.
 
 ## Setting it up
 
@@ -111,7 +111,7 @@ The full command reference is [docs/cli.md](cli.md) and, generated from the pars
 
 ## Using the MCP server
 
-The tools mirror the CLI: `zotero_search_items`, `zotero_get_item_metadata`, `zotero_get_item_children`, `zotero_read_pdf_pages` (with `format='image'` and `rect`), `zotero_get_page_layout`, `zotero_create_annotation` (`text=` for a highlight, `rect=` for a box), `zotero_manage_note`, `zotero_add_by_doi`, and more. Some groups are opt-in through `ZOTERO_MCP_TOOLSETS`. Every tool and group: [Tools](tools.md).
+The tools mirror the CLI: `zotero_search_items`, `zotero_get_item_metadata`, `zotero_get_item_children`, `zotero_read_pdf_pages` (with `format='image'` and `rect`), `zotero_get_page_layout`, `zotero_create_annotation` (`text=` for a highlight, `rect=` for a box), `zotero_manage_note`, `zotero_add_item`, and more. Some groups are opt-in through `ZOTERO_MCP_TOOLSETS`. Every tool and group: [Tools](tools.md).
 
 ## Rules that prevent mistakes
 

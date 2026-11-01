@@ -38,9 +38,10 @@ class TestCLIContext:
         ctx.warning("watch out")
         assert "watch out" in capsys.readouterr().err
 
-    def test_error_always_prints(self, capsys):
+    def test_error_prints_when_flushed(self, capsys):
         ctx = CLIContext(verbose=False)
         ctx.error("boom")
+        ctx.flush_errors()
         assert "boom" in capsys.readouterr().err
 
 
