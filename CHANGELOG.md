@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bearer-token authentication for the HTTP transports** (#616, #643). With `ZOTERO_MCP_AUTH_TOKEN` set (environment, `.env` or `client_env` in the config file), `serve --transport streamable-http` and `sse` answer `401` to any request without `Authorization: Bearer <token>`, SSE message posts included. The token is compared in constant time and never printed; an empty or malformed value stops the server at startup instead of being used, and `zotero-mcp setup` keeps a saved token when it rewrites the config. Docs show the header for Claude Code, Codex and Cursor. Thanks @iamnotmili, and @falcon1-1-code for the design discussion.
+
 ### Changed
 
+- **`serve` refuses to start an unauthenticated HTTP server on a non-loopback address.** `--host 0.0.0.0` or a LAN address now needs `ZOTERO_MCP_AUTH_TOKEN`, or `--allow-unauthenticated` to opt out explicitly. Loopback binds, the default, start as before with no token (and one warning), so local clients are unchanged; stdio is not affected.
+- **ChatGPT setup uses OpenAI's Secure MCP Tunnel instead of a public ngrok URL with no authentication.** ChatGPT cannot send a custom bearer token, and the old recipe relied on keeping the URL secret. The ngrok recipe remains for clients that can send the token.
 - **The default MCP tool surface costs 7.9k tokens per request instead of 16.9k** (cl100k_base, measured with `scripts/measure_context_cost.py`; `all` went from 21.0k to 11.2k). Every tool's name, description and schemas are sent on every request, so this is context returned to every session. Where it came from:
   - Tools no longer advertise FastMCP's `{"result": string}` output schema, and their answers are no longer sent a second time as structured content. Results arrive as one text block, as before.
   - Parameter schemas no longer repeat the docstring's Args as per-parameter descriptions (the tool description already explains each parameter), and show only the canonical shape of lenient parameters: an array of strings for `tags`, `collections`, `item_keys` and the like, an integer for `limit` and `offset`, no `null` branch for optional ones. The tools still accept everything they did (a bare string, a JSON-encoded list, `"10"`).

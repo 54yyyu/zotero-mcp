@@ -38,7 +38,7 @@ export FASTMCP_HTTP_ALLOWED_HOSTS='["zotero.example.com"]'
 export FASTMCP_HTTP_ALLOWED_ORIGINS='["https://app.example.com"]'
 ```
 
-Or have the proxy rewrite `Host` to `localhost:<port>`. To switch the check off entirely, set `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=false`; only do that on a trusted machine. Servers bound to `0.0.0.0` (for example in Docker) are not covered by the default check, so give those a bearer token or set `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=true` together with `FASTMCP_HTTP_ALLOWED_HOSTS`.
+Or have the proxy rewrite `Host` to `localhost:<port>`. To switch the check off entirely, set `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=false`; only do that on a trusted machine. Servers bound to `0.0.0.0` (for example in Docker) are not covered by the default check; they need `ZOTERO_MCP_AUTH_TOKEN` to start at all (see [HTTP authentication](configuration.md#http-authentication-and-network-access)), and you can add `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=true` together with `FASTMCP_HTTP_ALLOWED_HOSTS`.
 
 ## Semantic search issues
 
