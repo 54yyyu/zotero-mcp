@@ -7,6 +7,7 @@ a subprocess because import cost only shows on a cold interpreter.
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,8 @@ def test_the_entry_point_runs_tools_without_fastmcp(tmp_path):
         "ZOTERO_LIBRARY_ID": "1",
         # Nothing listens here: the command fails fast after loading the tools.
         "ZOTERO_API_URL": "http://127.0.0.1:9",
+        # Windows cannot load its socket provider without these (WinError 10106).
+        **{k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR") if k in os.environ},
     }
     proc = subprocess.run(
         [sys.executable, "-c", _ENTRY_PROBE.format(src=SRC)],
