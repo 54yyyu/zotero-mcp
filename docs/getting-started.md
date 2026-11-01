@@ -161,8 +161,7 @@ bearer_token_env_var = "ZOTERO_MCP_AUTH_TOKEN"
 ```
 
 The value is the environment variable's name; Codex reads its contents and sends
-the bearer header. Set it in the environment that launches Codex. See
-[Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+the bearer header. Set it in the environment that launches Codex.
 
 ### Cursor
 
@@ -186,93 +185,69 @@ Ensure Cursor inherits the variable, then restart it. Cursor uses the
 
 ## Integrating with OpenAI's ChatGPT
 
-### Recommended: OpenAI Secure MCP Tunnel
+ChatGPT connects to an MCP server with OAuth or with no authentication; OpenAI's
+[authentication docs](https://developers.openai.com/plugins/build/auth#client-identification)
+say it cannot present custom API keys, so it cannot send `ZOTERO_MCP_AUTH_TOKEN`.
+Do not work around that by exposing an unauthenticated server through a public
+tunnel: anyone with the URL could use every tool, writes included.
 
-[OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
-connects a private MCP server to supported OpenAI products through outbound
-HTTPS. It is the recommended ChatGPT path here because Zotero MCP can remain a
-local `stdio` process without a public listener.
+The supported route is OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels),
+which runs zotero-mcp as a local `stdio` process and opens only an outbound
+connection to OpenAI, so there is no public listener to protect. It needs
+ChatGPT developer mode and a tunnel in your OpenAI Platform organization
+(Tunnels permission Read + Manage to create it, Read + Use to run it).
 
-Availability depends on your account and workspace permissions. You need
-ChatGPT developer-mode access, a Platform tunnel associated with the target
-ChatGPT workspace, and a runtime API key. Managing the tunnel requires Tunnels
-Read + Manage; running or selecting it requires Read + Use. Check the linked
-OpenAI guide if the Tunnel option is unavailable.
-
-1. Install [openai/tunnel-client](https://github.com/openai/tunnel-client) using its
-   current installation instructions. On macOS, the repository recommends
-   `brew install openai/tools/tunnel-client`. Run `tunnel-client help quickstart`.
-2. Create or select a tunnel in [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels)
-   and obtain the required runtime credentials. Supply the runtime key as
-   `CONTROL_PLANE_API_KEY` in the terminal that will run the client. This is an
-   OpenAI credential, separate from `ZOTERO_MCP_AUTH_TOKEN` and Zotero API keys.
-3. Configure Zotero access as described above, keep Zotero running for local
-   access, and create a profile. Replace the example tunnel ID with yours:
+1. Install [tunnel-client](https://github.com/openai/tunnel-client)
+   (`brew install openai/tools/tunnel-client` on macOS; see its README for other platforms).
+2. Create a tunnel in [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels)
+   and export its runtime key as `CONTROL_PLANE_API_KEY` (an OpenAI credential,
+   unrelated to Zotero keys).
+3. Create a profile that starts zotero-mcp over stdio, using your tunnel ID, and run it:
 
    ```bash
    export ZOTERO_LOCAL=true
-   tunnel-client init \
-     --sample sample_mcp_stdio_local \
-     --profile zotero \
+   tunnel-client init --sample sample_mcp_stdio_local --profile zotero \
      --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
      --mcp-command "zotero-mcp serve --transport stdio"
    tunnel-client doctor --profile zotero --explain
    tunnel-client run --profile zotero
    ```
 
-   These are Bash commands; in PowerShell use `$env:ZOTERO_LOCAL = "true"` and
-   enter the `init` command on one line. Use the full path to `zotero-mcp` if the
-   tunnel client cannot find it. Keep one active tunnel client per tunnel ID
-   for this stdio configuration; stop it before starting a replacement.
-4. In ChatGPT's developer-mode app setup, choose **Tunnel** under **Connection**,
-   then select the tunnel or enter its ID. Keep the client running during setup
-   and use. Review the available tools before allowing access to your library.
+   Use the full path to `zotero-mcp` if the tunnel client cannot find it, and run
+   one `tunnel-client` per tunnel ID.
+4. In ChatGPT, add an app in developer mode, choose **Tunnel** under
+   **Connection** and select your tunnel. Keep `tunnel-client` running while you
+   use it.
 
-The command/profile and single-instance guidance follow the
-[tunnel-client repository](https://github.com/openai/tunnel-client). The app
-connection and permissions follow the [OpenAI tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
-This recipe has not been tested end to end with Zotero MCP and a live ChatGPT
-account. Confirm tool discovery and a read-only library query in your account.
-Whatever the connected tools return is shared with the AI service; configured
-write access can also let those tools modify your library.
+This route has not yet been tested end to end against a live ChatGPT account;
+check that the tools are listed and a read-only search works. Whatever the tools
+return is shared with OpenAI, and with write access configured they can change
+your library.
 
-### Direct ChatGPT connections and authentication
+## Public tunnel with a bearer token (ngrok)
 
-Zotero MCP's shared bearer token is not an OAuth server. OpenAI's
-[authentication documentation](https://developers.openai.com/plugins/build/auth#client-identification)
-states that ChatGPT cannot present custom API keys. Do not assume that a ChatGPT
-connection form can send `ZOTERO_MCP_AUTH_TOKEN`, and do not select **No
-authentication** for a public Zotero endpoint as a workaround. A direct public
-ChatGPT connection needs a compatible authentication layer, such as an MCP OAuth
-gateway, which is outside this guide.
+For clients that can send the `Authorization` header (the
+[HTTP clients above](#authenticated-http-clients)), a tunnel to a token-protected
+server works from anywhere:
 
-## Public tunnel fallback (ngrok)
-
-Use this fallback only with a client that can send the bearer header, such as
-the [HTTP clients above](#authenticated-http-clients). It is not a direct
-ChatGPT connection recipe.
-
-1. Set `ZOTERO_MCP_AUTH_TOKEN` and start the authenticated HTTP server as above.
-   Keep `--host 127.0.0.1`; a tunnel does not require a LAN listener.
-2. Follow [ngrok's installation and account setup](https://ngrok.com/download).
-   In a second terminal, run:
+1. Set `ZOTERO_MCP_AUTH_TOKEN` and start the server on loopback (a tunnel does not
+   need a LAN listener):
 
    ```bash
-   ngrok http 8000
+   zotero-mcp serve --transport streamable-http --host 127.0.0.1 --port 8000
    ```
 
-3. Use the HTTPS forwarding URL with `/mcp` appended as the client's server URL.
-   Send the same `Authorization: Bearer <token>` header. The ngrok account's
-   authtoken configures ngrok itself; it does not authenticate MCP callers.
-4. Before using the public endpoint, verify that requests with a missing or
-   incorrect token return HTTP 401, and that your authenticated client can
-   discover tools and complete a read-only query. Keep both processes running
-   only while needed.
+2. In a second terminal: `ngrok http 8000 --host-header=rewrite`. The server
+   refuses a `Host` header other than `localhost` or `127.0.0.1` (DNS-rebinding
+   protection) with `421 Misdirected Request`, and ngrok otherwise forwards its
+   public hostname. Instead of rewriting you can allow that hostname before
+   starting the server:
+   `export FASTMCP_HTTP_ALLOWED_HOSTS='["<random-string>.ngrok-free.app"]'`.
+3. Point the client at the HTTPS forwarding URL plus `/mcp`, with the
+   `Authorization: Bearer <token>` header. A request without it gets `401`.
 
-The public URL and any `session_id` provide no authentication. Do not disable
-Zotero MCP's token check to get past a client authentication failure. Use
-`streamable-http` at `/mcp`; switching to deprecated SSE does not remove the
-need for the bearer header.
+The URL and any `session_id` are not credentials; the token is. Stop both
+processes when you are done.
 
 ## Integrating with Cherry Studio
 

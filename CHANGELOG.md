@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Bearer-token authentication for the HTTP transports** (#616, #643). With `ZOTERO_MCP_AUTH_TOKEN` set (environment, `.env` or `client_env` in the config file), `serve --transport streamable-http` and `sse` answer `401` to any request without `Authorization: Bearer <token>`, SSE message posts included. The token is compared in constant time and never printed; an empty or malformed value stops the server at startup instead of being used, and `zotero-mcp setup` keeps a saved token when it rewrites the config. Docs show the header for Claude Code, Codex and Cursor. Thanks @iamnotmili, and @falcon1-1-code for the design discussion.
+
+### Changed
+
+- **`serve` refuses to start an unauthenticated HTTP server on a non-loopback address.** `--host 0.0.0.0` or a LAN address now needs `ZOTERO_MCP_AUTH_TOKEN`, or `--allow-unauthenticated` to opt out explicitly. Loopback binds, the default, start as before with no token (and one warning), so local clients are unchanged; stdio is not affected.
+- **ChatGPT setup uses OpenAI's Secure MCP Tunnel instead of a public ngrok URL with no authentication.** ChatGPT cannot send a custom bearer token, and the old recipe relied on keeping the URL secret. The ngrok recipe remains for clients that can send the token.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added

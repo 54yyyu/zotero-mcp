@@ -190,79 +190,41 @@ libraries is two items, and collapsing them would hide where each copy lives.
 
 ## HTTP authentication and network access
 
-Set `ZOTERO_MCP_AUTH_TOKEN` before starting an HTTP server. Clients must send the
-same value in the `Authorization: Bearer <token>` header. This token controls
-access to Zotero MCP; it is separate from the Zotero web API key and local write
-authorization.
+These settings apply to `serve --transport streamable-http` and `sse`; `stdio`
+is not affected. With `ZOTERO_MCP_AUTH_TOKEN` set, every HTTP request must carry
+`Authorization: Bearer <token>` or gets `401`. The token is a shared secret
+(compared in constant time, never logged) that gives the holder every enabled
+tool, writes included; it is separate from the Zotero API key.
 
-Generate a token once and make the same value available to the server and each
-authorized client. For example, in Bash:
+Generate one and give the same value to the server and each client:
 
 ```bash
 export ZOTERO_MCP_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 zotero-mcp serve --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
-Or in PowerShell:
+(PowerShell: `$env:ZOTERO_MCP_AUTH_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"`.)
+To keep it, put it in `client_env` in `~/.config/zotero-mcp/config.json`; the
+process environment and `.env` win over the config file, and re-running
+`zotero-mcp setup` keeps it. There is deliberately no `--token` flag, which
+would show the secret in the process list. An empty or malformed value (spaces,
+`null`, a number) stops the server at startup rather than being used.
 
-```powershell
-$env:ZOTERO_MCP_AUTH_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
-zotero-mcp serve --transport streamable-http --host 127.0.0.1 --port 8000
-```
+| Bind | No token | Token set |
+|---|---|---|
+| Loopback (`localhost`, `127.0.0.1`, `::1`) | Starts, with a warning; local clients unchanged | Bearer required |
+| Anything else (`0.0.0.0`, a LAN address) | Refuses to start unless `--allow-unauthenticated` | Bearer required |
 
-These commands set the token for the current terminal and its child processes.
-Another terminal or a GUI client needs the same token supplied separately; do
-not generate a different value for each client.
+On a loopback bind the server also checks the `Host` and `Origin` headers, so a
+web page cannot reach it through DNS rebinding; behind a tunnel or reverse proxy,
+see [Troubleshooting](troubleshooting.md). A tunnel can expose even a loopback
+server, so set a token before opening one. An auth provider configured through
+FastMCP's own settings is kept when no token is set.
 
-Alternatively, merge the following entry into the existing `client_env` object
-in `~/.config/zotero-mcp/config.json`, replacing the example value with your
-generated token and preserving the other settings:
-
-```json
-{
-  "client_env": {
-    "ZOTERO_MCP_AUTH_TOKEN": "REPLACE_WITH_YOUR_GENERATED_TOKEN"
-  }
-}
-```
-
-The process environment takes precedence over this saved value. Values loaded
-from an existing `.env` file also precede the standalone config; legacy Claude
-Desktop environment settings are used only when neither supplies a value. There is no
-`--token` argument or interactive token prompt during `serve`. Protect a config
-file containing the token as a secret, and do not commit it to version control.
-Restart the server and update its clients when rotating the token.
-
-An explicitly empty or invalid token is an HTTP startup configuration error;
-remove it from the environment and any config source supplying it to disable it.
-Use a generated token without spaces.
-When set, `ZOTERO_MCP_AUTH_TOKEN` takes precedence over an existing FastMCP
-authentication provider. When absent, that provider remains in effect.
-
-When neither a token nor an existing FastMCP authentication provider is
-configured, the HTTP transports behave as follows:
-
-| Bind address | Startup behavior |
-|---|---|
-| Loopback, such as `localhost`, `127.0.0.1`, or `::1` | Starts with one warning that authentication is disabled. |
-| Non-loopback, such as `0.0.0.0`, `::`, or a LAN address | Refuses to start unless `--allow-unauthenticated` is explicitly supplied. |
-
-`--allow-unauthenticated` permits an intentionally unauthenticated network
-listener; it does not disable a configured token. Use it only when access is
-controlled separately. A reverse proxy or tunnel can expose even a loopback
-listener, so the bind-address check does not make a public tunnel safe.
-
-A valid token gives access to all enabled tools with the running server's
-permissions, including writes if Zotero write access is configured. This is a
-shared secret, with no per-user identity or scopes. Use HTTPS for connections
-outside the local machine; bearer authentication does not encrypt traffic.
-Never put the token in a URL. An MCP session ID, including an SSE `session_id`,
-identifies a session and provides no authentication.
-
-Prefer `streamable-http` at `/mcp`; the deprecated `sse` transport requires the
-same bearer header on its requests. Local `stdio` clients continue to work
-without HTTP authentication. See [authenticated client examples](getting-started.md#authenticated-http-clients)
-and the [ChatGPT tunnel setup](getting-started.md#integrating-with-openais-chatgpt).
+Use HTTPS outside the local machine (the token is not encryption), never put the
+token in a URL, and note that an MCP session ID or SSE `session_id` is not a
+credential. Client examples: [authenticated HTTP clients](getting-started.md#authenticated-http-clients);
+ChatGPT: [Secure MCP Tunnel](getting-started.md#integrating-with-openais-chatgpt).
 
 ## Text extraction settings
 
