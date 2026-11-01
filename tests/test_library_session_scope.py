@@ -17,7 +17,11 @@ pytest.importorskip("fastmcp")
 httpx = pytest.importorskip("httpx")
 
 from fastmcp import Client  # noqa: E402
-from fastmcp.utilities.tests import asgi_server  # noqa: E402
+try:  # fastmcp 4 only; CI installs fastmcp<4
+    from fastmcp.utilities.tests import asgi_server  # noqa: E402
+except ImportError:
+    asgi_server = None
+needs_asgi_server = pytest.mark.skipif(asgi_server is None, reason="fastmcp.utilities.tests.asgi_server is fastmcp 4 only")
 
 from zotero_mcp import client as _client  # noqa: E402
 from zotero_mcp._app import _ZoteroMCP  # noqa: E402
@@ -53,6 +57,7 @@ def _data(result):
     return json.loads(result.content[0].text)  # tools advertise no output schema: text only
 
 
+@needs_asgi_server
 def test_sse_clients_keep_their_own_library():
     async def run():
         async with asgi_server(_server(), transport="sse") as srv:
@@ -71,6 +76,7 @@ def test_sse_clients_keep_their_own_library():
     assert _client._active_library_override == {}
 
 
+@needs_asgi_server
 def test_a_switch_in_one_session_leaves_another_on_the_default():
     async def run():
         async with asgi_server(_server(), transport="sse") as srv:
@@ -115,6 +121,7 @@ async def _call(http, session, name, args):
     return json.loads(result["content"][0]["text"]) if name == "active" else result
 
 
+@needs_asgi_server
 def test_streamable_http_sessions_keep_their_own_library():
     async def run():
         async with asgi_server(_server(), transport="streamable-http") as srv:
@@ -143,6 +150,7 @@ def test_in_memory_and_stdio_keep_the_process_wide_library():
     assert _client._active_library_override["library_id"] == "333"
 
 
+@needs_asgi_server
 def test_sessionless_http_keeps_the_process_wide_library():
     # Protocol 2026-07-28 requests carry no session: the switch is
     # server-wide, as it always was, and the tool says so.
