@@ -2125,15 +2125,15 @@ def _fetch_attachment_file(
 @mcp.tool(
     name="zotero_get_page_layout",
     description=(
-        "Detect figure and table regions on one PDF page and return their "
-        "boxes (x, y, width, height, normalized 0-1), each with its caption, "
-        "a confidence and a ready-made zotero_create_annotation call. Use it "
-        "before an area annotation instead of guessing coordinates. Boxes "
-        "cover the graphic itself: labels inside a figure or unruled table "
-        "headers can fall outside, and confidence reflects caption matching, "
-        "not box completeness. attachment_key: the PDF attachment, NOT the "
-        "parent item (zotero_get_item_children lists it). page: 1-indexed. "
-        "PDFs only."
+        "Detect figure, table and display-equation regions on one PDF page "
+        "and return their boxes (x, y, width, height, normalized 0-1), each "
+        "with its caption or equation number, a confidence and a ready-made "
+        "zotero_create_annotation call. Use it before an area annotation "
+        "instead of guessing coordinates. Boxes cover the graphic itself: "
+        "labels inside a figure or unruled table headers can fall outside, "
+        "and confidence reflects caption matching, not box completeness. "
+        "attachment_key: the PDF attachment, NOT the parent item "
+        "(zotero_get_item_children lists it). page: 1-indexed. PDFs only."
     )
 )
 def get_page_layout(

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The default MCP tool surface costs 7.9k tokens per request instead of 16.9k** (cl100k_base, measured with `scripts/measure_context_cost.py`; `all` went from 21.0k to 11.2k). Every tool's name, description and schemas are sent on every request, so this is context returned to every session. Where it came from:
+  - Tools no longer advertise FastMCP's `{"result": string}` output schema, and their answers are no longer sent a second time as structured content. Results arrive as one text block, as before.
+  - Parameter schemas no longer repeat the docstring's Args as per-parameter descriptions (the tool description already explains each parameter), and show only the canonical shape of lenient parameters: an array of strings for `tags`, `collections`, `item_keys` and the like, an integer for `limit` and `offset`, no `null` branch for optional ones. The tools still accept everything they did (a bare string, a JSON-encoded list, `"10"`).
+  - Tool descriptions were rewritten to what an agent needs to pick the tool and call it right: purpose, when to use it over its neighbour, constraints it cannot guess. Repeated scope notes, backend internals and sample output are gone.
+- **`zotero_search_items` takes tag conditions with or without a query.** With only `tag`, it lists the items carrying those tags, as `zotero_search_by_tag` did. The tag syntax is unchanged: entries are ANDed, ` OR ` alternates, a leading `-` excludes.
+- **`zotero_manage_collection(action="create"|"update"|"delete")`** replaces `zotero_create_collection`, `zotero_update_collection` and `zotero_delete_collection`, the same shape as `zotero_manage_note`. `zotero-cli` commands and flags are unchanged.
+- **`ZOTERO_MCP_TOOLSETS` accepts `default`**, the default profile, so a group can be added to it: `default,scite`.
+- A test now fails when the tool surface of the default, `none` or `all` profile grows past its ceiling, and the per-tool minimum description budgets are gone.
+
+### Deprecated
+
+- **`zotero_search_by_tag`, `zotero_create_collection`, `zotero_update_collection` and `zotero_delete_collection`** are off by default and kept in a new `legacy` tool group until 0.17, when they are removed. `ZOTERO_MCP_TOOLSETS=default,legacy` brings them back; `all` does not include `legacy`. Use `zotero_search_items(tag=...)` and `zotero_manage_collection` instead.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
