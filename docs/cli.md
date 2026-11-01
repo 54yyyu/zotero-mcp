@@ -133,6 +133,8 @@ zotero-cli get tags
 # Semantic search database
 zotero-cli db update
 zotero-cli db update --fulltext --force-rebuild
+zotero-cli db update --batch --auto-loop    # same flags as zotero-mcp update-db
+zotero-cli db batch-status                  # reads the configured provider's batches (or --provider)
 zotero-cli db status
 
 # Library and duplicates

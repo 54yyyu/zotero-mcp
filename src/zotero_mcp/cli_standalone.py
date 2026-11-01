@@ -26,10 +26,13 @@ from zotero_mcp import cli_json as _cli_json
 # Reuse environment setup from the original CLI module
 from zotero_mcp.cli import (
     _format_chunking_status,
-    _print_batch_import,
-    _print_batch_status,
-    _print_update_stats,
+    add_batch_import_arguments,
+    add_batch_status_arguments,
+    add_update_db_arguments,
     obfuscate_config_for_display,
+    run_batch_import,
+    run_batch_status,
+    run_update_db,
     setup_zotero_environment,
     tolerate_console_encoding,
 )
@@ -899,9 +902,19 @@ def cmd_duplicates(args):
 
 def cmd_db(args):
     """Manage the semantic search database."""
+    # Shared with `zotero-mcp update-db` / `batch-status` / `batch-import`,
+    # so the batch provider and every update flag behave the same here.
+    runner = {
+        "update": run_update_db,
+        "batch-status": run_batch_status,
+        "batch-import": run_batch_import,
+    }.get(args.subcommand)
+    if runner is not None:
+        runner(args)
+        return
+
     from pathlib import Path
     setup_zotero_environment()
-    from zotero_mcp.cli import _save_zotero_db_path_to_config
     from zotero_mcp.semantic_search import create_semantic_search
 
     config_path_arg = getattr(args, "config_path", None)
@@ -910,43 +923,7 @@ def cmd_db(args):
         else Path.home() / ".config" / "zotero-mcp" / "config.json"
     )
 
-    if args.subcommand == "update":
-        db_path = getattr(args, "db_path", None)
-        if db_path:
-            _save_zotero_db_path_to_config(config_path, db_path)
-        search = create_semantic_search(str(config_path), db_path=db_path)
-        if getattr(args, "openai_batch", None) is True and search.chroma_client.embedding_model != "openai":
-            print("Error: --openai-batch requires ZOTERO_EMBEDDING_MODEL=openai", file=sys.stderr)
-            sys.exit(1)
-        fulltext = getattr(args, "fulltext", False)
-        if fulltext:
-            from zotero_mcp.utils import is_local_mode
-            if not is_local_mode():
-                print("Error: --fulltext requires local mode (ZOTERO_LOCAL=true).", file=sys.stderr)
-                sys.exit(1)
-        stats = search.update_database(
-            force_full_rebuild=args.force_rebuild,
-            limit=args.limit,
-            extract_fulltext=fulltext,
-            use_openai_batch=getattr(args, "openai_batch", None),
-            allow_mass_deletion=getattr(args, "allow_mass_deletion", False),
-        )
-        _print_update_stats(stats)
-        if stats.get("error"):
-            print(f"Error: {stats['error']}", file=sys.stderr)
-            sys.exit(1)
-
-    elif args.subcommand == "batch-status":
-        search = create_semantic_search(str(config_path))
-        status = search.get_openai_batch_status(batch_ids=getattr(args, "batch_id", None))
-        _print_batch_status(status)
-
-    elif args.subcommand == "batch-import":
-        search = create_semantic_search(str(config_path))
-        stats = search.import_openai_batch(batch_ids=getattr(args, "batch_id", None))
-        _print_batch_import(stats)
-
-    elif args.subcommand == "status":
+    if args.subcommand == "status":
         search = create_semantic_search(str(config_path))
         status = search.get_database_status()
         ci = status.get("collection_info", {})
@@ -1783,23 +1760,9 @@ def build_parser() -> argparse.ArgumentParser:
     # db
     db_p = sub.add_parser("db", help="Manage the semantic search database")
     db_sub = db_p.add_subparsers(dest="subcommand")
-    dbu = db_sub.add_parser("update")
-    dbu.add_argument("--force-rebuild", action="store_true")
-    dbu.add_argument("--limit", type=int)
-    dbu.add_argument("--fulltext", action="store_true")
-    dbu.add_argument("--allow-mass-deletion", action="store_true")
-    dbu.add_argument("--config-path")
-    dbu.add_argument("--db-path")
-    dbu_batch = dbu.add_mutually_exclusive_group()
-    dbu_batch.add_argument("--openai-batch", dest="openai_batch", action="store_true")
-    dbu_batch.add_argument("--no-openai-batch", dest="openai_batch", action="store_false")
-    dbu.set_defaults(openai_batch=None)
-    dbbs = db_sub.add_parser("batch-status")
-    dbbs.add_argument("--batch-id", action="append")
-    dbbs.add_argument("--config-path")
-    dbbi = db_sub.add_parser("batch-import")
-    dbbi.add_argument("--batch-id", action="append")
-    dbbi.add_argument("--config-path")
+    add_update_db_arguments(db_sub.add_parser("update"))
+    add_batch_status_arguments(db_sub.add_parser("batch-status"))
+    add_batch_import_arguments(db_sub.add_parser("batch-import"))
     dbs = db_sub.add_parser("status")
     dbs.add_argument("--config-path")
     dbi = db_sub.add_parser("inspect")

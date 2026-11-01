@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Batch tag and Extra edits take about 40 requests for 1000 items instead of 2000.** `zotero_batch_update` and `zotero-cli batch` fetched every explicit key with its own request and wrote every edited item with its own PATCH. Keys are now fetched 50 per request and edits written 50 per request, on the web and the local API alike; in hybrid mode the web copies are fetched in batches too (60 requests instead of 3000). An item refused for a stale version is still re-fetched and retried on its own, any other refused item is reported and counted as skipped, and a batch the backend will not take is written one item at a time.
 - **`zotero-cli` commands start in about 0.4 s instead of 1.0 s.** Every command that used a tool loaded FastMCP and the MCP SDK on the way, about half a second spent on a server registry the CLI never uses. `zotero-cli` now runs the tools without them; the MCP server is unchanged. Measured with `zotero-cli get collections` against a local stand-in API: 1.00 s before, 0.41 s after. `--help` was already fast (0.05 s).
 
+### Fixed
+
+- **`zotero-cli db batch-status` and `db batch-import` work for Gemini batch runs.** They always read OpenAI's batch manifests. They now run the same code as `zotero-mcp batch-status` / `batch-import`: the provider follows the configured embedding model, or `--provider`. `zotero-cli db update` takes every `zotero-mcp update-db` flag, including `--batch`, `--batch-provider`, `--extraction-workers` and `--auto-loop`; its existing flags are unchanged.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
