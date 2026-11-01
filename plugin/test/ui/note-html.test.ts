@@ -129,3 +129,11 @@ test("the agent's formatting guide names exactly what the panel and the note acc
   }
   assert.ok([...walk(mdToTree('<span style="color: red">x</span>'))].some((n) => n.attrs?.color === "#ff2020"));
 });
+
+test("a callout is a quote with its label in bold, numbered within the note, and a \\ref says which one", () => {
+  const html = noteHtml("> [!definition] Metric $d$\n> A map.\n\n\\begin{proof}[Banach]\nTrivial.\n\\end{proof}\n\nSee \\ref{def:m} and \\ref{nope}.\n\n> [!theorem] T\n> \\label{def:m}\n> x");
+  assert.match(html, /<blockquote><p><strong>Definition 1<\/strong> — Metric <span class="math">\$d\$<\/span><\/p><p>A map\.<\/p><\/blockquote>/);
+  assert.match(html, /<strong>Proof\.<\/strong> — Banach<\/p><p>Trivial\.<\/p><p>∎<\/p>/);
+  assert.match(html, /See Theorem 2 and nope\./);
+  assert.equal(leak(html), null);
+});

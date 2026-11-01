@@ -14,6 +14,7 @@ class object, so the re-exported name has to *be* the registered class.
 import json
 import logging
 import os
+import sqlite3
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -35,7 +36,7 @@ from zotero_mcp.utils import ensure_private_dir, install_hint, suppress_stdout
 
 try:
     import chromadb
-    from chromadb import Documents, EmbeddingFunction, Embeddings
+    from chromadb import EmbeddingFunction
     from chromadb.config import Settings
 except ImportError as e:
     raise ImportError(
@@ -87,8 +88,10 @@ class ChromaClient:
         # the registry lookup used when a persisted collection config is
         # rebuilt below (issue #382).
         ensure_embedding_functions_registered()
+        self._open()
 
-        # Initialize ChromaDB client with stdout suppression
+    def _open(self) -> None:
+        """Open the persistent client and the collection in ``persist_directory``."""
         with suppress_stdout():
             self.client = chromadb.PersistentClient(
                 path=self.persist_directory,
@@ -392,8 +395,45 @@ class ChromaClient:
                 "count": 0,
                 "embedding_model": self.embedding_model,
                 "persist_directory": self.persist_directory,
-                "error": str(e)
+                "error": str(e),
+                **unreadable_index_facts(self.persist_directory),
             }
+
+    def read_error(self) -> str | None:
+        """Why the collection cannot be read, or None when it can.
+
+        Counting reads the metadata segment, which is the part an interrupted
+        write leaves unreadable (#747).
+        """
+        try:
+            self.collection.count()
+            return None
+        except Exception as e:
+            return str(e)
+
+    def move_aside(self) -> str:
+        """Rename the index directory to ``<dir>.broken-<timestamp>`` and start an empty one.
+
+        For an index ChromaDB cannot read: deleting it through ChromaDB would
+        run into the same error, and a rename keeps the data for ``repair-db``
+        or a manual look. Returns the new name of the old directory.
+        """
+        from datetime import datetime
+
+        self.collection = None
+        self.client = None
+        release_chroma_clients()
+        current = Path(self.persist_directory)
+        moved = current.with_name(f"{current.name}.broken-{datetime.now():%Y%m%d-%H%M%S}")
+        try:
+            os.rename(current, moved)
+        except PermissionError as e:  # Windows: ChromaDB or another process still has the files open
+            raise RuntimeError(
+                f"Could not move the unreadable index at {current} aside ({e}). Stop every Zotero MCP "
+                f"server using it and run `zotero-mcp repair-db`, or delete the folder and run update-db."
+            ) from e
+        self._open()
+        return str(moved)
 
     def reset_collection(self) -> None:
         """Reset (clear) the collection."""
@@ -537,12 +577,18 @@ class ChromaClient:
             raise
 
 
-def create_chroma_client(config_path: str | None = None) -> ChromaClient:
+def create_chroma_client(
+    config_path: str | None = None,
+    *,
+    persist_directory: str | None = None,
+) -> ChromaClient:
     """
     Create a ChromaClient instance from configuration.
 
     Args:
         config_path: Path to configuration file
+        persist_directory: Build the client on this directory instead of the
+            configured one (``repair-db`` writes its rebuilt index here)
 
     Returns:
         Configured ChromaClient instance
@@ -562,6 +608,16 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
                 config.update(file_config.get("semantic_search", {}))
         except Exception as e:
             logger.warning(f"Error loading config from {config_path}: {e}")
+
+    # In the MCP server, ChromaDB runs in a worker process that exits when
+    # idle, because the index it loads is never released in-process.
+    if persist_directory is None:
+        from zotero_mcp import chroma_worker
+
+        idle = config.get("idle_unload_minutes", chroma_worker.DEFAULT_IDLE_UNLOAD_MINUTES)
+        worker = chroma_worker.shared_client(config_path, idle)
+        if worker is not None:
+            return worker
 
     # Pick the embedding model. config.json is the richer, authoritative source
     # (it also carries the matching api_key / base_url / model_name), so it wins
@@ -592,41 +648,67 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
 
     return ChromaClient(
         collection_name=config["collection_name"],
-        persist_directory=config.get("persist_directory"),
+        persist_directory=persist_directory or config.get("persist_directory"),
         embedding_model=config["embedding_model"],
         embedding_config=config["embedding_config"]
     )
 
 
-class _NoEmbeddingFunction(EmbeddingFunction):
-    """Placeholder embedding function used for read-only status reads.
+def release_chroma_clients() -> None:
+    """Drop ChromaDB's per-path client cache, closing the files it holds open.
 
-    Passing an explicit embedding function to ``get_collection`` stops ChromaDB
-    from reconstructing the collection's persisted embedding function — which,
-    for the default backend, eagerly downloads the ~80MB ONNX MiniLM model.
-    Counting rows never embeds anything, so this is never actually called; it
-    raises if it ever is, to make misuse loud rather than silently wrong.
-
-    ``name()`` MUST return ``"default"``. ChromaDB >=1.x validates the supplied
-    embedding function against the collection's persisted config in
-    ``validate_embedding_function_conflict_on_get`` and raises a ``ValueError``
-    whenever the supplied ``name()`` differs from the persisted one — *unless*
-    the supplied name is ``"default"``, which short-circuits the check. Without
-    this, opening a collection that was built with any real backend (default,
-    openai, gemini, ...) raises a conflict; ``read_collection_status`` then
-    swallowed that error and reported "0 documents / not initialized" against a
-    fully populated database (issue #362).
+    Needed before an index directory is renamed: a later client for the same
+    path would otherwise reuse the cached one, still bound to the old files.
     """
+    try:
+        from chromadb.api.client import SharedSystemClient
 
-    def __init__(self):
-        pass
+        SharedSystemClient.clear_system_cache()
+    except Exception as e:  # pragma: no cover - best effort
+        logger.debug(f"could not clear the ChromaDB client cache: {e}")
 
-    def __call__(self, input: Documents) -> Embeddings:  # pragma: no cover - never invoked
-        raise RuntimeError("embedding is unavailable in status-only mode")
 
-    @staticmethod
-    def name() -> str:
-        return "default"
+def unreadable_index_facts(persist_directory: str) -> dict[str, Any]:
+    """Size and last write of an index ChromaDB failed to read, if one is on disk.
+
+    Empty when there is no ``chroma.sqlite3``: then the failure is not a
+    damaged index, and the caller's plain error is the right message.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    try:
+        if db.stat().st_size == 0:
+            return {}
+        size = sum(f.stat().st_size for f in Path(persist_directory).rglob("*") if f.is_file())
+        return {"unreadable": True, "size_bytes": size, "last_written": db.stat().st_mtime}
+    except OSError:
+        return {}
+
+
+def unreadable_index_message(info: dict[str, Any], last_update: str | None) -> str:
+    """What to tell the user about an index that exists but cannot be read (#747).
+
+    The last write against the last successful update tells an interrupted
+    update (written later) from damage of some other kind.
+    """
+    from datetime import datetime, timedelta
+
+    written = datetime.fromtimestamp(info["last_written"])
+    try:
+        last = datetime.fromisoformat(last_update) if last_update else None
+    except ValueError:
+        last = None
+    late = last is not None and written - last > timedelta(minutes=5)
+    lines = [
+        f"The semantic index exists ({info['size_bytes'] / 2**30:.1f} GB) but ChromaDB cannot read it:",
+        f"  {info.get('error', 'unknown error')}",
+        f"Last successful update: {last:%Y-%m-%d %H:%M}" if last else "Last successful update: never recorded",
+        f"Index last written:     {written:%Y-%m-%d %H:%M}"
+        + (" (after the last successful update; an interrupted update is the usual cause)" if late else ""),
+        f"Index location:         {info.get('persist_directory', '')}",
+        "To recover it without re-embedding: zotero-mcp repair-db",
+        "To re-embed everything instead:      zotero-mcp update-db --force-rebuild",
+    ]
+    return "\n".join(lines)
 
 
 def read_collection_status(
@@ -675,22 +757,70 @@ def read_collection_status(
         "persist_directory": persist_directory,
     }
 
+    # Read the counts from chroma.sqlite3 directly, read-only. Asking ChromaDB
+    # for count() loads the collection's whole vector index into this process
+    # and keeps it there (gigabytes for a large full-text index), and on a
+    # damaged index it writes while retrying its pending log (#747).
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return {**base, "count": 0, "initialized": False}
     try:
-        with suppress_stdout():
-            client = chromadb.PersistentClient(
-                path=persist_directory,
-                settings=Settings(anonymized_telemetry=False, allow_reset=True),
-            )
-            try:
-                collection = client.get_collection(
-                    name=collection_name,
-                    embedding_function=_NoEmbeddingFunction(),
-                )
-            except Exception:
-                # Collection does not exist yet — database not initialized.
+        if problem := sqlite_page_count_problem(db):
+            raise sqlite3.DatabaseError(problem)
+        con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+        try:
+            row = con.execute("SELECT id FROM collections WHERE name = ?", (collection_name,)).fetchone()
+            if row is None:
                 return {**base, "count": 0, "initialized": False}
-            count = collection.count()
-        return {**base, "count": count, "initialized": True}
+            count, pending = con.execute(
+                """
+                SELECT
+                    (SELECT count(*) FROM embeddings e JOIN segments s ON e.segment_id = s.id
+                     WHERE s.collection = :c AND s.scope = 'METADATA'),
+                    (SELECT count(*) FROM embeddings_queue
+                     WHERE topic LIKE '%' || :c AND seq_id > coalesce(
+                         (SELECT min(m.seq_id) FROM max_seq_id m JOIN segments s ON m.segment_id = s.id
+                          WHERE s.collection = :c), 0))
+                """,
+                {"c": row[0]},
+            ).fetchone()
+        finally:
+            con.close()
+        result = {**base, "count": count, "initialized": True}
+        if pending:
+            # Writes ChromaDB has logged but not applied yet; it applies them
+            # the next time the index is opened.
+            result["pending_writes"] = pending
+        return result
     except Exception as e:
         logger.error(f"Error reading collection status: {e}")
-        return {**base, "count": 0, "error": str(e)}
+        return {**base, "count": 0, "error": str(e), **unreadable_index_facts(persist_directory)}
+
+
+def sqlite_page_count_problem(db: Path) -> str | None:
+    """Say so if an SQLite file is longer than its header's page count; None if not.
+
+    SQLite never leaves a healthy rollback-journal database like that. It is
+    what a write that grew the file and was cut off before the header was
+    updated leaves behind, and SQLite then reports the tables that point past
+    the counted pages as "malformed" (#747). The check reads 100 bytes, so it
+    costs nothing on a 20 GB index. WAL databases are skipped: their file and
+    header lag the log by design.
+    """
+    if Path(f"{db}-wal").exists():
+        return None
+    with open(db, "rb") as f:
+        header = f.read(100)
+    if len(header) < 100 or not header.startswith(b"SQLite format 3\x00"):
+        return "not an SQLite database"
+    page_size = int.from_bytes(header[16:18], "big")
+    page_size = 65536 if page_size == 1 else page_size
+    page_count = int.from_bytes(header[28:32], "big")
+    trusted = header[24:28] == header[92:96]  # change counter == version-valid-for
+    file_pages = db.stat().st_size // page_size
+    if trusted and page_count < file_pages:
+        return (
+            f"the database file holds {file_pages} pages but its header counts {page_count}; "
+            "a write was cut off before it finished"
+        )
+    return None

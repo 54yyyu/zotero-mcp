@@ -3,7 +3,7 @@
 import type { AgentSession, ChatEvent, ContextChip, PanelHost, PanelSettings, SavedSession } from "../types.ts";
 import { clip, errMessage, nextId } from "./dom.ts";
 import { summary } from "./context.ts";
-import { planContext } from "./economy.ts";
+import { chipHash, planContext } from "./economy.ts";
 import { Persister } from "./persist.ts";
 import { applyEvent, emptyTranscript, promptFor, replay } from "./transcript.ts";
 import type { TranscriptState } from "./transcript.ts";
@@ -22,6 +22,8 @@ export interface ChatDeps {
   sessionChanged(): void;
   /** What the agent reads for what the user typed (`/skill rest` becomes a plain instruction), in the agent's folder `cwd`. */
   expand(text: string, cwd: string): Promise<string>;
+  /** Which chips count as already shown changed (a send, a new chat, a compaction): repaint the composer's chips. */
+  shownChanged(): void;
 }
 
 export class Chat {
@@ -40,6 +42,8 @@ export class Chat {
   private cwd = "";
   /** Chips this agent session has already read (id -> fingerprint): unchanged ones are not sent again. */
   private sent = new Map<string, string>();
+  /** Chips this chat has shown in a sent message (id -> fingerprint): the composer stops showing them (isShown). */
+  private shown = new Map<string, string>();
   private persister: Persister;
   private d: ChatDeps;
 
@@ -48,11 +52,20 @@ export class Chat {
     this.persister = new Persister((ev) => this.write(ev));
   }
 
+  /**
+   * Already shown in a message of this chat. Where the user is (the open paper, a selected item or collection) counts
+   * once per item, whatever page they are on; what they point at (a selection, an area, a picture) until it changes.
+   */
+  isShown(c: ContextChip): boolean {
+    const h = this.shown.get(c.id);
+    return h !== undefined && (c.kind === "reader" || c.kind === "item" || c.kind === "collection" || h === chipHash(c));
+  }
+
   get busy(): boolean { return this.sending || this.tr.running !== null; }
 
   /** Fold an event into the transcript, ask for a render, and save it. */
   dispatch(ev: ChatEvent, persist = true): void {
-    if (ev.t === "notice" && ev.compacted) this.sent.clear(); // the summary may have dropped what was sent
+    if (ev.t === "notice" && ev.compacted) { this.sent.clear(); this.shown.clear(); this.d.shownChanged(); } // the summary may have dropped what was sent
     this.tr = applyEvent(this.tr, ev);
     this.d.onChange();
     if (persist && (this.saved || ev.t === "user")) this.persister.push(ev);
@@ -114,7 +127,11 @@ export class Chat {
       this.saved = { id: nextId("s") + Date.now().toString(36), title: clip(text, 60), backend: host.getSettings().backend, cwd: this.resume?.cwd ?? "", agentSessionId: this.resume?.agentSessionId ?? "", updatedAt: Date.now() };
     }
     this.sending = true;
-    this.dispatch({ t: "user", id: nextId("u") + Date.now().toString(36), text, chips: used.map(summary) });
+    // The bubble shows what the composer showed: context already in this chat is only named to the agent, not shown again.
+    const fresh = used.filter((c) => !this.isShown(c));
+    for (const c of used) this.shown.set(c.id, chipHash(c));
+    this.d.shownChanged();
+    this.dispatch({ t: "user", id: nextId("u") + Date.now().toString(36), text, chips: fresh.map(summary) });
     try {
       const starting = this.ensureSession();
       // The focused paper's metadata and full-text file, prepared while the session starts (never longer than 1.5 s after).
@@ -130,6 +147,7 @@ export class Chat {
         this.sent = next;
         this.lastContext = plan;
       } catch { /* the question still goes */ }
+      if (ctx.images.length && !sess.supportsImages) this.dispatch({ t: "notice", level: "warn", message: "This agent doesn't take images, so the pictures were left out of that message." });
       const said = await this.d.expand(text, this.cwd);
       await sess.prompt({
         text: [ctx.text, said].filter(Boolean).join("\n\n"),
@@ -217,6 +235,8 @@ export class Chat {
     this.resume = null;
     this.sending = false;
     this.lastContext = [];
+    this.shown.clear();
+    this.d.shownChanged();
     this.d.onChange();
   }
 

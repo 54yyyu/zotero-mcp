@@ -1,6 +1,7 @@
 """Local HuggingFace embedding function, backed by sentence-transformers."""
 
 import logging
+import threading
 from typing import Any
 
 from chromadb import Documents, Embeddings
@@ -9,6 +10,31 @@ from chromadb.utils.embedding_functions import register_embedding_function
 from zotero_mcp.embeddings.base import BaseEmbeddingFunction
 
 logger = logging.getLogger(__name__)
+
+# One SentenceTransformer per model name, shared by every
+# HuggingFaceEmbeddingFunction in the process. ChromaDB rebuilds the embedding
+# function from the persisted collection config on every upsert and query
+# (Schema.deserialize_from_json -> build_from_config), so without this cache
+# each call loaded the model again and, on CUDA, kept a copy alive until the
+# next GC pass, which exhausted GPU memory during update-db (issue #726).
+_MODEL_CACHE: dict[str, Any] = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+
+
+def _load_model(model_name: str) -> Any:
+    """Return the cached SentenceTransformer for ``model_name``, loading it once."""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        raise ImportError("sentence-transformers package is required for HuggingFace embeddings. Install with: pip install sentence-transformers")
+
+    with _MODEL_CACHE_LOCK:
+        model = _MODEL_CACHE.get(model_name)
+        if model is None:
+            logger.info(f"Loading embedding model: {model_name}")
+            model = SentenceTransformer(model_name, trust_remote_code=True)
+            _MODEL_CACHE[model_name] = model
+    return model
 
 
 @register_embedding_function
@@ -22,13 +48,7 @@ class HuggingFaceEmbeddingFunction(BaseEmbeddingFunction):
 
     def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B"):
         self.model_name = model_name
-
-        try:
-            from sentence_transformers import SentenceTransformer
-            logger.info(f"Loading embedding model: {model_name}")
-            self.model = SentenceTransformer(model_name, trust_remote_code=True)
-        except ImportError:
-            raise ImportError("sentence-transformers package is required for HuggingFace embeddings. Install with: pip install sentence-transformers")
+        self.model = _load_model(model_name)
 
         # Read limit from model metadata; conservative fallback
         self.max_input_tokens = getattr(self.model, "max_seq_length", 500)

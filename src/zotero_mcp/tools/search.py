@@ -783,12 +783,9 @@ def search_by_tag(
         "metadata, or a not-found message if no item has that key. "
         "citekey: the citation key exactly as assigned by BetterBibTeX "
         "(case-sensitive). "
-        "In local mode: queries the running Better BibTeX plugin via its "
-        "HTTP API (Zotero desktop must be running and have BBT installed). "
-        "In web mode: scans the 'Extra' field of items for 'Citation Key:' "
-        "lines — slower, and may miss items whose keys aren't persisted to "
-        "Extra. "
-        "Requires the Better BibTeX plugin in the user's Zotero install. "
+        "Matches Zotero's native citationKey field, then any 'Citation Key:' "
+        "line in Extra. In web mode a key the API's search does not surface "
+        "is found by scanning the library, which is slower on large libraries. "
         "For partial-key or free-text lookup, use zotero_search_items. "
         "Example: zotero_search_by_citation_key(citekey='hasan2026mcp') → "
         "metadata for that single item."
@@ -1544,9 +1541,27 @@ def semantic_search(
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
+        # Say how the order was produced. A hosted re-ranker that fails falls
+        # back to retrieval order on purpose, and without this line that
+        # fallback is invisible: a wrong model name or an expired key would
+        # quietly degrade every search.
+        rerank = results.get("rerank")
+        if rerank:
+            if rerank.get("applied"):
+                output.append(
+                    f"*Ranked by {rerank.get('model')} over "
+                    f"{rerank.get('candidates')} candidates.*"
+                )
+            else:
+                output.append(
+                    f"**Note:** re-ranking with {rerank.get('model')} failed "
+                    f"({rerank.get('error')}); results are in embedding-similarity order."
+                )
+            output.append("")
 
         for i, result in enumerate(search_results, 1):
             similarity_score = result.get("similarity_score", 0)
+            rerank_score = result.get("rerank_score")
             zotero_item = result.get("zotero_item", {})
 
             # Prefer the grounded passage — the window of the document that
@@ -1558,6 +1573,11 @@ def semantic_search(
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.
             loc_bits = []
+            # Section first: it is what tells a reader whether the hit is this
+            # paper's own claim or a citation of someone else's, which changes
+            # how the result should be read before anything else does.
+            if section := result.get("section"):
+                loc_bits.append(str(section))
             if (page := result.get("page")) is not None:
                 loc_bits.append(f"p. {page}")
             if (ci := result.get("chunk_index")) is not None and (nc := result.get("n_chunks")):
@@ -1566,7 +1586,13 @@ def semantic_search(
                 loc_bits.append(f"char ~{off}")
 
             if zotero_item:
-                extra = {"Relevance": f"{similarity_score:.3f}"}
+                if rerank_score is not None:
+                    extra = {
+                        "Relevance": f"{rerank_score:.3f}",
+                        "Similarity": f"{similarity_score:.3f}",
+                    }
+                else:
+                    extra = {"Relevance": f"{similarity_score:.3f}"}
                 if loc_bits:
                     extra["Location"] = ", ".join(loc_bits)
                 if snippet:
@@ -1754,12 +1780,26 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append("## Collection Information")
         output.append(f"**Name:** {collection_info.get('name', 'Unknown')}")
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
+        if collection_info.get("pending_writes"):
+            output.append(
+                f"**Pending Writes:** {collection_info['pending_writes']} "
+                "(logged but not yet applied; applied when the index is next opened)"
+            )
         output.append(f"**Embedding Model:** {collection_info.get('embedding_model', 'Unknown')}")
         output.append(f"**Database Path:** {collection_info.get('persist_directory', 'Unknown')}")
 
         if collection_info.get("initialized") is False and not collection_info.get("error"):
             output.append("**Status:** Not initialized — run zotero_update_search_database first.")
-        if collection_info.get('error'):
+        if collection_info.get("unreadable"):
+            # A damaged index reads as 0 documents; say so, with what to run (#747).
+            from zotero_mcp.chroma_client import unreadable_index_message
+
+            output.append("**Status:** Unreadable — the index is damaged, not empty.")
+            output.append("")
+            output.append("```")
+            output.append(unreadable_index_message(collection_info, update_config.get("last_update")))
+            output.append("```")
+        elif collection_info.get('error'):
             output.append(f"**Error:** {collection_info['error']}")
 
         output.append("")

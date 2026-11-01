@@ -5,7 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.15.2] - 2026-10-31
+
+### Added
+
+- **`zotero-mcp repair-db` rebuilds an unreadable semantic index without re-embedding it** (#747). An `update-db` cut off part way through can leave `chroma.sqlite3` in a state ChromaDB refuses to read, and the only way out was `--force-rebuild`, which re-embeds the whole library: hours and a full API bill for a large full-text index. `repair-db` reads the vectors from the index's HNSW files and the documents and metadata from a copy of `chroma.sqlite3` (full table scans, so damaged indexes do not matter; a header that undercounts its pages is corrected in the copy), and writes every item whose chunks all have a document, a vector and matching metadata into a fresh index. The rest are left out and listed in a report; `update-db --fulltext` embeds them. The old index is kept as `chroma_db.broken-<timestamp>`. `--dry-run` reports what would be kept without changing anything. On a 1.16-million-chunk OpenAI index damaged this way it kept 36,421 of 36,442 items.
+- **Each indexed passage carries the paper section it falls in** (#721, split from #547). With chunking on, passages get a `section` label (Abstract, Introduction, Methods, Results, Discussion, Conclusion, References, Appendix, Back matter), shown first in the Location line and usable in `filters`. Headings are matched by shape; unrecognised headings end a label rather than letting it run on. Existing indexes get labels after a rebuild.
+- **Re-ranking through a hosted endpoint** (#722, split from #547). `reranker.provider` set to `voyage`, `cohere`, `openrouter` or `contextual` (or `base_url` + `api_key_env` for any compatible endpoint) re-ranks through that API instead of a local cross-encoder; the query and candidate passages are sent to the provider. A failed call falls back to embedding order and the search output says why. With any re-ranker, Relevance is now its score, with the embedding similarity alongside. Default unchanged (local cross-encoder, off).
+- **`zotero-cli edit --field NAME=VALUE`** sets any Zotero field that has no dedicated flag, such as `seriesNumber` or `versionNumber` (#728, #753). Repeatable; `NAME=` clears a field; the item-type schema check applies as for other edits.
+- **`embedding_config.max_input_tokens`** caps the text sent per document for OpenAI-compatible and Ollama providers (#735), for local servers that run a model with a shorter context than OpenAI's 8000 tokens. Unset, nothing changes.
+- **Paste or drop a picture into the Zotero Agent's message box** (#757). A screenshot from the clipboard or a dropped image file becomes an image card for the next message, redrawn as PNG at most 1568 px on the long edge. An agent that takes no images now says so in a notice instead of silently leaving the picture out.
+- **Callout cards in the Zotero Agent panel** (#719). Definitions, theorems, lemmas, proofs, notes and the like, written as `> [!definition]` blockquotes or LaTeX `\begin{theorem}`, render as numbered cards, and `\ref{thm:x}` links back to one.
+- **`zotero_attach_file` takes `link_mode="linked"`** (#754) to link a local file in place instead of importing a copy.
+- **`ZOTERO_API_URL` points the client at a self-hosted Zotero Web API server** (#734). Unset, nothing changes.
+- **A Nix flake** for `nix run` and `nix profile install` (#733), maintained by its contributor; CI does not build it.
+
+### Changed
+
+- **The MCP server can free the semantic index's memory when semantic search is idle (opt-in).** ChromaDB loads a collection's whole vector index on the first query and keeps it until the process exits; nothing in its API releases it, and the 1.x bindings ignore `chroma_memory_limit_bytes`. A server that ran one semantic search therefore held the index for as long as it ran, often days: about 6 GB for a million OpenAI passages. With `semantic_search.idle_unload_minutes` set (it is off by default; 10 is a good value), the server runs ChromaDB in a worker process that starts at the first semantic call and exits after that many idle minutes; the next call starts a new worker and reloads the index. Only ChromaDB moves: fetching the Zotero items for the hits, the active library and the result formatting stay in the server. `0`, the default, keeps the previous in-process behavior. The command-line tools are unchanged, since their process ends with the command. See "Semantic search memory" in `docs/configuration.md`.
+- **The search database status reads its counts from the database file.** `zotero_get_search_database_status` called ChromaDB's `count()`, which loads the whole vector index just to count it, and on a damaged index made ChromaDB retry its pending writes into the file. It now reads `chroma.sqlite3` read-only, reports writes ChromaDB has logged but not applied, and recognizes the on-disk signature of an interrupted write (a file longer than its header's page count) as an unreadable index without opening it.
+- **Selected areas and pasted pictures are small tiles in the Zotero Agent's message box**, in a row under the chips, with × on the corner on hover and a click for a large preview, instead of full-width cards.
+- **Context already sent in a chat leaves the Zotero Agent's message box.** The open paper's chip goes out with the first message and comes back only when you switch papers; a selection or area comes back when it changes. The agent still gets a one-line reminder of what is open.
+- **The Zotero Agent answers in the language you write in**, and "Explain better" keeps the language of the last answer.
+- **`zotero-cli batch` and `tags` address tag names that contain commas** (a JSON array), reaches attachments when items are selected by tag or key, takes `--item-keys`, and pages `--limit` up to 1000, saying so when more items matched (#752).
+
+### Fixed
+
+- **A damaged semantic index is reported as damaged, not as empty** (#747). When ChromaDB could not read the index, `zotero_get_search_database_status` and `db-status` showed `Document Count: 0` with ChromaDB's error, and a collection that failed to open was reported as "not initialized". Both now say the index is unreadable and show its size on disk, the last successful update and when the index was last written (a write after the last successful update points to an interrupted update), with the two ways out: `repair-db`, or `update-db --force-rebuild`. `update-db` and `zotero_semantic_search` stop with the same message instead of ChromaDB's error alone. `--force-rebuild` on an unreadable index renames it to `chroma_db.broken-<timestamp>` and starts a new one, rather than deleting the collection through ChromaDB, the same code that cannot read it.
+- **The HuggingFace embedding provider loads each model once per process** (#726). ChromaDB rebuilds the embedding function from the persisted collection config on every upsert and query, which reloaded the `SentenceTransformer` each time and, on CUDA, exhausted GPU memory during `update-db`.
+- **`zotero_search_by_citation_key` finds keys in web mode that the API's quick search misses** (#740). The web API's search indexes neither `citationKey` nor Extra, so a key that appeared nowhere else was reported as not found. The lookup now falls back to scanning top-level items, which is slower on large libraries only when the quick search misses.
+- **Japanese text in the Zotero Agent panel uses Japanese glyph forms** (#755, from #756). The font stack named Chinese fonts ahead of the system's own, so shared characters such as 骨 and 直 took Chinese forms; CJK text now falls back by the system's locale.
+- **The Zotero Agent installs its bridge on Windows when Node and the profile path both contain spaces** (#730, #737). Node's own `npm.cmd` is now run through `node` instead of `cmd.exe`.
+- **While an answer streams, the chat lets go of the bottom at your first upward scroll.**
+- **Local mode says Zotero is not running** when a write fails with a refused connection, instead of a bare `[Errno 61] Connection refused` (#744, #745).
+- **No more leaked database copies on Windows** (#736). The local SQLite snapshot is cleaned up when the process that made it is gone.
+- **A dry run of batch annotations reads metadata from the selected group library** in local-only mode (#731, #732).
+- **Highlights on rotated pages land in the right place, and a quote that repeats on a page is highlighted once** (#720).
+- **Batch Extra edits fetch each item once** instead of twice: a separately built read client made every item look like it came from another backend.
+- **`docs/cli.md` examples that did not parse** (`coll list`, `tags list`, `library info`) now name the real commands.
+
+### Deprecated
+
+- **`zotero-cli tags` is deprecated in favor of `zotero-cli batch`**, which takes the same selection and does the same tag edits with `--add-tags` / `--remove-tags`, plus Extra edits. `tags` still works and prints a notice on stderr; it will be removed in 0.17.
 
 ## [0.15.1] - 2026-10-16
 

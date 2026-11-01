@@ -436,3 +436,19 @@ def _isolated_update_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(
         semantic_search, "_update_lock_path", lambda: tmp_path / "update.lock"
     )
+
+
+@pytest.fixture(autouse=True)
+def _chromadb_in_process(monkeypatch):
+    """Keep ChromaDB in the test process unless a test asks for the worker.
+
+    Running the server lifespan switches the whole process to worker-backed
+    clients; without this a test that ran it would silently move every later
+    test's ChromaDB calls into worker processes.
+    """
+    from zotero_mcp import chroma_worker
+
+    monkeypatch.setattr(chroma_worker, "_enabled", False)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+    yield
+    chroma_worker.stop_all()

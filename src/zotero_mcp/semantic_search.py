@@ -31,7 +31,12 @@ except Exception:
 
 
 from . import batch_common, fulltext_cache, gemini_batch, openai_batch
-from .chroma_client import ChromaClient, create_chroma_client
+from .chroma_client import (
+    ChromaClient,
+    create_chroma_client,
+    unreadable_index_facts,
+    unreadable_index_message,
+)
 from .client import get_active_group_id, get_zotero_client
 from .client import read_config_for_update as _read_config_for_update
 
@@ -468,7 +473,7 @@ def warmup_reranker(config_path: str | None = None) -> bool:
         return False
     model = cfg.get("model", _DEFAULT_RERANKER_CONFIG["model"])
     try:
-        get_cached_reranker(model)
+        get_cached_reranker(model, cfg)
         return True
     except Exception as e:
         logger.warning(f"Reranker warmup failed for '{model}': {e}")
@@ -561,6 +566,138 @@ def _page_for_offset(text: str, offset: int) -> int | None:
     return text.count(_PAGE_SEPARATOR, 0, max(0, offset)) + 1
 
 
+# Canonical section labels, keyed by the heading that introduces them. Longer
+# names precede the shorter ones they contain ("materials and methods" before
+# "methods") so the alternation below cannot match a prefix of a longer
+# heading. Deliberately conservative: an unrecognised heading leaves the
+# passage unlabelled rather than mislabelled, since a wrong section is worse
+# than none for a reader deciding whether a hit is the paper's own claim.
+_SECTION_ALIASES: tuple[tuple[str, str], ...] = (
+    (r"abstract", "Abstract"),
+    (r"introduction", "Introduction"),
+    (r"background", "Introduction"),
+    (r"related work", "Introduction"),
+    (r"literature review", "Introduction"),
+    (r"theoretical framework", "Introduction"),
+    (r"(?:the\s+)?present study", "Introduction"),
+    (r"materials?\s+and\s+methods?", "Methods"),
+    (r"methodology", "Methods"),
+    (r"methods?", "Methods"),
+    (r"participants?", "Methods"),
+    (r"measures?", "Methods"),
+    (r"procedure", "Methods"),
+    (r"data\s+analys[ei]s", "Methods"),
+    (r"statistical\s+analys[ei]s", "Methods"),
+    (r"results?\s+and\s+discussion", "Results"),
+    (r"results?", "Results"),
+    (r"findings?", "Results"),
+    (r"general\s+discussion", "Discussion"),
+    (r"discussion", "Discussion"),
+    (r"limitations?", "Discussion"),
+    (r"implications?", "Discussion"),
+    (r"conclusions?", "Conclusion"),
+    (r"acknowledge?ments?", "Back matter"),
+    (r"funding", "Back matter"),
+    (r"conflicts? of interest", "Back matter"),
+    (r"references?", "References"),
+    (r"bibliography", "References"),
+    (r"appendix[\w \t.:-]*", "Appendix"),
+    (r"supplementary[\w \t.:-]*", "Appendix"),
+)
+
+# A heading is recognised by shape as well as name: its own line, optionally
+# numbered ("3.", "3.1", "IV."), nothing after it but an optional colon.
+# Extracted PDF text keeps line breaks but loses styling, so shape is the only
+# signal left that a line is a heading rather than prose mentioning the word.
+_SECTION_HEADING_RE = re.compile(
+    r"^[ \t]*(?:\d+(?:\.\d+)*[.)]?[ \t]+|[IVXivx]{1,5}[.)][ \t]+)?"
+    r"(" + "|".join(pattern for pattern, _ in _SECTION_ALIASES) + r")"
+    r"[ \t]*:?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+# A chapter or part heading ends whatever section preceded it. Without this a
+# label runs forward until the next *recognised* heading, and since chapter
+# titles are not recognised, every chapter after the first in an edited volume
+# or monograph inherits the tail of the one before it, usually "References",
+# because chapter bibliographies are the last thing this parser recognises.
+# That is the mislabelling the module set out to avoid.
+#
+# A false positive here only clears a label, never invents one, so the pattern
+# can afford to be generous: any line that opens with Chapter/Part/Book and a
+# number, numeral or spelled-out ordinal, with or without a title after it.
+_SECTION_RESET_RE = re.compile(
+    r"""
+    ^[ \t]*(?:
+        # A chapter, part or book heading, numbered any of the usual ways.
+        (?:chapter|part|book)[ \t]+
+        (?:\d{1,3}|[ivxlc]{1,7}|one|two|three|four|five|six|seven|eight|nine|
+           ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|
+           eighteen|nineteen|twenty)
+        \b[^\n]{0,80}
+      |
+        # An all-capitals line short enough to be a heading rather than
+        # prose. Extracted PDFs lose styling, so case and length are what is
+        # left to go on; requiring two letters and no lowercase keeps ordinary
+        # sentences, wrapped fragments and bare numbers out. Case-sensitive
+        # even though the pattern as a whole is not, since case is the signal.
+        (?-i:
+            (?=[^\na-z]{5,70}[ \t]*$)
+            (?=[^\n]*[A-Z][^\n]*[A-Z])
+            [A-Z0-9][^\na-z]{4,69}
+        )
+    )
+    [ \t]*$
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+
+
+def _section_offsets(text: str) -> list[tuple[int, str | None]]:
+    """Offsets of recognised section headings in *text*, in document order.
+
+    A ``None`` label marks a chapter or part boundary, which ends the previous
+    section without starting a named one.
+
+    Computed once per document and shared by all of its passages: scanning the
+    whole text per chunk would be quadratic in a long paper.
+    """
+    text = text or ""
+    marks: list[tuple[int, str | None]] = []
+    for match in _SECTION_HEADING_RE.finditer(text):
+        heading = match.group(1).strip()
+        for pattern, label in _SECTION_ALIASES:
+            if re.fullmatch(pattern, heading, re.IGNORECASE):
+                marks.append((match.start(), label))
+                break
+    # A recognised heading may also look like an unrecognised one (a line
+    # reading "METHODS" matches both), and the label must win over the reset.
+    named = {offset for offset, _ in marks}
+    marks.extend(
+        (match.start(), None)
+        for match in _SECTION_RESET_RE.finditer(text)
+        if match.start() not in named
+    )
+    marks.sort(key=lambda mark: mark[0])
+    return marks
+
+
+def _section_at(marks: list[tuple[int, str | None]], offset: int) -> str | None:
+    """The section label in force at *offset*, or None when unknown.
+
+    None is returned before the first recognised heading (front matter, and
+    every document whose headings this parser did not recognise) and after a
+    chapter boundary that has not yet been followed by one.
+    """
+    label: str | None = None
+    for start, name in marks:
+        if start > offset:
+            break
+        label = name
+    return label
+
+
 def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
     """Return the ``width``-char window of *text* richest in query terms.
 
@@ -628,6 +765,7 @@ class CrossEncoderReranker:
         from sentence_transformers import CrossEncoder
 
         self.model = CrossEncoder(model_name)
+        self.label = f"local/{model_name}"
 
     def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
         """Re-rank documents by relevance to query.
@@ -648,6 +786,221 @@ class CrossEncoderReranker:
         ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
         return [(i, float(scores[i])) for i in ranked[:top_k]]
 
+    def rerank_detailed(
+        self, query: str, documents: list[str], top_k: int
+    ) -> tuple[list[tuple[int, float]], str | None]:
+        """``(pairs, error)``, matching :class:`APIReranker`; a local model has no soft failure."""
+        return self.rerank_with_scores(query, documents, top_k), None
+
+
+# Hosted rerank endpoints. All of them take a query, a list of documents and a
+# cut-off, and answer with ``{index, relevance_score}`` records, so one client
+# covers them and switching vendors is a config edit. What differs:
+#
+# * the spelling of the cut-off (``top_k`` vs ``top_n``);
+# * the key the records are listed under -- Voyage answers
+#   ``{"object": "list", "data": [...]}`` while Cohere, OpenRouter and
+#   Contextual answer ``{"results": [...]}``. Both are read, so a provider that
+#   changes its envelope does not silently turn re-ranking off;
+# * how an instruction is passed. Contextual takes an ``instruction`` field.
+#   Voyage's instruction-following models (rerank-2.5 and later) read the
+#   instruction from the query itself and have no such field, so for them,
+#   and for any provider without a documented field, it is prepended.
+_RERANK_PROVIDERS: dict[str, dict[str, str]] = {
+    "voyage": {
+        "url": "https://api.voyageai.com/v1/rerank",
+        "key_env": "VOYAGE_API_KEY",
+        "top_field": "top_k",
+        "instruction": "query",
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/rerank",
+        "key_env": "OPENROUTER_API_KEY",
+        "top_field": "top_n",
+        "instruction": "query",
+    },
+    "cohere": {
+        "url": "https://api.cohere.com/v2/rerank",
+        "key_env": "COHERE_API_KEY",
+        "top_field": "top_n",
+        "instruction": "query",
+    },
+    "contextual": {
+        "url": "https://api.contextual.ai/v1/rerank",
+        "key_env": "CONTEXTUAL_API_KEY",
+        "top_field": "top_n",
+        "instruction": "field",
+    },
+}
+
+# Statuses worth one more attempt: throttling and transient server errors.
+_RERANK_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+# Ceiling on a Retry-After wait. A search is interactive; past this it is
+# better to answer in retrieval order than to keep the caller waiting.
+_RERANK_MAX_RETRY_WAIT = 5.0
+
+
+class APIReranker:
+    """Re-rank through a hosted cross-encoder instead of a local model.
+
+    Interface-compatible with :class:`CrossEncoderReranker`, so the search path
+    does not care which one it holds. Exists because the strong local
+    cross-encoders need a GPU to be interactive — on CPU they add seconds to
+    every query, while these endpoints answer in 200-600ms.
+
+    A failed call degrades to the retriever's own order rather than raising:
+    losing the re-ranking is a worse search, but losing the search entirely
+    because a network call timed out is a broken tool. The failure is not
+    silent, though: :meth:`rerank_detailed` returns the reason, and the search
+    result carries it, so a misconfigured model or key shows up in the very
+    next search instead of only in a log nobody reads.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        provider: str,
+        base_url: str | None = None,
+        api_key_env: str | None = None,
+        instruction: str | None = None,
+        timeout: float = 30.0,
+    ):
+        preset = _RERANK_PROVIDERS.get(provider, {})
+        if not preset and not (base_url and api_key_env):
+            raise ValueError(
+                f"Unknown rerank provider '{provider}'. Use one of "
+                f"{', '.join(sorted(_RERANK_PROVIDERS))}, or set both "
+                "reranker.base_url and reranker.api_key_env."
+            )
+        self.provider = provider
+        self.model_name = model_name
+        self.url = base_url or preset["url"]
+        self.top_field = preset.get("top_field", "top_n")
+        self.instruction_mode = preset.get("instruction", "query")
+        self.key_env = api_key_env or preset.get("key_env", "")
+        self.instruction = instruction
+        self.timeout = timeout
+
+        self.api_key = os.getenv(self.key_env) if self.key_env else None
+        if not self.api_key:
+            raise ValueError(
+                f"Rerank provider '{provider}' needs {self.key_env} in the "
+                "environment; it is unset."
+            )
+
+    @property
+    def label(self) -> str:
+        return f"{self.provider}/{self.model_name}"
+
+    def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
+        """Indices of the top_k documents, most relevant first."""
+        return [idx for idx, _ in self.rerank_with_scores(query, documents, top_k)]
+
+    def rerank_with_scores(
+        self, query: str, documents: list[str], top_k: int
+    ) -> list[tuple[int, float]]:
+        """``(index, relevance_score)`` pairs from the hosted reranker."""
+        return self.rerank_detailed(query, documents, top_k)[0]
+
+    def _payload(self, query: str, documents: list[str], cutoff: int) -> dict[str, Any]:
+        if self.instruction and self.instruction_mode == "query":
+            query = f"{self.instruction.strip()}\n\nQuery: {query}"
+        payload: dict[str, Any] = {
+            "model": self.model_name,
+            "query": query,
+            "documents": documents,
+            self.top_field: cutoff,
+        }
+        if self.instruction and self.instruction_mode == "field":
+            payload["instruction"] = self.instruction
+        return payload
+
+    @staticmethod
+    def _parse(body: Any, n_documents: int) -> list[tuple[int, float]]:
+        """Read ``{index, relevance_score}`` records from either envelope."""
+        if not isinstance(body, dict):
+            return []
+        records = body.get("results")
+        if not isinstance(records, list):
+            records = body.get("data")
+        if not isinstance(records, list):
+            return []
+        ranked: list[tuple[int, float]] = []
+        seen: set[int] = set()
+        for r in records:
+            if not isinstance(r, dict) or "index" not in r:
+                continue
+            try:
+                idx = int(r["index"])
+                score = float(r.get("relevance_score", r.get("score", 0.0)))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < n_documents and idx not in seen:
+                seen.add(idx)
+                ranked.append((idx, score))
+        # Providers return records sorted, but nothing in their contracts says
+        # so for every vendor; sort rather than trust.
+        ranked.sort(key=lambda pair: pair[1], reverse=True)
+        return ranked
+
+    def rerank_detailed(
+        self, query: str, documents: list[str], top_k: int
+    ) -> tuple[list[tuple[int, float]], str | None]:
+        """``(pairs, error)``: the ranking, and why it fell back if it did.
+
+        On failure the pairs are the first ``top_k`` documents in their
+        original (retrieval) order with score 0.0, and ``error`` says why.
+        """
+        import requests
+
+        if not documents:
+            return [], None
+        cutoff = max(1, min(top_k, len(documents)))
+        fallback = [(i, 0.0) for i in range(cutoff)]
+        payload = self._payload(query, documents, cutoff)
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        error: str | None = None
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    self.url, json=payload, headers=headers, timeout=self.timeout
+                )
+            except Exception as e:  # network error, timeout
+                error = f"request failed: {e}"
+                if attempt == 0:
+                    time.sleep(1.0)
+                    continue
+                break
+
+            if response.status_code in _RERANK_RETRY_STATUSES and attempt == 0:
+                wait = 1.0
+                try:
+                    wait = float(response.headers.get("Retry-After", wait))
+                except (TypeError, ValueError):
+                    pass
+                time.sleep(max(0.0, min(wait, _RERANK_MAX_RETRY_WAIT)))
+                continue
+            if response.status_code >= 400:
+                detail = (response.text or "").strip().replace("\n", " ")[:200]
+                error = f"HTTP {response.status_code}: {detail}" if detail else f"HTTP {response.status_code}"
+                break
+            try:
+                ranked = self._parse(response.json(), len(documents))
+            except ValueError as e:
+                error = f"unreadable response: {e}"
+                break
+            if ranked:
+                return ranked[:top_k], None
+            error = "response listed no ranked documents"
+            break
+
+        logger.warning(f"Rerank via {self.label} failed ({error}); keeping retrieval order.")
+        return fallback, error
+
 
 # Process-wide reranker cache (issue #283).
 #
@@ -661,18 +1014,39 @@ _RERANKER_CACHE: dict[str, CrossEncoderReranker] = {}
 _RERANKER_CACHE_LOCK = threading.Lock()
 
 
-def get_cached_reranker(model_name: str) -> CrossEncoderReranker:
-    """Return a process-wide cached reranker, loading it once per ``model_name``."""
-    cached = _RERANKER_CACHE.get(model_name)
+def get_cached_reranker(
+    model_name: str, config: dict[str, Any] | None = None
+) -> "CrossEncoderReranker | APIReranker":
+    """Return a process-wide cached reranker, built once per configuration.
+
+    ``config`` is the ``reranker`` block. When it names a ``provider`` the
+    reranker is a hosted :class:`APIReranker`; otherwise it is the local
+    cross-encoder, as before. The cache key includes the provider so switching
+    vendors mid-process cannot hand back the previous one.
+    """
+    provider = (config or {}).get("provider") or ""
+    cache_key = f"{provider}:{model_name}" if provider else model_name
+    cached = _RERANKER_CACHE.get(cache_key)
     if cached is not None:
         return cached
     with _RERANKER_CACHE_LOCK:
         # Re-check under the lock: another thread may have loaded it while we
         # waited, and the model load is far too expensive to repeat.
-        cached = _RERANKER_CACHE.get(model_name)
+        cached = _RERANKER_CACHE.get(cache_key)
         if cached is None:
-            cached = CrossEncoderReranker(model_name=model_name)
-            _RERANKER_CACHE[model_name] = cached
+            if provider:
+                cfg = config or {}
+                cached = APIReranker(
+                    model_name=model_name,
+                    provider=provider,
+                    base_url=cfg.get("base_url"),
+                    api_key_env=cfg.get("api_key_env"),
+                    instruction=cfg.get("instruction"),
+                    timeout=float(cfg.get("timeout", 30.0)),
+                )
+            else:
+                cached = CrossEncoderReranker(model_name=model_name)
+            _RERANKER_CACHE[cache_key] = cached
         return cached
 
 
@@ -680,12 +1054,15 @@ def _new_scoped_client(library_id: str, library_type: str, api_key: str | None, 
     """Construct a pyzotero client scoped to one library — seam for tests."""
     from pyzotero import zotero
 
-    return zotero.Zotero(
+    from zotero_mcp.client import _with_api_url
+
+    zot = zotero.Zotero(
         library_id=library_id,
         library_type=library_type,
         api_key=api_key,
         local=local,
     )
+    return zot if local else _with_api_url(zot)
 
 
 class ZoteroSemanticSearch:
@@ -866,7 +1243,13 @@ class ZoteroSemanticSearch:
             return None
         if self._reranker is None:
             model = self._reranker_config.get("model", _DEFAULT_RERANKER_CONFIG["model"])
-            self._reranker = get_cached_reranker(model)
+            try:
+                self._reranker = get_cached_reranker(model, self._reranker_config)
+            except Exception as e:
+                # A missing API key or unknown provider must not take the whole
+                # search down — degrade to no re-ranking and say why once.
+                logger.warning(f"Reranker unavailable ({e}); searching without it.")
+                return None
         return self._reranker
 
     def _load_update_config(self) -> dict[str, Any]:
@@ -2689,6 +3072,26 @@ class ZoteroSemanticSearch:
             # library.
             self._run_group_id = self._client_group_id()
 
+            # An index ChromaDB cannot read fails every later step with an
+            # error that does not say why (#747). Stop with one that does; a
+            # forced rebuild moves it aside instead of deleting it through
+            # ChromaDB, which would hit the same error.
+            if read_error := self.chroma_client.read_error():
+                info = {
+                    "error": read_error,
+                    "persist_directory": self.chroma_client.persist_directory,
+                    **unreadable_index_facts(self.chroma_client.persist_directory),
+                }
+                if not force_full_rebuild:
+                    stats["error"] = (
+                        unreadable_index_message(info, self.update_config.get("last_update"))
+                        if info.get("unreadable") else f"Cannot read the semantic index: {read_error}"
+                    )
+                    return stats
+                moved = self.chroma_client.move_aside()
+                logger.warning("Moved the unreadable index to %s for --force-rebuild", moved)
+                _report(f"The index could not be read; moved it to {moved} and building a new one.\n")
+
             # --force-rebuild resets the ENTIRE collection but repopulates
             # only the active library. Combinations that would silently drop
             # indexed data need the same explicit opt-in as any other mass
@@ -3247,6 +3650,7 @@ class ZoteroSemanticSearch:
                         stats["skipped"] += 1
                         continue
                     n_chunks = len(passages)
+                    section_marks = _section_offsets(doc_text)
                     for ci, (chunk_text, c0, c1) in enumerate(passages):
                         cmeta = dict(metadata)
                         cmeta["parent_item_key"] = item_key
@@ -3257,6 +3661,9 @@ class ZoteroSemanticSearch:
                         page = _page_for_offset(doc_text, c0)
                         if page is not None:
                             cmeta["page"] = page
+                        section = _section_at(section_marks, c0)
+                        if section is not None:
+                            cmeta["section"] = section
                         documents.append(self.chroma_client.truncate_text(chunk_text))
                         metadatas.append(cmeta)
                         ids.append(f"{item_key}#{ci}")
@@ -4077,16 +4484,16 @@ class ZoteroSemanticSearch:
             Search results with Zotero item details
         """
         try:
-            # Over-fetch candidates when re-ranking and/or chunking are on.
             reranker = self._get_reranker()
+            multiplier = max(1, int(self._reranker_config.get("candidate_multiplier", 3) or 3))
+            chunked = self._chunking_enabled
             fetch_limit = limit
-            if self._chunking_enabled:
+            if chunked:
                 # Passages are grouped back to items downstream, so fetch
                 # several chunks per desired item to still surface ~limit
                 # distinct papers.
                 fetch_limit = max(fetch_limit, limit * 4)
             if reranker:
-                multiplier = self._reranker_config.get("candidate_multiplier", 3)
                 fetch_limit = max(fetch_limit, limit * multiplier)
 
             where = filters
@@ -4099,16 +4506,30 @@ class ZoteroSemanticSearch:
 
             _drop_missing_documents(results)
 
-            # Re-rank results with cross-encoder if enabled. With chunking we
-            # rerank ALL candidates (grouping to `limit` items happens in
-            # enrichment); without chunking we keep the historical top-k=limit.
+            rerank_info: dict[str, Any] | None = None
             if reranker and results.get("documents") and results["documents"][0]:
                 documents = results["documents"][0]
-                top_k = len(documents) if self._chunking_enabled else limit
-                ranked_indices = reranker.rerank(query, documents, top_k=top_k)
+                # Chunked: rank every surviving passage (grouping to `limit`
+                # papers happens in enrichment). Item-level: the historical
+                # top-k = limit.
+                top_k = len(documents) if chunked else limit
+                if isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+                    pairs, rerank_error = reranker.rerank_detailed(query, documents, top_k)
+                else:  # any other object honouring the plain rerank() contract
+                    pairs = [(i, 0.0) for i in reranker.rerank(query, documents, top_k=top_k)]
+                    rerank_error = None
+                ranked_indices = [i for i, _ in pairs]
                 for key in ["ids", "distances", "documents", "metadatas"]:
                     if results.get(key) and results[key][0]:
                         results[key][0] = [results[key][0][i] for i in ranked_indices]
+                if rerank_error is None and isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+                    results["rerank_scores"] = [[score for _, score in pairs]]
+                rerank_info = {
+                    "model": getattr(reranker, "label", type(reranker).__name__),
+                    "applied": rerank_error is None,
+                    "error": rerank_error,
+                    "candidates": len(documents),
+                }
 
             # Enrich results with full Zotero item data, grouping passages back
             # to their parent items and capping at `limit` distinct papers.
@@ -4121,10 +4542,23 @@ class ZoteroSemanticSearch:
                 "group_id": group_id,
                 "results": enriched_results,
                 "total_found": len(enriched_results),
+                "rerank": rerank_info,
             }
 
         except Exception as e:
             logger.error(f"Error performing semantic search: {e}")
+            error = str(e)
+            try:
+                # A damaged index fails here with ChromaDB's own words; say what it means (#747).
+                persist_directory = self.chroma_client.persist_directory
+                facts = unreadable_index_facts(persist_directory)
+                if facts and self.chroma_client.read_error():
+                    error = unreadable_index_message(
+                        {"error": error, "persist_directory": persist_directory, **facts},
+                        self.update_config.get("last_update"),
+                    )
+            except Exception:
+                pass
             return {
                 "query": query,
                 "limit": limit,
@@ -4132,7 +4566,7 @@ class ZoteroSemanticSearch:
                 "group_id": group_id,
                 "results": [],
                 "total_found": 0,
-                "error": str(e),
+                "error": error,
             }
 
     def _enrich_search_results(
@@ -4157,6 +4591,7 @@ class ZoteroSemanticSearch:
         distances = chroma_results.get("distances", [[]])[0]
         documents = chroma_results.get("documents", [[]])[0]
         metadatas = chroma_results.get("metadatas", [[]])[0]
+        rerank_scores = (chroma_results.get("rerank_scores") or [[]])[0] or []
 
         seen_items: set[str] = set()
         for i, raw_id in enumerate(ids):
@@ -4179,9 +4614,11 @@ class ZoteroSemanticSearch:
                 "metadata": meta if isinstance(meta, dict) else {},
                 "query": query,
             }
+            if i < len(rerank_scores):
+                enriched_result["rerank_score"] = rerank_scores[i]
             # Passage provenance — present only on a chunk-indexed collection.
             if isinstance(meta, dict):
-                for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page"):
+                for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page", "section"):
                     if mk in meta:
                         enriched_result[mk] = meta[mk]
             if "char_start" not in enriched_result and passage_offset:

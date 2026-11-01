@@ -1,6 +1,6 @@
 """Integration tests for the BibTeX source of the zotero_add_item MCP tool."""
 
-from conftest import FakeZotero
+from conftest import FakeZotero, pyzotero_http_module
 
 from zotero_mcp import server
 from zotero_mcp.tools import write
@@ -347,3 +347,45 @@ class TestErrorPaths:
 
         assert "Added 2/3 items" in result
         assert "simulated write failure" in result
+
+    def test_refused_template_fetch_explains_zotero_is_not_running(
+        self, monkeypatch, dummy_ctx
+    ):
+        """#744: the per-entry conversion-failed branch used to interpolate
+        the raw errno from a refused item-template fetch."""
+        fake = _patch_hybrid(monkeypatch)
+        http = pyzotero_http_module()
+        request = http.Request("GET", "http://127.0.0.1:23119/api/users/0/items")
+        exc = http.ConnectError("[WinError 10061] Connection refused", request=request)
+
+        def raise_connect(item_type, linkmode=None):
+            raise exc
+
+        fake.item_template = raise_connect
+
+        result = write.add_by_bibtex(
+            bibtex="@article{a1, title={T}, author={X, Y}, year={2020}}",
+            ctx=dummy_ctx,
+        )
+        assert "Failed to add **a1**" in result
+        assert "conversion failed:" in result
+        assert "Zotero is not running" in result
+        assert "WinError 10061" not in result
+
+    def test_ordinary_conversion_error_is_unchanged(self, monkeypatch, dummy_ctx):
+        """Non-ConnectError conversion failures still surface as-is."""
+        _patch_hybrid(monkeypatch)
+
+        def boom(entry, template_fn):
+            raise ValueError("unknown BibTeX type")
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools.write._citation_import.bibtex_entry_to_zotero",
+            boom,
+        )
+        result = write.add_by_bibtex(
+            bibtex="@article{a1, title={T}, author={X, Y}, year={2020}}",
+            ctx=dummy_ctx,
+        )
+        assert "conversion failed: unknown BibTeX type" in result
+        assert "Zotero is not running" not in result

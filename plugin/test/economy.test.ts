@@ -66,7 +66,7 @@ describe("token estimate", () => {
   });
 });
 
-const deps = (host: FakeHost) => ({ host, onChange() {}, blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {}, expand: async (t: string) => t });
+const deps = (host: FakeHost) => ({ host, onChange() {}, blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {}, shownChanged() {}, expand: async (t: string) => t });
 
 describe("a chat sends unchanged context once", () => {
 
@@ -161,5 +161,26 @@ describe("the context popover's numbers", () => {
     planContext([reader(2), SELECTION], sent);
     assert.equal(sentLine(planContext([reader(3), SELECTION], sent)), "Reader p.4 in full; selection p.3 named only (unchanged)");
     assert.equal(sentLine([]), "");
+  });
+});
+
+describe("context already shown in a message leaves the composer", () => {
+  it("the open paper once per item on any page, a selection until it changes; the bubble shows only what was new", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const chat = new Chat(deps(host));
+    assert.equal(chat.isShown(reader(2)), false, "nothing before the first message");
+    host.sim.nextAnswer = "ok";
+    await chat.send("q1", [reader(2), SELECTION]);
+    assert.ok(chat.isShown(reader(2)) && chat.isShown(reader(7)), "the same paper on another page stays hidden");
+    assert.ok(chat.isShown(SELECTION));
+    assert.equal(chat.isShown({ ...SELECTION, text: "another passage" }), false, "a new selection shows");
+    assert.equal(chat.isShown({ ...reader(2), id: "reader:OTHER" }), false, "another paper shows");
+    host.sim.nextAnswer = "ok";
+    await chat.send("q2", [reader(3), SELECTION]);
+    const bubbles = chat.tr.messages.filter((m) => m.role === "user").map((m) => (m.role === "user" ? m.chips.map((c) => c.kind) : []));
+    assert.deepEqual(bubbles, [["reader", "selection"], []]);
+    assert.match(host.sim.prompts[1]!.text, /Still open, unchanged|reader/, "the agent is still told");
+    await chat.reset();
+    assert.equal(chat.isShown(reader(2)), false, "a new chat shows everything again");
   });
 });

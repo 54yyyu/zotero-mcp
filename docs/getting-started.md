@@ -13,6 +13,7 @@ This guide walks you through installing Zotero MCP and connecting it to your AI 
 uv tool install zotero-mcp-server   # recommended
 pip install zotero-mcp-server       # or with pip
 pipx install zotero-mcp-server      # or with pipx
+nix profile install github:54yyyu/zotero-mcp   # or with Nix (core install, no extras)
 ```
 
 Optional extras (`semantic`, `pdf`, `scite`, `all`) are listed in the [README](../README.md#optional-extras). If you are new to the command line, the community-built [Zotero MCP Setup](https://github.com/ehawkin/zotero-mcp-setup) has a macOS GUI installer (DMG), one-click install scripts for Mac and Windows, and a step-by-step guide.
@@ -57,6 +58,10 @@ If you want to connect to your Zotero library via the web API:
    export ZOTERO_LIBRARY_ID=your_library_id
    export ZOTERO_LIBRARY_TYPE=user  # or 'group' for group libraries
    ```
+
+   For a self-hosted server that speaks the Zotero Web API (such as
+   [altero](https://github.com/eseifert/altero)), also set `ZOTERO_API_URL` to its
+   base URL, the same value as Zotero desktop's `extensions.zotero.api.url`.
 
 ## Integrating with Claude Desktop and Claude Code
 

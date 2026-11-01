@@ -83,7 +83,7 @@ export const LOOK_STYLES = `
 }
 .zmc[data-glass="on"] .hd { border-bottom-color: var(--glass-line); }
 /* cards: translucent, a bright top edge, a soft shadow */
-.zmc[data-glass="on"] :is(.sec, .plan, .wcard, .pe, .check--ok, .code, .md-table, .area, .stat, .chip:not(.chip--sm), kbd) { background: var(--glass); border-color: var(--glass-line); }
+.zmc[data-glass="on"] :is(.sec, .plan, .wcard, .pe, .check--ok, .code, .md-table, .thumb__main, .stat, .chip:not(.chip--sm), kbd) { background: var(--glass); border-color: var(--glass-line); }
 .zmc[data-glass="on"] :is(.sec, .plan, .wcard, .pe, .check--ok) { box-shadow: var(--glass-sheen), var(--glass-lift); }
 .zmc[data-glass="on"] :is(.code, .md-table) { box-shadow: var(--glass-sheen); }
 .zmc[data-glass="on"] .md-table th { background: color-mix(in srgb, var(--ink) 4%, transparent); }

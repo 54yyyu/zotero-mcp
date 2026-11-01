@@ -276,7 +276,9 @@ class FakeZoteroForBatch(FakeZoteroForExtra):
     def add_parameters(self, **kwargs):
         self.params = kwargs
 
-    def items(self):
+    def items(self, **kwargs):
+        if kwargs:
+            self.params = kwargs
         return list(self._items.values())
 
 
@@ -363,9 +365,9 @@ def test_batch_update_reports_no_match_for_unknown_keys(monkeypatch):
 class FakeZoteroTagFilter(FakeZoteroForBatch):
     """Search honours the ``tag`` parameter against the items' live tags."""
 
-    def items(self):
+    def items(self, **kwargs):
+        out = super().items(**kwargs)
         tag = self.params.get("tag")
-        out = list(self._items.values())
         if tag:
             out = [it for it in out
                    if tag in {t["tag"] for t in it["data"].get("tags", [])}]
@@ -397,3 +399,22 @@ def test_batch_update_selects_once_when_tag_action_removes_selector_tag(monkeypa
     assert fake._items["ITEM0001"]["data"]["extra"] == "tex.status: read"
     assert fake._items["ITEM0002"]["data"]["extra"] == ""
     assert "No items found" not in result
+
+
+def test_batch_update_extra_fetches_each_item_once(monkeypatch):
+    """get_zotero_client() builds a new client per call. A read client made
+    separately from the write client made `write_zot is not zot` always true,
+    so every item was fetched twice even when both are the same backend."""
+    import copy
+
+    fake = FakeZoteroForExtra(_make_items())
+    fetched = []
+    real_item = type(fake).item
+    monkeypatch.setattr(type(fake), "item", lambda self, key, **kw: fetched.append(key) or real_item(self, key, **kw))
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: copy.copy(fake))  # a new instance, shared state
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+
+    write.batch_update(item_keys=["ITEM0001", "ITEM0002"], set_keys={"k": "v"}, ctx=DummyContext())
+
+    assert sorted(fetched) == ["ITEM0001", "ITEM0002"]
+    assert len(fake.updated) == 2

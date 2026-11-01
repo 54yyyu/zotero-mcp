@@ -6,6 +6,7 @@ import { STYLES } from "./styles.ts";
 import { Look } from "./appearance.ts";
 import { clear, clip, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
 import { Composer } from "./composer.ts";
+import { imageChips, imageFiles } from "./images.ts";
 import { chatStats, contextFill, sentLine } from "./economy.ts";
 import type { Choices, SlashItem } from "./composer.ts";
 import { Chat } from "./chat.ts";
@@ -22,7 +23,7 @@ import { enabledSkills, invocationText, parseInvocation, pinned, skillPath } fro
 type View = "chat" | "history" | "settings" | "status" | "welcome";
 
 /** The footer's "Explain better": the last answer again, the way a good teacher would start. */
-const EXPLAIN_BETTER = "Explain that again from the intuition first, with a tiny example, then the details.";
+const EXPLAIN_BETTER = "Explain that again from the intuition first, with a tiny example, then the details, in the language of your last answer.";
 
 export const mountPanel: MountPanel = (root, host) => {
   initEnv(root);
@@ -70,6 +71,7 @@ class Panel {
       turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? "Answer finished" : "Turn ended"),
       setupFailed: () => void this.health.refresh(),
       sessionChanged: () => this.syncPickers(),
+      shownChanged: () => this.refreshChips(),
       expand: (text, cwd) => this.expand(text, cwd),
     });
     this.feed = new Feed({
@@ -98,9 +100,12 @@ class Panel {
         // Only the host reads a drop: Zotero's drag formats are not the UI's business.
         const dropped = await host.dropChips(data).catch(() => []);
         for (const c of dropped) this.chips.add(c, true);
-        if (dropped.length) this.refreshChips();
-        return dropped.length;
+        const pics = await imageChips(imageFiles(data)); // pictures are for the next message only, like a paste
+        for (const c of pics) this.chips.add(c);
+        if (dropped.length || pics.length) this.refreshChips();
+        return dropped.length + pics.length;
       },
+      onPasteImages: (files) => void imageChips(files).then((pics) => { for (const c of pics) this.chips.add(c); if (pics.length) this.refreshChips(); }),
       onRemoveChip: (c) => { this.chips.remove(c); this.refreshChips(); },
       onTogglePin: (c) => { this.chips.togglePin(c); this.refreshChips(); },
       onPick: (kind, id) => void this.pick(kind, id),
@@ -328,7 +333,8 @@ class Panel {
 
   // ───────────────────────────── the chat ─────────────────────────────
 
-  private refreshChips(): void { this.composer.setChips(this.chips.current()); }
+  /** Chips already shown in a sent message are left out: they still reach the agent, as a one-line reminder. */
+  private refreshChips(): void { if (this.chat) this.composer.setChips(this.chips.current().filter((c) => !this.chat.isShown(c))); }
 
   private paintEmpty(): void {
     const s = this.host.getSettings();

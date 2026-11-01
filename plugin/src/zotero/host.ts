@@ -1,6 +1,6 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
 import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, Spawner } from "../types.ts";
-import { DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
+import { CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker } from "./context.ts";
 import { describeContext } from "./describe.ts";
 import { dropChips } from "./drop.ts";
@@ -117,7 +117,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       await skills.sync(cwd, (await skills.host.list()).filter((k) => !s.skills?.[k.name]?.off).map((k) => k.name)).catch((e) => Zotero.logError(e));
       const key = s.auth[s.backend] === "api-key" ? await keychain.getApiKey(s.backend) : null;
       const varName = keychain.API_KEY_ENV[s.backend];
-      return { cwd, brief: `${buildBrief()}\n\n${TOOL_SHEET}\n\n${DRAWING_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
+      return { cwd, brief: `${buildBrief()}\n\n${TOOL_SHEET}\n\n${DRAWING_GUIDE}\n\n${CALLOUT_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
   };
   return { host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()), importImage: images.importImage, knownCatalog: (b) => known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };

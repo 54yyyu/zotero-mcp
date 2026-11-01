@@ -80,6 +80,11 @@ class FakeStreamingChromaClient:
     def truncate_text(self, text, max_tokens=None):
         return text
 
+    def read_error(self):
+
+        return None
+
+
     def get_existing_ids(self, ids):
         return {i for i in ids if i.split("#", 1)[0] in self._existing}
 
@@ -179,6 +184,11 @@ def test_falls_back_when_client_has_no_upsert_embeddings(monkeypatch):
 
         def truncate_text(self, text, max_tokens=None):
             return text
+
+        def read_error(self):
+
+            return None
+
 
         def get_existing_ids(self, ids):
             return set()

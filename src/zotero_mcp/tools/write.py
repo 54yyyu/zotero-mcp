@@ -393,15 +393,57 @@ def _normalize_tag_selector(tag):
     return tag or None
 
 
-def _search_item_keys(zot, query, tag, limit) -> list[str]:
-    """Item keys matching a query and/or tag selector (the batch selector)."""
-    params = {"limit": limit}
+def _selection_params(query, tag) -> dict:
+    """Search parameters for the batch selector: a query and/or a tag.
+
+    A query alone also matches attachments (by title), which a caller asking
+    for items about X does not mean to edit, so the server is asked to leave
+    them out. A tag selection keeps them: an attachment carrying the tag is
+    exactly what removing that tag has to reach.
+    """
+    params = {}
     if query:
         params["q"] = query
     if tag:
         params["tag"] = tag
-    zot.add_parameters(**params)
-    return [it.get("key") for it in (zot.items() or []) if it.get("key")]
+    else:
+        params["itemType"] = "-attachment"
+    return params
+
+
+#: Most items one batch call selects by query or tag. It was
+#: _normalize_limit's default of 100, fetched as one page with nothing said
+#: when more matched; the selection is now paged, as get_collection_items
+#: is (#453), and the report says when the limit cut it short.
+_BATCH_MAX_LIMIT = 1000
+
+
+def _normalize_batch_limit(limit) -> int:
+    return _helpers._normalize_limit(limit, default=50, max_val=_BATCH_MAX_LIMIT)
+
+
+def _select_batch_items(zot, query, tag, limit) -> tuple[list, bool]:
+    """Items matching the batch selector, up to *limit*, and whether more
+    matched (one item past the limit is fetched to tell)."""
+    items = _utils._paginate(
+        zot.items, max_items=limit + 1, **_selection_params(query, tag)
+    )
+    return items[:limit], len(items) > limit
+
+
+def _limit_note(limit: int) -> str:
+    return (
+        f"More items matched than limit={limit}; only the first {limit} "
+        f"were processed. Raise limit (up to {_BATCH_MAX_LIMIT}) or narrow "
+        "the selection."
+    )
+
+
+def _search_item_keys(zot, query, tag, limit) -> tuple[list[str], bool]:
+    """Item keys matching a query and/or tag selector (the batch selector),
+    and whether more matched than *limit*."""
+    items, more = _select_batch_items(zot, query, tag, limit)
+    return [it.get("key") for it in items if it.get("key")], more
 
 
 @with_zotero_api_lock
@@ -438,7 +480,7 @@ def batch_update_tags(
             return f"Error: {validation_error}"
 
         if not query and not tag and not explicit_keys:
-            return "Error: Must provide a search query and/or tag filter"
+            return "Error: Must provide item_keys, a search query and/or a tag filter"
 
         if not add_tags and not remove_tags:
             return "Error: You must specify either tags to add or tags to remove"
@@ -464,7 +506,8 @@ def batch_update_tags(
         except ValueError as e:
             return str(e)
 
-        limit = _helpers._normalize_limit(limit, default=50)
+        limit = _normalize_batch_limit(limit)
+        more_matched = False
 
         # Normalize tag parameter: accept string, list, or JSON string
         tag = _normalize_tag_selector(tag)
@@ -485,13 +528,7 @@ def batch_update_tags(
                 return f"No items found for item_keys {explicit_keys}"
         else:
             # Search for items matching the query and/or tag filter
-            params = {"limit": limit}
-            if query:
-                params["q"] = query
-            if tag:
-                params["tag"] = tag
-            zot.add_parameters(**params)
-            items = zot.items()
+            items, more_matched = _select_batch_items(zot, query, tag, limit)
 
             if not items:
                 filter_desc = []
@@ -509,11 +546,6 @@ def batch_update_tags(
 
         # Process each item
         for item in items:
-            # Skip attachments if they were included in the results
-            if item["data"].get("itemType") == "attachment":
-                skipped_count += 1
-                continue
-
             # Get current tags
             current_tags = item["data"].get("tags", [])
             current_tag_values = {t["tag"] for t in current_tags}
@@ -587,6 +619,8 @@ def batch_update_tags(
         response.append(f"Items processed: {len(items)}")
         response.append(f"Items updated: {updated_count}")
         response.append(f"Items skipped: {skipped_count}")
+        if more_matched:
+            response.append("\n" + _limit_note(limit))
 
         if add_tags:
             response.append("\n## Tags Added")
@@ -693,10 +727,11 @@ def batch_update_extra(
             return f"Error: {validation_error}"
 
         tag = _normalize_tag_selector(tag)
+        limit = _normalize_batch_limit(limit)
+        more_matched = False
         if not item_keys and (query or tag):
-            item_keys = _search_item_keys(
-                _client.get_zotero_client(), query, tag,
-                _helpers._normalize_limit(limit, default=50),
+            item_keys, more_matched = _search_item_keys(
+                _client.get_zotero_client(), query, tag, limit,
             )
             if not item_keys:
                 filter_desc = []
@@ -737,10 +772,11 @@ def batch_update_extra(
             return "Error: replace=True is incompatible with remove_keys"
 
         ctx.info(f"Batch updating Extra field for {len(item_keys)} item(s)")
-        zot = _client.get_zotero_client()
-
+        # One resolution for both roles, as in batch_update_tags: a separate
+        # read client made `write_zot is not zot` always true, so every item
+        # was fetched twice.
         try:
-            _, write_zot = _helpers._get_write_client(ctx)
+            zot, write_zot = _helpers._get_write_client(ctx)
         except ValueError as e:
             return str(e)
 
@@ -797,6 +833,8 @@ def batch_update_extra(
         response.append(f"Items processed: {len(item_keys)}")
         response.append(f"Items updated: {updated_count}")
         response.append(f"Items skipped: {skipped_count}")
+        if more_matched:
+            response.append("\n" + _limit_note(limit))
 
         if set_keys:
             response.append("\n## Keys Set")
@@ -831,9 +869,11 @@ def batch_update_extra(
         "case-insensitively by its `key:` prefix and replacing it in "
         "place, else appending; remove_keys deletes those lines; lines "
         "without a colon are preserved. "
-        "limit: max items for query/tag selection (default 50). "
-        "Attachments and items needing no change are skipped and "
-        "counted. Requires a writable library. "
+        "limit: max items for query/tag selection (default 50, at most "
+        "1000); the report says when more matched. "
+        "A query-only selection leaves attachments out; Extra edits "
+        "skip attachments, notes and annotations. Items needing no "
+        "change are skipped and counted. Requires a writable library. "
         "Example: zotero_batch_update(tag='to-read', "
         "add_tags=['reviewed'], remove_tags=['to-read'])."
     )
@@ -876,11 +916,13 @@ def batch_update(
     # Searching again for the Extra half would run after the tag half has
     # already edited tags, so tag='to-read' + remove_tags=['to-read'] found
     # nothing and the Extra edits were silently dropped.
+    more_matched = False
     if tag_action and extra_action and not item_keys:
+        limit = _normalize_batch_limit(limit)
         try:
-            item_keys = _search_item_keys(
+            item_keys, more_matched = _search_item_keys(
                 _client.get_zotero_client(), query, _normalize_tag_selector(tag),
-                _helpers._normalize_limit(limit, default=50),
+                limit,
             )
         except Exception as e:
             return f"Error selecting items: {_helpers.format_zotero_error(e)}"
@@ -898,6 +940,8 @@ def batch_update(
             item_keys=item_keys, set_keys=set_keys, remove_keys=remove_keys,
             query=query, tag=tag, limit=limit, ctx=ctx,
         ))
+    if more_matched:
+        reports.append(_limit_note(limit))
     return "\n\n".join(reports)
 
 
@@ -4858,6 +4902,49 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
     )
 
 
+def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
+    """Create a LINKED-file child attachment (records the path, copies nothing).
+
+    Mirrors Zotero's "Add Link to File": the PDF stays where it is and
+    Zotero stores the absolute path with linkMode='linked_file'. Goes through
+    the local API so no bytes are uploaded and no cloud quota is consumed.
+    """
+    # Dedupe on the real file name: a filename override only sets the title,
+    # so comparing the override would never match on a re-run.
+    existing = _helpers._find_child_attachment(
+        write_zot, item_key, filename=os.path.basename(file_path)
+    )
+    if existing is not None:
+        data = existing.get("data", {}) or {}
+        existing_key = existing.get("key") or data.get("key")
+        return (
+            f"Linked attachment already present on `{item_key}`: {display_name}"
+            f" (key `{existing_key}`) — not re-linked."
+        )
+    try:
+        template = _helpers.item_template_for(
+            write_zot, "attachment", "linked_file"
+        )
+        template["path"] = file_path
+        template["title"] = display_name
+        template["contentType"] = (
+            _helpers._guess_content_type(display_name) or "application/pdf"
+        )
+        template["parentItem"] = item_key
+        result = write_zot.create_items([template])
+    except Exception as e:
+        ctx.error(f"Error linking file: {e}")
+        return f"Error linking file: {e}"
+    if not (isinstance(result, dict) and result.get("success")):
+        return f"Error: failed to create linked attachment: {result}"
+    key = next(iter(result["success"].values()))
+    return (
+        f"Linked file attached to `{item_key}`: {display_name} (key `{key}`) — "
+        f"file NOT moved; path: {file_path}. "
+        "Run zotero_update_search_database to index it for semantic search."
+    )
+
+
 @mcp.tool(
     name="zotero_attach_file",
     description=(
@@ -4883,6 +4970,11 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         "cloud storage quota unless WebDAV sync is configured. Run "
         "zotero_update_search_database afterwards to index the new file "
         "for semantic search. "
+        "link_mode: 'import' (default) uploads the file bytes; "
+        "'linked' records the absolute path only (like Zotero's "
+        "'Add Link to File') — the file is NOT moved or copied and no "
+        "cloud quota is used. 'linked' requires file_path (not url) and "
+        "a writable library; filename then only sets the title. "
         "Example: zotero_attach_file(item_key='ABCD2345', "
         "file_path='/Users/me/smith-2020.pdf')."
     ),
@@ -4894,6 +4986,7 @@ def attach_file(
     url: str | None = None,
     filename: str | None = None,
     *,
+    link_mode: str = "import",
     ctx: Context,
 ) -> str:
     try:
@@ -4904,6 +4997,10 @@ def attach_file(
     try:
         if bool(file_path) == bool(url):
             return "Error: Provide exactly one of file_path or url."
+        if link_mode not in ("import", "linked"):
+            return "Error: link_mode must be 'import' or 'linked'."
+        if link_mode == "linked" and url:
+            return "Error: link_mode='linked' needs file_path, not url."
 
         # Validate the parent item before touching any file.
         try:
@@ -4946,6 +5043,10 @@ def attach_file(
                 filename += ext
             display_name = filename or os.path.basename(file_path)
             ctx.info(f"Attaching local file to {item_key}: {display_name}")
+            if link_mode == "linked":
+                return _attach_linked_file(
+                    write_zot, item_key, display_name, file_path, ctx
+                )
             if filename and filename != os.path.basename(file_path):
                 # pyzotero's attachment_both() derives the *stored* filename
                 # from the real file's basename, not the title tuple element
@@ -5659,7 +5760,7 @@ def add_by_bibtex(
             except Exception as e:
                 results.append({
                     "ok": False, "key": None, "doi": None, "pdf_status": None,
-                    "error": f"conversion failed: {e}",
+                    "error": f"conversion failed: {_helpers.format_zotero_error(e)}",
                     "title": entry.get("citekey") or "(unknown)",
                 })
                 continue
@@ -5800,7 +5901,7 @@ def add_by_csl_json(
             except Exception as e:
                 results.append({
                     "ok": False, "key": None, "doi": None, "pdf_status": None,
-                    "error": f"conversion failed: {e}",
+                    "error": f"conversion failed: {_helpers.format_zotero_error(e)}",
                     "title": str(entry.get("id") or entry.get("title") or "(unknown)"),
                 })
                 continue

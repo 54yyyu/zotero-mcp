@@ -39,7 +39,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
 
 # Commands for the person at the keyboard, not the agent: keep them out of the skill.
-HUMAN_ONLY = {"plugin"}
+HUMAN_ONLY = {"plugin", "tags"}  # tags: deprecated alias of batch
 
 
 def _format_action(action) -> str | None:

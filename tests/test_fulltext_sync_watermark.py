@@ -96,6 +96,9 @@ class FakeVersionsZotero:
 class FakeChroma:
     """ChromaClient stub for update_database runs with no items."""
 
+    def read_error(self):
+        return None
+
     def reset_collection(self):
         raise AssertionError("reset_collection should not be called")
 

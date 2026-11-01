@@ -490,9 +490,40 @@ def _server_id_mismatch_message() -> str:
     )
 
 
+# pyzotero addresses its local API as localhost before 1.15.2 and 127.0.0.1 after.
+_LOCAL_API_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _is_local_connection_error(exc: Exception) -> bool:
+    """Whether *exc* is a refused connection to the local Zotero server.
+
+    None of the ``format_zotero_error`` call sites pass ``zot``, so this can't
+    ask whether the client is local. It matches on the request URL instead:
+    only the local API listens on port 23119 of the loopback host, so a
+    web-API outage (or a refusal to any other host) is left to fall through to
+    ``str(exc)`` rather than being misreported as "Zotero is not running".
+
+    The exception class comes from whichever HTTP library pyzotero is built
+    against (``httpx2`` on pyzotero >= 1.15, ``httpx`` before), so resolve it
+    through the client's own helper, as ``_make_local_http_client`` does (#512).
+    """
+    try:
+        if not isinstance(exc, _client._pyzotero_httpx().ConnectError):
+            return False
+        url = exc.request.url  # raises when no request is attached
+        return url.host in _LOCAL_API_HOSTS and url.port == 23119
+    except Exception:
+        return False
+
+
 def format_zotero_error(exc: Exception, zot=None) -> str:
     """Turn a pyzotero exception into advice a user can act on."""
     local = bool(getattr(zot, "local", False))
+    if _is_local_connection_error(exc):
+        return (
+            "Zotero is not running (nothing listening on 127.0.0.1:23119). "
+            "Start Zotero and retry, or set ZOTERO_LOCAL=false to use the web API."
+        )
     if isinstance(exc, LocalAPIKeyRequiredError):
         return _local_key_rejected_message()
     if isinstance(exc, LocalAPIDeniedError):

@@ -3,7 +3,12 @@
 import json
 
 import pytest
-from conftest import DummyContext, FakeLocalZotero, _FakeResponse
+from conftest import (
+    DummyContext,
+    FakeLocalZotero,
+    _FakeResponse,
+    pyzotero_http_module,
+)
 from pyzotero.errors import CallDoesNotExistError, LocalAPIKeyRequiredError
 
 from zotero_mcp import client as _client
@@ -259,6 +264,41 @@ class TestErrorMessages:
 
     def test_unknown_errors_pass_through_unchanged(self):
         assert _helpers.format_zotero_error(ValueError("something else")) == "something else"
+
+    def _connect_error(self, url):
+        """A ConnectError from the HTTP library pyzotero actually uses.
+
+        Built from the same library the local client is built from, so the
+        test does not pass on one branch of the httpx/httpx2 split while the
+        other leaks the bare errno (#512).
+        """
+        http = pyzotero_http_module()
+        request = http.Request("GET", url)
+        return http.ConnectError("[Errno 61] Connection refused", request=request)
+
+    # pyzotero addresses the local API as localhost before 1.15.2, and the
+    # package supports pyzotero >= 1.14.
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+    def test_refused_local_connection_says_zotero_is_not_running(self, host):
+        """#744: with Zotero closed the raw errno is printed with no hint that
+        the app has to be running."""
+        exc = self._connect_error(f"http://{host}:23119/api/users/0/items")
+        msg = _helpers.format_zotero_error(exc)
+        assert "Zotero is not running" in msg
+        assert "127.0.0.1:23119" in msg
+        assert "Connection refused" not in msg
+
+    def test_refused_web_connection_is_not_reported_as_local(self):
+        """A web-API outage must not be misreported as "Zotero is not running"
+        — nothing here passes ``zot``, so the branch keys off the URL."""
+        exc = self._connect_error("https://api.zotero.org/users/0/items")
+        msg = _helpers.format_zotero_error(exc)
+        assert "Zotero is not running" not in msg
+        assert "Connection refused" in msg
+
+    def test_local_connection_error_without_a_request_is_left_alone(self):
+        exc = pyzotero_http_module().ConnectError("Connection refused")
+        assert _helpers.format_zotero_error(exc) == "Connection refused"
 
     def test_missing_items_new_endpoint_should_never_surface(self, fake_local_zot):
         msg = _helpers.format_zotero_error(

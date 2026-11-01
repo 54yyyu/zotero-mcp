@@ -161,4 +161,27 @@ export const CHAT_STYLES = `
 .zmc .cite__l { min-width: 0; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zmc .cite:hover .cite__t { background: color-mix(in srgb, var(--link) 14%, transparent); color: var(--link); }
 .zmc .cite:focus-visible { outline-offset: 1px; border-radius: var(--pill); }
+/* callout cards (callout.ts): a statement or an aside, "DEFINITION 1 — Title" over its body; --cb is the kind's colour */
+.zmc .cb { --cb: var(--info); }
+.zmc .md .cb { margin: var(--s1) 0 var(--s3); padding: var(--s2) var(--s3) var(--s3); border: 1px solid var(--rule); border-left: 3px solid var(--cb); border-radius: var(--r1); background: color-mix(in srgb, var(--cb) 5%, var(--paper-raised)); }
+.zmc[data-accent="custom"] .cb--thm { --cb: var(--accent); }
+.zmc .cb--def { --cb: #0d7f78; } .zmc[data-theme="dark"] .cb--def { --cb: #4fd1c5; }
+.zmc .cb--rem { --cb: var(--ink-faint); } .zmc .cb--proof { --cb: var(--ink-muted); }
+.zmc .cb--tip { --cb: var(--ok); } .zmc .cb--warn { --cb: var(--warn); } .zmc .cb--bad { --cb: var(--danger); }
+.zmc .cb--key { --cb: #6d4fd6; } .zmc[data-theme="dark"] .cb--key { --cb: #a78bfa; }
+.zmc .cb__head { margin-bottom: var(--s1); font-size: var(--fs-1); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; line-height: 1.4; color: color-mix(in srgb, var(--cb) 72%, var(--ink)); }
+.zmc .cb__title { font-size: var(--fs-2); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--ink-muted); }
+.zmc .cb__body > * { margin: 0 0 var(--s2); } .zmc .cb__body > :last-child { margin-bottom: 0; }
+.zmc .cb--thm .cb__body { font-style: italic; }
+.zmc .cb--thm .cb__body :is(.math, .mathblock, code, .cite, .cbref) { font-style: normal; }
+.zmc .cb--proof { padding-block: var(--s1); border-color: transparent; border-left-color: var(--rule-strong); background: none; }
+.zmc .cb--proof .cb__head { font-style: italic; font-weight: 600; letter-spacing: 0; text-transform: none; font-size: var(--fs-3); color: var(--ink-muted); }
+.zmc .cb--proof::after { content: ""; display: block; width: 7px; height: 7px; margin: var(--s2) 0 0 auto; background: var(--ink-faint); } /* the end-of-proof square, drawn: a font may lack ∎ */
+.zmc .cb--flash { animation: zmc-cbflash 1.6s ease-out; }
+@keyframes zmc-cbflash { from { background: color-mix(in srgb, var(--cb) 24%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .zmc .cb--flash { animation: none; outline: 2px solid var(--cb); } }
+.zmc .cbref { display: inline; padding: 0 var(--s1); border: 0; border-radius: var(--r0); background: color-mix(in srgb, var(--link) 10%, transparent); color: var(--link); font: inherit; font-size: 0.92em; font-style: normal; }
+.zmc .cbref:hover { background: color-mix(in srgb, var(--link) 18%, transparent); }
+.zmc .cbref--missing { background: none; color: var(--ink-muted); text-decoration: underline dotted; cursor: default; }
+.zmc[data-glass="on"] .cb:not(.cb--proof) { background: color-mix(in srgb, var(--cb) 6%, var(--glass)); border-color: var(--glass-line); border-left-color: var(--cb); box-shadow: var(--glass-sheen); }
 `;

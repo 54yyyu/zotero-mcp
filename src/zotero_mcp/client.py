@@ -274,6 +274,20 @@ def _apply_default_headers(zot: zotero.Zotero) -> zotero.Zotero:
     return zot
 
 
+def _with_api_url(zot: zotero.Zotero) -> zotero.Zotero:
+    """Point a web API client at ZOTERO_API_URL when it is set.
+
+    For a self-hosted server that speaks the Zotero Web API (e.g. altero) in
+    place of api.zotero.org — the counterpart of Zotero desktop's
+    extensions.zotero.api.url. pyzotero hard-codes its endpoint but reads it
+    from the instance on every request, so overriding the attribute is enough.
+    """
+    url = os.getenv("ZOTERO_API_URL", "").strip()
+    if url:
+        zot.endpoint = url.rstrip("/")
+    return zot
+
+
 @dataclass
 class AttachmentDetails:
     """Details about a Zotero attachment."""
@@ -331,7 +345,7 @@ def get_zotero_client() -> zotero.Zotero:
         local=local,
         client=_make_local_http_client() if local else None,
     )
-    return _apply_default_headers(zot) if local else zot
+    return _apply_default_headers(zot) if local else _with_api_url(zot)
 
 
 def get_local_zotero_client() -> zotero.Zotero | None:
@@ -382,11 +396,13 @@ def get_web_zotero_client() -> zotero.Zotero | None:
     if not library_id or not api_key:
         return None
 
-    return zotero.Zotero(
-        library_id=library_id,
-        library_type=library_type,
-        api_key=api_key,
-        local=False,
+    return _with_api_url(
+        zotero.Zotero(
+            library_id=library_id,
+            library_type=library_type,
+            api_key=api_key,
+            local=False,
+        )
     )
 
 

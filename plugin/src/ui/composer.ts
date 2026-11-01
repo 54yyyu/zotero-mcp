@@ -2,6 +2,7 @@
 // It owns the draft and the popups; the controller (index.ts) owns what a send does.
 import type { BackendId, ContextChip, ItemHit, ZoteroRef } from "../types.ts";
 import { CHIP_ICON, append, env, errMessage, h, icon, isMac, setKids } from "./dom.ts";
+import { imageFiles } from "./images.ts";
 import type { Fill } from "./economy.ts";
 import { SearchPopup } from "./search.ts";
 import { Pickers } from "./pickers.ts";
@@ -24,6 +25,8 @@ export interface ComposerOpts {
   onTogglePin(chip: ContextChip): void;
   /** Something was dropped on the composer; resolves with how many chips it added. */
   onDrop(data: DataTransfer): Promise<number>;
+  /** Pictures pasted into the message box. */
+  onPasteImages(files: File[]): void;
   onPick(kind: PickKind, id: string): void;
   /** The agent's models and modes. May start the agent, so it is asked only when a picker opens. */
   loadChoices(): Promise<Choices>;
@@ -73,6 +76,7 @@ export class Composer {
       rows: "1", placeholder: "Ask about your library…", "aria-label": "Message", "aria-autocomplete": "list",
       oninput: () => this.onInput(),
       onkeydown: (e: KeyboardEvent) => this.onKey(e),
+      onpaste: (e: ClipboardEvent) => { const files = imageFiles(e.clipboardData); if (files.length) { e.preventDefault(); this.opts.onPasteImages(files); } },
       onfocus: () => { if (!this.warmed) { this.warmed = true; this.opts.onFirstFocus(); } },
     }) as HTMLTextAreaElement;
     this.pop = new SearchPopup(opts, (hit) => this.pickHit(hit), () => this.afterPopClose());
@@ -147,7 +151,9 @@ export class Composer {
 
   setChips(chips: ContextChip[]): void {
     this.chipsEl.hidden = chips.length === 0;
-    setKids(this.chipsEl, chips.map((c) => (c.kind === "area" ? this.areaCard(c) : this.chip(c))));
+    const pic = (c: ContextChip) => c.kind === "area" || c.kind === "image";
+    const thumbs = chips.filter(pic).map((c) => this.thumb(c));
+    setKids(this.chipsEl, [...chips.filter((c) => !pic(c)).map((c) => this.chip(c)), ...(thumbs.length ? [h("div.cthumbs", null, thumbs)] : [])]);
   }
 
   private chip(c: ContextChip): HTMLElement {
@@ -163,15 +169,41 @@ export class Composer {
       pin, x);
   }
 
-  private areaCard(c: ContextChip): HTMLElement {
+  /** A selected area or a pasted picture: a small tile, its name as the tooltip, × on its corner. Click: a large preview. */
+  private thumb(c: ContextChip): HTMLElement {
     const src = c.image && B64.test(c.image.data) ? `data:image/png;base64,${c.image.data}` : null;
-    return h("div.area", null,
-      h("div.area__head", null, icon("area"), h("span", null, c.label || "Selected Area")),
-      src ? h("img.area__img", { src, alt: "The selected area of the page" }) : h("div.area__none", null, "No preview"),
-      h("div.area__acts", null,
-        h("button.lnk", { type: "button", onclick: () => this.opts.open(c.ref) }, icon("external"), c.ref.annotationKey ? "Go to Annotation" : "Go to Page"),
-        h("button.lnk", { type: "button", onclick: () => this.opts.onRemoveChip(c) }, icon("close"), "Remove")));
+    const label = c.label || "Selected Area";
+    const img = src ? h("img.thumb__img", { src, alt: "" }) : h("span.thumb__none", null, icon("area"));
+    return h("div.thumb", { title: label },
+      src ? h("button.thumb__main", { type: "button", "aria-label": `Preview ${label}`, onclick: (e: Event) => this.preview(c, src, e.currentTarget as HTMLElement) }, img)
+        : h("div.thumb__main", { role: "img", "aria-label": label }, img),
+      h("button.thumb__x", { type: "button", "aria-label": `Remove ${label}`, title: "Remove", onclick: () => this.opts.onRemoveChip(c) }, icon("close")));
   }
+
+  /** The picture at panel size over a dimmed panel. Esc, × or a click outside closes it; an area can go to its page. */
+  private preview(c: ContextChip, src: string, from: HTMLElement): void {
+    const root = this.el.closest(".zmc");
+    if (!root) return;
+    const label = c.label || "Selected Area";
+    const close = () => { box.remove(); from.focus(); };
+    const go = c.kind === "image" ? null : c.ref.annotationKey ? "Go to Annotation" : "Go to Page"; // a pasted picture lives nowhere in Zotero
+    const shut = h("button.lb__x", { type: "button", "aria-label": "Close preview", title: "Close (Esc)", onclick: close }, icon("close")) as HTMLButtonElement;
+    // Sized in px from the panel, so the frame is exactly the picture and the × sits on its corner.
+    const r = root.getBoundingClientRect();
+    const img = h("img.lb__img", { src, alt: label, style: `max-width: ${Math.max(80, r.width - 32)}px; max-height: ${Math.max(80, r.height - 120)}px` });
+    const box = h("div.lb", {
+      role: "dialog", "aria-modal": "true", "aria-label": label,
+      onclick: (e: Event) => { if (e.target === box) close(); },
+      onkeydown: (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); close(); } },
+    },
+      h("div.lb__pic", null, img, shut),
+      h("div.lb__cap", null, h("span", null, label),
+        go ? h("button.lnk", { type: "button", onclick: () => { close(); this.opts.open(c.ref); } }, icon("external"), go) : null));
+    root.appendChild(box);
+    shut.focus();
+  }
+
+
 
   // --- typing
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import mimetypes
+import os
 
 import pytest
 from conftest import DummyContext, FakeZotero, skip_on_windows
@@ -156,6 +157,12 @@ class FakeZoteroForAttach(FakeZotero):
     def __init__(self):
         super().__init__()
         self.attachments = []
+
+    def item_template(self, item_type, linkmode=None):
+        template = super().item_template(item_type)
+        if linkmode:  # the real /items/new?linkMode=... template carries it
+            template["linkMode"] = linkmode
+        return template
 
     def attachment_both(self, files, parentid=None, **kwargs):
         self.attachments.append({"files": files, "parentid": parentid})
@@ -560,6 +567,73 @@ class TestAttachFileLocal:
             ctx=dummy_ctx,
         )
         assert fake.attachments[0]["files"][0][0] == "smith-2020.pdf"
+
+
+# ---------------------------------------------------------------------------
+# attach_file: link_mode="linked" (records the path, uploads nothing)
+# ---------------------------------------------------------------------------
+
+
+class TestAttachFileLinked:
+    def test_creates_linked_file_child_without_uploading(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            link_mode="linked",
+            ctx=dummy_ctx,
+        )
+
+        assert fake.attachments == []  # nothing uploaded
+        (created,) = fake.created
+        assert created["linkMode"] == "linked_file"
+        assert created["path"] == os.path.realpath("/Users/test/smith-2020.pdf")  # D:\Users\... on Windows
+        assert created["parentItem"] == "ITEM1"
+        assert created["contentType"] == "application/pdf"
+        assert "Linked file attached" in result
+        assert "KEY0000" in result
+
+    def test_rerun_does_not_link_twice(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {"key": "LINK0001", "data": {"itemType": "attachment", "filename": "smith-2020.pdf"}}
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            filename="Smith 2020.pdf",  # title override must not defeat the dedupe
+            link_mode="linked",
+            ctx=dummy_ctx,
+        )
+
+        assert fake.created == []
+        assert "already present" in result and "LINK0001" in result
+
+    def test_requires_file_path_not_url(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        result = server.attach_file(
+            item_key="ITEM1",
+            url="https://example.org/a.pdf",
+            link_mode="linked",
+            ctx=dummy_ctx,
+        )
+        assert "needs file_path" in result
+        assert fake.created == [] and fake.attachments == []
+
+    def test_unknown_link_mode_is_rejected(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/tmp/a.pdf", link_mode="symlink", ctx=dummy_ctx
+        )
+        assert "link_mode must be" in result
 
 
 # ---------------------------------------------------------------------------

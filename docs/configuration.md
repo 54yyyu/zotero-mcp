@@ -77,6 +77,9 @@ rather than opening a dialog that can't help.
 - `ZOTERO_API_KEY`: Your Zotero API key (for web API)
 - `ZOTERO_LIBRARY_ID`: Your Zotero library ID (for web API)
 - `ZOTERO_LIBRARY_TYPE`: The type of library (user or group, default: user)
+- `ZOTERO_API_URL`: Web API base URL, for a self-hosted server that speaks the Zotero Web
+  API (e.g. [altero](https://github.com/eseifert/altero)) instead of zotero.org — the same
+  value as Zotero desktop's `extensions.zotero.api.url` (default: `https://api.zotero.org`)
 - `ZOTERO_LOCAL_API_KEY`: Local API key for writes (Zotero 10+). Normally set for you by
   `zotero-mcp authorize-local`; use the variable for containers and CI, where the config
   file isn't convenient
@@ -240,6 +243,26 @@ Chunking only applies to items indexed after you turn it on, so run `zotero-mcp 
 A passage longer than the model can read would lose its tail, so `chunk_size` is lowered to fit: about 85% of the model's token limit, at 4 characters per token (3 for OpenAI). For the default model that is roughly 870 characters per passage whatever `chunk_size` says. Models with a larger limit keep your `chunk_size`, and the change is logged once at info level.
 
 With the default model, 20 passages cover about 13,000 characters, a few pages. To index whole papers, raise `max_chunks_per_item`: 100 covers roughly 20 pages, and longer papers need more. Each passage is one vector, so the database grows with it.
+
+<a id="semantic-search-memory"></a>
+
+## Semantic search memory
+
+ChromaDB loads the whole vector index into memory the first time a search runs, and keeps it there until the process holding it exits. Each vector takes its dimension × 4 bytes: a million passages with OpenAI's `text-embedding-3-small` (1,536 dimensions) need about 6 GB. To get that memory back, set `idle_unload_minutes`: the MCP server then runs ChromaDB in a separate worker process. The worker starts at the first semantic search and exits after a set time with no semantic calls, which returns that memory to the system. The next search starts a new worker and loads the index again, which takes a few seconds for a small index and can take half a minute for a large one.
+
+```json
+{
+  "semantic_search": {
+    "idle_unload_minutes": 10
+  }
+}
+```
+
+| Setting | Default | What it does |
+|---|---|---|
+| `idle_unload_minutes` | `0` (off) | Minutes without a semantic search or index update before the worker exits. `0` runs ChromaDB inside the server, where the index stays loaded until the server exits. |
+
+The status tool (`zotero_get_search_database_status`) reads its counts from the database file and never loads the index. Command-line tools such as `update-db` run ChromaDB in their own process, which frees the index when the command finishes.
 
 ## Command-line options
 
