@@ -889,8 +889,8 @@ def get_item_children(
     name="zotero_get_tags",
     description=(
         "List every tag in the active library, one per line. Use it to find "
-        "tag names before filtering with zotero_search_by_tag or editing with "
-        "zotero_batch_update. limit: default all."
+        "tag names before filtering with zotero_search_items(tag=...) or "
+        "editing with zotero_batch_update. limit: default all."
     )
 )
 @with_zotero_api_lock

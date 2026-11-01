@@ -936,13 +936,72 @@ def batch_update(
 
 
 @mcp.tool(
+    name="zotero_manage_collection",
+    description=(
+        "Create, update or delete a collection. action='create': name, and "
+        "optionally parent_collection for a subcollection. 'update': "
+        "collection_key plus a new name, a new parent_collection, or "
+        "to_top_level=True; the key, items and subcollections are kept, and a "
+        "collection cannot move under itself or its own subcollection. "
+        "'delete': collection_key; permanent (Zotero does not trash "
+        "collections) and takes its subcollections with it, but the items "
+        "stay in the library. parent_collection: a key, name or "
+        "'Parent/Child' path. To file items into collections use "
+        "zotero_set_item_collections."
+    )
+)
+def manage_collection(
+    action: Literal["create", "update", "delete"],
+    collection_key: str | None = None,
+    name: str | None = None,
+    parent_collection: str | None = None,
+    to_top_level: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """Dispatch the collection-write surface to create/update/delete.
+
+    Replaces the separate ``zotero_create_collection``,
+    ``zotero_update_collection`` and ``zotero_delete_collection`` tools, which
+    stay registered in the off-by-default ``legacy`` toolset until 0.17.
+    """
+    if action == "create":
+        if collection_key:
+            return (
+                "Error: action='create' takes name (and optionally "
+                "parent_collection), not collection_key. Use action='update' "
+                "to change an existing collection."
+            )
+        if not name or not name.strip():
+            return "Error: action='create' requires name."
+        return create_collection(name=name, parent_collection=parent_collection, ctx=ctx)
+
+    if not collection_key:
+        return f"Error: action='{action}' requires collection_key (zotero_search_collections finds it)."
+
+    if action == "update":
+        return update_collection(
+            collection_key=collection_key, name=name,
+            parent_collection=parent_collection, to_top_level=to_top_level, ctx=ctx,
+        )
+
+    if action == "delete":
+        if name is not None or parent_collection or to_top_level:
+            return (
+                "Error: action='delete' takes only collection_key. Use "
+                "action='update' to rename or move a collection."
+            )
+        return delete_collection(collection_key=collection_key, ctx=ctx)
+
+    return f"Error: unknown action '{action}'. Expected one of: create, update, delete."
+
+
+@mcp.tool(
     name="zotero_create_collection",
     description=(
-        "Create a new collection (project/folder) in your Zotero library. "
-        "To create a subcollection, pass parent_collection (not parent_key) as either "
-        "a collection key (8-character string like 'KMMQDFQ4'), a collection name, "
-        "or a 'Parent/Child' path when the name is shared. "
-        "Use zotero_search_collections to find collection keys."
+        "Deprecated (removed in 0.17): use "
+        "zotero_manage_collection(action='create'). Creates a collection; "
+        "parent_collection is a key, name or 'Parent/Child' path."
     )
 )
 @with_zotero_api_lock
@@ -995,14 +1054,9 @@ def create_collection(
 @mcp.tool(
     name="zotero_delete_collection",
     description=(
-        "Delete a collection (folder) from your Zotero library by its "
-        "8-character key. Items inside the collection are NOT deleted — they "
-        "remain in the library (and in any other collections they belong to). "
-        "Subcollections ARE deleted along with the parent. "
-        "This is a hard delete — Zotero's API does not trash collections, so "
-        "the operation cannot be undone via the API. Use "
-        "zotero_search_collections to find the key first. "
-        'Example: zotero_delete_collection(collection_key="KMMQDFQ4").'
+        "Deprecated (removed in 0.17): use "
+        "zotero_manage_collection(action='delete'). Permanently deletes a "
+        "collection and its subcollections; items stay in the library."
     )
 )
 def delete_collection(
@@ -1037,15 +1091,9 @@ def delete_collection(
 @mcp.tool(
     name="zotero_update_collection",
     description=(
-        "Rename a collection or move it under a different parent, keeping its "
-        "key, subcollections and item membership (#517). collection_key: the "
-        "8-character key of the collection to change. name: the new name, or "
-        "omit to keep it. parent_collection: key, name or 'Parent/Child' path of the new parent; "
-        "a collection cannot be moved under itself or one of its own "
-        "subcollections. to_top_level=True moves it out of any parent. Pass "
-        "at least one change. Use zotero_search_collections to find keys. "
-        'Example: zotero_update_collection(collection_key="KMMQDFQ4", '
-        'name="AI & ML").'
+        "Deprecated (removed in 0.17): use "
+        "zotero_manage_collection(action='update'). Renames a collection "
+        "(name) or moves it (parent_collection, or to_top_level=True)."
     )
 )
 @with_zotero_api_lock
@@ -1200,8 +1248,8 @@ def search_collections(
         "memberships alone. item_keys: an array of item keys. add_to / "
         "remove_from: arrays of collection keys, names or 'Parent/Child' "
         "paths, all checked before anything changes. To replace memberships "
-        "wholesale use zotero_update_item; to create or delete a collection, "
-        "zotero_create_collection / zotero_delete_collection."
+        "wholesale use zotero_update_item; to create, rename or delete a "
+        "collection, zotero_manage_collection."
     )
 )
 @with_zotero_api_lock

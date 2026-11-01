@@ -366,19 +366,22 @@ def _search_items_via_backend(zot, query: str, qmode: str, limit: int,
         "Keyword search of item metadata: substring match on title, creators "
         "and year (qmode='everything' adds abstracts). Keep queries short, "
         "like 'Brewer 2011' or a surname: every extra word narrows the match. "
-        "For topics or concepts use zotero_semantic_search; for tags, "
-        "zotero_search_by_tag. If nothing matches it retries simpler queries, "
-        "then semantic search, and says so. item_type: '-attachment' "
-        "(default) excludes attachments, or e.g. 'journalArticle'. tag: tag "
-        "names, ANDed. limit: default 10. collection_key: search one "
-        "collection (no retries); include_subcollections adds its "
-        "subcollections. search_all_libraries=True searches every library and "
-        "labels each result; not with collection_key."
+        "For topics or concepts use zotero_semantic_search. If nothing "
+        "matches it retries simpler queries, then semantic search, and says "
+        "so. tag: conditions that are ANDed; within one, ' OR ' alternates "
+        "and a leading '-' excludes, e.g. ['methods OR methodology', "
+        "'-draft']. Omit query to list items by tag alone (zotero_get_tags "
+        "lists the names). item_type: '-attachment' (default) excludes "
+        "attachments, or e.g. 'journalArticle'. limit: default 10. "
+        "collection_key: search one collection (no retries); "
+        "include_subcollections adds its subcollections. "
+        "search_all_libraries=True searches every library and labels each "
+        "result; needs a query, not with collection_key."
     )
 )
 @with_zotero_api_lock
 def search_items(
-    query: str,
+    query: str = "",
     qmode: Literal["titleCreatorYear", "everything"] = "titleCreatorYear",
     item_type: str = "-attachment",  # Exclude attachments by default
     limit: int | str | None = 10,
@@ -393,7 +396,9 @@ def search_items(
     Search for items in your Zotero library.
 
     Args:
-        query: Search query string
+        query: Search query string. May be empty when ``tag`` is given, which
+            lists the items carrying those tags (the former
+            ``zotero_search_by_tag``, now :func:`search_by_tag`).
         qmode: Query mode (titleCreatorYear or everything)
         item_type: Type of items to search for. Use "-attachment" to exclude attachments.
         limit: Maximum number of results to return
@@ -418,7 +423,18 @@ def search_items(
     """
     try:
         if not query.strip():
-            return "Error: Search query cannot be empty"
+            if not _helpers._normalize_tag_filter(tag):
+                return "Error: Search query cannot be empty. Pass query, tag, or both."
+            if search_all_libraries:
+                return (
+                    "Error: search_all_libraries needs a query. To list items by "
+                    "tag alone, search one library at a time."
+                )
+            return search_by_tag(
+                tag=tag, item_type=item_type, limit=limit,
+                collection_key=collection_key,
+                include_subcollections=include_subcollections, ctx=ctx,
+            )
 
         if search_all_libraries:
             if gate_error := _helpers.global_search_error():
@@ -648,22 +664,9 @@ def search_items(
 @mcp.tool(
     name="zotero_search_by_tag",
     description=(
-        "Find items carrying one or more tags, with boolean syntax "
-        "support. tag: list of tag strings; each entry is a condition ANDed "
-        "with the others, and within an entry you can use ' OR ' for "
-        "disjunction and a leading '-' for exclusion. "
-        "Example: tag=['methods OR methodology', '-draft'] matches items "
-        "tagged 'methods' OR 'methodology' AND NOT tagged 'draft'. "
-        "item_type: '-attachment' (default) excludes attachments; pass "
-        "'journalArticle', 'book', etc. to filter. "
-        "limit: max results (default 10). "
-        "collection_key: optional 8-char key to scope to a collection. "
-        "include_subcollections: also search collections nested beneath it "
-        "(default False). "
-        "Use zotero_get_tags to discover available tag names first. For "
-        "free-text content search, use zotero_search_items or "
-        "zotero_semantic_search instead. "
-        "Example: zotero_search_by_tag(tag=['to-read'], limit=20)."
+        "Deprecated (removed in 0.17): use zotero_search_items(tag=...) "
+        "without a query. Lists items matching tag conditions, ANDed; ' OR ' "
+        "alternates and a leading '-' excludes."
     )
 )
 @with_zotero_api_lock
