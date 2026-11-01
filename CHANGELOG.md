@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`zotero-cli tags` is deprecated in favor of `zotero-cli batch`**, which takes the same selection and does the same tag edits with `--add-tags` / `--remove-tags`, plus Extra edits. `tags` still works and prints a notice on stderr; it will be removed in 0.17.
 
+### Changed
+
+- **`zotero_find_duplicates` and `zotero_merge_duplicates(auto=True)` refuse an over-size library in one request, and their 5,000-item ceiling now counts top-level items only.** The refusal used to come only after paging in 5,100 items, about 51 requests (163 s against a 16,859-item library over the Web API); `num_items()` now answers it in one. The scan also pages `/items/top` rather than `/items`, so child attachments, notes and annotations, which the grouping always discarded, no longer use up the budget, and the groups found are the same. A library with many attachments that was refused before may now be scanned, at the same worst-case cost of 51 requests and 5,100 records. Noticed while investigating #506.
+
 ## [0.15.1] - 2026-10-16
 
 ### Added
