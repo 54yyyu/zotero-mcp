@@ -42,10 +42,18 @@ from zotero_mcp.cli import (
 # ---------------------------------------------------------------------------
 
 class CLIContext:
-    """Drop-in replacement for fastmcp.Context that writes to stderr."""
+    """Drop-in replacement for fastmcp.Context that writes to stderr.
+
+    Errors are held until the command's result is printed (see
+    :func:`_flush_errors`): a tool that fails typically logs the raw exception
+    and then returns the same failure, explained, and printing both showed
+    every failure twice, the unhelpful version first (#744). With --verbose
+    they print as they happen.
+    """
 
     def __init__(self, verbose: bool = False):
         self._verbose = verbose
+        self._held_errors: list[str] = []
 
     def info(self, message: str) -> None:
         if self._verbose:
@@ -55,7 +63,32 @@ class CLIContext:
         print(f"[WARN] {message}", file=sys.stderr)
 
     def error(self, message: str) -> None:
-        print(f"[ERROR] {message}", file=sys.stderr)
+        if self._verbose:
+            print(f"[ERROR] {message}", file=sys.stderr)
+        else:
+            self._held_errors.append(str(message))
+
+    def flush_errors(self, failure: str | None = None, shown: str | None = None) -> None:
+        """Print held errors, leaving out those the output already reports.
+
+        An error is left out when it opens with the same words, up to the
+        first colon, as the first line of *failure* ("Error adding by
+        BibTeX: [Errno 61] ..." against "Error adding by BibTeX: Zotero is
+        not running ..."), or when the result *shown* contains it verbatim.
+        """
+        held, self._held_errors = self._held_errors, []
+        reported = _error_head(failure) if failure else None
+        for message in held:
+            if reported is not None and _error_head(message) == reported:
+                continue
+            if shown and message in shown:
+                continue
+            print(f"[ERROR] {message}", file=sys.stderr)
+
+
+def _error_head(text: str) -> str:
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    return first.split(":", 1)[0].strip(" #*>").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +103,22 @@ def _import_tools():
 
 
 def _ctx(args) -> CLIContext:
-    return CLIContext(verbose=getattr(args, "verbose", False))
+    """The command's context: one per command, so its held errors are
+    printed once, by :func:`_flush_errors`."""
+    ctx = getattr(args, "_cli_ctx", None)
+    if not isinstance(ctx, CLIContext):
+        ctx = CLIContext(verbose=getattr(args, "verbose", False))
+        try:
+            args._cli_ctx = ctx
+        except Exception:
+            pass
+    return ctx
+
+
+def _flush_errors(args, failure: str | None = None, shown: str | None = None) -> None:
+    ctx = getattr(args, "_cli_ctx", None)
+    if isinstance(ctx, CLIContext):
+        ctx.flush_errors(failure, shown)
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +142,9 @@ def _out(args, command: str, *, data=None, text: str | None = None) -> None:
     """
     if text is not None:
         text = _cli_vocabulary(text)
-    if data is None and text is not None and _reports_failure(text):
+    failed = data is None and text is not None and _reports_failure(text)
+    _flush_errors(args, text if failed else None, text)
+    if failed:
         # Most tools return their failures as prose rather than raising. Left
         # alone, that prose became an `ok: true` envelope with exit code 0, so
         # a caller that checked `ok` believed a failed write had worked.
@@ -358,7 +408,7 @@ def cmd_get(args):
                 "collections": [_cli_json.project_collection(c) for c in cols],
             })
             return
-        print(retrieval.get_collections(limit=args.limit, ctx=ctx))
+        _out(args, "get collections", text=retrieval.get_collections(limit=args.limit, ctx=ctx))
     elif sub == "collection-items":
         result = retrieval.get_collection_items(
             collection_key=args.collection_key, detail=args.detail, limit=args.limit,
@@ -406,7 +456,7 @@ def cmd_get(args):
                 "tags": [_cli_json.project_tag(t) for t in tags],
             })
             return
-        print(retrieval.get_tags(limit=args.limit, ctx=ctx))
+        _out(args, "get tags", text=retrieval.get_tags(limit=args.limit, ctx=ctx))
     elif sub == "recent":
         result = retrieval.get_recent(
             limit=args.limit, collection_key=getattr(args, "collection", None), ctx=ctx,
@@ -1429,6 +1479,7 @@ def cmd_batch(args):
 
 def _fail(args, command: str, message: str, code: str = "error"):
     """Report a usage error in whichever shape the caller asked for, then exit."""
+    _flush_errors(args, f"Error: {message}")
     if _json_mode(args):
         _cli_json.emit_error(command, message, code=code)
     else:
@@ -1992,12 +2043,14 @@ def main():
     try:
         handler(args)
     except KeyboardInterrupt:
+        _flush_errors(args)
         if _json_mode(args):
             _cli_json.emit_error(args.command, "Interrupted", code="interrupted")
         else:
             print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
     except Exception as e:
+        _flush_errors(args, f"Error: {e}")
         # In JSON mode the failure has to arrive in the same shape as a
         # success, or a caller has to parse stderr to find out what happened.
         if _json_mode(args):
@@ -2012,6 +2065,9 @@ def main():
             import traceback
             traceback.print_exc()
         sys.exit(1)
+    finally:
+        # Commands that exit or return without going through _out.
+        _flush_errors(args)
 
 
 if __name__ == "__main__":

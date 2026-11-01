@@ -564,16 +564,30 @@ def probe_local_server_id(timeout: float = 3.0, force: bool = False) -> str | No
     # does: Zotero listens on 127.0.0.1 only, and "localhost" can resolve to
     # ::1 first or be routed through a proxy.
     server_id = None
+    reachable = False
     try:
         with _make_local_http_client(timeout) as http:
             resp = http.get("http://127.0.0.1:23119/api/")
+            reachable = True
             server_id = resp.headers.get("zotero-server-id")
     except Exception:
         server_id = None
 
     _local_probe_cache["server_id"] = server_id
+    # A missing header means two different things: nothing answered at all
+    # (Zotero is closed), or a Zotero without the write API answered (#744).
+    _local_probe_cache["reachable"] = reachable
     _local_probe_cache["checked_at"] = time.monotonic()
     return server_id
+
+
+def local_server_unreachable() -> bool:
+    """Whether the last probe found nothing listening on 127.0.0.1:23119.
+
+    False when Zotero answered, and when no probe has said otherwise.
+    """
+    probe_local_server_id()
+    return _local_probe_cache.get("reachable") is False
 
 
 def get_local_write_credentials() -> tuple[str | None, str | None, str | None]:

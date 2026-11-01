@@ -652,6 +652,13 @@ def cmd_authorize_local(args):
         )
         return 7
 
+    if not _client.probe_local_server_id() and _client.local_server_unreachable():
+        print(
+            "Zotero is not running (nothing listening on 127.0.0.1:23119). "
+            "Start Zotero and retry."
+        )
+        return 5
+
     if not _client.probe_local_server_id():
         print(
             "The local Zotero API did not return a Zotero-Server-ID header.\n\n"

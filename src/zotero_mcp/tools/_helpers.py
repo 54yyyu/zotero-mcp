@@ -185,6 +185,13 @@ def write_unavailable_message(op_description: str = "write operations") -> str:
     )
     if _client.probe_local_server_id():
         return f"{header}\n\nTwo options:\n{authorize}\n{web}"
+    if _client.local_server_unreachable():
+        # Zotero is closed: saying its build lacks the write API (below)
+        # sends the user after an upgrade they may not need (#744).
+        return (
+            f"{header}\n\nZotero is not running (nothing listening on "
+            f"127.0.0.1:23119). Start Zotero, then one of:\n{authorize}\n{web}"
+        )
     return (
         f"{header}\n\nThis Zotero build does not expose the local write API "
         f"(that needs Zotero 10 or newer), so:\n"
