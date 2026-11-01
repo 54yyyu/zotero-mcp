@@ -50,7 +50,7 @@ def _server():
 
 
 def _data(result):
-    return json.loads(result.data)
+    return json.loads(result.content[0].text)  # tools advertise no output schema: text only
 
 
 def test_sse_clients_keep_their_own_library():
