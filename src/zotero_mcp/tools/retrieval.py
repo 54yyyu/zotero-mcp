@@ -1153,6 +1153,24 @@ def list_libraries(*, ctx: Context) -> str:
 SWITCH_SUCCESS_NOTE = "All tools now operate on this library."
 
 
+def _switch_note() -> str:
+    """SWITCH_SUCCESS_NOTE, plus a warning when the switch is server-wide.
+
+    Over HTTP a switch holds for the client session (#739); a stateless
+    request (protocol 2026-07-28) has no session, so it moves the library
+    for every session-less request to the server.
+    """
+    from zotero_mcp._context import on_sessionless_http
+
+    if not on_sessionless_http():
+        return SWITCH_SUCCESS_NOTE
+    return (
+        f"{SWITCH_SUCCESS_NOTE} This request came over HTTP without a client "
+        "session, so the switch is server-wide: it applies to every "
+        "session-less request to this server, from any client."
+    )
+
+
 @mcp.tool(
     name="zotero_switch_library",
     description=(
@@ -1245,7 +1263,7 @@ def switch_library(
         if _library.get_library_backend().name == "sqlite":
             return (
                 f"Successfully switched to library **{library_id}** "
-                f"(type={library_type}). {SWITCH_SUCCESS_NOTE}"
+                f"(type={library_type}). {_switch_note()}"
             )
         try:
             zot = _client.get_zotero_client()
@@ -1253,7 +1271,7 @@ def switch_library(
             zot.items()
             return (
                 f"Successfully switched to library **{library_id}** "
-                f"(type={library_type}). {SWITCH_SUCCESS_NOTE}"
+                f"(type={library_type}). {_switch_note()}"
             )
         except Exception as e:
             # Roll back on failure

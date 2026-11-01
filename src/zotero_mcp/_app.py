@@ -164,5 +164,11 @@ else:
             register = super().tool(name_or_fn, **kwargs)
             return lambda fn: register(sync_context(fn))
 
+        def resource(self, uri, **kwargs):
+            # Resources read the active library too, which on HTTP is the
+            # client session's (#739).
+            register = super().resource(uri, **kwargs)
+            return lambda fn: register(sync_context(fn))
+
     # Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
     mcp = _ZoteroMCP("Zotero", version=__version__, lifespan=server_lifespan)

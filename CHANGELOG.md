@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`zotero-cli db batch-status` and `db batch-import` work for Gemini batch runs.** They always read OpenAI's batch manifests. They now run the same code as `zotero-mcp batch-status` / `batch-import`: the provider follows the configured embedding model, or `--provider`. `zotero-cli db update` takes every `zotero-mcp update-db` flag, including `--batch`, `--batch-provider`, `--extraction-workers` and `--auto-loop`; its existing flags are unchanged.
+- **`zotero_switch_library` on a shared HTTP server no longer moves other clients** (#739). The active library was one value for the whole server, so over streamable HTTP or SSE one client's switch re-scoped every other client's reads and writes. A switch made in a client session (an SSE connection, or a streamable HTTP session on protocol 2025-11-25 or earlier) now holds for that session only; MCP resources follow it too. Requests on the stateless 2026-07-28 protocol have no session, so a switch there is still server-wide, and the tool now says so. stdio is unchanged.
 
 ## [0.15.2] - 2026-10-31
 
