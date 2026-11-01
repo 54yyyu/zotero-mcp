@@ -328,10 +328,31 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
 
     The report keeps the ``Item key: `KEY``` line that callers (and
     add_from_file's key extraction) rely on.
+
+    It also reports the citation key when the item has one, since that — not
+    the item key — is what goes into a document. It costs nothing here: the
+    dedup search already returned the full item, so ``data.citationKey`` is
+    in hand. An item without one just omits the line, so nothing depends on
+    Better BibTeX being present.
+
+    Deliberately only ``data.citationKey``, never a ``Citation Key:`` line in
+    ``extra`` — the two disagree, and ``extra`` is the wrong one. On a
+    497-item sample both were present on 77 items and differed on 11 of
+    those; every difference checked against BBT's own export resolved to the
+    native field. Those ``extra`` lines are this package's own import
+    residue: ``citation_import`` preserves the *source document's* key there
+    (``Citation Key: CoaseFirmMarket1988`` beside a native
+    ``Coase1988Firm``), so reading them would report a key BBT does not
+    export. Nothing is lost by ignoring them — no sampled item carried a key
+    in ``extra`` alone. Note this differs from ``search_by_citation_key``,
+    which consults both *on purpose*, so an item stays findable by the key it
+    was imported under.
     """
     item = existing[0]
     item_key = item.get("key")
-    title = item.get("data", {}).get("title") or "(untitled)"
+    data = item.get("data") or {}
+    title = data.get("title") or "(untitled)"
+    citation_key = data.get("citationKey")
 
     note = ""
     if len(existing) > 1:
@@ -345,6 +366,8 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
         f"Already in library: **{title}** (`{item_key}`, matched by {matched_by})\n\n"
         f"Item key: `{item_key}`\n"
     )
+    if citation_key:
+        header += f"Citation key: `{citation_key}`\n"
 
     if if_exists == "skip":
         return header + "No changes made (if_exists='skip')." + note
@@ -5597,6 +5620,10 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
     'file'/'skip' and a DOI match exists; otherwise None (proceed to
     create). Entries without a DOI always create — title matching is out
     of scope (#4).
+
+    The result carries the item's ``data.citationKey`` when it has one, as
+    _handle_existing_item reports it for the single-item adders (see there
+    for why ``extra`` is not consulted).
     """
     if if_exists == "duplicate":
         return None
@@ -5616,6 +5643,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
         return None
 
     item = existing[0]
+    citation_key = (item.get("data") or {}).get("citationKey")
     if if_exists == "skip":
         return {
             "ok": True, "key": item.get("key"), "doi": doi,
@@ -5623,6 +5651,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
             "title": item.get("data", {}).get("title") or "(untitled)",
             "collections_failed": [],
             "existed": "skipped — already in library",
+            "citation_key": citation_key,
         }
 
     summary = _converge_existing_item(write_zot, item, coll_keys, tags, ctx)
@@ -5639,6 +5668,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
         "error": None, "title": summary["title"],
         "collections_failed": summary["colls_failed"],
         "existed": f"reused existing — {detail}",
+        "citation_key": citation_key,
     }
 
 
@@ -5654,6 +5684,8 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
             lines.append(f"{verb}: **{r['title']}**")
             lines.append("")
             lines.append(f"Item key: `{r['key']}`")
+            if r.get("citation_key"):
+                lines.append(f"Citation key: `{r['citation_key']}`")
             if r["doi"]:
                 lines.append(f"DOI: {r['doi']}")
             if r.get("existed"):
@@ -5679,6 +5711,8 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
                     line += f" (DOI: {r['doi']})"
                 if r.get("existed"):
                     line += f" [{r['existed']}]"
+                if r.get("citation_key"):
+                    line += f" [citation key: {r['citation_key']}]"
                 if r["pdf_status"]:
                     line += f" [{r['pdf_status']}]"
                 if r.get("collections_failed"):

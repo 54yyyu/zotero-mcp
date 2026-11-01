@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`zotero-cli tags` is deprecated in favor of `zotero-cli batch`**, which takes the same selection and does the same tag edits with `--add-tags` / `--remove-tags`, plus Extra edits. `tags` still works and prints a notice on stderr; it will be removed in 0.17.
 
+### Added
+
+- **The add tools report the citation key when they reuse an item already in the library.** The item key is what the tools returned, but the citation key is what goes into a document, so a caller that wanted one made a second `zotero-cli get metadata <KEY> --output-format bibtex` call to get it — and wrapping that second call around a write is how at least one duplicate got created. On the reuse path the key is already in hand: the dedup search returns the full item, so `data.citationKey` costs no extra request. An item without one simply omits the line, so nothing here depends on Better BibTeX being installed. Only `data.citationKey` is read, never a `Citation Key:` line in `extra`: the two disagree — on a 497-item sample both were present on 77 items and differed on 11 — and the native field is the one Better BibTeX exports, because those `extra` lines are this package's own import residue, where `citation_import` preserves the *source document's* key. This is the reuse path only. On the just-created path the key is not available at the same cost: BBT assigns it on the desktop client after it sees the new item, so an item created through the Web API has to sync down first, and a re-fetch immediately after the create would usually still come up empty.
+
 ## [0.15.1] - 2026-10-16
 
 ### Added

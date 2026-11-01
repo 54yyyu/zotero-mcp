@@ -10,13 +10,14 @@ if_exists contract on the add_by_* family:
 - 'skip': report the existing item, change nothing.
 """
 
+import re
 from unittest.mock import MagicMock
 
 import pytest
 
 from conftest import DummyContext, FakeZotero, _FakeResponse
 from zotero_mcp import server
-from zotero_mcp.tools import _helpers
+from zotero_mcp.tools import _helpers, write
 
 
 DOI = "10.1234/test.2024.001"
@@ -1092,3 +1093,143 @@ class TestAddByBibtexIfExists:
         assert fake_zot.created == []
         assert fake_zot.addto_calls == []
         assert "skipped — already in library" in result
+
+
+class TestExistingItemReportsCitationKey:
+    """The reuse report should name the key that ends up in a document.
+
+    data.citationKey is already on the item the dedup search returned, so
+    this costs no extra request. Measured over the Web API on a real
+    library, 496 of 497 sampled top-level items carried one, and none
+    carried a key in Extra alone.
+    """
+
+    def _existing(self, data_extra):
+        data = {"itemType": "preprint", "title": "A Paper"}
+        data.update(data_extra)
+        return [{"key": "ITEM0001", "version": 1, "data": data}]
+
+    def test_citation_key_is_reported_when_present(self, fake_zot, dummy_ctx):
+        out = write._handle_existing_item(
+            fake_zot, self._existing({"citationKey": "Shenfeld2025RLs"}),
+            [], None, "skip", matched_by="arXiv ID 2509.04259", ctx=dummy_ctx,
+        )
+        assert "Citation key: `Shenfeld2025RLs`" in out
+        assert "Item key: `ITEM0001`" in out
+
+    def test_no_line_when_the_item_has_no_citation_key(self, fake_zot, dummy_ctx):
+        """Better BibTeX may not be installed; the line simply doesn't appear."""
+        out = write._handle_existing_item(
+            fake_zot, self._existing({}), [], None, "skip",
+            matched_by="arXiv ID 2509.04259", ctx=dummy_ctx,
+        )
+        assert "Citation key" not in out
+        assert "Item key: `ITEM0001`" in out
+
+    def test_extra_citation_key_is_not_reported(self, fake_zot, dummy_ctx):
+        """A `Citation Key:` line in Extra is deliberately NOT a fallback.
+
+        citation_import writes the *source document's* key there, so it
+        routinely disagrees with the native field — 11 of 77 items carrying
+        both, on a 497-item sample — and BBT exports the native one. Reading
+        Extra here would report a key that never reaches the document.
+        """
+        out = write._handle_existing_item(
+            fake_zot,
+            self._existing({"extra": "Citation Key: CoaseFirmMarket1988"}),
+            [], None, "skip", matched_by="DOI 10.1234/x", ctx=dummy_ctx,
+        )
+        assert "Citation key" not in out
+        assert "CoaseFirmMarket1988" not in out
+
+    def test_native_key_wins_over_a_stale_extra_line(self, fake_zot, dummy_ctx):
+        """Both present and disagreeing: report what BBT exports."""
+        out = write._handle_existing_item(
+            fake_zot,
+            self._existing({
+                "citationKey": "Coase1988Firm",
+                "extra": "Citation Key: CoaseFirmMarket1988",
+            }),
+            [], None, "skip", matched_by="DOI 10.1234/x", ctx=dummy_ctx,
+        )
+        assert "Citation key: `Coase1988Firm`" in out
+        assert "CoaseFirmMarket1988" not in out
+
+    def test_reported_through_add_by_doi(self, monkeypatch, fake_zot, dummy_ctx):
+        """End to end through a real tool, not just the private helper.
+
+        Also guards add_from_file's ``Item key: `KEY``` extraction: the new
+        line must not sit where that regex would reach it first.
+        """
+        fake_zot._items[0]["data"]["citationKey"] = "Existing2024Paper"
+        _patch_clients(monkeypatch, fake_zot)
+
+        result = server.add_by_doi(doi=DOI, if_exists="skip", ctx=dummy_ctx)
+
+        assert "Item key: `EXIST001`" in result
+        assert "Citation key: `Existing2024Paper`" in result
+        assert re.search(r"Item key: `([^`]+)`", result).group(1) == "EXIST001"
+
+
+class TestBatchReuseReportsCitationKey:
+    """The batch imports (BibTeX, CSL-JSON, PubMed) report reuse too.
+
+    They do not go through _handle_existing_item but through
+    _maybe_reuse_existing and _format_batch_result, so the citation key has
+    to be carried separately. The reasoning is the same: the dedup search
+    returned the full item, so the key costs nothing.
+    """
+
+    BIB = ("@article{exists, title={Existing Paper}, author={A, B}, "
+           "year={2024}, doi={" + DOI + "}}")
+
+    def _patch(self, monkeypatch, fake_zot):
+        fake_zot._items[0]["data"]["citationKey"] = "Existing2024Paper"
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake_zot, fake_zot),
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf",
+            lambda *a, **kw: "skipped (test)",
+        )
+
+    @pytest.mark.parametrize("if_exists", ["skip", "file"])
+    def test_single_entry_reports_citation_key(
+        self, monkeypatch, fake_zot, dummy_ctx, if_exists
+    ):
+        self._patch(monkeypatch, fake_zot)
+
+        result = server.add_by_bibtex(
+            bibtex=self.BIB, if_exists=if_exists, ctx=dummy_ctx,
+        )
+
+        assert fake_zot.created == []
+        assert "Citation key: `Existing2024Paper`" in result
+        assert re.search(r"Item key: `([^`]+)`", result).group(1) == "EXIST001"
+
+    def test_multi_entry_reports_citation_key_on_the_reused_line(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        self._patch(monkeypatch, fake_zot)
+        bib = self.BIB + (
+            "\n@article{fresh, title={Fresh Paper}, author={C, D}, year={2024}}"
+        )
+
+        result = server.add_by_bibtex(bibtex=bib, if_exists="file", ctx=dummy_ctx)
+
+        reused = next(ln for ln in result.splitlines() if "`EXIST001`" in ln)
+        assert "[citation key: Existing2024Paper]" in reused
+
+    def test_no_line_when_the_item_has_no_citation_key(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        self._patch(monkeypatch, fake_zot)
+        del fake_zot._items[0]["data"]["citationKey"]
+
+        result = server.add_by_bibtex(
+            bibtex=self.BIB, if_exists="skip", ctx=dummy_ctx,
+        )
+
+        assert "Already in library" in result
+        assert "itation key" not in result
