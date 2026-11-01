@@ -151,9 +151,17 @@ async def server_lifespan(server: FastMCP):
 
 
 class _ZoteroMCP(FastMCP):
-    """FastMCP whose tools get a context they can log to synchronously."""
+    """FastMCP whose tools get a context they can log to synchronously.
+
+    Tools return markdown strings, and FastMCP would advertise each one with
+    an ``{"result": string}`` output schema and send the same text twice, as
+    content and as structured content. The schema tells a client nothing the
+    text does not, yet costs ~35 tokens per tool on every request, so it is
+    off unless a tool asks for one.
+    """
 
     def tool(self, name_or_fn=None, **kwargs):
+        kwargs.setdefault("output_schema", None)
         if callable(name_or_fn):
             return super().tool(sync_context(name_or_fn), **kwargs)
         register = super().tool(name_or_fn, **kwargs)
