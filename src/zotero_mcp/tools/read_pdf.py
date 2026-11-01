@@ -7,14 +7,11 @@ import unicodedata
 from contextlib import contextmanager
 from typing import Literal
 
-from fastmcp import Context
-from fastmcp.utilities.types import Image
-from fastmcp.exceptions import ToolError
-
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
+from zotero_mcp._context import Context, ToolError
 from zotero_mcp.config import load_config
 from zotero_mcp.extract import extract_pdf, pdf_page_count
 from zotero_mcp.tools import _helpers
@@ -229,6 +226,8 @@ def read_pdf_pages(
         ctx: MCP context.
     """
     if format == "image":
+        from fastmcp.utilities.types import Image
+
         header, pages = render_pdf_pages(item_key, start_page, end_page, rect=rect, ctx=ctx)
         return [header, *(Image(data=page["png"], format="png") for page in pages)]
     if format != "text":

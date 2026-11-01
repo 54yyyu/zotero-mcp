@@ -7,7 +7,6 @@ import uuid
 from typing import Literal
 
 import requests
-from fastmcp.exceptions import ToolError
 from pyzotero.zotero_errors import ResourceNotFoundError
 
 from zotero_mcp import client as _client
@@ -15,7 +14,7 @@ from zotero_mcp import library as _library
 from zotero_mcp import note_html as _note_html
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
-from zotero_mcp._context import Context
+from zotero_mcp._context import Context, ToolError
 from zotero_mcp.better_bibtex_client import get_color_category
 from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers

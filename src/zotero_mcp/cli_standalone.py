@@ -2004,6 +2004,11 @@ fields are not removed or retyped without bumping it. Parse defensively.
 
 
 def main():
+    # Before any tool module is imported: this process never serves MCP,
+    # so the tools skip loading FastMCP (about half a second per command).
+    from zotero_mcp import _serverless
+
+    _serverless.enable()
     tolerate_console_encoding()
     parser = build_parser()
     args = parser.parse_args()

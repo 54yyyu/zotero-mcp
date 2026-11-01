@@ -9,8 +9,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastmcp import FastMCP
-
+from zotero_mcp import _serverless
 from zotero_mcp._context import sync_context
 from zotero_mcp._version import __version__
 from zotero_mcp.utils import is_local_mode
@@ -95,7 +94,7 @@ def _relay_update_output(proc: subprocess.Popen) -> None:
 
 
 @asynccontextmanager
-async def server_lifespan(server: FastMCP):
+async def server_lifespan(server: "FastMCP"):
     """Manage server startup and shutdown lifecycle.
 
     The semantic auto-update runs as a child ``zotero-mcp update-db`` process
@@ -150,15 +149,20 @@ async def server_lifespan(server: FastMCP):
     chroma_worker.stop_all()
 
 
-class _ZoteroMCP(FastMCP):
-    """FastMCP whose tools get a context they can log to synchronously."""
+if _serverless.ENABLED:
+    # zotero-cli: the decorators leave the tools as plain functions.
+    mcp = _serverless.App()
+else:
+    from fastmcp import FastMCP
 
-    def tool(self, name_or_fn=None, **kwargs):
-        if callable(name_or_fn):
-            return super().tool(sync_context(name_or_fn), **kwargs)
-        register = super().tool(name_or_fn, **kwargs)
-        return lambda fn: register(sync_context(fn))
+    class _ZoteroMCP(FastMCP):
+        """FastMCP whose tools get a context they can log to synchronously."""
 
+        def tool(self, name_or_fn=None, **kwargs):
+            if callable(name_or_fn):
+                return super().tool(sync_context(name_or_fn), **kwargs)
+            register = super().tool(name_or_fn, **kwargs)
+            return lambda fn: register(sync_context(fn))
 
-# Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
-mcp = _ZoteroMCP("Zotero", version=__version__, lifespan=server_lifespan)
+    # Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)
+    mcp = _ZoteroMCP("Zotero", version=__version__, lifespan=server_lifespan)

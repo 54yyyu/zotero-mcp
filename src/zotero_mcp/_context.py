@@ -8,13 +8,17 @@ build a coroutine nobody awaits and the client never sees the message.
 
 import functools
 
-try:
-    from fastmcp import Context
-except ImportError:
-    class Context:  # type: ignore[no-redef]
-        def info(self, message: str) -> None: pass
-        def warning(self, message: str) -> None: pass
-        def error(self, message: str) -> None: pass
+from zotero_mcp import _serverless
+
+if _serverless.ENABLED:
+    # zotero-cli: no server in this process, so no FastMCP to import.
+    from zotero_mcp._serverless import Context, ToolError
+else:
+    try:
+        from fastmcp import Context
+        from fastmcp.exceptions import ToolError
+    except ImportError:
+        from zotero_mcp._serverless import Context, ToolError
 
 
 class SyncContext:
