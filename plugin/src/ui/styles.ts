@@ -169,7 +169,7 @@ const BASE = `
 .zmc .chip__x { display: none; } .zmc .chip:hover .chip__x, .zmc .chip:focus-within .chip__x, .zmc .chip:not(.chip--auto) .chip__x { display: grid; }
 @media (hover: none) { .zmc .chip__x { display: grid; } }
 .zmc .cerr { flex: 1 0 100%; font-size: var(--fs-2); color: var(--danger); }
-.zmc .cthumbs { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: var(--s3); padding: var(--s2) var(--s2) 0 0; }
+.zmc .cthumbs { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: var(--s2); padding: var(--s2) var(--s2) 0 0; }
 .zmc .thumb { position: relative; flex: none; width: 72px; height: 72px; }
 .zmc .thumb__main { display: block; width: 100%; height: 100%; padding: 0; border: 1px solid var(--rule); border-radius: var(--r2); overflow: hidden; background: var(--paper); }
 .zmc button.thumb__main { cursor: pointer; } .zmc button.thumb__main:hover { border-color: var(--rule-strong); }
@@ -177,14 +177,17 @@ const BASE = `
 .zmc .thumb__none { display: grid; place-items: center; height: 100%; color: var(--ink-faint); }
 .zmc .thumb__x { position: absolute; top: -8px; right: -8px; display: none; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--rule-strong); border-radius: 50%; background: var(--paper-raised); color: var(--ink); box-shadow: var(--shadow); }
 .zmc .thumb__x:hover { background: var(--paper-sunk); }
-.zmc .lb { position: absolute; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); padding: 44px var(--s4) var(--s4); background: rgb(0 0 0 / 0.72); }
-.zmc .lb__img { min-height: 0; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r1); background: #fff; box-shadow: var(--shadow); }
+.zmc .lb { position: absolute; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); padding: var(--s4); background: rgb(0 0 0 / 0.72); }
+.zmc .lb__pic { position: relative; }
+.zmc .lb__img { display: block; object-fit: contain; border-radius: var(--r1); background: #fff; box-shadow: var(--shadow); }
 .zmc .lb__cap { display: flex; align-items: center; gap: var(--s3); font-size: var(--fs-2); color: #fff; }
 .zmc .lb__cap .lnk { color: #fff; }
-.zmc .lb__x { position: absolute; top: var(--s2); right: var(--s2); display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: rgb(255 255 255 / 0.12); color: #fff; }
-.zmc .lb__x:hover { background: rgb(255 255 255 / 0.22); }
+.zmc .lb__x { position: absolute; bottom: 100%; right: -6px; display: grid; place-items: center; width: 24px; height: 24px; margin-bottom: 2px; padding: 0; border: 0; border-radius: var(--r1); background: none; color: rgb(255 255 255 / 0.85); }
+.zmc .lb__x:hover { color: #fff; background: rgb(255 255 255 / 0.12); }
+.zmc .lb__x svg { width: 16px; height: 16px; }
 .zmc .thumb__x svg { width: 12px; height: 12px; }
-.zmc .thumb:hover .thumb__x, .zmc .thumb:focus-within .thumb__x { display: grid; }
+/* Focus shows it only from the keyboard: a preview closed with the mouse hands focus back without leaving × up. */
+.zmc .thumb:hover .thumb__x, .zmc .thumb__main:focus-visible ~ .thumb__x, .zmc .thumb__x:focus-visible { display: grid; }
 @media (hover: none) { .zmc .thumb__x { display: grid; } }
 .zmc .cin { display: block; width: 100%; min-height: 24px; max-height: 168px; padding: 0; margin: 0; border: 0; background: none; resize: none; outline: none; font-size: var(--fs-4); line-height: 24px; overflow-y: auto; }
 .zmc .cin:focus-visible { outline: none; }

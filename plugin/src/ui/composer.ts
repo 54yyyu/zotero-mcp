@@ -188,13 +188,15 @@ export class Composer {
     const close = () => { box.remove(); from.focus(); };
     const go = c.kind === "image" ? null : c.ref.annotationKey ? "Go to Annotation" : "Go to Page"; // a pasted picture lives nowhere in Zotero
     const shut = h("button.lb__x", { type: "button", "aria-label": "Close preview", title: "Close (Esc)", onclick: close }, icon("close")) as HTMLButtonElement;
+    // Sized in px from the panel, so the frame is exactly the picture and the × sits on its corner.
+    const r = root.getBoundingClientRect();
+    const img = h("img.lb__img", { src, alt: label, style: `max-width: ${Math.max(80, r.width - 32)}px; max-height: ${Math.max(80, r.height - 120)}px` });
     const box = h("div.lb", {
       role: "dialog", "aria-modal": "true", "aria-label": label,
       onclick: (e: Event) => { if (e.target === box) close(); },
       onkeydown: (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); close(); } },
     },
-      shut,
-      h("img.lb__img", { src, alt: label }),
+      h("div.lb__pic", null, img, shut),
       h("div.lb__cap", null, h("span", null, label),
         go ? h("button.lnk", { type: "button", onclick: () => { close(); this.opts.open(c.ref); } }, icon("external"), go) : null));
     root.appendChild(box);

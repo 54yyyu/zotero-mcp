@@ -153,6 +153,7 @@ await test("selected area tile: thumbnail, click goes to the annotation, × on h
   await p.getByRole("button", { name: /^Preview Selected Area/ }).click();
   await p.locator(".lb").click({ position: { x: 5, y: 5 } });
   assert.equal(await p.locator(".lb").count(), 0, "a click outside the picture closes it");
+  assert.equal(await p.locator(".thumb__x").isVisible(), false, "closing with the mouse leaves no × up on the tile");
   await p.getByRole("button", { name: /^Preview Selected Area/ }).click();
   await p.getByRole("button", { name: "Go to Annotation" }).click();
   assert.equal(await p.locator(".lb").count(), 0);
