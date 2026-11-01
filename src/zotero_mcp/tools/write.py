@@ -857,24 +857,14 @@ def batch_update_extra(
 @mcp.tool(
     name="zotero_batch_update",
     description=(
-        "Edit metadata across many items in one call: add/remove tags "
-        "and upsert/remove `Key: value` lines in Extra (Better BibTeX "
-        "keys, tex.* fields). "
-        "Select items by item_keys, and/or a free-text query, and/or an "
-        "existing tag (query and tag are ANDed; tag may be a list to "
-        "OR); item_keys wins. At least one selector AND one action are "
-        "required. "
-        "add_tags/remove_tags keep the item's other tags — not a "
-        "replace-all. set_keys upserts Extra lines, matching a line "
-        "case-insensitively by its `key:` prefix and replacing it in "
-        "place, else appending; remove_keys deletes those lines; lines "
-        "without a colon are preserved. "
-        "limit: max items for query/tag selection (default 50, at most "
-        "1000); the report says when more matched. "
-        "A query-only selection leaves attachments out; Extra edits "
-        "skip attachments, notes and annotations. Items needing no "
-        "change are skipped and counted. Requires a writable library. "
-        "Example: zotero_batch_update(tag='to-read', "
+        "Edit many items in one call: add or remove tags, and set or remove "
+        "`Key: value` lines in Extra (BetterBibTeX keys, tex.* fields). "
+        "Select by item_keys, or by query and/or tag (ANDed; a list of tags "
+        "ORs); item_keys wins. Needs a selector and an action. "
+        "add_tags/remove_tags leave other tags alone. set_keys upserts Extra "
+        "lines by case-insensitive key; remove_keys deletes them. limit: "
+        "items selected by query/tag (default 50, up to 1000); the report "
+        "says if more matched. Example: (tag='to-read', "
         "add_tags=['reviewed'], remove_tags=['to-read'])."
     )
 )
@@ -1139,24 +1129,10 @@ def update_collection(
 @mcp.tool(
     name="zotero_search_collections",
     description=(
-        "Search collections by name in the active library and return their "
-        "8-character keys. Matching is case-insensitive substring and applies "
-        "ONLY to the collection's own name — not to parent names, "
-        "descriptions, or items inside the collection. "
-        "Multi-word queries are ANDed across words (NOT OR-ed): query "
-        "'reading list' matches only collections whose name contains both "
-        "'reading' AND 'list'. To match either word, issue two separate "
-        "searches. Leading/trailing whitespace is ignored and empty words "
-        "are dropped. "
-        "Returns the collection's key plus its parent (if any). "
-        "include_trashed: when True, also match collections currently in "
-        "the Zotero Trash (results annotated as such). Default False — "
-        "trashed collections are otherwise invisible to automated clients. "
-        "Performance: scans all collections in the active library (O(n)); "
-        "for very large libraries expect a full-list pagination under the "
-        "hood. "
-        'Example: zotero_search_collections(query="orals") → keys for every '
-        'collection with "orals" in its name.'
+        "Find collections by name in the active library; returns their keys "
+        "and parents. Case-insensitive substring on the collection's own "
+        "name, and every word must match ('reading list' needs both). "
+        "include_trashed=True also matches collections in the Trash."
     )
 )
 @with_zotero_api_lock
@@ -1220,17 +1196,12 @@ def search_collections(
 @mcp.tool(
     name="zotero_set_item_collections",
     description=(
-        "Change which collections existing items belong to — an "
-        "incremental add/remove of item membership, NOT collection "
-        "creation (use zotero_create_collection / "
-        "zotero_delete_collection for that). "
-        "item_keys must be an ARRAY of item keys, e.g. [\"KEY1\", \"KEY2\"] — not a single string. "
-        "add_to and remove_from accept arrays of collection keys, names, or "
-        "'/'-separated paths (resolved and validated automatically; unknown, "
-        "trashed, or ambiguous specs fail before anything is changed). "
-        "Existing memberships not named in remove_from are left alone; to "
-        "replace an item's memberships wholesale use zotero_update_item. "
-        "Use zotero_search_items to find item keys and zotero_search_collections to find collection keys."
+        "Add items to, or remove them from, collections, leaving their other "
+        "memberships alone. item_keys: an array of item keys. add_to / "
+        "remove_from: arrays of collection keys, names or 'Parent/Child' "
+        "paths, all checked before anything changes. To replace memberships "
+        "wholesale use zotero_update_item; to create or delete a collection, "
+        "zotero_create_collection / zotero_delete_collection."
     )
 )
 @with_zotero_api_lock
@@ -3121,29 +3092,20 @@ def _unknown_fields_error(unknown: list[str], item_type: str) -> str:
 @mcp.tool(
     name="zotero_update_item",
     description=(
-        "Update metadata on an existing Zotero item by key. Only what "
-        "you pass is changed. "
-        "fields: {name: value} of metadata to set (a JSON object string "
-        "is accepted). Names may be snake_case (title, date, doi, url, "
-        "abstract, publication_title, access_date, short_title, "
-        "book_title, citation_key, item_type, place, extra, volume, "
-        "issue, pages, publisher, issn, isbn, edition, language) or any "
-        "raw Zotero API field name. An unknown name fails the call and "
-        "lists the valid ones; a name that is not valid for this item's "
-        "type is reported as skipped. item_type migrates the item "
-        "(overlapping fields kept, type-specific ones dropped). "
-        "TAG SEMANTICS (easy to get wrong): tags REPLACES the whole tag "
-        "list; add_tags/remove_tags are incremental and preferred. They "
-        "are mutually exclusive with tags. "
-        "collections (keys) and collection_names likewise REPLACE "
-        "membership — pass collections=[] to clear it; for incremental "
-        "moves use zotero_set_item_collections. "
-        "creators: full replacement list of {creatorType, firstName, "
-        "lastName} objects. "
-        "Requires a writable library (fails in local-only mode). To edit "
-        "notes use zotero_manage_note. "
-        "Example: zotero_update_item(item_key='RTKZQI8E', "
-        "fields={'doi': '10.1145/3708319'}, add_tags=['reviewed'])."
+        "Change metadata on one item; only what you pass changes. fields: "
+        "{name: value} with snake_case names (title, date, doi, url, "
+        "abstract, publication_title, short_title, book_title, citation_key, "
+        "item_type, place, extra, volume, issue, pages, publisher, issn, "
+        "isbn, edition, language, access_date) or raw Zotero field names. "
+        "Unknown names fail and list the valid ones; names the item's type "
+        "lacks are skipped and reported. citation_key sets the BetterBibTeX "
+        "key; item_type converts the item, dropping fields the new type "
+        "lacks. creators: a full replacement list of {creatorType, firstName, "
+        "lastName}. tags REPLACES all tags; add_tags/remove_tags edit "
+        "incrementally (preferred; not with tags). collections (keys) or "
+        "collection_names REPLACE membership (collections=[] clears it); for "
+        "incremental moves use zotero_set_item_collections. For notes use "
+        "zotero_manage_note."
     )
 )
 @with_zotero_api_lock
@@ -3420,13 +3382,9 @@ def update_item(
 @mcp.tool(
     name="zotero_delete_item",
     description=(
-        "Move a Zotero item to the Trash. Works for any item type (book, "
-        "journalArticle, webpage, attachment, etc.). For notes, use "
-        "zotero_manage_note(action='delete') — identical mechanism, "
-        "constrained to notes for safety. Trashed items are recoverable "
-        "from Zotero's Trash — empty the Trash in the Zotero UI for "
-        "permanent deletion. By default refuses to trash notes; set "
-        "allow_note=True to override."
+        "Move an item to the Trash (recoverable in Zotero). Any item type, "
+        "but for notes use zotero_manage_note(action='delete'), or pass "
+        "allow_note=True."
     )
 )
 def delete_item(
@@ -4540,21 +4498,11 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
 @mcp.tool(
     name="zotero_get_pdf_outline",
     description=(
-        "Extract the table of contents (outline/bookmarks) from a PDF "
-        "attachment, returned as a hierarchical markdown list with each "
-        "entry's page number. "
-        "Use this to orient in a paper before calling "
-        "zotero_get_item_fulltext — the outline is typically < 200 "
-        "tokens versus 10K+ for the full text. If the PDF has no "
-        "embedded outline, returns a short 'no outline' message rather "
-        "than failing. "
-        "item_key: the PDF ATTACHMENT key OR the parent item key — both "
-        "are accepted; attachment-to-parent resolution is automatic. "
-        "Find the right key with zotero_get_item_children if unsure. "
-        "Scope: PDFs only (EPUBs have no outline extraction here). "
-        "Requires PyMuPDF (the [pdf] extra). "
-        "Read-only; works in local or web mode. "
-        "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
+        "Return a PDF's table of contents with page numbers, usually under "
+        "200 tokens: find the pages you need, then read them with "
+        "zotero_read_pdf_pages instead of the full text. item_key: the parent "
+        "item or the PDF attachment. Says so when the PDF has no outline. "
+        "PDFs only; needs PyMuPDF (the [pdf] extra)."
     )
 )
 def get_pdf_outline(
@@ -4948,35 +4896,16 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
 @mcp.tool(
     name="zotero_attach_file",
     description=(
-        "Attach a file to an EXISTING Zotero item as an imported child "
-        "attachment (uploads the file bytes). Use when the item is already "
-        "in the library and you have its key — e.g. attaching a PDF you "
-        "found for a reference. To create a NEW item from a file, use "
-        "zotero_add_item(source=<file path>) instead. "
-        "item_key: key of the existing REGULAR item. Passing an "
-        "attachment/note key fails with a hint to use its parent. "
-        "file_path: ABSOLUTE local path (.pdf, .epub, .djvu, .doc, .docx, "
-        ".odt, .rtf). "
-        "url: direct http(s) link, downloaded server-side — PDF-only; for "
-        "other formats download locally and use file_path. Exactly one of "
-        "file_path/url must be given. "
-        "filename: optional stored-filename override; defaults to the "
-        "file's basename or the URL's last path segment (falling back to "
-        "<item_key>.pdf); a missing extension is appended automatically. "
-        "Returns the created attachment's key. Idempotent: if the item "
-        "already has an attachment with the same filename or identical "
-        "content (MD5), nothing is re-uploaded. Requires a writable library "
-        "(fails in local-only mode). Uploads count against the Zotero "
-        "cloud storage quota unless WebDAV sync is configured. Run "
-        "zotero_update_search_database afterwards to index the new file "
-        "for semantic search. "
-        "link_mode: 'import' (default) uploads the file bytes; "
-        "'linked' records the absolute path only (like Zotero's "
-        "'Add Link to File') — the file is NOT moved or copied and no "
-        "cloud quota is used. 'linked' requires file_path (not url) and "
-        "a writable library; filename then only sets the title. "
-        "Example: zotero_attach_file(item_key='ABCD2345', "
-        "file_path='/Users/me/smith-2020.pdf')."
+        "Attach a file to an EXISTING regular item (not an attachment or "
+        "note). To create a new item from a file, use "
+        "zotero_add_item(source=<path>). Give exactly one of file_path "
+        "(absolute: .pdf, .epub, .djvu, .doc, .docx, .odt, .rtf) or url (a "
+        "direct PDF link, downloaded by the server). filename: overrides the "
+        "stored name. link_mode: 'import' (default) uploads a copy, which "
+        "counts against Zotero storage unless WebDAV is set up; 'linked' "
+        "links the file where it is (file_path only, nothing copied). Skips "
+        "the upload when the item already has the same file. Returns the "
+        "attachment key."
     ),
 )
 @with_zotero_api_lock
@@ -6107,39 +6036,23 @@ def detect_source_type(source: str) -> str:
 @mcp.tool(
     name="zotero_add_item",
     description=(
-        "Add item(s) to Zotero from any source: DOI, URL, ISBN, BibTeX, "
-        "CSL JSON, or a local file. Use for every 'add this to Zotero' "
-        "request. "
-        "source: the identifier, URL, citation text, or ABSOLUTE file "
-        "path. DOI/URL/ISBN/PMID also take many at once (list or "
-        "comma/newline-separated). "
-        "BibTeX/CSL JSON may be inline (many entries per call) or a path "
-        "to .bib/.bibtex/.json/.csljson; documents are .pdf, .epub, .docx "
-        "and similar. "
-        "source_type: 'auto' (default) detects it, incl. comma/newline "
-        "DOI lists; override for URL/ISBN batches. Routing: doi → CrossRef "
-        "(best metadata — prefer a DOI when you have one); url → "
-        "doi.org/arxiv.org get full metadata, anything else becomes a bare "
-        "'webpage' item that is often not citable, so resolve to a DOI "
-        "first; isbn → Open Library then Google Books (noisy — verify "
-        "after); bibtex/csl_json → one item per entry, citation key kept "
-        "in Extra; file → extracts the PDF's DOI and enriches via "
-        "CrossRef, else guesses from filename/text, then attaches the file. "
-        "collections: keys, names, or '/'-paths ('_project/topic'), "
-        "validated before anything is created — an unknown or ambiguous "
-        "spec fails the call rather than leaving an unfiled item; "
-        "create_missing_collections=True creates them instead. "
-        "if_exists: 'duplicate' (default) always creates; 'file' is "
-        "idempotent — reuses the item matching the DOI/ISBN/URL, adding "
-        "missing collections/tags, never removing; 'skip' leaves a match "
-        "untouched. "
-        "attach_mode: 'auto' (default) attaches an OA PDF, 'linked_url' "
-        "bookmarks it, 'none' skips, 'required' fails without one. "
-        "title: file sources only, when extraction misses. "
-        "Requires a writable library (fails in local-only mode). Run "
-        "zotero_update_search_database afterwards for semantic search. "
-        "Example: zotero_add_item(source='10.1145/3708319', "
-        "collections=['9SU943GB'], if_exists='file')."
+        "Add items from a DOI, URL, ISBN, PMID, BibTeX, CSL JSON or a local "
+        "file; use it for every 'add this to Zotero' request. source: the "
+        "identifier, URL, citation text or ABSOLUTE file path. "
+        "DOI/URL/ISBN/PMID also take a list or a comma/newline-separated "
+        "batch; BibTeX and CSL JSON may be inline (many entries) or a "
+        ".bib/.json path. source_type: 'auto' (default) detects it. Prefer a "
+        "DOI: a URL other than doi.org or arxiv.org becomes a bare webpage "
+        "item, and ISBN metadata is noisy (verify it). For a file, its DOI is "
+        "looked up, else metadata is guessed, then the file is attached; "
+        "title overrides a missed title. collections: keys, names or "
+        "'Parent/Child' paths, checked before anything is created "
+        "(create_missing_collections=True makes missing ones). if_exists: "
+        "'duplicate' (default) always creates; 'file' reuses an item with the "
+        "same DOI/ISBN/URL, adding missing collections and tags; 'skip' "
+        "leaves a match alone. attach_mode: 'auto' (default) attaches an "
+        "open-access PDF, 'linked_url' links it, 'none' skips, 'required' "
+        "fails without one."
     )
 )
 def add_item(
