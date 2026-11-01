@@ -200,7 +200,8 @@ _IMAGE_HINTS = {
     name="zotero_read_pdf_pages",
     description="Read specific page range(s) from a PDF attachment of a Zotero item. "
     "Use this when you know which pages to read — for example after getting the PDF "
-    "outline via zotero_get_pdf_outline. Pages are 1-indexed. "
+    "outline via zotero_get_pdf_outline. item_key: the paper or its PDF attachment. "
+    "Reads start_page through end_page (1-indexed; omit end_page for one page). "
     "format='text' (default) returns Markdown with the heading structure preserved and "
     "flags pages whose equations, figures or tables the text garbles. "
     "format='image' returns the pages as PNG images (up to 10) so those can be read "

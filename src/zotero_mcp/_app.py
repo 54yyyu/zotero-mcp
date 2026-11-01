@@ -12,6 +12,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from zotero_mcp._context import sync_context
+from zotero_mcp._tool_schema import advertise
 from zotero_mcp._version import __version__
 from zotero_mcp.utils import is_local_mode
 
@@ -158,14 +159,30 @@ class _ZoteroMCP(FastMCP):
     content and as structured content. The schema tells a client nothing the
     text does not, yet costs ~35 tokens per tool on every request, so it is
     off unless a tool asks for one.
+
+    The registered copy of each tool also differs from the module function
+    in what it advertises: when the tool has a ``description``, its docstring
+    is hidden, because FastMCP would otherwise turn the docstring's Args into
+    per-parameter descriptions that repeat the tool description; and its
+    parameter schemas are compacted (see :mod:`zotero_mcp._tool_schema`).
+    The module function, which the CLI and tests call, keeps its docstring.
     """
 
     def tool(self, name_or_fn=None, **kwargs):
         kwargs.setdefault("output_schema", None)
+
+        def register(fn, decorator):
+            registered = sync_context(fn)
+            if kwargs.get("description"):
+                registered.__doc__ = None
+            advertise(registered, fn)
+            decorator(registered)
+            return sync_context(fn)
+
         if callable(name_or_fn):
-            return super().tool(sync_context(name_or_fn), **kwargs)
-        register = super().tool(name_or_fn, **kwargs)
-        return lambda fn: register(sync_context(fn))
+            return register(name_or_fn, lambda f: super(_ZoteroMCP, self).tool(f, **kwargs))
+        decorator = super().tool(name_or_fn, **kwargs)
+        return lambda fn: register(fn, decorator)
 
 
 # Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)

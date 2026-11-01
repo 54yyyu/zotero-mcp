@@ -119,9 +119,9 @@ class TestReportShape:
 #: pass but growth fails. If a change legitimately needs more, raise the
 #: number here and say why in the PR: that is a choice, not an accident.
 SURFACE_CEILINGS = {
-    "(unset - default)": 15_700,
-    "none": 13_400,
-    "all": 19_400,
+    "(unset - default)": 12_700,
+    "none": 10_800,
+    "all": 16_000,
 }
 
 
