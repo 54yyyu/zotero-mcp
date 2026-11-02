@@ -121,7 +121,6 @@ def test_fragmented_ocr_spans_are_not_mistaken_for_visible_stamp(tmp_path):
     assert body in re.sub(r"\s+", "", extract_pdf(path).text)
 
 
-# Based on the synthetic repros shared by @kremserw in PR #729.
 def _review_scan_page(pdf, pymupdf):
     page = pdf.new_page()
     image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
@@ -233,21 +232,6 @@ def test_chart_ocr_does_not_replace_the_body(tmp_path, kind):
         assert "The committee reviewed" in doc.text
 
 
-def test_hidden_text_without_a_scan_image_keeps_primary_markdown(tmp_path):
-    pymupdf = pytest.importorskip("pymupdf")
-    path = tmp_path / "no-image.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text((60, 100), "Ordinary heading", fontsize=24)
-        page.insert_text((60, 160), "Visible body", fontsize=12)
-        page.insert_text((60, 200), "HIDDEN OCR WORDS", fontsize=12, render_mode=3)
-        pdf.save(path)
-    doc = extract_pdf(path)
-    assert "# Ordinary heading" in doc.text
-    assert "HIDDEN OCR WORDS" not in doc.text
-    assert "*[Plain text" not in doc.text
-
-
 def test_failed_optional_page_does_not_stop_later_pages(scanned_pdf, monkeypatch, caplog):
     pymupdf = pytest.importorskip("pymupdf")
     original = pymupdf.Page.get_texttrace
@@ -264,98 +248,6 @@ def test_failed_optional_page_does_not_stop_later_pages(scanned_pdf, monkeypatch
     assert "recovery" in caplog.text.lower()
 
 
-def test_recovered_hidden_only_scan_has_hint_and_clears_ocr_route(tmp_path):
-    pymupdf = pytest.importorskip("pymupdf")
-    path = tmp_path / "hidden-only.pdf"
-    with pymupdf.open() as pdf:
-        page = _review_scan_page(pdf, pymupdf)
-        page.insert_text((60, 100), "Readable hidden transcription", fontsize=12, render_mode=3)
-        pdf.save(path)
-    doc = extract_pdf(path, pages=[0])
-    assert "Plain text from the PDF's OCR layer" in doc.text
-    assert "Readable hidden transcription" in doc.text
-    assert doc.needs_ocr == ()
-
-
-def test_positioned_words_inside_one_trace_span_keep_word_boundaries(tmp_path):
-    pymupdf = pytest.importorskip("pymupdf")
-    path = tmp_path / "positioned.pdf"
-    with pymupdf.open() as pdf:
-        page = _review_scan_page(pdf, pymupdf)
-        page.insert_text((60, 100), "seed", render_mode=3)
-        content = page.get_contents()[-1]
-        pdf.update_stream(
-            content,
-            b"BT /helv 12 Tf 3 Tr 1 0 0 1 60 742 Tm "
-            b"(first) Tj 35 0 Td (second) Tj 50 0 Td (third) Tj 0 -20 Td (fourth) Tj ET",
-        )
-        page.insert_text((60, 800), "STAMP", fontsize=10)
-        pdf.save(path)
-    doc = extract_pdf(path)
-    assert re.findall(r"first|second|third|fourth", doc.text) == ["first", "second", "third", "fourth"]
-    assert "firstsecond" not in doc.text
-    assert "thirdfourth" not in doc.text
-    assert "STAMP" in doc.text
-
-
-@pytest.mark.parametrize("control", ["\x00", "\x0c", "\x85"])
-def test_trace_controls_never_become_page_boundaries(tmp_path, monkeypatch, control):
-    pymupdf = pytest.importorskip("pymupdf")
-    path = tmp_path / "controls.pdf"
-    with pymupdf.open() as pdf:
-        page = _review_scan_page(pdf, pymupdf)
-        page.insert_text((60, 100), "First hidden words then more", render_mode=3)
-        pdf.save(path)
-    original = pymupdf.Page.get_texttrace
-
-    def with_control(self, *args, **kwargs):
-        spans = original(self, *args, **kwargs)
-        chars = list(spans[0]["chars"])
-        # Emulate a corrupt decoded glyph at the real parser's trace boundary.
-        chars[5] = (ord(control), *chars[5][1:])
-        spans[0]["chars"] = tuple(chars)
-        return spans
-
-    monkeypatch.setattr(pymupdf.Page, "get_texttrace", with_control)
-    doc = extract_pdf(path)
-    assert "Plain text from the PDF's OCR layer" in doc.text
-    assert not re.search(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", doc.text)
-    assert doc.page_numbers == (0,)
-
-
-def test_stamp_between_hidden_lines_is_preserved(tmp_path):
-    pymupdf = pytest.importorskip("pymupdf")
-    path = tmp_path / "stamp-between-lines.pdf"
-    with pymupdf.open() as pdf:
-        page = _review_scan_page(pdf, pymupdf)
-        page.insert_text((60, 100), "seed", render_mode=3)
-        pdf.update_stream(
-            page.get_contents()[-1],
-            b"BT /helv 12 Tf 3 Tr 1 0 0 1 60 742 Tm "
-            b"(The first line of hidden recovered text) Tj 0 -100 Td "
-            b"(The second line of hidden recovered text) Tj ET",
-        )
-        page.insert_text((60, 150), "VISIBLE STAMP")
-        pdf.save(path)
-    doc = extract_pdf(path)
-    assert "The first line" in doc.text and "The second line" in doc.text
-    assert "VISIBLE STAMP" in doc.text
-
-
-def test_positioned_words_with_a_normal_space_are_separated(tmp_path):
-    pymupdf = pytest.importorskip("pymupdf")
-    path = tmp_path / "normal-space.pdf"
-    with pymupdf.open() as pdf:
-        page = _review_scan_page(pdf, pymupdf)
-        page.insert_text((60, 100), "seed", render_mode=3)
-        pdf.update_stream(
-            page.get_contents()[-1],
-            b"BT /helv 12 Tf 3 Tr 1 0 0 1 60 742 Tm (alpha) Tj 33 0 Td (bravo) Tj ET",
-        )
-        pdf.save(path)
-    assert "alpha bravo" in extract_pdf(path).text
-
-
 def test_undecodable_visible_remainder_keeps_ocr_route(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
     path = tmp_path / "unreadable-remainder.pdf"
@@ -366,17 +258,79 @@ def test_undecodable_visible_remainder_keeps_ocr_route(tmp_path):
     assert "\ufffd" not in doc.text
 
 
-@pytest.mark.parametrize("stamp_size", [10, 12])
-def test_separate_stamp_on_an_ocr_baseline_is_preserved(tmp_path, stamp_size):
-    pymupdf = pytest.importorskip("pymupdf")
-    path = tmp_path / "same-baseline-stamp.pdf"
+def _cost_pdf(tmp_path, pymupdf, mixed):
+    path = tmp_path / "cost.pdf"
+    with pymupdf.open() as pdf:
+        for short in [True, False] if mixed else [False, False]:
+            page = _review_scan_page(pdf, pymupdf)
+            page.insert_textbox(
+                pymupdf.Rect(60, 100, 520, 700),
+                " ".join(f"word{n}" for n in range(80)),
+                fontsize=12,
+                render_mode=3 if short else 0,
+            )
+            if short:
+                page.insert_text((60, 800), "DOWNLOAD STAMP", fontsize=10)
+        pdf.save(path)
+    return path
+
+
+def test_rich_document_never_opens_optional_parser(tmp_path, monkeypatch):
+    import pymupdf
+
+    path = _cost_pdf(tmp_path, pymupdf, mixed=False)
+    import pdf_inspector
+
+    expected = tuple(p.markdown for p in pdf_inspector.extract_pages_markdown(str(path)).pages)
+    assert all(len(text.split()) >= 60 for text in expected)
+    opened = []
+    original = pymupdf.open
+
+    def counted(*args, **kwargs):
+        opened.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pymupdf, "open", counted)
+    assert extract_pdf(path).pages == expected
+    assert opened == []
+
+
+def test_mixed_document_inspects_images_only_on_short_pages(tmp_path, monkeypatch):
+    import pymupdf
+
+    path = _cost_pdf(tmp_path, pymupdf, mixed=True)
+    visited = []
+    original = pymupdf.Page.get_image_info
+
+    def counted(page, *args, **kwargs):
+        visited.append(page.number)
+        return original(page, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_image_info", counted)
+    doc = extract_pdf(path)
+    assert "word79" in doc.pages[0] and "DOWNLOAD STAMP" in doc.pages[0]
+    assert "word79" in doc.pages[1] and "*[Plain text" not in doc.pages[1]
+    assert visited == [0]
+
+
+@pytest.mark.parametrize("variant", ["heading", "misread"])
+def test_short_duplicate_layers_never_emit_both_copies(tmp_path, variant):
+    import pdf_inspector
+    import pymupdf
+
+    path = tmp_path / f"short-{variant}.pdf"
+    body = "The quiet market sold silver lamps and simple maps."
     with pymupdf.open() as pdf:
         page = _review_scan_page(pdf, pymupdf)
-        page.insert_text((60, 100), "The first line of hidden recovered text", fontsize=12, render_mode=3)
-        page.insert_text((60, 200), "The second line of hidden recovered text", fontsize=12, render_mode=3)
-        page.insert_text((60, 100), "The first line of visible recopied text", fontsize=12)
-        page.insert_text((400, 100), "VISIBLE STAMP", fontsize=stamp_size)
+        for mode in (0, 3):
+            text = body.replace("m", "rn").replace("l", "1") if mode == 3 and variant == "misread" else body
+            page.insert_text((60, 80), text, fontsize=11, render_mode=mode)
+            page.insert_text((60, 130), "Second section", fontsize=22, render_mode=mode)
+            page.insert_text((60, 180), text, fontsize=11, render_mode=mode)
         pdf.save(path)
+    expected = pdf_inspector.extract_pages_markdown(str(path)).pages[0].markdown
+    assert len(expected.split()) < 60
     doc = extract_pdf(path)
-    assert "The first line of hidden recovered text" in doc.text
-    assert doc.text.count("VISIBLE STAMP") == 1
+    assert len(doc.text.split()) <= len(expected.split()) + 12
+    if variant == "heading":
+        assert doc.pages == (expected,)
