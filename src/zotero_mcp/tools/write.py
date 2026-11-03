@@ -3617,28 +3617,32 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     through here, so "merge everything that qualifies" and "show me what
     qualifies" can never disagree about what a group is.
     """
-    items = []
-    start = 0
-    page_size = 100
-    while True:
-        if collection_key:
-            batch = zot.collection_items(collection_key, start=start, limit=page_size)
-        else:
-            batch = zot.items(start=start, limit=page_size)
-        if not batch:
-            break
-        items.extend(batch)
-        if len(batch) < page_size:
-            break
-        start += page_size
-        if len(items) > _DUP_SCAN_MAX_ITEMS:
-            break
+    items = _library.get_library_backend(zot).duplicate_scan_items(collection_key)
+    if items is None:
+        # Only SQLite can enumerate without an HTTP request/count ceiling.
+        # The API path (including an unavailable-SQLite fallback) stays bounded.
+        items = []
+        start = 0
+        page_size = 100
+        while True:
+            if collection_key:
+                batch = zot.collection_items(collection_key, start=start, limit=page_size)
+            else:
+                batch = zot.items(start=start, limit=page_size)
+            if not batch:
+                break
+            items.extend(batch)
+            if len(batch) < page_size:
+                break
+            start += page_size
+            if len(items) > _DUP_SCAN_MAX_ITEMS:
+                break
 
-    if len(items) > _DUP_SCAN_MAX_ITEMS:
-        return {}, (
-            f"Library has {len(items)} items — too large for duplicate scan. "
-            "Please scope by collection_key to reduce the search."
-        )
+        if len(items) > _DUP_SCAN_MAX_ITEMS:
+            return {}, (
+                f"Library has {len(items)} items — too large for duplicate scan. "
+                "Please scope by collection_key to reduce the search."
+            )
 
     wanted = {"doi", "title"} if method == "both" else {method}
 
@@ -3670,9 +3674,9 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
         "unattended. "
         "collection_key: optional 8-character key to restrict scanning "
         "to one collection; otherwise scans the whole active library. "
-        "LIBRARY SIZE CAP: refuses to scan a library with > 5,000 items "
-        "(the whole-library scan is O(n²) on titles) — on larger "
-        "libraries you MUST pass collection_key to narrow the scope. "
+        "LIBRARY SIZE CAP: API scans refuse libraries with > 5,000 items; "
+        "pass collection_key to narrow the scope. Local SQLite scans have "
+        "no item-count ceiling and work with Zotero closed. "
         "limit: max groups per call (default 50, max 500). "
         "offset: 0-based index of the first group returned (default 0). "
         "Group order is stable, so page a library with more groups than "

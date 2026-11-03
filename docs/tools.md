@@ -136,7 +136,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_switch_library`: Set the library every later call works on
 
 ### 🧹 Duplicates (`duplicates`)
-- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`
+- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`. With a readable local SQLite backend, scanning works with Zotero closed and has no item-count ceiling; API scans keep the 5,000-item ceiling (scope with `collection_key`)
 - `zotero_merge_duplicates`: Merge duplicates with a dry-run preview; `auto=True` merges every same-DOI group behind a two-call plan/confirm gate
 
 ### 🌐 Discovery (`discovery`) and feeds (`feeds`)
