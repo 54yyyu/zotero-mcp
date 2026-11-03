@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-import chromadb
+try:
+    import chromadb
+except ImportError:
+    raise unittest.SkipTest("chromadb is an optional semantic-search dependency")
 
 from zotero_mcp.embeddings.providers import huggingface, ollama
 from zotero_mcp.embeddings.registry import create_embedding_function
@@ -47,14 +50,14 @@ class TestQueryInstruction(unittest.TestCase):
                 ef = create_embedding_function(provider, {"query_instruction": "Find papers"})
                 ef(["Document text"])
                 self.assertEqual(self.received(provider), ["Document text"])
-                self.assertEqual(ef.embed_query_text("query"), [1.0, 0.0])
+                self.assertEqual(list(ef.embed_query_text("query")), [1.0, 0.0])
                 self.assertEqual(self.received(provider), ["Instruct: Find papers\nQuery: query"])
 
     def test_batch_queries_each_get_one_instruction(self):
         for provider in ("ollama", "huggingface"):
             with self.subTest(provider=provider):
                 ef = create_embedding_function(provider, {"query_instruction": "Find papers"})
-                self.assertEqual(ef.embed_query(["one", "two"]), [[1.0, 0.0], [1.0, 0.0]])
+                self.assertEqual([list(vector) for vector in ef.embed_query(["one", "two"])], [[1.0, 0.0], [1.0, 0.0]])
                 self.assertEqual(self.received(provider), ["Instruct: Find papers\nQuery: two"])
                 self.assertEqual(ef.embed_query([]), [])
 
