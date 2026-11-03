@@ -1951,7 +1951,7 @@ def add_by_doi(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     supplemental: EmbeddedMetadata | None = None,
@@ -2271,7 +2271,7 @@ def _add_from_embedded_metadata(
     ctx: Context,
     *,
     read_zot=None,
-    if_exists: str = "duplicate",
+    if_exists: str = "file",
 ) -> str:
     """Create an item from a page's own citation meta tags.
 
@@ -2374,7 +2374,7 @@ def add_by_url(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     page_check: Literal["always", "thin_only"] = "always",
@@ -2556,7 +2556,7 @@ def add_by_url(
 
 
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
-                  read_zot=None, if_exists="duplicate",
+                  read_zot=None, if_exists="file",
                   create_missing_collections=False):
     """Add an arXiv paper by ID. Internal helper for add_by_url.
 
@@ -2962,7 +2962,7 @@ def add_by_isbn(
     isbn: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -4773,7 +4773,7 @@ def add_from_file(
     item_type: str = "document",
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5768,7 +5768,7 @@ def add_by_bibtex(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5866,7 +5866,7 @@ def add_by_pmid(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5909,7 +5909,7 @@ def add_by_csl_json(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -6187,9 +6187,9 @@ def detect_source_type(source: str) -> str:
         "overrides a missed title. collections: keys, names or 'Parent/Child' "
         "paths, checked before anything is created "
         "(create_missing_collections=True makes missing ones). if_exists: "
-        "'duplicate' (default) always creates; 'file' reuses an item with the "
-        "same DOI/ISBN/URL, adding missing collections and tags; 'skip' "
-        "leaves a match alone. attach_mode: 'auto' (default) attaches an "
+        "'file' (default) reuses an item with the same DOI/arXiv ID/ISBN/URL, "
+        "adding missing collections and tags; 'duplicate' always creates; "
+        "'skip' leaves a match alone. attach_mode: 'auto' (default) attaches an "
         "open-access PDF, 'linked_url' links it, 'none' skips, 'required' "
         "fails without one."
     )
@@ -6202,7 +6202,7 @@ def add_item(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     title: str | None = None,
     *,
