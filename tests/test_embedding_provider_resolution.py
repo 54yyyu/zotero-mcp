@@ -78,7 +78,7 @@ def hf_args(monkeypatch):
     """
     seen = {}
 
-    def fake_init(self, model_name="Qwen/Qwen3-Embedding-0.6B"):
+    def fake_init(self, model_name="Qwen/Qwen3-Embedding-0.6B", query_instruction=None):
         seen["model_name"] = model_name
 
     monkeypatch.setattr(

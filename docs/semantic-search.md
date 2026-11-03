@@ -33,8 +33,8 @@ zotero-mcp setup --semantic-config-only
 
 For instruction-tuned models such as Qwen3-Embedding, set an optional
 `query_instruction` under `semantic_search.embedding_config`. This works with
-`embedding_model: "ollama"` and the HuggingFace providers (`"huggingface"`,
-`"qwen"`, or a HuggingFace model name):
+`embedding_model: "ollama"` and HuggingFace models (`"qwen"` or a HuggingFace
+model name):
 
 ```json
 {
