@@ -451,7 +451,7 @@ class TestAttachFileLocal:
         assert sent == [ctype]
         assert _helpers._guess_content_type(f"data{ext}") == ctype
 
-    def test_rejects_bad_extension(self, monkeypatch, dummy_ctx):
+    def test_accepts_other_regular_file_extensions(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()
         _patch_write_client(monkeypatch, fake)
         _patch_path_valid(monkeypatch)
@@ -459,7 +459,7 @@ class TestAttachFileLocal:
         result = server.attach_file(
             item_key="ITEM1", file_path="/Users/test/a.exe", ctx=dummy_ctx
         )
-        assert "Unsupported file type" in result
+        assert "File attached" in result
 
     def test_missing_file(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()

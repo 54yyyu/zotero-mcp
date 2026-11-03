@@ -39,10 +39,10 @@ from zotero_mcp.tools import _helpers
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
 
-# Shared by add_from_file and attach_file. URL attach mode is PDF-only.
-# .json stays out: _SOURCE_TYPE_BY_EXT merges this set last, and `add x.json`
-# must remain a CSL-JSON import (#703).
-_ATTACH_ALLOWED_EXTS = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf",
+# New-item document imports only. Existing-item attachments accept any regular
+# file; URL attach mode remains PDF-only. Keep .json out so `add x.json`
+# remains a CSL-JSON import (#703).
+_FILE_IMPORT_EXTS = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf",
                         ".md", ".yaml", ".yml"}
 
 
@@ -4801,7 +4801,7 @@ def add_from_file(
             return f"Error: {e}"
 
         ext = os.path.splitext(file_path)[1].lower()
-        allowed_exts = _ATTACH_ALLOWED_EXTS
+        allowed_exts = _FILE_IMPORT_EXTS
         if ext not in allowed_exts:
             return f"Error: Unsupported file type '{ext}'. Allowed: {', '.join(sorted(allowed_exts))}"
 
@@ -4974,7 +4974,7 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         filepath,
         item_key,
         ctx,
-        content_type=_helpers._guess_content_type(display_name),
+        content_type=_helpers._guess_content_type(display_name) or "application/octet-stream",
     )
     if not ok:
         return (
@@ -4991,7 +4991,7 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
 def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
     """Create a LINKED-file child attachment (records the path, copies nothing).
 
-    Mirrors Zotero's "Add Link to File": the PDF stays where it is and
+    Mirrors Zotero's "Add Link to File": the file stays where it is and
     Zotero stores the absolute path with linkMode='linked_file'. Goes through
     the local API so no bytes are uploaded and no cloud quota is consumed.
     """
@@ -5014,7 +5014,7 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
         template["path"] = file_path
         template["title"] = display_name
         template["contentType"] = (
-            _helpers._guess_content_type(display_name) or "application/pdf"
+            _helpers._guess_content_type(file_path) or "application/octet-stream"
         )
         template["parentItem"] = item_key
         result = write_zot.create_items([template])
@@ -5037,7 +5037,7 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
         "Attach a file to an EXISTING regular item (not an attachment or "
         "note). To create a new item from a file, use "
         "zotero_add_item(source=<path>). Give exactly one of file_path "
-        "(absolute: .pdf, .epub, .djvu, .doc, .docx, .odt, .rtf) or url (a "
+        "(absolute; any regular file, no symlinks or .lnk) or url (a "
         "direct PDF link, downloaded by the server). filename: overrides the "
         "stored name. link_mode: 'import' (default) uploads a copy, which "
         "counts against Zotero storage unless WebDAV is set up; 'linked' "
@@ -5098,11 +5098,8 @@ def attach_file(
             if not os.path.isfile(file_path):
                 return f"Error: File not found: {file_path}"
             ext = os.path.splitext(file_path)[1].lower()
-            if ext not in _ATTACH_ALLOWED_EXTS:
-                return (
-                    f"Error: Unsupported file type '{ext}'. "
-                    f"Allowed: {', '.join(sorted(_ATTACH_ALLOWED_EXTS))}"
-                )
+            if ext == ".lnk":
+                return "Error: Windows shortcuts (.lnk) cannot be attached."
             if filename and not filename.lower().endswith(ext):
                 # Mirror the URL branch's .pdf enforcement: an override
                 # without the source's extension would strip it from the
@@ -6007,12 +6004,12 @@ _ADD_SOURCE_TYPES = ("doi", "url", "isbn", "pmid", "bibtex", "csl_json", "file")
 _BIBTEX_EXTS = {".bib", ".bibtex"}
 _CSL_JSON_EXTS = {".json", ".csljson"}
 
-# Extension -> source_type. Document extensions come from the attachment
-# allow-list so the two stay in sync.
+# Extension -> source_type. Document imports keep their own extension set;
+# accepting arbitrary attachments must not override BibTeX/CSL-JSON routing.
 _SOURCE_TYPE_BY_EXT = {
     **{e: "bibtex" for e in _BIBTEX_EXTS},
     **{e: "csl_json" for e in _CSL_JSON_EXTS},
-    **{e: "file" for e in _ATTACH_ALLOWED_EXTS},
+    **{e: "file" for e in _FILE_IMPORT_EXTS},
 }
 
 # A BibTeX entry header, possibly preceded by comments/whitespace.

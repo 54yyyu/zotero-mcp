@@ -2001,8 +2001,8 @@ def _guess_content_type(filename):
     """Guess a Zotero ``contentType`` from a filename's extension.
 
     Covers the file types ``add_from_file`` accepts (PDF, EPUB, DJVU, plus a
-    few common extras). Returns ``None`` when there is no useful guess so the
-    caller can leave the field unset and let Zotero fall back.
+    few common extras), then falls back to Python's MIME database for other
+    attachments. Returns ``None`` when there is no useful guess.
     """
     if not filename:
         return None
@@ -2018,7 +2018,7 @@ def _guess_content_type(filename):
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "rtf": "application/rtf",
         "odt": "application/vnd.oasis.opendocument.text",
-    }.get(ext)
+    }.get(ext) or mimetypes.guess_type(filename)[0]
 
 
 def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, content_type=None):
