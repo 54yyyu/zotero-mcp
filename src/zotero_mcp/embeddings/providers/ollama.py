@@ -40,6 +40,18 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
     DEFAULT_REQUEST_BATCH_SIZE = 64
     default_request_batch_size = DEFAULT_REQUEST_BATCH_SIZE
 
+    # EmbeddingGemma (v1 and v2) is trained with task-instruction prefixes and
+    # retrieves noticeably worse without them, but Ollama's /api/embed sends the
+    # text verbatim. These are the "SearchQuery" / "Document" prompts from the
+    # google/embeddinggemma-2 model card; "title: none" is the card's form for
+    # documents whose title is not passed separately (zotero-mcp's document
+    # text already contains the title inline).
+    GEMMA_QUERY_PREFIX = "task: search result | query: "
+    GEMMA_DOC_PREFIX = "title: none | text: "
+    # Tokens reserved for the prefix so truncation leaves room for it
+    # (longest prefix is ~8 tokens; reserve double for tokenizer variance).
+    GEMMA_PREFIX_TOKEN_BUDGET = 16
+
     def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None,
                  url: str | None = None, timeout: int | None = None,
                  request_batch_size: int | None = None,
@@ -65,6 +77,27 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
         )
         # Mirror the attribute under the built-in's name as well.
         self.url = self.base_url
+        if self._is_embeddinggemma():
+            self.max_input_tokens = type(self).max_input_tokens - self.GEMMA_PREFIX_TOKEN_BUDGET
+
+    def _is_embeddinggemma(self) -> bool:
+        """True for any EmbeddingGemma tag, e.g. ``embeddinggemma-2:270m-bf16-text``."""
+        return "embeddinggemma" in (getattr(self, "model_name", "") or "").lower()
+
+    def _prepare_document(self, text: str) -> str:
+        """Prepend EmbeddingGemma's document prompt; identity for other models."""
+        if self._is_embeddinggemma():
+            return f"{self.GEMMA_DOC_PREFIX}{text}"
+        return text
+
+    def _prepare_query(self, text: str) -> str:
+        """Prepend EmbeddingGemma's search-query prompt; identity for other models.
+
+        Runs after the base class's query truncation, as for Gemini v2.
+        """
+        if self._is_embeddinggemma():
+            return f"{self.GEMMA_QUERY_PREFIX}{text}"
+        return text
 
     @staticmethod
     def name() -> str:
