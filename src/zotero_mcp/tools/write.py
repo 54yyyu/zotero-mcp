@@ -6139,7 +6139,7 @@ def detect_source_type(source: str) -> str:
         "Requires a writable library (fails in local-only mode). Run "
         "zotero_update_search_database afterwards for semantic search. "
         "Example: zotero_add_item(source='10.1145/3708319', "
-        "collections=['9SU943GB'], if_exists='file')."
+        "collections=['9SU943GB'])."
     )
 )
 def add_item(
