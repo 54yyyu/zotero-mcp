@@ -76,7 +76,7 @@ def load_claude_desktop_env_vars():
         # use the first config that actually configures the zotero server.
         for config_path in find_existing_claude_configs():
             try:
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     config = json.load(f)
             except Exception:
                 continue
