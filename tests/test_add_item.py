@@ -415,7 +415,7 @@ class TestAddItemSharedArguments:
 
         tools = asyncio.run(server.mcp.list_tools())
         tool = next(tool for tool in tools if tool.name == "zotero_add_item")
-        assert tool.inputSchema["properties"]["if_exists"]["default"] == "file"
+        assert tool.parameters["properties"]["if_exists"]["default"] == "file"
 
     def test_shared_args_reach_the_adder(self, calls):
         write.add_item(
