@@ -116,7 +116,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_page_layout`: Detect figure and table regions on a PDF page with normalized boxes, for area annotations (`pdf-geometry`)
 
 ### 📦 Adding and editing items
-- `zotero_add_item`: Add items from a DOI, URL, ISBN, PMID, BibTeX, CSL JSON or a local file. Takes `collections` (keys, names or `parent/child` paths, validated before anything is created), `if_exists` (`"duplicate"`, the default, always creates; `"file"` reuses an item matching the DOI/ISBN/URL and files it into missing collections; `"skip"` leaves a match untouched) and `create_missing_collections`. The `zotero-cli add` commands default to `--if-exists file`.
+- `zotero_add_item`: Add items from a DOI, URL, ISBN, PMID, BibTeX, CSL JSON or a local file. Takes `collections` (keys, names or `parent/child` paths, validated before anything is created), `if_exists` (`"file"`, the default, reuses an item matching the DOI/arXiv ID/ISBN/URL and files it into missing collections; `"duplicate"` always creates a new item; `"skip"` leaves a match untouched) and `create_missing_collections`. The `zotero-cli add` commands default to `--if-exists file`.
 - `zotero_attach_file`: Attach a local file or a PDF URL to an existing item (returns the attachment key; skips a file already attached)
 - `zotero_update_item`: Update metadata, tags and collection membership of one item
 - `zotero_batch_update`: Add or remove tags and Extra lines across many items
