@@ -129,7 +129,7 @@ All add tools take a `collections` parameter accepting collection keys, names, o
 - `zotero_search_collections`: Search for collections by name to find their keys
 - `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
 - `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
-- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`
+- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`. With a readable local SQLite backend, scanning works with Zotero closed and has no item-count ceiling. API scans keep the 5,000-item ceiling; scope them with `collection_key` when needed.
 - `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items. `auto=True` merges every high-confidence (same-DOI) group in one pass behind a two-call plan/confirm gate
 - `zotero_search_by_citation_key`: Look up items by BetterBibTeX citation key (with Extra field fallback)
 

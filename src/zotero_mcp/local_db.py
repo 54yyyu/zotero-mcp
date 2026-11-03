@@ -3082,6 +3082,68 @@ class LocalZoteroReader:
                 result[parent_key].append(item)
         return result
 
+    def get_duplicate_scan_items(
+        self,
+        *,
+        collection_key: str | None = None,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> list[dict]:
+        """All regular items needed for duplicate grouping and keeper ranking.
+
+        The projection includes the abstract and creation date used by auto
+        merge. Read the raw title field, matching metadata_match_keys' existing
+        API policy. No per-item hydration or item-ID parameter list is needed,
+        so this also works above SQLite's bound-variable limit.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        placeholders = ",".join("?" * len(lib_ids))
+        collection_sql, collection_params = "", []
+        if collection_key:
+            collection = conn.execute(
+                f"SELECT collectionID FROM collections WHERE key = ? "
+                f"AND libraryID IN ({placeholders})",
+                [collection_key] + list(lib_ids),
+            ).fetchone()
+            if collection is None:
+                raise ValueError(f"Collection '{collection_key}' not found in the active library.")
+            collection_sql = " AND i.itemID IN (SELECT itemID FROM collectionItems WHERE collectionID = ?)"
+            collection_params = [collection[0]]
+        rows = conn.execute(
+            """SELECT i.key, it.typeName AS itemType, i.dateAdded, i.dateModified,
+                      title_val.value AS title, doi_val.value AS DOI,
+                      abstract_val.value AS abstractNote, date_val.value AS date
+               FROM items i JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            """
+            + _plain_field_join("title", "title")
+            + _plain_field_join("doi", "DOI")
+            + _plain_field_join("abstract", "abstractNote")
+            + _plain_field_join("date", "date")
+            + f""" WHERE i.libraryID IN ({placeholders})
+                   AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+            """
+            + collection_sql
+            + " ORDER BY i.dateModified DESC, i.itemID",
+            list(lib_ids) + collection_params,
+        ).fetchall()
+        return [
+            {
+                "key": row["key"],
+                "data": {
+                    "key": row["key"], "itemType": row["itemType"],
+                    "title": row["title"] or "", "DOI": row["DOI"] or "",
+                    "abstractNote": row["abstractNote"] or "",
+                    "date": _api_date_field(row["date"] or ""),
+                    "dateAdded": _api_timestamp(row["dateAdded"]),
+                    "dateModified": _api_timestamp(row["dateModified"]),
+                },
+            }
+            for row in rows
+        ]
+
     def list_items_of_type(
         self,
         item_type: str | None = None,
