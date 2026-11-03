@@ -46,7 +46,11 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
                  rate_limit_rps: float | None = None,
                  max_parallel_requests: int | None = None,
                  max_retries: int | None = None,
-                 tokens_per_minute: float | None = None):
+                 tokens_per_minute: float | None = None,
+                 query_instruction: str | None = None):
+        if query_instruction is not None and not isinstance(query_instruction, str):
+            raise ValueError("query_instruction must be a string or null")
+        self.query_instruction = (query_instruction or "").strip()
         # ``url`` is ChromaDB's built-in spelling of ``base_url``; accept both
         # so a config written by either class rebuilds here (issue #382).
         resolved_base_url = (
@@ -82,6 +86,7 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
             # Carrying both spellings makes the config valid for both classes.
             "url": self.base_url,
             "timeout": self.timeout,
+            "query_instruction": getattr(self, "query_instruction", ""),
             # Extra keys are ignored by the built-in (it reads only
             # url/model_name/timeout via .get()), so carrying ours is safe.
             **self._common_config(),
@@ -98,7 +103,12 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
             max_parallel_requests=config.get("max_parallel_requests"),
             max_retries=config.get("max_retries"),
             tokens_per_minute=config.get("tokens_per_minute"),
+            query_instruction=config.get("query_instruction"),
         )
+
+    def _prepare_query(self, text: str) -> str:
+        instruction = getattr(self, "query_instruction", "")
+        return f"Instruct: {instruction}\nQuery: {text}" if instruction else text
 
     def _embed_batch(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
         """One /api/embed request for ``texts``.
