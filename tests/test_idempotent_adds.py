@@ -2,9 +2,9 @@
 
 if_exists contract on the add_by_* family:
 
-- 'duplicate' (default): today's behavior — always create, even when an
+- 'duplicate': explicitly always create, even when an
   identical identifier exists.
-- 'file': converge. Reuse the existing item, add it to any requested
+- 'file' (default): converge. Reuse the existing item, add it to any requested
   collections it isn't in, add any missing tags. Nothing is ever removed.
   Re-running the same command is a no-op.
 - 'skip': report the existing item, change nothing.
@@ -559,12 +559,12 @@ class TestFindExistingItems:
 # ---------------------------------------------------------------------------
 
 class TestAddByDoiIfExists:
-    def test_file_mode_reuses_and_converges(self, monkeypatch, fake_zot, dummy_ctx):
+    def test_default_reuses_and_converges(self, monkeypatch, fake_zot, dummy_ctx):
         _patch_clients(monkeypatch, fake_zot)
 
-        result = server.add_by_doi(
-            doi=DOI, collections=["COLB0001"], tags=["new-tag"],
-            if_exists="file", ctx=dummy_ctx,
+        result = server.add_item(
+            source=DOI, collections=["COLB0001"], tags=["new-tag"],
+            ctx=dummy_ctx,
         )
 
         assert fake_zot.created == []                      # no duplicate item
@@ -576,16 +576,16 @@ class TestAddByDoiIfExists:
         assert "EXIST001" in result
         assert "added to ['COLB0001']" in result
 
-    def test_file_mode_second_run_is_noop(self, monkeypatch, fake_zot, dummy_ctx):
+    def test_default_second_run_is_noop(self, monkeypatch, fake_zot, dummy_ctx):
         _patch_clients(monkeypatch, fake_zot)
 
         server.add_by_doi(doi=DOI, collections=["COLB0001"], tags=["new-tag"],
-                          if_exists="file", ctx=dummy_ctx)
+                          ctx=dummy_ctx)
         addto_after_first = list(fake_zot.addto_calls)
         updates_after_first = len(fake_zot.updated)
 
         result = server.add_by_doi(doi=DOI, collections=["COLB0001"],
-                                   tags=["new-tag"], if_exists="file",
+                                   tags=["new-tag"],
                                    ctx=dummy_ctx)
 
         assert fake_zot.created == []
@@ -620,20 +620,20 @@ class TestAddByDoiIfExists:
         assert fake_zot.updated == []
         assert "No changes made" in result
 
-    def test_duplicate_default_still_creates(self, monkeypatch, fake_zot, dummy_ctx):
+    def test_explicit_duplicate_still_creates(self, monkeypatch, fake_zot, dummy_ctx):
         _patch_clients(monkeypatch, fake_zot)
 
-        result = server.add_by_doi(doi=DOI, ctx=dummy_ctx)
+        result = server.add_by_doi(doi=DOI, if_exists="duplicate", ctx=dummy_ctx)
 
         assert len(fake_zot.created) == 1
         assert "Successfully added" in result
 
-    def test_file_mode_creates_when_no_match(self, monkeypatch, fake_zot, dummy_ctx):
+    def test_default_creates_when_no_match(self, monkeypatch, fake_zot, dummy_ctx):
         fake_zot._items = []          # nothing in the library
         _patch_clients(monkeypatch, fake_zot)
 
         result = server.add_by_doi(
-            doi=DOI, collections=["COLB0001"], if_exists="file", ctx=dummy_ctx,
+            doi=DOI, collections=["COLB0001"], ctx=dummy_ctx,
         )
 
         assert len(fake_zot.created) == 1
@@ -763,7 +763,7 @@ class TestAddByUrlIfExists:
 
         result = server.add_by_url(
             url="https://arxiv.org/abs/2401.00001",
-            collections=["COLB0001"], if_exists="file", ctx=dummy_ctx,
+            collections=["COLB0001"], ctx=dummy_ctx,
         )
 
         assert fake_zot.created == []
@@ -853,7 +853,7 @@ class TestAddByUrlEmbeddedMetadataIfExists:
         assert fake_zot.created == []
         assert "Already in library" in result
 
-    def test_duplicate_default_still_creates(self, monkeypatch, fake_zot, dummy_ctx):
+    def test_explicit_duplicate_still_creates(self, monkeypatch, fake_zot, dummy_ctx):
         fake_zot._items.append({
             "key": "BOOK0001", "version": 4,
             "data": {"itemType": "book", "title": "Algorithms", "ISBN": self.ISBN,
@@ -861,7 +861,7 @@ class TestAddByUrlEmbeddedMetadataIfExists:
         })
         self._page(monkeypatch, fake_zot, {"title": "Algorithms", "isbn": self.ISBN})
 
-        result = server.add_by_url(url=self.URL, ctx=dummy_ctx)
+        result = server.add_by_url(url=self.URL, if_exists="duplicate", ctx=dummy_ctx)
 
         assert len(fake_zot.created) == 1
         assert "Successfully added" in result
@@ -941,7 +941,7 @@ class TestAddByIsbnIfExists:
 
         result = server.add_by_isbn(
             isbn="9780306406157", collections=["COLB0001"],
-            if_exists="file", ctx=dummy_ctx,
+            ctx=dummy_ctx,
         )
 
         assert fake_zot.created == []
@@ -1002,6 +1002,32 @@ class TestAddByIsbnIfExists:
 # add_by_bibtex × if_exists (batch: mixed existing/new)
 # ---------------------------------------------------------------------------
 
+class TestDefaultCslAdd:
+    def test_missing_identifier_does_not_match_on_title(self, monkeypatch, fake_zot, dummy_ctx):
+        _patch_clients(monkeypatch, fake_zot)
+        entry = {"type": "article-journal", "title": "Existing Paper"}
+
+        for _ in range(2):
+            result = server.add_item(source=entry, source_type="csl_json", ctx=dummy_ctx)
+            assert "Successfully added" in result
+
+        # Same title as EXIST001, but no identifier: each add must still create.
+        assert len(fake_zot.created) == 2
+        assert fake_zot.addto_calls == []
+        assert fake_zot.updated == []
+
+    def test_default_import_reuses_doi(self, monkeypatch, fake_zot, dummy_ctx):
+        _patch_clients(monkeypatch, fake_zot)
+        result = server.add_item(
+            source={"type": "article-journal", "title": "Existing Paper", "DOI": DOI},
+            source_type="csl_json", collections=["COLB0001"], ctx=dummy_ctx,
+        )
+
+        assert fake_zot.created == []
+        assert ("COLB0001", "EXIST001") in fake_zot.addto_calls
+        assert "reused existing" in result
+
+
 class TestAddByBibtexIfExists:
     def test_mixed_batch_reuses_and_creates(self, monkeypatch, fake_zot, dummy_ctx):
         monkeypatch.setattr(
@@ -1019,7 +1045,7 @@ class TestAddByBibtexIfExists:
             "@article{fresh, title={Fresh Paper}, author={C, D}, year={2024}}"
         )
         result = server.add_by_bibtex(
-            bibtex=bib, collections=["COLB0001"], if_exists="file",
+            bibtex=bib, collections=["COLB0001"],
             ctx=dummy_ctx,
         )
 

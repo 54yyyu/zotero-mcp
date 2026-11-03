@@ -1842,7 +1842,7 @@ def add_by_doi(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     supplemental: EmbeddedMetadata | None = None,
@@ -2162,7 +2162,7 @@ def _add_from_embedded_metadata(
     ctx: Context,
     *,
     read_zot=None,
-    if_exists: str = "duplicate",
+    if_exists: str = "file",
 ) -> str:
     """Create an item from a page's own citation meta tags.
 
@@ -2265,7 +2265,7 @@ def add_by_url(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     page_check: Literal["always", "thin_only"] = "always",
@@ -2447,7 +2447,7 @@ def add_by_url(
 
 
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
-                  read_zot=None, if_exists="duplicate",
+                  read_zot=None, if_exists="file",
                   create_missing_collections=False):
     """Add an arXiv paper by ID. Internal helper for add_by_url.
 
@@ -2853,7 +2853,7 @@ def add_by_isbn(
     isbn: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -4683,7 +4683,7 @@ def add_from_file(
     item_type: str = "document",
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5700,7 +5700,7 @@ def add_by_bibtex(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5798,7 +5798,7 @@ def add_by_pmid(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5841,7 +5841,7 @@ def add_by_csl_json(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -6129,10 +6129,11 @@ def detect_source_type(source: str) -> str:
         "validated before anything is created — an unknown or ambiguous "
         "spec fails the call rather than leaving an unfiled item; "
         "create_missing_collections=True creates them instead. "
-        "if_exists: 'duplicate' (default) always creates; 'file' is "
-        "idempotent — reuses the item matching the DOI/ISBN/URL, adding "
-        "missing collections/tags, never removing; 'skip' leaves a match "
-        "untouched. "
+        "if_exists: 'file' (default) reuses an item matching the "
+        "DOI/arXiv ID/ISBN/URL, adding missing collections/tags, never "
+        "removing; 'duplicate' always creates a new item; 'skip' leaves "
+        "a match untouched. Items without a matching identifier are "
+        "created normally; titles alone do not deduplicate. "
         "attach_mode: 'auto' (default) attaches an OA PDF, 'linked_url' "
         "bookmarks it, 'none' skips, 'required' fails without one. "
         "title: file sources only, when extraction misses. "
@@ -6150,7 +6151,7 @@ def add_item(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     title: str | None = None,
     *,

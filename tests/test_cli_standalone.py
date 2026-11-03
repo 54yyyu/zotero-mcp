@@ -621,7 +621,7 @@ class TestCmdAdd:
         assert call_kwargs["create_missing_collections"] is True
 
     def test_add_doi_default_if_exists_is_file(self):
-        """The CLI defaults to convergent behavior; MCP keeps 'duplicate'."""
+        """The CLI and MCP both default to convergent behavior."""
         args = self._args(subcommand="doi", doi="10.1234/test",
                           attach_mode="auto")
         mock_write = self._run(args)

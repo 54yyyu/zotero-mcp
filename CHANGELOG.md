@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **MCP adds reuse matching items by default** (#612). `zotero_add_item` and its per-source implementations now default to `if_exists="file"`, matching the CLI: an existing DOI/arXiv ID/ISBN/URL match is reused, with only missing collections and tags added. Items without a matching identifier are still created; titles alone do not deduplicate.
+
+### Upgrading
+
+- Clients that intentionally create a new copy on every add must now pass `if_exists="duplicate"` explicitly. `if_exists="skip"` still leaves an existing match untouched. Reusing an item may add requested tags or collection memberships, but never removes existing ones. The identifier lookup is best-effort, so this is not a guarantee that every repeated add is detected.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
