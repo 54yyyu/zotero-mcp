@@ -588,14 +588,15 @@ def requeue_failed_batches(adapter: BatchAdapter, manifest: dict[str, Any]) -> t
 
     A file with results to import is left for the import, which retries only
     the rows that failed. Returns ``(requeued, abandoned)``. Cancelled files
-    stay as they are, since someone cancelled them.
+    stay as they are, since someone cancelled them. A manifest with no
+    enqueued-token budget predates throttling and could never submit the file.
     """
     requeued = abandoned = 0
     for batch in manifest.get("batches", []):
         if not entry_will_requeue(adapter, batch):
             continue
         attempts = int(batch.get("attempts") or 1)
-        if attempts >= MAX_BATCH_ATTEMPTS:
+        if attempts >= MAX_BATCH_ATTEMPTS or manifest.get("max_enqueued_tokens") is None:
             batch["abandoned"] = True
             add_failed_ids(manifest, [record["id"] for record in read_jsonl(Path(batch["records_path"]))])
             abandoned += 1

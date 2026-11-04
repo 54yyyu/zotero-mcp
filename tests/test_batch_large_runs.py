@@ -89,7 +89,7 @@ class FakeChroma:
     embedding_max_tokens = 8000
 
     def __init__(self):
-        self.stored: dict[str, dict] = {}
+        self.stored: dict[str, dict] = {"EXISTING": {}}
         self.resets = 0
 
     def get_existing_ids(self, ids):
@@ -180,7 +180,7 @@ def test_a_failed_file_stops_after_its_retries_and_the_rest_still_lands(run):
 
     attempts = [j for j in run.fake.jobs if "K000" in run.fake.ids_in(j)]
     assert len(attempts) == batch_common.MAX_BATCH_ATTEMPTS
-    assert set(run.chroma.stored) == {"K002", "K003"}
+    assert set(run.chroma.stored) == {"EXISTING", "K002", "K003"}
     manifest = run.manifest()
     assert sorted(manifest["failed_ids"]) == ["K000", "K001"]
 
@@ -204,7 +204,7 @@ def test_failed_rows_are_sent_again_on_their_own(run):
 
     stats = run.search._import_batch("openai")
 
-    assert set(run.chroma.stored) == {"K000"}
+    assert set(run.chroma.stored) == {"EXISTING", "K000"}
     assert stats["batches_submitted"] == 1
     assert run.fake.ids_in("job-1") == ["K001"]
     assert run.watermark() == 0, "not until the retry has landed"
@@ -212,7 +212,7 @@ def test_failed_rows_are_sent_again_on_their_own(run):
     run.fake.finish("job-1")
     run.search._import_batch("openai")
 
-    assert set(run.chroma.stored) == {"K000", "K001"}
+    assert set(run.chroma.stored) == {"EXISTING", "K000", "K001"}
     assert run.watermark() == 7
 
 
@@ -238,7 +238,7 @@ def test_an_expired_batch_keeps_its_finished_rows_and_retries_the_rest(run):
 
     run.search._import_batch("openai")
 
-    assert set(run.chroma.stored) == {"K000"}
+    assert set(run.chroma.stored) == {"EXISTING", "K000"}
     assert run.fake.ids_in("job-1") == ["K001"]
 
 
@@ -279,7 +279,7 @@ def test_an_interrupted_import_does_not_import_a_finished_file_again(run, monkey
 
     assert stats["batches_skipped"] == 1
     assert stats["batches_imported"] == 1
-    assert set(run.chroma.stored) == {"K000", "K001", "K002", "K003"}
+    assert set(run.chroma.stored) == {"EXISTING", "K000", "K001", "K002", "K003"}
 
 
 def test_force_rebuild_downloads_results_before_the_last_file_finishes(run):
@@ -310,10 +310,51 @@ def test_force_rebuild_is_not_blocked_forever_by_a_file_that_keeps_failing(run):
         except RuntimeError:
             pass
 
-    assert set(run.chroma.stored) == {"K002", "K003"}
-    assert run.chroma.resets == 1
+    assert set(run.chroma.stored) == {"EXISTING", "K002", "K003"}
+    assert run.chroma.resets == 0, "an incomplete rebuild must not replace the index"
     assert run.manifest()["failed_ids"] == ["K000", "K001"]
-    assert run.watermark() == 0, "zero sends the next run through a full scan"
+    assert run.watermark() == 0
+
+
+def test_force_rebuild_where_every_file_fails_leaves_the_index_alone(run):
+    run.submit(n=2, force=True, budget=100)
+    for _ in range(batch_common.MAX_BATCH_ATTEMPTS + 2):
+        for job_id in run.fake.unfinished():
+            run.fake.fail(job_id)
+        try:
+            run.search._import_batch("openai")
+        except RuntimeError:
+            pass
+
+    assert run.chroma.resets == 0
+    assert set(run.chroma.stored) == {"EXISTING"}
+
+
+def test_force_rebuild_row_that_keeps_failing_is_retried_without_a_full_scan(run):
+    """Going back to a full scan would embed the whole library again for one record."""
+    run.submit(n=2, force=True, budget=100)
+    run.fake.finish("job-0", fail=["K001"])
+    run.search._import_batch("openai")
+    run.fake.finish("job-1", fail=["K001"])
+    run.search._import_batch("openai")
+    run.fake.finish("job-2", fail=["K001"])
+    run.search._import_batch("openai")
+
+    assert run.chroma.resets == 1
+    assert set(run.chroma.stored) == {"K000"}
+    assert run.watermark() == 7
+    assert run.search.update_config["retry_item_keys"] == ["K001"]
+
+
+def test_repeating_an_import_does_not_reset_the_index_again(run):
+    run.submit(n=2, force=True, budget=100)
+    run.fake.finish("job-0")
+    run.search._import_batch("openai")
+    assert run.chroma.resets == 1
+
+    run.search._import_batch("openai")
+
+    assert run.chroma.resets == 1
 
 
 def test_a_superseded_run_retries_nothing(run):
@@ -335,7 +376,7 @@ def test_a_clean_run_still_promotes_the_sync_version(run):
 
     _finish_everything(run)
 
-    assert set(run.chroma.stored) == {"K000", "K001", "K002", "K003"}
+    assert set(run.chroma.stored) == {"EXISTING", "K000", "K001", "K002", "K003"}
     assert run.watermark() == 7
 
 

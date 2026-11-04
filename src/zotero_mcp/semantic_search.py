@@ -2611,6 +2611,19 @@ class ZoteroSemanticSearch:
         if self._chunking_enabled and not batch:
             for key in articles - passages:
                 gaps[key] = {SEARCH_PASSAGES}
+        # Records a forced rebuild's batch run gave up on. An item with none at
+        # all would not show up above.
+        wants_passages = self._chunking_enabled and not batch
+        still_missing = []
+        for key in self.update_config.get("retry_item_keys") or []:
+            missing = set() if key in articles else {SEARCH_ARTICLES}
+            if wants_passages and key not in passages:
+                missing.add(SEARCH_PASSAGES)
+            if missing:
+                gaps[key] = missing
+                still_missing.append(key)
+        if "retry_item_keys" in self.update_config:
+            self.update_config["retry_item_keys"] = still_missing
         return gaps
 
     def _get_gap_items_from_api(
@@ -5339,13 +5352,19 @@ class ZoteroSemanticSearch:
         group_id = manifest.get("group_id")
         library_key = None if group_id is None else str(group_id)
         target = manifest.get("target_sync_version")
-        if manifest.get("failed_ids"):
-            # Records that never got an embedding. A forced rebuild replaced the
-            # collection the old watermark described, so zero sends the next
-            # run through a full scan. Otherwise the watermark stays, as on the
-            # realtime path (#610).
-            target = 0 if manifest.get("reset_at") else None
-            rebuilt_now = rebuilt_now or bool(manifest.get("reset_at"))
+        failed_ids = manifest.get("failed_ids") or []
+        if failed_ids and manifest.get("reset_at"):
+            # Records that never got an embedding. The old watermark described
+            # the collection a forced rebuild replaced, and a full scan would
+            # embed the whole library again for these few. Move on, and
+            # remember them.
+            retry_keys = set(self.update_config.get("retry_item_keys") or [])
+            retry_keys.update(doc_id.split("#", 1)[0] for doc_id in failed_ids)
+            self.update_config["retry_item_keys"] = sorted(retry_keys)
+            rebuilt_now = True
+        elif failed_ids:
+            # The watermark stays, as on the realtime path (#610).
+            target = None
         if rebuilt_now:
             target = 0 if target is None else target
         elif target is not None and target < self._load_last_sync_version(library_key):
@@ -5874,10 +5893,12 @@ class ZoteroSemanticSearch:
                 records_path = Path(batch["records_path"])
                 return records_path.with_name(records_path.stem + "-output.jsonl")
 
-            already_imported = any(batch.get("imported_at") for batch in all_batches)
+            # A forced rebuild replaces the index only when the whole run is here.
+            # With a file given up on, or nothing at all to import, what arrived
+            # is written over the existing index instead, which keeps the rest.
             if (
                 manifest.get("force_full_rebuild")
-                and not already_imported
+                and not any(batch.get("imported_at") or batch.get("abandoned") for batch in all_batches)
                 and any(not batch.get("imported_at") for batch in batches)
             ):
                 run_id = manifest.get("run_id")
