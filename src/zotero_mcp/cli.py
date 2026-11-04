@@ -418,6 +418,8 @@ def _print_repair_report(report) -> None:
     print(f"- Items left out: {len(report.excluded)}")
     for reason, count in Counter(report.excluded.values()).most_common():
         print(f"    {count:>6}  {reason}")
+    for name in report.collections_left_out:
+        print(f"- Collection left out, it had no saved vector files: {name}")
     if report.header_page_count_fixed:
         print("- Corrected the page count in a copy of the database header")
     if report.skipped_rows:
@@ -1408,6 +1410,8 @@ def main():
             collection_info = status.get("collection_info", {})
             print(f"Collection: {collection_info.get('name', 'Unknown')}")
             print(f"Document count: {collection_info.get('count', 0)}")
+            print(f"  Article-level records: {collection_info.get('article_records', 0)}")
+            print(f"  Passage-level records: {collection_info.get('passage_records', 0)}")
             print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
 

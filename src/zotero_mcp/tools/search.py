@@ -1866,6 +1866,8 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append("## Collection Information")
         output.append(f"**Name:** {collection_info.get('name', 'Unknown')}")
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
+        output.append(f"**Article-level Records:** {collection_info.get('article_records', 0)}")
+        output.append(f"**Passage-level Records:** {collection_info.get('passage_records', 0)}")
         if collection_info.get("pending_writes"):
             output.append(
                 f"**Pending Writes:** {collection_info['pending_writes']} "
