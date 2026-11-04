@@ -361,21 +361,14 @@ def _warmup_reranker_in_background() -> None:
 
 
 def _format_chunking_status(status: dict) -> str:
-    """Describe what the next indexing run will actually do about chunking.
-
-    Reports the effective behaviour, not the requested setting: the OpenAI
-    Batch API path has no chunking step, so `chunking.enabled: true` there
-    still yields one truncated vector per item (#416).
-    """
+    """Describe what the next indexing run will do about chunking."""
     chunking = status.get("chunking", {})
     if not chunking.get("enabled"):
         max_tokens = chunking.get("max_tokens")
         if isinstance(max_tokens, (int, float)) and max_tokens < 2000:
             return f"disabled (item-level indexing; only the first ~{int(max_tokens)} tokens of each item are searchable)"
         return "disabled (item-level indexing)"
-    if chunking.get("effective"):
-        return "enabled"
-    return "requested but NOT applied (Batch API path indexes item-level)"
+    return "enabled"
 
 
 # Providers with Batch API support, for argparse ``choices=``.

@@ -248,16 +248,6 @@ def test_unmigrated_index_goes_on_as_it_did(build):
     assert len(search.chroma_client.embedded) == 5
 
 
-def test_batch_runs_do_not_ask_for_passages_they_cannot_make_yet(build):
-    zotero = FakeZotero({"AAA": LONG})
-    build(zotero, chunking=False).update_database()
-
-    search = build(zotero, chunking=True, batch=True)
-
-    assert search._find_index_gaps(limit=None, force_rebuild=False, batch=True) == {}
-    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
-
-
 def test_an_item_missing_a_later_passage_counts_as_a_gap(build):
     """Its first passage exists, so checking only that would hide the hole for good."""
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})

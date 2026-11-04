@@ -78,6 +78,8 @@ OpenAI Batch API. Batch updates are cheaper for large libraries, but they are
 asynchronous: submit the batch, wait for completion, then import the embeddings.
 See [How batch runs are collected](#how-batch-runs-are-collected).
 
+[Passage chunking](configuration.md#passage-chunking) works on this path too, and a large library needs a little planning. Providers limit how many tokens can be queued at once, so a run is split into files and the ones that don't fit wait for earlier ones to finish: `update-db --auto-loop` keeps that going, or run `batch-import` from time to time. The default budgets are the lowest tier's, so set `batch_max_enqueued_tokens` under `semantic_search.<provider>_batch` a little below your account's limit. Also consider `batch_max_requests: 10000`, because each output file is read into memory during import and an output row is about 65 KB at 3072 dimensions. A file or row that fails is retried up to three times. The local copy of each file is deleted once it is imported.
+
 ### Update frequency
 
 - **Manual**: Update only when you run `zotero-mcp update-db`
