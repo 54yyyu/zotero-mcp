@@ -2759,6 +2759,70 @@ class ZoteroSemanticSearch:
             return None
         return target_sync_version
 
+    def _build_item_records(self, item: dict[str, Any], *, chunking: bool) -> list[dict[str, Any]]:
+        """Build the index records of one item, without embedding or writing them.
+
+        The one place an item becomes ``{"id", "document", "metadata"}`` records,
+        for the realtime and the Batch API paths alike. With ``chunking``, one
+        record per overlapping passage (``<item_key>#<n>``), so search can return
+        a grounded quote and long PDFs stay searchable past the single-vector
+        truncation limit; without it, one record under the item key.
+
+        Returns ``[]`` for an item with no key or no text. A failure raises with
+        nothing returned, so an item contributes all of its records or none.
+        """
+        item_key = item.get("key", "")
+        if not item_key:
+            return []
+
+        # Always include structured fields; append fulltext when available
+        fulltext = item.get("data", {}).get("fulltext", "")
+        structured_text = self._create_document_text(item)
+        if fulltext.strip():
+            doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
+        else:
+            doc_text = structured_text
+        metadata = self._create_metadata(item)
+
+        if not doc_text.strip():
+            return []
+
+        if not chunking:
+            # Truncate to fit the configured embedding model's token limit
+            return [{
+                "id": item_key,
+                "document": self.chroma_client.truncate_text(doc_text),
+                "metadata": metadata,
+            }]
+
+        passages = split_into_passages(
+            doc_text,
+            self._effective_chunk_size(),
+            int(self._chunking_config.get("overlap", 200)),
+            int(self._chunking_config.get("max_chunks_per_item", 20)),
+        )
+        section_marks = _section_offsets(doc_text) if passages else []
+        records: list[dict[str, Any]] = []
+        for ci, (chunk_text, c0, c1) in enumerate(passages):
+            cmeta = dict(metadata)
+            cmeta["parent_item_key"] = item_key
+            cmeta["chunk_index"] = ci
+            cmeta["n_chunks"] = len(passages)
+            cmeta["char_start"] = c0
+            cmeta["char_end"] = c1
+            page = _page_for_offset(doc_text, c0)
+            if page is not None:
+                cmeta["page"] = page
+            section = _section_at(section_marks, c0)
+            if section is not None:
+                cmeta["section"] = section
+            records.append({
+                "id": f"{item_key}#{ci}",
+                "document": self.chroma_client.truncate_text(chunk_text),
+                "metadata": cmeta,
+            })
+        return records
+
     def _prepare_index_records(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """Prepare ChromaDB records without embedding or writing them."""
         stats = {"processed": 0, "skipped": 0, "errors": 0}
@@ -2766,25 +2830,12 @@ class ZoteroSemanticSearch:
 
         for item in items:
             try:
-                item_key = item.get("key", "")
-                if not item_key:
+                item_records = self._build_item_records(item, chunking=False)
+                if not item_records:
                     stats["skipped"] += 1
                     continue
 
-                fulltext = item.get("data", {}).get("fulltext", "")
-                structured_text = self._create_document_text(item)
-                if fulltext.strip():
-                    doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
-                else:
-                    doc_text = structured_text
-                metadata = self._create_metadata(item)
-
-                if not doc_text.strip():
-                    stats["skipped"] += 1
-                    continue
-
-                doc_text = self.chroma_client.truncate_text(doc_text)
-                records.append({"id": item_key, "document": doc_text, "metadata": metadata})
+                records.extend(item_records)
                 stats["processed"] += 1
 
             except Exception as e:
@@ -3803,9 +3854,6 @@ class ZoteroSemanticSearch:
         stats = {"processed": 0, "skipped": 0, "errors": 0}
 
         chunking = self._chunking_enabled
-        chunk_size = self._effective_chunk_size() if chunking else 0
-        overlap = int(self._chunking_config.get("overlap", 200))
-        max_chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
 
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
@@ -3819,60 +3867,16 @@ class ZoteroSemanticSearch:
 
         for item in items:
             try:
-                item_key = item.get("key", "")
-                if not item_key:
-                    stats["skipped"] += 1
-                    continue
-                docs_before = len(documents)
-
-                # Create document text and metadata
-                # Always include structured fields; append fulltext when available
-                fulltext = item.get("data", {}).get("fulltext", "")
-                structured_text = self._create_document_text(item)
-                if fulltext.strip():
-                    doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
-                else:
-                    doc_text = structured_text
-                metadata = self._create_metadata(item)
-
-                if not doc_text.strip():
+                records = self._build_item_records(item, chunking=chunking)
+                if not records:
                     stats["skipped"] += 1
                     continue
 
-                if chunking:
-                    # Index one vector per overlapping passage so search can
-                    # return a grounded quote and long PDFs stay searchable
-                    # past the single-vector truncation limit.
-                    passages = split_into_passages(doc_text, chunk_size, overlap, max_chunks)
-                    if not passages:
-                        stats["skipped"] += 1
-                        continue
-                    n_chunks = len(passages)
-                    section_marks = _section_offsets(doc_text)
-                    for ci, (chunk_text, c0, c1) in enumerate(passages):
-                        cmeta = dict(metadata)
-                        cmeta["parent_item_key"] = item_key
-                        cmeta["chunk_index"] = ci
-                        cmeta["n_chunks"] = n_chunks
-                        cmeta["char_start"] = c0
-                        cmeta["char_end"] = c1
-                        page = _page_for_offset(doc_text, c0)
-                        if page is not None:
-                            cmeta["page"] = page
-                        section = _section_at(section_marks, c0)
-                        if section is not None:
-                            cmeta["section"] = section
-                        documents.append(self.chroma_client.truncate_text(chunk_text))
-                        metadatas.append(cmeta)
-                        ids.append(f"{item_key}#{ci}")
-                else:
-                    # Truncate to fit the configured embedding model's token limit
-                    documents.append(self.chroma_client.truncate_text(doc_text))
-                    metadatas.append(metadata)
-                    ids.append(item_key)
-
-                item_keys_order.append(item_key)
-                item_doc_counts.append(len(documents) - docs_before)
+                documents.extend(record["document"] for record in records)
+                metadatas.extend(record["metadata"] for record in records)
+                ids.extend(record["id"] for record in records)
+                item_keys_order.append(item["key"])
+                item_doc_counts.append(len(records))
                 stats["processed"] += 1
 
             except Exception as e:
