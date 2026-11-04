@@ -749,9 +749,8 @@ def tolerate_console_encoding():
             pass
 
 
-def main():
-    """Main entry point for the CLI."""
-    tolerate_console_encoding()
+def _build_parser() -> argparse.ArgumentParser:
+    """The complete command line, built in one place so help and tests can inspect it."""
     parser = argparse.ArgumentParser(
         description="Zotero Model Context Protocol server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -969,6 +968,14 @@ def main():
                                   help="Print the granted key (for ZOTERO_LOCAL_API_KEY)")
     authorize_parser.add_argument("--no-save", action="store_true",
                                   help="Do not persist the key to the config file")
+
+    return parser
+
+
+def main():
+    """Main entry point for the CLI."""
+    tolerate_console_encoding()
+    parser = _build_parser()
 
     args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
 
