@@ -65,6 +65,10 @@ def _maybe_fire_presearch_sync(search) -> None:
 #: (#456), and far under the 300s MCP idle timeout it used to hit.
 _ADVANCED_SCAN_BUDGET_SECONDS = 20
 
+#: Ceiling for semantic_search(full_passage=True). A chunk is ~1500 characters,
+#: so this only bites on item-level records, whose stored text can be far longer.
+_FULL_PASSAGE_MAX_CHARS = 4000
+
 
 def _server_side_filters(
     parsed_conditions: list[dict[str, str]], join_mode: str
@@ -1404,6 +1408,8 @@ def advanced_search(
         "search_all_libraries=True to cover every indexed library. "
         "query: the topic or concept; natural-language phrases work well. "
         "limit: max results (default 10). "
+        "full_passage: return the whole matched passage instead of a short "
+        "excerpt (default False). "
         "filters: optional ChromaDB metadata filter, one key per dict (e.g. "
         "{'item_type': 'journalArticle'}); also accepts a JSON string. Keys: "
         "item_type, item_key, citation_key, doi, publication, tags, "
@@ -1431,6 +1437,7 @@ def semantic_search(
     filters: dict[str, str] | str | None = None,
     library_id: int | str | None = None,
     search_all_libraries: bool = False,
+    full_passage: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -1446,6 +1453,10 @@ def semantic_search(
         search_all_libraries: Search every indexed library at once (#163).
             Requires the SQLite backend; results are labelled with their
             source library. Mutually exclusive with library_id.
+        full_passage: Return the whole matched passage instead of a short
+            excerpt (default: False). On a passage-indexed library this is
+            the complete chunk; otherwise the indexed text is capped at
+            4000 characters.
         ctx: MCP context
 
     Returns:
@@ -1568,7 +1579,15 @@ def semantic_search(
             # actually overlaps the query — over a blind head-truncation, so
             # the agent gets a citable quote rather than the abstract's opening.
             passage = result.get("matched_passage") or result.get("matched_text", "")
-            snippet = passage[:400] + "..." if len(passage) > 400 else passage
+            if full_passage:
+                full = result.get("matched_text") or passage
+                snippet = (
+                    full[:_FULL_PASSAGE_MAX_CHARS] + "..."
+                    if len(full) > _FULL_PASSAGE_MAX_CHARS
+                    else full
+                )
+            else:
+                snippet = passage[:400] + "..." if len(passage) > 400 else passage
 
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.

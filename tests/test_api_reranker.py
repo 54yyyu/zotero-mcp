@@ -286,6 +286,7 @@ class _FixedSemanticSearch:
             "item_key": "ITEM0001",
             "similarity_score": 0.52,
             "matched_passage": "a passage",
+            "matched_text": "a passage within a much longer chunk " + "x" * 5000,
             "metadata": {},
             "zotero_item": {"key": "ITEM0001", "data": {"title": "A Paper", "itemType": "journalArticle"}},
         }
@@ -294,7 +295,7 @@ class _FixedSemanticSearch:
         return {"results": [hit], "total_found": 1, "rerank": self._rerank}
 
 
-def _run_tool(monkeypatch, tmp_path, rerank):
+def _run_tool(monkeypatch, tmp_path, rerank, **tool_kwargs):
     from conftest import DummyContext
 
     from zotero_mcp import client as _client
@@ -307,7 +308,7 @@ def _run_tool(monkeypatch, tmp_path, rerank):
     monkeypatch.setattr(semantic_search, "create_semantic_search", lambda *a, **kw: _FixedSemanticSearch(rerank))
     monkeypatch.setattr(search_module, "_maybe_fire_presearch_sync", lambda _s: None)
     monkeypatch.setattr(_client, "get_active_group_id", lambda: 0)
-    return search_module.semantic_search(query="q", ctx=DummyContext())
+    return search_module.semantic_search(query="q", ctx=DummyContext(), **tool_kwargs)
 
 
 def test_tool_output_names_the_reranker(monkeypatch, tmp_path):
@@ -332,3 +333,18 @@ def test_tool_output_without_reranker_is_unchanged(monkeypatch, tmp_path):
     out = _run_tool(monkeypatch, tmp_path, None)
     assert "Ranked by" not in out and "re-ranking" not in out
     assert "**Relevance:** 0.520" in out
+
+
+def test_semantic_search_shows_short_excerpt_by_default(monkeypatch, tmp_path):
+    out = _run_tool(monkeypatch, tmp_path, None)
+    assert "Matched Passage" in out and "a passage" in out
+    assert "much longer chunk" not in out
+
+
+def test_semantic_search_full_passage_returns_stored_text_capped(monkeypatch, tmp_path):
+    from zotero_mcp.tools import search as search_module
+
+    out = _run_tool(monkeypatch, tmp_path, None, full_passage=True)
+    assert "much longer chunk" in out
+    assert "x" * search_module._FULL_PASSAGE_MAX_CHARS not in out  # capped, with room for the prefix
+    assert "..." in out
