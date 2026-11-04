@@ -131,3 +131,11 @@ def test_setup_chunking_accepts_zero_overlap(monkeypatch):
         ["1", "1", "", "", "y", "1000", "0", "60", ""],
     )
     assert config["chunking"]["overlap"] == 0
+
+
+def test_setup_chunking_warns_about_embeddings_and_memory(monkeypatch, capsys):
+    _run_wizard(monkeypatch, ["1", "1", "", "", "y", "1000", "100", "60", ""])
+    out = capsys.readouterr().out
+    assert "large library" in out
+    assert "memory" in out
+    assert "up to 600,000 embeddings per 10,000 items" in out

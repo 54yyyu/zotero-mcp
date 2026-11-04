@@ -251,6 +251,12 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool)
     print("With chunking, each item is split into overlapping passages, one vector")
     print("each, so long PDFs stay searchable and results can quote the matching passage.")
     print("Changing this setting requires 'zotero-mcp update-db --force-rebuild'.")
+    print("Warning: on a large library, chunking multiplies the size of the index.")
+    print("  - Each item can produce many embeddings, so indexing takes far more API calls,")
+    print("    time and, with a paid provider, money.")
+    print("  - The search index is loaded into memory: about 6 GB per million passages at")
+    print("    1536 dimensions and twice that at 3072 (text-embedding-3-large).")
+    print("    'semantic_search.idle_unload_minutes' frees it when idle.")
     hint = "Y/n" if was_enabled else "y/N"
     raw = input(f"Index full text as passages? [{hint}]: ").strip().lower()
     enabled = was_enabled if raw == "" else raw in ("y", "yes")
@@ -271,6 +277,10 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool)
         print("(passage size x max passages). More passages cost more to embed.")
         chunking["max_chunks_per_item"] = _prompt_positive_int(
             "Max passages per item", int(chunking["max_chunks_per_item"])
+        )
+        print(
+            f"That is up to {int(chunking['max_chunks_per_item']) * 10_000:,} embeddings "
+            "per 10,000 items."
         )
         if batch_enabled:
             print(
