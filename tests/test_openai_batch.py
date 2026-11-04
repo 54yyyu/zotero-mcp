@@ -124,6 +124,7 @@ def test_setup_openai_new_config_defaults_to_batch(monkeypatch):
         "1",  # manual updates
         "",  # default PDF max pages
         "",  # default extraction workers
+        "",  # default chunking choice
         "",  # auto-detect DB path
     ])
     monkeypatch.setattr(builtins, "input", lambda *args: next(answers))

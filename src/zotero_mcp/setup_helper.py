@@ -211,6 +211,77 @@ def find_claude_config(verbose: bool = False):
     return find_all_claude_configs(verbose=verbose)[0]
 
 
+def _prompt_positive_int(label: str, default: int, minimum: int = 1) -> int:
+    """Ask for an integer of at least ``minimum``; Enter keeps ``default``."""
+    while True:
+        raw = input(f"{label} [{default}]: ").strip()
+        if raw == "":
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            print("Please enter a valid number")
+            continue
+        if value >= minimum:
+            return value
+        print(f"Please enter a number of at least {minimum}")
+
+
+def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool) -> dict:
+    """Ask whether to index documents as overlapping passages.
+
+    Starts from the existing ``chunking`` block (hand-edited keys survive) and
+    only asks for the sizes when chunking is switched on. Enabling or disabling
+    it changes the record layout, so the user is told a rebuild is needed.
+    """
+    existing = dict((existing_semantic_config or {}).get("chunking") or {})
+    was_enabled = bool(existing.get("enabled", False))
+    chunking = {
+        "enabled": was_enabled,
+        "chunk_size": 1500,
+        "overlap": 200,
+        "max_chunks_per_item": 20,
+    }
+    chunking.update(existing)
+
+    print("\n=== Passage Chunking ===")
+    print("Without chunking, each item is one vector: the metadata plus the start of")
+    print("the full text, cut at the embedding model's input limit. Text beyond that")
+    print("is not searchable.")
+    print("With chunking, each item is split into overlapping passages, one vector")
+    print("each, so long PDFs stay searchable and results can quote the matching passage.")
+    print("Changing this setting requires 'zotero-mcp update-db --force-rebuild'.")
+    hint = "Y/n" if was_enabled else "y/N"
+    raw = input(f"Index full text as passages? [{hint}]: ").strip().lower()
+    enabled = was_enabled if raw == "" else raw in ("y", "yes")
+    chunking["enabled"] = enabled
+
+    if enabled:
+        chunking["chunk_size"] = _prompt_positive_int(
+            "Passage size in characters", int(chunking["chunk_size"])
+        )
+        while True:
+            chunking["overlap"] = _prompt_positive_int(
+                "Overlap between passages in characters", int(chunking["overlap"]), minimum=0
+            )
+            if chunking["overlap"] < chunking["chunk_size"]:
+                break
+            print("Overlap must be smaller than the passage size")
+        print("Max passages per item bounds how much of each document is searchable")
+        print("(passage size x max passages). More passages cost more to embed.")
+        chunking["max_chunks_per_item"] = _prompt_positive_int(
+            "Max passages per item", int(chunking["max_chunks_per_item"])
+        )
+        if batch_enabled:
+            print(
+                "Warning: the Batch API is enabled, and passage chunking is ignored "
+                "on that path. Use 'update-db --no-batch' or disable the Batch API."
+            )
+    if enabled != was_enabled:
+        print("Chunking changed: run 'zotero-mcp update-db --force-rebuild' to apply it.")
+    return chunking
+
+
 def setup_semantic_search(
     existing_semantic_config: dict | None = None,
     semantic_config_only_arg: bool = False,
@@ -457,6 +528,12 @@ def setup_semantic_search(
         except ValueError:
             print("Please enter a valid number")
 
+    batch_enabled = bool(
+        config.get("openai_batch", {}).get("enabled")
+        or config.get("gemini_batch", {}).get("enabled")
+    )
+    chunking_config = _prompt_chunking(existing_semantic_config, batch_enabled)
+
     # Configure Zotero database path
     print("\n=== Zotero Database Path ===")
     print("By default, zotero-mcp auto-detects the Zotero database location.")
@@ -517,15 +594,7 @@ def setup_semantic_search(
     # the default path (#617).
     if existing_semantic_config and existing_semantic_config.get("persist_directory"):
         config["persist_directory"] = existing_semantic_config["persist_directory"]
-    if existing_semantic_config and existing_semantic_config.get("chunking"):
-        config["chunking"] = existing_semantic_config["chunking"]
-    else:
-        config.setdefault("chunking", {
-            "enabled": False,
-            "chunk_size": 1500,
-            "overlap": 200,
-            "max_chunks_per_item": 20,
-        })
+    config["chunking"] = chunking_config
     return config, zotero_db_path
 
 

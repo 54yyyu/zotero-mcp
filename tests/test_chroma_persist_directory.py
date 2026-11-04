@@ -32,6 +32,7 @@ def test_setup_keeps_persist_directory(monkeypatch):
         "1",  # manual updates
         "",  # default PDF max pages
         "",  # default extraction workers
+        "",  # default chunking choice
         "",  # auto-detect DB path
     ])
     monkeypatch.setattr(builtins, "input", lambda *args: next(answers))
@@ -70,3 +71,63 @@ def test_windows_warns_about_a_non_ascii_index_path(monkeypatch, caplog, tmp_pat
         chroma_client.ChromaClient(persist_directory=path)
 
     assert ("persist_directory" in caplog.text) is warns
+
+
+def _run_wizard(monkeypatch, answers, existing=None):
+    it = iter(answers)
+    monkeypatch.setattr(builtins, "input", lambda *args: next(it))
+    config, _ = setup_helper.setup_semantic_search(existing)
+    return config
+
+
+def test_setup_chunking_defaults_to_disabled(monkeypatch):
+    config = _run_wizard(monkeypatch, ["1", "1", "", "", "", ""])
+    assert config["chunking"]["enabled"] is False
+    assert config["chunking"]["max_chunks_per_item"] == 20
+
+
+def test_setup_chunking_can_be_enabled_with_custom_sizes(monkeypatch, capsys):
+    config = _run_wizard(
+        monkeypatch,
+        ["1", "1", "", "", "y", "1000", "100", "60", ""],
+    )
+    assert config["chunking"] == {
+        "enabled": True,
+        "chunk_size": 1000,
+        "overlap": 100,
+        "max_chunks_per_item": 60,
+    }
+    assert "Chunking changed" in capsys.readouterr().out
+
+
+def test_setup_chunking_keeps_existing_values_on_enter(monkeypatch, capsys):
+    existing = {
+        "embedding_model": "default",
+        "chunking": {"enabled": True, "chunk_size": 800, "overlap": 50,
+                     "max_chunks_per_item": 99, "custom": "kept"},
+    }
+    # "n" declines keeping the existing config; Enter accepts every default.
+    config = _run_wizard(
+        monkeypatch, ["n", "1", "1", "", "", "", "", "", "", ""], existing
+    )
+    assert config["chunking"]["enabled"] is True
+    assert config["chunking"]["chunk_size"] == 800
+    assert config["chunking"]["max_chunks_per_item"] == 99
+    assert config["chunking"]["custom"] == "kept"
+    assert "Chunking changed" not in capsys.readouterr().out
+
+
+def test_setup_chunking_rejects_overlap_not_smaller_than_size(monkeypatch):
+    config = _run_wizard(
+        monkeypatch,
+        ["1", "1", "", "", "y", "500", "500", "100", "", ""],
+    )
+    assert config["chunking"]["overlap"] == 100
+
+
+def test_setup_chunking_accepts_zero_overlap(monkeypatch):
+    config = _run_wizard(
+        monkeypatch,
+        ["1", "1", "", "", "y", "1000", "0", "60", ""],
+    )
+    assert config["chunking"]["overlap"] == 0
