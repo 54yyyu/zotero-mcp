@@ -45,9 +45,34 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
+ARTICLES = "articles"
+PASSAGES = "passages"
+
+
+def passage_collection_name(collection_name: str) -> str:
+    """The collection holding the passages of the article collection ``collection_name``."""
+    return f"{collection_name}_passages"
+
 
 class ChromaClient:
-    """ChromaDB client for Zotero semantic search."""
+    """ChromaDB client for Zotero semantic search.
+
+    An index holds up to two collections, using the same embedding model:
+    ``collection_name`` for articles (one record per item, id ``KEY``) and
+    :func:`passage_collection_name` for passages (id ``KEY#n``). Keeping them
+    apart means an article search never loads passage vectors: ChromaDB loads a
+    collection's whole vector index on first use, deleted records included.
+
+    The passage collection is opened on first use and not before, so an index
+    that never had passages never gets an empty collection.
+
+    A chunked index built before the split holds its passages in the article
+    collection. It keeps working that way until it is migrated:
+    :meth:`separate_passages` is False for it and every id stays there.
+    """
+
+    #: Whether writes go to the collection their id belongs to.
+    route_passages = False
 
     def __init__(self,
                  collection_name: str = "zotero_library",
@@ -90,6 +115,10 @@ class ChromaClient:
         ensure_embedding_functions_registered()
         self._open()
 
+    @property
+    def passage_collection_name(self) -> str:
+        return passage_collection_name(self.collection_name)
+
     def _open(self) -> None:
         """Open the persistent client and the collection in ``persist_directory``."""
         with suppress_stdout():
@@ -104,56 +133,116 @@ class ChromaClient:
             # Set up embedding function
             self.embedding_function = self._create_embedding_function()
 
-            # Get or create collection with the configured embedding function.
-            # If the user switched embedding models, the persisted collection
-            # will have stale config.  Detect the mismatch and drop/recreate.
-            try:
-                self.collection = self.client.get_or_create_collection(
-                    name=self.collection_name,
-                    embedding_function=self.embedding_function
-                )
+            self.collection = self._open_collection(self.collection_name)
+            self._passage_collection = None
+            self._unmigrated: bool | None = None
 
-                # ChromaDB may silently persist the old embedding function config.
-                # Check if the stored config matches what we want; if not, recreate.
-                stored_config = getattr(self.collection, 'metadata', {}) or {}
-                if not stored_config:
-                    # Try reading config from the collection's config_json_str
-                    try:
-                        import json as _json
-                        rows = self.client._sysdb.get_collections(name=self.collection_name)
-                        if rows:
-                            raw = getattr(rows[0], 'config_json_str', None) or '{}'
-                            cfg = _json.loads(raw)
-                            ef_cfg = cfg.get('embedding_function', {}).get('config', {})
-                            stored_model = ef_cfg.get('model_name', '')
-                            # Compare stored model with configured model
-                            configured_model = getattr(self.embedding_function, 'model_name', None)
-                            if stored_model and configured_model and stored_model != configured_model:
-                                logger.warning(
-                                    f"Stored embedding model '{stored_model}' differs from "
-                                    f"configured '{configured_model}'. Resetting collection."
-                                )
-                                self.client.delete_collection(name=self.collection_name)
-                                self.collection = self.client.create_collection(
-                                    name=self.collection_name,
-                                    embedding_function=self.embedding_function
-                                )
-                    except Exception:
-                        pass  # Best-effort check; proceed with existing collection
+    def _open_collection(self, name: str):
+        """Get or create collection ``name`` with the configured embedding function.
 
-            except Exception as e:
-                if "embedding function conflict" in str(e).lower():
-                    logger.warning(
-                        f"Embedding model changed to '{self.embedding_model}'. "
-                        "Resetting collection for rebuild."
-                    )
-                    self.client.delete_collection(name=self.collection_name)
-                    self.collection = self.client.create_collection(
-                        name=self.collection_name,
-                        embedding_function=self.embedding_function
-                    )
-                else:
-                    raise
+        If the user switched embedding models, the persisted collection will
+        have stale config. Detect the mismatch and drop/recreate.
+        """
+        try:
+            collection = self.client.get_or_create_collection(
+                name=name,
+                embedding_function=self.embedding_function
+            )
+
+            # ChromaDB may silently persist the old embedding function config.
+            # Check if the stored config matches what we want; if not, recreate.
+            stored_config = getattr(collection, 'metadata', {}) or {}
+            if not stored_config:
+                # Try reading config from the collection's config_json_str
+                try:
+                    import json as _json
+                    rows = self.client._sysdb.get_collections(name=name)
+                    if rows:
+                        raw = getattr(rows[0], 'config_json_str', None) or '{}'
+                        cfg = _json.loads(raw)
+                        ef_cfg = cfg.get('embedding_function', {}).get('config', {})
+                        stored_model = ef_cfg.get('model_name', '')
+                        # Compare stored model with configured model
+                        configured_model = getattr(self.embedding_function, 'model_name', None)
+                        if stored_model and configured_model and stored_model != configured_model:
+                            logger.warning(
+                                f"Stored embedding model '{stored_model}' differs from "
+                                f"configured '{configured_model}'. Resetting collection."
+                            )
+                            self.client.delete_collection(name=name)
+                            collection = self.client.create_collection(
+                                name=name,
+                                embedding_function=self.embedding_function
+                            )
+                except Exception:
+                    pass  # Best-effort check; proceed with existing collection
+
+        except Exception as e:
+            if "embedding function conflict" not in str(e).lower():
+                raise
+            logger.warning(
+                f"Embedding model changed to '{self.embedding_model}'. "
+                "Resetting collection for rebuild."
+            )
+            self.client.delete_collection(name=name)
+            collection = self.client.create_collection(
+                name=name,
+                embedding_function=self.embedding_function
+            )
+        return collection
+
+    def index_layout(self) -> dict[str, Any]:
+        """Record counts per level, read from SQLite without loading a vector index.
+
+        Also picks up a change made by another process: a long-running client
+        (the server's worker) drops handles to a collection that was renamed
+        or recreated, and re-decides where passages belong.
+        """
+        layout = read_index_layout(self.persist_directory, self.collection_name)
+        article_id = layout.get("article_collection_id")
+        if article_id and article_id != str(getattr(self.collection, "id", article_id)):
+            with suppress_stdout():
+                self.collection = self._open_collection(self.collection_name)
+        passage_id = layout.get("passage_collection_id")
+        if self._passage_collection is not None and passage_id != str(self._passage_collection.id):
+            self._passage_collection = None
+        self._unmigrated = layout["unmigrated_passages"] > 0
+        return layout
+
+    def separate_passages(self) -> bool:
+        """Whether passages live in their own collection in this index.
+
+        False for an index with passages still in the article collection,
+        which goes on working that way until it is migrated.
+        """
+        if not self.route_passages:
+            return False
+        if self._unmigrated is None:
+            self.index_layout()
+        return not self._unmigrated
+
+    def _passages(self):
+        """The passage collection, created if this is the first use."""
+        if self._passage_collection is None:
+            with suppress_stdout():
+                self._passage_collection = self._open_collection(self.passage_collection_name)
+        return self._passage_collection
+
+    def _collection_for_level(self, level: str):
+        return self._passages() if level == PASSAGES and self.separate_passages() else self.collection
+
+    def _group_by_collection(self, ids: list[str]) -> list[tuple[Any, list[int]]]:
+        """``(collection, positions in ids)`` for each collection that ``ids`` touch."""
+        if not self.separate_passages():
+            return [(self.collection, list(range(len(ids))))] if ids else []
+        articles = [i for i, doc_id in enumerate(ids) if "#" not in doc_id]
+        passages = [i for i, doc_id in enumerate(ids) if "#" in doc_id]
+        groups = []
+        if articles:
+            groups.append((self.collection, articles))
+        if passages:
+            groups.append((self._passages(), passages))
+        return groups
 
     def _create_embedding_function(self) -> EmbeddingFunction:
         """Create the appropriate embedding function based on configuration.
@@ -206,11 +295,12 @@ class ChromaClient:
             ids: List of unique IDs for each document
         """
         try:
-            self.collection.add(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids
-            )
+            for collection, positions in self._group_by_collection(ids):
+                collection.add(
+                    documents=[documents[i] for i in positions],
+                    metadatas=[metadatas[i] for i in positions],
+                    ids=[ids[i] for i in positions],
+                )
             logger.info(f"Added {len(documents)} documents to ChromaDB collection")
         except Exception as e:
             logger.error(f"Error adding documents to ChromaDB: {e}")
@@ -236,12 +326,14 @@ class ChromaClient:
                 max_batch = int(self.client.get_max_batch_size())
             except Exception:
                 max_batch = 5000
-            for i in range(0, len(ids), max_batch):
-                self.collection.upsert(
-                    documents=documents[i:i + max_batch],
-                    metadatas=metadatas[i:i + max_batch],
-                    ids=ids[i:i + max_batch]
-                )
+            for collection, positions in self._group_by_collection(ids):
+                for start in range(0, len(positions), max_batch):
+                    part = positions[start:start + max_batch]
+                    collection.upsert(
+                        documents=[documents[i] for i in part],
+                        metadatas=[metadatas[i] for i in part],
+                        ids=[ids[i] for i in part],
+                    )
             logger.info(f"Upserted {len(documents)} documents to ChromaDB collection")
         except Exception as e:
             logger.error(f"Error upserting documents to ChromaDB: {e}")
@@ -264,13 +356,15 @@ class ChromaClient:
                 max_batch = int(self.client.get_max_batch_size())
             except Exception:
                 max_batch = 5000
-            for i in range(0, len(ids), max_batch):
-                self.collection.upsert(
-                    documents=documents[i:i + max_batch],
-                    metadatas=metadatas[i:i + max_batch],
-                    ids=ids[i:i + max_batch],
-                    embeddings=embeddings[i:i + max_batch],
-                )
+            for collection, positions in self._group_by_collection(ids):
+                for start in range(0, len(positions), max_batch):
+                    part = positions[start:start + max_batch]
+                    collection.upsert(
+                        documents=[documents[i] for i in part],
+                        metadatas=[metadatas[i] for i in part],
+                        ids=[ids[i] for i in part],
+                        embeddings=[embeddings[i] for i in part],
+                    )
             logger.info(f"Upserted {len(documents)} precomputed embeddings to ChromaDB collection")
         except Exception as e:
             logger.error(f"Error upserting precomputed embeddings to ChromaDB: {e}")
@@ -381,10 +475,17 @@ class ChromaClient:
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
         try:
-            count = self.collection.count()
+            # Counted in SQLite: count() would load each collection's whole
+            # vector index just to report a number. Reading the collection
+            # afterwards still reports a damaged index (#747).
+            self.collection.get(limit=1, include=[])
+            layout = self.index_layout()
             return {
                 "name": self.collection_name,
-                "count": count,
+                "count": layout["article_records"] + layout["passage_records"],
+                "article_records": layout["article_records"],
+                "passage_records": layout["passage_records"],
+                "unmigrated_passages": layout["unmigrated_passages"],
                 "embedding_model": self.embedding_model,
                 "persist_directory": self.persist_directory
             }
@@ -728,6 +829,64 @@ def unreadable_index_message(info: dict[str, Any], last_update: str | None) -> s
     return "\n".join(lines)
 
 
+def _level_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | None, int, int]:
+    """(collection id, records with a bare id, records with a ``KEY#n`` id)."""
+    row = con.execute("SELECT id FROM collections WHERE name = ?", (collection_name,)).fetchone()
+    if row is None:
+        return None, 0, 0
+    total, chunks = con.execute(
+        """
+        SELECT count(*), coalesce(sum(e.embedding_id LIKE '%#%'), 0)
+        FROM embeddings e JOIN segments s ON e.segment_id = s.id
+        WHERE s.collection = ? AND s.scope = 'METADATA'
+        """,
+        (row[0],),
+    ).fetchone()
+    return row[0], total - chunks, chunks
+
+
+def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
+    """Count an index's records per level from SQLite, read-only.
+
+    Never asks ChromaDB: counting through it loads the whole vector index of
+    the collection counted, which an article search must not do to passages.
+
+    ``passage_records`` covers both places a passage can be, and
+    ``unmigrated_passages`` is how many of them are still in the article
+    collection. Those are only "unmigrated" while the passage collection is
+    empty; once it holds records the index has been split, so any left behind
+    are reported but no longer decide where passages go.
+    """
+    layout: dict[str, Any] = {
+        "article_records": 0,
+        "passage_records": 0,
+        "unmigrated_passages": 0,
+        "passages_in_article_collection": 0,
+        "passage_collection_exists": False,
+        "article_collection_id": None,
+        "passage_collection_id": None,
+    }
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return layout
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        article_id, bare, in_articles = _level_counts(con, collection_name)
+        passage_id, _, in_passages = _level_counts(con, passage_collection_name(collection_name))
+    finally:
+        con.close()
+    layout.update(
+        article_records=bare,
+        passage_records=in_articles + in_passages,
+        unmigrated_passages=0 if in_passages else in_articles,
+        passages_in_article_collection=in_articles,
+        passage_collection_exists=passage_id is not None,
+        article_collection_id=article_id,
+        passage_collection_id=passage_id,
+    )
+    return layout
+
+
 def read_collection_status(
     config_path: str | None = None,
     *,
@@ -786,24 +945,34 @@ def read_collection_status(
             raise sqlite3.DatabaseError(problem)
         con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
         try:
-            row = con.execute("SELECT id FROM collections WHERE name = ?", (collection_name,)).fetchone()
-            if row is None:
+            names = (collection_name, passage_collection_name(collection_name))
+            rows = [con.execute("SELECT id FROM collections WHERE name = ?", (n,)).fetchone() for n in names]
+            if rows[0] is None:
                 return {**base, "count": 0, "initialized": False}
-            count, pending = con.execute(
-                """
-                SELECT
-                    (SELECT count(*) FROM embeddings e JOIN segments s ON e.segment_id = s.id
-                     WHERE s.collection = :c AND s.scope = 'METADATA'),
-                    (SELECT count(*) FROM embeddings_queue
-                     WHERE topic LIKE '%' || :c AND seq_id > coalesce(
-                         (SELECT min(m.seq_id) FROM max_seq_id m JOIN segments s ON m.segment_id = s.id
-                          WHERE s.collection = :c), 0))
-                """,
-                {"c": row[0]},
-            ).fetchone()
+            pending = sum(
+                con.execute(
+                    """
+                    SELECT count(*) FROM embeddings_queue
+                    WHERE topic LIKE '%' || :c AND seq_id > coalesce(
+                        (SELECT min(m.seq_id) FROM max_seq_id m JOIN segments s ON m.segment_id = s.id
+                         WHERE s.collection = :c), 0)
+                    """,
+                    {"c": row[0]},
+                ).fetchone()[0]
+                for row in rows
+                if row is not None
+            )
         finally:
             con.close()
-        result = {**base, "count": count, "initialized": True}
+        layout = read_index_layout(persist_directory, collection_name)
+        result = {
+            **base,
+            "count": layout["article_records"] + layout["passage_records"],
+            "article_records": layout["article_records"],
+            "passage_records": layout["passage_records"],
+            "unmigrated_passages": layout["unmigrated_passages"],
+            "initialized": True,
+        }
         if pending:
             # Writes ChromaDB has logged but not applied yet; it applies them
             # the next time the index is opened.
