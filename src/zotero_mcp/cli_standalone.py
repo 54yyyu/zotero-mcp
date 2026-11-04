@@ -993,8 +993,9 @@ def cmd_db(args):
         col = client.collection
 
         if args.stats:
-            meta = col.get(include=["metadatas"])
-            metas = meta.get("metadatas", [])
+            metas = []
+            for collection in client.collections():
+                metas.extend(collection.get(include=["metadatas"]).get("metadatas", []))
             info = client.get_collection_info()
             print("=== Semantic DB Stats ===")
             print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")

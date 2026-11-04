@@ -228,6 +228,46 @@ class ChromaClient:
                 self._passage_collection = self._open_collection(self.passage_collection_name)
         return self._passage_collection
 
+    def _existing_passages(self):
+        """The passage collection if it exists, without creating it."""
+        if not self.separate_passages():
+            return None
+        if self._passage_collection is None and not self._passage_collection_exists():
+            return None
+        return self._passages()
+
+    def _passage_collection_exists(self) -> bool:
+        db = Path(self.persist_directory) / "chroma.sqlite3"
+        if not db.exists():
+            return False
+        con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+        try:
+            row = con.execute(
+                "SELECT 1 FROM collections WHERE name = ?", (self.passage_collection_name,)
+            ).fetchone()
+        finally:
+            con.close()
+        return row is not None
+
+    def collections(self) -> list[Any]:
+        """Every collection of this index that exists: articles, then passages."""
+        passages = self._existing_passages()
+        return [self.collection] if passages is None else [self.collection, passages]
+
+    def _group_existing(self, ids: list[str]) -> list[tuple[Any, list[str]]]:
+        """``(collection, ids)`` for reads and deletes, which must not create a collection."""
+        passages = self._existing_passages()
+        if not self.separate_passages():
+            return [(self.collection, ids)] if ids else []
+        groups = []
+        articles = [doc_id for doc_id in ids if "#" not in doc_id]
+        if articles:
+            groups.append((self.collection, articles))
+        chunks = [doc_id for doc_id in ids if "#" in doc_id]
+        if chunks and passages is not None:
+            groups.append((passages, chunks))
+        return groups
+
     def _collection_for_level(self, level: str):
         return self._passages() if level == PASSAGES and self.separate_passages() else self.collection
 
@@ -427,7 +467,8 @@ class ChromaClient:
             ids: List of document IDs to delete
         """
         try:
-            self.collection.delete(ids=ids)
+            for collection, part in self._group_existing(ids):
+                collection.delete(ids=part)
             logger.info(f"Deleted {len(ids)} documents from ChromaDB collection")
         except Exception as e:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
@@ -453,7 +494,8 @@ class ChromaClient:
         if group_id is not None:
             where = {"$and": [{"parent_item_key": item_key}, {"group_id": int(group_id)}]}
         try:
-            self.collection.delete(where=where)
+            for collection in self.collections():
+                collection.delete(where=where)
         except Exception as e:
             logger.warning(f"delete_item_chunks({item_key}) failed: {e}")
 
@@ -463,12 +505,16 @@ class ChromaClient:
         Called after an item's new passages ``<item_key>#0..keep-1`` have been
         upserted, so a document that shrank leaves no orphaned tail, while a
         failed re-embed leaves the old passages searchable instead of none.
-        Also drops a bare ``<item_key>`` document left by a pre-chunking index.
+        On an index with passages in the article collection, also drops a bare
+        ``<item_key>`` document left by a pre-chunking index. Where passages
+        have their own collection, that record is the item's article vector.
         """
         where = {"$and": [{"parent_item_key": item_key}, {"chunk_index": {"$gte": int(keep)}}]}
         try:
-            self.collection.delete(where=where)
-            self.collection.delete(ids=[item_key])
+            for collection in self.collections():
+                collection.delete(where=where)
+            if not self.separate_passages():
+                self.collection.delete(ids=[item_key])
         except Exception as e:
             logger.warning(f"prune_item_chunks({item_key}) failed: {e}")
 
@@ -507,7 +553,8 @@ class ChromaClient:
         write leaves unreadable (#747).
         """
         try:
-            self.collection.count()
+            for collection in self.collections():
+                collection.count()
             return None
         except Exception as e:
             return str(e)
@@ -537,13 +584,17 @@ class ChromaClient:
         return str(moved)
 
     def reset_collection(self) -> None:
-        """Reset (clear) the collection."""
+        """Clear the index: the article collection, and the passage collection if any."""
         try:
+            if self._passage_collection_exists():
+                self.client.delete_collection(name=self.passage_collection_name)
+            self._passage_collection = None
             self.client.delete_collection(name=self.collection_name)
             self.collection = self.client.create_collection(
                 name=self.collection_name,
                 embedding_function=self.embedding_function
             )
+            self._unmigrated = False
             logger.info(f"Reset ChromaDB collection '{self.collection_name}'")
         except Exception as e:
             logger.error(f"Error resetting collection: {e}")
@@ -552,8 +603,10 @@ class ChromaClient:
     def document_exists(self, doc_id: str) -> bool:
         """Check if a document exists in the collection."""
         try:
-            result = self.collection.get(ids=[doc_id])
-            return len(result['ids']) > 0
+            return any(
+                len(collection.get(ids=part)['ids']) > 0
+                for collection, part in self._group_existing([doc_id])
+            )
         except Exception:
             return False
 
@@ -561,11 +614,10 @@ class ChromaClient:
         """
         Get metadata for an item if it is indexed.
 
-        With passage chunking enabled, an item is stored only under its chunk
-        ids (``<key>#<n>``) and never under the bare item key, so an exact-id
-        lookup on the key alone misses every chunked item. Chunk 0 carries the
+        An item may be stored only under its chunk ids (``<key>#<n>``), so an
+        exact-id lookup on the key alone would miss it. Chunk 0 carries the
         same item-level metadata (``date_modified``, ``has_fulltext``) that
-        callers need, so fall back to it.
+        callers need, so fall back to it, in whichever collection it is.
 
         Args:
             doc_id: Item key (or full document id) to look up
@@ -574,9 +626,10 @@ class ChromaClient:
             Metadata dictionary if the item is indexed, None otherwise
         """
         try:
-            result = self.collection.get(ids=[doc_id, f"{doc_id}#0"], include=["metadatas"])
-            if result['ids'] and result['metadatas']:
-                return result['metadatas'][0]
+            for collection, part in self._group_existing([doc_id, f"{doc_id}#0"]):
+                result = collection.get(ids=part, include=["metadatas"])
+                if result['ids'] and result['metadatas']:
+                    return result['metadatas'][0]
             return None
         except Exception:
             return None
@@ -586,8 +639,14 @@ class ChromaClient:
         if not ids:
             return set()
         try:
-            result = self.collection.get(ids=ids, include=[])
-            return set(result.get("ids", []))
+            found: set[str] = set()
+            for collection, part in self._group_existing(ids):
+                # Bounded, for the "too many SQL variables" failure (#368):
+                # a run can ask about every passage of a large library.
+                for start in range(0, len(part), 5000):
+                    result = collection.get(ids=part[start:start + 5000], include=[])
+                    found.update(result.get("ids", []))
+            return found
         except Exception:
             return set()
 
@@ -607,8 +666,10 @@ class ChromaClient:
         eligible" — deletion passes fail toward deleting nothing.
         """
         try:
-            result = self.collection.get(where=where, include=[])
-            return set(result.get("ids", []))
+            found: set[str] = set()
+            for collection in self.collections():
+                found.update(collection.get(where=where, include=[]).get("ids", []))
+            return found
         except Exception as e:
             logger.error(f"Error listing collection ids: {e}")
             return set()
@@ -656,15 +717,16 @@ class ChromaClient:
         # accidentally defeat the bounded-ids protection this method exists
         # to provide.
         batch_size = min(batch_size, 5000)
-        all_ids = sorted(self.collection.get(include=[]).get("ids") or [])
-        for start in range(0, len(all_ids), batch_size):
-            chunk = all_ids[start:start + batch_size]
-            result = self.collection.get(ids=chunk, include=["metadatas"])
-            ids = result.get("ids") or []
-            if not ids:
-                continue
-            metadatas = result.get("metadatas") or [{} for _ in ids]
-            yield ids, metadatas
+        for collection in self.collections():
+            all_ids = sorted(collection.get(include=[]).get("ids") or [])
+            for start in range(0, len(all_ids), batch_size):
+                chunk = all_ids[start:start + batch_size]
+                result = collection.get(ids=chunk, include=["metadatas"])
+                ids = result.get("ids") or []
+                if not ids:
+                    continue
+                metadatas = result.get("metadatas") or [{} for _ in ids]
+                yield ids, metadatas
 
     def update_metadatas(self, ids: list[str], metadatas: list[dict[str, Any]]) -> None:
         """Metadata-only update for existing documents; never re-embeds.
@@ -684,11 +746,11 @@ class ChromaClient:
                 max_batch = 5000
             if max_batch < 1:
                 max_batch = 5000
-            for i in range(0, len(ids), max_batch):
-                self.collection.update(
-                    ids=ids[i:i + max_batch],
-                    metadatas=metadatas[i:i + max_batch],
-                )
+            by_id = dict(zip(ids, metadatas))
+            for collection, part in self._group_existing(ids):
+                for start in range(0, len(part), max_batch):
+                    window = part[start:start + max_batch]
+                    collection.update(ids=window, metadatas=[by_id[doc_id] for doc_id in window])
             logger.info(f"Updated metadata for {len(ids)} documents")
         except Exception as e:
             logger.error(f"Error updating document metadata: {e}")
