@@ -2929,6 +2929,10 @@ class ZoteroSemanticSearch:
         Its results include records a gap check would see as missing, and
         paying for them again would also supersede the run.
         """
+        manifest = self._unfinished_batch_manifest()
+        return str(manifest.get("run_id")) if manifest else None
+
+    def _unfinished_batch_manifest(self) -> dict[str, Any] | None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.BATCH_RUN_BLOCKS_FILL_DAYS)
         group_id = self._pinned_group_id()
         provider = self._collect_provider()
@@ -2951,7 +2955,7 @@ class ZoteroSemanticSearch:
                 continue
             if created < cutoff:
                 continue
-            return str(run.get("run_id"))
+            return run
         return None
 
     def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:

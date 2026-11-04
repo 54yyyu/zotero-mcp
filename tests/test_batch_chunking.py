@@ -297,6 +297,31 @@ def test_filling_articles_with_chunking_off_keeps_the_passages(env):
     assert len(_passages(search)) == 5
 
 
+def test_a_library_change_does_not_strand_an_unfinished_fill(env):
+    """A small new run would supersede the fill, whose other files then never go out."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    search = env.build(zotero, chunking=False)
+    search.update_database()
+    _land(env, search)
+
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+    submitted = len(env.fake.jobs)
+
+    zotero.version = 6
+    zotero.changed = {"AAA"}
+    stats = search.update_database()
+
+    assert stats["batch_deferred"]
+    assert len(env.fake.jobs) == submitted
+
+    _land(env, search)
+    assert len(_passages(search)) == 10
+
+    search.update_database()
+    assert len(env.fake.jobs) > submitted, "the change goes out once the fill has landed"
+
+
 def test_no_second_submission_while_a_fill_is_unfinished(env):
     zotero = FakeZotero({"AAA": LONG})
     search = env.build(zotero, chunking=False)

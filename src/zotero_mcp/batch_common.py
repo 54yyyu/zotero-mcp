@@ -751,6 +751,8 @@ def submit_embedding_batches(
         # while the batch was running (#393).
         "group_id": group_id,
         "max_enqueued_tokens": max_enqueued_tokens,
+        # Records filling a gap are not covered by a newer incremental run.
+        "has_level_fill": any(record.get("level_fill") for record in records),
         "manifest_path": str(run_dir / "manifest.json"),
         "batches": [],
         # Passage ids look like "<key>#<n>"; a rebuild must match its index.
