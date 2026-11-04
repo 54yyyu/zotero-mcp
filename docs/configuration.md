@@ -244,6 +244,8 @@ An update writes every article record before any passage, so article search cove
 
 Passages and articles live in two collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
+An index built with chunking on by an earlier version holds its passages in `zotero_library`. It keeps working that way, passages only, until you run `zotero-mcp migrate-index`. That renames the collection, keeping every vector, and takes seconds however large the index is; `--dry-run` reports what would change. The next `update-db` then embeds one article vector per item, and an interrupted run carries on where it stopped. Restart any running server afterwards, and upgrade any other copy of zotero-mcp using the same index, because an older version would go back to writing passages in `zotero_library`.
+
 A passage longer than the model can read would lose its tail, so `chunk_size` is lowered to fit: about 85% of the model's token limit, at 4 characters per token (3 for OpenAI). For the default model that is roughly 870 characters per passage whatever `chunk_size` says. Models with a larger limit keep your `chunk_size`, and the change is logged once at info level.
 
 With the default model, 20 passages cover about 13,000 characters, a few pages. To index whole papers, raise `max_chunks_per_item`: 100 covers roughly 20 pages, and longer papers need more. Each passage is one vector, so the database grows with it.

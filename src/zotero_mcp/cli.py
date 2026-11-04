@@ -410,6 +410,31 @@ def _provider_label(provider: str) -> str:
     return provider.capitalize()
 
 
+def _print_migration_report(report) -> None:
+    if not report.needed:
+        print("Nothing to migrate: this index already keeps passages in their own collection, or has none.")
+    else:
+        print(f"\nMigration {'check (dry run)' if report.dry_run else 'completed'}:")
+        print(f"- Passages kept, with their vectors: {report.passage_records}")
+        if report.moved_articles:
+            print(f"- Article records moved to the article collection: {report.moved_articles}")
+        if report.moved_passages:
+            print(f"- Passages moved out of the article collection: {report.moved_passages}")
+    if report.items_needing_articles:
+        print(f"- Items without an article vector: {report.items_needing_articles}")
+    if report.dry_run:
+        if report.needed:
+            print("\nNothing was changed. Run without --dry-run to migrate.")
+        return
+    if report.needed or report.items_needing_articles:
+        print("\nNext steps:")
+    if report.items_needing_articles:
+        print("  zotero-mcp update-db --fulltext   # embeds the missing article vectors, one per item")
+        print("  (use the same options as your usual update; passages are not embedded again)")
+    if report.needed:
+        print("  Restart any running zotero-mcp server, and upgrade any other copy using this index.")
+
+
 def _print_repair_report(report) -> None:
     from collections import Counter
 
@@ -962,6 +987,16 @@ def main():
     repair_db_parser.add_argument("--config-path",
                                   help="Path to semantic search configuration file")
 
+    # Migration command: split a chunked index into two collections
+    migrate_index_parser = subparsers.add_parser(
+        "migrate-index",
+        help="Move a chunked index's passages to their own collection, without re-embedding them",
+    )
+    migrate_index_parser.add_argument("--dry-run", action="store_true",
+                                      help="Report what would change; change nothing")
+    migrate_index_parser.add_argument("--config-path",
+                                      help="Path to semantic search configuration file")
+
     # Update command
     update_parser = subparsers.add_parser("update", help="Update zotero-mcp to the latest version")
     update_parser.add_argument("--check-only", action="store_true",
@@ -1412,6 +1447,9 @@ def main():
             print(f"Document count: {collection_info.get('count', 0)}")
             print(f"  Article-level records: {collection_info.get('article_records', 0)}")
             print(f"  Passage-level records: {collection_info.get('passage_records', 0)}")
+            if collection_info.get("unmigrated_passages"):
+                print("  These passages are in the article collection. To search articles too,")
+                print("  run: zotero-mcp migrate-index")
             print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
 
@@ -1468,6 +1506,22 @@ def main():
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
         _print_repair_report(report)
+
+    elif args.command == "migrate-index":
+        from zotero_mcp.index_migration import MigrationError, migrate_index
+        from zotero_mcp.semantic_search import _acquire_update_lock, _update_lock_path
+
+        config_path = _semantic_config_path(args.config_path)
+        with _acquire_update_lock(_update_lock_path()) as acquired:
+            if not acquired:
+                print("Error: a database update is running; try again when it has finished.", file=sys.stderr)
+                sys.exit(1)
+            try:
+                report = migrate_index(str(config_path), dry_run=args.dry_run)
+            except MigrationError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        _print_migration_report(report)
 
     elif args.command == "db-inspect":
         # Setup Zotero environment variables

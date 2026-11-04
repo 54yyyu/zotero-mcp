@@ -1883,6 +1883,11 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
         output.append(f"**Article-level Records:** {collection_info.get('article_records', 0)}")
         output.append(f"**Passage-level Records:** {collection_info.get('passage_records', 0)}")
+        if collection_info.get("unmigrated_passages"):
+            output.append(
+                "**Note:** These passages are in the article collection. To search articles "
+                "too, run `zotero-mcp migrate-index`."
+            )
         if collection_info.get("pending_writes"):
             output.append(
                 f"**Pending Writes:** {collection_info['pending_writes']} "
