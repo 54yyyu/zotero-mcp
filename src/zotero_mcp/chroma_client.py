@@ -414,7 +414,8 @@ class ChromaClient:
                query_texts: list[str],
                n_results: int = 10,
                where: dict[str, Any] | None = None,
-               where_document: dict[str, Any] | None = None) -> dict[str, Any]:
+               where_document: dict[str, Any] | None = None,
+               level: str = ARTICLES) -> dict[str, Any]:
         """
         Search for similar documents.
 
@@ -423,6 +424,8 @@ class ChromaClient:
             n_results: Number of results to return
             where: Metadata filter conditions
             where_document: Document content filter conditions
+            level: Collection to search, ``ARTICLES`` or ``PASSAGES``. Only
+                the collection searched has its vector index loaded.
 
         Returns:
             Search results from ChromaDB
@@ -452,7 +455,7 @@ class ChromaClient:
             else:
                 query_kwargs["query_texts"] = query_texts
 
-            results = self.collection.query(**query_kwargs)
+            results = self._collection_for_level(level).query(**query_kwargs)
             logger.info(f"Semantic search returned {len(results.get('ids', [[]])[0])} results")
             return results
         except Exception as e:

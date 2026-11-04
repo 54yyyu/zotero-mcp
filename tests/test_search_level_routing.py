@@ -1,0 +1,184 @@
+"""Choosing between article and passage search, on a real index (#769)."""
+
+import importlib.util
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+if sys.version_info >= (3, 14):
+    pytest.skip(
+        "chromadb currently relies on pydantic v1 paths that are incompatible with Python 3.14+",
+        allow_module_level=True,
+    )
+
+if importlib.util.find_spec("chromadb") is None:
+    pytest.skip("chromadb not installed", allow_module_level=True)
+
+from zotero_mcp import chroma_client, semantic_search  # noqa: E402
+from zotero_mcp.chroma_client import ChromaClient  # noqa: E402
+
+
+def _meta(key, **extra):
+    return {"group_id": 0, "item_key": key, **extra}
+
+
+def _passage_meta(key, index, total=2):
+    return _meta(key, parent_item_key=key, chunk_index=index, n_chunks=total)
+
+
+def _write(client, ids, metadatas):
+    client.upsert_embeddings(
+        documents=[f"text of {i}" for i in ids],
+        metadatas=metadatas,
+        ids=ids,
+        embeddings=[[1.0, 0.0] for _ in ids],
+    )
+
+
+@pytest.fixture()
+def build(monkeypatch, tmp_path):
+    """A search over a real index, embedding queries with a stub so nothing downloads."""
+    monkeypatch.setattr(semantic_search, "get_zotero_client", MagicMock)
+    monkeypatch.setattr(chroma_client, "CUSTOM_EMBEDDING_FUNCTIONS", (SimpleNamespace,))
+
+    def _build(*, route=True, chunking=False, articles=(), passages=()):
+        client = ChromaClient(collection_name="levels", persist_directory=str(tmp_path / "chroma"))
+        if not route and passages:
+            _write(client, list(passages), [_passage_meta(p.split("#")[0], int(p.split("#")[1])) for p in passages])
+        client = ChromaClient(collection_name="levels", persist_directory=str(tmp_path / "chroma"))
+        client.route_passages = route
+        if articles:
+            _write(client, list(articles), [_meta(a) for a in articles])
+        if route and passages:
+            _write(client, list(passages), [_passage_meta(p.split("#")[0], int(p.split("#")[1])) for p in passages])
+        client.embedding_function = SimpleNamespace(embed_query_text=lambda _q: [1.0, 0.0])
+        search = semantic_search.ZoteroSemanticSearch(chroma_client=client)
+        search._chunking_config = {"enabled": chunking}
+        search._reranker_config = {"enabled": False}
+        search._attach_zotero_items = lambda enriched: None
+        return search
+
+    return _build
+
+
+def _keys(result):
+    assert "error" not in result, result.get("error")
+    return [r["item_key"] for r in result["results"]]
+
+
+def test_default_follows_the_chunking_setting(build):
+    search = build(chunking=True, articles=["ART"], passages=["PAS#0", "PAS#1"])
+    result = search.search("q")
+    assert _keys(result) == ["PAS"]
+    assert result["level"] == "passages"
+
+    search._chunking_config = {"enabled": False}
+    result = search.search("q")
+    assert _keys(result) == ["ART"]
+    assert result["level"] == "articles"
+
+
+def test_caller_can_choose_either_level(build):
+    search = build(chunking=True, articles=["ART"], passages=["PAS#0"])
+
+    assert _keys(search.search("q", level="articles")) == ["ART"]
+    assert _keys(search.search("q", level="passages")) == ["PAS"]
+
+
+def test_article_search_does_not_open_the_passage_collection(build):
+    search = build(chunking=False, articles=["ART"], passages=["PAS#0"])
+    client = search.chroma_client
+    client._passage_collection = None
+
+    search.search("q", level="articles")
+
+    assert client._passage_collection is None
+
+
+def test_chunking_just_enabled_falls_back_to_articles(build):
+    """Until passages are built, the default must still find something."""
+    search = build(chunking=True, articles=["ART"])
+
+    result = search.search("q")
+
+    assert _keys(result) == ["ART"]
+    assert result["level"] == "articles"
+
+
+def test_asking_for_passages_that_do_not_exist_says_so(build):
+    search = build(chunking=False, articles=["ART"])
+
+    result = search.search("q", level="passages")
+
+    assert result["results"] == []
+    assert "chunking" in result["error"]
+
+
+def test_asking_for_articles_that_do_not_exist_yet_says_so(build):
+    search = build(chunking=True, passages=["PAS#0"])
+
+    result = search.search("q", level="articles")
+
+    assert result["results"] == []
+    assert "update-db" in result["error"]
+
+
+def test_an_unknown_level_is_refused(build):
+    search = build(articles=["ART"])
+
+    result = search.search("q", level="sentences")
+
+    assert result["results"] == []
+    assert "sentences" in result["error"]
+
+
+def test_passage_search_fetches_enough_for_grouping(build):
+    search = build(chunking=False, articles=["ART"], passages=["PAS#0"])
+    seen = {}
+    real = search.chroma_client.search
+
+    def spy(query_texts, n_results=10, where=None, **kwargs):
+        seen["n_results"] = n_results
+        return real(query_texts, n_results=n_results, where=where, **kwargs)
+
+    search.chroma_client.search = spy
+
+    search.search("q", limit=5, level="passages")
+    assert seen["n_results"] == 20
+
+    search.search("q", limit=5, level="articles")
+    assert seen["n_results"] == 5
+
+
+# --- an unmigrated index ---------------------------------------------------------
+
+
+def test_unmigrated_index_searches_as_it_always_did(build):
+    search = build(route=False, chunking=True, passages=["PAS#0", "PAS#1"])
+    search.chroma_client.route_passages = True
+
+    result = search.search("q")
+
+    assert _keys(result) == ["PAS"]
+    assert result["level"] == "passages"
+
+
+def test_unmigrated_index_cannot_search_articles_yet(build):
+    search = build(route=False, chunking=True, passages=["PAS#0"])
+    search.chroma_client.route_passages = True
+
+    result = search.search("q", level="articles")
+
+    assert result["results"] == []
+    assert "migrate" in result["error"]
+
+
+def test_a_client_double_without_levels_still_searches():
+    """Fakes in this suite and old callers pass no level and know no layout."""
+    search = semantic_search.ZoteroSemanticSearch.__new__(semantic_search.ZoteroSemanticSearch)
+    search.chroma_client = SimpleNamespace()
+    search._chunking_config = {"enabled": True}
+
+    assert search._resolve_search_level(None) == (None, True, None)

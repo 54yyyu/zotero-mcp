@@ -75,6 +75,9 @@ logger = logging.getLogger(__name__)
 # description of each provider that could drift from the adapter.
 _BATCH_MODULES = {"openai": openai_batch, "gemini": gemini_batch}
 
+SEARCH_ARTICLES = "articles"
+SEARCH_PASSAGES = "passages"
+
 # How each provider spells "ready to import", for error text only. OpenAI
 # reports "completed", Gemini "succeeded"; both normalize to
 # batch_common.STATE_SUCCEEDED, which is what decision logic actually uses.
@@ -5431,7 +5434,8 @@ class ZoteroSemanticSearch:
                query: str,
                limit: int = 10,
                filters: dict[str, Any] | None = None,
-               group_id: int | None = None) -> dict[str, Any]:
+               group_id: int | None = None,
+               level: str | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -5443,14 +5447,27 @@ class ZoteroSemanticSearch:
                 groupID). ``None`` (default) searches every indexed library —
                 DB-side filtering via a ChromaDB ``where`` clause, never a
                 Python post-filter.
+            level: ``"articles"`` (one record per item, for finding works on a
+                topic) or ``"passages"`` (for finding where something is done
+                or stated). ``None`` (default) follows the chunking setting.
 
         Returns:
             Search results with Zotero item details
         """
         try:
+            search_level, chunked, level_error = self._resolve_search_level(level)
+            if level_error:
+                return {
+                    "query": query,
+                    "limit": limit,
+                    "filters": filters,
+                    "group_id": group_id,
+                    "results": [],
+                    "total_found": 0,
+                    "error": level_error,
+                }
             reranker = self._get_reranker()
             multiplier = max(1, int(self._reranker_config.get("candidate_multiplier", 3) or 3))
-            chunked = self._chunking_enabled
             fetch_limit = limit
             if chunked:
                 # Passages are grouped back to items downstream, so fetch
@@ -5466,7 +5483,14 @@ class ZoteroSemanticSearch:
                 where = {"$and": [filters, group_clause]} if filters else group_clause
 
             # Perform semantic search
-            results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)
+            search_kwargs: dict[str, Any] = {}
+            # On an unmigrated index everything is in the article collection,
+            # which is what the client searches by default.
+            if search_level == SEARCH_PASSAGES and self.chroma_client.separate_passages():
+                search_kwargs["level"] = SEARCH_PASSAGES
+            results = self.chroma_client.search(
+                query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
+            )
 
             _drop_missing_documents(results)
 
@@ -5507,6 +5531,7 @@ class ZoteroSemanticSearch:
                 "results": enriched_results,
                 "total_found": len(enriched_results),
                 "rerank": rerank_info,
+                "level": search_level,
             }
 
         except EmbeddingAPIUnreachable as e:
@@ -5547,6 +5572,49 @@ class ZoteroSemanticSearch:
                 "total_found": 0,
                 "error": error,
             }
+
+    def _resolve_search_level(self, requested: str | None) -> tuple[str | None, bool, str | None]:
+        """Decide what to search: ``(level, whether hits are passages, error)``.
+
+        Reads the layout from SQLite, so choosing costs no vector index load.
+        A client double with no layout gets the behaviour from before levels.
+        """
+        layout_of = getattr(self.chroma_client, "index_layout", None)
+        layout = layout_of() if layout_of else None
+        if not isinstance(layout, dict):
+            return requested, self._chunking_enabled, None
+        if requested not in (None, SEARCH_ARTICLES, SEARCH_PASSAGES):
+            return None, False, (
+                f"Unknown search level {requested!r}: use '{SEARCH_ARTICLES}' or '{SEARCH_PASSAGES}'."
+            )
+
+        if layout["unmigrated_passages"]:
+            # Passages are in the article collection, which is searched either
+            # way, as it always was until this index is migrated.
+            if requested == SEARCH_ARTICLES:
+                return None, False, (
+                    "This index holds passages only, in the article collection. To search "
+                    "articles too, run 'zotero-mcp migrate-index', then 'zotero-mcp update-db'."
+                )
+            return SEARCH_PASSAGES, self._chunking_enabled or requested == SEARCH_PASSAGES, None
+
+        if requested == SEARCH_PASSAGES and not layout["passage_records"]:
+            return None, False, (
+                "This index has no passages. Enable semantic_search.chunking in config.json "
+                "and run 'zotero-mcp update-db' to add them."
+            )
+        if requested == SEARCH_ARTICLES and not layout["article_records"] and layout["passage_records"]:
+            return None, False, (
+                "This index has no article records yet. Run 'zotero-mcp update-db' to embed them."
+            )
+        level = requested
+        if level is None:
+            level = (
+                SEARCH_PASSAGES
+                if self._chunking_enabled and layout["passage_records"]
+                else SEARCH_ARTICLES
+            )
+        return level, level == SEARCH_PASSAGES, None
 
     def _enrich_search_results(
         self, chroma_results: dict[str, Any], query: str, limit: int | None = None
