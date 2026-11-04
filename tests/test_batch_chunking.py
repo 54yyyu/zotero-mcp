@@ -262,16 +262,56 @@ def test_stats_count_items_not_passages(env):
 
 
 def test_a_passage_that_keeps_failing_sends_its_item_back_to_the_gap_fill(env):
-    """A hole in an item's passages is invisible to the KEY#0 check, so it must not stay."""
+    """Only that item goes back, and importing the run again changes nothing."""
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
     search = env.build(zotero, chunking=True)
     search.update_database()
 
     _land(env, search, skip={"AAA#3"})
 
-    assert search.chroma_client.get_existing_ids([f"AAA#{i}" for i in range(5)]) == set()
+    assert len([p for p in _passages(search) if p.startswith("AAA")]) == 4
     assert len([p for p in _passages(search) if p.startswith("BBB")]) == 5
     assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+
+    search._import_batch("openai")
+
+    assert len([p for p in _passages(search) if p.startswith("AAA")]) == 4
+
+
+def test_filling_articles_with_chunking_off_keeps_the_passages(env):
+    """The batch path of the same promise the realtime path makes."""
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+    _land(env, search)
+    search.chroma_client.delete_documents(["AAA"])
+    env.fake.jobs.clear()
+    env.fake.uploads.clear()
+
+    search = env.build(zotero, chunking=False)
+    search.update_database()
+    assert _submitted(env) == ["AAA"]
+    _land(env, search)
+
+    assert _ids(search) == {"AAA"}
+    assert len(_passages(search)) == 5
+
+
+def test_no_second_submission_while_a_fill_is_unfinished(env):
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=False)
+    search.update_database()
+    _land(env, search)
+
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+    submitted = len(env.fake.jobs)
+    assert env.fake.ids_in(f"job-{submitted - 1}") == [f"AAA#{i}" for i in range(5)]
+
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+
+    assert len(env.fake.jobs) == submitted
 
 
 def test_a_superseded_run_does_not_write_its_stale_passages(env):

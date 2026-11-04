@@ -3433,6 +3433,10 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
+                if item.get("_index_levels"):
+                    # The import must not treat this as a rewrite of the item.
+                    for record in item_records:
+                        record["level_fill"] = True
                 records.extend(item_records)
                 stats["processed"] += 1
 
@@ -6261,6 +6265,9 @@ class ZoteroSemanticSearch:
                     # After the write, as on the realtime path (#610). Each record
                     # carries its item's new length, so this is safe with the
                     # item's other passages still in a later file.
+                    self._level_fill_keys = {
+                        doc_id.split("#", 1)[0] for doc_id in ids if records[doc_id].get("level_fill")
+                    }
                     self._prune_stale_chunks(metadatas)
                     stats["imported_items"] += len(ids)
                     stats["updated_items"] += len(existing_items)
@@ -6328,14 +6335,6 @@ class ZoteroSemanticSearch:
                 failed_ids = manifest.get("failed_ids") or []
                 given_up: list[str] = []
                 covered = bool(superseded_by) or overtaken_at is not None or self._predates_reset(manifest)
-                if failed_ids:
-                    # An item missing one passage still looks indexed, because
-                    # only its first passage is checked. Clearing them leaves a
-                    # gap the next update-db can see.
-                    if self._separate_passages():
-                        parents = {doc_id.split("#", 1)[0] for doc_id in failed_ids if "#" in doc_id}
-                        for parent in sorted(parents):
-                            self.chroma_client.delete_item_chunks(parent, group_id=manifest.get("group_id"))
                 if superseded_by:
                     # The newer run was cut from this same watermark and will
                     # advance it when it lands; doing it here would skip
@@ -6376,6 +6375,7 @@ class ZoteroSemanticSearch:
                     str(manifest.get("run_id")),
                 )
             self._drop_passages_on_write = False
+            self._level_fill_keys = frozenset()
             lock_cm.__exit__(None, None, None)
 
     @staticmethod
