@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from zotero_mcp.cli_help import FullHelpAction
+
 # NOTE: Do NOT import zotero_mcp.server at module level.
 # That triggers heavy imports (FastMCP, ChromaDB, sentence-transformers, torch)
 # which take several seconds. Import lazily only when needed (serve command).
@@ -753,19 +755,14 @@ def _build_parser() -> argparse.ArgumentParser:
     """The complete command line, built in one place so help and tests can inspect it."""
     parser = argparse.ArgumentParser(
         description="Zotero Model Context Protocol server",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Batch API indexing (OpenAI or Gemini, ~50% of realtime cost):\n"
-            "  zotero-mcp update-db --batch            Submit embeddings asynchronously\n"
-            "  zotero-mcp update-db --batch --auto-loop  Submit, then poll and import\n"
-            "  zotero-mcp batch-status                 Check submitted batch status\n"
-            "  zotero-mcp batch-import                 Import completed embeddings\n"
-            "  zotero-mcp help update-db               Show update-db options\n"
-        ),
+        usage="zotero-mcp [-h] <command> [options]",
+        add_help=False,
     )
 
     # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    parser.add_argument("-h", "--help", action=FullHelpAction,
+                        help="Show every command and option, then exit")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>", help="Command to run")
 
     # Server command (default behavior)
     server_parser = subparsers.add_parser("serve", help="Run the MCP server")
