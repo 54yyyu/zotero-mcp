@@ -20,6 +20,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `<query>` -- Search query
  - `--mode` -- one of `items`, `tag`, `citekey`, `advanced`, `semantic`, `notes` -- default `items` -- Search mode (default: items)
  - `--qmode` -- one of `titleCreatorYear`, `everything` -- default `titleCreatorYear`
+ - `--level` -- one of `articles`, `passages` -- With --mode semantic: search articles or passages (default: passages when chunking is on, articles when off)
  - `--collection` -- Scope to a collection key
  - `--limit` -- default `10`
  - `--conditions` -- JSON conditions for advanced mode

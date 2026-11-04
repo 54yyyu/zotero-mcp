@@ -286,6 +286,10 @@ After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`
 
 An update writes every article record before any passage, so article search covers a long run's items early; a Batch API run sends its article records in its first files. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile (article search still finds it). A realtime run stopped in between leaves the rest to the next update. On the Batch API path a large run's passage files can land days after its article files, so a changed item can be missing from passage search for days.
 
+`zotero_semantic_search` takes `level="articles"` or `level="passages"` to choose per search, and `zotero-cli search --mode semantic` takes `--level`.
+
+While passages are being built, a default search covers only the items that have them so far. If passages don't exist at all yet, it searches articles instead. When an index holds both levels, the results say which level was searched and how many items each holds across the whole index, for example `Searched passages (12,000 items in the index). The article level has 48,750 items, so level="articles" may find more.`
+
 Passages and articles live in two ChromaDB collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
 An index built with chunking on by an earlier version holds its passages in `zotero_library`, the article-level ChromaDB collection: passages only, or passages beside article records left from before chunking was turned on (a mixed index). Search keeps working that way until you migrate, and the status commands (`zotero-mcp db-status`, `zotero-cli db status`, the `zotero_get_search_database_status` tool) say so, with the steps and an estimate of what the last one costs. To migrate:

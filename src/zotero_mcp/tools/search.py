@@ -9,7 +9,6 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
-
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
@@ -1424,7 +1423,9 @@ def advanced_search(
         "metadata filter with one key per dict, e.g. {'item_type': "
         "'journalArticle'}; keys item_type, item_key, citation_key, doi, "
         "publication, tags, has_fulltext; combine with {'$and': [{...}, "
-        "{...}]}; there is no year filter. Searches the active library; "
+        "{...}]}; there is no year filter. level: 'articles' for works on a "
+        "topic, 'passages' for where something is done or stated; the default "
+        "follows the chunking setting. Searches the active library; "
         "library_id picks another (0 or 'user', or a group ID), "
         "search_all_libraries=True searches every indexed library (not with "
         "library_id). Before your first semantic search in a session, check "
@@ -1440,6 +1441,7 @@ def semantic_search(
     filters: dict[str, str] | str | None = None,
     library_id: int | str | None = None,
     search_all_libraries: bool = False,
+    level: Literal["articles", "passages"] | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1533,7 +1535,10 @@ def semantic_search(
         _maybe_fire_presearch_sync(search)
 
         # Perform search
-        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
+        results = search.search(
+            query=query, limit=limit, filters=filters, group_id=group_id,
+            **({"level": level} if level else {}),
+        )
 
         if results.get("error"):
             message = f"Semantic search error: {results['error']}"
