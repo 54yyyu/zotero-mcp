@@ -5353,17 +5353,18 @@ class ZoteroSemanticSearch:
         library_key = None if group_id is None else str(group_id)
         target = manifest.get("target_sync_version")
         failed_ids = manifest.get("failed_ids") or []
-        if failed_ids and manifest.get("reset_at"):
-            # Records that never got an embedding. The old watermark described
-            # the collection a forced rebuild replaced, and a full scan would
-            # embed the whole library again for these few. Move on, and
-            # remember them.
+        if failed_ids and (manifest.get("reset_at") or self._separate_passages()):
+            # Records that never got an embedding. Holding the watermark would
+            # pay for this run's other items again every run, and after a
+            # forced rebuild the old one described a collection that is gone.
+            # Move on, and remember these for the gap fill.
             retry_keys = set(self.update_config.get("retry_item_keys") or [])
             retry_keys.update(doc_id.split("#", 1)[0] for doc_id in failed_ids)
             self.update_config["retry_item_keys"] = sorted(retry_keys)
-            rebuilt_now = True
+            rebuilt_now = rebuilt_now or bool(manifest.get("reset_at"))
         elif failed_ids:
-            # The watermark stays, as on the realtime path (#610).
+            # An unmigrated index has no gap fill, so the watermark stays, as
+            # on the realtime path (#610).
             target = None
         if rebuilt_now:
             target = 0 if target is None else target
@@ -5898,6 +5899,7 @@ class ZoteroSemanticSearch:
             # is written over the existing index instead, which keeps the rest.
             if (
                 manifest.get("force_full_rebuild")
+                and not superseded_by
                 and not any(batch.get("imported_at") or batch.get("abandoned") for batch in all_batches)
                 and any(not batch.get("imported_at") for batch in batches)
             ):
@@ -6115,8 +6117,8 @@ class ZoteroSemanticSearch:
                 failed_ids = manifest.get("failed_ids") or []
                 if failed_ids:
                     stats["errors"].append({"error": (
-                        f"{len(failed_ids)} record(s) still have no embedding after retries, so the sync "
-                        "version was not advanced; the next update-db embeds them again"
+                        f"{len(failed_ids)} record(s) still have no embedding after retries; "
+                        "the next update-db embeds them again"
                     )})
                 if superseded_by:
                     # The newer run was cut from this same watermark and will

@@ -346,6 +346,29 @@ def test_force_rebuild_row_that_keeps_failing_is_retried_without_a_full_scan(run
     assert run.search.update_config["retry_item_keys"] == ["K001"]
 
 
+def test_a_record_that_keeps_failing_does_not_hold_back_a_split_index(run):
+    """Holding the sync version would pay for the run's other items again, every run."""
+    run.chroma.separate_passages = lambda: True
+    run.submit(n=2)
+    for job_id in ("job-0", "job-1", "job-2"):
+        run.fake.finish(job_id, fail=["K001"])
+        run.search._import_batch("openai")
+
+    assert run.watermark() == 7
+    assert run.search.update_config["retry_item_keys"] == ["K001"]
+
+
+def test_a_superseded_force_rebuild_does_not_reset_the_index(run):
+    older = run.submit(n=2, force=True, budget=100)
+    run.submit(n=2, force=True, budget=100)
+    older_id = older["batches"][0]["batch_id"]
+    run.fake.finish(older_id)
+
+    run.search._import_batch("openai", [older_id])
+
+    assert run.chroma.resets == 0
+
+
 def test_repeating_an_import_does_not_reset_the_index_again(run):
     run.submit(n=2, force=True, budget=100)
     run.fake.finish("job-0")
