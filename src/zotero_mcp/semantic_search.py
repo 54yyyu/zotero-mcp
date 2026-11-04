@@ -5292,13 +5292,7 @@ class ZoteroSemanticSearch:
             dead = [
                 batch.get("batch_id") or "(pending)"
                 for batch in newest.get("batches", [])
-                if not batch.get("imported_at") and (
-                    batch.get("lost")
-                    or (
-                        batch_common._entry_state(adapter, batch) in batch_common.TERMINAL_STATES
-                        and not batch_common._entry_is_complete(adapter, batch)
-                    )
-                )
+                if not batch_common.is_settled(batch) and batch_common._entry_is_dead(adapter, batch)
             ]
             if dead and not (last_rebuild and last_rebuild > str(newest.get("created_at") or "")):
                 run_id = newest.get("run_id")
@@ -5323,9 +5317,8 @@ class ZoteroSemanticSearch:
             if (
                 "since_version" in run  # older manifests have no promoted_at to read
                 and batches
-                and all(batch.get("imported_at") for batch in batches)
+                and all(batch_common.is_settled(batch) for batch in batches)
                 and not run.get("promoted_at")
-                and not any(batch.get("imported_partial") for batch in batches)
                 and self._run_is_usable(provider, run)
                 and not any(_is_superseded(run, newer, adapter) for newer in runs[:position])
             ):
@@ -5346,6 +5339,13 @@ class ZoteroSemanticSearch:
         group_id = manifest.get("group_id")
         library_key = None if group_id is None else str(group_id)
         target = manifest.get("target_sync_version")
+        if manifest.get("failed_ids"):
+            # Records that never got an embedding. A forced rebuild replaced the
+            # collection the old watermark described, so zero sends the next
+            # run through a full scan. Otherwise the watermark stays, as on the
+            # realtime path (#610).
+            target = 0 if manifest.get("reset_at") else None
+            rebuilt_now = rebuilt_now or bool(manifest.get("reset_at"))
         if rebuilt_now:
             target = 0 if target is None else target
         elif target is not None and target < self._load_last_sync_version(library_key):
@@ -5446,12 +5446,13 @@ class ZoteroSemanticSearch:
                     )
             elif not run.get("force_full_rebuild"):  # _batch_notes speaks for a dead rebuild
                 lost = sum(1 for batch in batches if batch.get("lost"))
+                # Rows of a chunk that ended early go round again on their own,
+                # so only a chunk nothing more can come from counts here.
                 short = lost + sum(
                     1 for batch in batches
-                    if not batch.get("lost") and (
-                        batch.get("imported_partial")
-                        or (not batch.get("imported_at") and batch_common._entry_is_dead(adapter, batch))
-                    )
+                    if not batch.get("lost")
+                    and not batch_common.is_settled(batch)
+                    and batch_common._entry_is_dead(adapter, batch)
                 )
                 if short:
                     what = f"the provider no longer has {lost} of its chunks" if lost else (
@@ -5821,19 +5822,26 @@ class ZoteroSemanticSearch:
                 )})
 
             client = adapter.create_client(self.chroma_client.embedding_config)
+            # A failed or expired file goes round again, or is given up on so
+            # the rest of the run can land. Not for named batches, which don't
+            # carry the run forward, nor for a run taken over by a newer one.
+            if not selected_ids and not taken_over:
+                _requeued, abandoned = batch_common.requeue_failed_batches(adapter, manifest)
+                stats["batches_abandoned"] = abandoned
+
             if manifest.get("force_full_rebuild"):
                 def _incomplete() -> list[str]:
                     return [
                         batch.get("batch_id") or "(pending)"
                         for batch in all_batches
-                        if not batch.get("imported_at")
-                        and (
-                            batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES
-                            or batch_common._entry_is_dead(adapter, batch)
-                        )
+                        if not batch_common.is_settled(batch)
+                        and not batch_common.is_importable(adapter, batch)
                     ]
 
                 if _incomplete():
+                    # This run imports all at once, later than a throttled
+                    # run's first results may stay available, so fetch them now.
+                    self._download_finished_batches(adapter, client, all_batches)
                     # A force-rebuild run imports all-or-nothing. Before
                     # refusing, submit whatever the throttle parked: that is
                     # the progress the user is waiting for, not an error. The
@@ -5909,7 +5917,7 @@ class ZoteroSemanticSearch:
                 # fails now costs nothing, and after the reset it would leave an
                 # empty index behind.
                 for batch in batches:
-                    if not batch.get("imported_at") and not _output_path(batch).exists():
+                    if not batch_common.is_settled(batch) and not _output_path(batch).exists():
                         try:
                             adapter.download_output(client, batch, _output_path(batch))
                         except Exception as e:
@@ -5941,9 +5949,9 @@ class ZoteroSemanticSearch:
                 if batch.get("imported_at"):
                     stats["batches_skipped"] += 1
                     continue
-                if not batch.get("batch_id"):
+                if not batch.get("batch_id") or batch.get("abandoned"):
                     # Parked by the enqueued-token throttle; submitted below,
-                    # after this pass imports what has completed.
+                    # after this pass imports what has completed. Or given up on.
                     stats["batches_skipped"] += 1
                     continue
                 if batch.get("lost"):
@@ -6044,14 +6052,32 @@ class ZoteroSemanticSearch:
                     except Exception as e:
                         logger.debug(f"Fulltext cache eviction failed: {e}")
 
+                # Rows with no vector go round again on their own, which also
+                # covers an expired batch's unfinished rows. A named-batch import
+                # does not carry the run forward, and a superseded run's items
+                # belong to the newer one.
+                unfinished = [
+                    records[doc_id]
+                    for doc_id in records
+                    if doc_id not in embeddings_by_id
+                ]
+                if selected_ids or superseded_by:
+                    batch_common.add_failed_ids(manifest, [record["id"] for record in unfinished])
+                else:
+                    batch_common.add_retry_batch(
+                        adapter, manifest, unfinished, int(batch.get("attempts") or 1)
+                    )
+
                 batch["imported_at"] = datetime.now().isoformat()
                 batch["imported_count"] = len(ids)
                 if not complete:
                     batch["imported_partial"] = True
                 stats["batches_imported"] += 1
-                # After each chunk: a rebuild cut off part way must resume, not
-                # empty the index again.
+                # Saved per file: at this scale an interrupted import must not
+                # start again (and a rebuild cut off part way must resume, not
+                # empty the index again), and the files below are about to go.
                 module.save_manifest(manifest)
+                batch_common.remove_batch_files(batch)
 
             module.save_manifest(manifest)
 
@@ -6064,7 +6090,13 @@ class ZoteroSemanticSearch:
 
             # Newly submitted chunks have no ``imported_at``, so the watermark
             # stays where it is until the whole run has landed.
-            if all(batch.get("imported_at") for batch in all_batches):
+            if all(batch_common.is_settled(batch) for batch in all_batches):
+                failed_ids = manifest.get("failed_ids") or []
+                if failed_ids:
+                    stats["errors"].append({"error": (
+                        f"{len(failed_ids)} record(s) still have no embedding after retries, so the sync "
+                        "version was not advanced; the next update-db embeds them again"
+                    )})
                 if superseded_by:
                     # The newer run was cut from this same watermark and will
                     # advance it when it lands; doing it here would skip
@@ -6081,9 +6113,6 @@ class ZoteroSemanticSearch:
                     # Cut against an index that has since been replaced: its
                     # target says nothing about what the index holds now.
                     and not self._predates_reset(manifest)
-                    # Rows of a chunk that ended early never ran; the sync
-                    # version waiting is what gets them embedded in the end.
-                    and not any(batch.get("imported_partial") for batch in all_batches)
                 ):
                     self._promote_run(
                         provider,
@@ -6103,6 +6132,24 @@ class ZoteroSemanticSearch:
                     str(manifest.get("run_id")),
                 )
             lock_cm.__exit__(None, None, None)
+
+    @staticmethod
+    def _download_finished_batches(adapter: Any, client: Any, batches: list[dict[str, Any]]) -> None:
+        """Save finished batches' results locally ahead of their import."""
+        for batch in batches:
+            if batch.get("imported_at") or not batch.get("batch_id"):
+                continue
+            if not batch_common.is_importable(adapter, batch):
+                continue
+            if adapter.uses_error_file and not batch.get("output_file_id"):
+                continue
+            output_path = batch_common.output_path_for(batch)
+            if output_path.exists():
+                continue
+            try:
+                adapter.download_output(client, batch, output_path)
+            except Exception as e:
+                logger.warning(f"Could not download batch {batch.get('batch_id')} yet: {e}")
 
     def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
         """Import completed OpenAI Batch API embeddings into ChromaDB."""
@@ -6169,7 +6216,8 @@ class ZoteroSemanticSearch:
             aggregate["submitted_chunks"] += submitted
 
             entries = manifest.get("batches", [])
-            remaining = [b for b in entries if not b.get("imported_at")]
+            aggregate["abandoned"] = sum(1 for b in entries if b.get("abandoned"))
+            remaining = [b for b in entries if not batch_common.is_settled(b)]
             if not remaining:
                 break
             active = [

@@ -301,16 +301,21 @@ def _entry(status="in_progress", imported=False, batch_id="b1", output_file_id="
         (False, [_entry("completed")], True),
         (False, [_entry("completed", imported=True)], False),
         (False, [_entry("completed", imported=True), _entry("in_progress")], True),
+        # A failed or expired chunk is sent again, or given up on, by the next import.
+        (False, [_entry("failed", output_file_id=None)], True),
+        (False, [_entry("expired", output_file_id=None), _entry("completed", imported=True)], True),
         # Nothing more can happen; the next update re-covers these items.
-        (False, [_entry("failed", output_file_id=None)], False),
-        (False, [_entry("expired", output_file_id=None), _entry("completed", imported=True)], False),
+        (False, [_entry("cancelled", output_file_id=None)], False),
+        (False, [{**_entry("failed", output_file_id=None), "abandoned": True}], False),
         # An expired chunk's file still holds paid rows to import.
         (False, [_entry("expired")], True),
         ({"lost": True}, [], False),
         # Completed with every row failed: there is no output file to import.
         (False, [_entry("completed", output_file_id=None)], False),
-        # A rebuild is all-or-nothing, so one dead chunk kills the whole run.
-        (True, [_entry("failed"), _entry("completed")], False),
+        # A rebuild can't replace the index without a dead chunk.
+        (True, [_entry("cancelled", output_file_id=None), _entry("completed")], False),
+        # A failed chunk's file still holds paid rows; the rest go round again.
+        (True, [_entry("failed"), _entry("completed")], True),
         (True, [_entry("in_progress"), _entry("completed")], True),
         (False, [], False),
     ],
@@ -485,8 +490,10 @@ def test_a_submission_that_fails_on_its_first_chunk_is_still_on_record(env):
         ("JOB_STATE_RUNNING", True),
         ("JOB_STATE_SUCCEEDED", True),
         ("pending", True),
-        ("JOB_STATE_FAILED", False),
-        ("JOB_STATE_EXPIRED", False),
+        # Sent again, or given up on, by the next import.
+        ("JOB_STATE_FAILED", True),
+        ("JOB_STATE_EXPIRED", True),
+        ("JOB_STATE_CANCELLED", False),
     ],
 )
 def test_run_is_unfinished_reads_gemini_states(status, unfinished):
@@ -759,7 +766,7 @@ def test_a_run_from_another_embedding_model_is_neither_collected_nor_blocking(en
 
 def test_a_rebuild_that_can_no_longer_finish_is_reported(env):
     env.new_search().update_database(force_full_rebuild=True)
-    env.provider.finish_all("expired")
+    env.provider.finish_all("cancelled")
 
     stats = env.new_search().update_database()
 
@@ -768,14 +775,26 @@ def test_a_rebuild_that_can_no_longer_finish_is_reported(env):
 
 
 def test_failed_chunks_are_reported_and_covered_by_the_next_run(env):
+    # Cancelled: a failed chunk would be sent again first.
     env.new_search().update_database()
-    env.provider.finish_all("failed")
+    env.provider.finish_all("cancelled")
 
     stats = env.new_search().update_database()
 
     assert "failed" in str(stats["batch_collect"]["errors"])
     assert not _versions(env).get("0")
     assert env.provider.created == ["batch-1", "batch-2"]
+
+
+def test_a_failed_chunk_is_sent_again_by_the_next_collect(env):
+    _submit_run(env, budget=1_000_000)
+    env.provider.finish_all("failed")
+
+    stats = env.new_search().collect_batch_results()
+
+    assert env.provider.created == ["batch-1", "batch-2"]
+    assert stats["batch_collect"]["submitted_chunks"] == 1
+    assert not _versions(env).get("0")
 
 
 def test_a_second_process_holding_the_lock_skips_collecting(env):
@@ -1564,25 +1583,26 @@ def test_i3_a_throttled_run_keeps_going_when_its_last_chunk_went_out_recently(en
 
 
 def test_i4_an_expired_chunk_with_a_file_is_imported_but_does_not_promote(env):
-    run = _submit_run(env, target=20)
+    run = _submit_run(env, target=20, budget=1_000_000)
     env.provider.statuses["batch-1"] = "expired"
     env.provider.expired_with_output = True
+    env.provider._batch_ids["batch-1"] = ["R0"]  # R1 never ran before the window closed
 
-    stats = env.new_search().collect_batch_results()
+    env.new_search().collect_batch_results()
 
-    assert _indexed(env) == {"R0", "R1"}, "these rows are paid for"
+    assert _indexed(env) == {"R0"}, "these rows are paid for"
     assert not _versions(env).get("0"), "other rows of that chunk never ran"
+    assert env.provider._batch_ids["batch-2"] == ["R1"], "the row that never ran goes round again"
     saved = openai_batch.load_manifest(Path(run["manifest_path"]))
-    assert not batch_common.run_is_unfinished(saved, openai_batch.ADAPTER)
-    assert "every change since" in str(stats["batch_collect"]["errors"])
+    assert batch_common.run_is_unfinished(saved, openai_batch.ADAPTER)
 
 
-def test_i4_a_rebuild_with_an_expired_chunk_stays_all_or_nothing(env):
+def test_i4_a_rebuild_with_an_expired_chunk_imports_its_paid_rows(env):
     manifest = {
         "force_full_rebuild": True,
         "batches": [_entry("expired"), _entry("completed")],
     }
-    assert batch_common.run_is_unfinished(manifest, openai_batch.ADAPTER) is False
+    assert batch_common.run_is_unfinished(manifest, openai_batch.ADAPTER) is True
 
 
 def test_i4_the_message_says_what_is_actually_bought_again(env):
@@ -1594,7 +1614,7 @@ def test_i4_the_message_says_what_is_actually_bought_again(env):
     env.new_search().update_database(batch_max_requests=1)
     assert len(env.provider.created) == 2
     env.provider.statuses["batch-1"] = "completed"
-    env.provider.statuses["batch-2"] = "failed"
+    env.provider.statuses["batch-2"] = "cancelled"
 
     stats = env.new_search().collect_batch_results()
 
@@ -1789,7 +1809,7 @@ def test_m5_raw_sdk_text_is_not_shown(env):
 
 def test_m6_a_dead_rebuild_note_offers_giving_up_and_clears_with_it(env):
     run = _submit_run(env, force=True, scope=REBUILD_SCOPE)
-    env.provider.finish_all("failed")
+    env.provider.finish_all("cancelled")
     stats = env.new_search().collect_batch_results()
     assert "batch-abandon" in str(stats["batch_collect"]["errors"])
 
@@ -1801,7 +1821,7 @@ def test_m6_a_dead_rebuild_note_offers_giving_up_and_clears_with_it(env):
 
 def test_m6_a_realtime_rebuild_clears_a_dead_rebuild_note(env, monkeypatch):
     _submit_run(env, force=True, scope=REBUILD_SCOPE)
-    env.provider.finish_all("failed")
+    env.provider.finish_all("cancelled")
     env.new_search().collect_batch_results()
     monkeypatch.setattr(Index, "upsert_documents", lambda *a, **k: None)
     env.new_search().update_database(use_batch=False, force_full_rebuild=True, allow_mass_deletion=True)
@@ -1896,7 +1916,7 @@ def test_r2_2_an_abandoned_newer_run_covers_nothing(env):
 
 def test_r2_2_run_covers_ignores_runs_that_will_never_land():
     abandoned = {**_run(force=True), "abandoned_at": "2026-11-01T00:00:00"}
-    dead = {**_run(force=True), "batches": [_entry("failed", output_file_id=None)]}
+    dead = {**_run(force=True), "batches": [_entry("cancelled", output_file_id=None)]}
     landed = {**_run(force=True), "batches": [_entry("completed", imported=True)]}
 
     assert batch_common.run_covers(abandoned, _run("old")) is False
@@ -1911,7 +1931,7 @@ def test_r2_2_a_dead_newer_run_covers_nothing(env):
     rebuild = _rebuild_of(env, ["AAA", "BBB"], target=20)
     env.provider.statuses[older["batches"][0]["batch_id"]] = "completed"
     for batch in rebuild["batches"]:
-        env.provider.statuses[batch["batch_id"]] = "failed"
+        env.provider.statuses[batch["batch_id"]] = "cancelled"
 
     env.new_search().collect_batch_results()  # learns the rebuild is dead
     env.new_search().collect_batch_results()

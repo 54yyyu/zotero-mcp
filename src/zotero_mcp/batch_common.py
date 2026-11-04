@@ -46,6 +46,11 @@ TERMINAL_STATES = frozenset({STATE_SUCCEEDED, STATE_PARTIAL, STATE_FAILED, STATE
 # How long past a provider's completion window a run may hold up other work.
 WINDOW_MARGIN_HOURS = 24
 
+# Times a record may be sent before it is given up on. A large run spans many
+# files over days, so one failure must not stop it, and one that keeps failing
+# must not hold it up for ever.
+MAX_BATCH_ATTEMPTS = 3
+
 
 @runtime_checkable
 class BatchAdapter(Protocol):
@@ -373,28 +378,41 @@ def entry_has_results(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
     )
 
 
+def entry_will_requeue(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
+    """A failed or expired chunk with nothing to import: the next import sends
+    it again, or gives it up after ``MAX_BATCH_ATTEMPTS``
+    (:func:`requeue_failed_batches`)."""
+    return bool(
+        batch.get("batch_id")
+        and not batch.get("lost")
+        and not is_settled(batch)
+        and _entry_state(adapter, batch) in (STATE_FAILED, STATE_EXPIRED)
+        and not entry_has_results(adapter, batch)
+    )
+
+
 def _entry_is_dead(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
-    """Nothing can ever be imported from this chunk."""
+    """Nothing can ever be imported from this chunk, and it won't be sent again."""
     if batch.get("lost"):
         return True
+    if entry_will_requeue(adapter, batch):
+        return False
     return _entry_state(adapter, batch) in TERMINAL_STATES and not entry_has_results(adapter, batch)
 
 
 def run_is_unfinished(manifest: dict[str, Any], adapter: BatchAdapter) -> bool:
-    """Can this run still make progress: an import, or a chunk to submit?
+    """Can this run still make progress: an import, a chunk to submit, or a
+    failed chunk to send again or give up on?
 
     A run left with only dead chunks is finished: its sync version was never
     promoted, so the next update covers those items again. So is a rebuild with
-    any chunk that ended short of complete, because it imports all-or-nothing.
-    A run the user gave up on is finished too.
+    any dead chunk, because it can't replace the index without it. A run the
+    user gave up on is finished too.
     """
     if manifest.get("abandoned_at"):
         return False
-    remaining = [batch for batch in manifest.get("batches", []) if not batch.get("imported_at")]
-    if manifest.get("force_full_rebuild") and any(
-        _entry_state(adapter, batch) in TERMINAL_STATES and not _entry_is_complete(adapter, batch)
-        for batch in remaining
-    ):
+    remaining = [batch for batch in manifest.get("batches", []) if not is_settled(batch)]
+    if manifest.get("force_full_rebuild") and any(_entry_is_dead(adapter, batch) for batch in remaining):
         return False
     return any(not _entry_is_dead(adapter, batch) for batch in remaining)
 
@@ -543,6 +561,116 @@ def _entry_state(adapter: BatchAdapter, batch: dict[str, Any]) -> str:
     if "status" in batch:
         return adapter.normalize_status(batch["status"])
     return batch.get("state") or adapter.normalize_status(None)
+
+
+def is_importable(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
+    """Whether this entry has results to import now.
+
+    An expired OpenAI batch still returns what finished before the window
+    closed, and those rows have been charged for (:func:`entry_has_results`).
+    """
+    return entry_has_results(adapter, batch)
+
+
+def is_settled(batch: dict[str, Any]) -> bool:
+    """Whether this entry needs nothing more: imported, or given up on."""
+    return bool(batch.get("imported_at") or batch.get("abandoned"))
+
+
+def add_failed_ids(manifest: dict[str, Any], ids: list[str]) -> None:
+    """Record ids given up on; a run with any does not advance the sync version."""
+    failed = manifest.setdefault("failed_ids", [])
+    failed.extend(doc_id for doc_id in ids if doc_id not in failed)
+
+
+def requeue_failed_batches(adapter: BatchAdapter, manifest: dict[str, Any]) -> tuple[int, int]:
+    """Park failed or expired files to be submitted again, or give up on them.
+
+    A file with results to import is left for the import, which retries only
+    the rows that failed. Returns ``(requeued, abandoned)``. Cancelled files
+    stay as they are, since someone cancelled them.
+    """
+    requeued = abandoned = 0
+    for batch in manifest.get("batches", []):
+        if not entry_will_requeue(adapter, batch):
+            continue
+        attempts = int(batch.get("attempts") or 1)
+        if attempts >= MAX_BATCH_ATTEMPTS:
+            batch["abandoned"] = True
+            add_failed_ids(manifest, [record["id"] for record in read_jsonl(Path(batch["records_path"]))])
+            abandoned += 1
+            continue
+        batch["previous_batch_ids"] = [*batch.get("previous_batch_ids", []), batch["batch_id"]]
+        batch.update({
+            "batch_id": None,
+            "status": STATE_PENDING,
+            "state": STATE_PENDING,
+            "attempts": attempts + 1,
+        })
+        requeued += 1
+    if requeued or abandoned:
+        save_manifest(manifest)
+    return requeued, abandoned
+
+
+def add_retry_batch(
+    adapter: BatchAdapter,
+    manifest: dict[str, Any],
+    records: list[dict[str, Any]],
+    previous_attempts: int,
+) -> bool:
+    """Queue rows that failed as a new file of their own, or give up on them.
+
+    Returns whether a retry was queued. A manifest with no enqueued-token budget
+    predates throttling and could never submit the file, so its rows count as
+    given up on.
+    """
+    if not records:
+        return False
+    attempts = previous_attempts + 1
+    if attempts > MAX_BATCH_ATTEMPTS or manifest.get("max_enqueued_tokens") is None:
+        add_failed_ids(manifest, [record["id"] for record in records])
+        return False
+    run_dir = Path(manifest["manifest_path"]).parent
+    model_name = manifest.get("model") or adapter.default_model
+    stem = f"batch-{len(manifest.get('batches', [])) + 1:03d}"
+    input_path = run_dir / f"{stem}-input.jsonl"
+    records_path = run_dir / f"{stem}-records.jsonl"
+    write_jsonl(input_path, [adapter.build_request(record, model_name) for record in records])
+    write_jsonl(records_path, records)
+    manifest["batches"].append({
+        "input_path": str(input_path),
+        "records_path": str(records_path),
+        "request_count": len(records),
+        "request_tokens": sum(estimate_tokens(r["document"], adapter.chars_per_token) for r in records),
+        "imported_at": None,
+        "imported_count": 0,
+        "attempts": attempts,
+        "batch_id": None,
+        "status": STATE_PENDING,
+        "state": STATE_PENDING,
+    })
+    return True
+
+
+def remove_batch_files(batch: dict[str, Any]) -> None:
+    """Delete an imported file's local copies, which embeddings make very large.
+
+    At 3072 dimensions an output row is about 65 KB, so a million imported
+    passages would otherwise leave tens of gigabytes behind. The manifest stays.
+    """
+    records_path = Path(batch["records_path"])
+    paths = [
+        *([Path(batch["input_path"])] if batch.get("input_path") else []),
+        records_path,
+        records_path.with_name(records_path.stem + "-output.jsonl"),
+        records_path.with_name(records_path.stem + "-errors.jsonl"),
+    ]
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def get_batch_root(provider: str, config_path: str | None = None) -> Path:

@@ -481,7 +481,7 @@ class _FakeChromaForImport:
 def _write_fake_outputs(manifest):
     """Pretend every submitted batch's output file was downloaded already."""
     for b in manifest["batches"]:
-        if not b.get("batch_id"):
+        if not b.get("batch_id") or b.get("imported_at"):
             continue
         rp = Path(b["records_path"])
         rows = [
