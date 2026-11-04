@@ -256,6 +256,106 @@ def test_batch_runs_do_not_ask_for_passages_they_cannot_make_yet(build):
     assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
 
 
+def test_an_item_missing_a_later_passage_counts_as_a_gap(build):
+    """Its first passage exists, so checking only that would hide the hole for good."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    search = build(zotero, chunking=True)
+    search.update_database()
+    search.chroma_client.delete_documents(["AAA#3"])
+
+    search = build(zotero, chunking=True)
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+
+    search.update_database()
+
+    assert len(search.chroma_client.embedded) == 5, "AAA's passages, and nothing else"
+    assert len(_passage_ids(search)) == 10
+
+
+def test_filling_articles_with_chunking_off_keeps_the_passages(build):
+    """A migrated index with chunking off: those passages are paid for."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    search = build(zotero, chunking=True)
+    search.update_database()
+    search.chroma_client.delete_documents(["AAA", "BBB"])
+
+    search = build(zotero, chunking=False)
+    search.update_database()
+
+    assert _ids(search) == {"AAA", "BBB"}
+    assert len(_passage_ids(search)) == 10
+    assert len(search.chroma_client.embedded) == 2
+
+
+def test_no_fill_while_a_batch_run_is_unfinished(build, monkeypatch, capsys):
+    """Paying for the same records again would also supersede the run."""
+    zotero = FakeZotero({"AAA": LONG})
+    build(zotero, chunking=False).update_database()
+    search = build(zotero, chunking=True)
+    monkeypatch.setattr(search, "_unfinished_batch_run", lambda: "run-1")
+
+    search.update_database()
+
+    assert search.chroma_client.embedded == []
+    assert "run-1" in capsys.readouterr().err
+
+
+def test_an_old_unfinished_batch_run_stops_blocking_fills(build, tmp_path):
+    zotero = FakeZotero({"AAA": LONG})
+    search = build(zotero, chunking=True)
+    search._run_group_id = 0
+    root = tmp_path / "openai_batches" / "old-run"
+    root.mkdir(parents=True)
+    (root / "manifest.json").write_text(json.dumps({
+        "run_id": "old-run",
+        "created_at": "2020-01-01T00:00:00.000000Z",
+        "group_id": search._pinned_group_id(),
+        "batches": [{"batch_id": "b1", "imported_at": None}],
+    }))
+    assert search._unfinished_batch_run() is None
+
+    (root / "manifest.json").write_text(json.dumps({
+        "run_id": "new-run",
+        "created_at": semantic_search.batch_common._utc_now(),
+        "group_id": search._pinned_group_id(),
+        "batches": [{"batch_id": "b1", "imported_at": None}],
+    }))
+    assert search._unfinished_batch_run() == "new-run"
+
+
+def test_a_fill_without_full_text_waits_for_a_run_that_has_it(build, capsys):
+    """Closing the gap from metadata would leave passages that cannot match the paper."""
+    zotero = FakeZotero({"AAA": LONG})
+    search = build(zotero, chunking=False)
+    search.update_database()
+    collection = search.chroma_client.collection
+    stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
+    collection.update(ids=["AAA"], metadatas=[{**stored, "has_fulltext": True}])
+
+    search = build(zotero, chunking=True)
+    search.update_database()
+
+    assert search.chroma_client.embedded == []
+    assert "--fulltext" in capsys.readouterr().err
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+
+
+def test_a_full_scan_of_a_gapped_index_embeds_only_what_is_missing(build, tmp_path):
+    """With no sync watermark the API scan fetches everything, which must not re-embed it."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero, chunking=False).update_database()
+    config = tmp_path / "config.json"
+    data = json.loads(config.read_text())
+    data["semantic_search"].pop("last_sync_version", None)
+    data["semantic_search"].pop("last_sync_versions", None)
+    config.write_text(json.dumps(data))
+
+    search = build(zotero, chunking=True)
+    search.update_database()
+
+    assert len(search.chroma_client.embedded) == 10, "ten passages, and no article"
+
+
 # --- the local full-text scan -----------------------------------------------------
 
 

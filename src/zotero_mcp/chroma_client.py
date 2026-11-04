@@ -1046,36 +1046,51 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
 
 
 def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tuple[set[str], set[str]]:
-    """Item keys with an article record and with passages, read-only from SQLite.
+    """Item keys with an article record and with all their passages, read-only from SQLite.
 
-    A key with passages is known from its first passage. Listing ids through
-    ChromaDB would load both vector indexes just to compare two sets of keys.
+    An item with only some of its passages does not count: a failure part way
+    through writing them would otherwise stay hidden for as long as the item
+    does not change. Records carry ``n_chunks``, so missing ones can be counted.
+    Listing ids through ChromaDB would load both vector indexes for this.
     """
     db = Path(persist_directory) / "chroma.sqlite3"
     if not db.exists():
         return set(), set()
-    query = """
-        SELECT e.embedding_id
-        FROM embeddings e
-        JOIN segments s ON e.segment_id = s.id
-        JOIN collections c ON s.collection = c.id
-        WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id {condition}
-    """
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
     try:
         articles = {
             row[0]
-            for row in con.execute(query.format(condition="NOT LIKE '%#%'"), (collection_name,))
-        }
-        passages = {
-            row[0].split("#", 1)[0]
             for row in con.execute(
-                query.format(condition="LIKE '%#0'"), (passage_collection_name(collection_name),)
+                """
+                SELECT e.embedding_id
+                FROM embeddings e
+                JOIN segments s ON e.segment_id = s.id
+                JOIN collections c ON s.collection = c.id
+                WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id NOT LIKE '%#%'
+                """,
+                (collection_name,),
             )
         }
+        found: dict[str, int] = {}
+        expected: dict[str, int] = {}
+        for doc_id, n_chunks in con.execute(
+            """
+            SELECT e.embedding_id, m.int_value
+            FROM embeddings e
+            JOIN segments s ON e.segment_id = s.id
+            JOIN collections c ON s.collection = c.id
+            LEFT JOIN embedding_metadata m ON m.id = e.id AND m.key = 'n_chunks'
+            WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id LIKE '%#%'
+            """,
+            (passage_collection_name(collection_name),),
+        ):
+            key = doc_id.split("#", 1)[0]
+            found[key] = found.get(key, 0) + 1
+            if n_chunks is not None:
+                expected[key] = n_chunks
     finally:
         con.close()
-    return articles, passages
+    return articles, {key for key, count in found.items() if count >= expected.get(key, 1)}
 
 
 def read_collection_status(

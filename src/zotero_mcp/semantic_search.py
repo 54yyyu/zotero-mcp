@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1228,6 +1228,11 @@ class ZoteroSemanticSearch:
     _drop_passages_on_write = False
     # The gaps a local scan should keep items for, set per run by update_database.
     _scan_gaps: dict[str, set[str]] = {}
+    # Items a run only adds a missing level to, set per run by update_database.
+    _level_fill_keys: set[str] = frozenset()
+    # How long an unfinished batch run stops gap fills; a run left this long has
+    # been forgotten, and its results may be gone.
+    BATCH_RUN_BLOCKS_FILL_DAYS = 14
 
     # Share of the model's input limit a passage may fill. Characters per token
     # is an estimate, and the head of a passage is cut off if it overshoots.
@@ -2529,7 +2534,76 @@ class ZoteroSemanticSearch:
         if include_fulltext and items:
             self._attach_web_fulltext(items)
         self._tag_group_id(items)
-        return items
+        return self._without_fills_lacking_text(items)
+
+    def _without_fills_lacking_text(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop fills that would write metadata-only records for an item with full text.
+
+        The item's other level was built from its full text, which this run
+        does not have, say because the text came from a local ``--fulltext``
+        run. Filling from metadata would close the gap for good with a record
+        that cannot match the body of the paper. The gap stays for a run that
+        has the text.
+        """
+        kept: list[dict[str, Any]] = []
+        waiting = 0
+        for item in items:
+            if item.get("_index_levels") and not (item.get("data", {}).get("fulltext") or "").strip():
+                existing = self.chroma_client.get_document_metadata(item["key"]) or {}
+                if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
+                    waiting += 1
+                    continue
+            kept.append(item)
+        if waiting:
+            _report(
+                f"{waiting} indexed items need their full text to add the missing records; "
+                "run 'zotero-mcp update-db --fulltext' to add them.\n"
+            )
+        return kept
+
+    def _narrow_full_scan_to_changes(
+        self, items: list[dict[str, Any]], gaps: dict[str, set[str]]
+    ) -> list[dict[str, Any]]:
+        """Keep only what a full API scan of a gapped index actually has to embed.
+
+        With no sync watermark, the API scan fetches everything and would embed
+        every level of every item, when the point of the gap fill is to embed
+        only what is missing. An unchanged item keeps just its gap, if it has one.
+        """
+        kept: list[dict[str, Any]] = []
+        for item in items:
+            data = item.get("data", {})
+            existing = self.chroma_client.get_document_metadata(item.get("key", ""))
+            if not existing or existing.get("date_modified") != data.get("dateModified"):
+                kept.append(item)
+                continue
+            if (data.get("fulltext") or "").strip() and not existing.get("has_fulltext"):
+                kept.append(item)
+                continue
+            if item.get("key") in gaps:
+                item["_index_levels"] = gaps[item["key"]]
+                kept.append(item)
+        return self._without_fills_lacking_text(kept)
+
+    def _unfinished_batch_run(self) -> str | None:
+        """Run id of a recent batch run for this library that has not finished landing.
+
+        Its results include records a gap check would see as missing, and
+        paying for them again would also supersede the run.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.BATCH_RUN_BLOCKS_FILL_DAYS)
+        for provider, module in _BATCH_MODULES.items():
+            adapter = _batch_adapter(provider)
+            for run in module.manifests_for_group(config_path=self.config_path, group_id=self._pinned_group_id()):
+                try:
+                    created = datetime.fromisoformat(str(run.get("created_at")).replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if created < cutoff:
+                    continue
+                if batch_common.run_is_unfinished(run, adapter):
+                    return str(run.get("run_id"))
+        return None
 
     def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:
         """
@@ -3595,6 +3669,12 @@ class ZoteroSemanticSearch:
             index_gaps = self._find_index_gaps(
                 limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled
             )
+            if index_gaps and (unfinished_run := self._unfinished_batch_run()):
+                _report(
+                    f"Batch run {unfinished_run} has not finished, so missing records are left "
+                    "for now. Run 'zotero-mcp batch-import' to carry it forward.\n"
+                )
+                index_gaps = {}
             self._scan_gaps = index_gaps
 
             target_sync_version: int | None = None
@@ -3676,6 +3756,8 @@ class ZoteroSemanticSearch:
                     force_rebuild=force_full_rebuild,
                     include_fulltext_via_api=include_fulltext_via_api,
                 )
+                if index_gaps and not extract_fulltext:
+                    all_items = self._narrow_full_scan_to_changes(all_items, index_gaps)
                 # The local-extraction scan may lag behind the API version
                 # captured above (immutable sqlite reads skip WAL contents);
                 # only promote the watermark if the snapshot was complete.
@@ -3708,6 +3790,7 @@ class ZoteroSemanticSearch:
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
+            self._level_fill_keys = {item["key"] for item in all_items if item.get("_index_levels")}
 
             if batch_enabled:
                 stats["batch_mode"] = True
@@ -3985,6 +4068,7 @@ class ZoteroSemanticSearch:
             self._run_group_id = None
             self._drop_passages_on_write = False
             self._scan_gaps = {}
+            self._level_fill_keys = frozenset()
             # Release the update flock on every exit path. Paired with the
             # __enter__ call above; the "not acquired" branch releases
             # separately before its early return, so this finally only runs
@@ -4353,10 +4437,14 @@ class ZoteroSemanticSearch:
             # Chunking is off, so an item written now has no current passages.
             # Left in place they would stay searchable by level, and hide the
             # item from the gap fill when chunking comes back on.
+            # An item only getting its missing article record has not changed,
+            # and those passages have been paid for.
             scopes = {
                 m["item_key"]: m.get("group_id")
                 for m in metadatas
-                if m.get("item_key") and "parent_item_key" not in m
+                if m.get("item_key")
+                and "parent_item_key" not in m
+                and m["item_key"] not in self._level_fill_keys
             }
             for item_key, group_id in scopes.items():
                 self.chroma_client.delete_item_chunks(item_key, group_id=group_id)
