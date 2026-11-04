@@ -58,3 +58,17 @@ def test_short_model_limit_is_reported_when_chunking_is_off():
 def test_auto_update_off_is_visible():
     rows = _rows({"update_config": {"update_frequency": "daily", "auto_update": False}})
     assert rows["Update frequency"] == "daily (auto update off)"
+
+
+def test_db_status_keeps_a_gemini_batch_setting(tmp_path, capsys):
+    import json
+
+    from zotero_mcp.cli import _print_semantic_config
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"semantic_search": {
+        "embedding_model": "gemini", "gemini_batch": {"enabled": True},
+    }}))
+    # OpenAI batch is never active for a Gemini model.
+    _print_semantic_config({"openai_batch": {"active": False}}, config_path, "- ")
+    assert "- Gemini Batch API: enabled" in capsys.readouterr().out
