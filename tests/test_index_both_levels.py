@@ -340,6 +340,52 @@ def test_a_fill_without_full_text_waits_for_a_run_that_has_it(build, capsys):
     assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
 
 
+def test_a_waiting_fill_is_not_fetched_again_on_every_run(build):
+    """On a large --fulltext index this would be one API call per item, per run."""
+    zotero = FakeZotero({"AAA": LONG})
+    search = build(zotero, chunking=False)
+    search.update_database()
+    collection = search.chroma_client.collection
+    stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
+    collection.update(ids=["AAA"], metadatas=[{**stored, "has_fulltext": True}])
+    build(zotero, chunking=True).update_database()
+
+    fetched = []
+    real_item = zotero.item
+    zotero.item = lambda key: fetched.append(key) or real_item(key)
+    stats = build(zotero, chunking=True).update_database()
+
+    assert fetched == []
+    assert stats["total_items"] == 0
+
+
+def test_timestamps_compare_across_the_local_and_api_formats():
+    same = semantic_search._same_moment
+
+    assert same("2026-07-02 01:01:48", "2026-07-02T01:01:48Z")
+    assert same("2026-07-02T01:01:48Z", "2026-07-02T01:01:48Z")
+    assert not same("2026-07-02 01:01:48", "2026-07-02T01:01:49Z")
+    assert not same(None, "2026-07-02T01:01:48Z")
+    assert not same("", "not a date")
+
+
+def test_a_full_scan_with_a_fill_blocked_still_embeds_only_changes(build, tmp_path, monkeypatch):
+    """A blocked fill must not turn the scan back into embedding everything."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero, chunking=False).update_database()
+    config = tmp_path / "config.json"
+    data = json.loads(config.read_text())
+    data["semantic_search"].pop("last_sync_version", None)
+    data["semantic_search"].pop("last_sync_versions", None)
+    config.write_text(json.dumps(data))
+
+    search = build(zotero, chunking=True)
+    monkeypatch.setattr(search, "_unfinished_batch_run", lambda: "run-1")
+    search.update_database()
+
+    assert search.chroma_client.embedded == []
+
+
 def test_a_full_scan_of_a_gapped_index_embeds_only_what_is_missing(build, tmp_path):
     """With no sync watermark the API scan fetches everything, which must not re-embed it."""
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})

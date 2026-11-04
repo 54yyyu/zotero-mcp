@@ -557,6 +557,27 @@ def split_into_passages(
     return passages
 
 
+def _same_moment(first: Any, second: Any) -> bool:
+    """Whether two Zotero timestamps are the same time, whichever format each is in.
+
+    The local database gives ``2026-07-02 01:01:48`` and the API gives
+    ``2026-07-02T01:01:48Z``, both UTC, so comparing the text would make every
+    item indexed one way look changed to the other.
+    """
+    if first == second:
+        return True
+
+    def parse(value: Any) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace(" ", "T").replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    a, b = parse(first), parse(second)
+    return a is not None and a == b
+
+
 def _attachment_priority_changed(existing_metadata: dict, current_tag: str) -> bool:
     """True when a document was extracted under a different attachment priority.
 
@@ -2518,10 +2539,17 @@ class ZoteroSemanticSearch:
         """
         if library_keys is None:
             return []
+        waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
         items: list[dict[str, Any]] = []
         for key in sorted(gaps):
-            if key in already_fetched or key not in library_keys:
+            if key in already_fetched or key not in library_keys or key in waiting:
                 continue
+            if not include_fulltext:
+                # No run without text can fill this; don't fetch the item to find out.
+                existing = self.chroma_client.get_document_metadata(key) or {}
+                if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
+                    waiting.add(key)
+                    continue
             try:
                 item = self.zotero_client.item(key)
             except Exception as e:
@@ -2534,6 +2562,7 @@ class ZoteroSemanticSearch:
         if include_fulltext and items:
             self._attach_web_fulltext(items)
         self._tag_group_id(items)
+        self.update_config["gaps_waiting_for_text"] = sorted(waiting)
         return self._without_fills_lacking_text(items)
 
     def _without_fills_lacking_text(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2543,22 +2572,19 @@ class ZoteroSemanticSearch:
         does not have, say because the text came from a local ``--fulltext``
         run. Filling from metadata would close the gap for good with a record
         that cannot match the body of the paper. The gap stays for a run that
-        has the text.
+        has the text, and is remembered so later runs don't fetch the item again
+        just to find this out.
         """
         kept: list[dict[str, Any]] = []
-        waiting = 0
+        waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
         for item in items:
             if item.get("_index_levels") and not (item.get("data", {}).get("fulltext") or "").strip():
                 existing = self.chroma_client.get_document_metadata(item["key"]) or {}
                 if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
-                    waiting += 1
+                    waiting.add(item["key"])
                     continue
             kept.append(item)
-        if waiting:
-            _report(
-                f"{waiting} indexed items need their full text to add the missing records; "
-                "run 'zotero-mcp update-db --fulltext' to add them.\n"
-            )
+        self.update_config["gaps_waiting_for_text"] = sorted(waiting)
         return kept
 
     def _narrow_full_scan_to_changes(
@@ -2574,7 +2600,7 @@ class ZoteroSemanticSearch:
         for item in items:
             data = item.get("data", {})
             existing = self.chroma_client.get_document_metadata(item.get("key", ""))
-            if not existing or existing.get("date_modified") != data.get("dateModified"):
+            if not existing or not _same_moment(existing.get("date_modified"), data.get("dateModified")):
                 kept.append(item)
                 continue
             if (data.get("fulltext") or "").strip() and not existing.get("has_fulltext"):
@@ -3669,6 +3695,7 @@ class ZoteroSemanticSearch:
             index_gaps = self._find_index_gaps(
                 limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled
             )
+            gapped_index = bool(index_gaps)
             if index_gaps and (unfinished_run := self._unfinished_batch_run()):
                 _report(
                     f"Batch run {unfinished_run} has not finished, so missing records are left "
@@ -3676,6 +3703,14 @@ class ZoteroSemanticSearch:
                 )
                 index_gaps = {}
             self._scan_gaps = index_gaps
+            # Items that only a run with their full text can fill. What is no
+            # longer a gap is forgotten, and the rest don't count as work.
+            waiting_for_text = [
+                key for key in self.update_config.get("gaps_waiting_for_text") or [] if key in index_gaps
+            ]
+            if "gaps_waiting_for_text" in self.update_config:
+                self.update_config["gaps_waiting_for_text"] = waiting_for_text
+            has_fillable_gaps = len(index_gaps) > len(waiting_for_text)
 
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []
@@ -3700,7 +3735,7 @@ class ZoteroSemanticSearch:
                 use_incremental = False
                 last_sync_version = 0
 
-            if use_incremental and target_sync_version == last_sync_version and not index_gaps:
+            if use_incremental and target_sync_version == last_sync_version and not has_fillable_gaps:
                 # No changes since last sync; skip ingest but still touch last_update
                 try:
                     sys.stderr.write(
@@ -3756,7 +3791,7 @@ class ZoteroSemanticSearch:
                     force_rebuild=force_full_rebuild,
                     include_fulltext_via_api=include_fulltext_via_api,
                 )
-                if index_gaps and not extract_fulltext:
+                if gapped_index and not extract_fulltext:
                     all_items = self._narrow_full_scan_to_changes(all_items, index_gaps)
                 # The local-extraction scan may lag behind the API version
                 # captured above (immutable sqlite reads skip WAL contents);
@@ -3790,6 +3825,11 @@ class ZoteroSemanticSearch:
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
+            if waiting := self.update_config.get("gaps_waiting_for_text"):
+                _report(
+                    f"{len(waiting)} indexed items need their full text to add the missing records; "
+                    "run 'zotero-mcp update-db --fulltext' to add them.\n"
+                )
             self._level_fill_keys = {item["key"] for item in all_items if item.get("_index_levels")}
 
             if batch_enabled:
