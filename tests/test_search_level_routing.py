@@ -47,6 +47,7 @@ def build(monkeypatch, tmp_path):
 
     def _build(*, route=True, chunking=False, articles=(), passages=()):
         client = ChromaClient(collection_name="levels", persist_directory=str(tmp_path / "chroma"))
+        client.route_passages = False
         if not route and passages:
             _write(client, list(passages), [_passage_meta(p.split("#")[0], int(p.split("#")[1])) for p in passages])
         client = ChromaClient(collection_name="levels", persist_directory=str(tmp_path / "chroma"))

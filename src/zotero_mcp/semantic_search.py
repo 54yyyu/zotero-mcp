@@ -1224,6 +1224,11 @@ class ZoteroSemanticSearch:
         logger.warning(message)
         _report(f"\nWarning: {message}\n")
 
+    # Set per run by update_database; see _prune_stale_chunks.
+    _drop_passages_on_write = False
+    # The gaps a local scan should keep items for, set per run by update_database.
+    _scan_gaps: dict[str, set[str]] = {}
+
     # Share of the model's input limit a passage may fill. Characters per token
     # is an estimate, and the head of a passage is cut off if it overshoots.
     CHUNK_FIT_MARGIN = 0.85
@@ -1272,7 +1277,7 @@ class ZoteroSemanticSearch:
             f"Full text is being indexed as one vector per item, and {model} takes only "
             f"{int(max_tokens)} tokens, so only the first ~{int(max_tokens)} tokens of each "
             "item (usually the abstract) are searchable. Enable semantic_search.chunking in "
-            "config.json and rebuild with --force-rebuild to index whole papers."
+            "config.json and run update-db again to index whole papers."
         )
 
     def _load_reranker_config(self) -> dict[str, Any]:
@@ -2293,6 +2298,22 @@ class ZoteroSemanticSearch:
                                     should_extract = False
                                     skipped_existing += 1
 
+                        if not should_extract and it.key in self._scan_gaps:
+                            action = self._scan_gap_action(
+                                existing_metadata or {}, self._scan_gaps[it.key]
+                            )
+                            it._index_levels = self._scan_gaps[it.key]
+                            skipped_existing -= 1
+                            if action == "extract":
+                                should_extract = True
+                            else:
+                                # Extraction already failed and nothing changed:
+                                # index what metadata there is, as the first run
+                                # did, instead of parsing that file again.
+                                it._fulltext_attempted = True
+                                extracted += 1
+                                items_to_process.append(it)
+
                         if should_extract:
                             # Defer the parse itself — see phase 2b.
                             if not getattr(it, "fulltext", None):
@@ -2434,6 +2455,8 @@ class ZoteroSemanticSearch:
                         api_item["data"]["attachmentKeys"] = att
                     if (prio := getattr(item, "_attachment_priority", None)) is not None:
                         api_item["data"]["attachmentPriority"] = prio
+                    if (levels := getattr(item, "_index_levels", None)) is not None:
+                        api_item["_index_levels"] = levels
 
                     # Add notes if available
                     if item.notes:
@@ -2448,6 +2471,65 @@ class ZoteroSemanticSearch:
             logger.error(f"Error reading from local database: {e}")
             logger.info("Falling back to API...")
             return self._get_items_from_api(limit)
+
+    @staticmethod
+    def _scan_gap_action(existing_metadata: dict[str, Any], gap: set[str] | None) -> str | None:
+        """What a scan does with an up-to-date item that lacks a level, or None."""
+        if not gap:
+            return None
+        return "metadata_only" if existing_metadata.get("has_fulltext") == "failed" else "extract"
+
+    def _find_index_gaps(
+        self, *, limit: int | None, force_rebuild: bool, batch: bool = False
+    ) -> dict[str, set[str]]:
+        """Items that lack a level this index should have: ``{key: {levels}}``.
+
+        Enabling chunking leaves every item without passages, and a migration
+        leaves every item without an article record. Neither shows up as a
+        library change, so the sync watermark cannot find them.
+        """
+        if limit is not None or force_rebuild or not self._separate_passages():
+            return {}
+        articles, passages = self.chroma_client.item_keys_by_level()
+        gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in passages - articles}
+        # The Batch API path cannot make passages yet (#416).
+        if self._chunking_enabled and not batch:
+            for key in articles - passages:
+                gaps[key] = {SEARCH_PASSAGES}
+        return gaps
+
+    def _get_gap_items_from_api(
+        self,
+        gaps: dict[str, set[str]],
+        *,
+        already_fetched: set[str],
+        library_keys: set[str] | None,
+        include_fulltext: bool,
+    ) -> list[dict[str, Any]]:
+        """Fetch the items in ``gaps`` that belong to this library, marked with what they lack.
+
+        Items of other libraries wait for a run against their own library, and
+        with the library's keys unknown there is nothing to go on this run.
+        """
+        if library_keys is None:
+            return []
+        items: list[dict[str, Any]] = []
+        for key in sorted(gaps):
+            if key in already_fetched or key not in library_keys:
+                continue
+            try:
+                item = self.zotero_client.item(key)
+            except Exception as e:
+                logger.debug(f"item({key}) failed while filling index gaps: {e}")
+                continue
+            if not item or item.get("data", {}).get("itemType") in _NON_INDEXED_ITEM_TYPES:
+                continue
+            item["_index_levels"] = gaps[key]
+            items.append(item)
+        if include_fulltext and items:
+            self._attach_web_fulltext(items)
+        self._tag_group_id(items)
+        return items
 
     def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:
         """
@@ -2798,18 +2880,43 @@ class ZoteroSemanticSearch:
             return None
         return target_sync_version
 
-    def _build_item_records(self, item: dict[str, Any], *, chunking: bool) -> list[dict[str, Any]]:
+    def _separate_passages(self) -> bool:
+        """Whether this index keeps passages in their own collection."""
+        check = getattr(self.chroma_client, "separate_passages", None)
+        return bool(check) and check() is True
+
+    def _levels_to_write(self, item: dict[str, Any]) -> tuple[bool, bool]:
+        """``(article record, passage records)`` an item should get in this run.
+
+        An item in the index's gap list needs only what it lacks; anything else
+        gets every level the settings call for. An unmigrated index has one
+        level, chosen by the setting, as it always did.
+        """
+        chunking = self._chunking_enabled
+        if not self._separate_passages():
+            return not chunking, chunking
+        levels = item.get("_index_levels")
+        if levels:
+            return SEARCH_ARTICLES in levels, SEARCH_PASSAGES in levels
+        return True, chunking
+
+    def _build_item_records(
+        self, item: dict[str, Any], *, chunking: bool, article: bool | None = None
+    ) -> list[dict[str, Any]]:
         """Build the index records of one item, without embedding or writing them.
 
         The one place an item becomes ``{"id", "document", "metadata"}`` records,
         for the realtime and the Batch API paths alike. With ``chunking``, one
         record per overlapping passage (``<item_key>#<n>``), so search can return
         a grounded quote and long PDFs stay searchable past the single-vector
-        truncation limit; without it, one record under the item key.
+        truncation limit. With ``article``, which defaults to the opposite of
+        ``chunking``, one record under the item key, first.
 
         Returns ``[]`` for an item with no key or no text. A failure raises with
         nothing returned, so an item contributes all of its records or none.
         """
+        if article is None:
+            article = not chunking
         item_key = item.get("key", "")
         if not item_key:
             return []
@@ -2826,13 +2933,16 @@ class ZoteroSemanticSearch:
         if not doc_text.strip():
             return []
 
-        if not chunking:
+        records: list[dict[str, Any]] = []
+        if article:
             # Truncate to fit the configured embedding model's token limit
-            return [{
+            records.append({
                 "id": item_key,
                 "document": self.chroma_client.truncate_text(doc_text),
                 "metadata": metadata,
-            }]
+            })
+        if not chunking:
+            return records
 
         passages = split_into_passages(
             doc_text,
@@ -2841,7 +2951,6 @@ class ZoteroSemanticSearch:
             int(self._chunking_config.get("max_chunks_per_item", 20)),
         )
         section_marks = _section_offsets(doc_text) if passages else []
-        records: list[dict[str, Any]] = []
         for ci, (chunk_text, c0, c1) in enumerate(passages):
             cmeta = dict(metadata)
             cmeta["parent_item_key"] = item_key
@@ -3472,6 +3581,22 @@ class ZoteroSemanticSearch:
                 self.chroma_client.reset_collection()
                 rebuild_reset = True
 
+            # Pick up a layout changed by another process (a migration) before
+            # deciding where this run writes.
+            layout_of = getattr(self.chroma_client, "index_layout", None)
+            layout = layout_of() if layout_of else None
+            if not isinstance(layout, dict):
+                layout = {}
+            self._drop_passages_on_write = (
+                self._separate_passages()
+                and not self._chunking_enabled
+                and bool(layout.get("passage_records"))
+            )
+            index_gaps = self._find_index_gaps(
+                limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled
+            )
+            self._scan_gaps = index_gaps
+
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []
             if use_incremental:
@@ -3495,7 +3620,7 @@ class ZoteroSemanticSearch:
                 use_incremental = False
                 last_sync_version = 0
 
-            if use_incremental and target_sync_version == last_sync_version:
+            if use_incremental and target_sync_version == last_sync_version and not index_gaps:
                 # No changes since last sync; skip ingest but still touch last_update
                 try:
                     sys.stderr.write(
@@ -3521,6 +3646,15 @@ class ZoteroSemanticSearch:
                     include_fulltext=include_fulltext_via_api,
                 )
                 self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
+                gap_items = self._get_gap_items_from_api(
+                    index_gaps,
+                    already_fetched={item.get("key") for item in all_items},
+                    library_keys=current_library_keys,
+                    include_fulltext=include_fulltext_via_api,
+                )
+                if gap_items:
+                    _report(f"Adding the records missing from {len(gap_items)} indexed items.\n")
+                    all_items.extend(gap_items)
             else:
                 # Full scan: bootstrap or forced rebuild.
                 # Capture the library version BEFORE scanning so any changes
@@ -3849,6 +3983,8 @@ class ZoteroSemanticSearch:
             return stats
         finally:
             self._run_group_id = None
+            self._drop_passages_on_write = False
+            self._scan_gaps = {}
             # Release the update flock on every exit path. Paired with the
             # __enter__ call above; the "not acquired" branch releases
             # separately before its early return, so this finally only runs
@@ -3897,6 +4033,7 @@ class ZoteroSemanticSearch:
         stats = {"processed": 0, "skipped": 0, "errors": 0}
 
         chunking = self._chunking_enabled
+        separate = self._separate_passages()
 
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
@@ -3910,7 +4047,8 @@ class ZoteroSemanticSearch:
 
         for item in items:
             try:
-                records = self._build_item_records(item, chunking=chunking)
+                article, passages = self._levels_to_write(item)
+                records = self._build_item_records(item, chunking=passages, article=article)
                 if not records:
                     stats["skipped"] += 1
                     continue
@@ -3932,7 +4070,12 @@ class ZoteroSemanticSearch:
         existing_item_keys: set[str] = set()
         if documents and not force_rebuild:
             with self._chroma_call_lock:
-                if chunking:
+                if separate:
+                    # An item is indexed if it has a record at either level.
+                    probe_ids = item_keys_order + [f"{k}#0" for k in item_keys_order]
+                    found = self.chroma_client.get_existing_ids(probe_ids)
+                    existing_item_keys = {doc_id.split("#", 1)[0] for doc_id in found}
+                elif chunking:
                     probe_ids = [f"{k}#0" for k in item_keys_order]
                     existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
                     existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
@@ -4206,6 +4349,17 @@ class ZoteroSemanticSearch:
         """
         if not hasattr(self.chroma_client, "prune_item_chunks"):
             return
+        if self._drop_passages_on_write:
+            # Chunking is off, so an item written now has no current passages.
+            # Left in place they would stay searchable by level, and hide the
+            # item from the gap fill when chunking comes back on.
+            scopes = {
+                m["item_key"]: m.get("group_id")
+                for m in metadatas
+                if m.get("item_key") and "parent_item_key" not in m
+            }
+            for item_key, group_id in scopes.items():
+                self.chroma_client.delete_item_chunks(item_key, group_id=group_id)
         counts = {
             m["parent_item_key"]: m["n_chunks"]
             for m in metadatas

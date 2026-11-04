@@ -72,8 +72,11 @@ class ChromaClient:
     :meth:`separate_passages` is False for it and every id stays there.
     """
 
-    #: Whether writes go to the collection their id belongs to.
-    route_passages = False
+    #: Whether writes go to the collection their id belongs to. repair-db turns
+    #: this off to rebuild an unmigrated index in the shape it found it.
+    route_passages = True
+    _passage_collection = None
+    _unmigrated: bool | None = None
 
     def __init__(self,
                  collection_name: str = "zotero_library",
@@ -268,6 +271,10 @@ class ChromaClient:
         if chunks and passages is not None:
             groups.append((passages, chunks))
         return groups
+
+    def item_keys_by_level(self) -> tuple[set[str], set[str]]:
+        """Item keys with an article record, and item keys with passages, from SQLite."""
+        return read_item_keys_by_level(self.persist_directory, self.collection_name)
 
     def _collection_for_level(self, level: str):
         return self._passages() if level == PASSAGES and self.separate_passages() else self.collection
@@ -1036,6 +1043,39 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         passage_collection_id=passage_id,
     )
     return layout
+
+
+def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tuple[set[str], set[str]]:
+    """Item keys with an article record and with passages, read-only from SQLite.
+
+    A key with passages is known from its first passage. Listing ids through
+    ChromaDB would load both vector indexes just to compare two sets of keys.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return set(), set()
+    query = """
+        SELECT e.embedding_id
+        FROM embeddings e
+        JOIN segments s ON e.segment_id = s.id
+        JOIN collections c ON s.collection = c.id
+        WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id {condition}
+    """
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        articles = {
+            row[0]
+            for row in con.execute(query.format(condition="NOT LIKE '%#%'"), (collection_name,))
+        }
+        passages = {
+            row[0].split("#", 1)[0]
+            for row in con.execute(
+                query.format(condition="LIKE '%#0'"), (passage_collection_name(collection_name),)
+            )
+        }
+    finally:
+        con.close()
+    return articles, passages
 
 
 def read_collection_status(
