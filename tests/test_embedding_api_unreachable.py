@@ -149,7 +149,8 @@ def test_openai_401_and_403_are_not_retried():
     with pytest.raises(EmbeddingAPIUnreachable):
         ef(["some text"])
 
-    assert len(ef.client.embeddings.calls) == 1
+    # one attempt at the document, then one re-check request (not retried either)
+    assert ef.client.embeddings.calls == [["some text"], [ef.probe_text]]
 
 
 def test_openai_connection_error_is_retried_before_giving_up():
@@ -158,7 +159,9 @@ def test_openai_connection_error_is_retried_before_giving_up():
     with pytest.raises(EmbeddingAPIUnreachable):
         ef(["some text"])
 
-    assert len(ef.client.embeddings.calls) == 4
+    # 1 + 3 retries at the document, then the re-check (1 + probe_max_retries)
+    assert ef.client.embeddings.calls.count(["some text"]) == 4
+    assert ef.client.embeddings.calls.count([ef.probe_text]) == ef.probe_max_retries + 1
 
 
 def test_openai_other_errors_keep_their_type():
@@ -214,7 +217,7 @@ def test_ollama_connection_error_names_the_host():
     calls = []
 
     def refuse(*args, **kwargs):
-        calls.append(args)
+        calls.append(kwargs["json"]["input"])
         raise requests.exceptions.ConnectionError("refused")
 
     with pytest.MonkeyPatch.context() as mp:
@@ -223,7 +226,7 @@ def test_ollama_connection_error_names_the_host():
             ef(["x"])
 
     assert info.value.host == "gpu.uni.example"
-    assert len(calls) == 2
+    assert calls.count(["x"]) == 2
 
 
 def test_probe_uses_few_retries():
@@ -253,3 +256,40 @@ def test_error_survives_the_chromadb_worker_boundary():
     assert type(copy) is EmbeddingAPIUnreachable
     assert (copy.provider, copy.host, copy.reason) == ("openai", HOST, "connection failed")
     assert str(copy) == str(original)
+
+
+def test_query_gives_up_after_the_probe_budget():
+    """A search must report an unreachable API before an MCP client times
+    out, so the query path does not run the full document retry ladder."""
+    ef = make_openai_ef(always(connection_error), max_retries=5)
+
+    with pytest.raises(EmbeddingAPIUnreachable):
+        ef.embed_query_text("query")
+
+    assert len(ef.client.embeddings.calls) == ef.probe_max_retries + 1
+
+
+def test_query_keeps_full_retries_for_rate_limits():
+    rate_limited = lambda n, inputs: (  # noqa: E731
+        status_error(openai.RateLimitError, 429) if n <= 3 else None
+    )
+    ef = make_openai_ef(rate_limited, max_retries=5)
+
+    ef.embed_query_text("query")
+
+    assert len(ef.client.embeddings.calls) == 4
+
+
+def test_document_failure_on_a_reachable_api_keeps_its_own_type():
+    """A batch that times out while the API still answers is not "unreachable":
+    the caller sets it aside as before."""
+    script = lambda n, inputs: (  # noqa: E731
+        timeout_error() if "big batch" in inputs else None
+    )
+    ef = make_openai_ef(script, max_retries=1)
+
+    with pytest.raises(openai.APITimeoutError):
+        ef(["big batch"])
+
+    # two attempts on the batch, then one successful re-check
+    assert ef.client.embeddings.calls[-1] == [ef.probe_text]

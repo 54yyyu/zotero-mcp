@@ -384,22 +384,52 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             self._embed_with_retry(
                 [self._prepare_document(self.probe_text)],
                 max_retries=self.probe_max_retries,
+                confirm_unreachable=False,
             )
         except EmbeddingAPIUnreachable:
             raise
         except Exception as exc:
             logger.warning(f"Embedding API check failed, continuing: {exc}")
 
+    def _api_answers(self) -> bool:
+        """Whether the API answers the short probe request at all.
+
+        Asked after a document request failed in a way that looks like the
+        API is unreachable. A reachable API can still time out on one large
+        batch, drop one request under load, or have a proxy refuse one
+        document's body; those are not worth stopping a run for. Any answer,
+        even an error that is not about reachability, counts as "answers".
+        """
+        try:
+            self._embed_with_retry(
+                [self._prepare_document(self.probe_text)],
+                max_retries=self.probe_max_retries,
+                confirm_unreachable=False,
+            )
+        except EmbeddingAPIUnreachable:
+            return False
+        except Exception:
+            return True
+        return True
+
     def _embed_with_retry(
         self,
         texts: list[str],
         is_query: bool = False,
         max_retries: int | None = None,
+        confirm_unreachable: bool = True,
     ) -> list[list[float]]:
         """acquire -> _embed_batch -> on_success, or on_throttle and retry.
 
         Once retries are spent, an error the provider classifies as "API
-        unreachable" is re-raised as :class:`EmbeddingAPIUnreachable`.
+        unreachable" is re-raised as :class:`EmbeddingAPIUnreachable`. For a
+        document request (``confirm_unreachable``), only after the short probe
+        request fails too: if the API still answers, the original error is
+        raised and the caller sets the batch aside as before.
+
+        A query gives up on such an error after ``probe_max_retries``, so a
+        search reports an unreachable API before the client times out. Rate
+        limits and server errors keep the full ``max_retries``.
         """
         limiter = self._get_limiter()
         if max_retries is None:
@@ -421,12 +451,17 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
                 response = self._embed_batch(texts, is_query=is_query)
             except Exception as exc:
                 retryable, retry_after = self._classify_error(exc)
-                if retryable and attempt < max_retries:
+                reason = self._unreachable_reason(exc)
+                budget = max_retries
+                if reason and is_query:
+                    budget = min(max_retries, self.probe_max_retries)
+                if retryable and attempt < budget:
                     limiter.wait(limiter.on_throttle(retry_after))
                     attempt += 1
                     continue
-                reason = self._unreachable_reason(exc)
                 if reason:
+                    if confirm_unreachable and not is_query and self._api_answers():
+                        raise exc
                     raise EmbeddingAPIUnreachable(
                         self._provider_name(), self.api_host(), reason
                     ) from exc

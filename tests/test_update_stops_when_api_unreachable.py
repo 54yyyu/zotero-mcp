@@ -45,6 +45,7 @@ from test_embedding_api_unreachable import (  # noqa: E402
     always,
     connection_error,
     status_error,
+    timeout_error,
 )
 
 from zotero_mcp import config_light, semantic_search  # noqa: E402
@@ -199,7 +200,8 @@ def test_403_mid_run_also_stops(tmp_path, monkeypatch):
     stats = search.update_database()
 
     assert "HTTP 403" in stats["error"]
-    assert len(ef.client.embeddings.calls) == 3
+    # probe, first batch, the failing batch, then one re-check that also fails
+    assert len(ef.client.embeddings.calls) == 4
 
 
 def test_other_errors_keep_todays_behaviour(tmp_path, monkeypatch):
@@ -484,3 +486,21 @@ def test_force_rebuild_checks_the_api_before_emptying_the_index(tmp_path, monkey
     assert HOST in stats["error"]
     assert chroma.collection.count() == 20, "the index was emptied before the API check"
     assert _saved(config)["update_config"]["last_api_failure"]["host"] == HOST
+
+
+def test_one_failing_batch_on_a_reachable_api_does_not_stop_the_run(tmp_path, monkeypatch):
+    """A timeout on one batch while the API answers otherwise: the batch is
+    set aside as before, and the run completes."""
+    items = _items(60)
+
+    def script(n, inputs):
+        return timeout_error() if any("Title 35" in t for t in inputs) else None
+
+    search, chroma, ef, config = _build(tmp_path, monkeypatch, script, items)
+
+    stats = search.update_database()
+
+    assert "error" not in stats
+    assert chroma.collection.count() == 59
+    assert stats["errors"] == 1
+    assert "last_api_failure" not in _saved(config)["update_config"]
