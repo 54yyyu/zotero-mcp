@@ -243,27 +243,113 @@ def newest_run_path(root: Path) -> str | None:
     return str(manifests[0][0]) if manifests else None
 
 
-def newest_manifest_for_group(root: Path, group_id: int | None) -> dict[str, Any] | None:
-    """Newest run submitted against ``group_id``, or ``None`` if there is none.
+def manifests_for_group(root: Path, group_id: int | None) -> list[dict[str, Any]]:
+    """Every run submitted against ``group_id``, newest first.
 
     Runs are per library, and so is superseding one: a newer run for a
     different library re-embeds none of this one's items.
     """
-    for _, manifest in _sorted_manifests(root):
-        if manifest.get("group_id") == group_id:
-            return manifest
-    return None
+    return [manifest for _, manifest in _sorted_manifests(root) if manifest.get("group_id") == group_id]
 
 
-def find_manifest(root: Path, batch_id: str | None = None, provider_label: str = "batch") -> dict[str, Any]:
-    """Find the newest manifest, or the manifest that contains a batch ID."""
-    for _, manifest in _sorted_manifests(root):
-        if batch_id is None:
-            return manifest
-        if any(batch.get("batch_id") == batch_id for batch in manifest.get("batches", [])):
-            return manifest
-    if batch_id:
+def run_covers(newer: dict[str, Any], older: dict[str, Any]) -> bool:
+    """Does ``newer`` embed everything ``older`` was submitted for?
+
+    The one place this is decided. ``newer`` is a manifest, or the same fields
+    of a run about to be submitted. Runs carry ``limited`` (stopped at
+    ``--limit`` items) and ``since_version``: the sync version an incremental
+    run was cut from, 0 for a first build, ``None`` for a scan that skips what
+    is already indexed and so says nothing about changed items.
+
+    A force rebuild re-embeds the whole library, so it covers anything, unless
+    it stopped at ``--limit``. Otherwise a run covers an older one only if it
+    was cut from the same sync version or an earlier one. Manifests written
+    before these fields existed were all assumed to be cut from one sync
+    version; between one of those and a newer manifest nothing can be proved.
+    """
+    if newer.get("run_id") == older.get("run_id") or newer.get("group_id") != older.get("group_id"):
+        return False
+    if newer.get("limited"):
+        return False
+    if newer.get("force_full_rebuild"):
+        return True
+    if older.get("force_full_rebuild") or older.get("limited"):
+        return False
+    if "since_version" not in newer and "since_version" not in older:
+        return True
+    newer_since, older_since = newer.get("since_version"), older.get("since_version")
+    if newer_since is None or older_since is None:
+        return False
+    return newer_since <= older_since
+
+
+def may_supersede(new_run: dict[str, Any], unfinished: dict[str, Any]) -> bool:
+    """May ``new_run`` be submitted while ``unfinished`` is still running?
+
+    Only a full rebuild, which the user asks for by name. An incremental run
+    can cover an unfinished one, but it would pay again for every item in it
+    and throw away results already being paid for, when waiting gains the same
+    index at no cost: its changes are still there after the import. On a
+    schedule, submitting each time would also restart the clock on a run that
+    takes up to a day, so that with steady changes it never finishes.
+    """
+    return bool(new_run.get("force_full_rebuild")) and run_covers(new_run, unfinished)
+
+
+def _entry_is_dead(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
+    """Nothing can ever be imported from this chunk."""
+    state = _entry_state(adapter, batch)
+    if state in IMPORTABLE_STATES:
+        # A batch whose every row failed completes with only an error file.
+        return bool(adapter.uses_error_file and batch.get("batch_id") and not batch.get("output_file_id"))
+    return state in TERMINAL_STATES
+
+
+def run_is_unfinished(manifest: dict[str, Any], adapter: BatchAdapter) -> bool:
+    """Can this run still make progress: an import, or a chunk to submit?
+
+    A run left with only dead chunks is finished: its sync version was never
+    promoted, so the next update covers those items again. So is a rebuild with
+    any dead chunk, because it imports all-or-nothing.
+    """
+    remaining = [batch for batch in manifest.get("batches", []) if not batch.get("imported_at")]
+    dead = [batch for batch in remaining if _entry_is_dead(adapter, batch)]
+    if manifest.get("force_full_rebuild") and dead:
+        return False
+    return len(dead) < len(remaining)
+
+
+def find_manifest(
+    root: Path,
+    batch_id: str | None = None,
+    provider_label: str = "batch",
+    group_id: int | None = None,
+    adapter: BatchAdapter | None = None,
+) -> dict[str, Any]:
+    """Find the manifest that contains a batch ID, or else the run to work on.
+
+    Given ``group_id`` and ``adapter`` that is the newest unfinished run of
+    that library no newer run covers, so that neither another library's run nor
+    a small newer run can hide it; then the library's newest run. Otherwise,
+    and when the library has no runs, it is the newest run overall.
+    """
+    manifests = [manifest for _, manifest in _sorted_manifests(root)]
+    if batch_id is not None:
+        for manifest in manifests:
+            if any(batch.get("batch_id") == batch_id for batch in manifest.get("batches", [])):
+                return manifest
         raise FileNotFoundError(f"No {provider_label} manifest found for batch {batch_id}")
+    if group_id is not None and adapter is not None:
+        ours = [manifest for manifest in manifests if manifest.get("group_id") == group_id]
+        for position, manifest in enumerate(ours):
+            if run_is_unfinished(manifest, adapter) and not any(
+                run_covers(newer, manifest) for newer in ours[:position]
+            ):
+                return manifest
+        if ours:
+            return ours[0]
+    if manifests:
+        return manifests[0]
     raise FileNotFoundError(f"No {provider_label} manifests found")
 
 
@@ -373,6 +459,7 @@ def submit_embedding_batches(
     client: Any | None = None,
     max_enqueued_tokens: int | None = None,
     max_requests: int | None = None,
+    scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Upload JSONL files and create one or more embedding batches for ``adapter``.
 
@@ -380,7 +467,13 @@ def submit_embedding_batches(
     OpenAI/Gemini before this refactor). When ``max_enqueued_tokens`` is set,
     only chunks that fit the budget are submitted now; the rest are written
     to disk and recorded as ``status``/``state`` ``"pending"`` manifest
-    entries for :func:`submit_pending_batches`.
+    entries for :func:`submit_pending_batches`. ``scope`` is what
+    :func:`run_covers` reads about this run, saved in the manifest.
+
+    Every chunk is on record as pending before the first upload. A submission
+    cut off part way then leaves a run with chunks still to send, which the next
+    collect picks up. Recording them as they went left a shorter run that looked
+    complete, and whose import moved the sync version past the unsent items.
     """
     if not records:
         raise ValueError(f"No documents were prepared for {adapter.label} Batch API submission")
@@ -410,6 +503,7 @@ def submit_embedding_batches(
         "max_enqueued_tokens": max_enqueued_tokens,
         "manifest_path": str(run_dir / "manifest.json"),
         "batches": [],
+        **(scope or {}),
     }
 
     chunks = split_embedding_records(
@@ -421,38 +515,38 @@ def submit_embedding_batches(
         max_tokens=max_enqueued_tokens,
         chars_per_token=adapter.chars_per_token,
     )
-    enqueued_tokens = 0
     for index, (chunk_records, requests) in enumerate(chunks, start=1):
         stem = f"batch-{index:03d}"
         input_path = run_dir / f"{stem}-input.jsonl"
         records_path = run_dir / f"{stem}-records.jsonl"
         write_jsonl(input_path, requests)
         write_jsonl(records_path, chunk_records)
-        chunk_tokens = sum(estimate_tokens(r["document"], adapter.chars_per_token) for r in chunk_records)
-
-        entry: dict[str, Any] = {
+        manifest["batches"].append({
             "input_path": str(input_path),
             "records_path": str(records_path),
             "request_count": len(requests),
-            "request_tokens": chunk_tokens,
+            "request_tokens": sum(estimate_tokens(r["document"], adapter.chars_per_token) for r in chunk_records),
             "imported_at": None,
             "imported_count": 0,
-        }
+            "batch_id": None,
+            "status": STATE_PENDING,
+            "state": STATE_PENDING,
+        })
+    save_manifest(manifest)
 
+    enqueued_tokens = 0
+    for index, entry in enumerate(manifest["batches"], start=1):
+        chunk_tokens = entry["request_tokens"]
         fits_budget = (
             max_enqueued_tokens is None
             or enqueued_tokens == 0  # always submit at least one chunk
             or enqueued_tokens + chunk_tokens <= max_enqueued_tokens
         )
         if fits_budget:
-            entry.update(adapter.submit_chunk(client, input_path, run_id, index, model_name))
+            entry.update(adapter.submit_chunk(client, Path(entry["input_path"]), run_id, index, model_name))
             entry["state"] = adapter.normalize_status(entry.get("status"))
             enqueued_tokens += chunk_tokens
-        else:
-            entry.update({"batch_id": None, "status": STATE_PENDING, "state": STATE_PENDING})
-
-        manifest["batches"].append(entry)
-        save_manifest(manifest)
+            save_manifest(manifest)
 
     return manifest
 
@@ -504,15 +598,24 @@ def refresh_manifest_status(
     embedding_config: dict[str, Any] | None,
     batch_ids: set[str] | None = None,
     client: Any | None = None,
+    persist: bool = True,
 ) -> dict[str, Any]:
-    """Retrieve current status for ``adapter``'s selected batches and persist it."""
+    """Retrieve current status for ``adapter``'s selected batches and persist it.
+
+    ``persist=False`` is for a reader without the update lock: saving could
+    overwrite what the lock holder wrote in the meantime, such as the batch id
+    of a chunk it submitted, and that chunk would then be paid for again.
+    """
     client = client or adapter.create_client(embedding_config)
     for batch in manifest.get("batches", []):
         if not batch.get("batch_id"):
             continue  # pending chunk, not yet submitted
+        if batch.get("imported_at"):
+            continue  # settled; its status can no longer change anything
         if batch_ids and batch.get("batch_id") not in batch_ids:
             continue
         batch.update(adapter.retrieve_status(client, batch))
         batch["state"] = adapter.normalize_status(batch.get("status"))
-    save_manifest(manifest)
+    if persist:
+        save_manifest(manifest)
     return manifest

@@ -186,15 +186,25 @@ def newest_run_path(config_path: str | None = None) -> str | None:
     return batch_common.newest_run_path(get_gemini_batch_root(config_path))
 
 
-def newest_manifest_for_group(config_path: str | None = None, group_id: int | None = None) -> dict[str, Any] | None:
-    """Newest Gemini run submitted against ``group_id``, or ``None``."""
-    return batch_common.newest_manifest_for_group(get_gemini_batch_root(config_path), group_id)
+def manifests_for_group(config_path: str | None = None, group_id: int | None = None) -> list[dict[str, Any]]:
+    """Every Gemini run submitted against ``group_id``, newest first."""
+    return [
+        batch_common.ensure_states(manifest, ADAPTER)
+        for manifest in batch_common.manifests_for_group(get_gemini_batch_root(config_path), group_id)
+    ]
 
 
-def find_manifest(config_path: str | None = None, batch_id: str | None = None) -> dict[str, Any]:
-    """Find the newest manifest, or the manifest that contains a batch job name."""
+def find_manifest(
+    config_path: str | None = None, batch_id: str | None = None, group_id: int | None = None
+) -> dict[str, Any]:
+    """Find the manifest containing a batch job name, or else the run to work on
+    (see :func:`batch_common.find_manifest`)."""
     manifest = batch_common.find_manifest(
-        get_gemini_batch_root(config_path), batch_id=batch_id, provider_label="Gemini batch"
+        get_gemini_batch_root(config_path),
+        batch_id=batch_id,
+        provider_label="Gemini batch",
+        group_id=group_id,
+        adapter=ADAPTER,
     )
     return batch_common.ensure_states(manifest, ADAPTER)
 
@@ -439,6 +449,7 @@ def submit_embedding_batches(
     client: Any | None = None,
     max_enqueued_tokens: int | None = None,
     max_requests: int = GEMINI_BATCH_MAX_REQUESTS,
+    scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Upload JSONL files and create one or more Gemini embedding batch jobs.
 
@@ -459,6 +470,7 @@ def submit_embedding_batches(
         client=client,
         max_enqueued_tokens=max_enqueued_tokens,
         max_requests=max_requests,
+        scope=scope,
     )
 
 
@@ -467,10 +479,11 @@ def refresh_manifest_status(
     embedding_config: dict[str, Any] | None,
     batch_ids: set[str] | None = None,
     client: Any | None = None,
+    persist: bool = True,
 ) -> dict[str, Any]:
     """Retrieve current Gemini job state for selected batches and persist it."""
     return batch_common.refresh_manifest_status(
-        ADAPTER, manifest, embedding_config, batch_ids=batch_ids, client=client
+        ADAPTER, manifest, embedding_config, batch_ids=batch_ids, client=client, persist=persist
     )
 
 

@@ -45,6 +45,7 @@ from .client import read_config_for_update as _read_config_for_update
 from .config_light import (  # noqa: F401
     _DEFAULT_RERANKER_CONFIG,
     _DEFAULT_UPDATE_CONFIG,
+    auto_update_enabled,
     load_reranker_config,
     load_update_config,
     reranker_enabled,
@@ -97,24 +98,24 @@ def _is_superseded(current: dict[str, Any], newest: dict[str, Any] | None) -> bo
     """Has ``newest`` taken over the items ``current`` was submitted for?
 
     Only when it has may the older run's parked chunks be abandoned and its
-    sync watermark withheld. Three conditions, all necessary:
-
-    * **A different run.** Compared by ``run_id``, never by manifest path: the
-      same run reached through a differently spelled config path must not
-      supersede itself.
-    * **The same library.** A newer run for another ``group_id`` re-embeds none
-      of this run's items, so it supersedes nothing here.
-    * **Coverage.** A newer force-rebuild run re-embeds the whole library and
-      therefore covers anything older. A newer incremental run covers an older
-      incremental one (both were cut from the same sync watermark, which only a
-      complete import advances) but *not* an older force-rebuild run, whose
-      items it never touched.
+    sync watermark withheld. Compared by ``run_id``, never by manifest path: the
+    same run reached through a differently spelled config path must not
+    supersede itself. See :func:`batch_common.run_covers` for the coverage rule.
     """
-    if not newest or newest.get("run_id") == current.get("run_id"):
-        return False
-    if newest.get("group_id") != current.get("group_id"):
-        return False
-    return bool(newest.get("force_full_rebuild")) or not current.get("force_full_rebuild")
+    return bool(newest) and batch_common.run_covers(newest, current)
+
+
+def _deferred_message(run: dict[str, Any], run_count: int) -> str:
+    """What a user is told when a new batch submission has to wait."""
+    others = f" (and {run_count - 1} older one(s))" if run_count > 1 else ""
+    return (
+        f"Not submitting a new batch: run {run.get('run_id')}{others} for this library is still "
+        "unfinished, and a new run would pay for its items again or leave it stranded. Nothing is "
+        "lost: the sync version stays where it is, so these changes go in once that run has "
+        "finished. Check it with 'zotero-mcp batch-status'; 'zotero-mcp update-db' or "
+        "'zotero-mcp batch-import' collects it. To give a run up, delete its directory: "
+        f"{Path(str(run.get('manifest_path'))).parent}"
+    )
 
 
 def _report(message: str) -> None:
@@ -1498,9 +1499,10 @@ class ZoteroSemanticSearch:
         except (TypeError, ValueError):
             return 0
 
-    def _load_last_sync_version(self) -> int:
-        """Last Zotero library version fully indexed into ChromaDB for the
-        library the Zotero client is currently scoped to.
+    def _load_last_sync_version(self, library_key: str | None = None) -> int:
+        """Last Zotero library version fully indexed into ChromaDB for
+        ``library_key``, by default the library the Zotero client is currently
+        scoped to.
 
         Zero means "no prior successful sync for this library; bootstrap
         required". Used to drive since-based incremental ingest via
@@ -1521,7 +1523,7 @@ class ZoteroSemanticSearch:
             logger.warning(f"Error loading last_sync_version: {e}")
             return 0
 
-        library_key = self._active_library_key()
+        library_key = library_key if library_key is not None else self._active_library_key()
         versions = section.get("last_sync_versions")
         if isinstance(versions, dict):
             # The map is authoritative once written: a library absent from it
@@ -1880,6 +1882,10 @@ class ZoteroSemanticSearch:
         metadata["citation_key"] = citation_key
 
         return metadata
+
+    def auto_update_enabled(self) -> bool:
+        """Did the user ask for automatic updates, due or not?"""
+        return auto_update_enabled(self.update_config)
 
     def should_update_database(self) -> bool:
         """Check if the database should be updated based on configuration."""
@@ -2789,6 +2795,7 @@ class ZoteroSemanticSearch:
         stats: dict[str, Any],
         max_enqueued_tokens: int | None = None,
         max_requests: int | None = None,
+        scope: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Prepare records and submit asynchronous embedding batches."""
         module = _batch_module(provider)
@@ -2812,6 +2819,8 @@ class ZoteroSemanticSearch:
             submit_kwargs["max_enqueued_tokens"] = max_enqueued_tokens
         if max_requests is not None:
             submit_kwargs["max_requests"] = max_requests
+        if scope is not None:
+            submit_kwargs["scope"] = scope
         manifest = module.submit_embedding_batches(
             records=records,
             model_name=model_name,
@@ -3092,6 +3101,11 @@ class ZoteroSemanticSearch:
                 logger.warning("Moved the unreadable index to %s for --force-rebuild", moved)
                 _report(f"The index could not be read; moved it to {moved} and building a new one.\n")
 
+            # Results already paid for come first, whatever this run goes on to
+            # do. A rebuild re-embeds everything itself, so waiting chunks stay
+            # unsent: sending them would pay twice for the same items.
+            self._collect_unfinished_batches(stats, submit_waiting=not force_full_rebuild)
+
             # --force-rebuild resets the ENTIRE collection but repopulates
             # only the active library. Combinations that would silently drop
             # indexed data need the same explicit opt-in as any other mass
@@ -3242,6 +3256,50 @@ class ZoteroSemanticSearch:
                 except Exception:
                     pass
 
+            def _this_run() -> dict[str, Any]:
+                """What batch_common.run_covers reads about this run."""
+                if use_incremental:
+                    since_version = last_sync_version
+                elif (
+                    last_sync_version == 0
+                    and not extract_fulltext
+                    and not configured_collection_keys
+                    and limit is None
+                ):
+                    since_version = 0  # a first build reads the whole library
+                else:
+                    since_version = None
+                return {
+                    "limited": limit is not None,
+                    "since_version": since_version,
+                    "allow_mass_deletion": bool(allow_mass_deletion),
+                }
+
+            # Before reading a single item: a deferred run does no work, and
+            # leaves the deletion pass and the sync version to the run that
+            # eventually submits.
+            if batch_enabled:
+                new_run = {
+                    **_this_run(),
+                    "group_id": self._run_group_id,
+                    "force_full_rebuild": force_full_rebuild,
+                }
+                blocking = [
+                    run
+                    for run in self._unfinished_batch_runs(active_batch_provider, self._run_group_id)
+                    if not batch_common.may_supersede(new_run, run)
+                ]
+                if blocking:
+                    stats["batch_mode"] = True
+                    stats["batch_provider"] = active_batch_provider
+                    stats["batch_deferred"] = _deferred_message(blocking[-1], len(blocking))
+                    logger.warning(stats["batch_deferred"])
+                    _report(f"\n{stats['batch_deferred']}\n")
+                    end_time = datetime.now()
+                    stats["duration"] = str(end_time - start_time)
+                    stats["end_time"] = end_time.isoformat()
+                    return stats
+
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []
             if use_incremental:
@@ -3361,6 +3419,7 @@ class ZoteroSemanticSearch:
                     stats=stats,
                     max_enqueued_tokens=throttle["batch_max_enqueued_tokens"],
                     max_requests=throttle["batch_max_requests"],
+                    scope=_this_run(),
                 )
                 # This run did its work, so an auto-update is not due again
                 # until its next turn. Without this, should_update stayed true
@@ -3376,8 +3435,8 @@ class ZoteroSemanticSearch:
                 if stats.get("batch_pending"):
                     _report(
                         f"  {stats['batch_pending']} chunk(s) held back by the enqueued-token "
-                        "budget; the next 'zotero-mcp batch-import' (or --auto-loop) submits them "
-                        "as running batches finish.\n"
+                        "budget; the next 'zotero-mcp update-db' or 'zotero-mcp batch-import' "
+                        "(or --auto-loop) submits them as running batches finish.\n"
                     )
                 if auto_loop and stats.get("batch_submitted"):
                     self.auto_loop_batch_pipeline(
@@ -4043,15 +4102,21 @@ class ZoteroSemanticSearch:
         module = _batch_module(provider)
         label = _batch_adapter(provider).label
         selected_ids = set(batch_ids or [])
-        manifest = module.find_manifest(
-            config_path=self.config_path,
-            batch_id=next(iter(selected_ids), None),
-        )
-        manifest = module.refresh_manifest_status(
-            manifest,
-            embedding_config=self.chroma_client.embedding_config,
-            batch_ids=selected_ids or None,
-        )
+        # Saving the refreshed status needs the update lock: a background
+        # collect may be writing this manifest. While someone holds it, this
+        # still reports the live status, it just doesn't save it.
+        with _acquire_update_lock(_update_lock_path()) as acquired:
+            manifest = module.find_manifest(
+                config_path=self.config_path,
+                batch_id=next(iter(selected_ids), None),
+                group_id=self._pinned_group_id(),
+            )
+            manifest = module.refresh_manifest_status(
+                manifest,
+                embedding_config=self.chroma_client.embedding_config,
+                batch_ids=selected_ids or None,
+                persist=bool(acquired),
+            )
         batches = [
             batch for batch in manifest.get("batches", [])
             if not selected_ids or batch.get("batch_id") in selected_ids
@@ -4079,16 +4144,199 @@ class ZoteroSemanticSearch:
     def _superseded_by(self, provider: str, manifest: dict[str, Any]) -> str | None:
         """Run id of the newer run that has taken over this run's items, if any.
 
-        "Newer" is the newest run *for the same library*, ranked by the
-        immutable ``created_at``/``run_id`` order rather than by manifest mtime
-        (which a status refresh or an import would bump, letting a superseded
-        run pass itself off as current).
+        Any newer run *for the same library* counts, not just the newest: a
+        ``--limit`` run on top of a rebuild doesn't undo what the rebuild took
+        over. Runs are ranked by the immutable ``created_at``/``run_id`` order
+        rather than by manifest mtime (which a status refresh or an import would
+        bump, letting a superseded run pass itself off as current).
         """
         module = _batch_module(provider)
-        newest = module.newest_manifest_for_group(
+        for newer in module.manifests_for_group(
             config_path=self.config_path, group_id=manifest.get("group_id")
+        ):
+            if newer.get("run_id") == manifest.get("run_id"):
+                break
+            if _is_superseded(manifest, newer):
+                return str(newer.get("run_id"))
+        return None
+
+    def _overtaken_by_sync(self, manifest: dict[str, Any]) -> int | None:
+        """The sync version that already includes this run's items, if any.
+
+        A sync version only moves when a whole update has landed, so one past
+        the version this run was cut from and at least the version it targets
+        means another update, such as a realtime one, indexed these items and
+        anything newer. The run's results would write older text over newer, and
+        its waiting chunks would be paid for twice. A rebuild is never overtaken:
+        it exists to replace the index, which an incremental sync doesn't do.
+        """
+        since, target = manifest.get("since_version"), manifest.get("target_sync_version")
+        if manifest.get("force_full_rebuild") or since is None or target is None:
+            return None
+        group_id = manifest.get("group_id")
+        current = self._load_last_sync_version(None if group_id is None else str(group_id))
+        return current if since < current and target <= current else None
+
+    def _collect_provider(self) -> str | None:
+        """The provider whose runs can go into this index, if there is one.
+
+        Only the configured embedding model's: vectors from any other would land
+        in a ChromaDB collection where no query could match them. Without a
+        config file there is no batch directory to look at, either.
+        """
+        model = getattr(self.chroma_client, "embedding_model", None)
+        return model if self.config_path and model in _BATCH_MODULES else None
+
+    def _unfinished_batch_runs(self, provider: str, group_id: int) -> list[dict[str, Any]]:
+        """Runs for ``group_id`` still worth working on, oldest first.
+
+        Reads local manifests only, so it is safe to call on every update. Leaves
+        out runs that a newer run or a later sync has taken over, and runs made
+        with another model, which this index can't use.
+        """
+        module = _batch_module(provider)
+        adapter = _batch_adapter(provider)
+        model_name = self.chroma_client.embedding_config.get("model_name", adapter.default_model)
+        runs = module.manifests_for_group(config_path=self.config_path, group_id=group_id)
+        unfinished = [
+            run
+            for position, run in enumerate(runs)
+            if batch_common.run_is_unfinished(run, adapter)
+            and run.get("model") in (None, model_name)
+            and not any(_is_superseded(run, newer) for newer in runs[:position])
+            and self._overtaken_by_sync(run) is None
+        ]
+        unfinished.reverse()
+        return unfinished
+
+    def _dead_rebuild_note(self, provider: str, group_id: int) -> str | None:
+        """A warning when this library's latest run is a rebuild that can't finish.
+
+        Such a run isn't "unfinished", since nothing can move it, so nothing else
+        would ever mention it. A newer run for the library ends the warning.
+        """
+        adapter = _batch_adapter(provider)
+        runs = _batch_module(provider).manifests_for_group(config_path=self.config_path, group_id=group_id)
+        if not runs or not runs[0].get("force_full_rebuild"):
+            return None
+        newest = runs[0]
+        dead = [
+            batch.get("batch_id") or "(pending)"
+            for batch in newest.get("batches", [])
+            if not batch.get("imported_at") and batch_common._entry_is_dead(adapter, batch)
+        ]
+        if not dead:
+            return None
+        return (
+            f"Rebuild run {newest.get('run_id')} can't finish, because these chunks failed: "
+            f"{', '.join(dead)}. The index is unchanged. Run 'zotero-mcp update-db --force-rebuild' "
+            "to start the rebuild again."
         )
-        return str(newest.get("run_id")) if _is_superseded(manifest, newest) else None
+
+    def _collect_unfinished_batches(self, stats: dict[str, Any], submit_waiting: bool = True) -> None:
+        """Import finished files and submit waiting files of unfinished runs.
+
+        Call with the update lock held and the run's library pinned. A failure
+        is reported in ``stats["batch_collect"]`` and never raised, so the update
+        goes on to report its own outcome. Nothing happens here without an
+        unfinished run, which means no network call. Each provider call is one
+        short request: this doesn't wait for a batch, so the lock isn't held
+        across a provider's batch window.
+        """
+        provider = self._collect_provider()
+        if provider is None:
+            return
+        group_id = self._pinned_group_id()
+        errors: list[str] = []
+        try:
+            runs = self._unfinished_batch_runs(provider, group_id)
+        except Exception as e:
+            runs = []
+            errors.append(f"could not read the batch runs: {e}")
+
+        summary: dict[str, Any] = {
+            "provider": provider,
+            "runs": [],
+            "imported_items": 0,
+            "submitted_chunks": 0,
+            "errors": errors,
+        }
+        # Oldest first, so that newer text lands last and a sync version can
+        # only move forward through the runs.
+        for run in runs:
+            run_id = run.get("run_id")
+            try:
+                if self._superseded_by(provider, run) or self._overtaken_by_sync(run) is not None:
+                    continue  # an earlier run in this pass took it over
+                result = self._import_batch(
+                    provider, _skip_lock=True, _collect_run=run, _submit_waiting=submit_waiting
+                )
+            except Exception as e:
+                # Whatever was imported is saved, and the sync version only
+                # moves when a whole run has landed, so this run just stays
+                # unfinished for the next attempt.
+                errors.append(f"run {run_id}: {e}")
+                continue
+            summary["runs"].append(run_id)
+            summary["imported_items"] += result.get("imported_items", 0)
+            summary["submitted_chunks"] += result.get("batches_submitted", 0)
+            if result.get("deferred"):
+                summary.setdefault("waiting", []).append(result["deferred"])
+            failed_rows = result.get("failed_items", 0) + result.get("missing_items", 0)
+            if failed_rows:
+                errors.append(f"run {run_id}: {failed_rows} item(s) came back without an embedding")
+            dead = [batch for batch in run.get("batches", []) if not batch.get("imported_at")
+                    and batch_common._entry_is_dead(_batch_adapter(provider), batch)]
+            if dead and not run.get("force_full_rebuild") and not batch_common.run_is_unfinished(
+                run, _batch_adapter(provider)
+            ):
+                errors.append(
+                    f"run {run_id}: {len(dead)} chunk(s) failed at the provider; "
+                    "the sync version stays put, so the next update submits those items again"
+                )
+
+        try:
+            note = self._dead_rebuild_note(provider, group_id)
+            if note:
+                errors.append(note)
+        except Exception as e:
+            errors.append(f"could not read the batch runs: {e}")
+
+        if not summary["runs"] and not errors:
+            return
+
+        stats["batch_collect"] = summary
+        for error in errors:
+            logger.warning(f"Collecting batch results: {error}")
+            _report(f"Collecting batch results: {error}\n")
+        if summary["runs"]:
+            _report(
+                f"Collected {len(summary['runs'])} unfinished batch run(s): "
+                f"{summary['imported_items']} embeddings imported, "
+                f"{summary['submitted_chunks']} waiting chunk(s) submitted.\n"
+            )
+
+    def has_unfinished_batch_run(self) -> bool:
+        """Is a batch run for this library unfinished? Reads local files only."""
+        provider = self._collect_provider()
+        return bool(provider and self._unfinished_batch_runs(provider, self._client_group_id()))
+
+    def collect_batch_results(self) -> dict[str, Any]:
+        """Collect unfinished batch runs and do nothing else; a new run never starts here."""
+        stats: dict[str, Any] = {}
+        with _acquire_update_lock(_update_lock_path()) as acquired:
+            if not acquired:
+                stats["skipped_reason"] = "another_update_in_progress"
+                return stats
+            try:
+                self._run_group_id = self._client_group_id()
+                if read_error := self.chroma_client.read_error():
+                    stats["error"] = f"Cannot read the semantic index: {read_error}"
+                    return stats
+                self._collect_unfinished_batches(stats)
+            finally:
+                self._run_group_id = None
+        return stats
 
     def _submit_pending_chunks(
         self,
@@ -4129,84 +4377,106 @@ class ZoteroSemanticSearch:
         provider: str,
         batch_ids: list[str] | None = None,
         _skip_lock: bool = False,
+        _collect_run: dict[str, Any] | None = None,
+        _submit_waiting: bool = True,
     ) -> dict[str, Any]:
         """Import completed Batch API embeddings into ChromaDB.
 
-        ``_skip_lock`` is for the auto-loop, which already holds the update
-        lock via ``update_database``; re-acquiring it would self-deadlock.
+        ``_skip_lock`` is for callers that already hold the update lock via
+        ``update_database``; re-acquiring it would self-deadlock.
+
+        The lock covers the whole import, status refresh included. A manifest
+        read before the lock and saved after could undo what another process
+        did in between, down to losing a submitted chunk's batch id, which would
+        then be paid for again.
+
+        ``_collect_run`` is the unattended path, from
+        :meth:`_collect_unfinished_batches`: it names the run to work on, and a
+        rebuild that isn't ready is reported as ``deferred``, not raised.
+        ``_submit_waiting=False`` leaves throttle-parked chunks unsent.
         """
-        module = _batch_module(provider)
-        adapter = _batch_adapter(provider)
-        label = adapter.label
-        selected_ids = set(batch_ids or [])
-        manifest = module.find_manifest(
-            config_path=self.config_path,
-            batch_id=next(iter(selected_ids), None),
-        )
-        # Whether a newer run has taken this one's items over decides two
-        # things below: no more chunks may be submitted for it, and its sync
-        # watermark must stay where it is. Settled once here, before the
-        # refresh, so every decision in this import agrees.
-        superseded_by = self._superseded_by(provider, manifest)
-        manifest = module.refresh_manifest_status(
-            manifest,
-            embedding_config=self.chroma_client.embedding_config,
-            batch_ids=selected_ids or None,
-        )
-
-        all_batches = manifest.get("batches", [])
-        batches = [
-            batch for batch in all_batches
-            if not selected_ids or batch.get("batch_id") in selected_ids
-        ]
-        missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
-        if missing_ids:
-            raise FileNotFoundError(f"No {label} batch manifest entries found for: {', '.join(sorted(missing_ids))}")
-        if not batches:
-            raise ValueError(f"No matching {label} batches found in the local manifest")
-        if manifest.get("force_full_rebuild") and selected_ids and len(batches) != len(all_batches):
-            raise RuntimeError(f"Force-rebuild {label} batch runs must be imported as a complete run")
-
-        stats = {
-            "provider": provider,
-            "run_id": manifest.get("run_id"),
-            "manifest_path": manifest.get("manifest_path"),
-            "batches_seen": len(batches),
-            "batches_imported": 0,
-            "batches_skipped": 0,
-            "batches_submitted": 0,
-            "imported_items": 0,
-            "added_items": 0,
-            "updated_items": 0,
-            "failed_items": 0,
-            "missing_items": 0,
-            "errors": [],
-        }
-        if superseded_by:
-            # One entry, recorded once, covering both consequences.
-            stats["errors"].append({"error": (
-                f"run {manifest.get('run_id')} is superseded by run {superseded_by}: its pending "
-                "chunks are not submitted and its sync watermark is not promoted, because the "
-                "newer run covers the same items"
-            )})
-
         lock_path = _update_lock_path()
         lock_cm = contextlib.nullcontext(True) if _skip_lock else _acquire_update_lock(lock_path)
         acquired = lock_cm.__enter__()
         if not acquired:
             lock_cm.__exit__(None, None, None)
             raise RuntimeError(f"Another semantic-search update is already running (lock held at {lock_path})")
-
         try:
-            client = adapter.create_client(self.chroma_client.embedding_config)
+            module = _batch_module(provider)
+            adapter = _batch_adapter(provider)
+            label = adapter.label
+            selected_ids = set(batch_ids or [])
+            manifest = _collect_run or module.find_manifest(
+                config_path=self.config_path,
+                batch_id=next(iter(selected_ids), None),
+                group_id=self._pinned_group_id(),
+            )
+            # Whether something newer has taken this run's items over decides two
+            # things below: no more chunks may be submitted for it, and its sync
+            # watermark must stay where it is. Settled once here, before the
+            # refresh, so every decision in this import agrees.
+            superseded_by = self._superseded_by(provider, manifest)
+            overtaken_at = self._overtaken_by_sync(manifest)
+            taken_over = superseded_by or (None if overtaken_at is None else f"library version {overtaken_at}")
+            manifest = module.refresh_manifest_status(
+                manifest,
+                embedding_config=self.chroma_client.embedding_config,
+                batch_ids=selected_ids or None,
+            )
 
+            all_batches = manifest.get("batches", [])
+            batches = [
+                batch for batch in all_batches
+                if not selected_ids or batch.get("batch_id") in selected_ids
+            ]
+            missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
+            if missing_ids:
+                raise FileNotFoundError(f"No {label} batch manifest entries found for: {', '.join(sorted(missing_ids))}")
+            if not batches:
+                raise ValueError(f"No matching {label} batches found in the local manifest")
+            if manifest.get("force_full_rebuild") and selected_ids and len(batches) != len(all_batches):
+                raise RuntimeError(f"Force-rebuild {label} batch runs must be imported as a complete run")
+
+            stats = {
+                "provider": provider,
+                "run_id": manifest.get("run_id"),
+                "manifest_path": manifest.get("manifest_path"),
+                "batches_seen": len(batches),
+                "batches_imported": 0,
+                "batches_skipped": 0,
+                "batches_submitted": 0,
+                "imported_items": 0,
+                "added_items": 0,
+                "updated_items": 0,
+                "failed_items": 0,
+                "missing_items": 0,
+                "errors": [],
+            }
+            if superseded_by:
+                # One entry, recorded once, covering both consequences.
+                stats["errors"].append({"error": (
+                    f"run {manifest.get('run_id')} is superseded by run {superseded_by}: its pending "
+                    "chunks are not submitted and its sync watermark is not promoted, because the "
+                    "newer run covers the same items"
+                )})
+            elif overtaken_at is not None:
+                stats["errors"].append({"error": (
+                    f"run {manifest.get('run_id')} is superseded by an update that reached library "
+                    f"version {overtaken_at}: its pending chunks are not submitted and its sync "
+                    "watermark is not promoted"
+                )})
+
+            client = adapter.create_client(self.chroma_client.embedding_config)
             if manifest.get("force_full_rebuild"):
                 def _incomplete() -> list[str]:
                     return [
                         batch.get("batch_id") or "(pending)"
                         for batch in all_batches
                         if not batch.get("imported_at")
-                        and batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES
+                        and (
+                            batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES
+                            or batch_common._entry_is_dead(adapter, batch)
+                        )
                     ]
 
                 if _incomplete():
@@ -4216,8 +4486,8 @@ class ZoteroSemanticSearch:
                     # submission runs under the update lock (unlike the refusal
                     # it replaces), since it writes the manifest.
                     submitted = 0
-                    if not selected_ids:
-                        submitted = self._submit_pending_chunks(provider, manifest, client, superseded_by)
+                    if not selected_ids and _submit_waiting:
+                        submitted = self._submit_pending_chunks(provider, manifest, client, taken_over)
                         stats["batches_submitted"] += submitted
                     still_incomplete = _incomplete()
                     if still_incomplete and submitted:
@@ -4233,7 +4503,14 @@ class ZoteroSemanticSearch:
                         )
                         if superseded_by:
                             message += f" (run {superseded_by} has since superseded this one)"
+                        if _collect_run is not None:
+                            stats["deferred"] = message
+                            return stats
                         raise RuntimeError(message)
+
+            def _output_path(batch: dict[str, Any]) -> Path:
+                records_path = Path(batch["records_path"])
+                return records_path.with_name(records_path.stem + "-output.jsonl")
 
             already_imported = any(batch.get("imported_at") for batch in all_batches)
             if (
@@ -4241,6 +4518,27 @@ class ZoteroSemanticSearch:
                 and not already_imported
                 and any(not batch.get("imported_at") for batch in batches)
             ):
+                if _collect_run is not None and not manifest.get("allow_mass_deletion"):
+                    # The reset drops the whole ChromaDB collection. The user agreed
+                    # to what it held when they asked for the rebuild, not to what
+                    # another library has indexed since; an unattended import won't
+                    # guess. It stays a one-word decision: 'batch-import'.
+                    foreign = self.chroma_client.get_all_ids(
+                        where={"group_id": {"$ne": int(manifest["group_id"])}}
+                    )
+                    if foreign:
+                        stats["deferred"] = (
+                            f"Rebuild run {manifest.get('run_id')} is ready, but importing it replaces the "
+                            f"whole ChromaDB collection, which now holds {len(foreign)} document(s) from "
+                            "other libraries. Run 'zotero-mcp batch-import' to import it anyway."
+                        )
+                        return stats
+                # Every file in hand before the index is emptied: a download that
+                # fails now costs nothing, and after the reset it would leave an
+                # empty index behind.
+                for batch in batches:
+                    if not batch.get("imported_at") and not _output_path(batch).exists():
+                        adapter.download_output(client, batch, _output_path(batch))
                 self.chroma_client.reset_collection()
 
             for batch in batches:
@@ -4265,7 +4563,7 @@ class ZoteroSemanticSearch:
                     continue
 
                 records_path = Path(batch["records_path"])
-                output_path = records_path.with_name(records_path.stem + "-output.jsonl")
+                output_path = _output_path(batch)
                 if output_path.exists():
                     output_text = output_path.read_text(encoding="utf-8")
                 else:
@@ -4333,17 +4631,18 @@ class ZoteroSemanticSearch:
                 batch["imported_at"] = datetime.now().isoformat()
                 batch["imported_count"] = len(ids)
                 stats["batches_imported"] += 1
+                # After each chunk: a rebuild cut off part way must resume, not
+                # empty the index again.
+                module.save_manifest(manifest)
 
             module.save_manifest(manifest)
 
-            if not selected_ids:
+            if not selected_ids and _submit_waiting:
                 # Importing the completed batches freed enqueued-token headroom,
                 # so this is where the chunks the throttle parked get their turn.
                 # An import of named batch ids never does this: the user asked
                 # for those batches, not for the run to be carried forward.
-                stats["batches_submitted"] += self._submit_pending_chunks(
-                    provider, manifest, client, superseded_by
-                )
+                stats["batches_submitted"] += self._submit_pending_chunks(provider, manifest, client, taken_over)
 
             # Newly submitted chunks have no ``imported_at``, so the watermark
             # stays where it is until the whole run has landed.
@@ -4358,15 +4657,28 @@ class ZoteroSemanticSearch:
                         manifest.get("run_id"),
                         superseded_by,
                     )
-                else:
+                elif overtaken_at is None:
                     self.update_config["last_update"] = datetime.now().isoformat()
                     # Promote the watermark of the library the batch was submitted
                     # against, not whichever library happens to be active now.
                     manifest_group_id = manifest.get("group_id")
-                    self._save_update_config(
-                        last_sync_version=manifest.get("target_sync_version"),
-                        library_key=None if manifest_group_id is None else str(manifest_group_id),
-                    )
+                    library_key = None if manifest_group_id is None else str(manifest_group_id)
+                    target = manifest.get("target_sync_version")
+                    # An import never lowers the sync version: running
+                    # batch-import again on a settled run would make the next
+                    # update re-embed what is already indexed. The exception is
+                    # a rebuild landing right now, which just replaced the whole
+                    # ChromaDB collection: the sync version has to say what the
+                    # collection now holds, or the changes between the two
+                    # versions would be missing for good.
+                    rebuilt_now = manifest.get("force_full_rebuild") and stats["batches_imported"] > 0
+                    if (
+                        target is not None
+                        and not rebuilt_now
+                        and target < self._load_last_sync_version(library_key)
+                    ):
+                        target = None
+                    self._save_update_config(last_sync_version=target, library_key=library_key)
             return stats
         finally:
             lock_cm.__exit__(None, None, None)

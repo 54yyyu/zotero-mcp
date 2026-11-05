@@ -54,6 +54,11 @@ def load_update_config(config_path: str | None) -> dict[str, Any]:
     return config
 
 
+def auto_update_enabled(update_config: dict[str, Any]) -> bool:
+    """Did the user ask for automatic updates, whether or not one is due now?"""
+    return bool(update_config.get("auto_update", False)) and update_config.get("update_frequency", "manual") != "manual"
+
+
 def should_update(update_config: dict[str, Any]) -> bool:
     """Decide whether an auto-update is due from ``update_config`` alone.
 
