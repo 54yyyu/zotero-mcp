@@ -152,6 +152,7 @@ zotero-cli open --annotation ANN01            # jump to an annotation and select
 # Annotating a PDF — boxes to aim at, then a checked plan written in one run
 zotero-cli --json layout ATTACH01 --pages 3-9            # figure, table and equation boxes
 zotero-cli annotations create --attachment-key ATTACH01 --page 4 --text "exact words" --color yellow
+zotero-cli annotations create --attachment-key ATTACH01 --page 5 --text "exact words" --underline
 zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect 0.32,0.09,0.36,0.41 --comment "Figure 1"
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run   # where each highlight lands
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl             # write them all

@@ -92,7 +92,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_annotations`: Get annotations (including direct PDF extraction); use `format="json"` for normalized records suitable for scripts and other MCP tools
 - `zotero_synthesize_annotations`: Build a per-paper annotation/note digest; supports `format="json"` for structured grouped output
 - `zotero_get_notes`: Retrieve notes from your Zotero library; pass `query` to search note and annotation text instead of listing
-- `zotero_create_annotation`: Create a highlight (`text=`) or an area annotation (`rect=[x, y, width, height]`)
+- `zotero_create_annotation`: Create a highlight (`text=`, or with `underline=True` an underline), an area annotation (`rect=[x, y, width, height]`) or a sticky note (`note=[x, y]`)
 - `zotero_update_annotation`: Change an annotation's text, comment, color or tags
 - `zotero_delete_annotation`: Permanently delete an annotation
 - `zotero_manage_note`: Create, update, or delete a note via `action="create"|"update"|"delete"` (beta feature)

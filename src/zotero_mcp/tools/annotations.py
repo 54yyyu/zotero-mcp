@@ -1396,10 +1396,12 @@ def delete_note(
 @mcp.tool(
     name="zotero_create_annotation",
     description=(
-        "Create an annotation on a PDF attachment (EPUB: highlights only). "
+        "Create an annotation on a PDF attachment (EPUB: highlights and "
+        "underlines only). "
         "Exactly one mode per call: text= HIGHLIGHTS selectable "
-        "text; rect= draws an AREA box over a figure, table, or other "
-        "non-text region (PDF only); note=[x, y] places a STICKY NOTE "
+        "text (underline=True UNDERLINES it instead); rect= draws an "
+        "AREA box over a figure, table, or other non-text region (PDF "
+        "only); note=[x, y] places a STICKY NOTE "
         "centered on that normalized point, its text in comment (PDF "
         "only). Passing several or none is an error. "
         "attachment_key: the PDF/EPUB attachment key, NOT the parent item "
@@ -1428,6 +1430,7 @@ def create_annotation(
     color: str = "#ffd400",
     tags: list[str] | str | None = None,
     note: list[float] | str | None = None,
+    underline: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -1439,6 +1442,9 @@ def create_annotation(
     call carrying both is ambiguous rather than additive.
     """
     has_text = text is not None and text != ""
+
+    if underline and not has_text:
+        return "Error: underline applies to text; pass text= with the exact words to underline."
 
     if note is not None:
         if rect is not None or has_text:
@@ -1503,6 +1509,7 @@ def create_annotation(
         comment=comment,
         color=color,
         tags=tags,
+        underline=underline,
         ctx=ctx,
     )
 
@@ -1515,11 +1522,12 @@ def _create_highlight_annotation(
     comment: str | None = None,
     color: str = "#ffd400",
     tags: list[str] | str | None = None,
+    underline: bool = False,
     *,
     ctx: Context
 ) -> str:
     """
-    Create a highlight annotation on a PDF or EPUB attachment.
+    Create a highlight or underline annotation on a PDF or EPUB attachment.
 
     Args:
         attachment_key: Attachment key (e.g., "NHZFE5A7")
@@ -1527,19 +1535,21 @@ def _create_highlight_annotation(
         text: Exact text to highlight (used to find coordinates/CFI)
         comment: Optional comment on the annotation
         color: Highlight color in hex format (default: "#ffd400" yellow)
+        underline: Underline the text instead of highlighting it
         ctx: MCP context
 
     Returns:
         Confirmation message with the new annotation key
     """
-    spec = {"page": page, "text": text, "comment": comment, "color": color, "tags": tags}
+    spec = {"page": page, "text": text, "comment": comment, "color": color, "tags": tags,
+            "underline": underline}
     (result,) = create_annotations(attachment_key, [spec], ctx=ctx, allow_epub=True)
     if not result["ok"]:
         return result["error"]
 
     location = "Chapter" if result["file_type"] == "epub" else "Page"
     response = [
-        "Successfully created highlight annotation",
+        f"Successfully created {result['type']} annotation",
         "",
         f"**Annotation Key:** {result['annotation_key']}",
         f"**{location}:** {result['page_label']}",
@@ -1625,7 +1635,8 @@ def create_annotations(
 ) -> list[dict]:
     """Create highlights and area boxes on one attachment, written together.
 
-    Each spec is ``{"page", "text"}`` for a highlight or
+    Each spec is ``{"page", "text"}`` for a highlight (with
+    ``"underline": true``, an underline) or
     ``{"page", "rect": [x, y, width, height]}`` for an area box, or
     ``{"page", "note": [x, y], "comment"}`` for a sticky note, with optional
     ``comment``, ``color`` and ``tags``.
@@ -1642,7 +1653,7 @@ def create_annotations(
     Returns:
         One dict per spec, in order: ``index`` (1-based), ``page``, ``type``,
         ``ok``, and either ``error`` or ``annotation_key`` (not in a dry run),
-        ``page_label``, ``file_type`` and, for highlights, ``page_found``
+        ``page_label``, ``file_type`` and, for highlights and underlines, ``page_found``
         (PDF) or ``chapter_found`` (EPUB).
     """
     results = [
@@ -1771,6 +1782,11 @@ def _annotation_payload(
     text, rect, note = spec.get("text"), spec.get("rect"), spec.get("note")
     if sum(v is not None and v != "" for v in (text, rect, note)) > 1:
         return None, {"error": "Error: pass only one of text (highlight), rect (area box) or note (sticky note)"}
+    underline = spec.get("underline", False)
+    if not isinstance(underline, bool):
+        return None, {"error": f"Error: underline must be true or false. Got: {underline!r}"}
+    if underline and not text:
+        return None, {"error": "Error: underline applies to text; give the exact words to underline"}
 
     tags = spec.get("tags")
     tag_list = _helpers._normalize_str_list_input(tags, "tags") if tags is not None else []
@@ -1855,7 +1871,7 @@ def _annotation_payload(
         # EPUB sort index is "spine index|character offset"; Zotero's own
         # EPUB annotations leave pageLabel empty, and navigation needs that.
         payload = annotation(
-            "highlight",
+            "underline" if underline else "highlight",
             annotationText=text,
             annotationSortIndex=f"{chapter:05d}|{char_position:08d}",
             annotationPosition=position["annotation_position"],
@@ -1872,7 +1888,7 @@ def _annotation_payload(
     page_found = position["pageIndex"] + 1
     label = label_of(page_found)
     payload = annotation(
-        "highlight",
+        "underline" if underline else "highlight",
         annotationText=text,
         annotationSortIndex=position["sort_index"],
         annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
@@ -1889,7 +1905,7 @@ def _spec_type(spec: dict) -> str:
         return "area"
     if spec.get("note") is not None:
         return "note"
-    return "highlight"
+    return "underline" if spec.get("underline") is True else "highlight"
 
 
 def _rect_error(x, y, width, height) -> str | None:

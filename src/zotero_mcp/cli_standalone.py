@@ -462,6 +462,7 @@ def cmd_annotations(args):
             text=getattr(args, "text", None),
             rect=_parse_rect(getattr(args, "rect", None)),
             note=_parse_rect(getattr(args, "note", None), size=2, flag="--note"),
+            underline=getattr(args, "underline", False),
             comment=getattr(args, "comment", None),
             color=_resolve_color(args.color),
             tags=_split_tags(getattr(args, "tags", None)), ctx=ctx,
@@ -583,7 +584,7 @@ def _annotations_batch(args, annotations, ctx) -> None:
             where = f"#{r['index']} p{r['page']}"
             if not r["ok"]:
                 print(f"FAIL  {where}: {r['error']}")
-            elif args.dry_run and r["type"] == "highlight":
+            elif args.dry_run and r["type"] in ("highlight", "underline"):
                 found = r.get("page_found") or r.get("chapter_found")
                 moved = f" (found on p{found})" if found not in (None, r["page"]) else ""
                 print(f"ok    {where}{moved}: {r.get('matched_text', '')[:120]}")
@@ -1591,11 +1592,13 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--remove-tags", help=f"Tags to remove ({TAG_LIST_HELP})")
     ad = a_sub.add_parser("delete", help="Delete an annotation")
     ad.add_argument("annotation_key")
-    ac = a_sub.add_parser("create", help="Create a highlight (--text), an area box (--rect) "
-                                         "or a sticky note (--note)")
+    ac = a_sub.add_parser("create", help="Create a highlight (--text; with --underline, an "
+                                         "underline), an area box (--rect) or a sticky note (--note)")
     ac.add_argument("--attachment-key", required=True)
     ac.add_argument("--page", required=True, type=int)
     ac.add_argument("--text", help="Exact text to highlight")
+    ac.add_argument("--underline", action="store_true",
+                    help="Underline --text instead of highlighting it")
     ac.add_argument("--rect", help="Area box x,y,width,height, normalized 0-1; "
                                    "`zotero-cli layout` prints boxes for figures and tables")
     ac.add_argument("--note", help="Sticky note centered at x,y, normalized 0-1; "
@@ -1610,10 +1613,12 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument("--attachment-key", required=True,
                     help="Attachment for lines that do not name their own")
     ab.add_argument("--file", default="-",
-                    help="JSON Lines (or a JSON array) of {page, text|rect|note, comment, color, tags}; "
+                    help="JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, "
+                         "color, tags}; "
                          "- reads stdin")
     ab.add_argument("--dry-run", action="store_true",
-                    help="Locate every highlight and report what it would cover, without writing")
+                    help="Locate every highlight and underline and report what it would cover, "
+                         "without writing")
 
     # layout -- figure/table boxes to aim area annotations at
     ly_p = sub.add_parser("layout", help="Find figure and table boxes on PDF pages")
