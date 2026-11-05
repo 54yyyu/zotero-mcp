@@ -3580,7 +3580,6 @@ class ZoteroSemanticSearch:
             # was already written stays; last_update and the sync watermark
             # are left alone, so the next run picks up the rest.
             logger.error(f"Stopping the update: {e}")
-            _report(f"\n{e}\n")
             self._record_api_failure(e)
             stats["error"] = str(e)
             stats["embedding_api_unreachable"] = e.host

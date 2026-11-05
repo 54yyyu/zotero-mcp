@@ -91,6 +91,12 @@ class EmbeddingAPIUnreachable(RuntimeError):
         # exception's args; the message is rebuilt so it stays clean.
         return api_unreachable_message(self.host, self.reason)
 
+    def __reduce__(self):
+        # The ChromaDB worker process (idle_unload_minutes) sends exceptions
+        # back pickled, and the default reduction would call __init__ with
+        # the message alone.
+        return (type(self), (self.provider, self.host, self.reason))
+
 
 def _safe_int(value: Any) -> int | None:
     """int(value), or None if it is missing or unparseable."""

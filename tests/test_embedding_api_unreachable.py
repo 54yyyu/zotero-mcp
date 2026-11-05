@@ -239,3 +239,17 @@ def test_probe_ignores_errors_that_are_not_reachability():
     ef = make_openai_ef(always(lambda: status_error(openai.BadRequestError, 400)))
 
     ef.check_reachable()  # does not raise: other errors keep today's handling
+
+
+def test_error_survives_the_chromadb_worker_boundary():
+    """With ``idle_unload_minutes`` set, a search runs ChromaDB in a worker
+    process and its exceptions come back pickled; the type and host must
+    survive so the server still recognises an unreachable API."""
+    import pickle
+
+    original = EmbeddingAPIUnreachable("openai", HOST, "connection failed")
+    copy = pickle.loads(pickle.dumps(original))
+
+    assert type(copy) is EmbeddingAPIUnreachable
+    assert (copy.provider, copy.host, copy.reason) == ("openai", HOST, "connection failed")
+    assert str(copy) == str(original)
