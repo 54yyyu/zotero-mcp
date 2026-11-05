@@ -1857,7 +1857,7 @@ def test_r2_1_abandoning_a_part_landed_rebuild_resets_the_sync_version(env):
     env.index.collection.delete(ids=["BBB"])
     _set_version(env, 10)
 
-    result = env.new_search().abandon_batch_run("openai")
+    result = env.new_search().abandon_batch_run("openai", run_id=run["run_id"], confirm=True)
 
     assert result["abandoned"] == run["run_id"]
     assert result["sync_version_reset"] is True
@@ -2052,12 +2052,154 @@ def test_r2_7_abandoning_one_run_keeps_notes_about_another(env):
     assert stale["run_id"] in str(env.new_search().batch_notice()["notes"])
 
 
-def test_r2_7_a_collect_with_no_batch_provider_keeps_the_notes(env):
+def test_r3_3_a_collect_with_no_batch_provider_drops_notes_it_cannot_act_on(env):
+    """Round 3 replaces round 2's "keeps the notes": with a model that can't
+    import any batch run, nothing could clear them, and batch-import skips
+    other-model runs, so they'd tell the user to do something that won't work."""
     stale = _submit_run(env, force=True, target=20, created_at=LONG_AGO, scope=REBUILD_SCOPE)
     _set_version(env, 50)
     env.new_search().collect_batch_results()
+    assert stale["run_id"] in str(env.new_search().batch_notice()["notes"])
     env.index.embedding_model = "default"
 
     env.new_search().collect_batch_results()
 
-    assert stale["run_id"] in str(env.new_search().batch_notice()["notes"])
+    assert env.new_search().batch_notice() == {}
+
+
+# ---------------------------------------------------------------------------
+# Review round 3
+# ---------------------------------------------------------------------------
+
+
+def _part_landed_rebuild_behind(env, older_target=20):
+    """An older incremental run, then a rebuild that reset the index and got
+    part way in before a crash. The older run's batch has finished."""
+    _set_version(env, 10)
+    older = _submit_run(env, target=older_target)
+    rebuild = _rebuild_of(env, ["AAA", "BBB"], target=20)
+    for batch in rebuild["batches"]:
+        env.provider.statuses[batch["batch_id"]] = "completed"
+    env.new_search()._import_batch("openai", batch_ids=None)
+    run = [r for r in _runs(env) if r["run_id"] == rebuild["run_id"]][0]
+    run["batches"][1]["imported_at"] = None
+    run.pop("promoted_at", None)
+    openai_batch.save_manifest(run)
+    env.index.collection.delete(ids=["BBB"])
+    _set_version(env, 10)
+    env.provider.statuses[older["batches"][0]["batch_id"]] = "completed"
+    return older, rebuild
+
+
+def test_r3_1_a_run_cut_before_the_reset_does_not_undo_it(env):
+    older, rebuild = _part_landed_rebuild_behind(env)
+    env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"], confirm=True)
+
+    env.new_search().collect_batch_results()
+
+    assert _versions(env)["0"] == 0
+    assert "R0" not in _indexed(env), "cut against an index that no longer exists"
+    assert not env.new_search()._run_is_usable("openai", openai_batch.load_manifest(Path(older["manifest_path"])))
+
+
+def test_r3_1_the_update_the_cli_points_to_puts_the_missing_items_back(env):
+    env.zotero.add("NEW1", 20)
+    _part_landed_rebuild_behind(env)
+    rebuild = [r for r in _runs(env) if r.get("force_full_rebuild")][0]
+    env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"], confirm=True)
+
+    stats = env.new_search().update_database()
+    assert stats["batch_submitted"] is True
+    assert "Library unchanged" not in str(stats)
+    env.provider.finish_all()
+    env.new_search().update_database()
+
+    assert {"AAA", "BBB", "NEW1"} <= _indexed(env)
+
+
+def test_r3_1_an_explicit_import_of_such_a_run_lands_without_promoting(env):
+    older, rebuild = _part_landed_rebuild_behind(env)
+    env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"], confirm=True)
+
+    stats = env.new_search()._import_batch("openai", batch_ids=[older["batches"][0]["batch_id"]])
+
+    assert stats["imported_items"] == 2
+    assert _versions(env)["0"] == 0
+
+
+def test_r3_1_a_plain_import_passes_over_such_a_run(env):
+    older, rebuild = _part_landed_rebuild_behind(env)
+    env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"], confirm=True)
+
+    stats = env.new_search()._import_batch("openai")
+
+    assert stats["imported_items"] == 0
+    assert "R0" not in _indexed(env)
+
+
+def test_r3_1_a_realtime_rebuild_after_a_batch_run_keeps_it_from_promoting(env, monkeypatch):
+    _set_version(env, 5)
+    run = _submit_run(env, target=20)  # since 10, in flight
+    monkeypatch.setattr(Index, "upsert_documents", lambda *a, **k: None)
+    env.new_search().update_database(use_batch=False, force_full_rebuild=True, allow_mass_deletion=True)
+    assert _versions(env)["0"] == 10
+    env.provider.finish_all()
+
+    env.new_search().collect_batch_results()
+
+    assert _versions(env)["0"] == 10
+    assert "R0" not in _indexed(env)
+    assert not env.new_search()._run_is_usable("openai", openai_batch.load_manifest(Path(run["manifest_path"])))
+
+
+def test_r3_1_a_rebuild_that_did_the_reset_is_not_held_back_by_it(env):
+    _set_version(env, 10)
+    _rebuild_of(env, ["AAA", "BBB"], target=20)
+    env.provider.finish_all()
+
+    env.new_search()._import_batch("openai")
+
+    assert _versions(env)["0"] == 20
+    assert _indexed(env) == {"AAA", "BBB"}
+
+
+def test_r3_2_a_reset_with_no_chunk_in_yet_is_still_seen_by_abandon(env, monkeypatch):
+    _set_version(env, 10)
+    rebuild = _rebuild_of(env, ["AAA", "BBB"], target=20)
+    env.provider.finish_all()
+
+    def crash(*args, **kwargs):
+        raise KeyboardInterrupt  # cut off right after the reset
+
+    monkeypatch.setattr(Index, "upsert_embeddings", crash)
+    with pytest.raises(KeyboardInterrupt):
+        env.new_search()._import_batch("openai")
+    monkeypatch.undo()
+    assert not any(batch.get("imported_at") for batch in _runs(env)[0]["batches"])
+
+    result = env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"], confirm=True)
+
+    assert result["sync_version_reset"] is True
+    assert _versions(env)["0"] == 0
+
+
+def test_r3_4_giving_up_a_reset_rebuild_asks_first_and_says_what_it_costs(env):
+    _older, rebuild = _part_landed_rebuild_behind(env)
+
+    for kwargs in ({}, {"run_id": rebuild["run_id"]}):
+        result = env.new_search().abandon_batch_run("openai", **kwargs)
+
+        assert "abandoned" not in result
+        assert result["needs_confirmation"] == rebuild["run_id"]
+        assert "--fulltext" in result["message"]
+        assert "batch-import" in result["message"]
+        assert "whole library" in result["message"]
+    assert not openai_batch.load_manifest(Path(rebuild["manifest_path"])).get("abandoned_at")
+    assert _versions(env)["0"] == 10
+
+
+def test_r3_4_batch_abandon_takes_yes(capsys):
+    with patch("sys.argv", ["zotero-mcp", "help", "batch-abandon"]):
+        with pytest.raises(SystemExit):
+            cli_main()
+    assert "--yes" in capsys.readouterr().out
