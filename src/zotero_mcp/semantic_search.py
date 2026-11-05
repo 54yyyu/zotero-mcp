@@ -3064,6 +3064,9 @@ class ZoteroSemanticSearch:
             stats["skipped_reason"] = "another_update_in_progress"
             return stats
 
+        # Set once a realtime rebuild has emptied the index, so a stop after
+        # that point can say the old index is gone rather than "kept".
+        rebuild_reset = False
         try:
             # Pin this run's library identity once, from the client the run
             # will read items/versions from. Everything scope-sensitive in
@@ -3215,7 +3218,15 @@ class ZoteroSemanticSearch:
                     embedding_function.check_reachable()
                     api_checked = True
                 logger.info("Force rebuilding database...")
+                # The watermark describes the index about to be emptied. Zero
+                # it first, so a rebuild that stops part way (or a crash
+                # right after the reset) sends the next plain update-db
+                # through a full scan instead of "library unchanged".
+                self._save_update_config(
+                    last_sync_version=0, library_key=str(self._run_group_id)
+                )
                 self.chroma_client.reset_collection()
+                rebuild_reset = True
 
             # Decide whether to use since-based incremental ingest.
             # Incremental requires: not a forced rebuild, not a local-extraction
@@ -3593,10 +3604,20 @@ class ZoteroSemanticSearch:
             # are left alone, so the next run picks up the rest.
             logger.error(f"Stopping the update: {e}")
             self._record_api_failure(e)
-            stats["error"] = (
-                f"{e} Items already indexed were kept; run `zotero-mcp update-db` "
-                "again once the API can be reached."
-            )
+            if rebuild_reset:
+                # The rebuild started from an empty index, so everything in it
+                # now was written by this run.
+                indexed = stats["added_items"] + stats["updated_items"]
+                stats["error"] = (
+                    f"{e} The rebuild stopped part way: {indexed} item(s) are in "
+                    "the index now. Run `zotero-mcp update-db` once the API can "
+                    "be reached to add the rest."
+                )
+            else:
+                stats["error"] = (
+                    f"{e} Items already indexed were kept; run `zotero-mcp update-db` "
+                    "again once the API can be reached."
+                )
             stats["embedding_api_unreachable"] = e.host
             end_time = datetime.now()
             stats["duration"] = str(end_time - start_time)

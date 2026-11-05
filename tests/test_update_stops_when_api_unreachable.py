@@ -491,7 +491,11 @@ def test_force_rebuild_checks_the_api_before_emptying_the_index(tmp_path, monkey
 
     assert HOST in stats["error"]
     assert chroma.collection.count() == 20, "the index was emptied before the API check"
-    assert _saved(config)["update_config"]["last_api_failure"]["host"] == HOST
+    saved = _saved(config)
+    assert saved["update_config"]["last_api_failure"]["host"] == HOST
+    # Nothing was reset, so the watermark still describes the index.
+    assert set(saved["last_sync_versions"].values()) == {7}
+    assert "kept" in stats["error"]
 
 
 def test_one_failing_batch_on_a_reachable_api_does_not_stop_the_run(tmp_path, monkeypatch):
@@ -537,3 +541,58 @@ def test_stop_message_says_what_was_kept_and_what_to_run(tmp_path, monkeypatch):
 
     assert "zotero-mcp update-db" in stats["error"]
     assert "kept" in stats["error"]
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 regressions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("max_parallel", [1, None])
+def test_rebuild_that_loses_the_api_after_the_reset(tmp_path, monkeypatch, max_parallel):
+    """The rebuild emptied the index, so the watermark goes to 0 and the
+    message says how far it got; the next plain update-db finishes the job
+    instead of reporting "library unchanged" on a part-filled index."""
+    items = _items(30)
+    search, chroma, ef, config = _build(
+        tmp_path, monkeypatch, lambda n, i: None, items, max_parallel=max_parallel
+    )
+    assert "error" not in search.update_database()
+    assert chroma.collection.count() == 30
+
+    # The probe and the first request succeed, then the API goes away.
+    ef.client = FakeOpenAIClient(_fail_after(2))
+    stats = search.update_database(force_full_rebuild=True, allow_mass_deletion=True)
+
+    written = chroma.collection.count()
+    assert written < 30
+    assert "stopped part way" in stats["error"]
+    assert f"{written} item(s) are in the index now" in stats["error"]
+    assert "zotero-mcp update-db" in stats["error"]
+    assert "kept" not in stats["error"]
+    assert set(_saved(config)["last_sync_versions"].values()) == {0}
+
+    ef.client = FakeOpenAIClient(lambda n, i: None)
+    stats = search.update_database()
+
+    assert "error" not in stats
+    assert stats["total_items"] == 30
+    assert chroma.collection.count() == 30
+    assert set(_saved(config)["last_sync_versions"].values()) == {7}
+
+
+def test_watermark_is_zeroed_before_the_reset(tmp_path, monkeypatch):
+    """Saved first, so a crash between the two errs toward a full scan."""
+    search, chroma, ef, config = _populated(tmp_path, monkeypatch)
+    seen = []
+    real_reset = chroma.reset_collection
+
+    def reset():
+        seen.append(set(_saved(config)["last_sync_versions"].values()))
+        real_reset()
+
+    monkeypatch.setattr(chroma, "reset_collection", reset)
+
+    search.update_database(force_full_rebuild=True, allow_mass_deletion=True)
+
+    assert seen == [{0}]
