@@ -4456,7 +4456,10 @@ class ZoteroSemanticSearch:
         """
         provider = self._collect_provider()
         if provider is None:
-            self._save_batch_notice(notes=[], deferred=None)
+            # Nothing can hold an update up without a batch provider, but the
+            # notes are about runs this pass can't look at, so they stay until
+            # someone acts on them (batch-import, batch-abandon --provider).
+            self._save_batch_notice(deferred=None)
             return
         group_id = self._pinned_group_id()
         adapter = _batch_adapter(provider)
@@ -4581,7 +4584,24 @@ class ZoteroSemanticSearch:
 
     _KEEP = object()
 
-    def _save_batch_notice(self, notes: Any = _KEEP, deferred: Any = _KEEP) -> None:
+    def _refresh_batch_notice(self, provider: str, group_id: int, run_id: str) -> None:
+        """Bring the notice up to date after the user acted on ``run_id``.
+
+        Notes about that run go, unless they still apply (:meth:`_batch_notes`
+        says so); notes about other runs stay. A deferral stays only while
+        something still holds updates up. Called with the update lock held.
+        """
+        try:
+            old = self.batch_notice(group_id)
+            current = [note for note in self._batch_notes(provider, group_id) if run_id in note]
+            notes = [note for note in old.get("notes", []) if run_id not in note] + current
+            deferred = old.get("deferred") if self._blocking_batch_runs(provider, group_id) else None
+        except Exception as e:
+            logger.debug("Could not refresh the batch notice: %s", e)
+            return
+        self._save_batch_notice(notes=notes, deferred=deferred, library_key=str(group_id))
+
+    def _save_batch_notice(self, notes: Any = _KEEP, deferred: Any = _KEEP, library_key: str | None = None) -> None:
         """Keep what a background run has to tell, for whoever looks next.
 
         A background run's stats go nowhere. Written only when something changed,
@@ -4591,7 +4611,8 @@ class ZoteroSemanticSearch:
         if not self.config_path:
             return
         path = batch_notice_path(self.config_path)
-        library_key = str(self._pinned_group_id())
+        if library_key is None:
+            library_key = str(self._pinned_group_id())
         try:
             try:
                 with open(path, encoding="utf-8") as f:
@@ -4667,11 +4688,7 @@ class ZoteroSemanticSearch:
             module.save_manifest(run)
             if reset_happened:
                 self._save_update_config(last_sync_version=0, library_key=str(group_id))
-            try:
-                self._run_group_id = group_id
-                self._save_batch_notice(notes=[], deferred=None)
-            finally:
-                self._run_group_id = None
+            self._refresh_batch_notice(provider, group_id, str(run.get("run_id")))
             return {"abandoned": run.get("run_id"), "sync_version_reset": reset_happened}
 
     def has_unfinished_batch_run(self) -> bool:
