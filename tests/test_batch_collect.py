@@ -7,7 +7,7 @@ embedding function runs: vectors arrive precomputed from the fake provider.
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1817,3 +1817,247 @@ def test_m6_a_dead_rebuild_from_another_model_is_not_mentioned(env):
     env.provider.finish_all("failed")
 
     assert "batch_collect" not in env.new_search().collect_batch_results()
+
+
+# ---------------------------------------------------------------------------
+# Review round 2
+# ---------------------------------------------------------------------------
+
+
+def _rebuild_of(env, keys, target=20, max_requests=1):
+    return openai_batch.submit_embedding_batches(
+        records=[{"id": k, "document": "x" * 150, "metadata": {"item_key": k, "group_id": 0}} for k in keys],
+        model_name="text-embedding-3-small",
+        embedding_config={"api_key": "test"},
+        config_path=str(env.config_path),
+        client=env.provider,
+        force_full_rebuild=True,
+        target_sync_version=target,
+        group_id=0,
+        max_requests=max_requests,
+        scope={"limited": False, "since_version": 0},
+    )
+
+
+def _runs(env):
+    return openai_batch.manifests_for_group(config_path=str(env.config_path), group_id=0)
+
+
+def test_r2_1_abandoning_a_part_landed_rebuild_resets_the_sync_version(env):
+    _set_version(env, 10)
+    _rebuild_of(env, ["AAA", "BBB"], target=10)
+    env.provider.finish_all()
+    env.new_search()._import_batch("openai")
+    assert _indexed(env) == {"AAA", "BBB"}
+    # A crash after the first chunk of the rebuild landed.
+    run = _runs(env)[0]
+    run["batches"][1]["imported_at"] = None
+    run.pop("promoted_at", None)
+    openai_batch.save_manifest(run)
+    env.index.collection.delete(ids=["BBB"])
+    _set_version(env, 10)
+
+    result = env.new_search().abandon_batch_run("openai")
+
+    assert result["abandoned"] == run["run_id"]
+    assert result["sync_version_reset"] is True
+    assert _versions(env)["0"] == 0
+    stats = env.new_search().update_database()
+    assert stats["batch_submitted"] is True
+    env.provider.finish_all()
+    env.new_search().update_database()
+    assert "BBB" in _indexed(env)
+
+
+def test_r2_1_abandoning_a_rebuild_that_never_reset_leaves_the_sync_version(env):
+    _set_version(env, 10)
+    _rebuild_of(env, ["AAA", "BBB"], target=10)
+
+    result = env.new_search().abandon_batch_run("openai")
+
+    assert not result.get("sync_version_reset")
+    assert _versions(env)["0"] == 10
+
+
+def test_r2_2_an_abandoned_newer_run_covers_nothing(env):
+    _set_version(env, 10)
+    env.zotero.add("NEW1", 20)
+    older = _submit_run(env, target=20)
+    rebuild = _rebuild_of(env, ["AAA", "BBB", "NEW1"], target=20)
+    env.provider.statuses[older["batches"][0]["batch_id"]] = "completed"
+
+    env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"])
+
+    unfinished = env.new_search()._unfinished_batch_runs("openai", 0)
+    assert older["run_id"] in [run["run_id"] for run in unfinished]
+    env.new_search().collect_batch_results()
+    assert "R0" in _indexed(env)
+
+
+def test_r2_2_run_covers_ignores_runs_that_will_never_land():
+    abandoned = {**_run(force=True), "abandoned_at": "2026-11-01T00:00:00"}
+    dead = {**_run(force=True), "batches": [_entry("failed", output_file_id=None)]}
+    landed = {**_run(force=True), "batches": [_entry("completed", imported=True)]}
+
+    assert batch_common.run_covers(abandoned, _run("old")) is False
+    assert batch_common.run_covers(dead, _run("old"), openai_batch.ADAPTER) is False
+    assert batch_common.run_covers(landed, _run("old"), openai_batch.ADAPTER) is True
+    assert batch_common.run_covers(_run(force=True), _run("old"), openai_batch.ADAPTER) is True, "a run about to go out"
+
+
+def test_r2_2_a_dead_newer_run_covers_nothing(env):
+    _set_version(env, 10)
+    older = _submit_run(env, target=20)
+    rebuild = _rebuild_of(env, ["AAA", "BBB"], target=20)
+    env.provider.statuses[older["batches"][0]["batch_id"]] = "completed"
+    for batch in rebuild["batches"]:
+        env.provider.statuses[batch["batch_id"]] = "failed"
+
+    env.new_search().collect_batch_results()  # learns the rebuild is dead
+    env.new_search().collect_batch_results()
+
+    assert "R0" in _indexed(env), "the older run's paid results go in"
+
+
+def test_r2_3_batch_status_never_marks_a_chunk_lost(env):
+    _set_version(env, 10)
+    env.zotero.add("NEW1", 20)
+    run = _submit_run(env, target=20)
+    env.provider.finish_all()
+    env.provider.fail_status_with = NotFound("wrong key")
+
+    env.new_search()._get_batch_status("openai")
+
+    assert not any(batch.get("lost") for batch in _runs(env)[0]["batches"])
+    env.provider.fail_status_with = None  # key fixed
+    stats = env.new_search()._import_batch("openai", batch_ids=[run["batches"][0]["batch_id"]])
+    assert stats["imported_items"] == 2
+
+
+def test_r2_3_an_explicit_batch_import_rechecks_a_lost_chunk(env):
+    _set_version(env, 10)
+    run = _submit_run(env, target=20)
+    env.provider.finish_all()
+    env.provider.fail_status_with = NotFound("wrong key")
+    env.new_search().collect_batch_results()
+    assert _runs(env)[0]["batches"][0].get("lost")
+    assert not env.new_search().has_unfinished_batch_run(), "lost stops blocking"
+    env.provider.fail_status_with = None  # key fixed
+
+    by_id = env.new_search()._import_batch("openai", batch_ids=[run["batches"][0]["batch_id"]])
+
+    assert by_id["imported_items"] == 2
+    assert not _runs(env)[0]["batches"][0].get("lost")
+
+
+def test_r2_3_a_plain_batch_import_rechecks_a_lost_chunk_too(env):
+    _set_version(env, 10)
+    _submit_run(env, target=20)
+    env.provider.finish_all()
+    env.provider.fail_status_with = NotFound("wrong key")
+    env.new_search().collect_batch_results()
+    env.provider.fail_status_with = None
+
+    stats = env.new_search()._import_batch("openai")
+
+    assert stats["imported_items"] == 2
+    assert _versions(env)["0"] == 20
+
+
+def test_r2_3_a_chunk_whose_output_is_already_local_is_never_lost(env):
+    _set_version(env, 10)
+    run = _submit_run(env, target=20)
+    entry = run["batches"][0]
+    entry.update(status="completed", output_file_id="out-batch-1")
+    openai_batch.save_manifest(run)
+    records_path = Path(entry["records_path"])
+    rows = [
+        {"custom_id": record["id"], "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2, 0.3]}]}}}
+        for record in batch_common.read_jsonl(records_path)
+    ]
+    records_path.with_name(records_path.stem + "-output.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    env.provider.fail_status_with = NotFound("wrong key")
+
+    env.new_search().collect_batch_results()
+
+    assert not _runs(env)[0]["batches"][0].get("lost")
+    assert _indexed(env) == {"R0", "R1"}
+
+
+def test_r2_4_the_notice_clears_after_the_user_runs_batch_import(env, presearch):
+    _set_version(env, 10)
+    _rebuild_of(env, ["AAA", "BBB"])
+    env.provider.finish_all()
+    presearch()
+    assert any("ready" in note for note in env.new_search().batch_notice().get("notes", []))
+
+    env.new_search()._import_batch("openai")
+
+    assert env.new_search().batch_notice() == {}
+    presearch(after_seconds=3601 * 2)
+    assert env.new_search().batch_notice() == {}
+
+
+def test_r2_5_a_realtime_force_rebuild_warns_that_it_discards_a_batch_run(env, monkeypatch):
+    _batch_config(env, False)
+    run = _submit_run(env, target=20)
+    monkeypatch.setattr(Index, "upsert_documents", lambda *a, **k: None)
+
+    stats = env.new_search().update_database(force_full_rebuild=True, allow_mass_deletion=True)
+
+    assert not stats.get("batch_deferred")
+    assert run["run_id"] in stats["batch_discard_warning"]
+    assert "discarded" in stats["batch_discard_warning"]
+
+
+def test_r2_5_a_batch_force_rebuild_warns_too(env):
+    run = _submit_run(env, target=20)
+
+    stats = env.new_search().update_database(force_full_rebuild=True, allow_mass_deletion=True)
+
+    assert stats["batch_submitted"] is True
+    assert run["run_id"] in stats["batch_discard_warning"]
+
+
+def test_r2_6_a_realtime_update_held_by_presearch_leaves_a_notice(env, presearch, monkeypatch):
+    _batch_config(env, False, last_update=(datetime.now() - timedelta(days=3)).isoformat())
+    _set_version(env, 10)
+    env.zotero.add("NEW1", 20)
+    run = _submit_run(env, target=20)
+    calls = []
+    real = semantic_search.ZoteroSemanticSearch.update_database
+    monkeypatch.setattr(
+        semantic_search.ZoteroSemanticSearch, "update_database", lambda self, **k: calls.append(k) or real(self, **k)
+    )
+
+    for _ in range(3):
+        presearch(after_seconds=3601)
+
+    search = env.new_search()
+    assert not calls
+    assert search.should_update_database()
+    assert run["run_id"] in search.batch_notice()["deferred"]
+    assert "Not updating the index" in search.batch_notice()["deferred"]
+
+
+def test_r2_7_abandoning_one_run_keeps_notes_about_another(env):
+    stale = _submit_run(env, force=True, target=20, created_at=LONG_AGO, scope=REBUILD_SCOPE)
+    _set_version(env, 50)
+    other = _submit_run(env, target=60, created_at="2026-11-01T00:00:00+00:00")
+    env.new_search().collect_batch_results()
+    assert stale["run_id"] in str(env.new_search().batch_notice()["notes"])
+
+    env.new_search().abandon_batch_run("openai", run_id=other["run_id"])
+
+    assert stale["run_id"] in str(env.new_search().batch_notice()["notes"])
+
+
+def test_r2_7_a_collect_with_no_batch_provider_keeps_the_notes(env):
+    stale = _submit_run(env, force=True, target=20, created_at=LONG_AGO, scope=REBUILD_SCOPE)
+    _set_version(env, 50)
+    env.new_search().collect_batch_results()
+    env.index.embedding_model = "default"
+
+    env.new_search().collect_batch_results()
+
+    assert stale["run_id"] in str(env.new_search().batch_notice()["notes"])
