@@ -161,6 +161,13 @@ class TestArgumentHelpers:
             ["annotations", "create", "--attachment-key", "A1", "--page", "3",
              "--rect", "0.1,0.2,0.3,0.4", "--tags", "x,y", "--color", "green"])
         assert parsed.text is None and parsed.rect == "0.1,0.2,0.3,0.4"
+        assert parsed.underline is False
+
+    def test_create_takes_underline(self):
+        parsed = build_parser().parse_args(
+            ["annotations", "create", "--attachment-key", "A1", "--page", "3",
+             "--text", "exact words", "--underline"])
+        assert parsed.underline is True
 
     def test_batch_and_layout_parse(self):
         parser = build_parser()
@@ -188,6 +195,19 @@ class TestCreateForwarding:
         assert kwargs["text"] is None
         assert kwargs["color"] == "#a28ae5"
         assert kwargs["tags"] == ["a", "b"]
+
+
+class TestUnderlineForwarding:
+    def test_underline_reaches_the_tool(self, capsys):
+        annotations = MagicMock()
+        annotations.create_annotation.return_value = "Successfully created underline annotation"
+        args = _args(subcommand="create", attachment_key="A1", page=2, text="exact words",
+                     rect=None, note=None, underline=True, comment=None, color="red", tags=None)
+        env, tools = _with_tools(annotations)
+        with env, tools:
+            cli_standalone.cmd_annotations(args)
+        kwargs = annotations.create_annotation.call_args.kwargs
+        assert kwargs["underline"] is True and kwargs["text"] == "exact words"
 
 
 class TestNoteForwarding:
@@ -291,6 +311,16 @@ class TestBatch:
         assert annotations.create_annotations.call_args.kwargs["dry_run"] is True
         assert code == 0
         assert "(found on p3): the words" in out and "Located 1/1" in out
+
+    def test_dry_run_reports_underlines_like_highlights(self, tmp_path, capsys):
+        outcome = [{"index": 1, "page": 2, "type": "underline", "ok": True,
+                    "page_found": 2, "matched_text": "the words"}]
+        annotations, out, code = self._run(
+            tmp_path, capsys, [{"page": 2, "text": "the words", "underline": True}],
+            lambda key, specs, **kwargs: outcome, json_out=False, dry_run=True)
+        assert code == 0
+        assert "#1 p2: the words" in out
+        assert annotations.create_annotations.call_args.args[1][0]["underline"] is True
 
     def test_all_succeeded_exits_zero_with_a_summary(self, tmp_path, capsys):
         outcome = [{"index": 1, "page": 1, "type": "highlight", "ok": True, "annotation_key": "DDDD4444"}]
@@ -519,6 +549,33 @@ class TestCreateAnnotations:
         assert position["pageIndex"] == 0
         # Point (306, 198) from the top of a 612 x 792 page is y = 594 in PDF space.
         assert position["rects"] == [[295.0, 583.0, 317.0, 605.0]]
+
+    def test_underline_is_placed_like_a_highlight(self, writer):
+        annotations, fake, _fetches = writer
+        results = annotations.create_annotations("ATT00001", [
+            {"page": 1, "text": "sequential nature precludes"},
+            {"page": 1, "text": "sequential nature precludes", "underline": True, "color": "#ff6666"},
+        ], ctx=MagicMock())
+
+        assert [r["type"] for r in results] == ["highlight", "underline"]
+        assert all(r["ok"] for r in results)
+        highlight, underline = fake.create_items.call_args.args[0]
+        assert [k for k in underline if k.startswith("annotation")][0] == "annotationType"
+        assert underline["annotationType"] == "underline"
+        assert underline["annotationText"] == "sequential nature precludes"
+        assert underline["annotationColor"] == "#ff6666"
+        for key in ("annotationPosition", "annotationSortIndex", "annotationPageLabel"):
+            assert underline[key] == highlight[key]
+
+    @pytest.mark.parametrize("spec, error", [
+        ({"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "underline": True}, "underline applies to text"),
+        ({"page": 1, "note": [0.5, 0.5], "comment": "c", "underline": True}, "underline applies to text"),
+        ({"page": 1, "text": "sequential", "underline": "yes"}, "true or false"),
+    ])
+    def test_bad_underline_specs_fail_alone(self, writer, spec, error):
+        annotations, _fake, _fetches = writer
+        (result,) = annotations.create_annotations("ATT00001", [spec], ctx=MagicMock())
+        assert not result["ok"] and error in result["error"]
 
     @pytest.mark.parametrize("spec, error", [
         ({"page": 1, "note": [0.5, 0.5]}, "needs a comment"),

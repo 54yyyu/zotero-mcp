@@ -168,7 +168,8 @@ To annotate, plan everything, check it, then write it in one run:
 1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure, table and
    equation boxes with their captions and a paste-ready `rect_arg`.
 2. Write one JSON object per line: `{"page": 4, "text": "exact words",
-   "comment": "...", "color": "yellow"}` for a highlight, or
+   "comment": "...", "color": "yellow"}` for a highlight (add
+   `"underline": true` to underline instead), or
    `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box, or
    `{"page": 1, "note": "x,y", "comment": "..."}` for a sticky note
    centered on a point (its text is the comment). Copy

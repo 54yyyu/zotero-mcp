@@ -110,7 +110,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_synthesize_annotations`: Per-paper digest of highlights and notes across a collection or tag
 - `zotero_get_notes`: List notes, or pass `query` to search note and annotation text
 - `zotero_manage_note`: Create, update, or trash a note via `action="create"|"update"|"delete"`
-- `zotero_create_annotation`: Highlight (`text=`), area box (`rect=[x, y, width, height]`) or sticky note (`note=[x, y]`)
+- `zotero_create_annotation`: Highlight (`text=`, or an underline with `underline=True`), area box (`rect=[x, y, width, height]`) or sticky note (`note=[x, y]`)
 - `zotero_update_annotation`: Change an annotation's text, comment, color or tags
 - `zotero_delete_annotation`: Permanently delete an annotation
 - `zotero_get_page_layout`: Detect figure and table regions on a PDF page with normalized boxes, for area annotations (`pdf-geometry`)

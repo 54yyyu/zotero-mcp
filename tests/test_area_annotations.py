@@ -279,6 +279,33 @@ def test_create_annotation_text_creates_highlight(monkeypatch):
     assert calls[0]["tags"] == ["to-cite"]
 
 
+def test_create_annotation_underline_reaches_the_text_path(monkeypatch):
+    calls = []
+    monkeypatch.setattr(annotations, "_create_highlight_annotation",
+                        lambda **kwargs: calls.append(kwargs) or "underlined")
+
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01", page=4, text="working memory", underline=True,
+        ctx=DummyContext(),
+    )
+
+    assert result == "underlined"
+    assert calls[0]["underline"] is True and calls[0]["text"] == "working memory"
+
+
+@pytest.mark.parametrize("kwargs", [
+    {},
+    {"rect": [0.1, 0.2, 0.3, 0.4]},
+    {"note": [0.5, 0.5], "comment": "c"},
+])
+def test_create_annotation_underline_needs_text(kwargs):
+    result = annotations.create_annotation(
+        attachment_key="ATTACH01", page=1, underline=True, ctx=DummyContext(), **kwargs
+    )
+
+    assert "underline applies to text" in result
+
+
 def test_create_annotation_rejects_text_and_rect_together():
     result = annotations.create_annotation(
         attachment_key="ATTACH01",
