@@ -4501,10 +4501,11 @@ class ZoteroSemanticSearch:
         """
         provider = self._collect_provider()
         if provider is None:
-            # Nothing can hold an update up without a batch provider, but the
-            # notes are about runs this pass can't look at, so they stay until
-            # someone acts on them (batch-import, batch-abandon --provider).
-            self._save_batch_notice(deferred=None)
+            # The configured model can't import any batch run, so none of the
+            # notes can be acted on: batch-import skips other-model runs, and
+            # nothing would ever clear them. They go, with the deferral, which
+            # nothing can cause without a batch provider either.
+            self._save_batch_notice(notes=[], deferred=None)
             return
         group_id = self._pinned_group_id()
         adapter = _batch_adapter(provider)
