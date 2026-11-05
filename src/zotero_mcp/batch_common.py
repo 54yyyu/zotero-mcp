@@ -274,7 +274,21 @@ def manifests_for_group(root: Path, group_id: int | None) -> list[dict[str, Any]
     return [manifest for _, manifest in _sorted_manifests(root) if manifest.get("group_id") == group_id]
 
 
-def run_covers(newer: dict[str, Any], older: dict[str, Any]) -> bool:
+def run_will_never_land(manifest: dict[str, Any], adapter: BatchAdapter | None = None) -> bool:
+    """A run the user gave up on, or (given ``adapter``) one that can't finish:
+    nothing it was submitted for will ever reach the index through it."""
+    if manifest.get("abandoned_at"):
+        return True
+    batches = manifest.get("batches", [])
+    return bool(
+        adapter is not None
+        and batches
+        and not run_is_unfinished(manifest, adapter)
+        and not all(batch.get("imported_at") for batch in batches)
+    )
+
+
+def run_covers(newer: dict[str, Any], older: dict[str, Any], adapter: BatchAdapter | None = None) -> bool:
     """Does ``newer`` embed everything ``older`` was submitted for?
 
     The one place this is decided. ``newer`` is a manifest, or the same fields
@@ -288,8 +302,14 @@ def run_covers(newer: dict[str, Any], older: dict[str, Any]) -> bool:
     was cut from the same sync version or an earlier one. Manifests written
     before these fields existed were all assumed to be cut from one sync
     version; between one of those and a newer manifest nothing can be proved.
+
+    A run that will never land covers nothing (:func:`run_will_never_land`):
+    abandoned, or with ``adapter`` given, dead. Otherwise an older run's paid
+    results would be dropped for a newer run that never delivers them.
     """
     if newer.get("run_id") == older.get("run_id") or newer.get("group_id") != older.get("group_id"):
+        return False
+    if run_will_never_land(newer, adapter):
         return False
     if newer.get("limited"):
         return False
@@ -426,7 +446,7 @@ def find_manifest(
         current = [manifest for manifest in ours if is_current is None or is_current(manifest)]
         for manifest in current:
             newer = ours[:ours.index(manifest)]
-            if run_is_unfinished(manifest, adapter) and not any(run_covers(run, manifest) for run in newer):
+            if run_is_unfinished(manifest, adapter) and not any(run_covers(run, manifest, adapter) for run in newer):
                 return manifest
         if current:
             return current[0]

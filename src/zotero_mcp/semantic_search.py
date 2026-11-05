@@ -96,15 +96,16 @@ def _batch_adapter(provider: str):
     return _batch_module(provider).ADAPTER
 
 
-def _is_superseded(current: dict[str, Any], newest: dict[str, Any] | None) -> bool:
+def _is_superseded(current: dict[str, Any], newest: dict[str, Any] | None, adapter: Any = None) -> bool:
     """Has ``newest`` taken over the items ``current`` was submitted for?
 
     Only when it has may the older run's parked chunks be abandoned and its
     sync watermark withheld. Compared by ``run_id``, never by manifest path: the
     same run reached through a differently spelled config path must not
-    supersede itself. See :func:`batch_common.run_covers` for the coverage rule.
+    supersede itself. See :func:`batch_common.run_covers` for the coverage rule;
+    with ``adapter`` given, a dead ``newest`` takes nothing over.
     """
-    return bool(newest) and batch_common.run_covers(newest, current)
+    return bool(newest) and batch_common.run_covers(newest, current, adapter)
 
 
 def _deferred_message(run: dict[str, Any], run_count: int, batch: bool, window_hours: int) -> str:
@@ -4187,7 +4188,7 @@ class ZoteroSemanticSearch:
         ):
             if newer.get("run_id") == manifest.get("run_id"):
                 break
-            if _is_superseded(manifest, newer):
+            if _is_superseded(manifest, newer, _batch_adapter(provider)):
                 return str(newer.get("run_id"))
         return None
 
@@ -4326,7 +4327,7 @@ class ZoteroSemanticSearch:
             for position, run in enumerate(runs)
             if batch_common.run_is_unfinished(run, adapter)
             and self._run_is_usable(provider, run)
-            and not any(_is_superseded(run, newer) for newer in runs[:position])
+            and not any(_is_superseded(run, newer, adapter) for newer in runs[:position])
             and self._stale_rebuild_note(run) is None
         ]
         unfinished.reverse()
@@ -4359,7 +4360,7 @@ class ZoteroSemanticSearch:
             if (
                 batch_common.run_is_unfinished(run, adapter)
                 and self._run_is_usable(provider, run)
-                and not any(_is_superseded(run, newer) for newer in runs[:position])
+                and not any(_is_superseded(run, newer, adapter) for newer in runs[:position])
                 and (note := self._stale_rebuild_note(run))
             ):
                 notes.append(note)
@@ -4395,6 +4396,7 @@ class ZoteroSemanticSearch:
         between leaves a run that looks finished, and the next update would buy
         its items again.
         """
+        adapter = _batch_adapter(provider)
         runs = _batch_module(provider).manifests_for_group(config_path=self.config_path, group_id=group_id)
         for position, run in enumerate(runs):
             batches = run.get("batches", [])
@@ -4405,7 +4407,7 @@ class ZoteroSemanticSearch:
                 and not run.get("promoted_at")
                 and not any(batch.get("imported_partial") for batch in batches)
                 and self._run_is_usable(provider, run)
-                and not any(_is_superseded(run, newer) for newer in runs[:position])
+                and not any(_is_superseded(run, newer, adapter) for newer in runs[:position])
             ):
                 self._promote_run(provider, run, bool(run.get("force_full_rebuild")))
 
