@@ -187,6 +187,12 @@ def write_text_atomic(path: Path, text: str) -> None:
     _private_chmod(path)
 
 
+def output_path_for(batch: dict[str, Any]) -> Path:
+    """Where a chunk's downloaded output is kept, next to its records file."""
+    records_path = Path(batch["records_path"])
+    return records_path.with_name(records_path.stem + "-output.jsonl")
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with open(path, encoding="utf-8") as f:
@@ -707,19 +713,29 @@ def refresh_manifest_status(
     batch_ids: set[str] | None = None,
     client: Any | None = None,
     persist: bool = True,
+    mark_lost: bool = True,
+    recheck_lost: bool = False,
 ) -> dict[str, Any]:
     """Retrieve current status for ``adapter``'s selected batches and persist it.
 
     ``persist=False`` is for a reader without the update lock: saving could
     overwrite what the lock holder wrote in the meantime, such as the batch id
     of a chunk it submitted, and that chunk would then be paid for again.
+
+    A provider 404 marks a chunk ``lost`` (with ``mark_lost``), so that it stops
+    holding updates up. It isn't proof the batch is gone: a wrong key or base
+    URL gets the same answer. So ``recheck_lost`` asks again and clears the mark
+    on an answer, a status check never sets it, and a chunk whose output is
+    already on disk is never marked.
     """
     client = client or adapter.create_client(embedding_config)
     for batch in manifest.get("batches", []):
         if not batch.get("batch_id"):
             continue  # pending chunk, not yet submitted
-        if batch.get("imported_at") or batch.get("lost"):
+        if batch.get("imported_at"):
             continue  # settled; its status can no longer change anything
+        if batch.get("lost") and not recheck_lost:
+            continue
         if batch_ids and batch.get("batch_id") not in batch_ids:
             continue
         try:
@@ -727,8 +743,10 @@ def refresh_manifest_status(
         except Exception as e:
             if not is_not_found(e):
                 raise
-            batch["lost"] = True
+            if mark_lost and not output_path_for(batch).exists():
+                batch["lost"] = True
             continue
+        batch.pop("lost", None)
         batch["state"] = adapter.normalize_status(batch.get("status"))
     if persist:
         save_manifest(manifest)

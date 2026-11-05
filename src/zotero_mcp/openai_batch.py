@@ -351,10 +351,13 @@ def refresh_manifest_status(
     batch_ids: set[str] | None = None,
     client: Any | None = None,
     persist: bool = True,
+    mark_lost: bool = True,
+    recheck_lost: bool = False,
 ) -> dict[str, Any]:
     """Retrieve current OpenAI status for selected batches and persist it."""
     return batch_common.refresh_manifest_status(
-        ADAPTER, manifest, embedding_config, batch_ids=batch_ids, client=client, persist=persist
+        ADAPTER, manifest, embedding_config, batch_ids=batch_ids, client=client, persist=persist,
+        mark_lost=mark_lost, recheck_lost=recheck_lost,
     )
 
 

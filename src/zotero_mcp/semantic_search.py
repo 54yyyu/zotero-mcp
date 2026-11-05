@@ -4148,6 +4148,10 @@ class ZoteroSemanticSearch:
                 embedding_config=self.chroma_client.embedding_config,
                 batch_ids=selected_ids or None,
                 persist=bool(acquired),
+                # A status check never marks a chunk lost: a 404 from it may
+                # only mean the key or base URL is wrong.
+                mark_lost=False,
+                recheck_lost=True,
             )
         batches = [
             batch for batch in manifest.get("batches", [])
@@ -4779,6 +4783,9 @@ class ZoteroSemanticSearch:
                 manifest,
                 embedding_config=self.chroma_client.embedding_config,
                 batch_ids=selected_ids or None,
+                # Asking for an import is asking again about chunks a 404 took
+                # out of the unattended path.
+                recheck_lost=_collect_run is None,
             )
 
             all_batches = manifest.get("batches", [])
