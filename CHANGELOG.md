@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The search database status says whether the index is stale.** `zotero_get_search_database_status`, `zotero-mcp db-status` and `zotero-cli db status` compare the library version saved at the last update with the library's version now (a read of the local Zotero database in local mode, one API request in web mode) and report `up to date`, `STALE` with the two versions and what to run, or `couldn't check` with the reason; a failed check never reads as current. They also report an unfinished batch embedding run from its local manifest, with no network call. Neither loads an embedding model or a vector index, and the MCP tool does not take the Zotero API lock.
+- **Agents are told to check the status before their first semantic search.** The `zotero_semantic_search` description and the `zotero-cli` skill say to check the status once per session, to tell the user when the index is stale or could not be checked, and to fall back to keyword search (saying why) when the embedding API is unreachable.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added

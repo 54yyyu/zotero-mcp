@@ -71,6 +71,21 @@ zotero-cli --json search "diffusion models" --limit 5 --detail keys_only \
 `zotero-cli db update` to build). If it is empty, fall back to `items` and
 say why rather than reporting no results.
 
+Before your first semantic search in a session, run `zotero-cli db status`
+once. Its "Index freshness" line says whether the index is behind the library:
+
+- `STALE`: the library changed after the last update, so semantic results miss
+  recent additions. Tell the user, and that `zotero-cli db update` refreshes it.
+  Search anyway if they want, and say the results may be incomplete.
+- `couldn't check`: do not treat the index as current. Say you could not
+  verify it.
+- An "Unfinished batch" line means a batch embedding run has chunks not yet
+  imported; `zotero-cli db batch-import` imports the finished ones.
+
+If a semantic search fails because the embedding API is unreachable, fall back
+to `search` in `items` mode and tell the user why; do not report that nothing
+matched.
+
 Every search covers one library — the active one. When you don't know which
 library holds something, or a search comes up empty and the item might live in
 a group library, add `--all-libraries`:

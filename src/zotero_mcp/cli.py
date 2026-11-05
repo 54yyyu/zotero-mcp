@@ -1341,6 +1341,12 @@ def main():
             print(f"- OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
             print(f"- Passage chunking: {_format_chunking_status(status)}")
 
+            from zotero_mcp.index_staleness import status_lines
+
+            print()
+            for line in status_lines(str(config_path), "zotero-mcp update-db", "zotero-mcp batch-import"):
+                print(line)
+
             if collection_info.get("unreadable"):
                 from zotero_mcp.chroma_client import unreadable_index_message
 

@@ -1414,10 +1414,12 @@ def advanced_search(
         "zotero_list_libraries). search_all_libraries: search every indexed "
         "library at once, labelling each result with its library; needs the "
         "SQLite backend (the default in local mode), excludes library_id. "
-        "Requires the semantic search database to be POPULATED — run "
-        "zotero_update_search_database first if you just installed the "
-        "server or added new items; check readiness with "
-        "zotero_get_search_database_status. "
+        "Needs a populated index. Before your first semantic search in a "
+        "session, call zotero_get_search_database_status; if it says STALE, "
+        "empty or couldn't check, tell the user "
+        "(zotero_update_search_database refreshes it). If embedding fails "
+        "or the API is unreachable, fall back to zotero_search_items and "
+        "say why. "
         "Available only when the [semantic] optional dependency is "
         "installed. "
         "Example: zotero_semantic_search(query='mindfulness-based "
@@ -1722,8 +1724,9 @@ def update_search_database(
     name="zotero_get_search_database_status",
     description=(
         "Report the semantic search database's readiness and stats: item "
-        "count, last update time, embedding provider / model, and whether "
-        "the [semantic] optional dependency is installed. "
+        "count, last update time, embedding provider / model, whether "
+        "the index is STALE against the library, any unfinished batch run, "
+        "and whether the [semantic] optional dependency is installed. "
         "Use this to decide whether zotero_semantic_search will return "
         "useful results, or whether the user should run "
         "zotero_update_search_database first. "
@@ -1739,8 +1742,10 @@ def get_search_database_status(*, ctx: Context) -> str:
     Get semantic search database status.
 
     Deliberately NOT wrapped in ``@with_zotero_api_lock``: this is a read-only
-    ChromaDB query that never touches the Zotero API, and holding the shared
-    lock here would make a slow status read block every other tool. The read
+    index query, and holding the shared lock here would make a slow status
+    read block every other tool. The one Zotero call it makes is the
+    freshness check (a SQLite read in local mode, a single version request in
+    web mode), which does not need the lock either. The read
     path below also avoids constructing the embedding function, which for the
     default backend downloads an ONNX model on first use and could otherwise
     hang this call for minutes.
@@ -1802,6 +1807,24 @@ def get_search_database_status(*, ctx: Context) -> str:
         elif collection_info.get('error'):
             output.append(f"**Error:** {collection_info['error']}")
 
+        output.append("")
+
+        # Is the index behind the library? One SQLite read (local) or one API
+        # call (web); no model, no vector index, and not under the API lock.
+        from zotero_mcp import index_staleness as _staleness
+
+        output.append("## Index Freshness")
+        output.append(
+            "**Freshness:** "
+            + _staleness.format_staleness(
+                _staleness.check_active_library(str(config_path)),
+                "zotero_update_search_database",
+            )
+        )
+        for line in _staleness.format_unfinished_batches(
+            _staleness.unfinished_batch_runs(str(config_path))
+        ):
+            output.append(f"**Unfinished batch:** {line}")
         output.append("")
 
         output.append("## Update Configuration")
