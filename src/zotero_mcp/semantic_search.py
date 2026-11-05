@@ -4715,8 +4715,14 @@ class ZoteroSemanticSearch:
         provider = self._collect_provider()
         return bool(provider and self._blocking_batch_runs(provider, self._client_group_id()))
 
-    def collect_batch_results(self, allow_rebuild_import: bool = True) -> dict[str, Any]:
-        """Collect unfinished batch runs and do nothing else; a new run never starts here."""
+    def collect_batch_results(self, allow_rebuild_import: bool = True, update_due: bool = False) -> dict[str, Any]:
+        """Collect unfinished batch runs and do nothing else; a new run never starts here.
+
+        ``update_due`` says an automatic update was due and this collect ran in
+        its place. If a run still holds it up, the deferral is recorded in the
+        notice, as the update itself would have done, so the user can see why
+        nothing is being updated.
+        """
         stats: dict[str, Any] = {}
         with _acquire_update_lock(_update_lock_path()) as acquired:
             if not acquired:
@@ -4728,6 +4734,20 @@ class ZoteroSemanticSearch:
                     stats["error"] = f"Cannot read the semantic index: {read_error}"
                     return stats
                 self._collect_unfinished_batches(stats, allow_rebuild_import=allow_rebuild_import)
+                provider = self._collect_provider()
+                blocking = self._blocking_batch_runs(provider, self._run_group_id) if update_due and provider else []
+                if blocking:
+                    try:
+                        batch_enabled = self._resolve_batch_mode()[0]
+                    except Exception:
+                        batch_enabled = False
+                    stats["batch_deferred"] = _deferred_message(
+                        blocking[-1],
+                        len(blocking),
+                        batch_enabled,
+                        _batch_adapter(provider).completion_window_hours + batch_common.WINDOW_MARGIN_HOURS,
+                    )
+                    self._save_batch_notice(deferred=stats["batch_deferred"])
             finally:
                 self._run_group_id = None
         return stats

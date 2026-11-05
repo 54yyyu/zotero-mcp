@@ -82,7 +82,7 @@ def _maybe_fire_presearch_sync(search) -> None:
     def _run():
         try:
             if collect_only:
-                search.collect_batch_results(allow_rebuild_import=False)
+                search.collect_batch_results(allow_rebuild_import=False, update_due=update_due)
             else:
                 search.update_database(extract_fulltext=_utils.is_local_mode(), allow_rebuild_import=False)
         except Exception as e:
