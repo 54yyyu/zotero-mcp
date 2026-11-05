@@ -44,7 +44,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.parse import urlsplit
 
+from zotero_mcp.config_light import api_unreachable_message
 from zotero_mcp.embeddings.ratelimit import AdaptiveRateLimiter
 from zotero_mcp.utils import install_hint
 
@@ -68,6 +70,26 @@ COMMON_CONFIG_KEYS = (
     "max_retries",
     "tokens_per_minute",
 )
+
+
+class EmbeddingAPIUnreachable(RuntimeError):
+    """The embedding API could not be reached, or refused the request.
+
+    Raised for connection errors, timeouts, 401 and 403 once retries are
+    spent. Carries the host only, never the URL or the key, so the message
+    and anything stored from it are safe to show and keep.
+    """
+
+    def __init__(self, provider: str, host: str, reason: str):
+        self.provider = provider
+        self.host = host
+        self.reason = reason
+        super().__init__(api_unreachable_message(host, reason))
+
+    def __str__(self) -> str:
+        # ChromaDB appends " in upsert." and the like to a passing
+        # exception's args; the message is rebuilt so it stays clean.
+        return api_unreachable_message(self.host, self.reason)
 
 
 def _safe_int(value: Any) -> int | None:
@@ -157,9 +179,16 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
     - ``truncate_queries`` — whether :meth:`embed_query_text` truncates before
       preparing the text. Only Gemini needs this, because its query path
       bypasses the indexing pipeline's own truncation.
+    - ``default_api_host`` — the host named in an "unreachable" message when
+      no ``base_url`` is configured.
     """
 
     default_request_batch_size: int | None = None
+    default_api_host: str | None = None
+    #: Retries for :meth:`check_reachable`, kept low so an unreachable API
+    #: is reported in seconds rather than after a full backoff ladder.
+    probe_max_retries = 1
+    probe_text = "zotero-mcp connectivity check"
     default_tokens_per_minute: float | None = None
     max_parallel_requests_default = 1
     max_retries_default = 5
@@ -323,12 +352,52 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             text = self.truncate(text, getattr(self, "max_input_tokens", 8000))
         return self._embed_with_retry([self._prepare_query(text)], is_query=True)[0]
 
+    def api_host(self) -> str:
+        """The API's host name: no scheme, port, path, query or credentials.
+
+        Safe to show and store. Falls back to the provider's public host when
+        no ``base_url`` is configured.
+        """
+        base_url = getattr(self, "base_url", None)
+        if base_url:
+            text = str(base_url)
+            hostname = urlsplit(text if "//" in text else f"//{text}").hostname
+            if hostname:
+                return hostname
+        return self.default_api_host or "the configured embedding API"
+
+    def check_reachable(self) -> None:
+        """Embed one short string, to find out whether the API answers at all.
+
+        Goes through the normal limiter and retry path with
+        ``probe_max_retries``. Raises :class:`EmbeddingAPIUnreachable` when
+        the API cannot be reached or refuses the request. Any other error is
+        only logged: it is left to the run itself, which handles it as before.
+        """
+        try:
+            self._embed_with_retry(
+                [self._prepare_document(self.probe_text)],
+                max_retries=self.probe_max_retries,
+            )
+        except EmbeddingAPIUnreachable:
+            raise
+        except Exception as exc:
+            logger.warning(f"Embedding API check failed, continuing: {exc}")
+
     def _embed_with_retry(
-        self, texts: list[str], is_query: bool = False
+        self,
+        texts: list[str],
+        is_query: bool = False,
+        max_retries: int | None = None,
     ) -> list[list[float]]:
-        """acquire -> _embed_batch -> on_success, or on_throttle and retry."""
+        """acquire -> _embed_batch -> on_success, or on_throttle and retry.
+
+        Once retries are spent, an error the provider classifies as "API
+        unreachable" is re-raised as :class:`EmbeddingAPIUnreachable`.
+        """
         limiter = self._get_limiter()
-        max_retries = getattr(self, "max_retries", self.max_retries_default) or 0
+        if max_retries is None:
+            max_retries = getattr(self, "max_retries", self.max_retries_default) or 0
         # A rough estimate, not a token count: enough to pace the TPM bucket
         # without paying tiktoken's per-request CPU cost. Text reaching here
         # has already been truncated upstream.
@@ -350,6 +419,11 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
                     limiter.wait(limiter.on_throttle(retry_after))
                     attempt += 1
                     continue
+                reason = self._unreachable_reason(exc)
+                if reason:
+                    raise EmbeddingAPIUnreachable(
+                        self._provider_name(), self.api_host(), reason
+                    ) from exc
                 raise
 
             http_ms = (time.monotonic() - started) * 1000.0
@@ -365,6 +439,10 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
                 len(texts), estimated_tokens, http_ms, limiter_wait_ms, headers
             )
             return vectors
+
+    def _provider_name(self) -> str:
+        name_attr = getattr(self, "name", None)
+        return name_attr() if callable(name_attr) else self.__class__.__name__
 
     def _log_telemetry(
         self,
@@ -383,8 +461,7 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
         if not logger.isEnabledFor(logging.INFO):
             return
 
-        name_attr = getattr(self, "name", None)
-        provider = name_attr() if callable(name_attr) else self.__class__.__name__
+        provider = self._provider_name()
         message = (
             f"[{provider} API] [{threading.current_thread().name}] "
             f"Embedded {chunk_count} chunks (~{estimated_tokens} tokens) "
@@ -456,3 +533,14 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
         succeed. Providers override this with their SDK's exception types.
         """
         return False, None
+
+    def _unreachable_reason(self, exc: Exception) -> str | None:
+        """A short reason if ``exc`` means the API cannot be reached, else None.
+
+        "Unreachable" covers connection errors, timeouts, 401 and 403: the
+        failures an API that answers only on some networks produces off them.
+        Returns one of a fixed set of phrases ("connection failed", "timed
+        out", "HTTP 401", "HTTP 403"), never the exception's own text, which
+        may carry a URL. The default recognises nothing; providers override.
+        """
+        return None

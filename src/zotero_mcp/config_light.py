@@ -88,6 +88,70 @@ def should_update(update_config: dict[str, Any]) -> bool:
     return False
 
 
+#: How long background updates wait after the embedding API was unreachable.
+#: A manual ``update-db`` always runs; only the server's own syncs back off.
+API_FAILURE_BACKOFF = timedelta(hours=1)
+
+
+def api_unreachable_message(host: str, reason: str) -> str:
+    """The one message for an embedding API that cannot be reached.
+
+    Names the host and what went wrong, and suggests the network or VPN,
+    because some APIs answer only from particular networks. It does not claim
+    the request was blocked by address: a 403 can mean other things too.
+    """
+    message = (
+        f"Could not reach the embedding API at {host} ({reason}). "
+        "Check your network connection; if this API only accepts requests "
+        "from a particular network, connect to it or its VPN and try again."
+    )
+    if reason in ("HTTP 401", "HTTP 403"):
+        message += " If you are on the right network, check the API key."
+    return message
+
+
+def api_failure_backoff_until(
+    update_config: dict[str, Any], now: datetime | None = None
+) -> datetime | None:
+    """When background updates may resume, or None if they are not held off.
+
+    Reads the ``last_api_failure`` record a realtime update stores when the
+    embedding API could not be reached; a successful update removes it.
+    """
+    failure = update_config.get("last_api_failure")
+    if not isinstance(failure, dict):
+        return None
+    try:
+        until = datetime.fromisoformat(str(failure.get("time"))) + API_FAILURE_BACKOFF
+    except ValueError:
+        return None
+    return until if (now or datetime.now()) < until else None
+
+
+def background_update_due(update_config: dict[str, Any]) -> bool:
+    """``should_update``, held off for an hour after the API was unreachable.
+
+    For the server's own background syncs only. ``should_update`` itself is
+    unchanged, so status still reports whether an update is due.
+    """
+    return should_update(update_config) and api_failure_backoff_until(update_config) is None
+
+
+def describe_api_failure(update_config: dict[str, Any]) -> str | None:
+    """One status line for the stored embedding API failure, or None."""
+    failure = update_config.get("last_api_failure")
+    if not isinstance(failure, dict):
+        return None
+    line = (
+        f"{failure.get('time', 'unknown time')}: could not reach "
+        f"{failure.get('host', 'the embedding API')} ({failure.get('reason', 'unknown')})"
+    )
+    until = api_failure_backoff_until(update_config)
+    if until is not None:
+        line += f"; background updates paused until {until.isoformat(timespec='seconds')}"
+    return line
+
+
 _DEFAULT_RERANKER_CONFIG: dict[str, Any] = {
     "enabled": False,
     "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
