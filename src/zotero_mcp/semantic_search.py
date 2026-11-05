@@ -3327,6 +3327,23 @@ class ZoteroSemanticSearch:
                     stats["duration"] = str(end_time - start_time)
                     stats["end_time"] = end_time.isoformat()
                     return stats
+                elif force_full_rebuild:
+                    # Named by the user, so it goes ahead, but a run in flight
+                    # or ready is paid for and is about to be thrown away.
+                    replaced = [
+                        run for run in self._unfinished_batch_runs(collect_provider, self._run_group_id)
+                        if batch_common.may_supersede(new_run, run)
+                    ]
+                    if replaced:
+                        more = f" and {len(replaced) - 1} more" if len(replaced) > 1 else ""
+                        price = "" if batch_enabled else ", at realtime prices"
+                        stats["batch_discard_warning"] = (
+                            f"This rebuild replaces batch run {replaced[-1].get('run_id')}{more}, which is "
+                            "unfinished or ready to import: its results will be discarded, and every item "
+                            f"is embedded again{price}."
+                        )
+                        logger.warning(stats["batch_discard_warning"])
+                        _report(f"\nWarning: {stats['batch_discard_warning']}\n")
                 self._save_batch_notice(deferred=None)
 
             # In batch mode, defer destructive rebuilds until import so the
