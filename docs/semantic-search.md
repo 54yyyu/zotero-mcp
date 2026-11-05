@@ -76,6 +76,7 @@ with a 4096-token batch.
 When you choose OpenAI, setup also asks whether database updates should use
 OpenAI Batch API. Batch updates are cheaper for large libraries, but they are
 asynchronous: submit the batch, wait for completion, then import the embeddings.
+See [How batch runs are collected](#how-batch-runs-are-collected).
 
 ### Update frequency
 
@@ -83,6 +84,8 @@ asynchronous: submit the batch, wait for completion, then import the embeddings.
 - **Auto on startup**: Update database every time the server starts
 - **Daily**: Update once per day automatically
 - **Every N days**: Set custom interval
+
+Automatic updates run when the server starts and before a semantic search. If you use Batch API embeddings and rarely search, schedule `zotero-mcp update-db` with cron so that finished batches get imported.
 
 ## Building and updating the index
 
@@ -119,6 +122,18 @@ zotero-mcp repair-db
 ```
 
 `repair-db` is for an index that ChromaDB can no longer read, typically after an interrupted update; see [Repairing an unreadable index](troubleshooting.md#repairing-an-unreadable-index).
+
+### How batch runs are collected
+
+Results of a batch run (OpenAI or Gemini) are already paid for, so every `update-db`, the `zotero_update_search_database` tool and every automatic update first looks for unfinished runs of the active library. It imports the files that have finished and submits the ones the enqueued-token budget held back, even if the update itself runs in realtime. With no unfinished run this only reads local files and makes no provider call. `batch-import` does the same for one run, and starts nothing new.
+
+- **A new submission waits behind an unfinished run.** The update says which run it is waiting for, and the sync version stays where it is, so its changes go in with the next update after that run has finished. Submitting anyway would pay again for the items in the unfinished run. Only `update-db --force-rebuild` replaces an unfinished run, unless `--limit` is also given.
+- **While a run is unfinished, the check before a semantic search only collects.** It runs at most hourly instead of on the daily schedule, and never starts a new run. With auto-update off it does nothing, so collect by hand with `update-db` or `batch-import`.
+- **A failed chunk doesn't block anything.** The update reports it, and since the sync version didn't move, the next update submits those items again. A force rebuild imports all-or-nothing, so one failed chunk ends that run; the index stays as it was and the update reports what to run.
+- **An import doesn't lower the sync version.** The exception is a force rebuild as it lands: it has just replaced the ChromaDB collection, so the sync version has to say what the collection now holds.
+- **An unattended import of a force rebuild won't drop other libraries' documents.** If another library was indexed into the ChromaDB collection after you submitted the rebuild, the update tells you to run `zotero-mcp batch-import`, which imports it anyway. A rebuild you submitted with `--allow-mass-deletion` doesn't ask again.
+
+A run that can't be finished at the provider, for example because its API key changed, keeps being reported. To give it up, delete its directory under `~/.config/zotero-mcp/openai_batches/` or `gemini_batches/`; the update's message names it. Results made with a different embedding model aren't imported automatically, since no query in the current ChromaDB collection could match them.
 
 How much of each PDF is extracted, and which attachment is read when an item has several, is set in [Text extraction settings](configuration.md#text-extraction-settings).
 

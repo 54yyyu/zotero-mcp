@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Automatic updates no longer pay for the same batch twice, and results already paid for get imported.** With Batch API embeddings and auto-update on, a submission left the update due, so each semantic search (at most once a minute) could submit the library's changes again and replace the previous run. Nothing but `batch-import` and `--auto-loop` imported results at all. Now a submission saves the last update time, and every `update-db`, `zotero_update_search_database` and automatic update first imports finished files and submits waiting ones of the active library's unfinished runs, without a provider call when there are none. A failure while collecting is reported and never moves the sync version. While a run is unfinished, the check before a search only collects, at most hourly. See "How batch runs are collected" in `docs/semantic-search.md`.
+- **A new batch run no longer strands or re-buys an unfinished one.** It waits, saying which run it is waiting for, and the sync version stays put so nothing is lost. Only a force rebuild without `--limit` replaces an unfinished run. `--limit` runs used to replace one though they cover only N items, and a small incremental run hid an older rebuild or first build from `batch-import`, which then could never finish it.
+- **`batch-import` and `batch-status` find this library's unfinished run**, instead of the newest run overall, which could belong to another library.
+- **`batch-import` no longer moves the sync version backwards** when run again on a settled run or when a run lands after a newer sync. A force rebuild as it lands still sets it, because it has just replaced the ChromaDB collection.
+- **An interrupted batch submission or import costs less.** A submission cut off part way keeps its unsent chunks on record for the next update; it used to leave a shorter run that looked complete, and importing it moved the sync version past the unsent items. A force-rebuild import downloads every file before it empties the ChromaDB collection and resumes after a crash instead of emptying it again. `batch-import` refreshes status under the update lock, and `batch-status` saves only with the lock, so neither can overwrite another process's record of a submitted batch.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
