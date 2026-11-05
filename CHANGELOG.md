@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **With `idle_unload_minutes` set, indexing in the server keeps the embedding provider's settings.** The worker forwarded `embedding_function` as a callable that runs in the worker, so the server saw none of its settings: the streaming pipeline (embedding overlapped with preparing and committing; on by default for OpenAI and Gemini, `max_parallel_requests` 4) was silently off, item-level indexes lost their parallel requests, and passage sizes ignored the provider's characters per token. Settings are now read from the worker's function and embedding runs in the server on a copy built from the same model and config.
+- **A provider error that cannot be unpickled reaches the caller as itself.** The OpenAI SDK's status errors pickle but do not unpickle, so a rate-limit or authentication error raised in the worker surfaced in the server as an unrelated `TypeError`.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
