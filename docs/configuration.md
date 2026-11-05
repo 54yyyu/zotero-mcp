@@ -291,6 +291,7 @@ zotero-mcp update-db --openai-batch        # Submit OpenAI embeddings through Ba
 zotero-mcp update-db --no-openai-batch     # Force realtime OpenAI embeddings for this run
 zotero-mcp openai-batch-status             # Check latest OpenAI embedding batch status
 zotero-mcp openai-batch-import             # Import completed OpenAI batch embeddings
+zotero-mcp batch-abandon                   # Give up on an unfinished batch run
 zotero-mcp update-db --fulltext            # Update with full-text extraction (comprehensive but slower)
 zotero-mcp update-db --force-rebuild       # Force complete database rebuild
 zotero-mcp update-db --fulltext --force-rebuild  # Rebuild with full-text extraction
