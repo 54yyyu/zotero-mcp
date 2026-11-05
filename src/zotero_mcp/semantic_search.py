@@ -46,6 +46,8 @@ from .config_light import (  # noqa: F401
     _DEFAULT_RERANKER_CONFIG,
     _DEFAULT_UPDATE_CONFIG,
     auto_update_enabled,
+    batch_notice_path,
+    load_batch_notice,
     load_reranker_config,
     load_update_config,
     reranker_enabled,
@@ -105,16 +107,19 @@ def _is_superseded(current: dict[str, Any], newest: dict[str, Any] | None) -> bo
     return bool(newest) and batch_common.run_covers(newest, current)
 
 
-def _deferred_message(run: dict[str, Any], run_count: int) -> str:
-    """What a user is told when a new batch submission has to wait."""
+def _deferred_message(run: dict[str, Any], run_count: int, batch: bool, window_hours: int) -> str:
+    """What a user is told when an update has to wait behind an unfinished run."""
     others = f" (and {run_count - 1} older one(s))" if run_count > 1 else ""
+    what = "submitting a new batch" if batch else "updating the index"
+    run_id = run.get("run_id")
     return (
-        f"Not submitting a new batch: run {run.get('run_id')}{others} for this library is still "
-        "unfinished, and a new run would pay for its items again or leave it stranded. Nothing is "
-        "lost: the sync version stays where it is, so these changes go in once that run has "
-        "finished. Check it with 'zotero-mcp batch-status'; 'zotero-mcp update-db' or "
-        "'zotero-mcp batch-import' collects it. To give a run up, delete its directory: "
-        f"{Path(str(run.get('manifest_path'))).parent}"
+        f"Not {what}: batch run {run_id}{others} for this library is still unfinished, and going "
+        "ahead would pay for its items again or leave it stranded. The sync version stays where "
+        "it is, so these changes go in after that run has finished, or once it is past the "
+        f"provider's window, {window_hours} hours after its last chunk went out, when it stops "
+        "holding up updates. Check it with "
+        "'zotero-mcp batch-status'; 'zotero-mcp update-db' or 'zotero-mcp batch-import' collects "
+        f"it, and 'zotero-mcp batch-abandon --run-id {run_id}' gives it up."
     )
 
 
@@ -2980,6 +2985,7 @@ class ZoteroSemanticSearch:
         auto_loop: bool = False,
         batch_poll_interval: int = 60,
         allow_mass_deletion: bool = False,
+        allow_rebuild_import: bool = True,
     ) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
@@ -3021,6 +3027,11 @@ class ZoteroSemanticSearch:
                 empty). Deliberately a parameter, not an env var: nothing
                 persistent can disable the guard, and the server's
                 unattended background sync can never mass-delete.
+            allow_rebuild_import: False keeps the collect at the start of this
+                run from replacing the index with a finished rebuild. The
+                server's background thread passes it: a reset there would
+                leave searches on a part-filled index, and the thread dies with
+                the process.
 
         Returns:
             Update statistics
@@ -3103,8 +3114,15 @@ class ZoteroSemanticSearch:
 
             # Results already paid for come first, whatever this run goes on to
             # do. A rebuild re-embeds everything itself, so waiting chunks stay
-            # unsent: sending them would pay twice for the same items.
-            self._collect_unfinished_batches(stats, submit_waiting=not force_full_rebuild)
+            # unsent, which would pay twice for the same items, and an older
+            # rebuild isn't imported, which would wipe the index the user is
+            # replacing because it has gone stale.
+            self._collect_unfinished_batches(
+                stats,
+                submit_waiting=not force_full_rebuild,
+                skip_rebuilds=force_full_rebuild,
+                allow_rebuild_import=allow_rebuild_import,
+            )
 
             # --force-rebuild resets the ENTIRE collection but repopulates
             # only the active library. Combinations that would silently drop
@@ -3216,12 +3234,6 @@ class ZoteroSemanticSearch:
                 logger.warning(fit_warning)
                 _report(f"\nWarning: {fit_warning}\n")
 
-            # In batch mode, defer destructive rebuilds until import so the
-            # existing search index remains usable while the batch runs.
-            if force_full_rebuild and not batch_enabled:
-                logger.info("Force rebuilding database...")
-                self.chroma_client.reset_collection()
-
             # Decide whether to use since-based incremental ingest.
             # Incremental requires: not a forced rebuild, not a local-extraction
             # run (incremental path covers web-API metadata and optionally
@@ -3277,28 +3289,51 @@ class ZoteroSemanticSearch:
 
             # Before reading a single item: a deferred run does no work, and
             # leaves the deletion pass and the sync version to the run that
-            # eventually submits.
-            if batch_enabled:
+            # eventually goes ahead. Realtime updates wait too, or they would
+            # buy the in-flight items again and then drop the batch; only an
+            # explicit --no-batch goes ahead, told what it costs. Runs dead or
+            # past their window hold up nothing (_blocking_batch_runs).
+            collect_provider = self._collect_provider()
+            if collect_provider:
                 new_run = {
                     **_this_run(),
                     "group_id": self._run_group_id,
                     "force_full_rebuild": force_full_rebuild,
                 }
-                blocking = [
-                    run
-                    for run in self._unfinished_batch_runs(active_batch_provider, self._run_group_id)
-                    if not batch_common.may_supersede(new_run, run)
-                ]
-                if blocking:
-                    stats["batch_mode"] = True
-                    stats["batch_provider"] = active_batch_provider
-                    stats["batch_deferred"] = _deferred_message(blocking[-1], len(blocking))
+                in_flight = self._blocking_batch_runs(collect_provider, self._run_group_id)
+                explicit_realtime = not batch_enabled and False in (use_batch, use_openai_batch, use_gemini_batch)
+                blocking = [run for run in in_flight if not batch_common.may_supersede(new_run, run)]
+                if in_flight and explicit_realtime:
+                    stats["batch_discard_warning"] = (
+                        f"Batch run {in_flight[-1].get('run_id')} is still unfinished. This realtime "
+                        "update embeds its items again, and its results will be discarded."
+                    )
+                    logger.warning(stats["batch_discard_warning"])
+                    _report(f"\nWarning: {stats['batch_discard_warning']}\n")
+                elif blocking:
+                    stats["batch_provider"] = collect_provider
+                    stats["batch_mode"] = batch_enabled
+                    stats["batch_deferred"] = _deferred_message(
+                        blocking[-1],
+                        len(blocking),
+                        batch_enabled,
+                        _batch_adapter(collect_provider).completion_window_hours + batch_common.WINDOW_MARGIN_HOURS,
+                    )
+                    self._save_batch_notice(deferred=stats["batch_deferred"])
                     logger.warning(stats["batch_deferred"])
                     _report(f"\n{stats['batch_deferred']}\n")
                     end_time = datetime.now()
                     stats["duration"] = str(end_time - start_time)
                     stats["end_time"] = end_time.isoformat()
                     return stats
+                self._save_batch_notice(deferred=None)
+
+            # In batch mode, defer destructive rebuilds until import so the
+            # existing search index remains usable while the batch runs.
+            if force_full_rebuild and not batch_enabled:
+                logger.info("Force rebuilding database...")
+                self.chroma_client.reset_collection()
+                self._save_last_rebuild(str(self._run_group_id))
 
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []
@@ -4106,11 +4141,7 @@ class ZoteroSemanticSearch:
         # collect may be writing this manifest. While someone holds it, this
         # still reports the live status, it just doesn't save it.
         with _acquire_update_lock(_update_lock_path()) as acquired:
-            manifest = module.find_manifest(
-                config_path=self.config_path,
-                batch_id=next(iter(selected_ids), None),
-                group_id=self._pinned_group_id(),
-            )
+            manifest = self._find_run(provider, next(iter(selected_ids), None))
             manifest = module.refresh_manifest_status(
                 manifest,
                 embedding_config=self.chroma_client.embedding_config,
@@ -4168,14 +4199,105 @@ class ZoteroSemanticSearch:
         means another update, such as a realtime one, indexed these items and
         anything newer. The run's results would write older text over newer, and
         its waiting chunks would be paid for twice. A rebuild is never overtaken:
-        it exists to replace the index, which an incremental sync doesn't do.
+        it exists to replace the index, which an incremental sync doesn't do
+        (:meth:`_stale_rebuild_note` decides when one has gone stale).
+
+        A manifest from before ``since_version`` existed can't say where it was
+        cut from, so a target behind the sync version has to be enough.
         """
         since, target = manifest.get("since_version"), manifest.get("target_sync_version")
-        if manifest.get("force_full_rebuild") or since is None or target is None:
+        if manifest.get("force_full_rebuild") or target is None:
             return None
+        if all(batch.get("imported_at") for batch in manifest.get("batches", [])):
+            return None  # all in: nothing left to write over anything
         group_id = manifest.get("group_id")
         current = self._load_last_sync_version(None if group_id is None else str(group_id))
+        if "since_version" not in manifest:
+            return current if target < current else None
+        if since is None:
+            return None
         return current if since < current and target <= current else None
+
+    def _run_is_usable(self, provider: str, run: dict[str, Any]) -> bool:
+        """May this run go into this index without the user naming it?
+
+        Not one a later sync overtook, one made with another embedding model,
+        whose vectors no query here could match, or one the user gave up on.
+        """
+        adapter = _batch_adapter(provider)
+        model_name = self.chroma_client.embedding_config.get("model_name", adapter.default_model)
+        return (
+            not run.get("abandoned_at")
+            and run.get("model") in (None, model_name)
+            and self._overtaken_by_sync(run) is None
+        )
+
+    def _find_run(self, provider: str, batch_id: str | None = None) -> dict[str, Any]:
+        """The run with this batch id, or else the one to work on for this library."""
+        return _batch_module(provider).find_manifest(
+            config_path=self.config_path,
+            batch_id=batch_id,
+            group_id=self._pinned_group_id(),
+            is_current=lambda run: self._run_is_usable(provider, run),
+        )
+
+    def _load_last_rebuild(self, library_key: str) -> str | None:
+        """When an index for this library was last replaced, if on record."""
+        try:
+            with open(self.config_path) as f:
+                stamps = json.load(f).get("semantic_search", {}).get("last_rebuild_at") or {}
+            return stamps.get(library_key)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+
+    def _save_last_rebuild(self, library_key: str) -> None:
+        """Record that the index was just replaced, by whichever path."""
+        if not self.config_path:
+            return
+        full_config = self._config_for_update()
+        if full_config is None:
+            return
+        section = full_config.setdefault("semantic_search", {})
+        if not isinstance(section.get("last_rebuild_at"), dict):
+            section["last_rebuild_at"] = {}
+        section["last_rebuild_at"][library_key] = batch_common._utc_now()
+        try:
+            write_json_atomic(self.config_path, full_config)
+        except Exception as e:
+            logger.error(f"Error saving the last rebuild time: {e}")
+
+    def _stale_rebuild_note(self, run: dict[str, Any]) -> str | None:
+        """Why this rebuild must not replace the index unattended, if it must not.
+
+        Importing one empties the ChromaDB collection, so it has to be
+        demonstrably what the user still wants: nothing newer has synced past its
+        target, no other rebuild has landed since it was submitted, and its
+        chunking matches the index. A rebuild already part way in is exempt: the
+        reset has happened and finishing is all that's left.
+        """
+        if not run.get("force_full_rebuild") or any(b.get("imported_at") for b in run.get("batches", [])):
+            return None
+        run_id = run.get("run_id")
+        choice = (
+            f"Run 'zotero-mcp batch-import' to replace the index with this older rebuild, or "
+            f"'zotero-mcp batch-abandon --run-id {run_id}' to drop it."
+        )
+        group_id = run.get("group_id")
+        library_key = str(group_id) if group_id is not None else self._active_library_key()
+        target = run.get("target_sync_version")
+        if target is None or self._load_last_sync_version(library_key) > target:
+            return f"Rebuild run {run_id} is older than the current index. {choice}"
+        last_rebuild = self._load_last_rebuild(library_key)
+        if last_rebuild and last_rebuild > str(run.get("created_at") or ""):
+            return f"Rebuild run {run_id} was submitted before the index was last rebuilt. {choice}"
+        try:
+            index_chunked = self.chroma_client.has_passage_documents()
+        except Exception as e:
+            logger.debug("Could not read the index's chunking: %s", e)
+            return f"Rebuild run {run_id} is waiting: the index's chunking could not be read ({type(e).__name__}). {choice}"
+        if index_chunked != bool(run.get("chunked")):
+            return f"Rebuild run {run_id} has different passage chunking from the index. {choice}"
+        return None
 
     def _collect_provider(self) -> str | None:
         """The provider whose runs can go into this index, if there is one.
@@ -4191,68 +4313,155 @@ class ZoteroSemanticSearch:
         """Runs for ``group_id`` still worth working on, oldest first.
 
         Reads local manifests only, so it is safe to call on every update. Leaves
-        out runs that a newer run or a later sync has taken over, and runs made
-        with another model, which this index can't use.
+        out runs that a newer run or a later sync has taken over, runs made with
+        another model, which this index can't use, and rebuilds too stale to
+        replace the index unattended (:meth:`_stale_rebuild_note`). Those last
+        take a decision from the user, and :meth:`_batch_notes` asks for it.
         """
         module = _batch_module(provider)
         adapter = _batch_adapter(provider)
-        model_name = self.chroma_client.embedding_config.get("model_name", adapter.default_model)
         runs = module.manifests_for_group(config_path=self.config_path, group_id=group_id)
         unfinished = [
             run
             for position, run in enumerate(runs)
             if batch_common.run_is_unfinished(run, adapter)
-            and run.get("model") in (None, model_name)
+            and self._run_is_usable(provider, run)
             and not any(_is_superseded(run, newer) for newer in runs[:position])
-            and self._overtaken_by_sync(run) is None
+            and self._stale_rebuild_note(run) is None
         ]
         unfinished.reverse()
         return unfinished
 
-    def _dead_rebuild_note(self, provider: str, group_id: int) -> str | None:
-        """A warning when this library's latest run is a rebuild that can't finish.
+    def _blocking_batch_runs(self, provider: str, group_id: int) -> list[dict[str, Any]]:
+        """Unfinished runs that make an update wait, oldest first.
 
-        Such a run isn't "unfinished", since nothing can move it, so nothing else
-        would ever mention it. A newer run for the library ends the warning.
+        Not one past the provider's window: nothing more is coming from it unless
+        someone asks, and it can't be allowed to hold updates up for good.
+        """
+        adapter = _batch_adapter(provider)
+        return [
+            run for run in self._unfinished_batch_runs(provider, group_id)
+            if not batch_common.run_past_window(run, adapter)
+        ]
+
+    def _batch_notes(self, provider: str, group_id: int, skip_rebuilds: bool = False) -> list[str]:
+        """What needs a decision from the user, whatever this pass could do.
+
+        Neither a stale rebuild nor one that can't finish is collected, so nothing
+        else would ever mention them.
         """
         adapter = _batch_adapter(provider)
         runs = _batch_module(provider).manifests_for_group(config_path=self.config_path, group_id=group_id)
-        if not runs or not runs[0].get("force_full_rebuild"):
-            return None
-        newest = runs[0]
-        dead = [
-            batch.get("batch_id") or "(pending)"
-            for batch in newest.get("batches", [])
-            if not batch.get("imported_at") and batch_common._entry_is_dead(adapter, batch)
-        ]
-        if not dead:
-            return None
-        return (
-            f"Rebuild run {newest.get('run_id')} can't finish, because these chunks failed: "
-            f"{', '.join(dead)}. The index is unchanged. Run 'zotero-mcp update-db --force-rebuild' "
-            "to start the rebuild again."
-        )
+        notes = []
+        if skip_rebuilds:
+            return notes
+        for position, run in enumerate(runs):
+            if (
+                batch_common.run_is_unfinished(run, adapter)
+                and self._run_is_usable(provider, run)
+                and not any(_is_superseded(run, newer) for newer in runs[:position])
+                and (note := self._stale_rebuild_note(run))
+            ):
+                notes.append(note)
+        # Only the latest run: any newer run has moved on from an older rebuild.
+        newest = runs[0] if runs else None
+        if newest and newest.get("force_full_rebuild") and self._run_is_usable(provider, newest):
+            library_key = str(group_id)
+            last_rebuild = self._load_last_rebuild(library_key)
+            dead = [
+                batch.get("batch_id") or "(pending)"
+                for batch in newest.get("batches", [])
+                if not batch.get("imported_at") and (
+                    batch.get("lost")
+                    or (
+                        batch_common._entry_state(adapter, batch) in batch_common.TERMINAL_STATES
+                        and not batch_common._entry_is_complete(adapter, batch)
+                    )
+                )
+            ]
+            if dead and not (last_rebuild and last_rebuild > str(newest.get("created_at") or "")):
+                run_id = newest.get("run_id")
+                notes.append(
+                    f"Rebuild run {run_id} can't finish, because these chunks failed: {', '.join(dead)}. "
+                    "The index is unchanged. Run 'zotero-mcp update-db --force-rebuild' to rebuild "
+                    f"again, or 'zotero-mcp batch-abandon --run-id {run_id}' to drop it."
+                )
+        return notes
 
-    def _collect_unfinished_batches(self, stats: dict[str, Any], submit_waiting: bool = True) -> None:
+    def _finish_promotions(self, provider: str, group_id: int) -> None:
+        """Finish a sync version save that a crash cut off. No network call.
+
+        The last chunk's save and the sync version's are two writes. A crash in
+        between leaves a run that looks finished, and the next update would buy
+        its items again.
+        """
+        runs = _batch_module(provider).manifests_for_group(config_path=self.config_path, group_id=group_id)
+        for position, run in enumerate(runs):
+            batches = run.get("batches", [])
+            if (
+                "since_version" in run  # older manifests have no promoted_at to read
+                and batches
+                and all(batch.get("imported_at") for batch in batches)
+                and not run.get("promoted_at")
+                and not any(batch.get("imported_partial") for batch in batches)
+                and self._run_is_usable(provider, run)
+                and not any(_is_superseded(run, newer) for newer in runs[:position])
+            ):
+                self._promote_run(provider, run, bool(run.get("force_full_rebuild")))
+
+    def _promote_run(self, provider: str, manifest: dict[str, Any], rebuilt_now: bool) -> None:
+        """A whole run has landed: move the sync version of its library.
+
+        Of the library the batch was submitted against, not whichever library
+        happens to be active now. An import never lowers it: running batch-import
+        again on a settled run would make the next update re-embed what is
+        already indexed. The exception is a rebuild landing right now, which just
+        replaced the whole ChromaDB collection: the sync version has to say what
+        the collection now holds, or the changes between the two versions would
+        be missing for good, and 0 when that is unknown.
+        """
+        self.update_config["last_update"] = datetime.now().isoformat()
+        group_id = manifest.get("group_id")
+        library_key = None if group_id is None else str(group_id)
+        target = manifest.get("target_sync_version")
+        if rebuilt_now:
+            target = 0 if target is None else target
+        elif target is not None and target < self._load_last_sync_version(library_key):
+            target = None
+        self._save_update_config(last_sync_version=target, library_key=library_key)
+        manifest["promoted_at"] = datetime.now().isoformat()
+        _batch_module(provider).save_manifest(manifest)
+
+    def _collect_unfinished_batches(
+        self,
+        stats: dict[str, Any],
+        submit_waiting: bool = True,
+        skip_rebuilds: bool = False,
+        allow_rebuild_import: bool = True,
+    ) -> None:
         """Import finished files and submit waiting files of unfinished runs.
 
         Call with the update lock held and the run's library pinned. A failure
-        is reported in ``stats["batch_collect"]`` and never raised, so the update
-        goes on to report its own outcome. Nothing happens here without an
-        unfinished run, which means no network call. Each provider call is one
-        short request: this doesn't wait for a batch, so the lock isn't held
-        across a provider's batch window.
+        is reported in ``stats["batch_collect"]`` and in the batch notice, never
+        raised, so the update goes on to report its own outcome. Nothing happens
+        here without an unfinished run, which means no network call. Each provider
+        call is one short request: this doesn't wait for a batch, so the lock
+        isn't held across a provider's batch window.
         """
         provider = self._collect_provider()
         if provider is None:
+            self._save_batch_notice(notes=[], deferred=None)
             return
         group_id = self._pinned_group_id()
+        adapter = _batch_adapter(provider)
         errors: list[str] = []
         try:
+            self._finish_promotions(provider, group_id)
             runs = self._unfinished_batch_runs(provider, group_id)
         except Exception as e:
+            logger.warning(f"Could not read the batch runs: {e}")
             runs = []
-            errors.append(f"could not read the batch runs: {e}")
+            errors.append(f"could not read the batch runs ({type(e).__name__})")
 
         summary: dict[str, Any] = {
             "provider": provider,
@@ -4265,42 +4474,80 @@ class ZoteroSemanticSearch:
         # only move forward through the runs.
         for run in runs:
             run_id = run.get("run_id")
+            if skip_rebuilds and run.get("force_full_rebuild"):
+                continue
+            past_window = batch_common.run_past_window(run, adapter)
             try:
                 if self._superseded_by(provider, run) or self._overtaken_by_sync(run) is not None:
                     continue  # an earlier run in this pass took it over
                 result = self._import_batch(
-                    provider, _skip_lock=True, _collect_run=run, _submit_waiting=submit_waiting
+                    provider,
+                    _skip_lock=True,
+                    _collect_run=run,
+                    # Nothing past the window spends more unless someone asks.
+                    _submit_waiting=submit_waiting and not past_window,
+                    _allow_reset=allow_rebuild_import,
                 )
             except Exception as e:
                 # Whatever was imported is saved, and the sync version only
                 # moves when a whole run has landed, so this run just stays
-                # unfinished for the next attempt.
-                errors.append(f"run {run_id}: {e}")
-                continue
-            summary["runs"].append(run_id)
-            summary["imported_items"] += result.get("imported_items", 0)
-            summary["submitted_chunks"] += result.get("batches_submitted", 0)
-            if result.get("deferred"):
-                summary.setdefault("waiting", []).append(result["deferred"])
-            failed_rows = result.get("failed_items", 0) + result.get("missing_items", 0)
-            if failed_rows:
-                errors.append(f"run {run_id}: {failed_rows} item(s) came back without an embedding")
-            dead = [batch for batch in run.get("batches", []) if not batch.get("imported_at")
-                    and batch_common._entry_is_dead(_batch_adapter(provider), batch)]
-            if dead and not run.get("force_full_rebuild") and not batch_common.run_is_unfinished(
-                run, _batch_adapter(provider)
-            ):
+                # unfinished for the next attempt. The SDK's own text goes to the
+                # debug log only: it can carry request details.
+                logger.debug("Collecting run %s failed: %s", run_id, e)
                 errors.append(
-                    f"run {run_id}: {len(dead)} chunk(s) failed at the provider; "
-                    "the sync version stays put, so the next update submits those items again"
+                    f"run {run_id}: could not check or import it ({type(e).__name__}); "
+                    "the next update tries again"
                 )
+                result = None
+            if result is not None:
+                summary["runs"].append(run_id)
+                summary["imported_items"] += result.get("imported_items", 0)
+                summary["submitted_chunks"] += result.get("batches_submitted", 0)
+                if result.get("needs_user"):
+                    errors.append(result["deferred"])
+                elif result.get("deferred"):
+                    summary.setdefault("waiting", []).append(result["deferred"])
+                failed_rows = result.get("failed_items", 0) + result.get("missing_items", 0)
+                if failed_rows:
+                    errors.append(f"run {run_id}: {failed_rows} item(s) came back without an embedding")
+            batches = run.get("batches", [])
+            if batch_common.run_is_unfinished(run, adapter):
+                if past_window:
+                    errors.append(
+                        f"run {run_id} is past the provider's {adapter.completion_window_hours}-hour window "
+                        "and no longer holds up updates. 'zotero-mcp batch-import' retries it and sends any "
+                        f"waiting chunks; 'zotero-mcp batch-abandon --run-id {run_id}' drops it."
+                    )
+            elif not run.get("force_full_rebuild"):  # _batch_notes speaks for a dead rebuild
+                lost = sum(1 for batch in batches if batch.get("lost"))
+                short = lost + sum(
+                    1 for batch in batches
+                    if not batch.get("lost") and (
+                        batch.get("imported_partial")
+                        or (not batch.get("imported_at") and batch_common._entry_is_dead(adapter, batch))
+                    )
+                )
+                if short:
+                    what = f"the provider no longer has {lost} of its chunks" if lost else (
+                        f"{short} chunk(s) failed or expired at the provider"
+                    )
+                    errors.append(
+                        f"run {run_id}: {what}. The sync version stays put, so the next update submits "
+                        "every change since that version again, including chunks already imported."
+                    )
 
         try:
-            note = self._dead_rebuild_note(provider, group_id)
-            if note:
-                errors.append(note)
+            errors.extend(self._batch_notes(provider, group_id, skip_rebuilds))
         except Exception as e:
-            errors.append(f"could not read the batch runs: {e}")
+            logger.warning(f"Could not read the batch runs: {e}")
+            errors.append(f"could not read the batch runs ({type(e).__name__})")
+
+        try:
+            still_blocking = bool(self._blocking_batch_runs(provider, group_id))
+        except Exception:
+            still_blocking = True
+        keep_deferred = self.batch_notice(group_id).get("deferred") if still_blocking else None
+        self._save_batch_notice(notes=errors, deferred=keep_deferred)
 
         if not summary["runs"] and not errors:
             return
@@ -4310,18 +4557,110 @@ class ZoteroSemanticSearch:
             logger.warning(f"Collecting batch results: {error}")
             _report(f"Collecting batch results: {error}\n")
         if summary["runs"]:
-            _report(
-                f"Collected {len(summary['runs'])} unfinished batch run(s): "
-                f"{summary['imported_items']} embeddings imported, "
-                f"{summary['submitted_chunks']} waiting chunk(s) submitted.\n"
-            )
+            if summary["imported_items"] or summary["submitted_chunks"]:
+                _report(
+                    f"Collected {len(summary['runs'])} unfinished batch run(s): "
+                    f"{summary['imported_items']} embeddings imported, "
+                    f"{summary['submitted_chunks']} waiting chunk(s) submitted.\n"
+                )
+            else:
+                _report(f"Checked {len(summary['runs'])} unfinished batch run(s): nothing new is ready yet.\n")
+
+    def batch_notice(self, group_id: int | None = None) -> dict[str, Any]:
+        """The last collect problems and deferral for this library, if any."""
+        if group_id is None:
+            group_id = self._pinned_group_id() if getattr(self, "_run_group_id", None) is not None \
+                else self._client_group_id()
+        return load_batch_notice(self.config_path, str(group_id))
+
+    _KEEP = object()
+
+    def _save_batch_notice(self, notes: Any = _KEEP, deferred: Any = _KEEP) -> None:
+        """Keep what a background run has to tell, for whoever looks next.
+
+        A background run's stats go nowhere. Written only when something changed,
+        and only with the update lock held, like the manifests. Never fatal: this
+        is a courtesy on top of a run that has its own outcome.
+        """
+        if not self.config_path:
+            return
+        path = batch_notice_path(self.config_path)
+        library_key = str(self._pinned_group_id())
+        try:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    notices = json.load(f)
+                if not isinstance(notices, dict):
+                    notices = {}
+            except (OSError, ValueError):
+                notices = {}
+            old = notices.get(library_key) or {}
+            new = {
+                "notes": old.get("notes", []) if notes is self._KEEP else notes,
+                "deferred": old.get("deferred") if deferred is self._KEEP else deferred,
+            }
+            comparable = {key: value for key, value in old.items() if key != "updated_at"}
+            if not new["notes"] and not new["deferred"]:
+                if library_key not in notices:
+                    return
+                notices.pop(library_key)
+            elif comparable == new:
+                return
+            else:
+                notices[library_key] = {**new, "updated_at": datetime.now().isoformat()}
+            write_json_atomic(path, notices)
+        except Exception as e:
+            logger.debug("Could not save the batch notice: %s", e)
+
+    def abandon_batch_run(self, provider: str, run_id: str | None = None) -> dict[str, Any]:
+        """Give up on a run: it stops being collected, reported and holding anything up.
+
+        The sync version doesn't move, so the next update covers its items again.
+        Its files stay, and ``batch-import --batch-id`` can still import from them.
+        With no ``run_id`` this works only if there's exactly one run it could mean.
+        """
+        with _acquire_update_lock(_update_lock_path()) as acquired:
+            if not acquired:
+                raise RuntimeError(
+                    f"Another semantic-search update is already running (lock held at {_update_lock_path()})"
+                )
+            module = _batch_module(provider)
+            adapter = _batch_adapter(provider)
+            group_id = self._client_group_id()
+            runs = module.manifests_for_group(config_path=self.config_path, group_id=group_id)
+            if run_id is None:
+                candidates = [
+                    run for position, run in enumerate(runs)
+                    if not run.get("abandoned_at") and (
+                        batch_common.run_is_unfinished(run, adapter)
+                        or (position == 0 and run.get("force_full_rebuild") and any(
+                            not batch.get("imported_at") for batch in run.get("batches", [])
+                        ))
+                    )
+                ]
+                if len(candidates) != 1:
+                    return {"candidates": [run.get("run_id") for run in candidates]}
+                run = candidates[0]
+            else:
+                matching = [run for run in runs if run.get("run_id") == run_id]
+                if not matching:
+                    raise FileNotFoundError(f"No {adapter.label} batch run {run_id} for this library")
+                run = matching[0]
+            run["abandoned_at"] = datetime.now().isoformat()
+            module.save_manifest(run)
+            try:
+                self._run_group_id = group_id
+                self._save_batch_notice(notes=[], deferred=None)
+            finally:
+                self._run_group_id = None
+            return {"abandoned": run.get("run_id")}
 
     def has_unfinished_batch_run(self) -> bool:
-        """Is a batch run for this library unfinished? Reads local files only."""
+        """Is a run holding updates back for this library? Reads local files only."""
         provider = self._collect_provider()
-        return bool(provider and self._unfinished_batch_runs(provider, self._client_group_id()))
+        return bool(provider and self._blocking_batch_runs(provider, self._client_group_id()))
 
-    def collect_batch_results(self) -> dict[str, Any]:
+    def collect_batch_results(self, allow_rebuild_import: bool = True) -> dict[str, Any]:
         """Collect unfinished batch runs and do nothing else; a new run never starts here."""
         stats: dict[str, Any] = {}
         with _acquire_update_lock(_update_lock_path()) as acquired:
@@ -4333,7 +4672,7 @@ class ZoteroSemanticSearch:
                 if read_error := self.chroma_client.read_error():
                     stats["error"] = f"Cannot read the semantic index: {read_error}"
                     return stats
-                self._collect_unfinished_batches(stats)
+                self._collect_unfinished_batches(stats, allow_rebuild_import=allow_rebuild_import)
             finally:
                 self._run_group_id = None
         return stats
@@ -4379,6 +4718,7 @@ class ZoteroSemanticSearch:
         _skip_lock: bool = False,
         _collect_run: dict[str, Any] | None = None,
         _submit_waiting: bool = True,
+        _allow_reset: bool = True,
     ) -> dict[str, Any]:
         """Import completed Batch API embeddings into ChromaDB.
 
@@ -4392,8 +4732,14 @@ class ZoteroSemanticSearch:
 
         ``_collect_run`` is the unattended path, from
         :meth:`_collect_unfinished_batches`: it names the run to work on, and a
-        rebuild that isn't ready is reported as ``deferred``, not raised.
+        rebuild that isn't ready is reported as ``deferred``, not raised, with
+        ``needs_user`` set when only the user can move it on.
         ``_submit_waiting=False`` leaves throttle-parked chunks unsent.
+        ``_allow_reset=False`` stops at a rebuild's reset and asks for 'batch-import'.
+
+        With no batch ids, a run that a later sync overtook, that another model
+        made or that the user gave up on is not imported. Its text would be older
+        than the index, or its vectors unmatchable, so that takes naming it.
         """
         lock_path = _update_lock_path()
         lock_cm = contextlib.nullcontext(True) if _skip_lock else _acquire_update_lock(lock_path)
@@ -4406,11 +4752,20 @@ class ZoteroSemanticSearch:
             adapter = _batch_adapter(provider)
             label = adapter.label
             selected_ids = set(batch_ids or [])
-            manifest = _collect_run or module.find_manifest(
-                config_path=self.config_path,
-                batch_id=next(iter(selected_ids), None),
-                group_id=self._pinned_group_id(),
-            )
+            manifest = _collect_run or self._find_run(provider, next(iter(selected_ids), None))
+            if not selected_ids and not self._run_is_usable(provider, manifest):
+                return {
+                    "provider": provider,
+                    "run_id": manifest.get("run_id"),
+                    "manifest_path": manifest.get("manifest_path"),
+                    "imported_items": 0,
+                    "batches_submitted": 0,
+                    "errors": [{"error": (
+                        f"Nothing to import: run {manifest.get('run_id')} is older than the index, was made "
+                        "with another embedding model, or was given up on. To import it anyway, name "
+                        "its batches with --batch-id."
+                    )}],
+                }
             # Whether something newer has taken this run's items over decides two
             # things below: no more chunks may be submitted for it, and its sync
             # watermark must stay where it is. Settled once here, before the
@@ -4518,28 +4873,63 @@ class ZoteroSemanticSearch:
                 and not already_imported
                 and any(not batch.get("imported_at") for batch in batches)
             ):
+                run_id = manifest.get("run_id")
+                if not _allow_reset:
+                    stats["deferred"] = (
+                        f"Rebuild run {run_id} is ready. Run 'zotero-mcp batch-import' to replace the "
+                        "index with it."
+                    )
+                    stats["needs_user"] = True
+                    return stats
                 if _collect_run is not None and not manifest.get("allow_mass_deletion"):
                     # The reset drops the whole ChromaDB collection. The user agreed
                     # to what it held when they asked for the rebuild, not to what
-                    # another library has indexed since; an unattended import won't
-                    # guess. It stays a one-word decision: 'batch-import'.
-                    foreign = self.chroma_client.get_all_ids(
-                        where={"group_id": {"$ne": int(manifest["group_id"])}}
-                    )
+                    # has been indexed from elsewhere since; an unattended import
+                    # won't guess, and not knowing counts as not agreed.
+                    try:
+                        foreign = self.chroma_client.count_outside_library(int(manifest["group_id"]))
+                    except Exception as e:
+                        logger.debug("Could not count documents outside the library: %s", e)
+                        stats["deferred"] = (
+                            f"Rebuild run {run_id} is ready, but it could not be checked for other "
+                            f"libraries' documents ({type(e).__name__}). The next update tries again; "
+                            "'zotero-mcp batch-import' imports it anyway."
+                        )
+                        stats["needs_user"] = True
+                        return stats
                     if foreign:
                         stats["deferred"] = (
-                            f"Rebuild run {manifest.get('run_id')} is ready, but importing it replaces the "
-                            f"whole ChromaDB collection, which now holds {len(foreign)} document(s) from "
-                            "other libraries. Run 'zotero-mcp batch-import' to import it anyway."
+                            f"Rebuild run {run_id} is ready, but importing it replaces the "
+                            f"whole ChromaDB collection, which now holds {foreign} document(s) from "
+                            "other libraries or with no library. Run 'zotero-mcp batch-import' to "
+                            "import it anyway."
                         )
+                        stats["needs_user"] = True
                         return stats
                 # Every file in hand before the index is emptied: a download that
                 # fails now costs nothing, and after the reset it would leave an
                 # empty index behind.
                 for batch in batches:
                     if not batch.get("imported_at") and not _output_path(batch).exists():
-                        adapter.download_output(client, batch, _output_path(batch))
+                        try:
+                            adapter.download_output(client, batch, _output_path(batch))
+                        except Exception as e:
+                            if not batch_common.is_not_found(e):
+                                raise
+                            batch["lost"] = True
+                            module.save_manifest(manifest)
+                            message = (
+                                f"Rebuild run {run_id} can't finish: the provider no longer has the "
+                                f"output of {batch.get('batch_id')}. The index is unchanged."
+                            )
+                            if _collect_run is not None:
+                                stats["deferred"] = message
+                                return stats
+                            raise RuntimeError(message) from e
                 self.chroma_client.reset_collection()
+                self._save_last_rebuild(
+                    str(manifest["group_id"]) if manifest.get("group_id") is not None else self._active_library_key()
+                )
 
             for batch in batches:
                 if batch.get("imported_at"):
@@ -4550,7 +4940,16 @@ class ZoteroSemanticSearch:
                     # after this pass imports what has completed.
                     stats["batches_skipped"] += 1
                     continue
-                if batch_common._entry_state(adapter, batch) not in batch_common.IMPORTABLE_STATES:
+                if batch.get("lost"):
+                    stats["batches_skipped"] += 1
+                    stats["errors"].append({
+                        "batch_id": batch.get("batch_id"), "error": "The provider no longer has this batch",
+                    })
+                    continue
+                # An expired, cancelled or failed batch can still leave a file of
+                # rows that are paid for. Those go in, but not as a whole chunk.
+                complete = batch_common._entry_state(adapter, batch) in batch_common.IMPORTABLE_STATES
+                if not complete and not batch_common.entry_has_results(adapter, batch):
                     stats["batches_skipped"] += 1
                     stats["errors"].append({
                         "batch_id": batch.get("batch_id"),
@@ -4567,7 +4966,18 @@ class ZoteroSemanticSearch:
                 if output_path.exists():
                     output_text = output_path.read_text(encoding="utf-8")
                 else:
-                    output_text = adapter.download_output(client, batch, output_path)
+                    try:
+                        output_text = adapter.download_output(client, batch, output_path)
+                    except Exception as e:
+                        if not batch_common.is_not_found(e):
+                            raise
+                        batch["lost"] = True
+                        module.save_manifest(manifest)
+                        stats["batches_skipped"] += 1
+                        stats["errors"].append({
+                            "batch_id": batch.get("batch_id"), "error": "The provider no longer has this file",
+                        })
+                        continue
 
                 # Rows without a correlation key are matched positionally
                 # against the exact submitted order, so the records file is
@@ -4630,6 +5040,8 @@ class ZoteroSemanticSearch:
 
                 batch["imported_at"] = datetime.now().isoformat()
                 batch["imported_count"] = len(ids)
+                if not complete:
+                    batch["imported_partial"] = True
                 stats["batches_imported"] += 1
                 # After each chunk: a rebuild cut off part way must resume, not
                 # empty the index again.
@@ -4657,28 +5069,18 @@ class ZoteroSemanticSearch:
                         manifest.get("run_id"),
                         superseded_by,
                     )
-                elif overtaken_at is None:
-                    self.update_config["last_update"] = datetime.now().isoformat()
-                    # Promote the watermark of the library the batch was submitted
-                    # against, not whichever library happens to be active now.
-                    manifest_group_id = manifest.get("group_id")
-                    library_key = None if manifest_group_id is None else str(manifest_group_id)
-                    target = manifest.get("target_sync_version")
-                    # An import never lowers the sync version: running
-                    # batch-import again on a settled run would make the next
-                    # update re-embed what is already indexed. The exception is
-                    # a rebuild landing right now, which just replaced the whole
-                    # ChromaDB collection: the sync version has to say what the
-                    # collection now holds, or the changes between the two
-                    # versions would be missing for good.
-                    rebuilt_now = manifest.get("force_full_rebuild") and stats["batches_imported"] > 0
-                    if (
-                        target is not None
-                        and not rebuilt_now
-                        and target < self._load_last_sync_version(library_key)
-                    ):
-                        target = None
-                    self._save_update_config(last_sync_version=target, library_key=library_key)
+                elif (
+                    overtaken_at is None
+                    and not manifest.get("promoted_at")
+                    # Rows of a chunk that ended early never ran; the sync
+                    # version waiting is what gets them embedded in the end.
+                    and not any(batch.get("imported_partial") for batch in all_batches)
+                ):
+                    self._promote_run(
+                        provider,
+                        manifest,
+                        bool(manifest.get("force_full_rebuild")) and stats["batches_imported"] > 0,
+                    )
             return stats
         finally:
             lock_cm.__exit__(None, None, None)
@@ -4711,7 +5113,6 @@ class ZoteroSemanticSearch:
         """
         import time
 
-        module = _batch_module(provider)
         adapter = _batch_adapter(provider)
         label = adapter.label
         aggregate = {"provider": provider, "polls": 0, "imported_items": 0, "submitted_chunks": 0}
@@ -4731,7 +5132,7 @@ class ZoteroSemanticSearch:
                 logger.debug(f"auto-loop import deferred: {e}")
             aggregate["polls"] += 1
 
-            manifest = module.find_manifest(config_path=self.config_path)
+            manifest = self._find_run(provider)
             client = adapter.create_client(self.chroma_client.embedding_config)
             # Through _submit_pending_chunks, not straight to the provider
             # module: the loop must obey the same supersession rule as every
@@ -5153,6 +5554,7 @@ class ZoteroSemanticSearch:
             },
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
+            "batch_notice": self.batch_notice(),
         }
 
     def delete_item(self, item_key: str) -> bool:

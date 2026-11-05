@@ -440,17 +440,33 @@ def _print_batch_collect(stats: dict) -> None:
     collect = stats.get("batch_collect")
     if not collect:
         return
-    print(f"\nCollected unfinished batch runs ({len(collect['runs'])}):")
-    print(f"- Embeddings imported: {collect['imported_items']}")
-    print(f"- Waiting chunks submitted: {collect['submitted_chunks']}")
-    for note in collect.get("waiting", []):
-        print(f"- Still waiting: {note}")
+    if collect["runs"]:
+        print(f"\nChecked unfinished batch runs ({len(collect['runs'])}):")
+        print(f"- Embeddings imported: {collect['imported_items']}")
+        print(f"- Waiting chunks submitted: {collect['submitted_chunks']}")
+        for note in collect.get("waiting", []):
+            print(f"- Still waiting: {note}")
+    else:
+        print("\nBatch runs:")
     for error in collect["errors"]:
         print(f"- WARNING: {error}")
 
 
+def _print_batch_notice(status: dict) -> None:
+    notice = status.get("batch_notice") or {}
+    if not notice:
+        return
+    print("\nBatch runs:")
+    for note in notice.get("notes", []):
+        print(f"- {note}")
+    if notice.get("deferred"):
+        print(f"- Update deferred: {notice['deferred']}")
+
+
 def _print_update_stats(stats: dict) -> None:
     _print_batch_collect(stats)
+    if stats.get("batch_discard_warning"):
+        print(f"\nWARNING: {stats['batch_discard_warning']}")
     is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
     batch_provider = stats.get("batch_provider", "openai")
     label = f"{_provider_label(batch_provider)} batch submission" if is_batch else "Database update"
@@ -779,6 +795,7 @@ def main():
             "  zotero-mcp update-db --batch --auto-loop  Submit, then poll and import\n"
             "  zotero-mcp batch-status                 Check submitted batch status\n"
             "  zotero-mcp batch-import                 Import completed embeddings\n"
+            "  zotero-mcp batch-abandon                Give up on an unfinished batch run\n"
             "  zotero-mcp help update-db               Show update-db options\n"
         ),
     )
@@ -907,6 +924,15 @@ def main():
         sp.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
                         help="Which provider's manifests to read (default: inferred from config)")
         sp.add_argument("--config-path", help="Path to semantic search configuration file")
+
+    abandon_parser = subparsers.add_parser(
+        "batch-abandon",
+        help="Give up on an unfinished batch run; the next update covers its items again",
+    )
+    abandon_parser.add_argument("--run-id", help="The run to give up on (needed when there are several)")
+    abandon_parser.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
+                                help="Which provider's manifests to read (default: inferred from config)")
+    abandon_parser.add_argument("--config-path", help="Path to semantic search configuration file")
 
     # Database status command
     db_status_parser = subparsers.add_parser("db-status", help="Show semantic search database status")
@@ -1321,6 +1347,28 @@ def main():
             print(f"Error importing batch: {e}")
             sys.exit(1)
 
+    elif args.command == "batch-abandon":
+        setup_zotero_environment()
+
+        from zotero_mcp.semantic_search import create_semantic_search
+
+        config_path = _semantic_config_path(args.config_path)
+        try:
+            search = create_semantic_search(str(config_path))
+            provider = args.provider or _detect_batch_provider(search)
+            result = search.abandon_batch_run(provider, run_id=args.run_id)
+        except Exception as e:
+            print(f"Error giving up on the batch run: {e}")
+            sys.exit(1)
+        if result.get("abandoned"):
+            print(f"Gave up on batch run {result['abandoned']}. The next update covers its items again.")
+        elif result.get("candidates"):
+            print("Several batch runs could be meant. Choose one with --run-id:")
+            for run_id in result["candidates"]:
+                print(f"- {run_id}")
+        else:
+            print("No unfinished batch run for this library.")
+
     elif args.command == "db-status":
         # Setup Zotero environment variables
         setup_zotero_environment()
@@ -1358,6 +1406,7 @@ def main():
             print(f"- Should update: {status.get('should_update', False)}")
             print(f"- OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
             print(f"- Passage chunking: {_format_chunking_status(status)}")
+            _print_batch_notice(status)
 
             if collection_info.get("unreadable"):
                 from zotero_mcp.chroma_client import unreadable_index_message

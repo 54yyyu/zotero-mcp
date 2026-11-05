@@ -832,7 +832,7 @@ def test_auto_loop_does_not_submit_into_a_superseded_run(import_env, monkeypatch
     # superseded run so this exercises the guard, not the run ordering.
     monkeypatch.setattr(
         openai_batch, "find_manifest",
-        lambda config_path=None, batch_id=None: openai_batch.load_manifest(Path(old["manifest_path"])),
+        lambda config_path=None, batch_id=None, **kwargs: openai_batch.load_manifest(Path(old["manifest_path"])),
     )
     monkeypatch.setattr(
         semantic_search.ZoteroSemanticSearch, "_import_batch",

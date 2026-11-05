@@ -35,7 +35,6 @@ from zotero_mcp.embeddings.registry import attach_batch_adapter
 from . import batch_common
 from .batch_common import (
     _json_dumps,
-    _private_chmod,
     _utc_now,  # noqa: F401 — re-export
     estimate_tokens,  # noqa: F401 — re-exported for provider-symmetric callers/tests
     read_jsonl,  # noqa: F401 — re-exported so callers/tests can stay provider-symmetric
@@ -195,7 +194,7 @@ def manifests_for_group(config_path: str | None = None, group_id: int | None = N
 
 
 def find_manifest(
-    config_path: str | None = None, batch_id: str | None = None, group_id: int | None = None
+    config_path: str | None = None, batch_id: str | None = None, group_id: int | None = None, is_current=None
 ) -> dict[str, Any]:
     """Find the manifest containing a batch job name, or else the run to work on
     (see :func:`batch_common.find_manifest`)."""
@@ -205,6 +204,7 @@ def find_manifest(
         provider_label="Gemini batch",
         group_id=group_id,
         adapter=ADAPTER,
+        is_current=is_current,
     )
     return batch_common.ensure_states(manifest, ADAPTER)
 
@@ -313,9 +313,7 @@ def download_results(client: Any, batch: dict[str, Any], output_path: Path) -> s
                 rows.append({"response": getattr(item, "response", None)})
         text = "\n".join(_json_dumps(row) for row in rows)
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(text)
-    _private_chmod(output_path)
+    batch_common.write_text_atomic(output_path, text)
     return text
 
 
@@ -392,6 +390,7 @@ class GeminiBatchAdapter:
     default_max_enqueued_tokens = GEMINI_BATCH_MAX_ENQUEUED_TOKENS
     chars_per_token = GEMINI_CHARS_PER_TOKEN
     uses_error_file = False
+    completion_window_hours = 48  # Google expires batch jobs still pending after 48 hours
 
     def create_client(self, embedding_config: dict[str, Any] | None) -> Any:
         return create_gemini_client(embedding_config)

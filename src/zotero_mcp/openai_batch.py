@@ -25,7 +25,6 @@ from .batch_common import (
     _json_dumps,  # noqa: F401 — re-exported for provider-symmetric callers/tests
     _jsonable,
     _object_attr,
-    _private_chmod,
     _utc_now,  # noqa: F401 — re-export
     estimate_tokens,  # noqa: F401 — re-export
     read_jsonl,  # noqa: F401 — re-exported so callers/tests can stay provider-symmetric
@@ -146,7 +145,7 @@ def manifests_for_group(config_path: str | None = None, group_id: int | None = N
 
 
 def find_manifest(
-    config_path: str | None = None, batch_id: str | None = None, group_id: int | None = None
+    config_path: str | None = None, batch_id: str | None = None, group_id: int | None = None, is_current=None
 ) -> dict[str, Any]:
     """Find the manifest containing a batch ID, or else the run to work on
     (see :func:`batch_common.find_manifest`)."""
@@ -156,6 +155,7 @@ def find_manifest(
         provider_label="OpenAI batch",
         group_id=group_id,
         adapter=ADAPTER,
+        is_current=is_current,
     )
     return batch_common.ensure_states(manifest, ADAPTER)
 
@@ -201,9 +201,7 @@ def content_to_text(content: Any) -> str:
 def download_file_text(client: Any, file_id: str, output_path: Path) -> str:
     content = client.files.content(file_id)
     text = content_to_text(content)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(text)
-    _private_chmod(output_path)
+    batch_common.write_text_atomic(output_path, text)
     return text
 
 
@@ -258,6 +256,7 @@ class OpenAIBatchAdapter:
     default_max_enqueued_tokens = OPENAI_BATCH_MAX_ENQUEUED_TOKENS
     chars_per_token = OPENAI_CHARS_PER_TOKEN
     uses_error_file = True
+    completion_window_hours = 24  # OPENAI_BATCH_COMPLETION_WINDOW
 
     def create_client(self, embedding_config: dict[str, Any] | None) -> Any:
         return create_openai_client(embedding_config)

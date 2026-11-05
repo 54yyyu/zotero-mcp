@@ -512,6 +512,23 @@ class ChromaClient:
             logger.error(f"Error listing collection ids: {e}")
             return set()
 
+    def count_outside_library(self, group_id: int) -> int:
+        """Documents a reset would take from anyone but library ``group_id``.
+
+        Unlike :meth:`get_all_ids` this raises on a read failure, for the guard
+        in front of a reset: not knowing must not read as "there are none".
+        Counts by subtraction, because unattributed documents never match a
+        ``group_id`` filter and they would be lost too.
+        """
+        everything = self.collection.get(include=[])
+        ours = self.collection.get(where={"group_id": int(group_id)}, include=[])
+        return len(set(everything.get("ids", [])) - set(ours.get("ids", [])))
+
+    def has_passage_documents(self) -> bool:
+        """Does the index hold passage-chunked documents? Raises on a read failure."""
+        found = self.collection.get(where={"chunk_index": {"$gte": 0}}, limit=1, include=[])
+        return bool(found.get("ids"))
+
     def iter_metadatas(self, batch_size: int = 500) -> Iterator[tuple[list[str], list[dict[str, Any]]]]:
         """Stream ``(ids, metadatas)`` over the whole collection in batches.
 
