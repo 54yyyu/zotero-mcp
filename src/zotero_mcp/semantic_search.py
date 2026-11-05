@@ -3213,9 +3213,12 @@ class ZoteroSemanticSearch:
             # an empty index behind and nothing to say so.
             embedding_function = getattr(self.chroma_client, "embedding_function", None)
             api_checked = False
+            # Whether a provider call succeeded in this run; only then may
+            # the stored API failure be cleared.
+            api_answered = False
             if force_full_rebuild and not batch_enabled:
                 if isinstance(embedding_function, RemoteEmbeddingFunction):
-                    embedding_function.check_reachable()
+                    api_answered = embedding_function.check_reachable()
                     api_checked = True
                 logger.info("Force rebuilding database...")
                 # The watermark describes the index about to be emptied. Zero
@@ -3417,7 +3420,7 @@ class ZoteroSemanticSearch:
                 and not api_checked
                 and isinstance(embedding_function, RemoteEmbeddingFunction)
             ):
-                embedding_function.check_reachable()
+                api_answered = embedding_function.check_reachable()
 
             # User-friendly progress reporting
             total = stats["total_items"] = len(all_items)
@@ -3582,7 +3585,9 @@ class ZoteroSemanticSearch:
             # Trade-off: an item that always fails keeps the watermark back
             # on every run. Persisting failed keys instead is a follow-up.
             self.update_config["last_update"] = datetime.now().isoformat()
-            self.update_config.pop("last_api_failure", None)
+            written = stats["added_items"] + stats["updated_items"] + stats["recovered_items"]
+            if api_answered or written:
+                self.update_config.pop("last_api_failure", None)
             if stats.get("deletion_skipped_reason") or retry_fail:
                 self._save_update_config()
             else:

@@ -372,13 +372,16 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
                 return hostname
         return self.default_api_host or "the configured embedding API"
 
-    def check_reachable(self) -> None:
+    def check_reachable(self) -> bool:
         """Embed one short string, to find out whether the API answers at all.
 
         Goes through the normal limiter and retry path with
         ``probe_max_retries``. Raises :class:`EmbeddingAPIUnreachable` when
         the API cannot be reached or refuses the request. Any other error is
         only logged: it is left to the run itself, which handles it as before.
+
+        Returns True when the request succeeded, False after such a logged
+        error.
         """
         try:
             self._embed_with_retry(
@@ -390,6 +393,8 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             raise
         except Exception as exc:
             logger.warning(f"Embedding API check failed, continuing: {exc}")
+            return False
+        return True
 
     def _api_answers(self) -> bool:
         """Whether the API answers the short probe request at all.

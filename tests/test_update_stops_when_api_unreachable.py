@@ -596,3 +596,20 @@ def test_watermark_is_zeroed_before_the_reset(tmp_path, monkeypatch):
     search.update_database(force_full_rebuild=True, allow_mass_deletion=True)
 
     assert seen == [{0}]
+
+
+def test_run_with_nothing_to_embed_keeps_the_failure(tmp_path, monkeypatch):
+    """Only a run in which the API answered may clear the stored failure."""
+    search, chroma, ef, config = _populated(tmp_path, monkeypatch, n=3)
+    search.update_config["last_api_failure"] = {
+        "time": datetime.now().isoformat(), "host": HOST, "reason": "connection failed",
+    }
+    search._save_update_config()
+    monkeypatch.setattr(search, "_get_items_from_source", lambda **kw: [])
+    calls_before = len(ef.client.embeddings.calls)
+
+    stats = search.update_database(limit=5)
+
+    assert "error" not in stats
+    assert len(ef.client.embeddings.calls) == calls_before
+    assert _saved(config)["update_config"]["last_api_failure"]["host"] == HOST
