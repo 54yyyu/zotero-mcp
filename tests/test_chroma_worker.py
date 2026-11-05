@@ -34,6 +34,7 @@ from chromadb.config import Settings
 from zotero_mcp import chroma_worker
 from zotero_mcp.chroma_client import ChromaClient, create_chroma_client
 from zotero_mcp.chroma_worker import WorkerChromaClient, WorkerExited
+from zotero_mcp.config import SemanticSearchConfig
 
 N = 30
 
@@ -56,7 +57,6 @@ def config(tmp_path, monkeypatch):
     path.write_text(json.dumps({"semantic_search": {
         "persist_directory": str(persist),
         "embedding_model": "default",
-        "idle_unload_minutes": 10,  # opt-in: the default (0) keeps ChromaDB in-process
     }}))
     # The worker is `python -m zotero_mcp.chroma_worker`; make sure it imports
     # this checkout, as the server's own interpreter would.
@@ -186,18 +186,55 @@ def test_a_call_in_flight_when_the_worker_dies_raises(config, monkeypatch):
         client.get_collection_info()
 
 
-@pytest.mark.parametrize("idle", [{"idle_unload_minutes": 0}, {}], ids=["zero", "unset"])
-def test_zero_or_unset_idle_minutes_keeps_chromadb_in_process(tmp_path, monkeypatch, idle):
-    monkeypatch.setattr(chroma_worker, "_enabled", True)
-    monkeypatch.setattr(chroma_worker, "_shared", {})
+def _bare_config(tmp_path, **idle):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"semantic_search": {
         "persist_directory": str(tmp_path / "chroma_db"),
         **idle,
     }}))
+    return str(path)
 
-    assert isinstance(create_chroma_client(str(path)), ChromaClient)
+
+def test_zero_idle_minutes_keeps_chromadb_in_process(tmp_path, monkeypatch):
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    assert isinstance(create_chroma_client(_bare_config(tmp_path, idle_unload_minutes=0)), ChromaClient)
     SharedSystemClient.clear_system_cache()
+
+
+def test_unset_idle_minutes_means_ten_in_the_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    client = create_chroma_client(_bare_config(tmp_path))
+
+    assert isinstance(client, WorkerChromaClient)
+    assert client._idle_seconds == 600
+    assert chroma_worker.DEFAULT_IDLE_UNLOAD_MINUTES == 10
+    assert SemanticSearchConfig().idle_unload_minutes == 10  # one default, two places
+
+
+@pytest.mark.parametrize("path", [None, "missing.json"], ids=["no-path", "nonexistent-path"])
+def test_no_config_file_also_means_ten_in_the_server(tmp_path, monkeypatch, path):
+    monkeypatch.setenv("HOME", str(tmp_path))  # keep the default index location off the real one
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    client = create_chroma_client(str(tmp_path / path) if path else None)
+
+    assert isinstance(client, WorkerChromaClient)
+    assert client._idle_seconds == 600
+
+
+def test_a_users_own_idle_minutes_wins_over_the_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    client = create_chroma_client(_bare_config(tmp_path, idle_unload_minutes=3))
+
+    assert isinstance(client, WorkerChromaClient)
+    assert client._idle_seconds == 180
 
 
 def test_outside_the_server_chromadb_stays_in_process(tmp_path):
@@ -254,7 +291,6 @@ def openai_config(config, tmp_path):
         "persist_directory": str(tmp_path / "openai_chroma_db"),
         "embedding_model": "openai",
         "embedding_config": {"api_key": "sk-test", "base_url": "http://127.0.0.1:9"},
-        "idle_unload_minutes": 10,
     }}))
     return str(path)
 

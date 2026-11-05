@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The MCP server now frees the semantic index's memory after 10 idle minutes by default.** `semantic_search.idle_unload_minutes` defaulted to `0`, so a server that ran one semantic search held the whole vector index until it exited. The default is now `10`: ChromaDB runs in a worker process that exits after 10 minutes without a semantic call, and the next call starts a new one and reloads the index. On an Apple M1 Max a new worker answered its first query 0.4 s after starting for 5,000 article-level records of 3,072 dimensions (about 150 MB resident) and 0.55 s for 50,000 (about 700 MB). Set `idle_unload_minutes` to `0` to keep ChromaDB in the server as before; a value you have set is unchanged. The command-line tools are unaffected. See "Semantic search memory" in `docs/configuration.md`.
+
 ### Fixed
 
 - **With `idle_unload_minutes` set, indexing in the server keeps the embedding provider's settings.** The worker forwarded `embedding_function` as a callable that runs in the worker, so the server saw none of its settings: the streaming pipeline (embedding overlapped with preparing and committing; on by default for OpenAI and Gemini, `max_parallel_requests` 4) was silently off, item-level indexes lost their parallel requests, and passage sizes ignored the provider's characters per token. Settings are now read from the worker's function and embedding runs in the server on a copy built from the same model and config.
