@@ -4622,6 +4622,12 @@ class ZoteroSemanticSearch:
         """Give up on a run: it stops being collected, reported and holding anything up.
 
         The sync version doesn't move, so the next update covers its items again.
+        The exception is a rebuild that already emptied the ChromaDB collection
+        and got part way in: the index then holds only some of the library, and
+        an update from the old sync version would see nothing to do. The sync
+        version goes to 0 instead, so the next update reads the whole library
+        (``sync_version_reset`` in the result).
+
         Its files stay, and ``batch-import --batch-id`` can still import from them.
         With no ``run_id`` this works only if there's exactly one run it could mean.
         """
@@ -4652,14 +4658,21 @@ class ZoteroSemanticSearch:
                 if not matching:
                     raise FileNotFoundError(f"No {adapter.label} batch run {run_id} for this library")
                 run = matching[0]
+            reset_happened = bool(
+                run.get("force_full_rebuild")
+                and not run.get("promoted_at")
+                and any(batch.get("imported_at") for batch in run.get("batches", []))
+            )
             run["abandoned_at"] = datetime.now().isoformat()
             module.save_manifest(run)
+            if reset_happened:
+                self._save_update_config(last_sync_version=0, library_key=str(group_id))
             try:
                 self._run_group_id = group_id
                 self._save_batch_notice(notes=[], deferred=None)
             finally:
                 self._run_group_id = None
-            return {"abandoned": run.get("run_id")}
+            return {"abandoned": run.get("run_id"), "sync_version_reset": reset_happened}
 
     def has_unfinished_batch_run(self) -> bool:
         """Is a run holding updates back for this library? Reads local files only."""

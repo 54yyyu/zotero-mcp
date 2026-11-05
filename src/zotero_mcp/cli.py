@@ -1361,7 +1361,15 @@ def main():
             print(f"Error giving up on the batch run: {e}")
             sys.exit(1)
         if result.get("abandoned"):
-            print(f"Gave up on batch run {result['abandoned']}. The next update covers its items again.")
+            if result.get("sync_version_reset"):
+                print(
+                    f"Gave up on batch run {result['abandoned']}, a rebuild that had already replaced "
+                    "part of the index. The sync version is now 0, so the next 'zotero-mcp update-db' "
+                    "reads the whole library and puts back what is missing; without --fulltext and "
+                    "with paid embeddings, that embeds the whole library again."
+                )
+            else:
+                print(f"Gave up on batch run {result['abandoned']}. The next update covers its items again.")
         elif result.get("candidates"):
             print("Several batch runs could be meant. Choose one with --run-id:")
             for run_id in result["candidates"]:
