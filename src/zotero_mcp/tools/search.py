@@ -1885,7 +1885,7 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Passage-level Records:** {collection_info.get('passage_records', 0)}")
         if collection_info.get("unmigrated_passages"):
             output.append(
-                "**Note:** These passages are in the article collection. To search articles "
+                "**Note:** These passages are in the article-level ChromaDB collection. To search articles "
                 "too, run `zotero-mcp migrate-index`."
             )
         if collection_info.get("pending_writes"):

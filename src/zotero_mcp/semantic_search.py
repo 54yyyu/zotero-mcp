@@ -6378,7 +6378,7 @@ class ZoteroSemanticSearch:
                 )
             if requested == SEARCH_ARTICLES:
                 return None, False, None, (
-                    "This index holds passages only, in the article collection. To search "
+                    "This index holds passages only, in the article-level ChromaDB collection. To search "
                     "articles too, run 'zotero-mcp migrate-index', then 'zotero-mcp update-db'."
                 )
             return SEARCH_PASSAGES, self._chunking_enabled or requested == SEARCH_PASSAGES, None, None

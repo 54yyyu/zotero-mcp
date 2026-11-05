@@ -216,7 +216,7 @@ Extracted text is reliable for prose and unreliable for math and tables. `zotero
 
 By default each item is indexed as one vector: title, authors, abstract and any full text joined and cut at the embedding model's input limit. The default model, all-MiniLM-L6-v2, reads 256 tokens (about 1,000 characters), so with `update-db --fulltext` the body of a PDF is extracted but never embedded and only the start of each item is searchable. `zotero-mcp update-db --fulltext` and `zotero-mcp db-status` say so when this applies.
 
-Passage chunking also indexes each item as several overlapping passages, in a separate collection, so search can match anywhere in a paper and return the matching passage with its page. The one-vector article record stays: articles suit finding works on a topic, and passages suit finding where something is done or stated. It is off by default. These keys live under `semantic_search.chunking`:
+Passage chunking also indexes each item as several overlapping passages, in a separate ChromaDB collection (not a Zotero collection), so search can match anywhere in a paper and return the matching passage with its page. The one-vector article record stays: articles suit finding works on a topic, and passages suit finding where something is done or stated. It is off by default. These keys live under `semantic_search.chunking`:
 
 ```json
 {
@@ -242,7 +242,7 @@ After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`
 
 An update writes every article record before any passage, so article search covers a long run's items early. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile; a run stopped in between leaves the rest to the next update.
 
-Passages and articles live in two collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
+Passages and articles live in two ChromaDB collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
 An index built with chunking on by an earlier version holds its passages in `zotero_library`. It keeps working that way, passages only, until you run `zotero-mcp migrate-index`. That renames the collection, keeping every vector, and takes seconds however large the index is; `--dry-run` reports what would change. The next `update-db` then embeds one article vector per item, and an interrupted run carries on where it stopped. Restart any running server afterwards, and upgrade any other copy of zotero-mcp using the same index, because an older version would go back to writing passages in `zotero_library`.
 

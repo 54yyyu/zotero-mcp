@@ -417,9 +417,9 @@ def _print_migration_report(report) -> None:
         print(f"\nMigration {'check (dry run)' if report.dry_run else 'completed'}:")
         print(f"- Passages kept, with their vectors: {report.passage_records}")
         if report.moved_articles:
-            print(f"- Article records moved to the article collection: {report.moved_articles}")
+            print(f"- Article records moved to the article-level ChromaDB collection: {report.moved_articles}")
         if report.moved_passages:
-            print(f"- Passages moved out of the article collection: {report.moved_passages}")
+            print(f"- Passages moved out of the article-level ChromaDB collection: {report.moved_passages}")
     if report.items_needing_articles:
         print(f"- Items without an article vector: {report.items_needing_articles}")
     if report.dry_run:
@@ -1448,7 +1448,7 @@ def main():
             print(f"  Article-level records: {collection_info.get('article_records', 0)}")
             print(f"  Passage-level records: {collection_info.get('passage_records', 0)}")
             if collection_info.get("unmigrated_passages"):
-                print("  These passages are in the article collection. To search articles too,")
+                print("  These passages are in the article-level ChromaDB collection. To search articles too,")
                 print("  run: zotero-mcp migrate-index")
             print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
