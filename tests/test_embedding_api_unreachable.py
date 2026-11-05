@@ -293,3 +293,35 @@ def test_document_failure_on_a_reachable_api_keeps_its_own_type():
 
     # two attempts on the batch, then one successful re-check
     assert ef.client.embeddings.calls[-1] == [ef.probe_text]
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1"])
+def test_loopback_hosts_point_at_the_local_server(host):
+    from zotero_mcp.config_light import api_unreachable_message
+
+    message = api_unreachable_message(host, "connection failed")
+    assert "running" in message
+    assert "VPN" not in message
+
+
+def test_401_leads_with_the_api_key():
+    from zotero_mcp.config_light import api_unreachable_message
+
+    message = api_unreachable_message(HOST, "HTTP 401")
+    assert "API key" in message
+    assert message.index("API key") < message.index("VPN")
+
+
+def test_ollama_on_localhost_says_the_server_is_not_running():
+    ef = OllamaEmbeddingFunction(base_url="http://localhost:11434", max_retries=0)
+    ef.limiter = _no_wait_limiter()
+
+    def refuse(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("refused")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(requests, "post", refuse)
+        with pytest.raises(EmbeddingAPIUnreachable) as info:
+            ef(["x"])
+
+    assert "running" in str(info.value) and "VPN" not in str(info.value)

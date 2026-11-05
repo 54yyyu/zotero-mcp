@@ -3282,8 +3282,9 @@ class ZoteroSemanticSearch:
                     )
                 except Exception:
                     pass
+                # last_api_failure stays: this path made no provider call, so
+                # it cannot say the API is reachable again.
                 self.update_config["last_update"] = datetime.now().isoformat()
-                self.update_config.pop("last_api_failure", None)
                 self._save_update_config(
                     last_sync_version=target_sync_version,
                     library_key=str(self._run_group_id),
@@ -3592,7 +3593,10 @@ class ZoteroSemanticSearch:
             # are left alone, so the next run picks up the rest.
             logger.error(f"Stopping the update: {e}")
             self._record_api_failure(e)
-            stats["error"] = str(e)
+            stats["error"] = (
+                f"{e} Items already indexed were kept; run `zotero-mcp update-db` "
+                "again once the API can be reached."
+            )
             stats["embedding_api_unreachable"] = e.host
             end_time = datetime.now()
             stats["duration"] = str(end_time - start_time)

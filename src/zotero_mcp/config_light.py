@@ -96,18 +96,39 @@ API_FAILURE_BACKOFF = timedelta(hours=1)
 def api_unreachable_message(host: str, reason: str) -> str:
     """The one message for an embedding API that cannot be reached.
 
-    Names the host and what went wrong, and suggests the network or VPN,
-    because some APIs answer only from particular networks. It does not claim
-    the request was blocked by address: a 403 can mean other things too.
+    Names the host and what went wrong. For a server on this machine it says
+    to check that the server is running; otherwise it suggests the network
+    or VPN, because some APIs answer only from particular networks, without
+    claiming the request was blocked by address. A 401 leads with the key.
     """
-    message = (
-        f"Could not reach the embedding API at {host} ({reason}). "
-        "Check your network connection; if this API only accepts requests "
-        "from a particular network, connect to it or its VPN and try again."
+    if host in _LOOPBACK_HOSTS:
+        return (
+            f"Could not reach the embedding server at {host} ({reason}). "
+            "Check that the local server (for example Ollama) is running."
+        )
+    network = (
+        "if this API only accepts requests from a particular network, "
+        "connect to it or its VPN"
     )
-    if reason in ("HTTP 401", "HTTP 403"):
-        message += " If you are on the right network, check the API key."
-    return message
+    if reason == "HTTP 401":
+        return (
+            f"The embedding API at {host} rejected the API key (HTTP 401). "
+            f"Check the API key; {network}."
+        )
+    if reason == "HTTP 403":
+        return (
+            f"The embedding API at {host} refused the request (HTTP 403). "
+            f"Check your network connection; {network}. "
+            "If you are on the right network, check the API key and its permissions."
+        )
+    return (
+        f"Could not reach the embedding API at {host} ({reason}). "
+        f"Check your network connection; {network}."
+    )
+
+
+#: Hosts that name this machine; for these, VPN advice would be misleading.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def api_failure_backoff_until(

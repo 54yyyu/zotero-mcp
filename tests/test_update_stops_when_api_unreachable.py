@@ -510,3 +510,30 @@ def test_one_failing_batch_on_a_reachable_api_does_not_stop_the_run(tmp_path, mo
     assert chroma.collection.count() == 59
     assert stats["errors"] == 1
     assert "last_api_failure" not in _saved(config)["update_config"]
+
+
+def test_unchanged_library_does_not_clear_the_failure(tmp_path, monkeypatch):
+    """The early return contacts no API, so it cannot vouch for it."""
+    search, chroma, ef, config = _populated(tmp_path, monkeypatch, n=3)
+    search.update_config["last_api_failure"] = {
+        "time": datetime.now().isoformat(), "host": HOST, "reason": "connection failed",
+    }
+    search._save_update_config()
+    calls_before = len(ef.client.embeddings.calls)
+
+    stats = search.update_database()
+
+    assert "error" not in stats and stats["total_items"] == 0
+    assert len(ef.client.embeddings.calls) == calls_before
+    assert _saved(config)["update_config"]["last_api_failure"]["host"] == HOST
+
+
+def test_stop_message_says_what_was_kept_and_what_to_run(tmp_path, monkeypatch):
+    search, chroma, ef, config = _build(
+        tmp_path, monkeypatch, always(connection_error), _items(5)
+    )
+
+    stats = search.update_database()
+
+    assert "zotero-mcp update-db" in stats["error"]
+    assert "kept" in stats["error"]
