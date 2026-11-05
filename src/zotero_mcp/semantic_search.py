@@ -78,6 +78,10 @@ _BATCH_MODULES = {"openai": openai_batch, "gemini": gemini_batch}
 SEARCH_ARTICLES = "articles"
 SEARCH_PASSAGES = "passages"
 
+
+def _count_items(count: int) -> str:
+    return f"{count:,} item" if count == 1 else f"{count:,} items"
+
 # How each provider spells "ready to import", for error text only. OpenAI
 # reports "completed", Gemini "succeeded"; both normalize to
 # batch_common.STATE_SUCCEEDED, which is what decision logic actually uses.
@@ -5455,7 +5459,7 @@ class ZoteroSemanticSearch:
             Search results with Zotero item details
         """
         try:
-            search_level, chunked, level_error = self._resolve_search_level(level)
+            search_level, chunked, level_note, level_error = self._resolve_search_level(level)
             if level_error:
                 return {
                     "query": query,
@@ -5532,6 +5536,7 @@ class ZoteroSemanticSearch:
                 "total_found": len(enriched_results),
                 "rerank": rerank_info,
                 "level": search_level,
+                "level_note": level_note,
             }
 
         except EmbeddingAPIUnreachable as e:
@@ -5573,8 +5578,10 @@ class ZoteroSemanticSearch:
                 "error": error,
             }
 
-    def _resolve_search_level(self, requested: str | None) -> tuple[str | None, bool, str | None]:
-        """Decide what to search: ``(level, whether hits are passages, error)``.
+    def _resolve_search_level(
+        self, requested: str | None
+    ) -> tuple[str | None, bool, str | None, str | None]:
+        """Decide what to search: ``(level, whether hits are passages, note, error)``.
 
         Reads the layout from SQLite, so choosing costs no vector index load.
         A client double with no layout gets the behaviour from before levels.
@@ -5582,9 +5589,9 @@ class ZoteroSemanticSearch:
         layout_of = getattr(self.chroma_client, "index_layout", None)
         layout = layout_of() if layout_of else None
         if not isinstance(layout, dict):
-            return requested, self._chunking_enabled, None
+            return requested, self._chunking_enabled, None, None
         if requested not in (None, SEARCH_ARTICLES, SEARCH_PASSAGES):
-            return None, False, (
+            return None, False, None, (
                 f"Unknown search level {requested!r}: use '{SEARCH_ARTICLES}' or '{SEARCH_PASSAGES}'."
             )
 
@@ -5592,29 +5599,60 @@ class ZoteroSemanticSearch:
             # Passages are in the article collection, which is searched either
             # way, as it always was until this index is migrated.
             if requested == SEARCH_ARTICLES:
-                return None, False, (
+                return None, False, None, (
                     "This index holds passages only, in the article collection. To search "
                     "articles too, run 'zotero-mcp migrate-index', then 'zotero-mcp update-db'."
                 )
-            return SEARCH_PASSAGES, self._chunking_enabled or requested == SEARCH_PASSAGES, None
+            return SEARCH_PASSAGES, self._chunking_enabled or requested == SEARCH_PASSAGES, None, None
 
         if requested == SEARCH_PASSAGES and not layout["passage_records"]:
-            return None, False, (
+            return None, False, None, (
                 "This index has no passages. Enable semantic_search.chunking in config.json "
                 "and run 'zotero-mcp update-db' to add them."
             )
         if requested == SEARCH_ARTICLES and not layout["article_records"] and layout["passage_records"]:
-            return None, False, (
+            return None, False, None, (
                 "This index has no article records yet. Run 'zotero-mcp update-db' to embed them."
             )
-        level = requested
-        if level is None:
-            level = (
-                SEARCH_PASSAGES
-                if self._chunking_enabled and layout["passage_records"]
-                else SEARCH_ARTICLES
-            )
-        return level, level == SEARCH_PASSAGES, None
+        level = requested or self._default_search_level(layout)
+        return level, level == SEARCH_PASSAGES, self._search_level_note(level, layout), None
+
+    def _default_search_level(self, layout: dict[str, Any]) -> str:
+        """The level to search when the caller did not choose one.
+
+        The chunking setting decides, so results never switch level because an
+        index run reached some point. The other level is used only while the
+        chosen one has no records at all, and the note says so.
+        """
+        articles, passages = layout["article_records"], layout["passage_records"]
+        if self._chunking_enabled:
+            return SEARCH_PASSAGES if passages else SEARCH_ARTICLES
+        return SEARCH_ARTICLES if articles or not passages else SEARCH_PASSAGES
+
+    def _search_level_note(self, level: str, layout: dict[str, Any]) -> str | None:
+        """Tell the caller what was searched and what the other level holds.
+
+        A passage fill can take days, and until it ends passages cover only part
+        of the library. An agent can't see that from the results, so it gets the
+        counts and can decide to search the other level. The counts are for the
+        whole index, whichever library was searched. An index with one level and
+        no choice to make, or still unmigrated, gets no note.
+        """
+        if layout["unmigrated_passages"]:
+            return None
+        items = {SEARCH_ARTICLES: layout["article_records"], SEARCH_PASSAGES: layout["passage_items"]}
+        other = SEARCH_PASSAGES if level == SEARCH_ARTICLES else SEARCH_ARTICLES
+        searched, elsewhere = items[level], items[other]
+        if not searched:
+            return None
+
+        note = f"Searched {level} ({_count_items(searched)} in the index)."
+        if elsewhere:
+            note += f" The {other[:-1]} level has {_count_items(elsewhere)}"
+            return f"{note}, so searching it may find more." if elsewhere > searched else f"{note}."
+        if level == SEARCH_PASSAGES:
+            return f"{note} No article records are indexed yet."
+        return f"{note} No passages are indexed yet." if self._chunking_enabled else None
 
     def _enrich_search_results(
         self, chroma_results: dict[str, Any], query: str, limit: int | None = None

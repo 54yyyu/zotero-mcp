@@ -107,6 +107,125 @@ def test_chunking_just_enabled_falls_back_to_articles(build):
     assert result["level"] == "articles"
 
 
+def test_default_is_passages_from_the_first_passage_of_a_fill(build):
+    """Only the setting picks the level, so results never switch mid-fill."""
+    articles = [f"A{i}" for i in range(10)]
+    search = build(chunking=True, articles=articles, passages=["A0#0", "A0#1"])
+
+    assert search.search("q", limit=20)["level"] == "passages"
+
+    _write(search.chroma_client, [f"A{i}#0" for i in range(1, 9)], [_passage_meta(f"A{i}", 0, 1) for i in range(1, 9)])
+
+    assert search.search("q", limit=20)["level"] == "passages"
+
+
+# --- telling the caller what was searched ----------------------------------------
+
+
+def test_note_points_at_the_article_level_during_a_fill(build):
+    articles = [f"A{i}" for i in range(12)]
+    search = build(chunking=True, articles=articles, passages=["A0#0", "A0#1"])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched passages (1 item in the index)" in note
+    assert "article level has 12 items" in note
+    assert "may find more" in note
+
+
+def test_note_gives_both_counts_when_neither_level_has_more(build):
+    search = build(chunking=True, articles=["A", "B"], passages=["A#0", "B#0"])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched passages (2 items in the index)" in note
+    assert "article level has 2 items" in note
+    assert "may find more" not in note
+
+
+def test_note_on_an_article_search_gives_the_passage_count(build):
+    search = build(chunking=False, articles=["A", "B"], passages=["A#0"])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched articles (2 items in the index)" in note
+    assert "passage level has 1 item" in note
+    assert "may find more" not in note
+
+
+def test_note_says_passages_are_not_there_yet(build):
+    search = build(chunking=True, articles=["ART"])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched articles (1 item in the index)" in note
+    assert "No passages are indexed yet" in note
+
+
+def test_note_says_articles_are_not_there_yet(build):
+    search = build(chunking=False, passages=["PAS#0"])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched passages (1 item in the index)" in note
+    assert "No article records are indexed yet" in note
+
+
+def test_no_note_when_the_index_has_only_the_level_the_setting_asks_for(build):
+    assert build(chunking=False, articles=["ART"]).search("q")["level_note"] is None
+
+
+def test_no_note_on_an_unmigrated_index(build):
+    search = build(route=False, chunking=True, passages=["PAS#0"])
+    search.chroma_client.route_passages = True
+
+    assert search.search("q")["level_note"] is None
+
+
+@pytest.fixture()
+def tool_output(monkeypatch):
+    """The MCP tool's text for a search that returns these results and this note."""
+    from zotero_mcp import client as client_module
+    from zotero_mcp.tools import search as search_tool
+
+    def _run(results, note):
+        fake = MagicMock()
+        fake.search.return_value = {"results": results, "level": "passages", "level_note": note}
+        monkeypatch.setattr(semantic_search, "create_semantic_search", lambda *a, **k: fake)
+        monkeypatch.setattr(search_tool, "_maybe_fire_presearch_sync", lambda *a, **k: None)
+        monkeypatch.setattr(client_module, "get_active_group_id", lambda: None, raising=False)
+        return search_tool.semantic_search(query="q", ctx=MagicMock())
+
+    return _run
+
+
+def test_tool_prints_the_note_above_the_results(tool_output):
+    hit = {"item_key": "A", "similarity_score": 0.5, "matched_text": "text", "zotero_item": {"data": {"title": "T"}}}
+
+    text = tool_output([hit], "Searched passages (1 item in the index).")
+
+    assert "Searched passages (1 item in the index)." in text
+    assert text.index("Searched passages") < text.index("T")
+
+
+def test_tool_prints_the_note_when_nothing_was_found(tool_output):
+    """An empty result is when the other level matters most."""
+    text = tool_output([], "The article level has 12 items, so searching it may find more.")
+
+    assert "No semantically similar items" in text
+    assert "may find more" in text
+
+
+def test_migrated_index_finds_passages_before_its_articles_exist(build):
+    """With chunking off, the articles the default would pick are not there yet."""
+    search = build(chunking=False, passages=["PAS#0"])
+
+    result = search.search("q")
+
+    assert _keys(result) == ["PAS"]
+    assert result["level"] == "passages"
+
+
 def test_asking_for_passages_that_do_not_exist_says_so(build):
     search = build(chunking=False, articles=["ART"])
 
@@ -181,4 +300,4 @@ def test_a_client_double_without_levels_still_searches():
     search.chroma_client = SimpleNamespace()
     search._chunking_config = {"enabled": True}
 
-    assert search._resolve_search_level(None) == (None, True, None)
+    assert search._resolve_search_level(None) == (None, True, None, None)

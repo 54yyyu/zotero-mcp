@@ -123,6 +123,7 @@ def test_layout_counts_each_level(client, directory):
 
     assert layout["article_records"] == 2
     assert layout["passage_records"] == 3
+    assert layout["passage_items"] == 1
     assert layout["unmigrated_passages"] == 0
     assert layout["passage_collection_exists"] is True
 

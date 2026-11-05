@@ -1588,10 +1588,12 @@ def semantic_search(
 
         search_results = results.get("results", [])
         index_note = _index_note(search)
+        level_note = results.get("level_note")
 
         if not search_results:
             empty = f"No semantically similar items found for query: '{query}'"
-            return f"{empty}\n\n{index_note}" if index_note else empty
+            notes = [n for n in (index_note, f"*{level_note}*" if level_note else None) if n]
+            return "\n\n".join([empty, *notes])
 
         # Format results as markdown
         output = [f"# Semantic Search Results for '{query}'", ""]
@@ -1600,6 +1602,9 @@ def semantic_search(
             output.append("")
         if search_all_libraries:
             output.append("*Scope: all indexed libraries.*")
+            output.append("")
+        if level_note:
+            output.append(f"*{level_note}*")
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")

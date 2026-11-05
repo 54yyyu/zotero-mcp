@@ -918,6 +918,35 @@ def _level_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | 
     return row[0], total - chunks, chunks
 
 
+def _passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | None, int, int]:
+    """(collection id, records, items) of the passage collection, cheaply.
+
+    Runs on every search, so it counts through indexes rather than scanning a
+    million ids: an item is counted by its first passage's metadata.
+    """
+    row = con.execute("SELECT id FROM collections WHERE name = ?", (collection_name,)).fetchone()
+    if row is None:
+        return None, 0, 0
+    records = con.execute(
+        """
+        SELECT count(*) FROM embeddings e JOIN segments s ON e.segment_id = s.id
+        WHERE s.collection = ? AND s.scope = 'METADATA'
+        """,
+        (row[0],),
+    ).fetchone()[0]
+    items = con.execute(
+        """
+        SELECT count(*)
+        FROM embedding_metadata m
+        JOIN embeddings e ON e.id = m.id
+        JOIN segments s ON e.segment_id = s.id
+        WHERE s.collection = ? AND s.scope = 'METADATA' AND m.key = 'chunk_index' AND m.int_value = 0
+        """,
+        (row[0],),
+    ).fetchone()[0]
+    return row[0], records, items
+
+
 def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
     """Count an index's records per level from SQLite, read-only.
 
@@ -933,6 +962,7 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     layout: dict[str, Any] = {
         "article_records": 0,
         "passage_records": 0,
+        "passage_items": 0,
         "unmigrated_passages": 0,
         "passages_in_article_collection": 0,
         "passage_collection_exists": False,
@@ -945,12 +975,13 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
     try:
         article_id, bare, in_articles = _level_counts(con, collection_name)
-        passage_id, _, in_passages = _level_counts(con, passage_collection_name(collection_name))
+        passage_id, in_passages, passage_items = _passage_counts(con, passage_collection_name(collection_name))
     finally:
         con.close()
     layout.update(
         article_records=bare,
         passage_records=in_articles + in_passages,
+        passage_items=passage_items,
         unmigrated_passages=0 if in_passages else in_articles,
         passages_in_article_collection=in_articles,
         passage_collection_exists=passage_id is not None,
