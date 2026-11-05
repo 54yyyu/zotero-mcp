@@ -32,7 +32,7 @@ def _semantic_update_command() -> list[str] | None:
     third-party, so a server with no update due never loads ChromaDB (#485).
     The update itself runs in a child process (``_spawn_semantic_update``).
     """
-    from zotero_mcp.config_light import should_update
+    from zotero_mcp.config_light import background_update_due
 
     config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
     if not config_path.exists():
@@ -47,7 +47,8 @@ def _semantic_update_command() -> list[str] | None:
         # here is what would drag the heavy work back in on every startup.
         return None
 
-    if not should_update(update_cfg):
+    # Held off for an hour after the embedding API was unreachable.
+    if not background_update_due(update_cfg):
         return None
 
     cmd = [sys.executable, "-m", "zotero_mcp.cli", "update-db"]

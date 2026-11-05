@@ -1338,6 +1338,10 @@ def main():
             print(f"- Frequency: {update_config.get('update_frequency', 'manual')}")
             print(f"- Last update: {update_config.get('last_update', 'Never')}")
             print(f"- Should update: {status.get('should_update', False)}")
+            from zotero_mcp.config_light import describe_api_failure
+
+            if api_failure := describe_api_failure(update_config):
+                print(f"- Last embedding API failure: {api_failure}")
             print(f"- OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
             print(f"- Passage chunking: {_format_chunking_status(status)}")
 

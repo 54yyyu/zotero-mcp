@@ -50,6 +50,7 @@ from .config_light import (  # noqa: F401
     reranker_enabled,
     should_update,
 )
+from .embeddings.base import EmbeddingAPIUnreachable, RemoteEmbeddingFunction
 from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .identifiers import metadata_match_keys
@@ -3274,6 +3275,7 @@ class ZoteroSemanticSearch:
                 except Exception:
                     pass
                 self.update_config["last_update"] = datetime.now().isoformat()
+                self.update_config.pop("last_api_failure", None)
                 self._save_update_config(
                     last_sync_version=target_sync_version,
                     library_key=str(self._run_group_id),
@@ -3388,6 +3390,12 @@ class ZoteroSemanticSearch:
                 stats["end_time"] = end_time.isoformat()
                 return stats
 
+            # One short request before any real work: an API that only answers
+            # on some networks would otherwise fail every batch of the run.
+            embedding_function = getattr(self.chroma_client, "embedding_function", None)
+            if all_items and isinstance(embedding_function, RemoteEmbeddingFunction):
+                embedding_function.check_reachable()
+
             # User-friendly progress reporting
             total = stats["total_items"] = len(all_items)
             try:
@@ -3435,7 +3443,6 @@ class ZoteroSemanticSearch:
             # default run is byte-for-byte the historical sequential path. The
             # upsert_embeddings check also keeps the minimal ChromaDB doubles
             # used in tests — which implement only upsert_documents — on it.
-            embedding_function = getattr(self.chroma_client, "embedding_function", None)
             max_parallel = getattr(embedding_function, "max_parallel_requests", 1) or 1
             use_streaming = (
                 embedding_function is not None
@@ -3508,6 +3515,8 @@ class ZoteroSemanticSearch:
                         # ran, so we don't know which category it belongs in.
                         # Track recovered items in their own bucket.
                         stats["recovered_items"] += 1
+                    except EmbeddingAPIUnreachable:
+                        raise
                     except Exception as e2:
                         retry_fail += 1
                         if parent is not None:
@@ -3550,6 +3559,7 @@ class ZoteroSemanticSearch:
             # Trade-off: an item that always fails keeps the watermark back
             # on every run. Persisting failed keys instead is a follow-up.
             self.update_config["last_update"] = datetime.now().isoformat()
+            self.update_config.pop("last_api_failure", None)
             if stats.get("deletion_skipped_reason") or retry_fail:
                 self._save_update_config()
             else:
@@ -3565,6 +3575,18 @@ class ZoteroSemanticSearch:
             logger.info(f"Database update completed in {stats['duration']}")
             return stats
 
+        except EmbeddingAPIUnreachable as e:
+            # Stop here: every later request would fail the same way. What
+            # was already written stays; last_update and the sync watermark
+            # are left alone, so the next run picks up the rest.
+            logger.error(f"Stopping the update: {e}")
+            _report(f"\n{e}\n")
+            self._record_api_failure(e)
+            stats["error"] = str(e)
+            stats["embedding_api_unreachable"] = e.host
+            end_time = datetime.now()
+            stats["duration"] = str(end_time - start_time)
+            return stats
         except Exception as e:
             logger.error(f"Error updating database: {e}")
             stats["error"] = str(e)
@@ -3578,6 +3600,22 @@ class ZoteroSemanticSearch:
             # separately before its early return, so this finally only runs
             # for the path where we actually hold the lock.
             lock_cm.__exit__(None, None, None)
+
+    def _record_api_failure(self, error: EmbeddingAPIUnreachable) -> None:
+        """Store when the embedding API was last unreachable, and its host.
+
+        Kept in ``update_config`` so the status tools can show it and the
+        server's background syncs can hold off for an hour (see
+        ``config_light.background_update_due``). Only the time, host and a
+        fixed reason phrase are stored: never a URL or a key. The next
+        successful update removes it.
+        """
+        self.update_config["last_api_failure"] = {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "host": error.host,
+            "reason": error.reason,
+        }
+        self._save_update_config()
 
     def _prepare_and_classify_slice(
         self,
@@ -3799,9 +3837,19 @@ class ZoteroSemanticSearch:
                     payload = chunk_queue.get()
                     if payload is _STREAM_SENTINEL:
                         break
+                    if stop_event.is_set():
+                        # Drain without embedding: the run is stopping.
+                        continue
                     documents, metadatas, ids, item_keys = payload
                     try:
                         vectors = embedding_function(documents)
+                    except EmbeddingAPIUnreachable as exc:
+                        # Every later request would fail the same way: stop
+                        # the producer and the other workers, and let the
+                        # committer write what is already embedded.
+                        record_thread_error(exc)
+                        stop_event.set()
+                        continue
                     except Exception as exc:
                         # One sub-batch failing is not fatal: hand it to the
                         # end-of-run retry pass and keep the worker alive, so a
@@ -4014,6 +4062,8 @@ class ZoteroSemanticSearch:
                     fulltext_cache.evict_many(item_keys_order, config_path=self.config_path)
                 except Exception as e:
                     logger.debug(f"Fulltext cache eviction failed: {e}")
+            except EmbeddingAPIUnreachable:
+                raise
             except Exception as e:
                 # Batch failed — collect failures for end-of-run retry.
                 # ChromaDB's ONNX tokenizer can fail intermittently in bursts;
@@ -4545,6 +4595,21 @@ class ZoteroSemanticSearch:
                 "rerank": rerank_info,
             }
 
+        except EmbeddingAPIUnreachable as e:
+            # The index is local, but the query still has to be embedded by
+            # the API. Never fall back to another provider: its vectors would
+            # not match the index.
+            logger.error(f"Error performing semantic search: {e}")
+            return {
+                "query": query,
+                "limit": limit,
+                "filters": filters,
+                "group_id": group_id,
+                "results": [],
+                "total_found": 0,
+                "error": str(e),
+                "embedding_api_unreachable": True,
+            }
         except Exception as e:
             logger.error(f"Error performing semantic search: {e}")
             error = str(e)

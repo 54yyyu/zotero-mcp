@@ -42,6 +42,12 @@ def _maybe_fire_presearch_sync(search) -> None:
     try:
         if not search.should_update_database():
             return
+        # Read from disk, not the instance: the failure may have been stored
+        # by another process (the startup update runs as a child).
+        from zotero_mcp.config_light import api_failure_backoff_until, load_update_config
+
+        if api_failure_backoff_until(load_update_config(search.config_path)):
+            return
     except Exception:
         return
     now = _time.monotonic()
@@ -1527,7 +1533,14 @@ def semantic_search(
         results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
 
         if results.get("error"):
-            return f"Semantic search error: {results['error']}"
+            message = f"Semantic search error: {results['error']}"
+            if results.get("embedding_api_unreachable"):
+                message += (
+                    "\n\nThe index is stored locally, but each query is embedded "
+                    "by the API. Until it can be reached, use zotero_search_items "
+                    "for a keyword search instead."
+                )
+            return message
 
         search_results = results.get("results", [])
 
@@ -1809,6 +1822,10 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Frequency:** {update_config.get('update_frequency', 'manual')}")
         output.append(f"**Last Update:** {update_config.get('last_update', 'Never')}")
         output.append(f"**Should Update Now:** {should_update(update_config)}")
+        from zotero_mcp.config_light import describe_api_failure
+
+        if api_failure := describe_api_failure(update_config):
+            output.append(f"**Last Embedding API Failure:** {api_failure}")
 
         frequency = update_config.get('update_frequency', 'manual')
         if frequency.startswith('every_') and update_config.get('update_days'):
