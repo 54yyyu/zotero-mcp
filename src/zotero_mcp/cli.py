@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from zotero_mcp import strict_sqlite
+
 # NOTE: Do NOT import zotero_mcp.server at module level.
 # That triggers heavy imports (FastMCP, ChromaDB, sentence-transformers, torch)
 # which take several seconds. Import lazily only when needed (serve command).
@@ -573,6 +575,9 @@ def setup_zotero_environment():
         }
         apply_environment_variables(fallback_env_vars)
 
+    # The setting can also arrive through the env sections loaded above.
+    strict_sqlite.activate_if_requested()
+
 
 def _normalize_help_args(argv: list[str]) -> list[str]:
     """Support `zotero-mcp help [command]` in addition to argparse's `--help`."""
@@ -751,6 +756,14 @@ def tolerate_console_encoding():
 
 def main():
     """Main entry point for the CLI."""
+    try:
+        _run_cli()
+    except strict_sqlite.StrictSqliteViolation as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(strict_sqlite.EXIT_CODE)
+
+
+def _run_cli():
     tolerate_console_encoding()
     parser = argparse.ArgumentParser(
         description="Zotero Model Context Protocol server",
@@ -765,8 +778,24 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--strict-sqlite", action=argparse.BooleanOptionalAction, default=None,
+        help=strict_sqlite.FLAG_HELP,
+    )
+
     # Create subparsers for different commands
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    # The flag also works after the command name. SUPPRESS keeps a subparser's
+    # default from undoing a flag given before the command name.
+    _add_subparser = subparsers.add_parser
+
+    def add_subparser(*args, **kwargs):
+        sp = _add_subparser(*args, **kwargs)
+        sp.add_argument("--strict-sqlite", action=argparse.BooleanOptionalAction,
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        return sp
+
+    subparsers.add_parser = add_subparser
 
     # Server command (default behavior)
     server_parser = subparsers.add_parser("serve", help="Run the MCP server")
@@ -971,6 +1000,8 @@ def main():
                                   help="Do not persist the key to the config file")
 
     args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
+    strict_sqlite.apply_flag(args.strict_sqlite)
+    strict_sqlite.activate_if_requested()
 
     # If no command is provided, default to 'serve'
     if not args.command:

@@ -129,6 +129,8 @@ narrower than the API's. Writes always go through Zotero.
   0.12.1. `ZOTERO_BACKEND=sqlite` forces SQLite; `ZOTERO_SEARCH_BACKEND` is
   accepted as an older name for the same setting. Outside local mode the API is
   always used.
+- `ZOTERO_STRICT_SQLITE=true`: make reads that would reach the Zotero API errors. See
+  [Strict SQLite mode](#strict-sqlite-mode).
 - `ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL`: Zotero keeps recent changes in a WAL file
   next to `zotero.sqlite`, so reads use a private copy of the database plus that
   file. The copy is refreshed when Zotero writes, at most once per this many
@@ -263,6 +265,56 @@ ChromaDB loads the whole vector index into memory the first time a search runs, 
 | `idle_unload_minutes` | `0` (off) | Minutes without a semantic search or index update before the worker exits. `0` runs ChromaDB inside the server, where the index stays loaded until the server exits. |
 
 The status tool (`zotero_get_search_database_status`) reads its counts from the database file and never loads the index. Command-line tools such as `update-db` run ChromaDB in their own process, which frees the index when the command finishes.
+
+## Strict SQLite mode
+
+A check for developers, people posting patches and other advanced users. In local
+mode, reads should come from `zotero.sqlite`, with the Zotero API as a fallback.
+That fallback hides any code path that skips the database for as long as Zotero is
+running. With strict SQLite mode on, a read that would reach the API is an error
+naming the code that made it, so the path can be fixed.
+
+It is off by default, and `zotero-mcp setup` doesn't ask about it. Turn it on any
+of these ways, listed from highest precedence to lowest:
+
+- **For one run:** `--strict-sqlite` on `zotero-mcp` or `zotero-cli`, before or after
+  the command name. `--no-strict-sqlite` turns it off for one run.
+- **In the environment:** `ZOTERO_STRICT_SQLITE=true` or `false`.
+- **Permanently:** `"strict_sqlite": true` at the top level of
+  `~/.config/zotero-mcp/config.json`.
+
+While it is on, a line on stderr says so.
+
+**These are errors:**
+
+- a GET on a library path of the local or web API (`/users/...`, `/groups/...`)
+- any request to Better BibTeX's local endpoint
+- a read the SQLite backend can't express, which would otherwise be retried through
+  the API
+- having no readable local database, which includes web-only mode. `ZOTERO_BACKEND=api`
+  has no effect in this mode.
+
+**These still work:**
+
+- writes, and reads through a client resolved for a write, which needs the current
+  version from the store it writes to
+- citation and bibliography rendering, which needs Zotero's citation engine
+- requests that aren't for library data, such as the schema refresh, the `/api/`
+  capability probe and third-party metadata services
+
+**How errors appear:** an MCP tool or resource returns a tool error, and the
+command-line tools exit with status 3. `zotero-cli --json` reports the code
+`strict_sqlite_violation`. The tool stops at the refused read, even where its code
+would normally catch the failure and carry on.
+
+**What it doesn't show:**
+
+- whether SQLite's answers match the API's, which needs parity tests
+- anything in tests that mock the Zotero client, because those never reach the HTTP
+  layer where the check sits
+
+An attachment whose file isn't on this machine is also an error if the code tries to
+download it through the API.
 
 ## Command-line options
 

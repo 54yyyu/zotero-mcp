@@ -22,6 +22,7 @@ import re
 import sys
 
 from zotero_mcp import cli_json as _cli_json
+from zotero_mcp import strict_sqlite
 
 # Reuse environment setup from the original CLI module
 from zotero_mcp.cli import (
@@ -1492,6 +1493,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--json-schema", action="store_true", dest="json_schema",
         help="Print the --json envelope contract and exit",
     )
+    parser.add_argument(
+        "--strict-sqlite", action=argparse.BooleanOptionalAction, default=None,
+        help=strict_sqlite.FLAG_HELP,
+    )
 
     sub = parser.add_subparsers(dest="command", help="Command to run")
     # Every subcommand accepts the global flags after its own name too, so
@@ -1508,6 +1513,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--json", action="store_true", dest="json_out",
                        default=argparse.SUPPRESS,
                        help="Emit a JSON envelope instead of markdown")
+        p.add_argument("--strict-sqlite", action=argparse.BooleanOptionalAction,
+                       default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         return p
 
     sub.add_parser = add_parser
@@ -2007,6 +2014,8 @@ def main():
     tolerate_console_encoding()
     parser = build_parser()
     args = parser.parse_args()
+    strict_sqlite.apply_flag(args.strict_sqlite)
+    strict_sqlite.activate_if_requested()
 
     if getattr(args, "json_schema", False):
         print(JSON_SCHEMA_DOC)
@@ -2029,6 +2038,12 @@ def main():
         else:
             print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
+    except strict_sqlite.StrictSqliteViolation as e:
+        if _json_mode(args):
+            _cli_json.emit_error(args.command, str(e), code="strict_sqlite_violation")
+        else:
+            print(f"Error: {e}", file=sys.stderr)
+        sys.exit(strict_sqlite.EXIT_CODE)
     except Exception as e:
         # In JSON mode the failure has to arrive in the same shape as a
         # success, or a caller has to parse stderr to find out what happened.

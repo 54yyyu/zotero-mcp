@@ -38,6 +38,7 @@ import threading
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from zotero_mcp import strict_sqlite as _strict_sqlite
 from zotero_mcp import utils as _utils
 from pyzotero.zotero_errors import ResourceNotFoundError
 
@@ -571,6 +572,8 @@ class FallbackBackend:
             try:
                 return target(*args, **kwargs)
             except UnsupportedByBackend as exc:
+                if _strict_sqlite.is_active():
+                    raise _strict_sqlite.declined(attr, exc) from exc
                 logger.debug("SQLite cannot answer %s (%s); asking the API", attr, exc)
                 return getattr(self._api_backend(), attr)(*args, **kwargs)
 
@@ -612,6 +615,9 @@ def get_library_backend(zot=None) -> LibraryBackend:
                 SqliteBackend(reader, _client.get_active_group_id()),
                 lambda: ApiBackend(zot if zot is not None else _client.get_zotero_client()),
             )
+
+    if _strict_sqlite.is_active():
+        raise _strict_sqlite.no_database()
 
     return ApiBackend(zot if zot is not None else _client.get_zotero_client())
 

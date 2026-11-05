@@ -43,7 +43,7 @@ HUMAN_ONLY = {"plugin", "tags"}  # tags: deprecated alias of batch
 
 
 def _format_action(action) -> str | None:
-    if action.dest in ("help", "json_out", "verbose"):
+    if action.dest in ("help", "json_out", "verbose", "strict_sqlite"):
         return None
     if isinstance(action, argparse._SubParsersAction):
         return None

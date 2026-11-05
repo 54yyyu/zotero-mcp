@@ -13,6 +13,7 @@ from fastmcp import FastMCP
 
 from zotero_mcp._context import sync_context
 from zotero_mcp._version import __version__
+from zotero_mcp.strict_sqlite import surface_as_tool_error
 from zotero_mcp.utils import is_local_mode
 
 # Configure logging from environment variable
@@ -150,14 +151,22 @@ async def server_lifespan(server: FastMCP):
     chroma_worker.stop_all()
 
 
+def _guarded(fn):
+    return surface_as_tool_error(sync_context(fn))
+
+
 class _ZoteroMCP(FastMCP):
     """FastMCP whose tools get a context they can log to synchronously."""
 
     def tool(self, name_or_fn=None, **kwargs):
         if callable(name_or_fn):
-            return super().tool(sync_context(name_or_fn), **kwargs)
+            return super().tool(_guarded(name_or_fn), **kwargs)
         register = super().tool(name_or_fn, **kwargs)
-        return lambda fn: register(sync_context(fn))
+        return lambda fn: register(_guarded(fn))
+
+    def resource(self, uri, **kwargs):
+        register = super().resource(uri, **kwargs)
+        return lambda fn: register(surface_as_tool_error(fn))
 
 
 # Create an MCP server (fastmcp 2.14+ no longer accepts `dependencies`)

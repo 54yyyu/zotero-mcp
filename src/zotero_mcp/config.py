@@ -98,6 +98,10 @@ class SemanticSearchConfig:
 class ZoteroMcpConfig:
     zotero_db_path: str | None = None
     client_env: dict[str, str] = field(default_factory=dict)
+    # Developer setting: reads that would reach the Zotero API are errors. See
+    # zotero_mcp.strict_sqlite, which reads this key itself so that checking it
+    # costs nothing at startup.
+    strict_sqlite: bool = False
     semantic_search: SemanticSearchConfig = field(
         default_factory=SemanticSearchConfig,
     )
