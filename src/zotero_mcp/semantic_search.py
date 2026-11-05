@@ -4591,6 +4591,8 @@ class ZoteroSemanticSearch:
         says so); notes about other runs stay. A deferral stays only while
         something still holds updates up. Called with the update lock held.
         """
+        if not self.config_path:
+            return  # no notice file, and no batch directory to read
         try:
             old = self.batch_notice(group_id)
             current = [note for note in self._batch_notes(provider, group_id) if run_id in note]
@@ -4783,6 +4785,7 @@ class ZoteroSemanticSearch:
         if not acquired:
             lock_cm.__exit__(None, None, None)
             raise RuntimeError(f"Another semantic-search update is already running (lock held at {lock_path})")
+        manifest = None
         try:
             module = _batch_module(provider)
             adapter = _batch_adapter(provider)
@@ -5122,6 +5125,16 @@ class ZoteroSemanticSearch:
                     )
             return stats
         finally:
+            # The user acted on this run, so a note asking them to (from a
+            # background collect) mustn't stay on every search. A collect
+            # writes the whole notice itself when its pass ends.
+            if _collect_run is None and manifest is not None:
+                group_id = manifest.get("group_id")
+                self._refresh_batch_notice(
+                    provider,
+                    int(group_id) if group_id is not None else self._pinned_group_id(),
+                    str(manifest.get("run_id")),
+                )
             lock_cm.__exit__(None, None, None)
 
     def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
