@@ -3362,6 +3362,12 @@ class ZoteroSemanticSearch:
                     max_enqueued_tokens=throttle["batch_max_enqueued_tokens"],
                     max_requests=throttle["batch_max_requests"],
                 )
+                # This run did its work, so an auto-update is not due again
+                # until its next turn. Without this, should_update stayed true
+                # until an import and every search could pay for the same
+                # changes again. The sync version waits for the import.
+                self.update_config["last_update"] = datetime.now().isoformat()
+                self._save_update_config()
                 batch_ids = ", ".join(stats.get("batch_ids", []))
                 _report(
                     f"  Submitted {batch_label} embedding batch"
