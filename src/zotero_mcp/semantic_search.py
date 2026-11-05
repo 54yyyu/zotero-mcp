@@ -4243,8 +4243,9 @@ class ZoteroSemanticSearch:
     def _run_is_usable(self, provider: str, run: dict[str, Any]) -> bool:
         """May this run go into this index without the user naming it?
 
-        Not one a later sync overtook, one made with another embedding model,
-        whose vectors no query here could match, or one the user gave up on.
+        Not one a later sync overtook, one cut before the index was last reset,
+        one made with another embedding model, whose vectors no query here could
+        match, or one the user gave up on.
         """
         adapter = _batch_adapter(provider)
         model_name = self.chroma_client.embedding_config.get("model_name", adapter.default_model)
@@ -4252,7 +4253,28 @@ class ZoteroSemanticSearch:
             not run.get("abandoned_at")
             and run.get("model") in (None, model_name)
             and self._overtaken_by_sync(run) is None
+            and not self._predates_reset(run)
         )
+
+    def _predates_reset(self, run: dict[str, Any]) -> bool:
+        """Was this run cut against an index that has since been replaced?
+
+        A run submitted before the library's last reset (``last_rebuild_at``, set
+        by a batch or a realtime rebuild) was cut from a sync version that
+        described the index before it was emptied. Promoting its target would
+        claim that index's contents for the new one: after a rebuild given up
+        part way, that moves the sync version back up from 0 and the missing
+        items never return. Such a run is never imported unattended and never
+        promotes; an import by batch id still lands its records. A rebuild is
+        self-contained and has its own rule (:meth:`_stale_rebuild_note`).
+        """
+        if run.get("force_full_rebuild"):
+            return False
+        group_id = run.get("group_id")
+        library_key = str(group_id) if group_id is not None else self._active_library_key()
+        last_rebuild = batch_common._parse_stamp(self._load_last_rebuild(library_key))
+        created = batch_common._parse_stamp(run.get("created_at"))
+        return bool(last_rebuild and created and created < last_rebuild)
 
     def _find_run(self, provider: str, batch_id: str | None = None) -> dict[str, Any]:
         """The run with this batch id, or else the one to work on for this library."""
@@ -4854,9 +4876,10 @@ class ZoteroSemanticSearch:
                     "imported_items": 0,
                     "batches_submitted": 0,
                     "errors": [{"error": (
-                        f"Nothing to import: run {manifest.get('run_id')} is older than the index, was made "
-                        "with another embedding model, or was given up on. To import it anyway, name "
-                        "its batches with --batch-id."
+                        f"Nothing to import: run {manifest.get('run_id')} is older than the index, was cut "
+                        "before the index was last rebuilt, was made with another embedding model, or was "
+                        "given up on. To import it anyway, name its batches with --batch-id; that never "
+                        "moves the sync version."
                     )}],
                 }
             # Whether something newer has taken this run's items over decides two
@@ -5168,6 +5191,9 @@ class ZoteroSemanticSearch:
                 elif (
                     overtaken_at is None
                     and not manifest.get("promoted_at")
+                    # Cut against an index that has since been replaced: its
+                    # target says nothing about what the index holds now.
+                    and not self._predates_reset(manifest)
                     # Rows of a chunk that ended early never ran; the sync
                     # version waiting is what gets them embedded in the end.
                     and not any(batch.get("imported_partial") for batch in all_batches)
