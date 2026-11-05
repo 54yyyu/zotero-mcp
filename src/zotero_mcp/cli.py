@@ -930,6 +930,9 @@ def main():
         help="Give up on an unfinished batch run; the next update covers its items again",
     )
     abandon_parser.add_argument("--run-id", help="The run to give up on (needed when there are several)")
+    abandon_parser.add_argument("--yes", action="store_true",
+                                help="Go ahead even when giving the run up means the next update "
+                                     "re-reads and re-embeds the whole library")
     abandon_parser.add_argument("--provider", choices=BATCH_PROVIDERS, default=None,
                                 help="Which provider's manifests to read (default: inferred from config)")
     abandon_parser.add_argument("--config-path", help="Path to semantic search configuration file")
@@ -1356,9 +1359,12 @@ def main():
         try:
             search = create_semantic_search(str(config_path))
             provider = args.provider or _detect_batch_provider(search)
-            result = search.abandon_batch_run(provider, run_id=args.run_id)
+            result = search.abandon_batch_run(provider, run_id=args.run_id, confirm=args.yes)
         except Exception as e:
             print(f"Error giving up on the batch run: {e}")
+            sys.exit(1)
+        if result.get("needs_confirmation"):
+            print(result["message"])
             sys.exit(1)
         if result.get("abandoned"):
             if result.get("sync_version_reset"):

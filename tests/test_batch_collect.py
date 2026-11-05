@@ -2186,16 +2186,34 @@ def test_r3_2_a_reset_with_no_chunk_in_yet_is_still_seen_by_abandon(env, monkeyp
 def test_r3_4_giving_up_a_reset_rebuild_asks_first_and_says_what_it_costs(env):
     _older, rebuild = _part_landed_rebuild_behind(env)
 
-    for kwargs in ({}, {"run_id": rebuild["run_id"]}):
-        result = env.new_search().abandon_batch_run("openai", **kwargs)
+    assert "abandoned" not in env.new_search().abandon_batch_run("openai")
 
-        assert "abandoned" not in result
-        assert result["needs_confirmation"] == rebuild["run_id"]
-        assert "--fulltext" in result["message"]
-        assert "batch-import" in result["message"]
-        assert "whole library" in result["message"]
+    result = env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"])
+
+    assert "abandoned" not in result
+    assert result["needs_confirmation"] == rebuild["run_id"]
+    assert "--fulltext" in result["message"]
+    assert "batch-import" in result["message"]
+    assert "whole library" in result["message"]
+    assert "--yes" in result["message"]
     assert not openai_batch.load_manifest(Path(rebuild["manifest_path"])).get("abandoned_at")
     assert _versions(env)["0"] == 10
+
+
+def test_r3_4_giving_up_with_no_run_id_never_resets_unasked(env):
+    _set_version(env, 10)
+    rebuild = _rebuild_of(env, ["AAA", "BBB"], target=20)
+    env.provider.finish_all()
+    env.new_search()._import_batch("openai")
+    run = _runs(env)[0]
+    run["batches"][1]["imported_at"] = None
+    run.pop("promoted_at", None)
+    openai_batch.save_manifest(run)
+
+    result = env.new_search().abandon_batch_run("openai")  # the only candidate
+
+    assert result["needs_confirmation"] == rebuild["run_id"]
+    assert _versions(env)["0"] != 0
 
 
 def test_r3_4_batch_abandon_takes_yes(capsys):

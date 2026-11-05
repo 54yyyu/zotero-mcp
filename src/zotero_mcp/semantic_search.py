@@ -4658,15 +4658,17 @@ class ZoteroSemanticSearch:
         except Exception as e:
             logger.debug("Could not save the batch notice: %s", e)
 
-    def abandon_batch_run(self, provider: str, run_id: str | None = None) -> dict[str, Any]:
+    def abandon_batch_run(self, provider: str, run_id: str | None = None, confirm: bool = False) -> dict[str, Any]:
         """Give up on a run: it stops being collected, reported and holding anything up.
 
         The sync version doesn't move, so the next update covers its items again.
-        The exception is a rebuild that already emptied the ChromaDB collection
-        and got part way in: the index then holds only some of the library, and
-        an update from the old sync version would see nothing to do. The sync
-        version goes to 0 instead, so the next update reads the whole library
-        (``sync_version_reset`` in the result).
+        The exception is a rebuild that already emptied the ChromaDB collection:
+        the index then holds only some of the library, and an update from the
+        old sync version would see nothing to do. The sync version goes to 0
+        instead, so the next update reads the whole library
+        (``sync_version_reset`` in the result). That can mean paying to embed the
+        whole library again, so it takes ``confirm``; without it nothing changes
+        and the result says what it would cost (``needs_confirmation``).
 
         Its files stay, and ``batch-import --batch-id`` can still import from them.
         With no ``run_id`` this works only if there's exactly one run it could mean.
@@ -4703,6 +4705,21 @@ class ZoteroSemanticSearch:
                 and not run.get("promoted_at")
                 and any(batch.get("imported_at") for batch in run.get("batches", []))
             )
+            if reset_happened and not confirm:
+                found_id = run.get("run_id")
+                return {
+                    "needs_confirmation": found_id,
+                    "message": (
+                        f"Rebuild run {found_id} has already replaced part of the index. Giving it up "
+                        "sets the sync version to 0, so the next update reads the whole library and "
+                        "puts back what is missing. Without --fulltext that embeds the whole library "
+                        "again, at your provider's price, and with auto-update on the next search may "
+                        "start it. In local mode, 'zotero-mcp update-db --fulltext' skips items already "
+                        "indexed and costs only what is missing. If the provider still has this run's "
+                        "results, 'zotero-mcp batch-import' finishes the rebuild instead. To give it "
+                        f"up anyway: 'zotero-mcp batch-abandon --run-id {found_id} --yes'."
+                    ),
+                }
             run["abandoned_at"] = datetime.now().isoformat()
             module.save_manifest(run)
             if reset_happened:
