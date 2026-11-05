@@ -3205,7 +3205,15 @@ class ZoteroSemanticSearch:
 
             # In batch mode, defer destructive rebuilds until import so the
             # existing search index remains usable while the batch runs.
+            # A rebuild empties the index first, so check the embedding API
+            # before that: off the network it accepts, a rebuild would leave
+            # an empty index behind and nothing to say so.
+            embedding_function = getattr(self.chroma_client, "embedding_function", None)
+            api_checked = False
             if force_full_rebuild and not batch_enabled:
+                if isinstance(embedding_function, RemoteEmbeddingFunction):
+                    embedding_function.check_reachable()
+                    api_checked = True
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
 
@@ -3392,8 +3400,11 @@ class ZoteroSemanticSearch:
 
             # One short request before any real work: an API that only answers
             # on some networks would otherwise fail every batch of the run.
-            embedding_function = getattr(self.chroma_client, "embedding_function", None)
-            if all_items and isinstance(embedding_function, RemoteEmbeddingFunction):
+            if (
+                all_items
+                and not api_checked
+                and isinstance(embedding_function, RemoteEmbeddingFunction)
+            ):
                 embedding_function.check_reachable()
 
             # User-friendly progress reporting

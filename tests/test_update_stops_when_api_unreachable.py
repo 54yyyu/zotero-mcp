@@ -460,3 +460,27 @@ def test_local_embedding_functions_are_not_probed(monkeypatch):
     assert "error" not in stats
     assert LocalEF.probed is False
     assert len(Chroma.written) == 3
+
+
+# ---------------------------------------------------------------------------
+# Review round 1 regressions
+# ---------------------------------------------------------------------------
+
+
+def _populated(tmp_path, monkeypatch, n=20):
+    items = _items(n)
+    search, chroma, ef, config = _build(tmp_path, monkeypatch, lambda n, i: None, items)
+    assert "error" not in search.update_database()
+    assert chroma.collection.count() == n
+    return search, chroma, ef, config
+
+
+def test_force_rebuild_checks_the_api_before_emptying_the_index(tmp_path, monkeypatch):
+    search, chroma, ef, config = _populated(tmp_path, monkeypatch)
+    ef.client = FakeOpenAIClient(always(connection_error))
+
+    stats = search.update_database(force_full_rebuild=True, allow_mass_deletion=True)
+
+    assert HOST in stats["error"]
+    assert chroma.collection.count() == 20, "the index was emptied before the API check"
+    assert _saved(config)["update_config"]["last_api_failure"]["host"] == HOST
