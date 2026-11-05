@@ -436,10 +436,28 @@ def _print_repair_report(report) -> None:
     print(f"  When search works, delete the old index: {report.broken_directory}")
 
 
+def _print_batch_collect(stats: dict) -> None:
+    collect = stats.get("batch_collect")
+    if not collect:
+        return
+    print(f"\nCollected unfinished batch runs ({len(collect['runs'])}):")
+    print(f"- Embeddings imported: {collect['imported_items']}")
+    print(f"- Waiting chunks submitted: {collect['submitted_chunks']}")
+    for note in collect.get("waiting", []):
+        print(f"- Still waiting: {note}")
+    for error in collect["errors"]:
+        print(f"- WARNING: {error}")
+
+
 def _print_update_stats(stats: dict) -> None:
+    _print_batch_collect(stats)
     is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
     batch_provider = stats.get("batch_provider", "openai")
     label = f"{_provider_label(batch_provider)} batch submission" if is_batch else "Database update"
+    if stats.get("batch_deferred"):
+        print(f"\n{label} deferred:")
+        print(stats["batch_deferred"])
+        return
     outcome = "failed" if stats.get("error") else "completed"
     print(f"\n{label} {outcome}:")
     print(f"- Total items: {stats.get('total_items', 0)}")

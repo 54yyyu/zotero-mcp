@@ -670,6 +670,21 @@ def test_a_collect_failure_is_reported_and_moves_nothing(env):
     assert _versions(env)["0"] == 10
 
 
+def test_nothing_is_collected_into_an_index_chromadb_cannot_read(env, monkeypatch):
+    env.new_search().update_database()
+    env.provider.finish_all()
+    calls = env.provider.network_calls
+    monkeypatch.setattr(Index, "read_error", lambda self: "Failed to apply logs")
+
+    stats = env.new_search().update_database()
+    collected = env.new_search().collect_batch_results()
+
+    assert "Failed to apply logs" in stats["error"]
+    assert "Failed to apply logs" in collected["error"]
+    assert env.provider.network_calls == calls
+    assert not _versions(env).get("0")
+
+
 def test_a_failed_download_before_a_rebuild_import_leaves_the_index_alone(env):
     env.index.upsert_embeddings(
         documents=["old"], metadatas=[{"item_key": "OLD", "group_id": 0}], ids=["OLD"], embeddings=[[0.1, 0.2, 0.3]]
@@ -1021,3 +1036,33 @@ def test_presearch_with_no_run_and_no_update_due_does_nothing(env, presearch):
     presearch()
 
     assert env.provider.network_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# What the user is told
+# ---------------------------------------------------------------------------
+
+
+def test_cli_output_for_a_collect_and_a_deferred_submission(capsys):
+    from zotero_mcp.cli import _print_update_stats
+
+    _print_update_stats({
+        "batch_mode": True,
+        "batch_provider": "openai",
+        "batch_deferred": "Not submitting a new batch: run R is still unfinished.",
+        "batch_collect": {
+            "runs": ["R"],
+            "imported_items": 3,
+            "submitted_chunks": 1,
+            "waiting": ["the force-rebuild run imports once all batches complete"],
+            "errors": ["run R: 2 item(s) came back without an embedding"],
+        },
+    })
+
+    out = capsys.readouterr().out
+    assert "Embeddings imported: 3" in out
+    assert "Waiting chunks submitted: 1" in out
+    assert "Still waiting: the force-rebuild run" in out
+    assert "WARNING: run R: 2 item(s)" in out
+    assert "deferred" in out
+    assert "run R is still unfinished" in out

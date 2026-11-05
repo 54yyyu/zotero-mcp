@@ -4703,9 +4703,8 @@ class ZoteroSemanticSearch:
         Loops until every entry in the latest run's manifest is imported, or
         until no further progress is possible (everything left is terminal and
         nothing can be submitted). The on-disk manifest is consistent at every
-        step, so after Ctrl-C or a crash a later ``batch-import`` imports what
-        completed and submits what is still pending; a new ``update-db --batch``
-        starts a fresh run instead.
+        step, so after Ctrl-C or a crash a later ``batch-import`` or ``update-db``
+        imports what completed and submits what is still pending.
 
         Must be called with the update lock already held (``update_database``
         holds it), hence ``_skip_lock`` on the imports below.
