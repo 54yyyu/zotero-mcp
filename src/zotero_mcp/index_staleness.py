@@ -97,17 +97,23 @@ API_TIMEOUT = 5.0
 
 
 def _api_library_version() -> int:
-    """The library's current version through the same call ``update_database``
-    makes: ``last_modified_version()`` on the configured client (the local API
-    in local mode, the web API otherwise)."""
+    """The library's current version: the ``Last-Modified-Version`` header of
+    ``items?limit=1``, which is what ``last_modified_version()`` reads in
+    ``update_database`` (the local API in local mode, the web API otherwise).
+
+    Sent through the client's own HTTP session rather than through pyzotero,
+    whose ``_retrieve_data`` passes its own 30 s timeout on every request and
+    retries a 429 up to three times with backoff: neither fits a status call.
+    One request, ``API_TIMEOUT`` seconds, no retry.
+    """
     from zotero_mcp.client import get_zotero_client
 
     zot = get_zotero_client()
-    try:
-        zot.client.timeout = API_TIMEOUT
-    except Exception:  # a client double without a settable timeout
-        pass
-    return int(zot.last_modified_version())
+    url = f"{zot.endpoint}/{zot.library_type}/{zot.library_id}/items"
+    response = zot.client.get(url, params={"limit": 1, "format": "json"}, timeout=API_TIMEOUT)
+    if response.status_code != 200:
+        raise RuntimeError(f"HTTP {response.status_code} from {zot.endpoint}")
+    return int(response.headers["last-modified-version"])
 
 
 def _local_file_version(group_id: int, db_path: str | None) -> tuple[int, bool]:
@@ -303,20 +309,24 @@ def _batch_dirs(config_path: str | None) -> Path:
 
 
 _DEAD_STATES = frozenset({"failed", "expired", "cancelled"})
+_DEAD_RAW_STATUSES = {
+    "failed": "failed",
+    "expired": "expired",
+    "cancelled": "cancelled",
+    "cancelling": "cancelled",
+    "JOB_STATE_FAILED": "failed",
+    "JOB_STATE_EXPIRED": "expired",
+    "JOB_STATE_CANCELLED": "cancelled",
+}
 
 
 def _recorded_state(provider: str, entry: dict[str, Any]) -> str:
     """The chunk's state as the manifest recorded it; no provider call."""
     state = entry.get("state")
     if not state and entry.get("status"):
-        try:
-            if provider == "openai":
-                from zotero_mcp.openai_batch import _normalize_openai_status as normalize
-            else:
-                from zotero_mcp.gemini_batch import _normalize_gemini_status as normalize
-            state = normalize(entry["status"])
-        except Exception:
-            state = str(entry["status"]).lower().removeprefix("job_state_")
+        # The raw statuses the two provider modules map to a dead state. Kept
+        # here because importing those modules loads chromadb (~0.3 s).
+        state = _DEAD_RAW_STATUSES.get(str(entry["status"]), "")
     return str(state or "")
 
 

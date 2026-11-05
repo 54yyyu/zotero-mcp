@@ -29,6 +29,8 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("ZOTERO_DB_PATH", raising=False)
+    monkeypatch.delenv("ZOTERO_LIBRARY_TYPE", raising=False)
+    monkeypatch.delenv("ZOTERO_LIBRARY_ID", raising=False)
     return home
 
 
@@ -160,15 +162,39 @@ def _patch_client(monkeypatch, factory):
     monkeypatch.setattr(importlib.import_module("zotero_mcp.client"), "get_zotero_client", factory)
 
 
-class _FakeWebClient:
-    def __init__(self, version=None, error=None):
-        self.version, self.error, self.calls = version, error, 0
+class _FakeResponse:
+    def __init__(self, status_code, version):
+        self.status_code = status_code
+        self.headers = {"last-modified-version": str(version)} if version is not None else {}
 
-    def last_modified_version(self):
-        self.calls += 1
-        if self.error:
-            raise self.error
-        return self.version
+
+class _FakeHttp:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def get(self, url, params=None, timeout=None, **_):
+        self.owner.calls += 1
+        self.owner.last_request = (url, params, timeout)
+        if self.owner.error:
+            raise self.owner.error
+        return _FakeResponse(self.owner.status, self.owner.version)
+
+
+class _FakeWebClient:
+    """Stands in for the Zotero client: the check does one GET through its
+    HTTP client (not pyzotero's retrying ``last_modified_version``)."""
+
+    endpoint = "http://example.invalid/api"
+    library_type = "users"
+    library_id = "0"
+
+    def __init__(self, version=None, error=None, status=200):
+        self.version, self.error, self.status, self.calls = version, error, status, 0
+        self.last_request = None
+        self.client = _FakeHttp(self)
+
+    def last_modified_version(self):  # must not be used: it retries and ignores our timeout
+        raise AssertionError("the check must not call pyzotero's last_modified_version")
 
 
 def test_web_mode_makes_one_api_call(tmp_path, monkeypatch):
@@ -262,6 +288,24 @@ def test_dead_chunks_point_at_batch_status_not_batch_import(tmp_path):
     text = "\n".join(st.format_unfinished_batches(found, "IMPORT-CMD", "STATUS-CMD"))
     assert "STATUS-CMD" in text and "cannot be imported" in text
     assert "IMPORT-CMD" in text  # the completed chunk can still be imported
+
+
+def test_batch_report_does_not_import_chromadb(tmp_path):
+    import subprocess
+
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "r", [{"batch_id": "b", "status": "failed"}])
+    _manifest(tmp_path, "gemini", "g", [{"batch_id": "b", "status": "JOB_STATE_EXPIRED"}])
+    src = str(Path(st.__file__).resolve().parents[1])
+    code = (
+        f"import sys; sys.path.insert(0, {src!r})\n"
+        "from zotero_mcp import index_staleness as st\n"
+        f"r = st.unfinished_batch_runs({cfg!r}, group_id=0)\n"
+        "print([x['dead'] for x in r], 'chromadb' in sys.modules)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                         env={"HOME": str(tmp_path), "PATH": ""}).stdout
+    assert out.strip() == "[1, 1] False"
 
 
 def test_run_with_only_dead_chunks_does_not_offer_import(tmp_path):
@@ -485,15 +529,93 @@ def test_local_mode_asks_the_local_api_like_update_does(tmp_path, monkeypatch):
     assert fake.calls == 1
 
 
-def test_local_api_call_has_a_short_timeout(tmp_path, monkeypatch):
-    class _Http:
-        timeout = 600
-
+def test_the_request_is_one_get_with_a_short_per_request_timeout(tmp_path, monkeypatch):
     fake = _FakeWebClient(version=100)
-    fake.client = _Http()
     _patch_client(monkeypatch, lambda: fake)
     st.check_index_staleness(_config(tmp_path, {"0": 100}), group_id=0, local=True)
-    assert fake.client.timeout <= 10
+    url, params, timeout = fake.last_request
+    assert url == "http://example.invalid/api/users/0/items"
+    assert params["limit"] == 1
+    assert timeout is not None and timeout <= 10
+
+
+def _real_local_client_at(port):
+    """A real pyzotero local client pointed at a throwaway loopback port."""
+    from pyzotero import zotero
+
+    from zotero_mcp.client import _make_local_http_client
+
+    zot = zotero.Zotero(library_id="0", library_type="user", api_key=None, local=True,
+                        client=_make_local_http_client())
+    zot.endpoint = f"http://127.0.0.1:{port}/api"
+    return zot
+
+
+@pytest.fixture
+def silent_port():
+    """127.0.0.1 port that accepts connections and never answers."""
+    import socket
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    held = []
+
+    def accept():
+        while True:
+            try:
+                held.append(srv.accept()[0])
+            except OSError:
+                return
+
+    import threading
+
+    threading.Thread(target=accept, daemon=True).start()
+    yield srv.getsockname()[1]
+    srv.close()
+    for c in held:
+        c.close()
+
+
+def test_a_local_api_that_never_answers_is_bounded_by_our_timeout(tmp_path, monkeypatch, silent_port):
+    assert silent_port != 23119
+    _patch_client(monkeypatch, lambda: _real_local_client_at(silent_port))
+    cfg = _config(tmp_path, {"0": 100})
+    start = time.perf_counter()
+    result = st.check_index_staleness(cfg, group_id=0, local=False)
+    elapsed = time.perf_counter() - start
+    assert result.state == "unknown" and "couldn't check" in st.format_staleness(result, "x")
+    assert elapsed < 8, f"took {elapsed:.1f}s; pyzotero's own 30 s timeout is in effect"
+
+
+def test_a_rate_limited_api_is_not_waited_out(tmp_path, monkeypatch):
+    import http.server
+    import threading
+
+    class Limited(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(429)
+            self.send_header("Retry-After", "30")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Limited)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        assert port != 23119
+        _patch_client(monkeypatch, lambda: _real_local_client_at(port))
+        start = time.perf_counter()
+        result = st.check_index_staleness(_config(tmp_path, {"0": 100}), group_id=0, local=False)
+        elapsed = time.perf_counter() - start
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.state == "unknown" and "429" in result.detail
+    assert elapsed < 3
 
 
 def test_wal_not_read_in_place_is_never_up_to_date(tmp_path, monkeypatch):

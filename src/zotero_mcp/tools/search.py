@@ -1807,8 +1807,9 @@ def get_search_database_status(*, ctx: Context) -> str:
 
         output.append("")
 
-        # Is the index behind the library? One SQLite read (local) or one API
-        # call (web); no model, no vector index, and not under the API lock.
+        # Is the index behind the library? One bounded version request (5 s,
+        # no retry; local API, or web API), with a SQLite read as the local
+        # fallback. No model, no vector index, and not under the API lock.
         from zotero_mcp import index_staleness as _staleness
 
         output.append("## Index Freshness")
