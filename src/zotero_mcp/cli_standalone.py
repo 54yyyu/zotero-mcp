@@ -967,7 +967,13 @@ def cmd_db(args):
         from zotero_mcp.index_staleness import status_lines
 
         print()
-        for line in status_lines(str(config_path), "zotero-cli db update", "zotero-cli db batch-import"):
+        for line in status_lines(
+            str(config_path),
+            "zotero-cli db update",
+            "zotero-cli db batch-import",
+            "zotero-cli db batch-status",
+            ci,
+        ):
             print(line)
         if ci.get("unreadable"):
             from zotero_mcp.chroma_client import unreadable_index_message

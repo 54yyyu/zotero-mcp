@@ -2422,6 +2422,23 @@ class LocalZoteroReader:
         ).fetchone()
         return int(row[0] or 0) if row is not None else None
 
+    def read_reflects_wal(self) -> bool:
+        """Whether the open connection sees everything Zotero has committed.
+
+        False when the file was read in place while a non-empty ``-wal`` file
+        exists (snapshots disabled or the copy failed), or when a cached
+        snapshot older than the current file/WAL was served (the copy
+        throttle). Opens the connection if needed.
+        """
+        self._get_connection()
+        source = os.path.realpath(self.db_path)
+        wal_sig = _file_signature(source + "-wal")
+        kind = getattr(self, "_connection_target", ("inplace", None))[0]
+        if kind == "snapshot":
+            cached = _snapshots.get(source)
+            return bool(cached) and cached[0] == (_file_signature(source), wal_sig)
+        return wal_sig is None or wal_sig[0] == 0
+
     def _resolve_scope_library_ids(self, group_id: int | None) -> list[int] | None:
         """The local ``libraryID``s one search should cover, or None if the
         requested scope resolves to nothing.

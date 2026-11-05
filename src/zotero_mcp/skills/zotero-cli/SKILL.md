@@ -79,6 +79,9 @@ once. Its "Index freshness" line says whether the index is behind the library:
   Search anyway if they want, and say the results may be incomplete.
 - `couldn't check`: do not treat the index as current. Say you could not
   verify it.
+- `no update has been recorded` or `not meaningful`: the index is empty,
+  unreadable or for another library. Tell the user to run `zotero-cli db update`.
+- Only the active library is checked; a group library needs its own check.
 - An "Unfinished batch" line means a batch embedding run has chunks not yet
   imported; `zotero-cli db batch-import` imports the finished ones.
 

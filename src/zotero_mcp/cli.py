@@ -1344,7 +1344,13 @@ def main():
             from zotero_mcp.index_staleness import status_lines
 
             print()
-            for line in status_lines(str(config_path), "zotero-mcp update-db", "zotero-mcp batch-import"):
+            for line in status_lines(
+                str(config_path),
+                "zotero-mcp update-db",
+                "zotero-mcp batch-import",
+                "zotero-mcp batch-status",
+                collection_info,
+            ):
                 print(line)
 
             if collection_info.get("unreadable"):

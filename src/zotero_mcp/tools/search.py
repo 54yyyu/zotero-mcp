@@ -1414,12 +1414,10 @@ def advanced_search(
         "zotero_list_libraries). search_all_libraries: search every indexed "
         "library at once, labelling each result with its library; needs the "
         "SQLite backend (the default in local mode), excludes library_id. "
-        "Needs a populated index. Before your first semantic search in a "
-        "session, call zotero_get_search_database_status; if it says STALE, "
-        "empty or couldn't check, tell the user "
-        "(zotero_update_search_database refreshes it). If embedding fails "
-        "or the API is unreachable, fall back to zotero_search_items and "
-        "say why. "
+        "Before your first semantic search in a session, check "
+        "zotero_get_search_database_status; if STALE, empty or couldn't "
+        "check, tell the user (zotero_update_search_database refreshes it). "
+        "If embedding fails, use zotero_search_items and say why. "
         "Available only when the [semantic] optional dependency is "
         "installed. "
         "Example: zotero_semantic_search(query='mindfulness-based "
@@ -1819,10 +1817,11 @@ def get_search_database_status(*, ctx: Context) -> str:
             + _staleness.format_staleness(
                 _staleness.check_active_library(str(config_path)),
                 "zotero_update_search_database",
+                _staleness.index_problem(collection_info),
             )
         )
         for line in _staleness.format_unfinished_batches(
-            _staleness.unfinished_batch_runs(str(config_path))
+            _staleness.unfinished_batch_runs(str(config_path), _staleness.active_group_id())
         ):
             output.append(f"**Unfinished batch:** {line}")
         output.append("")

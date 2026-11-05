@@ -32,6 +32,17 @@ def _isolated_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def _no_real_zotero_api(monkeypatch):
+    """No test reaches a real Zotero API; the default is 'unreachable'."""
+    import importlib
+
+    def unreachable():
+        raise ConnectionError("local Zotero API not running (test default)")
+
+    monkeypatch.setattr(importlib.import_module("zotero_mcp.client"), "get_zotero_client", unreachable)
+
+
 def _config(tmp_path, versions=None, legacy=None):
     path = tmp_path / "config.json"
     section = {}
@@ -193,11 +204,11 @@ def test_web_mode_without_credentials_says_could_not_check(tmp_path, monkeypatch
 # ---- unfinished batch runs -------------------------------------------------
 
 
-def _manifest(config_dir, provider, run_id, entries, created="2026-11-01T10:00:00.000000Z"):
+def _manifest(config_dir, provider, run_id, entries, created="2026-11-01T10:00:00.000000Z", group_id=0):
     run = Path(config_dir) / f"{provider}_batches" / run_id
     run.mkdir(parents=True)
     (run / "manifest.json").write_text(
-        json.dumps({"run_id": run_id, "created_at": created, "batches": entries})
+        json.dumps({"run_id": run_id, "created_at": created, "group_id": group_id, "batches": entries})
     )
 
 
@@ -213,7 +224,7 @@ def test_unfinished_batch_run_is_reported_from_the_manifest(tmp_path):
             {"batch_id": None, "status": "pending"},
         ],
     )
-    found = st.unfinished_batch_runs(cfg)
+    found = st.unfinished_batch_runs(cfg, group_id=0)
     assert len(found) == 1
     assert found[0]["provider"] == "openai"
     assert (found[0]["total"], found[0]["imported"]) == (3, 1)
@@ -224,12 +235,46 @@ def test_unfinished_batch_run_is_reported_from_the_manifest(tmp_path):
 def test_finished_batch_run_is_not_reported(tmp_path):
     cfg = _config(tmp_path, {"0": 1})
     _manifest(tmp_path, "gemini", "run-b", [{"batch_id": "b1", "imported_at": "2026-11-02T00:00:00Z"}])
-    assert st.unfinished_batch_runs(cfg) == []
+    assert st.unfinished_batch_runs(cfg, group_id=0) == []
+
+
+def test_other_librarys_newer_run_does_not_hide_this_librarys_unfinished_one(tmp_path):
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "run-old", [{"batch_id": "b", "status": "in_progress"}],
+              created="2026-11-01T10:00:00.000000Z", group_id=0)
+    _manifest(tmp_path, "openai", "run-new", [{"batch_id": "c", "imported_at": "x"}],
+              created="2026-11-03T10:00:00.000000Z", group_id=77)
+    mine = st.unfinished_batch_runs(cfg, group_id=0)
+    assert [r["run_id"] for r in mine] == ["run-old"]
+    assert st.unfinished_batch_runs(cfg, group_id=77) == []
+    assert st.unfinished_batch_runs(cfg, group_id=5) == []
+
+
+def test_dead_chunks_point_at_batch_status_not_batch_import(tmp_path):
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "run-d", [
+        {"batch_id": "b1", "status": "failed"},
+        {"batch_id": "b2", "status": "expired"},
+        {"batch_id": "b3", "status": "completed"},
+    ])
+    found = st.unfinished_batch_runs(cfg, group_id=0)
+    assert (found[0]["dead"], found[0]["total"]) == (2, 3)
+    text = "\n".join(st.format_unfinished_batches(found, "IMPORT-CMD", "STATUS-CMD"))
+    assert "STATUS-CMD" in text and "cannot be imported" in text
+    assert "IMPORT-CMD" in text  # the completed chunk can still be imported
+
+
+def test_run_with_only_dead_chunks_does_not_offer_import(tmp_path):
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "gemini", "run-e", [{"batch_id": "b1", "status": "JOB_STATE_FAILED"}])
+    text = "\n".join(st.format_unfinished_batches(
+        st.unfinished_batch_runs(cfg, group_id=0), "IMPORT-CMD", "STATUS-CMD"))
+    assert "IMPORT-CMD" not in text and "STATUS-CMD" in text
 
 
 def test_no_batch_directories_means_nothing_to_report_and_none_created(tmp_path):
     cfg = _config(tmp_path, {"0": 1})
-    assert st.unfinished_batch_runs(cfg) == []
+    assert st.unfinished_batch_runs(cfg, group_id=0) == []
     assert not (tmp_path / "openai_batches").exists()
     assert not (tmp_path / "gemini_batches").exists()
 
@@ -250,19 +295,30 @@ def test_status_tool_includes_freshness_and_loads_no_embedding_model(tmp_path, m
         "check_index_staleness",
         lambda *a, **k: st.Staleness("stale", saved=7, current=9, detail=""),
     )
+    monkeypatch.setattr(
+        "zotero_mcp.chroma_client.read_collection_status",
+        lambda *_a, **_k: {"name": "c", "count": 4, "initialized": True},
+    )
 
-    class Ctx:
-        def info(self, *_):
-            pass
-
-        def error(self, *_):
-            pass
-
-    out = search_tools.get_search_database_status.fn(ctx=Ctx()) if hasattr(
-        search_tools.get_search_database_status, "fn"
-    ) else search_tools.get_search_database_status(ctx=Ctx())
+    before = set(sys.modules)
+    out = _call_status_tool(search_tools)
+    loaded = set(sys.modules) - before
     assert "STALE" in out
-    assert "sentence_transformers" not in sys.modules
+    assert not {m for m in loaded if m.split(".")[0] in ("sentence_transformers", "torch")}
+
+
+class _Ctx:
+    def info(self, *_):
+        pass
+
+    def error(self, *_):
+        pass
+
+
+def _call_status_tool(search_tools):
+    tool = search_tools.get_search_database_status
+    fn = tool.fn if hasattr(tool, "fn") else tool
+    return fn(ctx=_Ctx())
 
 
 def test_check_is_fast_on_a_few_thousand_items(tmp_path):
@@ -306,6 +362,185 @@ def _run_cli_status(monkeypatch, tmp_path, capsys, which):
         monkeypatch.setattr(sys, "argv", ["zotero-cli", "db", "status", "--config-path", cfg])
         standalone.main()
     return capsys.readouterr().out
+
+
+# ---- review round 1, minor findings ----------------------------------------
+
+
+def test_legacy_scalar_follows_the_env_default_library(tmp_path, monkeypatch):
+    # Mirrors _migrate_legacy_sync_version: the scalar belongs to the
+    # env-configured default library, which may be a group.
+    cfg = _config(tmp_path, legacy=50)
+    monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "group")
+    monkeypatch.setenv("ZOTERO_LIBRARY_ID", "8")
+    assert st.saved_sync_version(cfg, 8) == 50
+    assert st.saved_sync_version(cfg, 0) is None
+
+
+def test_saved_version_ahead_of_the_library_says_so(tmp_path):
+    cfg = _config(tmp_path, {"0": 130})
+    db = _zotero_db(tmp_path, personal_version=120)
+    result = st.check_index_staleness(cfg, group_id=0, local=True, db_path=db)
+    assert result.state == "ahead"
+    text = st.format_staleness(result, "RUN")
+    assert "STALE" in text and "ahead" in text and "full scan" in text and "RUN" in text
+
+
+def test_result_names_the_library_and_says_only_the_active_one_is_checked(tmp_path):
+    cfg = _config(tmp_path, {"0": 5, "77": 5})
+    db = _zotero_db(tmp_path, personal_version=5, group_id=77, group_version=5)
+    personal = st.format_staleness(st.check_index_staleness(cfg, group_id=0, local=True, db_path=db), "x")
+    group = st.format_staleness(st.check_index_staleness(cfg, group_id=77, local=True, db_path=db), "x")
+    assert "personal library" in personal and "group 77" in group
+    assert "active library" in personal and "other libraries are not checked" in personal
+
+
+def test_check_active_library_follows_the_group_override(tmp_path, monkeypatch):
+    import importlib
+
+    client = importlib.import_module("zotero_mcp.client")
+    cfg = _config(tmp_path, {"0": 5, "77": 5})
+    db = _zotero_db(tmp_path, personal_version=5, group_id=77, group_version=9)
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
+    monkeypatch.setenv("ZOTERO_DB_PATH", db)
+    monkeypatch.setattr(client, "_active_library_override", {"library_id": "77", "library_type": "group"})
+    result = st.check_active_library(cfg)
+    assert (result.state, result.current) == ("stale", 9)
+    assert result.group_id == 77
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        {"count": 0, "initialized": True},
+        {"count": 0, "initialized": False},
+        {"count": 5, "unreadable": True},
+        {"count": 5, "error": "boom"},
+    ],
+)
+def test_unusable_index_overrides_up_to_date(info):
+    up = st.Staleness("up_to_date", saved=5, current=5, group_id=0)
+    text = st.format_staleness(up, "RUN", index_problem=st.index_problem(info))
+    assert "not meaningful" in text and "RUN" in text
+    assert "up to date (" not in text
+
+
+def test_usable_index_has_no_problem():
+    assert st.index_problem({"count": 5, "initialized": True}) is None
+
+
+def test_status_tool_does_not_say_up_to_date_for_an_empty_collection(tmp_path, monkeypatch, _isolated_home):
+    pytest.importorskip("chromadb")
+    from zotero_mcp.tools import search as search_tools
+
+    cfg_dir = _isolated_home / ".config" / "zotero-mcp"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.json").write_text(json.dumps({"semantic_search": {"last_sync_versions": {"0": 7}}}))
+    monkeypatch.setattr(
+        st, "check_index_staleness", lambda *a, **k: st.Staleness("up_to_date", 7, 7, group_id=0)
+    )
+    monkeypatch.setattr(
+        "zotero_mcp.chroma_client.read_collection_status",
+        lambda *_a, **_k: {"name": "c", "count": 0, "initialized": True},
+    )
+    out = _call_status_tool(search_tools)
+    assert "not meaningful" in out and "up to date (" not in out
+
+
+# ---- local mode reads what update_database reads (review round 1) -----------
+
+
+def _wal_db(tmp_path, name, checkpointed=100, in_wal=130):
+    """A Zotero-like database whose newest library version sits only in the
+    write-ahead log, as after a sync with Zotero running. Returns (path, conn);
+    the connection stays open so the WAL is not checkpointed away."""
+    path = tmp_path / name
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    conn.executescript(
+        """
+        CREATE TABLE libraries (libraryID INTEGER PRIMARY KEY, type TEXT, editable INT,
+            filesEditable INT, version INT NOT NULL DEFAULT 0, storageVersion INT, lastSync INT);
+        CREATE TABLE groups (groupID INTEGER PRIMARY KEY, libraryID INT UNIQUE, name TEXT,
+            description TEXT, version INT);
+        """
+    )
+    conn.execute("INSERT INTO libraries VALUES (1, 'user', 1, 1, ?, 0, 0)", (checkpointed,))
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("UPDATE libraries SET version = ? WHERE libraryID = 1", (in_wal,))
+    conn.commit()
+    assert Path(str(path) + "-wal").stat().st_size > 0
+    return str(path), conn
+
+
+def test_local_mode_asks_the_local_api_like_update_does(tmp_path, monkeypatch):
+    fake = _FakeWebClient(version=130)
+    _patch_client(monkeypatch, lambda: fake)
+    cfg = _config(tmp_path, {"0": 100})
+    db = _zotero_db(tmp_path, personal_version=100)  # a stale file must not win
+    result = st.check_index_staleness(cfg, group_id=0, local=True, db_path=db)
+    assert (result.state, result.current) == ("stale", 130)
+    assert fake.calls == 1
+
+
+def test_local_api_call_has_a_short_timeout(tmp_path, monkeypatch):
+    class _Http:
+        timeout = 600
+
+    fake = _FakeWebClient(version=100)
+    fake.client = _Http()
+    _patch_client(monkeypatch, lambda: fake)
+    st.check_index_staleness(_config(tmp_path, {"0": 100}), group_id=0, local=True)
+    assert fake.client.timeout <= 10
+
+
+def test_wal_not_read_in_place_is_never_up_to_date(tmp_path, monkeypatch):
+    # The reviewer's reproduction: saved 100, live 130 only in the WAL, the
+    # local API unreachable and snapshots disabled, so the file reads 100.
+    db, conn = _wal_db(tmp_path, "wal.sqlite")
+    monkeypatch.setenv("ZOTERO_MCP_DB_SNAPSHOT", "0")
+    cfg = _config(tmp_path, {"0": 100})
+    try:
+        result = st.check_index_staleness(cfg, group_id=0, local=True, db_path=db)
+    finally:
+        conn.close()
+    assert result.state == "unknown"
+    assert "write-ahead" in result.detail
+    assert "up to date" not in st.format_staleness(result, "x").lower().replace("brings it up to date", "")
+
+
+def test_wal_in_snapshot_fallback_is_read_correctly(tmp_path, monkeypatch):
+    db, conn = _wal_db(tmp_path, "wal2.sqlite")
+    monkeypatch.delenv("ZOTERO_MCP_DB_SNAPSHOT", raising=False)
+    cfg = _config(tmp_path, {"0": 100})
+    try:
+        result = st.check_index_staleness(cfg, group_id=0, local=True, db_path=db)
+    finally:
+        conn.close()
+    assert (result.state, result.current) == ("stale", 130)
+
+
+def test_throttled_old_snapshot_is_never_up_to_date(tmp_path, monkeypatch):
+    db, conn = _wal_db(tmp_path, "wal3.sqlite", checkpointed=100, in_wal=110)
+    monkeypatch.delenv("ZOTERO_MCP_DB_SNAPSHOT", raising=False)
+    monkeypatch.setenv("ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL", "3600")
+    cfg = _config(tmp_path, {"0": 110})
+    try:
+        assert st.check_index_staleness(cfg, group_id=0, local=True, db_path=db).state == "up_to_date"
+        conn.execute("UPDATE libraries SET version = 130 WHERE libraryID = 1")
+        conn.commit()
+        # The cached copy still says 110, but the WAL has moved on.
+        assert st.check_index_staleness(cfg, group_id=0, local=True, db_path=db).state == "unknown"
+    finally:
+        conn.close()
+
+
+def test_fallback_to_a_complete_file_read_still_answers(tmp_path):
+    cfg = _config(tmp_path, {"0": 100})
+    db = _zotero_db(tmp_path, personal_version=100)
+    assert st.check_index_staleness(cfg, group_id=0, local=True, db_path=db).state == "up_to_date"
 
 
 @pytest.mark.parametrize("which", ["db-status", "db status"])
