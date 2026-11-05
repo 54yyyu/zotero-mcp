@@ -3350,8 +3350,10 @@ class ZoteroSemanticSearch:
             # existing search index remains usable while the batch runs.
             if force_full_rebuild and not batch_enabled:
                 logger.info("Force rebuilding database...")
-                self.chroma_client.reset_collection()
+                # On record first, so that a crash in between can't leave an
+                # emptied index that older batch runs think is still theirs.
                 self._save_last_rebuild(str(self._run_group_id))
+                self.chroma_client.reset_collection()
 
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []
@@ -4294,8 +4296,8 @@ class ZoteroSemanticSearch:
         except (OSError, ValueError, TypeError, AttributeError):
             return None
 
-    def _save_last_rebuild(self, library_key: str) -> None:
-        """Record that the index was just replaced, by whichever path."""
+    def _save_last_rebuild(self, library_key: str, stamp: str | None = None) -> None:
+        """Record that the index is being replaced, by whichever path."""
         if not self.config_path:
             return
         full_config = self._config_for_update()
@@ -4304,7 +4306,7 @@ class ZoteroSemanticSearch:
         section = full_config.setdefault("semantic_search", {})
         if not isinstance(section.get("last_rebuild_at"), dict):
             section["last_rebuild_at"] = {}
-        section["last_rebuild_at"][library_key] = batch_common._utc_now()
+        section["last_rebuild_at"][library_key] = stamp or batch_common._utc_now()
         try:
             write_json_atomic(self.config_path, full_config)
         except Exception as e:
@@ -4321,13 +4323,17 @@ class ZoteroSemanticSearch:
         """
         if not run.get("force_full_rebuild") or any(b.get("imported_at") for b in run.get("batches", [])):
             return None
+        group_id = run.get("group_id")
+        library_key = str(group_id) if group_id is not None else self._active_library_key()
+        own_reset = batch_common._parse_stamp(run.get("reset_at"))
+        last_reset = batch_common._parse_stamp(self._load_last_rebuild(library_key))
+        if own_reset and (last_reset is None or own_reset >= last_reset):
+            return None  # it did the latest reset itself and was cut off before a chunk landed
         run_id = run.get("run_id")
         choice = (
             f"Run 'zotero-mcp batch-import' to replace the index with this older rebuild, or "
             f"'zotero-mcp batch-abandon --run-id {run_id}' to drop it."
         )
-        group_id = run.get("group_id")
-        library_key = str(group_id) if group_id is not None else self._active_library_key()
         target = run.get("target_sync_version")
         if target is None or self._load_last_sync_version(library_key) > target:
             return f"Rebuild run {run_id} is older than the current index. {choice}"
@@ -4722,10 +4728,12 @@ class ZoteroSemanticSearch:
                 if not matching:
                     raise FileNotFoundError(f"No {adapter.label} batch run {run_id} for this library")
                 run = matching[0]
+            # reset_at is written just before the reset; older manifests have
+            # only their imported chunks to show for it.
             reset_happened = bool(
                 run.get("force_full_rebuild")
                 and not run.get("promoted_at")
-                and any(batch.get("imported_at") for batch in run.get("batches", []))
+                and (run.get("reset_at") or any(batch.get("imported_at") for batch in run.get("batches", [])))
             )
             if reset_happened and not confirm:
                 found_id = run.get("run_id")
@@ -5045,10 +5053,17 @@ class ZoteroSemanticSearch:
                                 stats["deferred"] = message
                                 return stats
                             raise RuntimeError(message) from e
-                self.chroma_client.reset_collection()
+                # On record before the collection is emptied, in the run and for
+                # the library: a crash right after the reset leaves an empty
+                # index whose run has no chunk in yet, and giving that run up
+                # must still know the index is gone.
+                manifest["reset_at"] = batch_common._utc_now()
+                module.save_manifest(manifest)
                 self._save_last_rebuild(
-                    str(manifest["group_id"]) if manifest.get("group_id") is not None else self._active_library_key()
+                    str(manifest["group_id"]) if manifest.get("group_id") is not None else self._active_library_key(),
+                    manifest["reset_at"],
                 )
+                self.chroma_client.reset_collection()
 
             for batch in batches:
                 if batch.get("imported_at"):

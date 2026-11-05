@@ -2171,16 +2171,35 @@ def test_r3_2_a_reset_with_no_chunk_in_yet_is_still_seen_by_abandon(env, monkeyp
     def crash(*args, **kwargs):
         raise KeyboardInterrupt  # cut off right after the reset
 
-    monkeypatch.setattr(Index, "upsert_embeddings", crash)
-    with pytest.raises(KeyboardInterrupt):
+    # A context, not monkeypatch.undo(): undo would also lift the fixtures'
+    # patches, sending the provider client and the update lock to the real ones.
+    with monkeypatch.context() as patched, pytest.raises(KeyboardInterrupt):
+        patched.setattr(Index, "upsert_embeddings", crash)
         env.new_search()._import_batch("openai")
-    monkeypatch.undo()
     assert not any(batch.get("imported_at") for batch in _runs(env)[0]["batches"])
 
     result = env.new_search().abandon_batch_run("openai", run_id=rebuild["run_id"], confirm=True)
 
     assert result["sync_version_reset"] is True
     assert _versions(env)["0"] == 0
+
+
+def test_r3_2_a_rebuild_cut_off_right_after_its_own_reset_still_lands(env, monkeypatch):
+    _set_version(env, 10)
+    _rebuild_of(env, ["AAA", "BBB"], target=20)
+    env.provider.finish_all()
+
+    def crash(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patched, pytest.raises(KeyboardInterrupt):
+        patched.setattr(Index, "upsert_embeddings", crash)
+        env.new_search()._import_batch("openai")
+
+    env.new_search().collect_batch_results()
+
+    assert _indexed(env) == {"AAA", "BBB"}, "its own reset doesn't make it stale"
+    assert _versions(env)["0"] == 20
 
 
 def test_r3_4_giving_up_a_reset_rebuild_asks_first_and_says_what_it_costs(env):
