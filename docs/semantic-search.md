@@ -118,6 +118,8 @@ zotero-mcp db-status
 zotero-mcp repair-db
 ```
 
+If the embedding API cannot be reached, for example because it only accepts requests from a campus network or VPN, `update-db` stops after one short test request instead of working through the library; see [Embedding API unreachable](troubleshooting.md#embedding-api-unreachable).
+
 `repair-db` is for an index that ChromaDB can no longer read, typically after an interrupted update; see [Repairing an unreadable index](troubleshooting.md#repairing-an-unreadable-index).
 
 How much of each PDF is extracted, and which attachment is read when an item has several, is set in [Text extraction settings](configuration.md#text-extraction-settings).

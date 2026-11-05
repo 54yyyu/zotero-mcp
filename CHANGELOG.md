@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **An unreachable embedding API stops the update and says so.** An API that accepts requests only from one network (a university's, say) failed every request elsewhere, and `update-db` retried each group of items, set it aside and went on through the whole library, then saved the update time as if it had worked; background updates failed without a trace, and semantic search returned a bare connection error. Now an update with something to embed sends one short test request first and stops if the API cannot be reached (a connection error, a timeout, HTTP 401 or 403), and stops the same way if the API goes away mid-run. Items already written stay; the last update time and sync watermark do not move. The message names the host and suggests checking the network or VPN. The failure's time and host show in `db-status`, `zotero-cli db status` and `zotero_get_search_database_status` until the next successful update, and the server's background updates wait an hour before trying again. `zotero_semantic_search` returns the same message and suggests `zotero_search_items`. Applies to every remote provider (OpenAI and compatible, Gemini, Ollama); local models are unchanged. Gemini now retries connection errors and timeouts as the others already did.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
