@@ -422,7 +422,7 @@ def cli_standalone_status(module, monkeypatch, config):
     module.cmd_db(args)
 
 
-def test_local_embedding_functions_are_not_probed(monkeypatch):
+def test_local_embedding_functions_are_not_probed(tmp_path, monkeypatch):
     """Only RemoteEmbeddingFunction subclasses are probed; a local model
     (HuggingFace) runs exactly as before."""
 
@@ -453,7 +453,13 @@ def test_local_embedding_functions_are_not_probed(monkeypatch):
             Chroma.written.extend(ids)
 
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: FakeZotero([]))
-    search = semantic_search.ZoteroSemanticSearch(chroma_client=Chroma())
+    # A temporary config_path keeps the fulltext cache (resolved next to the
+    # config) out of the real ~/.config/zotero-mcp.
+    config = tmp_path / "config.json"
+    _write_config(config)
+    search = semantic_search.ZoteroSemanticSearch(
+        chroma_client=Chroma(), config_path=str(config)
+    )
     monkeypatch.setattr(search, "_save_update_config", lambda *a, **k: None)
     monkeypatch.setattr(search, "_get_items_from_source", lambda **kw: _items(3))
 
