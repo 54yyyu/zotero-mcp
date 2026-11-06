@@ -48,6 +48,12 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# After .env, so ZOTERO_STRICT_SQLITE can be set there too. Every tool imports
+# this module before its first request, so the guard is in place in time.
+from zotero_mcp import strict_sqlite as _strict_sqlite  # noqa: E402
+
+_strict_sqlite.activate_if_requested()
+
 # Serialize all Zotero API access. The local API (port 23119) is single-threaded;
 # concurrent requests from parallel MCP tool threads queue at the network layer and
 # risk hitting pyzotero's 30s timeout. A process-local lock ensures only one

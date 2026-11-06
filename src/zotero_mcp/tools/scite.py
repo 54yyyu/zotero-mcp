@@ -19,6 +19,7 @@ import logging
 
 from zotero_mcp._context import Context
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp.client import zotero_api_lock
 from zotero_mcp import scite_client as _scite
 from zotero_mcp import utils as _utils
@@ -169,8 +170,7 @@ def enrich_item(
         if not doi and item_key:
             ctx.info(f"Looking up DOI for Zotero item {item_key}")
             with zotero_api_lock():
-                zot = _client.get_zotero_client()
-                item = zot.item(item_key)
+                item = _library.get_library_backend().get_item(item_key)
             if not item:
                 return f"Error: Zotero item '{item_key}' not found"
             doi = _extract_doi(item)
@@ -282,14 +282,16 @@ def enrich_search(
         ctx.info(f"Searching Zotero for '{query}' and enriching with Scite data")
         # The Zotero API lock covers the Zotero read only, not the Scite call.
         with zotero_api_lock():
-            zot = _client.get_zotero_client()
-            zot.add_parameters(
-                q=query,
-                qmode="titleCreatorYear",
-                itemType="-attachment",
-                limit=limit_int,
+            backend = _library.get_library_backend()
+            results = backend.search_items(
+                query, qmode="titleCreatorYear", item_type="-attachment", limit=limit_int
             )
-            results = zot.items()
+            # SQLite's search rows leave out Extra, where a preprint or book
+            # often keeps its DOI. Fetch those few in full; API rows have it.
+            bare = [r["key"] for r in results if "extra" not in r.get("data", {}) and not _extract_doi(r)]
+            if bare:
+                full = backend.get_items(bare)
+                results = [full.get(r["key"], r) for r in results]
 
         if not results:
             return f"No items found matching query: '{query}'"
@@ -361,28 +363,31 @@ def check_retractions(
 
         # The Zotero API lock covers the Zotero reads only, not the Scite call.
         with zotero_api_lock():
-            zot = _client.get_zotero_client()
-            # Fetch items
+            backend = _library.get_library_backend()
             if collection:
                 ctx.info(f"Checking collection '{collection}' for retractions")
-                keys = _helpers._resolve_collection_names(zot, [collection], ctx)
+                keys = _helpers._resolve_collection_names(
+                    None, [collection], ctx, collections=backend.list_collections()
+                )
                 if not keys:
                     return f"Collection '{collection}' not found"
-                items = zot.collection_items(
-                    keys[0], limit=limit_int, itemType="-attachment"
-                )
+                if backend.name == "sqlite":
+                    items = [
+                        item for item in backend.collection_items(keys[0]) or []
+                        if item.get("data", {}).get("itemType") not in ("attachment", "note", "annotation")
+                    ][:limit_int]
+                else:
+                    # One page, filtered by the server, as before.
+                    items = _client.get_zotero_client().collection_items(
+                        keys[0], limit=limit_int, itemType="-attachment"
+                    )
             elif tag:
                 ctx.info(f"Checking items tagged '{tag}' for retractions")
-                zot.add_parameters(tag=tag, itemType="-attachment", limit=limit_int)
-                items = zot.items()
+                items = backend.list_items("-attachment", limit=limit_int, tag=[tag])
             else:
+                # Both backends list the most recently modified first.
                 ctx.info("Checking recent items for retractions")
-                items = zot.items(
-                    sort="dateModified",
-                    direction="desc",
-                    limit=limit_int,
-                    itemType="-attachment",
-                )
+                items = backend.list_items("-attachment", limit=limit_int)
 
         if not items:
             return "No items found to check."

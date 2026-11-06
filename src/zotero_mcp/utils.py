@@ -10,6 +10,8 @@ from contextlib import contextmanager
 
 from unidecode import unidecode
 
+from zotero_mcp import strict_sqlite
+
 html_re = re.compile(r"<.*?>")
 
 #: How this client identifies itself to third-party services.
@@ -302,7 +304,12 @@ def get_search_backend() -> str:
     :func:`zotero_mcp.library.configured_backend` delegates here, so the
     read port and the older search paths can never disagree about which
     backend is selected.
+
+    Strict SQLite mode overrides every setting here: its point is that nothing
+    reads through the API.
     """
+    if strict_sqlite.is_active():
+        return "sqlite"
     chosen = {
         os.getenv(var, "").strip().lower()
         for var in ("ZOTERO_BACKEND", "ZOTERO_SEARCH_BACKEND")

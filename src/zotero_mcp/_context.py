@@ -9,6 +9,7 @@ build a coroutine nobody awaits and the client never sees the message.
 import functools
 
 from zotero_mcp import _serverless
+from zotero_mcp.strict_sqlite import StrictSqliteViolation
 
 if _serverless.ENABLED:
     # zotero-cli: no server in this process, so no FastMCP to import.
@@ -102,12 +103,17 @@ def sync_context(fn):
         ctx = kwargs.get("ctx")
         if isinstance(ctx, Context):
             kwargs["ctx"] = SyncContext(ctx)
-        session = http_session_key()
-        if session is None:
-            return fn(*args, **kwargs)
-        from zotero_mcp import client as _client
+        try:
+            session = http_session_key()
+            if session is None:
+                return fn(*args, **kwargs)
+            from zotero_mcp import client as _client
 
-        with _client.library_session(session):
-            return fn(*args, **kwargs)
+            with _client.library_session(session):
+                return fn(*args, **kwargs)
+        except StrictSqliteViolation as exc:
+            # A BaseException, so the tool's own handlers cannot swallow it;
+            # here it becomes an ordinary tool error (ZOTERO_STRICT_SQLITE).
+            raise ToolError(str(exc)) from exc
 
     return wrapper

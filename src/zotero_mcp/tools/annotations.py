@@ -514,14 +514,8 @@ def get_annotations(
             annotations = better_bibtex_annotations + zotero_api_annotations + pdf_annotations
 
         else:
-            # Retrieve all annotations in the library. No backend operation
-            # covers an unfiltered library-wide annotation listing, so this
-            # stays on the API client.
             limit = _helpers._normalize_limit(limit, default=100)
-            # Use _paginate helper instead of inline manual pagination
-            annotations = _helpers._paginate(
-                _api_client().items, max_items=limit, itemType="annotation"
-            )
+            annotations = backend.list_items("annotation", limit=limit)
 
         # Handle no annotations found
         if not annotations:
@@ -702,8 +696,7 @@ def get_notes(
         if item_key:
             notes = backend.get_children([item_key], item_type="note").get(item_key, [])[:limit]
         else:
-            zot = _client.get_zotero_client()
-            notes = _helpers._paginate(zot.items, max_items=limit, itemType="note")
+            notes = backend.list_items("note", limit=limit)
 
         if not notes and item_key:
             # `item_key` may name a note itself rather than its parent. A note
@@ -2064,6 +2057,14 @@ def detect_layouts(
     return layouts, filename, None
 
 
+def _download_clients():
+    """(local API client, web API client) for fetching an attachment's file."""
+    web_client = _client.get_web_zotero_client()
+    if web_client:
+        _helpers.apply_library_override(web_client, _client.get_active_library())
+    return _client.get_local_zotero_client(), web_client
+
+
 def _fetch_attachment_file(
     attachment_key: str,
     tmpdir: str,
@@ -2083,32 +2084,32 @@ def _fetch_attachment_file(
         message and ``file_path`` is None when the attachment is missing, of
         the wrong type, or could not be fetched.
     """
-    local_client = _client.get_local_zotero_client()
-    web_client = _client.get_web_zotero_client()
-    if web_client:
-        _helpers.apply_library_override(web_client, _client.get_active_library())
-
-    if meta_client is None:
-        if web_client is not None:
-            meta_client = web_client
-        else:
-            override = _client.get_active_library() or {}
-            library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
-            meta_client = (
-                _client.get_zotero_client()
-                if _utils.is_local_mode() and library_type.startswith("group")
-                else local_client
-            )
-    if meta_client is None:
-        return None, "", "", (
-            "Error: No Zotero client configured.\n\n"
-            "Configure either local Zotero (with 'Allow other applications "
-            "on this computer to communicate with Zotero' enabled) or Web "
-            "API credentials:\n" + _WEB_API_ENV_VARS
-        )
+    # In local mode zotero.sqlite answers both questions, the attachment's
+    # metadata and where its file is, so the API clients are built only when
+    # the file is not on this machine. A writer passes meta_client and keeps
+    # the API path.
+    from_sqlite = meta_client is None and _utils.is_local_mode()
+    if not from_sqlite:
+        local_client, web_client = _download_clients()
+        if meta_client is None:
+            # Not local mode, so a group library is reached through the web client.
+            meta_client = web_client if web_client is not None else local_client
+            if meta_client is None:
+                return None, "", "", (
+                    "Error: No Zotero client configured.\n\n"
+                    "Configure either local Zotero (with 'Allow other applications "
+                    "on this computer to communicate with Zotero' enabled) or Web "
+                    "API credentials:\n" + _WEB_API_ENV_VARS
+                )
 
     try:
-        attachment_data = meta_client.item(attachment_key).get("data", {})
+        if from_sqlite:
+            item = _library.get_library_backend().get_item(attachment_key)
+            if item is None:
+                raise LookupError("not in zotero.sqlite")
+        else:
+            item = meta_client.item(attachment_key)
+        attachment_data = item.get("data", {})
         if attachment_data.get("itemType") != "attachment":
             return None, "", "", f"Error: Item {attachment_key} is not an attachment"
         content_type = attachment_data.get("contentType", "")
@@ -2121,6 +2122,12 @@ def _fetch_attachment_file(
         filename = attachment_data.get("filename", f"{attachment_key}.{file_type}")
     except Exception as e:
         return None, "", "", f"Error: No attachment found with key: {attachment_key} ({e})"
+
+    if from_sqlite:
+        local_path = _library.attachment_path_for(attachment_key)
+        if local_path is not None and local_path.stat().st_size > 0:
+            return str(local_path), filename, file_type, None
+        local_client, web_client = _download_clients()
 
     file_path, error_message = _download_attachment_for_processing(
         attachment_key,
