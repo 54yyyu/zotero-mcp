@@ -2389,6 +2389,17 @@ def test_t7_a_fill_run_past_the_window_still_defers_a_new_run(iso, capsys):
     assert "deferred" in out and run["run_id"] in out
 
 
+def test_t7_a_collect_does_not_say_a_fill_run_past_the_window_holds_nothing_up(iso):
+    run = _fill_run(iso, created_at=_ago(days=3))
+
+    stats = iso.new_search().collect_batch_results()
+
+    errors = str(stats["batch_collect"]["errors"])
+    assert run["run_id"] in errors
+    assert "no longer holds up updates" not in errors
+    assert "14 days" in errors and "batch-import" in errors
+
+
 def test_t7_a_fill_run_stops_deferring_14_days_after_its_last_activity(iso):
     _set_version(iso, 10)
     _fill_run(iso, created_at=_ago(days=15))

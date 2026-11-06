@@ -5664,7 +5664,15 @@ class ZoteroSemanticSearch:
                     errors.append(given_up_notes[-1])
             batches = run.get("batches", [])
             if batch_common.run_is_unfinished(run, adapter):
-                if past_window:
+                if past_window and self._fill_still_holds(run):
+                    errors.append(
+                        f"run {run_id} is past the provider's {adapter.completion_window_hours}-hour window, "
+                        "so nothing more happens to it on its own. It adds records missing from the index, "
+                        f"so it holds up updates until {self.BATCH_RUN_BLOCKS_FILL_DAYS} days after its last "
+                        "activity. 'zotero-mcp batch-import' sends its waiting chunks and imports what is "
+                        f"ready; 'zotero-mcp batch-abandon --run-id {run_id}' drops it."
+                    )
+                elif past_window:
                     errors.append(
                         f"run {run_id} is past the provider's {adapter.completion_window_hours}-hour window "
                         "and no longer holds up updates. 'zotero-mcp batch-import' retries it and sends any "
