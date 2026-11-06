@@ -957,11 +957,17 @@ def cmd_db(args):
         print(f"Document count: {ci.get('count', 0)}")
         print(f"  Article-level records: {ci.get('article_records', 0)}")
         print(f"  Passage-level records: {ci.get('passage_records', 0)}")
-        if ci.get("unmigrated_passages"):
-            print("  These passages are in the article-level ChromaDB collection. To search articles too,")
-            print("  run: zotero-mcp migrate-index")
+        for label, key in (("Items with article records", "article_items"), ("Items with passages", "passage_items")):
+            if key in ci:
+                print(f"  {label}: {'unknown' if ci[key] is None else ci[key]}")
         print(f"Embedding model: {ci.get('embedding_model', 'Unknown')}")
         print(f"Database path: {ci.get('persist_directory', 'Unknown')}")
+        if ci.get("migration"):
+            from zotero_mcp.index_migration import status_note
+
+            print("\nIndex migration:")
+            for line in status_note(ci["migration"], "zotero-cli db update"):
+                print(f"  {line}")
         print("\nUpdate configuration:")
         print(f"- Auto update: {uc.get('auto_update', False)}")
         print(f"- Frequency: {uc.get('update_frequency', 'manual')}")

@@ -1883,11 +1883,10 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
         output.append(f"**Article-level Records:** {collection_info.get('article_records', 0)}")
         output.append(f"**Passage-level Records:** {collection_info.get('passage_records', 0)}")
-        if collection_info.get("unmigrated_passages"):
-            output.append(
-                "**Note:** These passages are in the article-level ChromaDB collection. To search articles "
-                "too, run `zotero-mcp migrate-index`."
-            )
+        for label, key in (("Items with Article Records", "article_items"), ("Items with Passages", "passage_items")):
+            if key in collection_info:
+                count = collection_info[key]
+                output.append(f"**{label}:** {'unknown' if count is None else count}")
         if collection_info.get("pending_writes"):
             output.append(
                 f"**Pending Writes:** {collection_info['pending_writes']} "
@@ -1911,6 +1910,15 @@ def get_search_database_status(*, ctx: Context) -> str:
             output.append(f"**Error:** {collection_info['error']}")
 
         output.append("")
+
+        if collection_info.get("migration"):
+            from zotero_mcp.index_migration import status_note
+
+            output.append("## Index Migration")
+            output.append("```")
+            output.extend(status_note(collection_info["migration"], "zotero-mcp update-db"))
+            output.append("```")
+            output.append("")
 
         # Is the index behind the library? One bounded version request (5 s,
         # no retry; local API, or web API), with a SQLite read as the local

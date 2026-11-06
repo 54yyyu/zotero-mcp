@@ -13,6 +13,7 @@ class object, so the re-exported name has to *be* the registered class.
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import sys
@@ -548,6 +549,10 @@ class ChromaClient:
                 "article_records": layout["article_records"],
                 "passage_records": layout["passage_records"],
                 "unmigrated_passages": layout["unmigrated_passages"],
+                **level_item_counts(
+                    layout, self.persist_directory, self.collection_name,
+                    self.embedding_model, self.embedding_config,
+                ),
                 "embedding_model": self.embedding_model,
                 "persist_directory": self.persist_directory
             }
@@ -1067,6 +1072,155 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     return layout
 
 
+def article_token_budget(
+    embedding_model: str, embedding_config: dict[str, Any] | None = None
+) -> tuple[float, int, bool]:
+    """(characters per token, tokens an article record is cut to, whether a paid API embeds it).
+
+    Read from the settings, without building the embedding function: the
+    figures each provider's function uses (``chars_per_token`` and
+    ``max_input_tokens`` in ``embeddings/providers``, the Batch API estimates
+    in ``openai_batch`` and ``gemini_batch``). Only for estimates.
+    """
+    config = embedding_config or {}
+    model_name = str(config.get("model_name") or "")
+    if embedding_model == "openai":
+        budget = (3.0, 8000, not config.get("base_url"))
+    elif embedding_model == "gemini":
+        budget = (3.5, 7980 if "gemini-embedding-2" in model_name else 2000, True)
+    elif embedding_model == "ollama":
+        budget = (4.0, 8000, False)
+    elif embedding_model == "default":
+        budget = (4.0, 256, False)
+    else:  # sentence-transformers: the model's max_seq_length, commonly 512
+        budget = (4.0, 512, False)
+    if embedding_model in ("openai", "ollama") and config.get("max_input_tokens"):
+        budget = (budget[0], int(config["max_input_tokens"]), budget[2])
+    return budget
+
+
+# For each item's first passage in a segment: does the item have an article
+# record there, and how long is its text? The last passage ends where the text
+# ends (or where max_chunks_per_item stopped, past which an article record is
+# cut anyway). Index seeks only: chunk_index has an index, ids are unique.
+_UNMIGRATED_ITEMS_SQL = """
+SELECT
+    EXISTS (SELECT 1 FROM embeddings b WHERE b.segment_id = :segment AND b.embedding_id = f.key),
+    (SELECT c.int_value FROM embeddings l
+     JOIN embedding_metadata c ON c.id = l.id AND c.key = 'char_end'
+     WHERE l.segment_id = :segment AND l.embedding_id = f.key || '#' || (f.n_chunks - 1))
+FROM (
+    SELECT substr(e.embedding_id, 1, instr(e.embedding_id, '#') - 1) AS key,
+           (SELECT n.int_value FROM embedding_metadata n WHERE n.id = e.id AND n.key = 'n_chunks') AS n_chunks
+    FROM embedding_metadata m JOIN embeddings e ON e.id = m.id
+    WHERE m.key = 'chunk_index' AND m.int_value = 0 AND e.segment_id = :segment
+      AND instr(e.embedding_id, '#') > 0
+) f
+"""
+
+
+def _unmigrated_items(con: sqlite3.Connection, segment: str) -> list[tuple[int, int | None]]:
+    """``(has an article record, text length or None)`` per item with a first passage."""
+    return con.execute(_UNMIGRATED_ITEMS_SQL, {"segment": segment}).fetchall()
+
+
+def read_migration_estimate(
+    persist_directory: str,
+    collection_name: str,
+    article_records: int,
+    embedding_model: str,
+    embedding_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """What ``update-db`` would embed after ``migrate-index`` on an unmigrated index.
+
+    ``migrate-index`` embeds nothing; the next update embeds an article record
+    for each item that has passages but no article record. The token total is
+    an estimate: each item's text length, from its last passage's ``char_end``,
+    over the provider's characters per token (as ``batch_common.estimate_tokens``
+    counts), cut to the tokens an article record is truncated to. An item
+    whose first or last passage is missing counts at the average of the others.
+
+    Reads SQLite only, by index seeks: about one per item. ``items_with_passages``
+    and the estimate are None when ChromaDB's tables can't be read for them.
+    """
+    chars_per_token, max_tokens, paid = article_token_budget(embedding_model, embedding_config)
+    result: dict[str, Any] = {
+        "paid": paid,
+        "chars_per_token": chars_per_token,
+        "max_tokens": max_tokens,
+        "items_needing_articles": None,
+        "items_with_passages": None,
+        "estimated_tokens": None,
+    }
+    try:
+        db = Path(persist_directory) / "chroma.sqlite3"
+        con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+        try:
+            segment = con.execute(
+                """
+                SELECT s.id FROM segments s JOIN collections c ON s.collection = c.id
+                WHERE c.name = ? AND s.scope = 'METADATA'
+                """,
+                (collection_name,),
+            ).fetchone()
+            if segment is None:
+                return result
+            rows = _unmigrated_items(con, segment[0])
+            # Every item in the collection, by bare or passage ids, one seek
+            # each; counts an item whose first passage is missing, as
+            # migrate-index does.
+            try:
+                all_items = con.execute(_PASSAGE_ITEMS_SQL, {"segment": segment[0]}).fetchone()[0]
+            except sqlite3.Error:
+                all_items = None
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        logger.warning(f"Could not estimate what update-db embeds after migrate-index: {e}")
+        return result
+
+    with_article = sum(1 for has_article, _length in rows if has_article)
+    lengths = [length for has_article, length in rows if not has_article and length is not None]
+    if all_items is None:
+        needing = sum(1 for has_article, _length in rows if not has_article)
+    else:
+        needing = max(0, all_items - article_records)
+    tokens = [min(max(1, math.ceil(length / chars_per_token)), max_tokens) for length in lengths]
+    average = sum(tokens) / len(tokens) if tokens else max_tokens
+    result.update(
+        items_needing_articles=needing,
+        items_with_passages=needing + with_article,
+        estimated_tokens=sum(tokens) + round(average * max(0, needing - len(tokens))),
+    )
+    return result
+
+
+def level_item_counts(
+    layout: dict[str, Any],
+    persist_directory: str,
+    collection_name: str,
+    embedding_model: str,
+    embedding_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Items per level for status, and on an unmigrated index what migrating costs.
+
+    An article record is one item, so ``article_items`` is the article record
+    count. ``migration`` is there only while passages are still in the article
+    collection, and is what the status note about ``migrate-index`` reads.
+    """
+    counts: dict[str, Any] = {
+        "article_items": layout["article_records"],
+        "passage_items": layout.get("passage_items"),
+    }
+    if layout["unmigrated_passages"]:
+        migration = read_migration_estimate(
+            persist_directory, collection_name, layout["article_records"], embedding_model, embedding_config
+        )
+        counts["passage_items"] = migration["items_with_passages"]
+        counts["migration"] = migration
+    return counts
+
+
 def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tuple[set[str], set[str]]:
     """Item keys with an article record and with all their passages, read-only from SQLite.
 
@@ -1135,6 +1289,7 @@ def read_collection_status(
     """
     collection_name = "zotero_library"
     embedding_model = "default"
+    embedding_config: dict[str, Any] = {}
     configured_dir = None
 
     if config_path and os.path.exists(config_path):
@@ -1143,6 +1298,7 @@ def read_collection_status(
                 semantic_cfg = json.load(f).get("semantic_search", {})
             collection_name = semantic_cfg.get("collection_name", collection_name)
             embedding_model = semantic_cfg.get("embedding_model", embedding_model)
+            embedding_config = semantic_cfg.get("embedding_config") or {}
             configured_dir = semantic_cfg.get("persist_directory")
         except Exception as e:
             logger.warning(f"Error loading config from {config_path}: {e}")
@@ -1199,6 +1355,7 @@ def read_collection_status(
             "article_records": layout["article_records"],
             "passage_records": layout["passage_records"],
             "unmigrated_passages": layout["unmigrated_passages"],
+            **level_item_counts(layout, persist_directory, collection_name, embedding_model, embedding_config),
             "initialized": True,
         }
         if pending:
