@@ -921,28 +921,38 @@ def _level_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | 
 def _passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | None, int, int]:
     """(collection id, records, items) of the passage collection, cheaply.
 
-    Runs on every search, so it counts through indexes rather than scanning a
-    million ids: an item is counted by its first passage's metadata.
+    Runs on every search, so it counts items without scanning a million ids.
+    Passage ids are ``KEY#n`` and sorted in ChromaDB's (segment, id) index, so
+    an item's passages sit together: each step seeks past ``KEY#`` to the next
+    item. That makes one index seek per item, and counts an item whose first
+    passage failed to write, which counting ``chunk_index = 0`` would miss.
     """
     row = con.execute("SELECT id FROM collections WHERE name = ?", (collection_name,)).fetchone()
     if row is None:
         return None, 0, 0
-    records = con.execute(
-        """
-        SELECT count(*) FROM embeddings e JOIN segments s ON e.segment_id = s.id
-        WHERE s.collection = ? AND s.scope = 'METADATA'
-        """,
-        (row[0],),
-    ).fetchone()[0]
+    segment = con.execute(
+        "SELECT id FROM segments WHERE collection = ? AND scope = 'METADATA'", (row[0],)
+    ).fetchone()
+    if segment is None:
+        return row[0], 0, 0
+    records = con.execute("SELECT count(*) FROM embeddings WHERE segment_id = ?", (segment[0],)).fetchone()[0]
+    # '$' is the character after '#', so "KEY$" sorts after every "KEY#n".
     items = con.execute(
         """
-        SELECT count(*)
-        FROM embedding_metadata m
-        JOIN embeddings e ON e.id = m.id
-        JOIN segments s ON e.segment_id = s.id
-        WHERE s.collection = ? AND s.scope = 'METADATA' AND m.key = 'chunk_index' AND m.int_value = 0
+        WITH RECURSIVE item(id) AS (
+            SELECT (SELECT embedding_id FROM embeddings WHERE segment_id = :segment
+                    ORDER BY embedding_id LIMIT 1)
+            UNION ALL
+            SELECT (SELECT embedding_id FROM embeddings
+                    WHERE segment_id = :segment AND embedding_id > CASE
+                        WHEN instr(item.id, '#') THEN substr(item.id, 1, instr(item.id, '#') - 1)
+                        ELSE item.id END || '$'
+                    ORDER BY embedding_id LIMIT 1)
+            FROM item WHERE item.id IS NOT NULL
+        )
+        SELECT count(id) FROM item
         """,
-        (row[0],),
+        {"segment": segment[0]},
     ).fetchone()[0]
     return row[0], records, items
 

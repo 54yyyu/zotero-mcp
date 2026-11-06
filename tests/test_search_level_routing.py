@@ -40,6 +40,8 @@ def _write(client, ids, metadatas):
 @pytest.fixture()
 def build(monkeypatch, tmp_path):
     """A search over a real index, embedding queries with a stub so nothing downloads."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setattr(semantic_search, "get_zotero_client", MagicMock)
     monkeypatch.setattr(chroma_client, "CUSTOM_EMBEDDING_FUNCTIONS", (SimpleNamespace,))
 
@@ -54,7 +56,7 @@ def build(monkeypatch, tmp_path):
         if route and passages:
             _write(client, list(passages), [_passage_meta(p.split("#")[0], int(p.split("#")[1])) for p in passages])
         client.embedding_function = SimpleNamespace(embed_query_text=lambda _q: [1.0, 0.0])
-        search = semantic_search.ZoteroSemanticSearch(chroma_client=client)
+        search = semantic_search.ZoteroSemanticSearch(chroma_client=client, config_path=str(tmp_path / "config.json"))
         search._chunking_config = {"enabled": chunking}
         search._reranker_config = {"enabled": False}
         search._attach_zotero_items = lambda enriched: None
@@ -169,6 +171,14 @@ def test_note_says_articles_are_not_there_yet(build):
 
     assert "Searched passages (1 item in the index)" in note
     assert "No article records are indexed yet" in note
+
+
+def test_passage_count_includes_an_item_missing_its_first_passage(build):
+    """An item whose passage 0 failed to write still has passages to search."""
+    search = build(chunking=True, articles=["A", "B"], passages=["A#0", "A#1", "B#1"])
+
+    assert search.chroma_client.index_layout()["passage_items"] == 2
+    assert "Searched passages (2 items in the index)" in search.search("q")["level_note"]
 
 
 def test_no_note_when_the_index_has_only_the_level_the_setting_asks_for(build):
