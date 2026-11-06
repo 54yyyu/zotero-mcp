@@ -238,7 +238,9 @@ Passage chunking also indexes each item as several overlapping passages, in a se
 | `overlap` | `200` | Characters shared between neighbouring passages. |
 | `max_chunks_per_item` | `20` | Passages kept per item. Text past the last passage is not indexed. |
 
-After turning it on, run `zotero-mcp update-db --fulltext` once. It adds the passages and keeps the article vectors you already have, with no `--force-rebuild` and no re-embedding of articles. It is not applied on the Batch API path.
+After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`ZOTERO_LOCAL=true`). With the web API, where `--fulltext` is not available, run `zotero-mcp update-db`, which uses the text Zotero has already extracted. It adds the passages and keeps the article vectors you already have, with no `--force-rebuild` and no re-embedding of articles. It is not applied on the Batch API path.
+
+An update writes every article record before any passage, so article search covers a long run's items early. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile; a run stopped in between leaves the rest to the next update.
 
 Passages and articles live in two collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
