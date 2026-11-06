@@ -4444,6 +4444,8 @@ class ZoteroSemanticSearch:
             self._drop_passages_on_write = False
             self._scan_gaps = {}
             self._level_fill_keys = frozenset()
+            # The server keeps one instance: the next run starts without these.
+            self._undropped_passages = frozenset()
             if self._held_text is not None:
                 self._held_text.close()
                 self._held_text = None

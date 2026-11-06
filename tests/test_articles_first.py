@@ -463,8 +463,37 @@ def test_old_passages_that_could_not_be_deleted_are_reported(build, monkeypatch,
     search = build(zotero, parallel=parallel)
     monkeypatch.setattr(search.chroma_client, "prune_item_chunks", lambda key, keep: None)
 
+    noted: list[str] = []
+    original_note = search._note_undropped_passages
+
+    def note(item_key):
+        original_note(item_key)
+        noted.append(item_key)
+        assert item_key in search._undropped_passages
+
+    monkeypatch.setattr(search, "_note_undropped_passages", note)
+
     with caplog.at_level(logging.WARNING, logger="zotero_mcp.semantic_search"):
         _stop_in_the_passage_pass(monkeypatch, search)
 
-    assert search._undropped_passages == {"AAA"}
+    assert noted == ["AAA"]
     assert any("AAA" in r.getMessage() and "passages" in r.getMessage() for r in caplog.records)
+
+
+def test_undropped_passages_do_not_carry_over_to_the_next_run(build, monkeypatch):
+    """The server keeps one instance: a later run must not start with an earlier run's items."""
+    zotero = FakeZotero(["AAA", "BBB"])
+    build(zotero).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA": CHANGED}
+    search = build(zotero)
+    monkeypatch.setattr(search.chroma_client, "prune_item_chunks", lambda key, keep: None)
+    _stop_in_the_passage_pass(monkeypatch, search)
+
+    # A later run of the same instance, and a delete that fails after it (say
+    # in a batch collect), must not add to the set the earlier run left.
+    zotero.changed = {}
+    search.update_database()
+    search._note_undropped_passages("CCC")
+
+    assert not search._undropped_passages
