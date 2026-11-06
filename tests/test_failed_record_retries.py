@@ -421,6 +421,25 @@ def test_a_batch_record_that_keeps_failing_is_counted_across_runs(build, batch, 
     assert "embeds them again" not in errors
 
 
+def test_an_update_that_collects_a_run_says_what_it_gave_up(build, batch, tmp_path):
+    """A background collect lands most runs, so its summary must carry the news."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero, chunking=False).update_database()
+    _set_update_config(tmp_path, retry_item_keys=["BBB"], retry_item_attempts={"BBB": 2})
+    batch.search(zotero, chunking=False).update_database(use_batch=True)
+
+    stats = {}
+    for _ in range(6):
+        batch.fake.finish_all(fail={"BBB"})
+        stats = batch.search(zotero, chunking=False).update_database()
+        if not any(job.status == "in_progress" for job in batch.fake.jobs.values()):
+            break
+
+    assert _saved(tmp_path)["retry_item_keys_given_up"] == ["BBB"]
+    errors = " ".join(stats["batch_collect"]["errors"])
+    assert "Gave up" in errors and "BBB" in errors
+
+
 def test_the_import_says_an_unmigrated_index_keeps_its_sync_version(build, batch, tmp_path):
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
     build(zotero, chunking=False, split=False).update_database()

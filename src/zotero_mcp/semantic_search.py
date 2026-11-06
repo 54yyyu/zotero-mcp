@@ -5600,6 +5600,8 @@ class ZoteroSemanticSearch:
                 failed_rows = result.get("failed_items", 0) + result.get("missing_items", 0)
                 if failed_rows:
                     errors.append(f"run {run_id}: {failed_rows} item(s) came back without an embedding")
+                if result.get("retry_given_up"):
+                    errors.append(f"run {run_id}: {result['retry_given_up']}")
             batches = run.get("batches", [])
             if batch_common.run_is_unfinished(run, adapter):
                 if past_window:
@@ -6291,7 +6293,8 @@ class ZoteroSemanticSearch:
                 if failed_ids and not {doc_id.split("#", 1)[0] for doc_id in failed_ids} <= set(given_up):
                     stats["errors"].append({"error": self._failed_records_note(manifest, failed_ids, covered)})
                 if given_up:
-                    stats["errors"].append({"error": self._given_up_message(given_up)})
+                    stats["retry_given_up"] = self._given_up_message(given_up)
+                    stats["errors"].append({"error": stats["retry_given_up"]})
             return stats
         finally:
             # The user acted on this run, so a note asking them to (from a
