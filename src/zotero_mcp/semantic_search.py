@@ -2553,8 +2553,7 @@ class ZoteroSemanticSearch:
             if key in already_fetched or key in skipped:
                 continue
             if key not in library_keys:
-                # Another library's item, which this run can't ask about.
-                self._note_unanswered_recheck(key, waiting)
+                # Another library's item: its own library's run asks about it.
                 continue
             if not include_fulltext:
                 # No run without text can fill this; don't fetch the item to find out.
@@ -2584,10 +2583,10 @@ class ZoteroSemanticSearch:
         """A stored ISO time as naive local time, or None when it can't be read."""
         try:
             moment = datetime.fromisoformat(str(value))
-        except (TypeError, ValueError):
+            if moment.tzinfo is not None:
+                moment = moment.astimezone().replace(tzinfo=None)
+        except (TypeError, ValueError, OverflowError, OSError):
             return None
-        if moment.tzinfo is not None:
-            moment = moment.astimezone().replace(tzinfo=None)
         return moment
 
     @staticmethod
@@ -2595,7 +2594,7 @@ class ZoteroSemanticSearch:
         """How many times Zotero answered a waiting item without text; 0 if unreadable."""
         try:
             return max(int(check.get("checks") or 0), 0) if isinstance(check, dict) else 0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0
 
     def _text_checks(self) -> dict[str, Any]:
@@ -2608,17 +2607,17 @@ class ZoteroSemanticSearch:
 
         ``at`` and ``checks`` record Zotero's answers without text, and set the
         backoff. ``tried_at`` records a try that got no answer (a failed
-        request, or an item this library doesn't hold): it doesn't lengthen
-        the backoff, but the item isn't tried again for a day. A record that
-        can't be read is due.
+        request): it doesn't lengthen the backoff, but the item isn't tried
+        again for a day. A record that can't be read is due, and so is one
+        stamped in the future, which no run could have written.
         """
         if not isinstance(check, dict):
             return True
         tried = cls._local_time(check.get("tried_at"))
-        if tried is not None and now - tried < timedelta(days=cls.GAP_TEXT_RECHECK_FIRST_DAYS):
+        if tried is not None and timedelta(0) <= now - tried < timedelta(days=cls.GAP_TEXT_RECHECK_FIRST_DAYS):
             return False
         at = cls._local_time(check.get("at"))
-        if at is None:
+        if at is None or at > now:
             return True
         checks = max(cls._check_count(check), 1)
         wait = min(cls.GAP_TEXT_RECHECK_FIRST_DAYS * 2 ** min(checks - 1, 16), cls.GAP_TEXT_RECHECK_MAX_DAYS)
@@ -2644,7 +2643,24 @@ class ZoteroSemanticSearch:
             return waiting
         checks = self._text_checks()
         now = datetime.now()
-        return {key for key in waiting if not self._text_recheck_due(checks.get(key), now)}
+        not_due = {key for key in waiting if not self._text_recheck_due(checks.get(key), now)}
+        return not_due | self._other_library_keys(waiting - not_due)
+
+    def _other_library_keys(self, keys: set[str]) -> set[str]:
+        """Those of ``keys`` the index records as another library's items.
+
+        The waiting list is shared by every library in the index. This run
+        can't ask Zotero about another library's item, so it neither counts
+        it as work nor touches its record: that library's own run does.
+        """
+        if not keys:
+            return set()
+        lookup = getattr(self.chroma_client, "item_group_ids", None)
+        groups = lookup(sorted(keys)) if lookup else {}
+        if not isinstance(groups, dict):
+            return set()
+        own = self._pinned_group_id()
+        return {key for key, group_id in groups.items() if group_id != own}
 
     def _without_fills_lacking_text(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Drop fills that would write metadata-only records for an item with full text.

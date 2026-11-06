@@ -316,9 +316,51 @@ def test_a_waiting_item_zotero_never_returns_is_tried_once_a_day(build, tmp_path
     assert zotero.fetched == ["AAA", "AAA"]
 
 
+def test_another_librarys_waiting_item_stays_due_for_its_own_library(build, tmp_path):
+    """The waiting list is shared by every library in the index.
+
+    A library updated many times a day must neither hold another library's
+    waiting item back nor count it as work of its own.
+    """
+    zotero_a = FakeZotero({"AAA": LONG, "BBB": LONG})
+    _park(build, zotero_a)
+    search = build(zotero_a, chunking=True)
+    collection = search.chroma_client.collection
+    stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
+    collection.update(ids=["AAA"], metadatas=[{**stored, "group_id": 7}])
+    del zotero_a.abstracts["AAA"]
+    zotero_a.fetched.clear()
+
+    for _ in range(3):
+        stats = build(zotero_a, chunking=True, fulltext=True).update_database()
+        assert stats.get("error") is None
+
+    assert zotero_a.fetched == [], "library A neither fetched nor counted B's item"
+    assert "AAA" not in (_saved(tmp_path).get("gaps_text_checked") or {})
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+    zotero_b = FakeZotero({"AAA": LONG})
+    zotero_b.library_type, zotero_b.library_id = "groups", 7
+    zotero_b.texts["AAA"] = TEXT
+    config_path = tmp_path / "config.json"
+    data = json.loads(config_path.read_text())
+    data["semantic_search"].setdefault("last_sync_versions", {})["7"] = zotero_b.version
+    config_path.write_text(json.dumps(data))
+
+    search = build(zotero_b, chunking=True, fulltext=True)
+    search.update_database()
+
+    assert zotero_b.text_requests == ["AAA"]
+    assert len(_passage_ids(search)) == 10, "B's item has its passages next to BBB's"
+
+
 @pytest.mark.parametrize(
     "record",
     [
+        {"at": "0001-01-01T00:00:00+05:00", "checks": 1},
+        {"at": "2026-01-01T00:00:00", "checks": float("inf")},
+        {"at": "9999-01-01T00:00:00", "checks": 1},
+        {"at": "2026-01-01T00:00:00", "checks": 1, "tried_at": "9999-01-01T00:00:00"},
         {"at": "2026-01-01T00:00:00+00:00", "checks": 1},
         {"at": "2026-01-01T00:00:00", "checks": "many"},
         {"at": None, "checks": None, "tried_at": "yesterday"},

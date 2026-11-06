@@ -666,6 +666,28 @@ class ChromaClient:
         except Exception:
             return set()
 
+    def item_group_ids(self, item_keys: list[str]) -> dict[str, int]:
+        """The library (``group_id``) of each indexed item in ``item_keys`` that has one.
+
+        Read from the item's article record, or its first passage. Items
+        without a recorded library are left out, and so is everything on a
+        read failure: callers treat a missing entry as "don't know".
+        """
+        groups: dict[str, int] = {}
+        try:
+            ids = [doc_id for key in item_keys for doc_id in (key, f"{key}#0")]
+            for collection, part in self._group_existing(ids):
+                for start in range(0, len(part), 5000):
+                    result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                    for doc_id, meta in zip(result.get("ids", []), result.get("metadatas") or []):
+                        group_id = (meta or {}).get("group_id")
+                        if group_id is not None:
+                            groups.setdefault(doc_id.split("#", 1)[0], int(group_id))
+            return groups
+        except Exception as e:
+            logger.debug(f"Error reading item libraries: {e}")
+            return {}
+
     def get_all_ids(self, where: dict[str, Any] | None = None) -> set[str]:
         """Return every id currently stored in the collection.
 
