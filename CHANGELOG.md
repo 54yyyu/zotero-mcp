@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The MCP server now frees the semantic index's memory after 10 idle minutes by default.** `semantic_search.idle_unload_minutes` defaulted to `0`, so a server that ran one semantic search held the whole vector index until it exited. The default is now `10`: ChromaDB runs in a worker process that exits after 10 minutes without a semantic call, and the next call starts a new one and reloads the index. On an Apple M1 Max a new worker answered its first query 0.4 s after starting for 5,000 article-level records of 3,072 dimensions (about 150 MB resident) and 0.55 s for 50,000 (about 700 MB). Set `idle_unload_minutes` to `0` to keep ChromaDB in the server as before; a value you have set is unchanged. The command-line tools are unaffected. See "Semantic search memory" in `docs/configuration.md`.
+- **The semantic index can hold passages in a ChromaDB collection of their own**, `zotero_library_passages` next to `zotero_library`, so that article searches need not load passage vectors (#769). Nothing writes to it yet, so indexes and searches are unchanged.
 
 ### Fixed
 
