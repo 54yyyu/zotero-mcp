@@ -33,6 +33,7 @@ from pyzotero.errors import (
 )
 
 from zotero_mcp import client as _client
+from zotero_mcp import strict_sqlite as _strict_sqlite
 from zotero_mcp import utils as _utils
 from zotero_mcp.extract import pdf_page_count
 from zotero_mcp.identifiers import (
@@ -200,6 +201,11 @@ def write_unavailable_message(op_description: str = "write operations") -> str:
     )
 
 
+# A write needs the current version from the store it writes to, and SQLite can
+# lag it. Local versions also have no relation to web versions (see below).
+_WRITE_READS = "reads made for a write"
+
+
 def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
     """Return (read_client, write_client, mode) for a mutating operation.
 
@@ -218,7 +224,7 @@ def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
     # just before it landed (local_db._wal_snapshot_path).
     note_local_write()
     if not _utils.is_local_mode():
-        zot = _client.get_zotero_client()
+        zot = _strict_sqlite.exempt(_client.get_zotero_client(), _WRITE_READS)
         return zot, zot, "web"
 
     local_write_zot = _client.get_local_write_client()
@@ -229,12 +235,14 @@ def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
         # would write that mapping back to whatever id the switch-library tool
         # reported (the SQLite libraryID, typically 1) and every write would
         # go to a library that does not exist locally.
+        _strict_sqlite.exempt(local_write_zot, _WRITE_READS)
         return local_write_zot, local_write_zot, "local"
 
     web_zot = _client.get_web_zotero_client()
     if web_zot is not None:
         apply_library_override(web_zot, _client.get_active_library())
-        return _client.get_zotero_client(), web_zot, "hybrid"
+        _strict_sqlite.exempt(web_zot, _WRITE_READS)
+        return _strict_sqlite.exempt(_client.get_zotero_client(), _WRITE_READS), web_zot, "hybrid"
 
     raise ValueError(write_unavailable_message(op_description))
 
@@ -620,7 +628,8 @@ def _get_bibliography_client(ctx=None):
     or the top-level ``format=bibtex`` export) works against the local API with
     no credentials at all, so every mode can now use its normal client.
     """
-    return _client.get_zotero_client()
+    # Rendering needs Zotero's citation engine and translators; SQLite has neither.
+    return _strict_sqlite.exempt(_client.get_zotero_client(), "citation rendering")
 
 
 def fetch_trashed_collections(zot) -> list[dict]:

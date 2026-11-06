@@ -135,6 +135,11 @@ narrower than the API's. Writes always go through Zotero.
   0.12.1. `ZOTERO_BACKEND=sqlite` forces SQLite; `ZOTERO_SEARCH_BACKEND` is
   accepted as an older name for the same setting. Outside local mode the API is
   always used.
+- `ZOTERO_STRICT_SQLITE=1`: a developer check. A read that would reach the Zotero
+  API (a GET on `/users/...` or `/groups/...`, any Better BibTeX request, a query
+  SQLite declines, or no readable `zotero.sqlite`) fails with an error naming the
+  code that made it, instead of falling back. Writes, the reads a write makes
+  through its own client, and citation rendering are still allowed. Off unless set.
 - `ZOTERO_MCP_DB_SNAPSHOT_MIN_INTERVAL`: Zotero keeps recent changes in a WAL file
   next to `zotero.sqlite`, so reads use a private copy of the database plus that
   file. The copy is refreshed when Zotero writes, at most once per this many
