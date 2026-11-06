@@ -64,6 +64,18 @@ async function main(ctx) {
   out.area = { label: area.label, bytes: area.image.data.length };
   await ctx.snapshot("context-area");
 
+  // 4b. resizing the box (what dragging a handle saves) replaces the picture, never the stale PNG
+  ann.annotationPosition = JSON.stringify({ pageIndex: 0, rects: [[72, 560, 540, 725]] });
+  await ann.saveTx();
+  const resized = await ctx.waitFor(() => {
+    const c = chips().find((x) => x.kind === "area");
+    return c && c.image && c.image.data !== area.image.data ? c : null;
+  }, "area image follows the resized box", 20000);
+  const dims = (b64) => { const s = atob(b64.slice(0, 40)); const n = (i) => (s.charCodeAt(i) << 24 | s.charCodeAt(i + 1) << 16 | s.charCodeAt(i + 2) << 8 | s.charCodeAt(i + 3)) >>> 0; return [n(16), n(20)]; };
+  const [w0, h0] = dims(area.image.data), [w1, h1] = dims(resized.image.data);
+  check(w1 > w0 && h1 > h0, `the new PNG is the larger box: ${w0}x${h0} -> ${w1}x${h1}`);
+  out.areaResized = { before: [w0, h0], after: [w1, h1] };
+
   // 5. back in the library, the selected item becomes the chip
   ctx.win.Zotero_Tabs.select("zotero-pane");
   await ctx.sleep(500);

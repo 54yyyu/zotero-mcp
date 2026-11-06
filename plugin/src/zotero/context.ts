@@ -40,7 +40,9 @@ export class ContextTracker {
   private selections = new Map<number, { text: string; pageIndex: number | null; pageLabel: string | null }>();
   private notifierID: string | null = null;
   private disposers: (() => void)[] = [];
-  private images = new Map<string, { mime: "image/png"; data: string }>();
+  /** Area PNGs by annotation key, with the box they show: a resized box is a new picture. */
+  private images = new Map<string, { pos: string; image: { mime: "image/png"; data: string } }>();
+  /** Renders under way, as `key:position`. */
   private rendering = new Set<string>();
   private lastSig = "";
   /** Per attachment id: its annotations counted by kind, in all and per page. Cleared by the item notifier, so a turn costs a lookup. */
@@ -202,15 +204,21 @@ export class ContextTracker {
     return { id: `annotation:${ann.key}`, kind: "annotation", label: `${ann.annotationType} · p.${label}`, ...own, text: ann.annotationText || ann.annotationComment || "" };
   }
 
-  /** The area's PNG, rendered by Zotero if it has not been yet. Cached per annotation; null when it cannot be had. */
+  /**
+   * The area's PNG for the box as it is now, rendered by Zotero if it has not been yet; null when it cannot be had.
+   * Zotero drops its cached PNG when a box moves, but only once the save commits, which can be after we hear of the
+   * change: so when a box we know has moved, the old file is removed first and the render always draws the new box.
+   */
   async loadImage(ann: any, att: any): Promise<{ mime: "image/png"; data: string } | null> {
+    const pos = String(ann.annotationPosition ?? "");
     const hit = this.images.get(ann.key);
-    if (hit) return hit;
+    if (hit?.pos === pos) return hit.image;
     try {
+      if (hit) await Zotero.Annotations.removeCacheImage(ann);
       const path = Zotero.Annotations.getCacheImagePath(ann);
       if (!(await IOUtils.exists(path))) await Zotero.PDFWorker.renderAttachmentAnnotations(att.id);
       const image = { mime: "image/png" as const, data: toBase64(await IOUtils.read(path)) };
-      this.images.set(ann.key, image);
+      this.images.set(ann.key, { pos, image });
       return image;
     } catch (e) {
       Zotero.debug(`zotero-chat: area image failed: ${e}`);
@@ -218,15 +226,17 @@ export class ContextTracker {
     }
   }
 
-  /** The cached PNG now; the first call also starts the render and announces when it is ready. */
+  /** The PNG for the current box if we have it; otherwise start the render, announce it when ready, and show the last one meanwhile. */
   private imageFor(ann: any, att: any): { mime: "image/png"; data: string } | null {
+    const pos = String(ann.annotationPosition ?? "");
     const hit = this.images.get(ann.key);
-    if (hit) return hit;
-    if (!this.rendering.has(ann.key)) {
-      this.rendering.add(ann.key);
-      void this.loadImage(ann, att).then((img) => { if (img) this.changed(); });
+    if (hit?.pos === pos) return hit.image;
+    const job = `${ann.key}:${pos}`;
+    if (!this.rendering.has(job)) {
+      this.rendering.add(job);
+      void this.loadImage(ann, att).then((img) => { this.rendering.delete(job); if (img) this.changed(); });
     }
-    return null;
+    return hit?.image ?? null;
   }
 
   private libraryChips(win: any): ContextChip[] {
