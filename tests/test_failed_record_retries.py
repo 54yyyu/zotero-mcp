@@ -206,6 +206,24 @@ def test_a_kept_item_stays_until_its_write_succeeds_then_is_given_up(build, tmp_
     assert not fourth.get("retry_given_up")
 
 
+def _passage_ids(search):
+    return set(search.chroma_client.client.get_collection(f"{NAME}_passages").get(include=[])["ids"])
+
+
+def test_a_kept_item_rewritten_with_chunking_off_loses_its_stale_passages(build, tmp_path):
+    """A rewrite is no level fill: the passages left from before the change must go."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero).update_database()
+    zotero.abstracts["BBB"] = "A new abstract for BBB."
+    _set_update_config(tmp_path, retry_item_keys=["BBB"], retry_item_attempts={"BBB": 1})
+
+    search = build(zotero, chunking=False)
+    search.update_database()
+
+    assert not [p for p in _passage_ids(search) if p.startswith("BBB")]
+    assert [p for p in _passage_ids(search) if p.startswith("AAA")]
+
+
 def test_a_given_up_item_missing_a_level_is_not_filled_on_every_run(build, tmp_path):
     """Its first passages got written, its article never did: a gap the cap must cover."""
     zotero = FakeZotero({"AAA": LONG, "CCC": f"{LONG} {POISON}"})
