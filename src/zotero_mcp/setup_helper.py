@@ -335,22 +335,14 @@ def setup_semantic_search(
     print("\n=== Semantic Search Configuration ===")
 
     if existing_semantic_config:
-        # Display config without sensitive info
-        model = existing_semantic_config.get("embedding_model", "unknown")
-        name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
-        update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
-        db_path = existing_db_path or existing_semantic_config.get("zotero_db_path") or "auto-detect"
-        openai_batch = existing_semantic_config.get("openai_batch", {}).get("enabled", False)
+        # Same rows as `db-status`; never prints the API key.
+        from zotero_mcp.semantic_summary import print_rows, semantic_config_rows
+
         print("Found existing semantic search configuration:")
-        print(f"  - Embedding model: {model}")
-        print(f"  - Embedding model name: {name}")
-        if model == "openai":
-            print(f"  - OpenAI Batch API updates: {'enabled' if openai_batch else 'disabled'}")
-        elif model == "gemini":
-            gemini_batch = existing_semantic_config.get("gemini_batch", {}).get("enabled", False)
-            print(f"  - Gemini Batch API updates: {'enabled' if gemini_batch else 'disabled'}")
-        print(f"  - Update frequency: {update_freq}")
-        print(f"  - Zotero database path: {db_path}")
+        print_rows(
+            semantic_config_rows(existing_semantic_config, existing_db_path),
+            "  - ",
+        )
         print("You can keep it or change it.")
         print("If you change to a new configuration, a database rebuild is advised.")
         print("Would you like to keep your existing configuration? (y/n): ", end="")
