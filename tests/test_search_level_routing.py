@@ -134,6 +134,7 @@ def test_note_points_at_the_article_level_during_a_fill(build):
     assert "Searched passages (1 item in the index)" in note
     assert "article level has 12 items" in note
     assert "may find more" in note
+    assert 'level="articles"' in note
 
 
 def test_note_gives_both_counts_when_neither_level_has_more(build):

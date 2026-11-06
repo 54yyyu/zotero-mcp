@@ -5514,7 +5514,7 @@ class ZoteroSemanticSearch:
         note = f"Searched {level} ({_count_items(searched)} in the index)."
         if elsewhere:
             note += f" The {other[:-1]} level has {_count_items(elsewhere)}"
-            return f"{note}, so searching it may find more." if elsewhere > searched else f"{note}."
+            return f'{note}, so level="{other}" may find more.' if elsewhere > searched else f"{note}."
         if level == SEARCH_PASSAGES:
             return f"{note} No article records are indexed yet."
         return f"{note} No passages are indexed yet." if self._chunking_enabled else None

@@ -329,7 +329,8 @@ def cmd_search(args):
                 sys.exit(1)
         result = search_mod.semantic_search(
             query=args.query, limit=args.limit, filters=filters,
-            search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
+            search_all_libraries=getattr(args, "all_libraries", False),
+            level=getattr(args, "level", None), ctx=ctx,
         )
     elif args.mode == "notes":
         result = annotations.search_notes(query=args.query, limit=args.limit, ctx=ctx)
@@ -1567,6 +1568,9 @@ def build_parser() -> argparse.ArgumentParser:
                      default="items", help="Search mode (default: items)")
     s_p.add_argument("--qmode", choices=["titleCreatorYear", "everything"],
                      default="titleCreatorYear")
+    s_p.add_argument("--level", choices=["articles", "passages"],
+                     help="With --mode semantic: search articles or passages "
+                          "(default: passages when chunking is on, articles when off)")
     s_p.add_argument("--collection", help="Scope to a collection key")
     s_p.add_argument("--limit", type=int, default=10)
     s_p.add_argument("--conditions", help='JSON conditions for advanced mode')

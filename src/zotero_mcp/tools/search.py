@@ -9,7 +9,6 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
-
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
@@ -1433,7 +1432,9 @@ def advanced_search(
         "metadata filter with one key per dict, e.g. {'item_type': "
         "'journalArticle'}; keys item_type, item_key, citation_key, doi, "
         "publication, tags, has_fulltext; combine with {'$and': [{...}, "
-        "{...}]}; there is no year filter. Searches the active library; "
+        "{...}]}; there is no year filter. level: 'articles' (works on a topic) "
+        "or 'passages' (where something is stated); default follows the "
+        "chunking setting. Searches the active library; "
         "library_id picks another (0 or 'user', or a group ID), "
         "search_all_libraries=True searches every indexed library (not with "
         "library_id). Needs a built index: if results look empty or stale, "
@@ -1449,6 +1450,7 @@ def semantic_search(
     library_id: int | str | None = None,
     search_all_libraries: bool = False,
     full_passage: bool = False,
+    level: Literal["articles", "passages"] | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1553,7 +1555,10 @@ def semantic_search(
         )
 
         # Perform search
-        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
+        results = search.search(
+            query=query, limit=limit, filters=filters, group_id=group_id,
+            **({"level": level} if level else {}),
+        )
         stale_note = _stale_index_note(search, version_check()) if version_check else None
 
         if results.get("error"):
