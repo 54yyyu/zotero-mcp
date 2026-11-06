@@ -342,3 +342,67 @@ def test_a_full_scan_of_a_complete_split_index_embeds_nothing(build, tmp_path):
 
     assert search.chroma_client.embedded == []
     assert stats["total_items"] == 0
+
+
+# --- the Batch API path ----------------------------------------------------------
+
+
+def _batch(search):
+    """Make ``search`` an OpenAI batch run; any request would hit a closed local port."""
+    search.chroma_client.embedding_model = "openai"
+    search.chroma_client.embedding_config = {
+        "model_name": "text-embedding-3-small",
+        "api_key": "test",
+        "base_url": "http://127.0.0.1:9",
+    }
+    return search
+
+
+def test_a_batch_run_with_nothing_to_embed_moves_the_sync_version(build, tmp_path):
+    """Otherwise every later run fetches the same changes again, and never gets past them."""
+    zotero = FakeZotero({"AAA": LONG})
+    build(zotero, chunking=False).update_database()
+    zotero.version = 6
+    zotero.changed = set()
+
+    search = _batch(build(zotero, chunking=False))
+    stats = search.update_database(use_batch=True)
+
+    assert stats.get("batch_submitted") is False
+    assert "batch_error" not in stats
+    assert list(tmp_path.glob("**/manifest.json")) == []
+    assert build(zotero, chunking=False)._load_last_sync_version() == 6
+
+
+def test_a_batch_run_whose_items_all_fail_keeps_the_sync_version(build, monkeypatch):
+    zotero = FakeZotero({"AAA": LONG})
+    build(zotero, chunking=False).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA"}
+
+    search = _batch(build(zotero, chunking=False))
+
+    def broken(*args, **kwargs):
+        raise ValueError("cannot build")
+
+    monkeypatch.setattr(search, "_build_item_records", broken)
+    search.update_database(use_batch=True)
+
+    assert build(zotero, chunking=False)._load_last_sync_version() == 5
+
+
+def test_a_batch_run_saves_what_it_learned_about_waiting_items(build, tmp_path):
+    """update_config is saved on the batch path too, with the waiting list in it."""
+    zotero = FakeZotero({"AAA": LONG})
+    search = build(zotero, chunking=True)
+    search.update_database()
+    search.chroma_client.delete_documents(["AAA"])
+    passages = search.chroma_client.client.get_collection(f"{NAME}_passages")
+    stored = passages.get(ids=["AAA#0"], include=["metadatas"])["metadatas"][0]
+    passages.update(ids=["AAA#0"], metadatas=[{**stored, "has_fulltext": True}])
+    zotero.version = 6
+
+    search = _batch(build(zotero, chunking=True))
+    search.update_database(use_batch=True)
+
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]

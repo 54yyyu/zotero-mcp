@@ -3206,7 +3206,11 @@ class ZoteroSemanticSearch:
 
         if not records:
             stats["batch_submitted"] = False
-            stats["batch_error"] = f"No documents were prepared for {label} Batch API submission"
+            if prepare_stats["errors"]:
+                stats["batch_error"] = f"No documents were prepared for {label} Batch API submission"
+            else:
+                # Nothing changed that needs a record: no batch to wait for.
+                stats["batch_nothing_to_embed"] = True
             return stats
 
         ids = [record["id"] for record in records]
@@ -3970,9 +3974,27 @@ class ZoteroSemanticSearch:
                 # This run did its work, so an auto-update is not due again
                 # until its next turn. Without this, should_update stayed true
                 # until an import and every search could pay for the same
-                # changes again. The sync version waits for the import.
+                # changes again. The sync version waits for the import, unless
+                # there is nothing to import: then it moves now, or every later
+                # run would fetch the same changes again.
                 self.update_config["last_update"] = datetime.now().isoformat()
-                self._save_update_config()
+                if (
+                    stats.get("batch_nothing_to_embed")
+                    and target_sync_version is not None
+                    and not force_full_rebuild
+                ):
+                    self._save_update_config(
+                        last_sync_version=target_sync_version,
+                        library_key=str(self._run_group_id),
+                    )
+                else:
+                    self._save_update_config()
+                if stats.get("batch_nothing_to_embed"):
+                    _report("  Nothing needs embedding; no batch was submitted.\n")
+                    end_time = datetime.now()
+                    stats["duration"] = str(end_time - start_time)
+                    stats["end_time"] = end_time.isoformat()
+                    return stats
                 batch_ids = ", ".join(stats.get("batch_ids", []))
                 _report(
                     f"  Submitted {batch_label} embedding batch"
