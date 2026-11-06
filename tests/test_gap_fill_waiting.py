@@ -321,3 +321,24 @@ def test_a_run_stopped_by_an_unreachable_api_keeps_the_waiting_list(build, tmp_p
 
     assert stats.get("embedding_api_unreachable")
     assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+
+# --- full scans of a split index -----------------------------------------------------
+
+
+def test_a_full_scan_of_a_complete_split_index_embeds_nothing(build, tmp_path):
+    """No gaps, no sync version: the scan must not pay for the library again."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero, chunking=True).update_database()
+    config = tmp_path / "config.json"
+    data = json.loads(config.read_text())
+    data["semantic_search"].pop("last_sync_version", None)
+    data["semantic_search"].pop("last_sync_versions", None)
+    config.write_text(json.dumps(data))
+
+    search = build(zotero, chunking=True)
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {}
+    stats = search.update_database()
+
+    assert search.chroma_client.embedded == []
+    assert stats["total_items"] == 0

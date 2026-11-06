@@ -2645,11 +2645,11 @@ class ZoteroSemanticSearch:
     def _narrow_full_scan_to_changes(
         self, items: list[dict[str, Any]], gaps: dict[str, set[str]]
     ) -> list[dict[str, Any]]:
-        """Keep only what a full API scan of a gapped index actually has to embed.
+        """Keep only what a full scan of a split index actually has to embed.
 
         With no sync watermark, the API scan fetches everything and would embed
-        every level of every item, when the point of the gap fill is to embed
-        only what is missing. An unchanged item keeps just its gap, if it has one.
+        every level of every item, though most are indexed and unchanged. An
+        unchanged item keeps just its gap, if it has one.
         """
         kept: list[dict[str, Any]] = []
         for item in items:
@@ -3787,7 +3787,6 @@ class ZoteroSemanticSearch:
             index_gaps = self._find_index_gaps(
                 limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled
             )
-            gapped_index = bool(index_gaps)
             # Items that only a run with their full text can fill. What is no
             # longer a gap is forgotten, but only by a run that looked for
             # every gap: a limited run, a rebuild and (until it can make
@@ -3897,7 +3896,17 @@ class ZoteroSemanticSearch:
                     force_rebuild=force_full_rebuild,
                     include_fulltext_via_api=include_fulltext_via_api,
                 )
-                if gapped_index and not extract_fulltext:
+                # A full scan of a split index that already holds records
+                # embeds only changes and gaps. Without a sync version (a
+                # stopped rebuild, a migrated index, a reset watermark) it
+                # would otherwise pay for every record of the library again.
+                if (
+                    not extract_fulltext
+                    and not force_full_rebuild
+                    and limit is None
+                    and self._separate_passages()
+                    and (layout.get("article_records", 0) or layout.get("passage_records", 0))
+                ):
                     all_items = self._narrow_full_scan_to_changes(all_items, index_gaps)
                 # The local-extraction scan may lag behind the API version
                 # captured above (immutable sqlite reads skip WAL contents);
