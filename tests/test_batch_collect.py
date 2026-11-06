@@ -2389,6 +2389,32 @@ def test_t7_a_fill_run_past_the_window_still_defers_a_new_run(iso, capsys):
     assert "deferred" in out and run["run_id"] in out
 
 
+def test_t7_auto_loop_drives_the_run_it_waits_for_not_a_newer_stuck_one(iso):
+    _set_version(iso, 10)
+    fill = _fill_run(iso, created_at=_ago(days=3), budget=1)  # one file sent, one waiting
+    stuck = _fill_run(iso, fill=False, records=1, created_at=_ago(days=2, hours=12))
+    stuck["max_enqueued_tokens"] = None  # an old manifest: its waiting file can't be sent
+    stuck["batches"][0].update(batch_id=None, status="pending", state="pending")
+    stuck["batches"][0].pop("submitted_at", None)
+    openai_batch.save_manifest(stuck)
+    real_create = iso.provider.batches.create
+
+    def create_finished(**kwargs):
+        created = real_create(**kwargs)
+        iso.provider.statuses[created.id] = "completed"
+        return created
+
+    iso.provider.batches.create = create_finished
+    iso.provider.finish_all()
+
+    stats = iso.new_search().update_database(auto_loop=True, batch_poll_interval=0)
+
+    assert not stats.get("batch_deferred"), "the fill run it was waiting for has landed"
+    assert stats["batch_waited"]["runs"] == [fill["run_id"]]
+    manifest = openai_batch.load_manifest(Path(fill["manifest_path"]))
+    assert all(batch_common.is_settled(batch) for batch in manifest["batches"])
+
+
 def test_t7_a_collect_does_not_say_a_fill_run_past_the_window_holds_nothing_up(iso):
     run = _fill_run(iso, created_at=_ago(days=3))
 

@@ -6006,6 +6006,7 @@ class ZoteroSemanticSearch:
         _collect_run: dict[str, Any] | None = None,
         _submit_waiting: bool = True,
         _allow_reset: bool = True,
+        _run: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Import completed Batch API embeddings into ChromaDB.
 
@@ -6023,6 +6024,8 @@ class ZoteroSemanticSearch:
         ``needs_user`` set when only the user can move it on.
         ``_submit_waiting=False`` leaves throttle-parked chunks unsent.
         ``_allow_reset=False`` stops at a rebuild's reset and asks for 'batch-import'.
+        ``_run`` names the run for a path the user asked for (the ``--auto-loop``
+        wait), which otherwise works as 'batch-import' does.
 
         With no batch ids, a run that a later sync overtook, that another model
         made or that the user gave up on is not imported. Its text would be older
@@ -6040,7 +6043,7 @@ class ZoteroSemanticSearch:
             adapter = _batch_adapter(provider)
             label = adapter.label
             selected_ids = set(batch_ids or [])
-            manifest = _collect_run or self._find_run(provider, next(iter(selected_ids), None))
+            manifest = _collect_run or _run or self._find_run(provider, next(iter(selected_ids), None))
             if not selected_ids and not self._run_is_usable(provider, manifest):
                 return {
                     "provider": provider,
@@ -6513,9 +6516,9 @@ class ZoteroSemanticSearch:
     ) -> list[dict[str, Any]]:
         """Drive the runs that hold this update up to the end, one at a time.
 
-        For ``--auto-loop``: the run worked on is the one 'batch-import' would
-        pick. Stops when nothing holds the update up any more, or when a run
-        can make no more progress. Returns the runs still in the way, oldest
+        For ``--auto-loop``: newest first, the run named in the message is the
+        run worked on. Stops when nothing holds the update up any more, or when
+        a run can make no more progress. Returns the runs still in the way, oldest
         first. Called with the update lock held.
         """
         def in_the_way() -> list[dict[str, Any]]:
@@ -6532,11 +6535,9 @@ class ZoteroSemanticSearch:
         for _ in range(len(self._unfinished_batch_runs(provider, self._run_group_id))):
             if not blocking:
                 break
-            _report(
-                f"\nWaiting for batch run {blocking[-1].get('run_id')} to finish before updating "
-                "(--auto-loop).\n"
-            )
-            loop = self.auto_loop_batch_pipeline(provider, poll_interval=poll_interval)
+            run_id = str(blocking[-1].get("run_id"))
+            _report(f"\nWaiting for batch run {run_id} to finish before updating (--auto-loop).\n")
+            loop = self.auto_loop_batch_pipeline(provider, poll_interval=poll_interval, run_id=run_id)
             waited["runs"].append(loop.get("run_id"))
             for key in ("polls", "imported_items", "submitted_chunks"):
                 waited[key] += loop.get(key, 0)
@@ -6552,10 +6553,12 @@ class ZoteroSemanticSearch:
         poll_interval: int = 60,
         max_enqueued_tokens: int | None = None,
         stats: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Drive a throttled batch run to completion: poll, import, submit pending.
 
-        Loops until every entry in the latest run's manifest is imported, or
+        The run is ``run_id``'s, or else the one 'batch-import' would pick.
+        Loops until every entry in the run's manifest is imported, or
         until no further progress is possible (everything left is terminal and
         nothing can be submitted). The on-disk manifest is consistent at every
         step, so after Ctrl-C or a crash a later ``batch-import`` or ``update-db``
@@ -6570,10 +6573,22 @@ class ZoteroSemanticSearch:
         label = adapter.label
         aggregate = {"provider": provider, "polls": 0, "imported_items": 0, "submitted_chunks": 0}
 
+        def _the_run() -> dict[str, Any]:
+            """Read again from disk on every poll, as the import saves it."""
+            if run_id is None:
+                return self._find_run(provider)
+            for run in _batch_module(provider).manifests_for_group(
+                config_path=self.config_path, group_id=self._pinned_group_id()
+            ):
+                if run.get("run_id") == run_id:
+                    return run
+            raise FileNotFoundError(f"No {label} batch run {run_id} for this library")
+
         while True:
             imported_submitted = 0
             try:
-                import_stats = self._import_batch(provider, _skip_lock=True)
+                named = {"_run": _the_run()} if run_id is not None else {}
+                import_stats = self._import_batch(provider, _skip_lock=True, **named)
                 aggregate["imported_items"] += import_stats.get("imported_items", 0)
                 # The import submits this run's parked chunks itself, so those
                 # count here too; otherwise the tally below reports 0 for
@@ -6585,7 +6600,7 @@ class ZoteroSemanticSearch:
                 logger.debug(f"auto-loop import deferred: {e}")
             aggregate["polls"] += 1
 
-            manifest = self._find_run(provider)
+            manifest = _the_run()
             aggregate["run_id"] = manifest.get("run_id")
             client = adapter.create_client(self.chroma_client.embedding_config)
             # Through _submit_pending_chunks, not straight to the provider
