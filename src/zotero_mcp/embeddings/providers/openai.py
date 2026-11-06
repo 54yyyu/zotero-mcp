@@ -31,6 +31,13 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     DEFAULT_REQUEST_BATCH_SIZE = 64
     default_request_batch_size = DEFAULT_REQUEST_BATCH_SIZE
 
+    # OpenAI refuses a request above 300,000 tokens, and 64 documents at the
+    # input limit are 512,000. It checks this twice, measured against the live
+    # API in November 2026: UTF-8 bytes / 4, then real tokens. The estimate
+    # bounds both (see _estimate_request_tokens), so this margin is only there
+    # in case OpenAI's count differs slightly from cl100k_base.
+    max_request_tokens = 290_000
+
     # Tokens per minute the limiter paces against when nothing else supplies a
     # ceiling. text-embedding-3-small is 1,000,000 TPM on Tier 1 and higher on
     # later tiers, so this leaves 5% headroom against the *lowest* tier, which

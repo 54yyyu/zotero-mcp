@@ -160,6 +160,9 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
     """
 
     default_request_batch_size: int | None = None
+    #: Estimated tokens one request may carry, or None if only the document
+    #: count limits it. See :meth:`_split_into_requests`.
+    max_request_tokens: int | None = None
     default_tokens_per_minute: float | None = None
     max_parallel_requests_default = 1
     max_retries_default = 5
@@ -278,15 +281,7 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             getattr(self, "request_batch_size", None) or self.default_request_batch_size
         )
 
-        if batch_size:
-            sub_batches = [
-                prepared[i : i + batch_size] for i in range(0, len(prepared), batch_size)
-            ]
-        else:
-            # A falsy request_batch_size means "the whole input in one
-            # request", but an empty input must still issue zero requests
-            # rather than one empty one.
-            sub_batches = [prepared] if prepared else []
+        sub_batches = self._split_into_requests(prepared, batch_size)
 
         if not sub_batches:
             return []
@@ -311,6 +306,47 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
         for chunk in slots:
             embeddings.extend(chunk or [])
         return embeddings
+
+    def _split_into_requests(self, texts: list, batch_size: int | None) -> list[list]:
+        """Split ``texts`` into requests, limited by count and by estimated tokens.
+
+        A falsy ``batch_size`` means no count limit. An empty input gives no
+        requests rather than one empty one. A document over the token limit
+        goes out alone, where the provider can reject it without taking others
+        down with it.
+        """
+        token_limit = self.max_request_tokens
+        requests: list[list] = []
+        current: list = []
+        current_tokens = 0
+        for text in texts:
+            tokens = self._estimate_request_tokens(text) if token_limit else 0
+            over_count = bool(batch_size) and len(current) >= batch_size
+            over_tokens = bool(token_limit) and current_tokens + tokens > token_limit
+            if current and (over_count or over_tokens):
+                requests.append(current)
+                current, current_tokens = [], 0
+            current.append(text)
+            current_tokens += tokens
+        if current:
+            requests.append(current)
+        return requests
+
+    def _estimate_request_tokens(self, text: Any) -> int:
+        """A document's share of a request's token limit, without tokenizing it.
+
+        Tokenizing every document here would be expensive on PDF text (see
+        ``OpenAIEmbeddingFunction.truncate``), and neither of OpenAI's two
+        checks needs it. This is the larger of two bounds, so a request within
+        the limit passes both:
+
+        - It counts UTF-8 bytes / 4, however few real tokens they are.
+        - It counts real tokens. A token is at least one byte, and documents
+          reaching this point are truncated to the input limit, so the smaller
+          of those two can't be below the real count.
+        """
+        data = len(str(text).encode("utf-8"))
+        return max(min(data, getattr(self, "max_input_tokens", data)), data // 4 + 1)
 
     def embed_query_text(self, text: str) -> list[float]:
         """Embed one query string through the same limiter and retry path.
