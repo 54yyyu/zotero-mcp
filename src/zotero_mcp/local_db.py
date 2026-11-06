@@ -2410,6 +2410,35 @@ class LocalZoteroReader:
             row = conn.execute("SELECT libraryID FROM groups WHERE groupID = ?", (group_id,)).fetchone()
         return row[0] if row is not None else None
 
+    def get_library_version(self, group_id: int) -> int | None:
+        """Zotero's version counter for one library (0 = personal), or None
+        if the library is not in this database. The same counter the local API
+        serves as ``Last-Modified-Version``; one indexed read."""
+        library_id = self._resolve_scope_library_id(group_id)
+        if library_id is None:
+            return None
+        row = self._get_connection().execute(
+            "SELECT version FROM libraries WHERE libraryID = ?", (library_id,)
+        ).fetchone()
+        return int(row[0] or 0) if row is not None else None
+
+    def read_reflects_wal(self) -> bool:
+        """Whether the open connection sees everything Zotero has committed.
+
+        False when the file was read in place while a non-empty ``-wal`` file
+        exists (snapshots disabled or the copy failed), or when a cached
+        snapshot older than the current file/WAL was served (the copy
+        throttle). Opens the connection if needed.
+        """
+        self._get_connection()
+        source = os.path.realpath(self.db_path)
+        wal_sig = _file_signature(source + "-wal")
+        kind = getattr(self, "_connection_target", ("inplace", None))[0]
+        if kind == "snapshot":
+            cached = _snapshots.get(source)
+            return bool(cached) and cached[0] == (_file_signature(source), wal_sig)
+        return wal_sig is None or wal_sig[0] == 0
+
     def _resolve_scope_library_ids(self, group_id: int | None) -> list[int] | None:
         """The local ``libraryID``s one search should cover, or None if the
         requested scope resolves to nothing.

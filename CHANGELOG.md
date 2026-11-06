@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The search database status says whether the index is stale.** `zotero_get_search_database_status`, `zotero-mcp db-status` and `zotero-cli db status` compare the library version saved at the last update with the library's version now (one request to Zotero's local API in local mode, or to the web API, bounded at 5 s; in local mode the database file is read only if the local API fails, and a read that may have missed recent writes reads as `couldn't check`) and report `up to date`, `STALE` with the two versions and what to run, or `couldn't check` with the reason; a failed check never reads as current. The status names the library it checked; only the active library is checked. They also report an unfinished batch embedding run from its local manifest, with no network call. Neither loads an embedding model or a vector index, and the MCP tool does not take the Zotero API lock.
+- **Agents are told to check the status before their first semantic search.** The `zotero_semantic_search` description and the `zotero-cli` skill say to check the status once per session, to tell the user when the index is stale or could not be checked, and to fall back to keyword search (saying why) when the embedding API is unreachable.
+
 ### Changed
 
 - **The MCP server now frees the semantic index's memory after 10 idle minutes by default.** `semantic_search.idle_unload_minutes` defaulted to `0`, so a server that ran one semantic search held the whole vector index until it exited. The default is now `10`: ChromaDB runs in a worker process that exits after 10 minutes without a semantic call, and the next call starts a new one and reloads the index. On an Apple M1 Max a new worker answered its first query 0.4 s after starting for 5,000 article-level records of 3,072 dimensions (about 150 MB resident) and 0.55 s for 50,000 (about 700 MB). Set `idle_unload_minutes` to `0` to keep ChromaDB in the server as before; a value you have set is unchanged. The command-line tools are unaffected. See "Semantic search memory" in `docs/configuration.md`.

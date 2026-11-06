@@ -1426,6 +1426,18 @@ def main():
             print(f"- Passage chunking: {_format_chunking_status(status)}")
             _print_batch_notice(status)
 
+            from zotero_mcp.index_staleness import status_lines
+
+            print()
+            for line in status_lines(
+                str(config_path),
+                "zotero-mcp update-db",
+                "zotero-mcp batch-import",
+                "zotero-mcp batch-status",
+                collection_info,
+            ):
+                print(line)
+
             if collection_info.get("unreadable"):
                 from zotero_mcp.chroma_client import unreadable_index_message
 
