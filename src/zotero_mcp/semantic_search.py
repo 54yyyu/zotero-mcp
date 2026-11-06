@@ -2961,6 +2961,9 @@ class ZoteroSemanticSearch:
                 where={"group_id": int(self._run_group_id)}
             )
             stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
+            # Which kind of delete a key needs comes from what is stored, not
+            # from the chunking setting, which may have changed since.
+            keys_with_passages = {i.split("#", 1)[0] for i in stored_ids if "#" in i}
             if current_library_keys is None:
                 # item_versions() failed: unknown is not "empty".
                 stats["deletion_skipped_reason"] = "item_versions_unavailable"
@@ -3005,8 +3008,8 @@ class ZoteroSemanticSearch:
                     )
                     stats["deletion_skipped_reason"] = "mass_deletion_guard"
                 elif to_delete_keys:
-                    if self._chunking_enabled and hasattr(self.chroma_client, "delete_item_chunks"):
-                        for k in to_delete_keys:
+                    for k in to_delete_keys:
+                        if k in keys_with_passages:
                             # Scoped: a chunk set can carry mixed
                             # group_ids (partial rewrite, key
                             # collision); a bare parent-key delete
@@ -3015,8 +3018,9 @@ class ZoteroSemanticSearch:
                             self.chroma_client.delete_item_chunks(
                                 k, group_id=int(self._run_group_id)
                             )
-                    else:
-                        self.chroma_client.delete_documents(to_delete_keys)
+                    bare_keys = [k for k in to_delete_keys if k in stored_ids]
+                    if bare_keys:
+                        self.chroma_client.delete_documents(bare_keys)
                     stats["deleted_items"] = len(to_delete_keys)
                     try:
                         sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
@@ -4920,6 +4924,7 @@ class ZoteroSemanticSearch:
         """Delete an item from the semantic search database."""
         try:
             self.chroma_client.delete_documents([item_key])
+            self.chroma_client.delete_item_chunks(item_key)
             return True
         except Exception as e:
             logger.error(f"Error deleting item {item_key}: {e}")

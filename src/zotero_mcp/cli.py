@@ -1456,7 +1456,6 @@ def main():
         try:
             search = create_semantic_search(str(config_path))
             client = search.chroma_client
-            col = client.collection
 
             def _iter_all_metadatas(batch_size=DB_INSPECT_BATCH_SIZE, include_documents=False):
                 """Paginate through the whole collection in bounded batches.
@@ -1471,17 +1470,18 @@ def main():
                 limited to whatever the first raw batch happened to contain.
                 """
                 inc = ["metadatas", "documents"] if include_documents else ["metadatas"]
-                total = col.count()
-                offset = 0
-                while offset < total:
-                    batch = col.get(limit=batch_size, offset=offset, include=inc)
-                    metas = batch.get("metadatas", [])
-                    if not metas:
-                        break
-                    docs = batch.get("documents", [None] * len(metas)) if include_documents else [None] * len(metas)
-                    for m, d in zip(metas, docs):
-                        yield (m or {}), d
-                    offset += batch_size
+                for col in client.collections():
+                    total = col.count()
+                    offset = 0
+                    while offset < total:
+                        batch = col.get(limit=batch_size, offset=offset, include=inc)
+                        metas = batch.get("metadatas", [])
+                        if not metas:
+                            break
+                        docs = batch.get("documents", [None] * len(metas)) if include_documents else [None] * len(metas)
+                        for m, d in zip(metas, docs):
+                            yield (m or {}), d
+                        offset += batch_size
 
             if args.stats:
                 # Show aggregate stats (merged from former db-stats).
